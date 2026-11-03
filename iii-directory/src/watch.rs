@@ -1,8 +1,8 @@
-//! Filesystem watch: external changes under the directory roots fire the
+//! Filesystem watch: external changes under the directory roots call the
 //! matching `directory::*::on-change` with `{op: "external"}`.
 //!
 //! Reads are scan-on-demand and never stale — this is purely the push
-//! signal for open subscribers (directory tabs, agent bindings) when a
+//! signal for open observers (directory tabs, agents) when a
 //! file is pasted, edited, deleted, or renamed outside the worker.
 //! Doorbell, not ledger: same shape as the database worker's sqlite
 //! watch. Events are debounced into at most one fire per kind per

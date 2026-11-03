@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 
 use crate::config::WorkerConfig;
 
@@ -194,7 +194,7 @@ pub struct ActionRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SurfaceRecord {
-    /// Authoritative Harness session stamped by the pre-trigger hook.
+    /// Authoritative Harness session stamped by the pre-call hook.
     pub session_id: String,
     /// Globally unique inside the session.
     pub surface_id: String,
@@ -213,8 +213,27 @@ pub struct SurfaceRecord {
     pub pinned: bool,
     #[serde(default)]
     pub bindings: Vec<LiveBinding>,
+    /// Bindings stored under iii 0.25 that could not be translated when the
+    /// session loaded, each with the reason. The page lists them;
+    /// `a2ui::binding::set` with the same id replaces one and
+    /// `a2ui::binding::delete` removes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_bindings: Vec<RetiredBinding>,
     #[serde(default)]
     pub history: Vec<SurfaceRevision>,
+}
+
+/// A binding stored under iii 0.25 as a worker's type `W::X` whose function
+/// `W::on-X` was not registered, or failed the binding checks, when its
+/// session loaded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RetiredBinding {
+    /// The binding id.
+    pub id: String,
+    /// The function the stored type reads as.
+    pub function_id: String,
+    /// Why the binding could not be translated.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -230,35 +249,245 @@ pub struct SurfaceRevision {
     pub reason: String,
 }
 
-/// Declarative live-data binding rendered by the Console: the page registers
-/// `trigger_type`/`config` for its own view and writes delivered values to
-/// `target_path`. Bindings cannot invoke arbitrary functions.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// Declarative live-data binding rendered by the Console: the page observes
+/// `function_id` (with `args` and `filters`) for its own view and writes
+/// delivered values to `target_path`. Bindings cannot invoke arbitrary
+/// functions.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LiveBinding {
     /// Stable binding id within the surface.
     pub id: String,
-    /// Trigger type to bind: a worker-owned trigger type (for example
-    /// `orders::changed`), `state`, or `shell::changed`. `stream` is accepted
-    /// only as deprecated legacy compatibility.
-    pub trigger_type: String,
-    /// Trigger configuration, validated against the trigger type's registered
-    /// configuration schema when the provider declares one.
-    pub config: Value,
+    /// Function to observe: another worker's private event function (for
+    /// example `orders::on-changed`), `state::on-changed`, or
+    /// `shell::on-changed`.
+    /// `stream::on-changed` is accepted only as deprecated legacy
+    /// compatibility.
+    pub function_id: String,
+    /// Args for a function that takes them, validated against the function's
+    /// registered `args_format`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Value>,
+    /// Filters selecting which calls are delivered, each with an explicit
+    /// operator: `{ "input.status": { "$eq": "open" } }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Value>,
     /// JSON Pointer in the surface data model that receives the value.
     pub target_path: String,
-    /// JSON Pointer inside the event payload to apply (event mode only).
+    /// JSON Pointer inside the event to apply (event mode only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_path: Option<String>,
-    /// Optional provider query for worker-owned trigger types: run for the
+    /// Optional provider query for a worker's event source: run for the
     /// initial read, after every notification, and on reconnect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<BindingQuery>,
 }
 
-/// Read-only query a worker-owned trigger type's provider exposes for the
-/// current data. The function must be registered by the same worker as the
-/// trigger type with metadata `{"read_only": true}`.
+/// A binding as sent or stored. A binding stored under iii 0.25 carries
+/// `trigger_type` and `config`. `state`, `shell::changed` and `stream` read as
+/// the function that replaced the type ([`stored_builtin_source`]); a worker's
+/// type `W::X` is translated through the engine registry when its session
+/// loads ([`translate_stored_binding`]). Either is written back in the current
+/// shape on the surface's next change.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLiveBinding {
+    id: String,
+    #[serde(default)]
+    function_id: Option<String>,
+    #[serde(default)]
+    args: Option<Value>,
+    #[serde(default)]
+    filters: Option<Value>,
+    #[serde(default, rename = "trigger_type")]
+    stored_type: Option<String>,
+    #[serde(default, rename = "config")]
+    stored_config: Option<Value>,
+    target_path: String,
+    #[serde(default)]
+    event_path: Option<String>,
+    #[serde(default)]
+    query: Option<BindingQuery>,
+}
+
+impl<'de> Deserialize<'de> for LiveBinding {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let stored = StoredLiveBinding::deserialize(deserializer)?;
+        let (function_id, args, filters) = match (stored.function_id, stored.stored_type) {
+            (Some(function_id), None) => {
+                if stored.stored_config.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "binding `config` belongs to the stored `trigger_type` shape; pass `args` or `filters`",
+                    ));
+                }
+                (function_id, stored.args, stored.filters)
+            }
+            (None, Some(stored_type)) => {
+                if stored.args.is_some() || stored.filters.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "a stored `trigger_type` binding carries `config`, not `args` or `filters`",
+                    ));
+                }
+                let config = stored.stored_config.unwrap_or(Value::Null);
+                stored_builtin_source(&stored_type, &config).ok_or_else(|| {
+                    serde::de::Error::custom(format!(
+                        "binding `{}` names the type `{stored_type}`; pass `function_id` with `args` or `filters`",
+                        stored.id
+                    ))
+                })?
+            }
+            (Some(_), Some(_)) => {
+                return Err(serde::de::Error::custom(
+                    "binding has both `function_id` and a stored `trigger_type`",
+                ))
+            }
+            (None, None) => return Err(serde::de::Error::missing_field("function_id")),
+        };
+        Ok(LiveBinding {
+            id: stored.id,
+            function_id,
+            args,
+            filters,
+            target_path: stored.target_path,
+            event_path: stored.event_path,
+            query: stored.query,
+        })
+    }
+}
+
+/// Stored types with a fixed translation; every other stored type is a
+/// worker's `W::X`.
+const STORED_BUILTIN_TYPES: &[&str] = &["state", "shell::changed", "stream"];
+/// Fields of a stored binding's `config` that never selected events.
+const STORED_CONFIG_DROPPED: &[&str] = &["metadata", "condition_function_id"];
+
+/// The observed function, args and filters of a binding stored with the
+/// `trigger_type` `state` (filters `state::on-changed` on `input.scope` and
+/// `input.key`), `shell::changed` (passes its `path` to `shell::on-changed`
+/// as args) or `stream` (filters `stream::on-changed` on `input.stream_name`,
+/// `input.group_id` and `input.id`). `None` for a worker's type `W::X`, which
+/// [`translate_stored_binding`] reads with the registry's answer.
+pub fn stored_builtin_source(
+    stored_type: &str,
+    config: &Value,
+) -> Option<(String, Option<Value>, Option<Value>)> {
+    match stored_type {
+        "state" => Some((
+            STATE_ON_CHANGED_FN.to_string(),
+            None,
+            Some(eq_filters(
+                config,
+                &[("scope", "input.scope"), ("key", "input.key")],
+            )),
+        )),
+        "shell::changed" => Some((SHELL_ON_CHANGED_FN.to_string(), Some(config.clone()), None)),
+        "stream" => Some((
+            STREAM_ON_CHANGED_FN.to_string(),
+            None,
+            Some(eq_filters(
+                config,
+                &[
+                    ("stream_name", "input.stream_name"),
+                    ("group_id", "input.group_id"),
+                    ("item_id", "input.id"),
+                ],
+            )),
+        )),
+        _ => None,
+    }
+}
+
+/// The `trigger_type` of a binding stored under iii 0.25 as a worker's type
+/// `W::X`; `None` for every other binding.
+pub fn stored_worker_type(binding: &Value) -> Option<&str> {
+    if binding.get("function_id").is_some() {
+        return None;
+    }
+    binding
+        .get("trigger_type")
+        .and_then(Value::as_str)
+        .filter(|stored_type| !STORED_BUILTIN_TYPES.contains(stored_type))
+}
+
+/// The binding a stored `{ "trigger_type": "W::X", "config": … }` reads as,
+/// given whether the registry says `W::on-X` takes args. The config, without
+/// `metadata` and `condition_function_id`, is the function's args when it
+/// takes args; when it takes none, each field becomes the filter
+/// `{ "input.<field>": { "$eq": <value> } }`.
+pub fn translate_stored_binding(stored: &Value, takes_args: bool) -> Result<LiveBinding, String> {
+    let object = stored
+        .as_object()
+        .ok_or_else(|| "stored binding must be an object".to_string())?;
+    let stored_type = stored_worker_type(stored)
+        .ok_or_else(|| "stored binding does not name a worker's type".to_string())?;
+    let mut config = match object.get("config") {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(config)) => config.clone(),
+        Some(_) => return Err("stored binding `config` must be an object".into()),
+    };
+    for field in STORED_CONFIG_DROPPED {
+        config.remove(*field);
+    }
+    let mut binding: Map<String, Value> = object
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "trigger_type" | "config"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    binding.insert(
+        "function_id".into(),
+        Value::String(stored_event_function_id(stored_type)),
+    );
+    if !config.is_empty() {
+        let (key, value) = if takes_args {
+            ("args", Value::Object(config))
+        } else {
+            let filters = config
+                .into_iter()
+                .map(|(field, value)| {
+                    (
+                        format!("input.{field}"),
+                        serde_json::json!({ "$eq": value }),
+                    )
+                })
+                .collect();
+            ("filters", Value::Object(filters))
+        };
+        binding.insert(key.into(), value);
+    }
+    serde_json::from_value(Value::Object(binding)).map_err(|error| error.to_string())
+}
+
+/// `W::X` and `W::P::X` become `W::on-X` and `W::P::on-X`, `a:b` becomes
+/// `a::on-b`, and an id whose last segment starts with `on-` stays.
+pub fn stored_event_function_id(stored_type: &str) -> String {
+    let (prefix, last) = match stored_type.rsplit_once("::") {
+        Some((prefix, last)) => (prefix.to_string(), last),
+        None => match stored_type.split_once(':') {
+            Some((prefix, last)) => (prefix.to_string(), last),
+            None => return stored_type.to_string(),
+        },
+    };
+    if last.starts_with("on-") {
+        format!("{prefix}::{last}")
+    } else {
+        format!("{prefix}::on-{last}")
+    }
+}
+
+/// `{ "<path>": { "$eq": config[field] } }` for each field present in `config`.
+fn eq_filters(config: &Value, fields: &[(&str, &str)]) -> Value {
+    let mut filters = Map::new();
+    for (field, path) in fields {
+        if let Some(value) = config.get(*field) {
+            filters.insert((*path).to_string(), serde_json::json!({ "$eq": value }));
+        }
+    }
+    Value::Object(filters)
+}
+
+/// Read-only query the worker that hosts an observed event function exposes
+/// for the current data. The function must be registered by the same worker
+/// as the observed function with metadata `{"read_only": true}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BindingQuery {
@@ -472,6 +701,7 @@ pub fn apply_messages(
                     last_action: None,
                     pinned: false,
                     bindings: Vec::new(),
+                    retired_bindings: Vec::new(),
                     history: Vec::new(),
                 });
             }
@@ -567,43 +797,58 @@ pub fn push_history(surface: &mut SurfaceRecord, entry: SurfaceRevision, limit: 
     }
 }
 
-/// Legacy `stream` trigger type kept for compatibility while iii-stream is
+/// The state worker's change events.
+pub const STATE_ON_CHANGED_FN: &str = "state::on-changed";
+/// The shell worker's filesystem change events (args `{ path }`).
+pub const SHELL_ON_CHANGED_FN: &str = "shell::on-changed";
+/// iii-stream's change events, kept for compatibility while iii-stream is
 /// deprecated. Standard deprecation wording, without the guide URL.
-pub const LEGACY_STREAM_TRIGGER_TYPE: &str = "stream";
-pub const STREAM_BINDING_DEPRECATION: &str = "stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: \"Migrate from iii-stream and pubsub\". Bind a worker-owned trigger type instead.";
+pub const STREAM_ON_CHANGED_FN: &str = "stream::on-changed";
+pub const STREAM_BINDING_DEPRECATION: &str = "stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: \"Migrate from iii-stream and pubsub\". Observe the producing worker's own event function.";
 
 /// Maximum live bindings declared on one surface (each mounted Console view
-/// registers one trigger per binding).
+/// creates one observer per binding).
 pub const MAX_BINDINGS_PER_SURFACE: usize = 32;
-/// Maximum serialized size of a binding `config` or `query.payload`.
+/// Maximum serialized size of a binding's `args`, `filters` or
+/// `query.payload`.
 pub const MAX_BINDING_CONFIG_BYTES: usize = 4096;
 
-/// Trigger-type prefixes a binding may never target: engine internals,
+/// Function-id prefixes a binding may never observe: engine internals,
 /// Harness turn plumbing, Browser (approval boundary), A2UI itself (feedback
-/// loops) and iii-internal feeds.
-const RESERVED_TRIGGER_PREFIXES: &[&str] =
-    &["engine::", "harness::", "browser::", "a2ui::", "iii::"];
-/// Trigger types that are ingress, scheduling, queue consumption or deprecated
-/// pubsub/stream membership rather than data-change feeds.
-const RESERVED_TRIGGER_TYPES: &[&str] = &[
-    "http",
-    "cron",
-    "queue",
-    "durable:subscriber",
-    "subscribe",
-    "stream:join",
-    "stream:leave",
+/// loops), the engine's log and span feeds (each applied value logs and
+/// traces again) and iii-internal feeds.
+const RESERVED_FUNCTION_PREFIXES: &[&str] = &[
+    "engine::",
+    "harness::",
+    "browser::",
+    "a2ui::",
+    "observability::",
+    "iii::",
+];
+/// Functions that are ingress, scheduling, queue consumption, console asset
+/// setup or deprecated pubsub/stream membership rather than data-change
+/// feeds.
+const RESERVED_FUNCTIONS: &[&str] = &[
+    "http::on-request",
+    "cron::on-tick",
+    "queue::on-message",
+    "publish",
+    "stream::on-join",
+    "stream::on-leave",
+    "console::ui::asset",
 ];
 
 /// How a validated binding is delivered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingKind {
-    /// `state` or `shell::changed`: built-in, exact-config bindings.
+    /// `state::on-changed` or `shell::on-changed`: built-in bindings with an
+    /// exact shape.
     Builtin,
-    /// `stream`: deprecated legacy compatibility (requires iii-stream).
+    /// `stream::on-changed`: deprecated legacy compatibility (requires
+    /// iii-stream).
     LegacyStream,
-    /// Any other worker-owned trigger type; checked against the engine
-    /// registry before it is stored.
+    /// Any other worker's private event function; checked against the
+    /// engine registry before it is stored.
     Owned,
 }
 
@@ -613,25 +858,46 @@ pub fn validate_live_binding(binding: &LiveBinding) -> Result<BindingKind, Strin
     if let Some(path) = binding.event_path.as_deref() {
         validate_json_pointer("binding event_path", path)?;
     }
-    let kind = match binding.trigger_type.as_str() {
-        "state" => {
-            validate_binding_config(&binding.config, &["scope", "key"], &[])?;
-            if binding.config.get("scope").and_then(Value::as_str) == Some("a2ui") {
-                return Err("bindings cannot subscribe to A2UI's own state scope".into());
+    let kind = match binding.function_id.as_str() {
+        STATE_ON_CHANGED_FN => {
+            require_no_args(binding)?;
+            let filters =
+                validate_eq_filters(binding.filters.as_ref(), &["input.scope", "input.key"], &[])?;
+            if filters.get("input.scope").map(String::as_str) == Some("a2ui") {
+                return Err("bindings cannot observe A2UI's own state scope".into());
             }
             BindingKind::Builtin
         }
-        LEGACY_STREAM_TRIGGER_TYPE => {
-            validate_binding_config(&binding.config, &["stream_name", "group_id"], &["item_id"])?;
+        STREAM_ON_CHANGED_FN => {
+            require_no_args(binding)?;
+            validate_eq_filters(
+                binding.filters.as_ref(),
+                &["input.stream_name", "input.group_id"],
+                &["input.id"],
+            )?;
             BindingKind::LegacyStream
         }
-        "shell::changed" => {
-            validate_binding_config(&binding.config, &["path"], &[])?;
+        SHELL_ON_CHANGED_FN => {
+            if binding.filters.is_some() {
+                return Err(format!(
+                    "a `{SHELL_ON_CHANGED_FN}` binding takes args `{{ path }}` and no filters"
+                ));
+            }
+            validate_string_fields(
+                "binding args",
+                binding.args.as_ref().unwrap_or(&Value::Null),
+                &["path"],
+            )?;
             BindingKind::Builtin
         }
         other => {
-            validate_owned_trigger_type(other)?;
-            validate_bounded_object("binding config", &binding.config)?;
+            validate_observed_function(other)?;
+            if let Some(args) = &binding.args {
+                validate_bounded_object("binding args", args)?;
+            }
+            if let Some(filters) = &binding.filters {
+                validate_bounded_object("binding filters", filters)?;
+            }
             BindingKind::Owned
         }
     };
@@ -639,8 +905,8 @@ pub fn validate_live_binding(binding: &LiveBinding) -> Result<BindingKind, Strin
         (Some(query), BindingKind::Owned) => validate_binding_query(query)?,
         (Some(_), _) => {
             return Err(format!(
-                "binding query is only supported for worker-owned trigger types, not `{}`",
-                binding.trigger_type
+                "binding query is only supported for a worker's own event functions, not `{}`",
+                binding.function_id
             ))
         }
         (None, _) => {}
@@ -648,19 +914,29 @@ pub fn validate_live_binding(binding: &LiveBinding) -> Result<BindingKind, Strin
     Ok(kind)
 }
 
-fn validate_owned_trigger_type(trigger_type: &str) -> Result<(), String> {
-    validate_identifier("binding trigger_type", trigger_type)?;
-    let lower = trigger_type.to_ascii_lowercase();
-    let reserved = RESERVED_TRIGGER_PREFIXES
+fn require_no_args(binding: &LiveBinding) -> Result<(), String> {
+    if binding.args.is_some() {
+        return Err(format!(
+            "`{}` takes no args; select its calls with filters",
+            binding.function_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_observed_function(function_id: &str) -> Result<(), String> {
+    validate_identifier("binding function_id", function_id)?;
+    let lower = function_id.to_ascii_lowercase();
+    let reserved = RESERVED_FUNCTION_PREFIXES
         .iter()
         .any(|prefix| lower.starts_with(prefix))
-        || RESERVED_TRIGGER_TYPES.contains(&lower.as_str())
+        || RESERVED_FUNCTIONS.contains(&lower.as_str())
         || lower
             .split([':', '.', '-', '_'])
             .any(|segment| segment == "hook");
     if reserved {
         return Err(format!(
-            "binding trigger_type `{trigger_type}` is reserved; bind a worker-owned data-change trigger type, `state`, or `shell::changed`"
+            "binding function_id `{function_id}` is reserved; observe a worker's data-change event function, `{STATE_ON_CHANGED_FN}`, or `{SHELL_ON_CHANGED_FN}`"
         ));
     }
     Ok(())
@@ -690,17 +966,52 @@ fn validate_bounded_object(label: &str, value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_binding_config(
-    config: &Value,
+/// Filters of the exact form `{ "<path>": { "$eq": "<non-empty string>" } }`
+/// for every `required` path and any `optional` one, and nothing else.
+/// Returns each path's value.
+fn validate_eq_filters(
+    filters: Option<&Value>,
     required: &[&str],
     optional: &[&str],
-) -> Result<(), String> {
-    let object = config
+) -> Result<BTreeMap<String, String>, String> {
+    let object = filters
+        .and_then(Value::as_object)
+        .ok_or_else(|| "binding filters must be an object".to_string())?;
+    let mut values = BTreeMap::new();
+    for (path, condition) in object {
+        if !required.contains(&path.as_str()) && !optional.contains(&path.as_str()) {
+            return Err(format!("binding filters contain unsupported path `{path}`"));
+        }
+        let value = condition
+            .as_object()
+            .filter(|condition| condition.len() == 1)
+            .and_then(|condition| condition.get("$eq"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                format!("binding filter `{path}` must be {{ \"$eq\": <non-empty string> }}")
+            })?;
+        if value.len() > MAX_JSON_POINTER_BYTES {
+            return Err(format!("binding filter `{path}` is too long"));
+        }
+        values.insert(path.clone(), value.to_string());
+    }
+    for path in required {
+        if !values.contains_key(*path) {
+            return Err(format!("binding filters must select `{path}` with `$eq`"));
+        }
+    }
+    Ok(values)
+}
+
+/// An object whose fields are exactly `required`, each a non-empty string.
+fn validate_string_fields(label: &str, value: &Value, required: &[&str]) -> Result<(), String> {
+    let object = value
         .as_object()
-        .ok_or_else(|| "binding config must be an object".to_string())?;
+        .ok_or_else(|| format!("{label} must be an object"))?;
     for key in object.keys() {
-        if !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
-            return Err(format!("binding config contains unsupported field `{key}`"));
+        if !required.contains(&key.as_str()) {
+            return Err(format!("{label} contain unsupported field `{key}`"));
         }
     }
     for key in required {
@@ -708,20 +1019,9 @@ fn validate_binding_config(
             .get(*key)
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| format!("binding config `{key}` must be a non-empty string"))?;
+            .ok_or_else(|| format!("{label} `{key}` must be a non-empty string"))?;
         if value.len() > MAX_JSON_POINTER_BYTES {
-            return Err(format!("binding config `{key}` is too long"));
-        }
-    }
-    for key in optional {
-        if let Some(value) = object.get(*key) {
-            let value = value
-                .as_str()
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| format!("binding config `{key}` must be a non-empty string"))?;
-            if value.len() > MAX_JSON_POINTER_BYTES {
-                return Err(format!("binding config `{key}` is too long"));
-            }
+            return Err(format!("{label} `{key}` is too long"));
         }
     }
     Ok(())
@@ -1481,41 +1781,74 @@ mod tests {
     fn live_bindings_are_allowlisted_and_cannot_loop_on_a2ui_state() {
         let valid = LiveBinding {
             id: "shell-files".into(),
-            trigger_type: "shell::changed".into(),
-            config: json!({"path": "/workspace"}),
+            function_id: SHELL_ON_CHANGED_FN.into(),
+            args: Some(json!({"path": "/workspace"})),
+            filters: None,
             target_path: "/last_change".into(),
             event_path: None,
             query: None,
         };
         assert_eq!(validate_live_binding(&valid), Ok(BindingKind::Builtin));
         let mut invalid = valid.clone();
-        invalid.trigger_type = "harness::pre-turn".into();
+        invalid.function_id = "harness::on-turn-completed".into();
         assert!(validate_live_binding(&invalid).is_err());
-        invalid.trigger_type = "state".into();
-        invalid.config = json!({"scope": "a2ui", "key": "s"});
-        assert!(validate_live_binding(&invalid).is_err());
-
-        invalid.config = Value::Null;
-        assert!(validate_live_binding(&invalid).is_err());
-        invalid.config = json!({"scope": "orders"});
-        assert!(validate_live_binding(&invalid).is_err());
-        invalid.config = json!({"scope": "orders", "key": "active", "function_id": "unsafe"});
+        invalid.function_id = STATE_ON_CHANGED_FN.into();
+        invalid.args = None;
+        invalid.filters = Some(json!({
+            "input.scope": {"$eq": "a2ui"},
+            "input.key": {"$eq": "s"},
+        }));
         assert!(validate_live_binding(&invalid).is_err());
 
-        invalid.trigger_type = "stream".into();
-        invalid.config = json!({"stream_name": "agent::events", "group_id": "session-1"});
+        invalid.filters = None;
+        assert!(validate_live_binding(&invalid).is_err());
+        invalid.filters = Some(json!({"input.scope": {"$eq": "orders"}}));
+        assert!(validate_live_binding(&invalid).is_err());
+        invalid.filters = Some(json!({
+            "input.scope": {"$eq": "orders"},
+            "input.key": {"$eq": "active"},
+            "input.function_id": {"$eq": "unsafe"},
+        }));
+        assert!(validate_live_binding(&invalid).is_err());
+        invalid.filters = Some(json!({
+            "input.scope": {"$eq": "orders"},
+            "input.key": {"$ne": "active"},
+        }));
+        assert!(validate_live_binding(&invalid).is_err());
+        invalid.filters = Some(json!({
+            "input.scope": {"$eq": "orders"},
+            "input.key": {"$eq": "active"},
+        }));
+        assert_eq!(validate_live_binding(&invalid), Ok(BindingKind::Builtin));
+        invalid.args = Some(json!({"scope": "orders"}));
+        assert!(validate_live_binding(&invalid)
+            .unwrap_err()
+            .contains("takes no args"));
+        invalid.args = None;
+
+        invalid.function_id = STREAM_ON_CHANGED_FN.into();
+        invalid.filters = Some(json!({
+            "input.stream_name": {"$eq": "agent::events"},
+            "input.group_id": {"$eq": "session-1"},
+        }));
         assert_eq!(
             validate_live_binding(&invalid),
             Ok(BindingKind::LegacyStream)
         );
-        invalid.config = json!({"stream_name": "agent::events"});
+        invalid.filters = Some(json!({"input.stream_name": {"$eq": "agent::events"}}));
         assert!(validate_live_binding(&invalid).is_err());
 
-        invalid.trigger_type = "browser::console-event".into();
-        invalid.config = json!({"session_id": "browser-session"});
+        invalid.function_id = "browser::on-console-event".into();
+        invalid.filters = Some(json!({"input.session_id": {"$eq": "browser-session"}}));
         assert!(validate_live_binding(&invalid).is_err());
 
-        invalid.trigger_type = "shell::changed".into();
+        let mut invalid = valid.clone();
+        invalid.args = Some(json!({"path": "/workspace", "function_id": "unsafe"}));
+        assert!(validate_live_binding(&invalid).is_err());
+        let mut invalid = valid.clone();
+        invalid.filters = Some(json!({"input.kind": {"$eq": "modified"}}));
+        assert!(validate_live_binding(&invalid).is_err());
+        let mut invalid = valid.clone();
         invalid.target_path = "/constructor/polluted".into();
         assert!(validate_live_binding(&invalid).is_err());
     }
@@ -1523,8 +1856,9 @@ mod tests {
     fn owned_binding() -> LiveBinding {
         LiveBinding {
             id: "orders-open".into(),
-            trigger_type: "orders::changed".into(),
-            config: json!({"status": "open"}),
+            function_id: "orders::on-changed".into(),
+            args: None,
+            filters: Some(json!({"input.status": {"$eq": "open"}})),
             target_path: "/orders".into(),
             event_path: None,
             query: Some(BindingQuery {
@@ -1536,34 +1870,39 @@ mod tests {
     }
 
     #[test]
-    fn owned_trigger_type_bindings_are_structurally_validated() {
+    fn owned_function_bindings_are_structurally_validated() {
         let binding = owned_binding();
         assert_eq!(validate_live_binding(&binding), Ok(BindingKind::Owned));
         let mut event_mode = binding.clone();
         event_mode.query = None;
         event_mode.event_path = Some("/order".into());
         assert_eq!(validate_live_binding(&event_mode), Ok(BindingKind::Owned));
+        let mut with_args = binding.clone();
+        with_args.args = Some(json!({"counter": "clicks"}));
+        assert_eq!(validate_live_binding(&with_args), Ok(BindingKind::Owned));
 
         for reserved in [
-            "harness::hook::pre-trigger",
-            "harness::turn-completed",
-            "engine::functions-available",
-            "browser::console-event",
-            "a2ui::surface-changed",
+            "harness::hook::on-pre-call",
+            "harness::on-turn-completed",
+            "engine::on-functions-changed",
+            "browser::on-console-event",
+            "a2ui::on-surface-changed",
             "iii::devtools",
             "directory::hook::search",
-            "orders:hook",
-            "http",
-            "cron",
-            "queue",
-            "durable:subscriber",
-            "subscribe",
-            "stream:join",
-            "stream:leave",
-            "HTTP",
+            "orders::hook",
+            "http::on-request",
+            "cron::on-tick",
+            "queue::on-message",
+            "publish",
+            "stream::on-join",
+            "stream::on-leave",
+            "console::ui::asset",
+            "HTTP::on-request",
+            "observability::on-log",
+            "observability::on-span",
         ] {
             let mut invalid = binding.clone();
-            invalid.trigger_type = reserved.into();
+            invalid.function_id = reserved.into();
             let error = validate_live_binding(&invalid).unwrap_err();
             assert!(
                 error.contains("reserved") || error.contains("may contain"),
@@ -1571,18 +1910,24 @@ mod tests {
             );
         }
         let mut invalid = binding.clone();
-        invalid.trigger_type = "orders changed".into();
+        invalid.function_id = "orders on-changed".into();
         assert!(validate_live_binding(&invalid).is_err());
 
         let mut invalid = binding.clone();
-        invalid.config = json!("open");
+        invalid.filters = Some(json!("open"));
         assert!(validate_live_binding(&invalid)
             .unwrap_err()
             .contains("must be an object"));
-        invalid.config = json!({"blob": "x".repeat(MAX_BINDING_CONFIG_BYTES)});
+        invalid.filters =
+            Some(json!({"input.blob": {"$eq": "x".repeat(MAX_BINDING_CONFIG_BYTES)}}));
         assert!(validate_live_binding(&invalid)
             .unwrap_err()
             .contains("maximum"));
+        let mut invalid = binding.clone();
+        invalid.args = Some(json!(["clicks"]));
+        assert!(validate_live_binding(&invalid)
+            .unwrap_err()
+            .contains("must be an object"));
 
         let mut invalid = binding.clone();
         invalid.query.as_mut().unwrap().function_id = "orders list".into();
@@ -1597,25 +1942,44 @@ mod tests {
         no_payload.query.as_mut().unwrap().payload = Value::Null;
         assert!(validate_live_binding(&no_payload).is_ok());
 
-        for builtin in ["state", "shell::changed", "stream"] {
+        for builtin in [
+            STATE_ON_CHANGED_FN,
+            SHELL_ON_CHANGED_FN,
+            STREAM_ON_CHANGED_FN,
+        ] {
             let mut invalid = binding.clone();
-            invalid.trigger_type = builtin.into();
-            invalid.config = match builtin {
-                "state" => json!({"scope": "orders", "key": "open"}),
-                "shell::changed" => json!({"path": "/workspace"}),
-                _ => json!({"stream_name": "orders", "group_id": "open"}),
+            invalid.function_id = builtin.into();
+            (invalid.args, invalid.filters) = match builtin {
+                STATE_ON_CHANGED_FN => (
+                    None,
+                    Some(json!({"input.scope": {"$eq": "orders"}, "input.key": {"$eq": "open"}})),
+                ),
+                SHELL_ON_CHANGED_FN => (Some(json!({"path": "/workspace"})), None),
+                _ => (
+                    None,
+                    Some(json!({
+                        "input.stream_name": {"$eq": "orders"},
+                        "input.group_id": {"$eq": "open"},
+                    })),
+                ),
             };
             let error = validate_live_binding(&invalid).unwrap_err();
-            assert!(error.contains("only supported for worker-owned"), "{error}");
+            assert!(
+                error.contains("only supported for a worker's own"),
+                "{error}"
+            );
         }
     }
 
     #[test]
-    fn bindings_without_query_round_trip_unchanged() {
+    fn bindings_round_trip_unchanged() {
         let stored = json!({
-            "id": "legacy",
-            "trigger_type": "stream",
-            "config": {"stream_name": "agent::events", "group_id": "s1"},
+            "id": "events",
+            "function_id": "stream::on-changed",
+            "filters": {
+                "input.stream_name": {"$eq": "agent::events"},
+                "input.group_id": {"$eq": "s1"},
+            },
             "target_path": "/events"
         });
         let binding: LiveBinding = serde_json::from_value(stored.clone()).unwrap();
@@ -1624,5 +1988,152 @@ mod tests {
             "stream is deprecated (iii-stream) and will be removed in an upcoming release."
         ));
         assert!(!STREAM_BINDING_DEPRECATION.contains("https://"));
+    }
+
+    /// Bindings stored with the `trigger_type` `state`, `shell::changed` or
+    /// `stream` read as the function that replaced the type; a worker's type
+    /// is translated with the registry's answer when its session loads.
+    #[test]
+    fn stored_trigger_type_bindings_read_as_observed_functions() {
+        let read = |stored: Value| serde_json::from_value::<LiveBinding>(stored).unwrap();
+
+        let state = read(json!({
+            "id": "status",
+            "trigger_type": "state",
+            "config": {"scope": "orders", "key": "open"},
+            "target_path": "/status"
+        }));
+        assert_eq!(state.function_id, STATE_ON_CHANGED_FN);
+        assert_eq!(state.args, None);
+        assert_eq!(
+            state.filters,
+            Some(json!({"input.scope": {"$eq": "orders"}, "input.key": {"$eq": "open"}}))
+        );
+        assert_eq!(validate_live_binding(&state), Ok(BindingKind::Builtin));
+
+        let shell = read(json!({
+            "id": "files",
+            "trigger_type": "shell::changed",
+            "config": {"path": "/workspace"},
+            "target_path": "/files"
+        }));
+        assert_eq!(shell.function_id, SHELL_ON_CHANGED_FN);
+        assert_eq!(shell.args, Some(json!({"path": "/workspace"})));
+        assert_eq!(validate_live_binding(&shell), Ok(BindingKind::Builtin));
+
+        let stream = read(json!({
+            "id": "legacy",
+            "trigger_type": "stream",
+            "config": {"stream_name": "agent::events", "group_id": "s1", "item_id": "i"},
+            "target_path": "/events"
+        }));
+        assert_eq!(stream.function_id, STREAM_ON_CHANGED_FN);
+        assert_eq!(
+            stream.filters,
+            Some(json!({
+                "input.stream_name": {"$eq": "agent::events"},
+                "input.group_id": {"$eq": "s1"},
+                "input.id": {"$eq": "i"},
+            }))
+        );
+        assert_eq!(
+            validate_live_binding(&stream),
+            Ok(BindingKind::LegacyStream)
+        );
+
+        // A worker's type needs the registry's answer: it does not read on
+        // its own.
+        let error = serde_json::from_value::<LiveBinding>(json!({
+            "id": "clicks-count",
+            "trigger_type": "demo::counter-changed",
+            "config": {"counter": "clicks"},
+            "target_path": "/count"
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("pass `function_id`"), "{error}");
+
+        for (stored_type, function_id) in [
+            ("orders::changed", "orders::on-changed"),
+            ("router::models::changed", "router::models::on-changed"),
+            ("kanban:change", "kanban::on-change"),
+            (
+                "directory::skills::on-change",
+                "directory::skills::on-change",
+            ),
+        ] {
+            assert_eq!(
+                stored_event_function_id(stored_type),
+                function_id,
+                "{stored_type}"
+            );
+        }
+
+        for invalid in [
+            json!({"id": "b", "target_path": "/v"}),
+            json!({"id": "b", "function_id": "orders::on-changed", "trigger_type": "orders::changed", "target_path": "/v"}),
+            json!({"id": "b", "function_id": "orders::on-changed", "config": {}, "target_path": "/v"}),
+            json!({"id": "b", "trigger_type": "orders::changed", "args": {}, "target_path": "/v"}),
+        ] {
+            assert!(
+                serde_json::from_value::<LiveBinding>(invalid.clone()).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    /// Contract §1.4: a stored config is the function's args when it takes
+    /// args, and `$eq` filters on `input.<field>` when it takes none.
+    #[test]
+    fn stored_worker_types_translate_config_to_args_or_filters() {
+        let stored = json!({
+            "id": "models",
+            "trigger_type": "router::models::changed",
+            "config": {
+                "provider": "openai",
+                "metadata": {"source": "agent"},
+                "condition_function_id": "router::is-openai"
+            },
+            "target_path": "/models",
+            "event_path": "/models"
+        });
+        assert_eq!(stored_worker_type(&stored), Some("router::models::changed"));
+
+        let filters = translate_stored_binding(&stored, false).unwrap();
+        assert_eq!(
+            serde_json::to_value(&filters).unwrap(),
+            json!({
+                "id": "models",
+                "function_id": "router::models::on-changed",
+                "filters": {"input.provider": {"$eq": "openai"}},
+                "target_path": "/models",
+                "event_path": "/models"
+            })
+        );
+        assert_eq!(validate_live_binding(&filters), Ok(BindingKind::Owned));
+
+        let args = translate_stored_binding(&stored, true).unwrap();
+        assert_eq!(args.function_id, "router::models::on-changed");
+        assert_eq!(args.args, Some(json!({"provider": "openai"})));
+        assert_eq!(args.filters, None);
+
+        let mut empty = stored.clone();
+        empty["config"] = json!({"metadata": {"source": "agent"}});
+        let bare = translate_stored_binding(&empty, false).unwrap();
+        assert_eq!((bare.args, bare.filters), (None, None));
+        empty["config"] = Value::Null;
+        assert!(translate_stored_binding(&empty, true).is_ok());
+        empty["config"] = json!("openai");
+        assert!(translate_stored_binding(&empty, true).is_err());
+
+        for builtin in [
+            json!({"id": "s", "trigger_type": "state", "config": {}, "target_path": "/v"}),
+            json!({"id": "s", "trigger_type": "shell::changed", "config": {}, "target_path": "/v"}),
+            json!({"id": "s", "trigger_type": "stream", "config": {}, "target_path": "/v"}),
+            json!({"id": "s", "function_id": "orders::on-changed", "target_path": "/v"}),
+        ] {
+            assert_eq!(stored_worker_type(&builtin), None, "{builtin}");
+            assert!(translate_stored_binding(&builtin, false).is_err());
+        }
     }
 }

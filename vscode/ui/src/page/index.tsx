@@ -92,7 +92,7 @@ export function VscodePage({ host, onRequestClose, workingDir, panelContext, com
       setPhase('starting');
       setError(null);
       try {
-        const result = await host.iii.trigger<Instance>(
+        const result = await host.iii.call<Instance>(
           'vscode::start',
           { workspace: path },
           { timeoutMs: startTimeoutMs },
@@ -113,7 +113,7 @@ export function VscodePage({ host, onRequestClose, workingDir, panelContext, com
     if (!instance) return;
     const seq = ++requestSeq.current;
     try {
-      await host.iii.trigger('vscode::stop', { id: instance.id });
+      await host.iii.call('vscode::stop', { id: instance.id });
       if (seq === requestSeq.current) setPhase('stopped');
     } catch (cause) {
       if (seq !== requestSeq.current) return;

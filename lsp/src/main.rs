@@ -96,9 +96,9 @@ impl LanguageServer for Backend {
                 .log_message(
                     MessageType::INFO,
                     format!(
-                        "lsp: connected to engine ({} functions, {} trigger types)",
+                        "lsp: connected to engine ({} functions, {} observers)",
                         self.engine.functions.len(),
-                        self.engine.trigger_types.len()
+                        self.engine.observers.len()
                     ),
                 )
                 .await;

@@ -21,7 +21,7 @@ records an actions log. `play` functions, MDX and addons are ignored.
 ## Install
 
 ```bash
-iii trigger compose::add worker=stories
+iii call compose::add worker=stories
 ```
 
 Requirements on the host: `git`, Node 22+ with `npm` on `PATH` (the compiler
@@ -64,9 +64,34 @@ project that imports it. `base` is the ref changes are classified against
 | `stories::diff` | One state across two lines: tree changes, pixel regions mapped to elements, verdict `identical` / `invisible` / `visual` / `unexplained`. |
 | `stories::history` | Versions of one component seen by working-tree builds. |
 
-Triggers: `stories:changed` fires after a working-tree rebuild with the
-classified changes (`{ workspace?, project?, kinds? }`); `stories:build`
-fires on every build state transition.
+## Event functions
+
+Two private functions carry the worker's events: only the worker calls them,
+any worker or console page observes them, and each handler returns the event
+it is called with.
+
+| Function | Args | Delivery | Event |
+|---|---|---|---|
+| `stories::on-changed` | `{ workspace?, project?, kinds? }` (`kinds`: `direct`, `indirect`, `new`, `removed`) | The worker delivers it: each observer whose filters match receives the `ChangedEvent` narrowed to its args, fire-and-forget; an observer left with no change receives nothing. `deliver` does not apply. | `ChangedEvent { workspace, line, base, summary, changes, at }`, called after a working-tree rebuild that changed at least one component |
+| `stories::on-build` | none; filter on `input.workspace` | iii delivers every call to each observer whose filters match. | `BuildEvent { workspace, build_id, status: queued \| running \| done \| failed, line, message?, at }`, called on every build state transition of any line |
+
+```ts
+// direct and indirect changes in one workspace
+iii.observe(
+  { function_id: 'stories::on-changed', args: { workspace: 'web', kinds: ['direct', 'indirect'] } },
+  'review::components-changed',
+)
+
+// build progress of one workspace, as the event itself
+iii.observe(
+  { function_id: 'stories::on-build', filters: { 'input.workspace': { $eq: 'web' } }, deliver: 'output' },
+  'review::build-progress',
+)
+```
+
+An observer of `stories::on-changed` passes any metadata it wants on its
+target's calls as the observer's `metadata` option; its args take only the
+three fields above (`INVALID_ARGS` otherwise).
 
 The review workflow for agents lives in [`skills/`](skills/).
 

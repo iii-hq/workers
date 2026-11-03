@@ -24,6 +24,10 @@ describe('Cursor LLM Router provider', () => {
     const provider = new CursorProvider(iii.asClient(), testConfig, cli, fakeWorkspace());
 
     provider.register();
+    expect(iii.observed).toContainEqual({
+      source: { function_id: 'router::on-ready', deliver: 'output' },
+      target: 'provider::cursor::on_router_ready',
+    });
     await vi.waitFor(() => {
       expect(routerCalls.some((call) => call.function_id === 'router::models::reconcile')).toBe(
         true,
@@ -109,12 +113,12 @@ describe('Cursor LLM Router provider', () => {
   it('persists an accepted registration token without re-registering after a transient state failure', async () => {
     const iii = new MockIII();
     let stateSetAttempts = 0;
-    const baseTrigger = iii.trigger.bind(iii);
-    iii.trigger = async (request: Record<string, unknown>) => {
+    const baseCall = iii.call.bind(iii);
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'state::set' && stateSetAttempts++ === 0) {
         throw new Error('state temporarily unavailable');
       }
-      return baseTrigger(request);
+      return baseCall(request);
     };
     const routerCalls: Array<Record<string, unknown>> = [];
     installRouter(iii, routerCalls);
@@ -144,7 +148,7 @@ describe('Cursor LLM Router provider', () => {
 
   it('preserves a registration token minted during a concurrent stale state read', async () => {
     const iii = new MockIII();
-    const baseTrigger = iii.trigger.bind(iii);
+    const baseCall = iii.call.bind(iii);
     let stateReads = 0;
     let releaseRegistration: (() => void) | undefined;
     let markRegistrationStarted: (() => void) | undefined;
@@ -157,7 +161,7 @@ describe('Cursor LLM Router provider', () => {
       markStaleReadStarted = resolve;
     });
     const reconciliations: Array<Record<string, unknown>> = [];
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'state::get') {
         stateReads += 1;
         if (stateReads === 1) return null;
@@ -177,7 +181,7 @@ describe('Cursor LLM Router provider', () => {
         reconciliations.push(structuredClone(request.payload as Record<string, unknown>));
         return { provider: 'cursor', count: 2 };
       }
-      return baseTrigger(request);
+      return baseCall(request);
     };
     const provider = new CursorProvider(
       iii.asClient(),
@@ -204,13 +208,13 @@ describe('Cursor LLM Router provider', () => {
   it('retries persistence when the router returns an in-memory token after repeated state failures', async () => {
     const iii = new MockIII();
     let stateSetAttempts = 0;
-    const baseTrigger = iii.trigger.bind(iii);
-    iii.trigger = async (request: Record<string, unknown>) => {
+    const baseCall = iii.call.bind(iii);
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'state::set') {
         stateSetAttempts += 1;
         if (stateSetAttempts <= 6) throw new Error('state still unavailable');
       }
-      return baseTrigger(request);
+      return baseCall(request);
     };
     const routerCalls: Array<Record<string, unknown>> = [];
     installRouter(iii, routerCalls);
@@ -241,10 +245,10 @@ describe('Cursor LLM Router provider', () => {
 
   it('reloads an absent token after another provider instance claims registration', async () => {
     const iii = new MockIII();
-    const baseTrigger = iii.trigger.bind(iii);
+    const baseCall = iii.call.bind(iii);
     const declarations: Array<Record<string, unknown>> = [];
     let reconciled = false;
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'router::provider::register') {
         declarations.push(structuredClone(request.payload as Record<string, unknown>));
         if (declarations.length === 1) {
@@ -257,7 +261,7 @@ describe('Cursor LLM Router provider', () => {
         reconciled = true;
         return { provider: 'cursor', count: 2 };
       }
-      return baseTrigger(request);
+      return baseCall(request);
     };
     const provider = new CursorProvider(
       iii.asClient(),
@@ -277,20 +281,20 @@ describe('Cursor LLM Router provider', () => {
 
   it('persists a registration token returned during graceful shutdown', async () => {
     const iii = new MockIII();
-    const baseTrigger = iii.trigger.bind(iii);
+    const baseCall = iii.call.bind(iii);
     let completeRegistration: ((value: unknown) => void) | undefined;
     let markRegistrationStarted: (() => void) | undefined;
     const registrationStarted = new Promise<void>((resolve) => {
       markRegistrationStarted = resolve;
     });
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'router::provider::register') {
         markRegistrationStarted?.();
         return new Promise((resolve) => {
           completeRegistration = resolve;
         });
       }
-      return baseTrigger(request);
+      return baseCall(request);
     };
     const provider = new CursorProvider(
       iii.asClient(),
@@ -333,7 +337,7 @@ describe('Cursor LLM Router provider', () => {
       system_prompt: 'Answer precisely.',
       model: 'cursor/auto',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'reply exactly' }] }],
-      tools: [{ name: 'agent_trigger' }],
+      tools: [{ name: 'agent_call' }],
       max_output_tokens: 100,
       resolution_key: 'cursor-provider-request',
     });
@@ -880,8 +884,8 @@ function fakeWorkspace() {
 }
 
 function installRouter(iii: MockIII, calls: Array<Record<string, unknown>>): void {
-  const originalTrigger = iii.trigger.bind(iii);
-  iii.trigger = async (request: Record<string, unknown>) => {
+  const originalCall = iii.call.bind(iii);
+  iii.call = async (request: Record<string, unknown>) => {
     if (String(request.function_id).startsWith('router::')) {
       calls.push(structuredClone(request));
       if (request.function_id === 'router::provider::register') {
@@ -894,6 +898,6 @@ function installRouter(iii: MockIII, calls: Array<Record<string, unknown>>): voi
         };
       }
     }
-    return originalTrigger(request);
+    return originalCall(request);
   };
 }

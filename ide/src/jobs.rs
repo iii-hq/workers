@@ -135,7 +135,7 @@ pub fn running_gauge_value() -> usize {
 /// of these into its detached finalize task; when that task ends (for any
 /// reason) the `Drop` fires and the gauge returns to its true value. This keeps
 /// the gauge correct without instrumenting every scattered status-flip site
-/// (the host wait arms, the sandbox trigger arms, shell::kill, the shutdown
+/// (the host wait arms, the sandbox call arms, shell::kill, the shutdown
 /// sweep) — the single task that owns the job's lifetime owns the decrement.
 #[derive(Debug)]
 pub struct RunningJobGuard {

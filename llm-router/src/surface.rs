@@ -14,15 +14,37 @@ use crate::chat::chat::{ChatCall, ChatFnInput};
 use crate::types::router::{
     AbortRequest, AbortResponse, ChatResponse, CompleteResponse, ConfigChangedEvent,
     FunctionsChangedEvent, ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest,
-    ModelGetResponse, ModelsListRequest, ModelsListResponse, ModelsReconcileRequest,
-    ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
-    ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse, ProviderResolveOutput,
-    ProviderResolveRequest, RouteRequest, RouteResponse, RouterAck, SecretChangedEvent,
-    UpdateCredentialRequest, UpdateCredentialResponse,
+    ModelGetResponse, ModelsChangedEvent, ModelsListRequest, ModelsListResponse,
+    ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse,
+    ProviderChangedEvent, ProviderListRequest, ProviderListResponse, ProviderRegisterRequest,
+    ProviderRegisterResponse, ProviderResolveOutput, ProviderResolveRequest, RouteRequest,
+    RouteResponse, RouterAck, RouterReadyEvent, SecretChangedEvent, UpdateCredentialRequest,
+    UpdateCredentialResponse,
 };
 
 // ── function id + description constants — consumed by both register_router and
 //    catalog() so the registered surface and the golden stay in lockstep. ──────
+
+// The event functions (`crate::events`): private, each handler returns the
+// event it is called with, and none takes args.
+
+pub const ON_READY_ID: &str = "router::on-ready";
+pub const ON_READY_DESC: &str =
+    "The router is ready: each observer receives the event once the router has \
+     booted and the observer is accepted, once per router start, and once more \
+     when its worker reconnects within the observer grace period. Providers \
+     observe it to re-declare. Takes no args; the event is {}.";
+
+pub const ON_MODELS_CHANGED_ID: &str = "router::models::on-changed";
+pub const ON_MODELS_CHANGED_DESC: &str =
+    "A provider reconciled its catalog slice. Event: { provider, count }. Takes no \
+     args; filter on input.provider.";
+
+pub const ON_PROVIDER_CHANGED_ID: &str = "router::provider::on-changed";
+pub const ON_PROVIDER_CHANGED_DESC: &str =
+    "The provider registry changed: a declaration (op register), a discovery \
+     result (discovery) or an availability flip (available, unavailable). Event: \
+     { provider, op }. Takes no args; filter on input.provider and input.op.";
 
 pub const CHAT_ID: &str = "router::chat";
 pub const CHAT_DESC: &str =
@@ -155,6 +177,15 @@ where
 /// `tests/schemas.rs`; keep in lockstep with `register::register_router`.
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
+        spec::<RouterReadyEvent, RouterReadyEvent>(ON_READY_ID, ON_READY_DESC),
+        spec::<ModelsChangedEvent, ModelsChangedEvent>(
+            ON_MODELS_CHANGED_ID,
+            ON_MODELS_CHANGED_DESC,
+        ),
+        spec::<ProviderChangedEvent, ProviderChangedEvent>(
+            ON_PROVIDER_CHANGED_ID,
+            ON_PROVIDER_CHANGED_DESC,
+        ),
         spec::<ChatFnInput, ChatResponse>(CHAT_ID, CHAT_DESC),
         spec::<ChatCall, CompleteResponse>(COMPLETE_ID, COMPLETE_DESC),
         spec::<AbortRequest, AbortResponse>(ABORT_ID, ABORT_DESC),

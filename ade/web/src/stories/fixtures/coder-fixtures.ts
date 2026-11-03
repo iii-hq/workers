@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
 const now = Date.now()
@@ -53,16 +53,16 @@ const III_SKILL_MD = `---
 name: iii
 description: >-
   Language agnostic runtime where services, agents, and tools are composed of
-  the same things: workers, triggers, and functions.
+  the same things: workers, functions, and observers.
 ---
 
 # iii
 
 iii is a language agnostic runtime where services, agents, and tools are composed of the same things:
-workers, triggers, and functions. One engine process (default port \`49134\`) holds a live registry
-of every connected worker, every function those workers expose, and every trigger bound to them.
+workers, functions, and observers. One engine process (default port \`49134\`) holds a live registry
+of every connected worker, every function those workers expose, and every observer of them.
 Workers are independent OS processes that open a WebSocket to the engine and register **Functions**
-(\`service::name\` handlers) and **Triggers** (the events that invoke those Functions).
+(\`service::name\` handlers) and **Observers** (a function that runs when another one does).
 
 \`\`\`ts
 import { registerWorker } from 'iii-sdk'
@@ -81,7 +81,7 @@ iii.registerFunction('demo::add', async (payload: { a: number; b: number }) => {
 | Engine | One coordinator process. Routes every invocation. | The operator |
 | Worker | A process that opens a WebSocket to the engine. | Anyone who writes one |
 | Function | A named handler inside a worker, id \`service::name\`. | The registering worker |
-| Trigger | A \`(type, config, function_id)\` triple. | A worker + a caller |
+| Observer | An \`(observed function, args, target)\` triple. | The observing worker |
 
 ## Need a capability? Discover before you build
 
@@ -108,7 +108,7 @@ Work the steps in order; stop at the first that satisfies the need.
 \`\`\`
 
 If a registered function fits, just call it:
-\`iii.trigger({ function_id, payload })\`.
+\`iii.call({ function_id, payload })\`.
 
 **2. Search the public registry** via \`directory::registry::workers::list\`.
 
@@ -116,7 +116,7 @@ If a registered function fits, just call it:
 
 ## Trust runtime probes over introspection
 
-Probe with \`iii.trigger(...)\` before re-registering: a successful call proves
+Probe with \`iii.call(...)\` before re-registering: a successful call proves
 the registration is live regardless of what \`engine::*::list\` reported.
 `
 
@@ -128,7 +128,7 @@ const DISCOVERY_V2_LINES = DISCOVERY_SECTION_V2.replace(/\n$/, '').split('\n')
  * trailing context at EOF. update_file.rs::build_line_echo keeps the first
  * and last 8 lines and elides the middle. */
 const DISCOVERY_ECHO_REGION = [
-  '| Trigger | A `(type, config, function_id)` triple. | A worker + a caller |',
+  '| Observer | An `(observed function, args, target)` triple. | The observing worker |',
   '',
   ...DISCOVERY_V2_LINES,
 ]
@@ -164,11 +164,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionTriggerMessage>,
-): FunctionTriggerMessage {
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input,
     output,
@@ -1140,7 +1140,7 @@ export const coderGateError = base(
   {
     error: {
       kind: 'function_error',
-      message: 'trigger_failed: approval gate unreachable',
+      message: 'call_failed: approval gate unreachable',
       details: {
         status: 'denied',
         denied_by: 'gate_unavailable',

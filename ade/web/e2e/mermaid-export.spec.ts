@@ -47,12 +47,12 @@ for (const theme of ['light', 'dark']) {
         <style>text{font:16px sans-serif;fill:${theme === 'dark' ? '#eee' : '#111'}}</style>
         <g transform="translate(90 65)">
           <rect x="350" y="0" width="250" height="65" fill="red"/>
-          <text x="365" y="35">TriggerRegistry</text>
+          <text x="365" y="35">ObserverRegistry</text>
           <g transform="translate(0 170)">
             <rect width="260" height="75" fill="red"/>
-            <text x="10" y="35">Trigger</text>
+            <text x="10" y="35">Observer</text>
             <rect x="330" width="260" height="75" fill="red"/>
-            <text x="340" y="35">TriggerType + registrator</text>
+            <text x="340" y="35">Function + hooks</text>
             <rect x="660" width="260" height="75" fill="red"/>
             <text x="670" y="35">BindingLifecycle</text>
           </g>
@@ -111,9 +111,9 @@ for (const theme of ['light', 'dark']) {
     expect(result.width - result.paintedRight).toBeGreaterThan(15)
     expect(result.height - result.paintedBottom).toBeGreaterThan(15)
     expect(result.labels).toEqual([
-      'TriggerRegistry',
-      'Trigger',
-      'TriggerType + registrator',
+      'ObserverRegistry',
+      'Observer',
+      'Function + hooks',
       'BindingLifecycle',
     ])
   })

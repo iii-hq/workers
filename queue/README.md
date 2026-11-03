@@ -1,39 +1,46 @@
 # queue
 
-Durable function queues for iii. This worker registers the
-`durable:subscriber` trigger type, the `queue::on-message` observable function
-(iii 0.25 engines), and the queue/DLQ service functions that replace the
-legacy built-in queue worker.
+Durable function queues for iii. This worker hosts `queue::on-message`, the
+function its topic subscribers observe, and the queue/DLQ service functions
+that replace the legacy built-in queue worker.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=queue
+iii call compose::add worker=queue
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
-## Trigger Type
+## Subscribing: `queue::on-message`
 
-Bind a function to `durable:subscriber` to consume a topic/queue:
+A subscriber of a topic is an observer of `queue::on-message`. The function is
+private (only this worker calls it) and its handler returns the message it is
+called with. The worker calls it once per message for each subscriber, and
+calls the subscriber's target through its observer: the target's result acks
+the message, an error retries it with backoff and then moves it to the topic's
+DLQ.
+
+| | |
+|---|---|
+| Args | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` (below) |
+| Delivery | custom: each message goes to the one subscriber it was queued for |
+| Event (`input` and `output`) | `QueueMessage`: the data published to the topic, as published (any JSON value) |
+| Target receives | the published data |
+| The queue gets back | the target's result: a result acks the message, an error retries it and then dead-letters it; a target that has not answered within the engine's `observers.activation_timeout_ms` fails the delivery with `TIMEOUT` (see **Timeouts** below) |
+| Filters | read the message as `input`; a message an observer's filters reject is acked without calling its target |
+| Rejections | `INVALID_ARGS` (no topic, a blank topic, an unknown field), `OBSERVER_ID_CONFLICT` (an observer id already subscribed) |
+
+Args:
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `queue` | yes | - | Topic/queue name to consume. `topic` is accepted as a compatibility alias. |
-| `max_retries` | no | `3` | Maximum failed deliveries before the message moves to DLQ. |
-| `backoff_ms` | no | `1000` | Base retry delay in milliseconds. Retries use exponential backoff. |
-| `condition_function_id` | no | - | Function invoked first. Only explicit `false` skips the handler. |
-| `group` | no | - | Consumer group. Registrations on the topic with the same group share one durable queue, so each message is handled once by the group, whatever their function, namespace or worker. Without it a subscription belongs to its function (or harness binding) in its namespace. |
-
-The worker also accepts the built-in subscriber `queue_config` shape for
-compatibility, including `maxRetries` and `backoffDelayMs`.
-
-## Observable Function: `queue::on-message`
-
-On an iii 0.25 engine, a consumer can observe `queue::on-message` instead of
-binding the trigger type. Its args are the `durable:subscriber` config above,
-validated the same way (`INVALID_ARGS` when the topic is missing or blank):
+| `topic` | yes | - | Topic to consume. `queue` is accepted as an alias. |
+| `max_retries` | no | `3` | Failed deliveries before the message moves to the DLQ. `maxRetries` is accepted as an alias. |
+| `backoff_ms` | no | `1000` | Base retry delay in milliseconds; retries back off exponentially. `backoffDelayMs` is accepted as an alias. |
+| `queue_config` | no | - | Per-subscriber tuning ([Subscriber `queue_config`](#subscriber-queue_config)). |
+| `group` | no | - | Consumer group: the observers of the topic with the same group share one durable queue, so each message is handled once by the group, whatever their target, namespace or worker. |
 
 ```typescript
 iii.registerFunction('orders::process', async (order) => {
@@ -41,48 +48,85 @@ iii.registerFunction('orders::process', async (order) => {
   return { ok: true }            // throwing retries it, then moves it to the DLQ
 })
 
+// one subscriber
 const observer = iii.observe(
-  {
-    function_id: 'queue::on-message',
-    args: { topic: 'orders.created', max_retries: 3, backoff_ms: 1000 },
-    filters: { 'input.priority': { $eq: 'high' } },   // optional
-  },
+  { function_id: 'queue::on-message', args: { topic: 'orders.created', max_retries: 3, backoff_ms: 1000 } },
   'orders::process',
+  { id: 'orders-process' },      // a stable id keeps the subscriber's queue across restarts
 )
 await observer.ready()
+
+// one subscriber with filters: other messages are acked unseen
+iii.observe(
+  {
+    function_id: 'queue::on-message',
+    args: { topic: 'orders.created' },
+    filters: { 'input.priority': { $eq: 'high' } },
+  },
+  'orders::expedite',
+)
+
+// instances in one consumer group: each message is handled once
+iii.observe(
+  { function_id: 'queue::on-message', args: { topic: 'orders.created', group: 'billing' } },
+  'billing::charge',
+)
 ```
 
-- **Delivery.** Each observer is one more subscriber of its topic, next to the
-  `durable:subscriber` bindings: every subscriber (binding or observer)
-  receives every message, with the same payload. Only subscribers that share a
-  subscription identity (two triggers on one function, or bindings and
-  observers that name the same `group`) share one consumer: a group handles
-  each message once.
-  The worker hands each message to the observer with `obs.call`; the target's
-  result acks it, an error retries it with backoff and then moves it to the
-  topic's DLQ, exactly as for a trigger target.
-- **Filters** select messages per observer: a message the filters reject is
-  acked without invoking the target, as a `condition_function_id` returning
-  `false` is. `condition_function_id` still works and resolves in the queue
-  worker's namespace.
-- **Lifecycle.** `dispose()`, or the observing worker gone past the engine's
-  grace period, stops the observer's consumer like unregistering a trigger.
-  While the observer is suspended (its worker briefly disconnected, or its
-  target unregistered), messages stay queued and are retried like a message
-  for an unreachable trigger target. Outside a group, a subscription is keyed
-  by the observer id, which the SDK keeps across reconnects: its backlog survives a restart of
-  this worker (with a file-backed store) and is picked up by a later observer
-  with the same `id` option, once the previous one is disposed (the engine
-  refuses a second observer under a live id with `OBSERVER_ID_CONFLICT`).
-- **Timeouts.** The engine bounds each `obs.call` by
-  `observers.activation_timeout_ms` (30 s by default); a `durable:subscriber`
-  target gets 30 minutes. Raise that engine setting for consumers that run
-  longer, or a slow message is retried while its first delivery still runs.
-- Invoking `queue::on-message` directly is refused (`FORBIDDEN`): only this
-  worker delivers its messages.
-- On an engine without observe (0.24), `observe` fails with `UNSUPPORTED`; keep
-  using the `durable:subscriber` trigger type there. It stays registered on
-  every engine, and its old consumers behave as before.
+```rust
+iii.observe_with(
+    Source::function("queue::on-message").args(json!({ "topic": "orders.created" })),
+    "orders::process",
+    ObserverOptions::default().id("orders-process"),
+);
+```
+
+- **Fan-out.** Every subscriber of a topic receives every message, with the
+  same payload, except that the members of a group share one queue. A member
+  whose worker disconnects leaves the group, and the group's messages go to
+  the members that stay.
+- **Durable identity.** A subscriber outside a group has the durable queue
+  `<topic>::observer:<observer id>` (builtin) or
+  `iii.<topic>.observer:<observer id>.queue` (RabbitMQ); a group has
+  `@<group>`. The SDK keeps an observer's id across reconnects, and the `id`
+  observe option pins it across restarts of the observing worker: the
+  restarted worker, connecting under the same worker name in the same
+  namespace, observes under the same id, replaces the observer it left
+  behind, and finds the same queue and its backlog (with a file-backed store
+  or RabbitMQ). Any other worker that observes under an id that is live, or
+  left behind within the engine's `observers.observer_grace_ms`, is refused
+  with `OBSERVER_ID_CONFLICT`.
+- **Lifecycle.** When a subscriber's observer is removed (`dispose()`, or
+  its observing worker disconnected), its consumer stops at once: nothing more
+  is delivered from its queue. The queue keeps receiving the topic for
+  `subscriber_retention_ms` (30 s by default, the engine's default
+  `observers.observer_grace_ms`), and an observer with the same id within
+  that time consumes it, including everything published meanwhile. After
+  that the queue keeps only what it holds, for a later observer with the same
+  id. A worker that restarts under the same name within the engine's grace
+  period re-observes its id. Back within `subscriber_retention_ms` as well
+  (with the defaults, both are 30 s), it receives everything: its unacked
+  backlog and each message published while it was away, once. Back after
+  the retention, it receives what its queue holds. A group's queue keeps its
+  consumer while any member remains. A call through an observer that is not
+  active (its target unregistered, say) fails with `OBSERVER_NOT_ACTIVE`: the
+  message stays queued and is retried.
+- **Timeouts.** The worker calls each target through its observer, and the
+  engine bounds every call through an observer by
+  `observers.activation_timeout_ms` (30 s by default). A target that has not
+  answered by then fails the delivery with `TIMEOUT`: the message is retried
+  after its backoff while that first call keeps running, and moves to the DLQ
+  once `max_retries` deliveries have failed, even if the target finishes
+  later. For targets that run longer, raise the setting in the engine's
+  `config.yaml` (it applies to every observer on the engine; the worker's own
+  bound is 30 minutes):
+
+  ```yaml
+  observers:
+    activation_timeout_ms: 600000   # 10 minutes
+  ```
+- **Private.** Another worker's call of `queue::on-message` is refused
+  (`FORBIDDEN`): messages come from publishes only.
 
 ## Functions
 
@@ -98,7 +142,7 @@ await observer.ready()
 | `engine::queue::topic_stats` | `{ "topic" \| "queue" }` | `{ "depth", "consumer_count", "dlq_depth", "config" }` |
 | `engine::queue::dlq_topics` | `{}` | DLQ topic list |
 | `engine::queue::dlq_messages` | `{ "topic" \| "queue", "offset", "limit" }` | DLQ messages |
-| `queue::on-message` | observe only (see above); invoking it is refused | - |
+| `queue::on-message` | the message (private: only this worker calls it; observe it, see above) | the same message |
 
 ### Namespace connections
 
@@ -137,13 +181,14 @@ queue_configs:
 
 For FIFO named queues, messages with the same group-field value run in order;
 different groups run concurrently up to `concurrency`.
-Each target invocation has a configurable `timeout_ms`; when omitted, it
-defaults to 1,800,000 milliseconds (30 minutes).
+Each job of a named queue calls its function directly, with the queue's
+`timeout_ms`; when omitted, it defaults to 1,800,000 milliseconds (30
+minutes).
 After a restart, a delivery waits until its target function is registered and
 does not consume retry budget while the target worker is still booting. The
-wait is event-driven: the worker binds the engine's
-`engine::functions-available` and `engine::workers-available` triggers (to the
-internal `queue::on-engine-change` function) and re-checks the target once per
+wait is event-driven: the worker observes the engine's
+`engine::on-functions-changed` and `engine::on-workers-changed` with the
+internal `queue::on-engine-change` function and re-checks the target once per
 change, never on a timer. The same feed drives the
 `redeliver_on_engine_restart` restart check.
 
@@ -160,6 +205,23 @@ change, never on a timer. The same feed drives the
 `poll_interval_ms` is deprecated and ignored (still accepted so existing
 definitions validate): consumers wake on enqueue, and a backed-off retry is
 delivered at exactly its due time.
+
+`subscriber_retention_ms` (default `30000`, the engine's default
+`observers.observer_grace_ms`) is how long the queue of a `queue::on-message`
+subscriber whose observer is removed keeps receiving its topic (see
+**Lifecycle** above). `0` stops it receiving when the observer is removed.
+Keep it at least the engine's `observers.observer_grace_ms`: an engine whose
+grace period is raised needs this raised to the same value or more, or a
+worker that re-observes late in the grace period misses what was published
+after the retention ended. A change applies to the next observer removed. A
+retention lives in the running adapter: an adapter swap or a restart of the
+queue worker ends it. It applies to the `builtin` adapter; a `rabbitmq`
+subscriber queue stays bound to its topic, so it keeps receiving the topic
+whatever this setting, and `redis` holds no subscriber queue.
+
+```yaml
+subscriber_retention_ms: 30000
+```
 
 `adapter.name` selects the transport: `builtin` (default), `redis`, or
 `rabbitmq`. Changing the adapter config hot-swaps the transport and
@@ -199,7 +261,8 @@ adapter:
 
 Pub/sub only — 1:1 port of the engine builtin's `RedisAdapter`, including
 its limitations. There is no DLQ, no retries, and no message durability: a
-message published with no subscriber connected is lost.
+message published with no subscriber connected is lost, so
+`subscriber_retention_ms` does not apply.
 Redis does not currently support named function-queue consumers, so a
 persisted `queue_configs` entry fails boot with an explicit unsupported error.
 
@@ -227,6 +290,17 @@ is feature-default-on); building with `--no-default-features` drops it,
 and selecting `adapter.name: rabbitmq` in that build fails boot with an
 error naming the missing feature.
 
+A subscriber's queue stays declared and bound to its topic when its observer
+is removed, so it keeps receiving the topic for a later observer with the same
+id, whatever `subscriber_retention_ms`.
+
+> **Known gap.** Nothing deletes such a queue. A consumer outside a group that
+> observes under a fresh id (the default, a UUID) leaves one queue per
+> restart on the broker, bound to its topic and collecting every message
+> published to it. Observe under a stable `id`, derived from the worker's name
+> and what it consumes, or in a `group`, so a restart finds the same queue;
+> delete a queue you no longer need from the broker.
+
 RabbitMQ's `x-max-priority` queue argument is immutable. An existing named
 queue cannot change `max_priority` in place; delete and recreate its broker
 topology first.
@@ -250,7 +324,7 @@ adapter:
 | `adapter.config.queue_mode` | `standard` | `standard` or `fifo`. Unrecognized values fall back to `standard`. |
 | `adapter.config.priority_field` | none | JSON field read from each published message's payload to set the AMQP message priority. Only applies to subscribers whose `queue_config.maxPriority` declares the queue as a priority queue (`x-max-priority`). |
 
-Per-subscriber queue tuning uses the trigger's `queue_config` below;
+Per-subscriber queue tuning uses the subscriber's `queue_config` arg below;
 `maxPriority` is RabbitMQ-only and ignored by the other adapters.
 
 #### `memory` (dev/test only)
@@ -260,9 +334,9 @@ used by this worker's own hot-swap tests. It is gated behind the
 `test-adapters` cargo feature, off in normal builds, and not a supported
 `adapter.name` value for real deployments.
 
-### Trigger `queue_config`
+### Subscriber `queue_config`
 
-The `durable:subscriber` trigger's `queue_config` accepts the full builtin
+A `queue::on-message` observer's `queue_config` arg accepts the full builtin
 `SubscriberQueueConfig` shape:
 
 | Field | Default | Description |
@@ -278,14 +352,15 @@ The `durable:subscriber` trigger's `queue_config` accepts the full builtin
 
 ## Engine Compatibility
 
-Current engines no longer load the legacy built-in by default. Engines with the
-`QueueEnqueuer` cut route `TriggerAction::Enqueue` through this worker's
-`engine::queue::enqueue` provider. Until that support is available, use
-`iii::durable::publish` with `durable:subscriber` triggers instead of named
-function queues.
+Current engines do not load the legacy built-in by default. Engines with the
+`QueueEnqueuer` cut route `CallAction::Enqueue` through this worker's
+`engine::queue::enqueue` provider. Where that support is missing, publish with
+`iii::durable::publish` to `queue::on-message` subscribers rather than use
+named function queues.
 
-When connecting to an older engine, remove the legacy built-in from its config first;
-two owners of `durable:subscriber` cannot run together.
+`queue::on-message` needs an engine with `observe.v2`. When connecting to an
+older engine, remove the legacy built-in from its config first: it serves the
+same queues, and the two cannot run together.
 
 On boot, this worker queries `engine::workers::list` and refuses to start if
 the legacy built-in is active.
@@ -294,35 +369,35 @@ the legacy built-in is active.
 
 | Behavior | Builtin | This worker |
 |---|---|---|
-| Trigger type | `durable:subscriber` | same |
+| Subscribers | per-function subscriptions of a topic | `queue::on-message` observers |
 | Function ids | 8 legacy public ids | same 8 plus `queue::define` and the engine enqueue provider |
 | Retry | `max_retries` + exponential `backoff_ms * 2^(attempts - 1)` | same |
 | DLQ | after retries exhausted; redrive/redrive_message/discard | same |
 | Restart survival | file-backed store | same (`file_based`) |
 | In-memory mode | jobs lost on restart/swap | same |
 | Transports | builtin (memory/file), redis (pub/sub, no DLQ), rabbitmq (full: retry/DLQ/priority/fifo) | same as builtin |
-| bridge adapter | engine-internal (`TriggerAction::Enqueue`) | replaced by `engine::queue::enqueue` |
+| bridge adapter | engine-internal (`CallAction::Enqueue`) | replaced by `engine::queue::enqueue` |
 | Enqueue failure when worker offline | n/a, in-process | invocation fails explicitly through the engine provider route |
 | Latency benchmark | in-process baseline required | final budget is a pre-deprecation gate (tracked in the migration master plan) |
 
-The `TriggerAction::Enqueue` path requires an engine version that routes named
+The `CallAction::Enqueue` path requires an engine version that routes named
 enqueue actions through the registered `engine::queue::enqueue` provider.
 
 ## Known Gaps / Parity Notes
 
 - **`bridge` adapter — not ported.** It was engine-internal plumbing for
-  `TriggerAction::Enqueue`; the registered `engine::queue::enqueue` provider
-  supersedes that path.
-- **Subscriber FIFO remains global.** Grouped FIFO is implemented for named
-  function queues created by `queue::define`; `durable:subscriber` keeps its
-  existing strictly serial FIFO behavior.
+  `CallAction::Enqueue`; the registered `engine::queue::enqueue` provider
+  serves that path.
+- **Subscriber FIFO is global.** Grouped FIFO is implemented for named
+  function queues created by `queue::define`; a topic subscriber's `fifo` mode
+  is strictly serial.
 - **`resolve_dlq_name` bare-topic behavior ported verbatim, bug and all.**
   DLQ operations (`redrive`, `dlq_count`, `topic_stats`, `dlq_peek`)
   address a bare topic name and, on the builtin adapter, aggregate across
   every subscriber's internal queue on that topic — matching the engine's
   behavior (and its naming quirk) exactly, rather than fixing it here.
   On the rabbitmq transport this makes DLQ browse/redrive against a
-  subscriber topic 404 (retries write to the per-function DLQ), and the
+  subscriber topic 404 (retries write to the per-subscriber DLQ), and the
   AMQP channel closure stops every consumer on the worker. Upstream engine
   fix tracked as MOT-3904; this worker follows once the engine lands it.
 - **`dlq_topics` filters to `dlq_count > 0`.** The engine's equivalent also

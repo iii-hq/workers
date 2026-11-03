@@ -448,7 +448,7 @@
         "description": "The limits this version enforces, so the console never restates them."
       },
       "observer_bound": {
-        "description": "False when the `harness::turn-completed` binding was refused locally: automatic observation is unavailable even if `config.enabled` is true. The SDK does not wait for the engine's acknowledgement, so true means the binding was requested, not confirmed.",
+        "description": "True while the `harness::on-turn-completed` observer is active. False while it is pending (no harness has registered the function) or after the engine refused it (`observer_error` says why): automatic observation is unavailable even if `config.enabled` is true.",
         "type": "boolean"
       },
       "observer_error": {

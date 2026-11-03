@@ -1,6 +1,6 @@
-import type { FunctionTriggerMessage } from '@iii-dev/console-ui'
+import type { FunctionCallMessage } from '@iii-dev/console-ui'
 import { describe, expect, it, vi } from 'vitest'
-import { createSearchTriggerRenderer } from './search-card'
+import { createSearchCallRenderer } from './search-card'
 
 vi.mock('@iii-dev/console-ui', () => ({
   ActionLine: () => null,
@@ -45,13 +45,13 @@ const output = {
   latency_ms: 12,
 }
 
-describe('search trigger renderer', () => {
+describe('search call renderer', () => {
   it('keeps the custom result hidden until the host card expands', () => {
-    expect(createSearchTriggerRenderer().metadata?.display).not.toBe(true)
+    expect(createSearchCallRenderer().metadata?.display).not.toBe(true)
   })
 
   it('renders submitted capabilities in the expanded result', () => {
-    const rendered = createSearchTriggerRenderer().tryRender({
+    const rendered = createSearchCallRenderer().tryRender({
       functionId: 'directory::search_functions',
       input: {
         query: 'legacy query must stay hidden',
@@ -61,7 +61,7 @@ describe('search trigger renderer', () => {
         ],
       },
       output,
-    } as FunctionTriggerMessage) as {
+    } as FunctionCallMessage) as {
       type: (props: Record<string, unknown>) => unknown
       props: Record<string, unknown>
     }
@@ -74,7 +74,7 @@ describe('search trigger renderer', () => {
   })
 
   it('renders installed skills with their skills::get call, even without functions', () => {
-    const rendered = createSearchTriggerRenderer().tryRender({
+    const rendered = createSearchCallRenderer().tryRender({
       functionId: 'directory::search_functions',
       input: { capabilities: ['schedule recurring function execution with cron'] },
       output: {
@@ -83,7 +83,7 @@ describe('search trigger renderer', () => {
         skills: [{ id: 'cron', title: 'cron', description: 'Schedule any registered function.' }],
         latency_ms: 4256,
       },
-    } as FunctionTriggerMessage) as {
+    } as FunctionCallMessage) as {
       type: (props: Record<string, unknown>) => unknown
       props: Record<string, unknown>
     }
@@ -98,61 +98,70 @@ describe('search trigger renderer', () => {
     expect(serialized).not.toContain('No functions matched')
   })
 
-  it('renders registered triggers with their functions::info call, even without functions', () => {
-    const rendered = createSearchTriggerRenderer().tryRender({
+  it('renders observers with their target functions::info call, even without functions', () => {
+    const rendered = createSearchCallRenderer().tryRender({
       functionId: 'directory::search_functions',
       input: { capabilities: ['run a job every night'] },
       output: {
-        guidance: 'The `triggers` entries are registered trigger bindings…',
+        guidance: 'The `observers` entries are observers that already run a function…',
         workers: [],
-        triggers: [
+        observers: [
           {
-            id: 't-1',
-            trigger_type: 'cron',
-            function_id: 'harness::sweep-pending',
+            id: 'o-1',
+            function_id: 'cron::on-tick',
+            target: 'harness::sweep-pending',
             worker_name: 'harness',
-            config: { expression: '0 0 0 * * *' },
+            args: { expression: '0 0 0 * * *' },
+            filters: {},
           },
         ],
         latency_ms: 900,
       },
-    } as FunctionTriggerMessage) as {
+    } as FunctionCallMessage) as {
       type: (props: Record<string, unknown>) => unknown
       props: Record<string, unknown>
     }
 
     const serialized = JSON.stringify(expand(rendered.type(rendered.props)))
-    expect(serialized).toContain('registered triggers')
-    expect(serialized).toContain('"type":"TriggerBlock"')
+    expect(serialized).toContain('"observers"')
+    expect(serialized).toContain('"type":"ObserverBlock"')
     expect(serialized).toContain(JSON.stringify('engine::functions::info { "function_id": "harness::sweep-pending" }'))
     expect(serialized).toContain(JSON.stringify(JSON.stringify({ expression: '0 0 0 * * *' })))
     expect(serialized).toContain('· harness')
     expect(serialized).not.toContain('No functions matched')
   })
 
-  it('omits the config line for a trigger bound without config', () => {
-    const rendered = createSearchTriggerRenderer().tryRender({
+  it('omits the args and filters lines for an observer without them', () => {
+    const rendered = createSearchCallRenderer().tryRender({
       functionId: 'directory::search_functions',
       input: { capabilities: ['react when the configuration changes'] },
       output: {
-        guidance: 'The `triggers` entries are registered trigger bindings…',
+        guidance: 'The `observers` entries are observers that already run a function…',
         workers: [],
-        triggers: [{ id: 't-2', trigger_type: 'configuration', function_id: 'directory::on-config-change', config: {} }],
+        observers: [
+          {
+            id: 'o-2',
+            function_id: 'configuration::on-updated',
+            target: 'directory::on-config-change',
+            args: {},
+            filters: {},
+          },
+        ],
         latency_ms: 90,
       },
-    } as FunctionTriggerMessage) as {
+    } as FunctionCallMessage) as {
       type: (props: Record<string, unknown>) => unknown
       props: Record<string, unknown>
     }
 
     const serialized = JSON.stringify(expand(rendered.type(rendered.props)))
-    expect(serialized).toContain('"type":"TriggerBlock"')
+    expect(serialized).toContain('"type":"ObserverBlock"')
     expect(serialized).toContain(JSON.stringify('engine::functions::info { "function_id": "directory::on-config-change" }'))
     expect(serialized).not.toContain('dir-ui-search-desc"')
   })
 
   it('labels the card with the search mode when present', () => {
-    const rendered = createSearchTriggerRenderer().tryRender({
+    const rendered = createSearchCallRenderer().tryRender({
       functionId: 'directory::search_functions',
       input: { capabilities: ['x'] },
       output: {
@@ -161,7 +170,7 @@ describe('search trigger renderer', () => {
         search_mode: 'judge',
         latency_ms: 10,
       },
-    } as FunctionTriggerMessage) as {
+    } as FunctionCallMessage) as {
       type: (props: Record<string, unknown>) => unknown
       props: Record<string, unknown>
     }

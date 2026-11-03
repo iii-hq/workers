@@ -4,17 +4,17 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `code-runner/page.js` (`console:script`) — the function-trigger renderers
+//! - `code-runner/page.js` (a `script` asset) — the function-call renderers
 //!   its `setup(host)` registers, so `code-runner::run`, `register_function`
 //!   and `teardown` render as purpose-built cards in chat and traces instead
 //!   of raw JSON.
-//! - `code-runner/styles.css` (`console:style`) — the stylesheet, every rule
+//! - `code-runner/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="code-runner"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `code-runner::ui-content`, one
-//! Message-path trigger per asset, `III_CODE_RUNNER_UI_WATCH` hot-reload
-//! watcher) lives in the shared `iii-console-ui` crate (path-linked from
+//! observer of `console::ui::asset` per asset, `III_CODE_RUNNER_UI_WATCH`
+//! hot-reload watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and embeds
 //! their bytes.
 //!
@@ -22,9 +22,8 @@
 //! external — they resolve through the console's import map at runtime) and
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_CODE_RUNNER_UI_WATCH` to the build output
-//! directory (or `1` for `ui/dist`): the worker polls both files and
-//! re-registers a changed asset's trigger — every open console tab hot-swaps
-//! it.
+//! directory (or `1` for `ui/dist`): the worker polls both files and observes
+//! a changed asset again — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 
@@ -77,7 +76,7 @@ mod tests {
     }
 
     /// One renderer per user-facing op, all reachable from `setup(host)`.
-    /// Dropping one from `ui/src/function-trigger-message/index.tsx` silently
+    /// Dropping one from `ui/src/function-call-message/index.tsx` silently
     /// falls that op back to the console's raw-JSON card; this catches it.
     #[test]
     fn every_rendered_op_is_wired_in() {

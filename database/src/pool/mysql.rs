@@ -23,6 +23,7 @@ pub struct MysqlPool {
     max_size: u32,
     /// Keeps the entry's SSH tunnel (if any) alive as long as the pool.
     connector: Arc<Connector>,
+    id: super::PoolId,
 }
 
 pub type MysqlConn = mysql_async::Conn;
@@ -86,7 +87,12 @@ impl MysqlPool {
             acquire_timeout: Duration::from_millis(pool_cfg.acquire_timeout_ms),
             max_size: pool_cfg.max,
             connector,
+            id: super::PoolId::next(),
         })
+    }
+
+    pub(crate) fn id(&self) -> super::PoolId {
+        self.id
     }
 
     pub fn connector(&self) -> &Arc<Connector> {

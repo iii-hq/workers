@@ -1,9 +1,9 @@
 //! Mirror a `devin::run` turn into `session-manager`, so a Devin run shows up
 //! in the console's session list and transcript like a harness session.
 //!
-//! `devin::agent-event` / `devin::raw-event` are a live tape: they are not
-//! stored or replayed, so a console window opened after the run has nothing
-//! to read from them, and with no binding they deliver nothing. The session
+//! `devin::on-agent-event` / `devin::on-raw-event` are a live tape: they are
+//! not stored or replayed, so a console window opened after the run has
+//! nothing to read from them, and with no observer they deliver nothing. The session
 //! manager is the durable side
 //! the console reads (`session::list`, `session::messages`), so a turn writes
 //! the same records a harness turn does:
@@ -26,8 +26,7 @@
 //! console's views, not of running Devin: when it is not installed the link
 //! logs that once and the run continues unrecorded.
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 use crate::optional::OptionalDependency;
@@ -169,7 +168,7 @@ async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,

@@ -483,7 +483,7 @@ async fn guest_code_can_call_the_bus_and_use_the_answer() {
     let (m, bridge) = bridged(Ok(serde_json::json!({ "n": 7 })));
     let resp = m
         .run(req(
-            "answer = iii.trigger({'function_id': 'state::get', 'payload': {'key': 'k'}})\nresult = answer['n'] * 2",
+            "answer = iii.call({'function_id': 'state::get', 'payload': {'key': 'k'}})\nresult = answer['n'] * 2",
         ))
         .await
         .expect("the bridged run must succeed");
@@ -502,15 +502,31 @@ async fn a_bus_error_is_a_catchable_python_exception() {
     let (m, _) = bridged(Err("state::get: not found".into()));
     let resp = m
         .run(req(
-            "try:\n    iii.trigger({'function_id': 'state::get'})\n    result = 'no raise'\nexcept RuntimeError as e:\n    result = str(e)",
+            "try:\n    iii.call({'function_id': 'state::get'})\n    result = 'no raise'\nexcept RuntimeError as e:\n    result = str(e)",
         ))
         .await
         .unwrap();
+    let message = resp.result.as_str().unwrap();
+    assert!(message.contains("not found"), "got {message:?}");
     assert!(
-        resp.result.as_str().unwrap().contains("not found"),
-        "got {:?}",
-        resp.result
+        message.starts_with("iii.call: "),
+        "the error must name the call that failed: {message:?}"
     );
+}
+
+/// `iii.trigger` is the same function as `iii.call`, under the name every
+/// iii SDK keeps for it — not a second implementation that could drift.
+#[tokio::test]
+async fn trigger_is_the_same_function_as_call() {
+    let (m, bridge) = bridged(Ok(serde_json::json!({ "n": 7 })));
+    let resp = m
+        .run(req(
+            "result = [iii.trigger == iii.call, iii.trigger({'function_id': 'state::get'})['n']]",
+        ))
+        .await
+        .expect("the bridged run must succeed");
+    assert_eq!(resp.result, serde_json::json!([true, 7]));
+    assert_eq!(bridge.calls.lock().unwrap()[0].0, "state::get");
 }
 
 /// Without a bridge there is no global at all, rather than one that always
@@ -539,7 +555,7 @@ async fn there_is_no_iii_global_without_a_bridge() {
 #[tokio::test]
 async fn a_guest_timeout_is_clamped_to_the_runs_remaining_budget() {
     let (m, bridge) = bridged(Ok(serde_json::Value::Null));
-    let mut r = req("iii.trigger({'function_id': 'x::y', 'timeout_ms': 600000})\nresult = None");
+    let mut r = req("iii.call({'function_id': 'x::y', 'timeout_ms': 600000})\nresult = None");
     r.timeout_ms = Some(3_000);
     m.run(r).await.unwrap();
 
@@ -559,7 +575,7 @@ async fn tenant_output_and_request_frames_do_not_contaminate_each_other() {
     let (m, bridge) = bridged(Ok(serde_json::json!("answered")));
     let resp = m
         .run(req(
-            "print('before')\nresult = iii.trigger({'function_id': 'x::y'})\nprint('after')",
+            "print('before')\nresult = iii.call({'function_id': 'x::y'})\nprint('after')",
         ))
         .await
         .unwrap();
@@ -641,7 +657,7 @@ async fn pinning_an_unknown_runtime_is_an_error() {
     assert_eq!(err.kind, ErrorKind::RuntimeNotFound);
 }
 
-/// The host's ANSWER to `iii.trigger` is length-prefixed the same way a turn
+/// The host's ANSWER to `iii.call` is length-prefixed the same way a turn
 /// frame is, so it carries the same hazard.
 ///
 /// Mutation: read `sys.stdin` instead of `sys.stdin.buffer` in `_read_frame`.
@@ -653,7 +669,7 @@ async fn a_non_ascii_bridge_answer_does_not_hang_the_guest() {
     let (m, _b) = bridged(Ok(serde_json::json!({"city": "東京", "note": "±3°"})));
     let out = m
         .run(req(
-            "a = iii.trigger({'function_id': 'geo::lookup'})\nresult = a['city'] + a['note']",
+            "a = iii.call({'function_id': 'geo::lookup'})\nresult = a['city'] + a['note']",
         ))
         .await
         .expect("the bridge answer must arrive intact");

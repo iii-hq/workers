@@ -24,16 +24,16 @@ use wiremock::MockServer;
 
 use iii_directory::{
     config::SkillsConfig,
+    events::{self, ChangeSources},
     functions,
-    trigger_types::{self, RegisteredTriggerTypes},
 };
 
 pub struct Shared {
     pub cfg: Arc<SkillsConfig>,
-    /// Kept so step defs needing to assert on subscriber-set state can
-    /// probe it directly (the registered trigger types live here).
+    /// Kept so step defs can name the change functions the write paths
+    /// call.
     #[allow(dead_code)]
-    pub triggers: Arc<RegisteredTriggerTypes>,
+    pub sources: ChangeSources,
     /// The skills_folder the configured worker reads + writes against.
     pub skills_folder: PathBuf,
     /// MockServer the worker's `registry_url` points at. Scenarios add
@@ -81,19 +81,19 @@ pub async fn register_all(iii: &Arc<IIIClient>) -> Result<Arc<Shared>> {
         registry_url: mock_server.uri(),
         ..SkillsConfig::default()
     });
-    let registered = trigger_types::register_all(iii);
+    let sources = events::register_all(iii);
     // `register_all` reads the live (hot-reloadable) handle; wrap a snapshot.
     // `Shared.cfg` keeps the plain `Arc<SkillsConfig>` the step defs assert on.
     let cfg_handle = (*cfg).clone().into_shared();
-    functions::register_all(iii, &cfg_handle, &registered);
+    functions::register_all(iii, &cfg_handle, &sources);
 
     // Give the SDK a beat to publish the function registrations before
-    // scenarios start triggering them.
+    // scenarios start calling them.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
     let shared = Arc::new(Shared {
         cfg,
-        triggers: Arc::new(registered),
+        sources,
         skills_folder,
         mock_server,
     });

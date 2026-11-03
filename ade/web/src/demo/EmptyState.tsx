@@ -22,9 +22,9 @@ export function DemoEmptyState() {
           can leverage the power of a full-featured agentic system:
         </p>
         <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
-          <li>· trigger functions via the function registry</li>
+          <li>· call functions via the function registry</li>
           <li>· spawn subagents for parallel/async work</li>
-          <li>· register triggers for loop and graph control</li>
+          <li>· observe functions for loop and graph control</li>
           <li>
             · query state, publish to queues, and do everything production
             systems do

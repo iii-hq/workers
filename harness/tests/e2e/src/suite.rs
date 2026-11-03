@@ -167,7 +167,7 @@ fn validate_config(config: &SuiteRunConfig) -> Result<()> {
 
 async fn resolve_model(context: &E2eContext, model: &str, provider: &str) -> Result<Model> {
     let response = context
-        .trigger_value(
+        .call_value(
             "router::models::get",
             json!({ "id": model, "provider": provider }),
         )
@@ -373,7 +373,7 @@ async fn execute(
         })?;
     }
     let response: SendResponse = context
-        .trigger(
+        .call(
             "harness::send",
             SendRequest {
                 session_id: Some(session_id.to_string()),

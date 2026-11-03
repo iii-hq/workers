@@ -10,35 +10,35 @@ import {
 } from './api'
 import type { PlanStep } from './plan'
 
-const trigger = vi.fn()
+const call = vi.fn()
 
-/** A fake engine: browser-local handlers plus the trigger bindings on them. */
-interface Binding {
-  type: string
+/** A fake engine: browser-local handlers plus the observers that target them. */
+interface Observer {
   function_id: string
-  config: Record<string, unknown>
+  target: string
+  filters?: Record<string, Record<string, unknown>>
   active: boolean
 }
 const handlers = new Map<string, (payload: unknown) => void>()
-const bindings: Binding[] = []
-/** Subscriptions and calls in the order they happened. */
+const observers: Observer[] = []
+/** Observers and calls in the order they happened. */
 const order: string[] = []
 const connected = new Set<string>()
 
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
-    trigger,
+    call,
     browserId: 'tab',
     on: (id: string, handler: (payload: unknown) => void) => {
       handlers.set(`${id}::tab`, handler)
       return () => handlers.delete(`${id}::tab`)
     },
-    registerTrigger: (input: Omit<Binding, 'active'>) => {
-      const binding = { ...input, active: true }
-      bindings.push(binding)
-      order.push(`subscribe ${input.type}`)
+    observe: (source: Omit<Observer, 'target' | 'active'>, target: string) => {
+      const observer = { ...source, target, active: true }
+      observers.push(observer)
+      order.push(`observe ${source.function_id}`)
       return () => {
-        binding.active = false
+        observer.active = false
       }
     },
   }),
@@ -51,28 +51,45 @@ vi.mock('@/pages/Workers/api/workers', () => ({
   },
 }))
 
-/** Deliver one event to every live binding of `type`. */
-function emit(type: string, payload: unknown) {
-  for (const binding of bindings) {
-    if (binding.active && binding.type === type) {
-      handlers.get(binding.function_id)?.(payload)
+/** The `$eq` / `$in` filters on `input.<field>` the onboarding observers use. */
+function matches(observer: Observer, payload: unknown): boolean {
+  const input = (payload ?? {}) as Record<string, unknown>
+  return Object.entries(observer.filters ?? {}).every(([path, op]) => {
+    const value = input[path.replace(/^input\./, '')]
+    if ('$eq' in op) return value === op.$eq
+    if ('$in' in op) return (op.$in as unknown[]).includes(value)
+    return false
+  })
+}
+
+/** Deliver one call of `functionId` to every active observer it matches. */
+function emit(functionId: string, payload: unknown) {
+  for (const observer of observers) {
+    if (
+      observer.active &&
+      observer.function_id === functionId &&
+      matches(observer, payload)
+    ) {
+      handlers.get(observer.target)?.(payload)
     }
   }
 }
 
-const live = (type: string) =>
-  bindings.filter((binding) => binding.active && binding.type === type)
+const live = (functionId: string) =>
+  observers.filter(
+    (observer) => observer.active && observer.function_id === functionId,
+  )
 
 const calls = (fn: string) =>
-  trigger.mock.calls.filter(([name]) => name === fn).length
+  call.mock.calls.filter(([name]) => name === fn).length
 
 /** Let the awaited calls behind an event settle. */
 const settle = () => vi.advanceTimersByTimeAsync(0)
 
 function resetBus() {
-  trigger.mockReset()
+  call.mockReset()
   handlers.clear()
-  bindings.length = 0
+  observers.length = 0
   order.length = 0
   connected.clear()
 }
@@ -104,8 +121,8 @@ function storeStep(
 
 describe('runStep store-secret', () => {
   beforeEach(() => {
-    trigger.mockReset()
-    trigger.mockImplementation(async (fn: string) =>
+    call.mockReset()
+    call.mockImplementation(async (fn: string) =>
       fn === 'secrets::get' ? null : META,
     )
   })
@@ -113,7 +130,7 @@ describe('runStep store-secret', () => {
   it('shares a variable as it is, without claiming it was stored', async () => {
     const result = await runStep(storeStep({ mode: 'env' }), context)
     expect(result.note).toBeUndefined()
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'secrets::access',
       { name: 'DEEPSEEK_API_KEY', consumers: ['llm-router'], store: 'env' },
       expect.anything(),
@@ -157,7 +174,7 @@ describe('runStep add-workers', () => {
   }
   const operationId = () =>
     (
-      trigger.mock.calls.find(([fn]) => fn === 'compose::add')?.[1] as {
+      call.mock.calls.find(([fn]) => fn === 'compose::add')?.[1] as {
         operation_id: string
       }
     )?.operation_id
@@ -168,7 +185,7 @@ describe('runStep add-workers', () => {
     snapshot = { status: 'running', phase: 'accepted', completed: 0, total: 1 }
     acceptedId = undefined
     report = vi.fn<(progress: StepProgress) => void>()
-    trigger.mockImplementation(
+    call.mockImplementation(
       async (fn: string, payload: Record<string, unknown>) => {
         order.push(fn)
         if (fn === 'compose::add') {
@@ -193,22 +210,21 @@ describe('runStep add-workers', () => {
   const start = (signal = { cancelled: false }) =>
     runStep(addStep, { consoleConfig: null, report, signal })
 
-  it('binds compose-operation before compose::add and follows its events', async () => {
+  it('observes the operation progress before compose::add and follows its events', async () => {
     const done = start()
     await settle()
     const id = operationId()
     expect(id).toMatch(/^ade-setup:/)
-    expect(order.indexOf('subscribe compose-operation')).toBeLessThan(
-      order.indexOf('compose::add'),
-    )
-    expect(live('compose-operation')[0].config).toEqual({
-      operation_id: id,
-      terminal_only: false,
+    expect(
+      order.indexOf('observe compose::on-operation-progress'),
+    ).toBeLessThan(order.indexOf('compose::add'))
+    expect(live('compose::on-operation-progress')[0].filters).toEqual({
+      'input.operation_id': { $eq: id },
     })
-    // One read covers the instant before the binding was live.
+    // One read covers the instant before the observer was active.
     expect(calls('compose::operation')).toBe(1)
 
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: id,
       phase: 'starting',
       container: 'judge',
@@ -232,7 +248,7 @@ describe('runStep add-workers', () => {
       total: 1,
     }
     connected.add('judge')
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: id,
       phase: 'complete',
       detail: 'all requested workers are ready',
@@ -243,7 +259,7 @@ describe('runStep add-workers', () => {
     await expect(done).resolves.toEqual({ note: 'judge running' })
     // The terminal event carries no status: exactly one read for it.
     expect(calls('compose::operation')).toBe(2)
-    expect(bindings.every((binding) => !binding.active)).toBe(true)
+    expect(observers.every((observer) => !observer.active)).toBe(true)
     expect(handlers.size).toBe(0)
   })
 
@@ -257,7 +273,7 @@ describe('runStep add-workers', () => {
       total: 1,
       last_event: { detail: 'one or more workers failed' },
     }
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: operationId(),
       phase: 'complete',
       detail: 'one or more workers failed',
@@ -271,7 +287,7 @@ describe('runStep add-workers', () => {
     await settle()
     snapshot = new Error('compose::operation unavailable')
     connected.add('judge')
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: operationId(),
       phase: 'complete',
       detail: 'all requested workers are ready',
@@ -280,15 +296,15 @@ describe('runStep add-workers', () => {
     await expect(done).resolves.toEqual({ note: 'judge running' })
   })
 
-  it('catches up when the operation finished before the binding was live', async () => {
+  it('catches up when the operation finished before the observer was active', async () => {
     snapshot = {
       status: 'succeeded',
       phase: 'complete',
       completed: 1,
       total: 1,
     }
-    const compose = trigger.getMockImplementation()
-    trigger.mockImplementation(
+    const compose = call.getMockImplementation()
+    call.mockImplementation(
       async (fn: string, payload: Record<string, unknown>) => {
         // The worker is up by the time compose answers.
         if (fn === 'compose::add') connected.add('judge')
@@ -303,21 +319,23 @@ describe('runStep add-workers', () => {
     acceptedId = 'compose:theirs'
     const done = start()
     await settle()
-    expect(live('compose-operation').map((b) => b.config.operation_id)).toEqual(
-      [operationId(), 'compose:theirs'],
-    )
-    expect(trigger).toHaveBeenCalledWith(
+    expect(
+      live('compose::on-operation-progress').map(
+        (o) => o.filters?.['input.operation_id'].$eq,
+      ),
+    ).toEqual([operationId(), 'compose:theirs'])
+    expect(call).toHaveBeenCalledWith(
       'compose::operation',
       { operation_id: 'compose:theirs' },
       expect.anything(),
     )
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: operationId(),
       phase: 'ignored',
       detail: 'not this one',
       terminal: false,
     })
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: 'compose:theirs',
       phase: 'starting',
       detail: 'judge',
@@ -335,7 +353,7 @@ describe('runStep add-workers', () => {
       total: 1,
     }
     connected.add('judge')
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: 'compose:theirs',
       phase: 'complete',
       detail: 'all requested workers are ready',
@@ -353,7 +371,7 @@ describe('runStep add-workers', () => {
     await vi.advanceTimersByTimeAsync(120_000)
     expect(calls('compose::operation')).toBe(2)
 
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: operationId(),
       phase: 'starting',
       detail: 'still going',
@@ -371,7 +389,7 @@ describe('runStep add-workers', () => {
       total: 1,
     }
     connected.add('judge')
-    emit('compose-operation', {
+    emit('compose::on-operation-progress', {
       operation_id: operationId(),
       phase: 'complete',
       detail: 'all requested workers are ready',
@@ -380,14 +398,14 @@ describe('runStep add-workers', () => {
     await expect(done).resolves.toEqual({ note: 'judge running' })
   })
 
-  it('waits for the worker to connect on engine::workers-available', async () => {
+  it('waits for the worker to connect on engine::on-workers-changed', async () => {
     acceptedId = null // compose finished in-line, no operation to follow
     const done = start()
     await settle()
     expect(report).toHaveBeenLastCalledWith({
       note: 'Waiting for judge to connect',
     })
-    expect(live('engine::workers-available')).toHaveLength(1)
+    expect(live('engine::on-workers-changed')).toHaveLength(1)
     const lists = order.filter((entry) => entry === 'engine::workers::list')
     // Nothing more is asked while nothing happens.
     await vi.advanceTimersByTimeAsync(20_000)
@@ -395,12 +413,12 @@ describe('runStep add-workers', () => {
       lists,
     )
     connected.add('judge')
-    emit('engine::workers-available', {
+    emit('engine::on-workers-changed', {
       event: 'worker_connected',
       worker_id: 'w1',
     })
     await expect(done).resolves.toEqual({ note: 'judge running' })
-    expect(live('engine::workers-available')).toHaveLength(0)
+    expect(live('engine::on-workers-changed')).toHaveLength(0)
   })
 
   it('gives up when the worker never connects', async () => {
@@ -418,7 +436,7 @@ describe('runStep add-workers', () => {
     const failed = expect(done).rejects.toThrow('cancelled')
     signal.cancelled = true
     await failed
-    expect(live('compose-operation')).toHaveLength(0)
+    expect(live('compose::on-operation-progress')).toHaveLength(0)
     // The token is a plain object again.
     expect(Object.getOwnPropertyDescriptor(signal, 'cancelled')).toMatchObject({
       value: true,
@@ -453,7 +471,7 @@ describe('runStep set-config', () => {
     vi.useFakeTimers()
     resetBus()
     entries = []
-    trigger.mockImplementation(async (fn: string) => {
+    call.mockImplementation(async (fn: string) => {
       order.push(fn)
       if (fn === 'configuration::list') return { configurations: entries }
       if (fn === 'configuration::get') return { value: {} }
@@ -473,26 +491,31 @@ describe('runStep set-config', () => {
     owner: 'Laya',
   }
 
-  it('writes straight away when the entry exists, without subscribing', async () => {
+  it('writes straight away when the entry exists, without observing', async () => {
     entries = [{ id: 'judge' }]
     // The entry id is the engine's business, not a line in setup's log.
     await expect(runStep(step, context)).resolves.toEqual({})
-    expect(bindings).toHaveLength(0)
+    expect(observers).toHaveLength(0)
   })
 
-  it('waits for the entry on configuration events, bound without an id', async () => {
+  it('waits for the entry on configuration events, observed without an id', async () => {
     const done = runStep(step, context)
     await settle()
-    const [binding] = live('configuration')
-    // No configuration_id: a per-id binding would start the entry's TTL.
-    expect(binding.config).toEqual({
-      event_types: ['configuration:registered', 'configuration:updated'],
+    const [observer] = live('configuration::on-updated')
+    // No id filter: the family's entry id is what the wait is looking for.
+    expect(observer.filters).toEqual({
+      'input.event_type': {
+        $in: ['configuration:registered', 'configuration:updated'],
+      },
     })
     expect(calls('configuration::list')).toBe(2)
     entries = [{ id: 'judge' }]
-    emit('configuration', { event_type: 'registered', id: 'judge' })
+    emit('configuration::on-updated', {
+      event_type: 'configuration:registered',
+      id: 'judge',
+    })
     await expect(done).resolves.toEqual({})
-    expect(trigger).toHaveBeenCalledWith('configuration::set', {
+    expect(call).toHaveBeenCalledWith('configuration::set', {
       id: 'judge',
       value: { provider: 'laya' },
     })
@@ -523,7 +546,7 @@ describe('runStep wait-models', () => {
     models = 0
     refreshCount = 0
     configured = true
-    trigger.mockImplementation(async (fn: string) => {
+    call.mockImplementation(async (fn: string) => {
       order.push(fn)
       if (fn === 'router::models::list') {
         return { models: Array.from({ length: models }, () => ({})) }
@@ -600,7 +623,7 @@ describe('runStep wait-models', () => {
     const done = runStep(codex, context).catch((e: unknown) => e)
     await settle()
     expect(calls('provider::openai-codex::refresh_models')).toBe(1)
-    emit('router::provider::changed', { provider: 'openai-codex' })
+    emit('router::provider::on-changed', { provider: 'openai-codex' })
     const error = await done
     expect(error).not.toBeInstanceOf(SignInRequiredError)
     expect(error).toMatchObject({ message: 'connection reset' })
@@ -619,10 +642,10 @@ describe('runStep wait-models', () => {
     await settle()
     expect(calls('provider::deepseek::refresh_models')).toBe(1)
     // Someone else's catalog changing is not a reason to ask again.
-    emit('router::models::changed', { provider: 'openai', count: 9 })
+    emit('router::models::on-changed', { provider: 'openai', count: 9 })
     await settle()
     expect(calls('provider::deepseek::refresh_models')).toBe(1)
-    emit('router::models::changed', { provider: 'deepseek', count: 0 })
+    emit('router::models::on-changed', { provider: 'deepseek', count: 0 })
     await failed
     expect(calls('provider::deepseek::refresh_models')).toBe(2)
   })
@@ -634,7 +657,10 @@ describe('runStep wait-models', () => {
     expect(calls('provider::deepseek::refresh_models')).toBe(0)
     configured = true
     refreshCount = 2
-    emit('router::provider::changed', { provider: 'deepseek', op: 'register' })
+    emit('router::provider::on-changed', {
+      provider: 'deepseek',
+      op: 'register',
+    })
     await expect(done).resolves.toEqual({ note: '2 models' })
   })
 })
@@ -645,7 +671,7 @@ describe('runStep check-judge', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     resetBus()
-    trigger.mockImplementation(async (fn: string) => {
+    call.mockImplementation(async (fn: string) => {
       order.push(fn)
       if (fn === 'judge::models::list') {
         if (answer instanceof Error) throw answer
@@ -671,21 +697,21 @@ describe('runStep check-judge', () => {
     await settle()
     expect(calls('judge::models::list')).toBe(1)
     // The long wait lets a local provider finish loading inside the call.
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'judge::models::list',
       { timeout_ms: 300_000 },
       { timeoutMs: 310_000 },
     )
-    emit('engine::functions-available', functions('judge::evaluate', 'x::y'))
+    emit('engine::on-functions-changed', functions('judge::evaluate', 'x::y'))
     await settle()
     expect(calls('judge::models::list')).toBe(2)
     // The same judge functions again (another worker changed): no new ask.
-    emit('engine::functions-available', functions('judge::evaluate', 'z::w'))
+    emit('engine::on-functions-changed', functions('judge::evaluate', 'z::w'))
     await settle()
     expect(calls('judge::models::list')).toBe(2)
     answer = { models: [{ name: 'laya' }] }
     emit(
-      'engine::functions-available',
+      'engine::on-functions-changed',
       functions('judge::evaluate', 'judge-laya::models::list'),
     )
     await expect(done).resolves.toEqual({ note: 'answering' })
@@ -693,7 +719,7 @@ describe('runStep check-judge', () => {
 
   it('falls back to the default wait when the provider refuses the long one', async () => {
     answer = { status: 'error', code: 'invalid_request' }
-    trigger.mockImplementation(
+    call.mockImplementation(
       async (fn: string, payload: Record<string, unknown>) => {
         if (fn !== 'judge::models::list') return null
         return 'timeout_ms' in payload ? answer : { models: [] }
@@ -726,7 +752,7 @@ describe('checkProviderKey', () => {
     vi.useFakeTimers()
     resetBus()
     configured = false
-    trigger.mockImplementation(async (fn: string) => {
+    call.mockImplementation(async (fn: string) => {
       if (fn === 'router::provider::list') {
         return { providers: [{ id: 'deepseek', configured, available: true }] }
       }
@@ -745,7 +771,7 @@ describe('checkProviderKey', () => {
     await settle()
     expect(calls('router::provider::list')).toBe(2)
     configured = true
-    emit('router::models::changed', { provider: 'deepseek', count: 2 })
+    emit('router::models::on-changed', { provider: 'deepseek', count: 2 })
     await expect(done).resolves.toEqual({ configured: true, models: 2 })
   })
 
@@ -788,13 +814,13 @@ describe('runStep add-workers: the compose file', () => {
   })
 
   it('names the file the daemon loaded, not whatever is in its working directory', async () => {
-    trigger.mockImplementation(
+    call.mockImplementation(
       answer(() => ({ projects: [{ file: FILE, namespace: 'my-project' }] })),
     )
     await expect(runStep(addStep, context)).resolves.toEqual({
       note: 'provider-claude-code running',
     })
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'compose::add',
       expect.objectContaining({
         file: FILE,
@@ -805,7 +831,7 @@ describe('runStep add-workers: the compose file', () => {
   })
 
   it('lets compose keep its default when the daemon cannot say', async () => {
-    trigger.mockImplementation(
+    call.mockImplementation(
       answer(() => {
         throw new Error('function_not_found')
       }),
@@ -813,9 +839,7 @@ describe('runStep add-workers: the compose file', () => {
     await expect(runStep(addStep, context)).resolves.toEqual({
       note: 'provider-claude-code running',
     })
-    const payload = trigger.mock.calls.find(
-      ([fn]) => fn === 'compose::add',
-    )?.[1]
+    const payload = call.mock.calls.find(([fn]) => fn === 'compose::add')?.[1]
     expect(payload).toMatchObject({ workers: ['provider-claude-code'] })
     expect(payload).not.toHaveProperty('file')
   })

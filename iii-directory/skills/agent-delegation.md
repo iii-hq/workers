@@ -16,7 +16,7 @@ Another agent on this engine is **not a model and not a provider**. Asking
 is correct: those are workers, and you reach them the way you reach every
 worker — by calling a function.
 
-    iii trigger engine::functions::list --json '{"search":"task"}'
+    iii call engine::functions::list --json '{"search":"task"}'
 
 ## The one call
 
@@ -27,7 +27,7 @@ worker — by calling a function.
 | `<agent>::task` | Any agent worker that adopts this shape |
 
 ```bash
-iii trigger claude::task --json '{
+iii call claude::task --json '{
   "task": "Read src/auth.ts and list every caller of verifyToken",
   "parent_session_id": "<your own session id>",
   "cwd": "/path/to/repo"
@@ -44,19 +44,23 @@ the repository, the file, the database, the resource ids, in the task itself.
 ## Being woken, instead of waiting
 
 Nothing new to learn here: a settled task is an ordinary `state` write, and you
-bind it the way you bind any other trigger — which the calling rules already
+observe it the way you observe any other event — which the calling rules already
 tell you to do instead of polling.
 
 - scope `agent_tasks`
 - key the child's `session_id`
 - value `{ session_id, parent_session_id, agent, task, status, result, error, updated_at_ms }`
 
-Bind before you delegate. Take the trigger's config keys from
-`engine::triggers::info id=state`, never from memory.
+Observe before you delegate: `harness::observe { function_id: "state::on-changed",
+filters: { "input.scope": { "$eq": "agent_tasks" }, "input.key": { "$eq": "<child session_id>" } } }`.
+Take the event's field names from `engine::functions::info function_id=state::on-changed`
+(its `response_format`), never from memory.
 
-The child's turns also stream onto `agent::events` under its `session_id`, and
-`session::get` returns its status and title. Those are for watching; the state
-write is what wakes you.
+The child's turns also arrive as AgentEvent frames on `claude::on-agent-event`
+(or `pi::on-agent-event`): `harness::observe { function_id: "claude::on-agent-event",
+args: { "session_id": "<child session_id>" } }`. `session::get` returns the
+child's status and title. Those are for watching; the state write is what wakes
+you.
 
 ## When blocking IS right
 
@@ -71,5 +75,6 @@ state write survives both.
 - **`claude::task`** — Claude Code with its own tools and login.
 - **`pi::task`** — the pi coding agent, provider-agnostic.
 
-Both stream their work onto `agent::events`, so the console renders a delegated
-run exactly like a native harness sub-agent's.
+Both publish their turns as AgentEvent frames (`claude::on-agent-event`,
+`pi::on-agent-event`), so the console renders a delegated run exactly like a
+native harness sub-agent's.

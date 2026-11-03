@@ -1,6 +1,6 @@
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -29,8 +29,8 @@ pub fn session_history_key(session_id: &str) -> String {
     format!("sessions:{}:history", session_id)
 }
 
-// Streaming wire = each agent worker's own `<namespace>::agent-event`
-// trigger type (see agent_feed). acp binds it per owned session with
+// Streaming wire = each agent worker's own `<namespace>::on-agent-event`
+// function (see agent_feed). acp observes it per owned session with args
 // `{ session_id }`; no per-connection topic exists for events.
 
 pub fn cancel_topic(conn_id: &str, session_id: &str) -> String {
@@ -57,7 +57,7 @@ pub struct SessionRecord {
 
 pub async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Result<Option<Value>, Error> {
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".to_string(),
             payload: json!({ "scope": scope, "key": key }),
             action: None,
@@ -78,7 +78,7 @@ pub async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Result<Option
 }
 
 pub async fn state_set(iii: &IIIClient, scope: &str, key: &str, value: Value) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({ "scope": scope, "key": key, "value": value }),
         action: None,
@@ -119,7 +119,7 @@ async fn state_compare_and_set_with_current(
         payload["expected"] = expected.clone();
     }
     let response = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::compare-and-set".to_string(),
             payload,
             action: None,
@@ -140,7 +140,7 @@ async fn state_compare_and_set_with_current(
 }
 
 pub async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::delete".to_string(),
         payload: json!({ "scope": scope, "key": key }),
         action: None,
@@ -151,7 +151,7 @@ pub async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(),
 }
 
 pub async fn durable_publish(iii: &IIIClient, topic: &str, data: Value) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": data }),
         action: None,

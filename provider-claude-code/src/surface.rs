@@ -29,7 +29,7 @@ pub const REFRESH_MODELS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::claude-code::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::claude-code::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =

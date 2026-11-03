@@ -5,7 +5,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "AgentFunction": {
-        "description": "An invocation-surface schema entry (README.md § AgentFunction) — accepted by `context::count-tokens` so callers can include the `agent_trigger` schema in their estimate.",
+        "description": "An invocation-surface schema entry (README.md § AgentFunction) — accepted by `context::count-tokens` so callers can include the `agent_call` schema in their estimate.",
         "properties": {
           "description": {
             "type": "string"
@@ -27,7 +27,7 @@
             ]
           },
           "name": {
-            "description": "Invocation surface name (`agent_trigger`, `submit_result`, or a function id in native exposure mode).",
+            "description": "Invocation surface name (`agent_call`, `submit_result`, or a function id in native exposure mode).",
             "type": "string"
           },
           "parameters": {
@@ -282,7 +282,7 @@
           },
           "previous_summary": {
             "default": null,
-            "description": "Persisted summary from a prior compaction (see the spec's \"The compaction round trip\"); rendered into the system prompt and used as the anchor if compaction triggers again.",
+            "description": "Persisted summary from a prior compaction (see the spec's \"The compaction round trip\"); rendered into the system prompt and used as the anchor if compaction runs again.",
             "type": [
               "string",
               "null"

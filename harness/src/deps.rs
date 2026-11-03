@@ -40,9 +40,9 @@ pub struct Deps {
     /// Harness-owned JSON project catalog, serialized across concurrent
     /// console requests while allowing its configured file path to hot-reload.
     pub projects: ProjectStore,
-    /// SDK handles for the delivery triggers this process registered; see
-    /// [`crate::bindings::TriggerHandles`].
-    pub trigger_handles: crate::bindings::TriggerHandles,
+    /// Handles of the binding observers this process created; see
+    /// [`crate::bindings::ObserverHandles`].
+    pub observer_handles: crate::bindings::ObserverHandles,
     /// One deadline timer per binding with an `expires_at`
     /// ([`crate::bindings::expiry`]); the binding store cancels a binding's
     /// timer whenever it deletes the record.
@@ -63,7 +63,7 @@ impl Deps {
         events: TurnEvents,
         hooks: HookRegistry,
     ) -> Self {
-        let deletion_events = crate::deletion_events::DeletionEvents::register(&iii);
+        let deletion_events = crate::deletion_events::DeletionEvents::new(&iii);
         Self {
             topology: Arc::new(tokio::sync::Mutex::new(())),
             deletion_commands: SessionLocks::new(),
@@ -81,7 +81,7 @@ impl Deps {
             cancels: TurnCancels::new(),
             inflight: crate::inflight::InflightSteps::new(),
             projects: ProjectStore::default(),
-            trigger_handles: crate::bindings::TriggerHandles::default(),
+            observer_handles: crate::bindings::ObserverHandles::default(),
             expiry_timers: crate::timer::OneShots::new(),
             kicks: crate::engine_events::RecoveryKicks::default(),
             compactions: crate::compaction::Compactions::default(),
@@ -106,7 +106,7 @@ impl Deps {
     }
 
     /// The current cached function-registry snapshot (cheap `Arc` clone). Kept
-    /// live by the `engine::functions-available` trigger and by worker
+    /// live by the `engine::on-functions-changed` observer and by worker
     /// announces; see [`crate::discovery`].
     /// Carries both the callable set (`.functions`) and its `.generation`.
     pub async fn functions(&self) -> Arc<FunctionsSnapshot> {
@@ -141,7 +141,7 @@ impl Deps {
         EngineClient::new(self.iii.clone(), cfg.dispatch_timeout_ms)
     }
 
-    /// The durable trigger-binding store. Built per call like the other
+    /// The durable observer-binding store. Built per call like the other
     /// clients so a hot-reloaded timeout applies to the next read.
     pub async fn bindings(&self) -> BindingStore {
         let cfg = self.cfg().await;

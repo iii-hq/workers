@@ -3,35 +3,26 @@ Feature: the reactivity model — streaming a reply end to end
 
   Contract (session-manager.md § Reactivity model): streaming uses the
   same primitives as everything else. The driver appends an initially
-  empty assistant message (fires message_added), then calls
-  update_message as tokens arrive (each firing message_updated with a
+  empty assistant message (session::on-message-added), then calls
+  update_message as tokens arrive (each calling session::on-message-updated with a
   monotonic revision), while set_status frames the turn with working /
-  done. A consumer bound once renders the whole turn live with no
+  done. A consumer that observes once renders the whole turn live with no
   polling and no separate publish call.
 
   This is the worker's reason to exist — the full sequence diagram from
   the spec, pinned step by step.
 
   # Prevents: any regression in the exact event choreography a chat UI
-  # depends on: 1 created, 2 status changes, 2 message_added, N
-  # message_updated with increasing revisions.
+  # depends on: 1 created, 2 status changes, 2 messages added, N
+  # message updates with increasing revisions.
   Scenario: a full streamed turn delivers every event a chat UI renders from
-    Given a binding "b1" on "session::created" delivering to "ui::chat" with config:
+    Given an observer "b1" of "session::on-created" delivering to "ui::chat"
+    And an observer "b2" of "session::on-message-added" delivering to "ui::chat"
+    And an observer "b3" of "session::on-message-updated" delivering to "ui::chat" with filters:
       """
-      {}
+      { "input.message.role": { "$in": ["assistant"] } }
       """
-    And a binding "b2" on "session::message-added" delivering to "ui::chat" with config:
-      """
-      {}
-      """
-    And a binding "b3" on "session::message-updated" delivering to "ui::chat" with config:
-      """
-      { "roles": ["assistant"] }
-      """
-    And a binding "b4" on "session::status-changed" delivering to "ui::chat" with config:
-      """
-      {}
-      """
+    And an observer "b4" of "session::on-status-changed" delivering to "ui::chat"
 
     # -- the driver flow --
     When I call "session::create" with:
@@ -65,10 +56,10 @@ Feature: the reactivity model — streaming a reply end to end
       """
 
     # -- what the consumer saw --
-    Then function "ui::chat" received 1 "session::created" delivery
-    And function "ui::chat" received 2 "session::message-added" deliveries
-    And function "ui::chat" received 3 "session::message-updated" deliveries
-    And function "ui::chat" received 2 "session::status-changed" deliveries
+    Then function "ui::chat" received 1 "session::on-created" delivery
+    And function "ui::chat" received 2 "session::on-message-added" deliveries
+    And function "ui::chat" received 3 "session::on-message-updated" deliveries
+    And function "ui::chat" received 2 "session::on-status-changed" deliveries
     And delivery 0 to "ui::chat" has "title" = "Weather question"
     And delivery 1 to "ui::chat" has "message.role" = "user"
     And delivery 2 to "ui::chat" has "status" = "working"

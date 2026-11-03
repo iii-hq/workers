@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
@@ -101,7 +100,7 @@ const MAX_SEARCH_QUERIES: usize = 6;
 /// mutex, so concurrent batches would only overlap their timeouts).
 /// Capabilities past the last batch are named in `guidance` instead.
 const MAX_SEARCH_BATCHES: usize = 3;
-/// Documents one side lane (installed skills, registered triggers) returns,
+/// Documents one side lane (installed skills, observers) returns,
 /// round-robin across the capabilities.
 const SIDE_LANE_DOCS: usize = 6;
 /// Bytes of text one side-lane document contributes to the ranking payload.
@@ -110,12 +109,13 @@ const SIDE_LANE_DOC_BYTES: usize = 300;
 /// `SIDE_LANE_DOCS` rows, so half an evaluation of candidates is plenty and
 /// keeps their calls light next to the function lane's.
 const SIDE_LANE_SHORTLIST: usize = JUDGE_SHORTLIST / 2;
-/// Console tabs register ephemeral `iii::*` listeners and `console:*` asset
-/// triggers; neither is a binding an agent can reuse.
+/// Console tabs observe with ephemeral `iii::*` listeners as targets, and
+/// workers observe `console::ui::*` to publish their UI assets; neither is an
+/// observer an agent can reuse.
 /// ponytail: prefix heuristic; switch to an engine-side ephemeral flag if
-/// registered-triggers::list ever carries one.
-const EPHEMERAL_TRIGGER_FUNCTION_PREFIX: &str = "iii::";
-const EPHEMERAL_TRIGGER_TYPE_PREFIX: &str = "console:";
+/// engine::observers::list ever carries one.
+const EPHEMERAL_OBSERVER_TARGET_PREFIX: &str = "iii::";
+const EPHEMERAL_OBSERVED_FUNCTION_PREFIX: &str = "console::ui::";
 /// Registry list queries per search: each capability, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
@@ -310,7 +310,7 @@ are INSTALLED candidates. Choose the smallest candidate set the task needs from 
 BEFORE their first use fetch those contracts in ONE engine::functions::info call with \
 { \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }. Call them with the \
 returned request schemas, directly when the function is a tool in your surface, otherwise via \
-agent_trigger. For capabilities absent from both `workers` and `installable`, call \
+agent_call. For capabilities absent from both `workers` and `installable`, call \
 directory::search_functions again once at the next decision point with all unmet external \
 capabilities in `capabilities`. \
 Always write every `capabilities` entry in English, even when the user writes in \
@@ -350,10 +350,10 @@ const SEARCH_SKILLS_NOTE: &str = "The `skills` entries are installed how-to docu
 content matches the requested capabilities: before acting on such a capability, read the \
 relevant one with directory::skills::get { \"id\": \"<id>\" } and follow it.";
 
-const SEARCH_TRIGGERS_NOTE: &str = "The `triggers` entries are registered trigger bindings \
-that already fire, schedule, or hook a function for a matching capability: inspect the bound \
-function with engine::functions::info { \"function_id\": \"<id>\" } and reuse the binding \
-instead of registering a duplicate.";
+const SEARCH_OBSERVERS_NOTE: &str = "The `observers` entries are observers that already run \
+a function on the events, schedules, or hooks of a matching capability: inspect the target \
+function with engine::functions::info { \"function_id\": \"<id>\" } and reuse the observer \
+instead of observing a duplicate.";
 
 const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable` \
 for unmet capabilities. An explicit installation request follows the installation workflow below \
@@ -380,14 +380,15 @@ report that they cannot be applied and stop the installation. Explain the worker
 follow the caller's installation approval requirements; if approval is still needed, \
 wait for explicit confirmation before compose::add. Choose a fresh operation_id that \
 starts with your session id (ids are global to Compose and never reusable). \
-Register a one-shot compose-operation \
-wake with engine::register_trigger { \"trigger_type\": \"compose-operation\", \
-\"config\": { \"operation_id\": \"<operation-id>\", \"terminal_only\": true }, \"once\": true }. \
-This wake payload is complete; invoke it directly without trigger discovery or contract \
-lookup. Save the returned subscription_id. After registration succeeds, call compose::add \
+Arm a one-shot operation \
+wake with harness::observe { \"function_id\": \"compose::on-operation-progress\", \
+\"filters\": { \"input.operation_id\": { \"$eq\": \"<operation-id>\" }, \"input.terminal\": { \"$eq\": true } }, \
+\"once\": true }. \
+This wake payload is complete; invoke it directly without discovery or contract \
+lookup. Save the returned observer_id. After the wake is armed, call compose::add \
 using the selected payload plus the same operation_id. Read \
 compose::operation { operation_id: \"<operation-id>\" } once for race recovery; if terminal, \
-unregister any still-armed wake with engine::unregister_trigger { id: \"<subscription_id>\" }, \
+dispose any still-armed wake with harness::unobserve { \"id\": \"<observer_id>\" }, \
 otherwise end the turn and wait for its notification. Do not poll. \
 Wait for terminal success, not just acceptance, then confirm registration with the pre-verified call \
 engine::workers::info { \"name\": \"<worker name>\" }. This confirmation payload is complete; \
@@ -400,7 +401,7 @@ engine::functions::info call. Search again only when a required function ID is s
 
 /// Stand-in for `SEARCH_INSTALL_WORKFLOW` once the session already received it.
 const SEARCH_INSTALL_WORKFLOW_REPEAT: &str = "Installation workflow: follow the workflow given \
-earlier in this session (registry::workers::info, compose-operation wake, compose::add, \
+earlier in this session (registry::workers::info, operation wake, compose::add, \
 engine::workers::info).";
 
 const SEARCH_LANGUAGE_GUIDANCE: &str = "Keep user-facing text in the session's response language \
@@ -441,18 +442,23 @@ pub struct SkillCandidate {
     pub description: String,
 }
 
-/// A registered trigger binding (an `engine::registered-triggers::list`
-/// row) whose event, schedule, or hook matches a requested capability.
+/// An observer (an `engine::observers::list` row) whose observed event,
+/// schedule, or hook matches a requested capability.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
-pub struct TriggerCandidate {
+pub struct ObserverCandidate {
+    /// The observer's id.
     pub id: String,
-    pub trigger_type: String,
-    /// The function the trigger runs; inspect it with `engine::functions::info`.
+    /// The observed function (`cron::on-tick`, `harness::hook::on-pre-generate`, …).
     pub function_id: String,
+    /// The function the observer runs; inspect it with `engine::functions::info`.
+    pub target: String,
+    /// The worker that created the observer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_name: Option<String>,
-    /// The binding's configuration (cron expression, hook filters, …).
-    pub config: Value,
+    /// The observer's args (cron expression, route, hook priority, …).
+    pub args: Value,
+    /// The observer's filters.
+    pub filters: Value,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -471,11 +477,11 @@ pub struct InstallableWorker {
     /// Compact candidates only. If the remaining task needs these functions,
     /// reuse their IDs and fetch the required contracts through `engine::functions::info`.
     pub functions: Vec<FunctionCandidate>,
-    /// The `compose::add` target and payload; agent-trigger callers add `description`.
+    /// The `compose::add` target and payload; agent-call callers add `description`.
     pub install: InstallCall,
 }
 
-/// A ready-made `compose::add` target and payload. Under agent-trigger exposure,
+/// A ready-made `compose::add` target and payload. Under agent-call exposure,
 /// the caller still supplies the wrapper's user-facing `description`.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct InstallCall {
@@ -504,10 +510,10 @@ pub struct SearchFunctionsResponse {
     /// `directory::skills::get { id }` before acting on it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillCandidate>,
-    /// Registered trigger bindings matching the capabilities: what already
-    /// fires, schedules, or hooks a function for them.
+    /// Observers matching the capabilities: what already runs a function on
+    /// their events, schedules, or hooks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub triggers: Vec<TriggerCandidate>,
+    pub observers: Vec<ObserverCandidate>,
     /// The search mode that actually produced these results: `judge`, `hybrid`
     /// or `lexical`. It can be lower than the configured mode when a batch
     /// fell back (judge worker absent or failing, or no local model).
@@ -1373,7 +1379,7 @@ pub async fn search_functions(
         }
         (selected, installable, effective_mode)
     };
-    // Skills and triggers are ranked by the same mode as the functions:
+    // Skills and observers are ranked by the same mode as the functions:
     // the judge worker judges each capability's local shortlist, and
     // lexical/hybrid (also the judge's fallback) rank them with BM25 fused
     // with the dense lane in hybrid. Both share the judge deadline.
@@ -1389,24 +1395,24 @@ pub async fn search_functions(
         )
         .await
     };
-    let trigger_search = async {
-        let docs = registered_trigger_docs(deps).await;
+    let observer_search = async {
+        let docs = observer_docs_listed(deps).await;
         side_lane(
             deps,
             &cfg,
             &request.capabilities,
             judge,
             docs,
-            JudgeCorpus::Triggers,
+            JudgeCorpus::Observers,
         )
         .await
     };
     let (
         (mut selected, installable, search_mode),
         (skills, skills_judged),
-        (triggers, triggers_judged),
-    ) = tokio::join!(function_search, skill_search, trigger_search);
-    let search_mode = if skills_judged || triggers_judged {
+        (observers, observers_judged),
+    ) = tokio::join!(function_search, skill_search, observer_search);
+    let search_mode = if skills_judged || observers_judged {
         FunctionSearchMode::Judge
     } else {
         search_mode
@@ -1483,10 +1489,10 @@ unchanged — reuse the earlier result): {}.",
     } else {
         format!("{guidance} {SEARCH_SKILLS_NOTE}")
     };
-    let guidance = if triggers.is_empty() {
+    let guidance = if observers.is_empty() {
         guidance
     } else {
-        format!("{guidance} {SEARCH_TRIGGERS_NOTE}")
+        format!("{guidance} {SEARCH_OBSERVERS_NOTE}")
     };
     let guidance = if dropped.is_empty() {
         guidance
@@ -1503,7 +1509,7 @@ search again for: {}.",
         workers,
         installable,
         skills,
-        triggers,
+        observers,
         search_mode,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
@@ -1682,17 +1688,17 @@ fn rank_locally(
     round_robin_rankings(&rankings, SIDE_LANE_DOCS)
 }
 
-/// The registered trigger bindings a search may surface, as the ranking
-/// carrier (`name` = trigger id, `description` = `type trigger runs function
-/// configured by <config keys>`) plus the response row. Ephemeral console
-/// listeners are skipped.
-async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandidate)> {
+/// The observers a search may surface, as the ranking carrier (`name` =
+/// observer id, `description` = `function observer runs target with args
+/// <arg keys> filtered by <filter keys>`) plus the response row. Ephemeral
+/// console observers are skipped.
+async fn observer_docs_listed(deps: &Deps) -> Vec<(ToolSchema, ObserverCandidate)> {
     let Some(iii) = deps.iii.as_ref() else {
         return Vec::new();
     };
     let listed = match iii
-        .trigger(TriggerRequest {
-            function_id: "engine::registered-triggers::list".into(),
+        .call(CallRequest {
+            function_id: "engine::observers::list".into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(CATALOG_TIMEOUT_MS),
@@ -1701,37 +1707,44 @@ async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandida
     {
         Ok(listed) => listed,
         Err(error) => {
-            tracing::warn!(%error, "registered-triggers list failed; omitting the triggers section");
+            tracing::warn!(%error, "observers list failed; omitting the observers section");
             return Vec::new();
         }
     };
-    trigger_docs(&listed)
+    observer_docs(&listed)
 }
 
-/// `registered_triggers[]` rows as side-lane documents plus response rows;
-/// malformed rows and ephemeral console bindings are skipped. The document
-/// names the config KEYS only: values (webhook URLs, headers, tokens) stay
-/// in the local response row and never reach the remote ranker.
-fn trigger_docs(listed: &Value) -> Vec<(ToolSchema, TriggerCandidate)> {
+/// `observers[]` rows as side-lane documents plus response rows; malformed
+/// rows and ephemeral console observers are skipped. The document names the
+/// arg and filter KEYS only: values (webhook URLs, headers, tokens, session
+/// ids) stay in the local response row and never reach the remote ranker.
+fn observer_docs(listed: &Value) -> Vec<(ToolSchema, ObserverCandidate)> {
+    fn sorted_keys(value: &Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .map(|object| object.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        keys
+    }
     listed
-        .get("registered_triggers")
+        .get("observers")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(trigger_candidate)
+        .filter_map(observer_candidate)
         .map(|candidate| {
-            let mut keys: Vec<&str> = candidate
-                .config
-                .as_object()
-                .map(|config| config.keys().map(String::as_str).collect())
-                .unwrap_or_default();
-            keys.sort_unstable();
             let mut document = format!(
-                "{} trigger runs {}",
-                candidate.trigger_type, candidate.function_id
+                "{} observer runs {}",
+                candidate.function_id, candidate.target
             );
-            if !keys.is_empty() {
-                document = format!("{document} configured by {}", keys.join(", "));
+            let args = sorted_keys(&candidate.args);
+            if !args.is_empty() {
+                document = format!("{document} with args {}", args.join(", "));
+            }
+            let filters = sorted_keys(&candidate.filters);
+            if !filters.is_empty() {
+                document = format!("{document} filtered by {}", filters.join(", "));
             }
             let document = truncate_bytes(&document, SIDE_LANE_DOC_BYTES);
             (
@@ -1746,26 +1759,34 @@ fn trigger_docs(listed: &Value) -> Vec<(ToolSchema, TriggerCandidate)> {
         .collect()
 }
 
-/// One `registered_triggers[]` row as a candidate; `None` for malformed rows
-/// and for ephemeral console bindings.
-fn trigger_candidate(row: &Value) -> Option<TriggerCandidate> {
+/// One `observers[]` row as a candidate; `None` for malformed rows and for
+/// ephemeral console observers.
+fn observer_candidate(row: &Value) -> Option<ObserverCandidate> {
     let id = row.get("id")?.as_str()?.to_string();
-    let trigger_type = row.get("trigger_type")?.as_str()?.to_string();
     let function_id = row.get("function_id")?.as_str()?.to_string();
-    if trigger_type.starts_with(EPHEMERAL_TRIGGER_TYPE_PREFIX)
-        || function_id.starts_with(EPHEMERAL_TRIGGER_FUNCTION_PREFIX)
+    let target = row.get("target")?.get("function_id")?.as_str()?.to_string();
+    if function_id.starts_with(EPHEMERAL_OBSERVED_FUNCTION_PREFIX)
+        || target.starts_with(EPHEMERAL_OBSERVER_TARGET_PREFIX)
     {
         return None;
     }
-    Some(TriggerCandidate {
+    let object_or_empty = |key: &str| {
+        row.get(key)
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+    };
+    Some(ObserverCandidate {
         id,
-        trigger_type,
         function_id,
+        target,
         worker_name: row
-            .get("worker_name")
+            .get("worker")
+            .and_then(|worker| worker.get("worker_name"))
             .and_then(Value::as_str)
             .map(str::to_string),
-        config: row.get("config").cloned().unwrap_or_else(|| json!({})),
+        args: object_or_empty("args"),
+        filters: object_or_empty("filters"),
     })
 }
 
@@ -2202,6 +2223,11 @@ fn catalog_from_entries(ids: &[String], entries: &HashMap<String, Value>) -> Vec
             {
                 return None;
             }
+            // A private function (an event source) answers only its own
+            // worker's calls: observable, never callable by an agent.
+            if entry.get("private").and_then(Value::as_bool) == Some(true) {
+                return None;
+            }
             Some(ToolSchema {
                 name: id.clone(),
                 description: entry
@@ -2222,7 +2248,7 @@ fn catalog_from_entries(ids: &[String], entries: &HashMap<String, Value>) -> Vec
 
 pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
     let list = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::list".into(),
             payload: json!({}),
             action: None,
@@ -2239,7 +2265,7 @@ pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
         let iii = iii.clone();
         let chunk: Vec<String> = chunk.to_vec();
         batches.spawn(async move {
-            iii.trigger(TriggerRequest {
+            iii.call(CallRequest {
                 function_id: "engine::functions::info".into(),
                 payload: json!({ "function_ids": chunk }),
                 action: None,
@@ -2310,25 +2336,19 @@ pub async fn refresh_catalog(
     }
 }
 
-/// Always-on trigger bindings: the engine's functions-available push keeps
-/// the catalog fresh. The pre-generate hint binding is NOT here — it
-/// follows the `inject_hint` config knob (crate::hook::apply).
-pub fn required_bindings() -> Vec<(&'static str, &'static str, Value)> {
-    vec![(
-        "engine::functions-available",
-        "directory::on-functions-change",
-        json!({}),
-    )]
-}
+/// The engine's function-set changes.
+const FUNCTIONS_ON_CHANGED_FN: &str = "engine::on-functions-changed";
 
-pub fn bind_best_effort(iii: &IIIClient) {
-    for (trigger_type, function_id, config) in required_bindings() {
-        if let Err(error) =
-            iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config))
-        {
-            tracing::warn!(%trigger_type, %function_id, %error, "trigger binding failed");
-        }
-    }
+/// The always-on observer: `engine::on-functions-changed` keeps the catalog
+/// fresh through `directory::on-functions-change`. The pre-generate hint
+/// observer is NOT here — it follows the `inject_hint` config knob
+/// (crate::hook::apply). The observer lives as long as the worker's
+/// connection.
+pub fn observe_catalog_changes(iii: &IIIClient) {
+    iii.observe(
+        Source::function(FUNCTIONS_ON_CHANGED_FN).deliver(Deliver::Output),
+        "directory::on-functions-change",
+    );
 }
 
 /// Register the public search function, the internal catalog listener, and
@@ -2416,34 +2436,43 @@ mod tests {
     }
 
     #[test]
-    fn trigger_candidate_skips_console_plumbing_and_keeps_bindings() {
+    fn observer_candidate_skips_console_plumbing_and_keeps_observers() {
         let cron = json!({
-            "id": "t-1", "trigger_type": "cron", "function_id": "harness::sweep-pending",
-            "worker_name": "harness", "config": {"expression": "0 0 0 * * *"}, "status": "active"
+            "id": "o-1", "function_id": "cron::on-tick", "namespace": "default",
+            "args": { "expression": "0 0 0 * * *" }, "filters": {},
+            "target": { "function_id": "harness::sweep-pending", "namespace": "default" },
+            "worker": { "worker_id": "w-1", "worker_name": "harness" }, "state": "active"
         });
-        let candidate = trigger_candidate(&cron).unwrap();
-        assert_eq!(candidate.function_id, "harness::sweep-pending");
+        let candidate = observer_candidate(&cron).unwrap();
+        assert_eq!(candidate.function_id, "cron::on-tick");
+        assert_eq!(candidate.target, "harness::sweep-pending");
         assert_eq!(candidate.worker_name.as_deref(), Some("harness"));
-        assert_eq!(candidate.config["expression"], "0 0 0 * * *");
-        for (trigger_type, function_id) in [
-            ("console:style", "state::ui-content"),
-            ("trace", "iii::console::trace_activity::console-1"),
+        assert_eq!(candidate.args["expression"], "0 0 0 * * *");
+        for (function_id, target) in [
+            ("console::ui::asset", "state::ui-content"),
+            (
+                "observability::on-span",
+                "iii::console::trace_activity::console-1",
+            ),
         ] {
-            let row =
-                json!({ "id": "t", "trigger_type": trigger_type, "function_id": function_id });
-            assert!(
-                trigger_candidate(&row).is_none(),
-                "{trigger_type} {function_id}"
-            );
+            let row = json!({
+                "id": "o", "function_id": function_id, "target": { "function_id": target }
+            });
+            assert!(observer_candidate(&row).is_none(), "{function_id} {target}");
         }
-        assert!(trigger_candidate(&json!({ "id": "t" })).is_none());
-        let docs = trigger_docs(&json!({ "registered_triggers": [
+        assert!(observer_candidate(&json!({ "id": "o" })).is_none());
+        let docs = observer_docs(&json!({ "observers": [
             cron,
-            { "id": "t", "trigger_type": "console:style", "function_id": "state::ui-content" },
-            { "id": "t" },
-            { "id": "t-2", "trigger_type": "http", "function_id": "hooks::deliver",
-              "config": { "url": "https://x.test/?token=s3cr3t", "headers": { "authorization": "Bearer s3cr3t" } } },
-            { "id": "t-3", "trigger_type": "configuration", "function_id": "directory::on-config-change" },
+            { "id": "o", "function_id": "console::ui::asset",
+              "args": { "kind": "style", "path": "state/page.css" },
+              "target": { "function_id": "state::ui-content" } },
+            { "id": "o" },
+            { "id": "o-2", "function_id": "http::on-request",
+              "args": { "method": "POST", "path": "/hooks/deliver?token=s3cr3t" },
+              "target": { "function_id": "hooks::deliver" } },
+            { "id": "o-3", "function_id": "configuration::on-updated",
+              "filters": { "input.id": { "$eq": "iii-directory" } },
+              "target": { "function_id": "directory::on-config-change" } },
         ] }));
         let described: Vec<(&str, &str)> = docs
             .iter()
@@ -2453,25 +2482,23 @@ mod tests {
             described,
             [
                 (
-                    "t-1",
-                    "cron trigger runs harness::sweep-pending configured by expression"
+                    "o-1",
+                    "cron::on-tick observer runs harness::sweep-pending with args expression"
                 ),
                 (
-                    "t-2",
-                    "http trigger runs hooks::deliver configured by headers, url"
+                    "o-2",
+                    "http::on-request observer runs hooks::deliver with args method, path"
                 ),
                 (
-                    "t-3",
-                    "configuration trigger runs directory::on-config-change"
+                    "o-3",
+                    "configuration::on-updated observer runs directory::on-config-change \
+                     filtered by input.id"
                 ),
             ]
         );
         // Values stay in the response row only.
-        assert_eq!(
-            docs[1].1.config["headers"]["authorization"],
-            "Bearer s3cr3t"
-        );
-        assert!(trigger_docs(&json!({})).is_empty());
+        assert_eq!(docs[1].1.args["path"], "/hooks/deliver?token=s3cr3t");
+        assert!(observer_docs(&json!({})).is_empty());
     }
 
     #[test]
@@ -2538,7 +2565,7 @@ mod tests {
         assert!(excluded_from_search(SEARCH_FN));
         assert!(excluded_from_search("engine::functions::list"));
         assert!(excluded_from_search("engine::workers::register"));
-        assert!(excluded_from_search("engine::registered-triggers::list"));
+        assert!(excluded_from_search("engine::observers::list"));
         // Capabilities of workers bundled with the engine stay searchable.
         assert!(!excluded_from_search("engine::traces::list"));
         assert!(!excluded_from_search("engine::logs::list"));
@@ -2640,7 +2667,7 @@ mod tests {
     #[tokio::test]
     async fn local_rank_documents_ranks_relevant_docs_and_drops_the_tail() {
         // Default SemanticSearch is not production MiniLM, so this exercises
-        // the pure BM25 (lexical) path used by the skills/triggers side lanes.
+        // the pure BM25 (lexical) path used by the skills/observers side lanes.
         let deps = search_deps(Vec::new());
         let documents = vec![
             ToolSchema {
@@ -3248,9 +3275,7 @@ mod tests {
         assert!(response
             .guidance
             .contains("Keep user-facing text in the session's response language"));
-        assert!(!response
-            .guidance
-            .contains("Register a one-shot compose-operation wake"));
+        assert!(!response.guidance.contains("Arm a one-shot operation wake"));
     }
 
     #[tokio::test]
@@ -3308,7 +3333,7 @@ mod tests {
         assert_eq!(
             first
                 .guidance
-                .matches("Register a one-shot compose-operation wake")
+                .matches("Arm a one-shot operation wake")
                 .count(),
             1
         );
@@ -3421,7 +3446,7 @@ mod tests {
             .expect("mixed guidance checks the install contract");
         let wake = response
             .guidance
-            .find("Register a one-shot compose-operation wake")
+            .find("Arm a one-shot operation wake")
             .expect("mixed guidance registers the completion wake before installing");
         let ready_wait = response
             .guidance
@@ -3463,12 +3488,7 @@ mod tests {
             assert!(guidance
                 .contains("If that package or requested version is absent, report it and stop"));
             assert!(guidance.contains("Keep user-facing text in the session's response language"));
-            assert_eq!(
-                guidance
-                    .matches("Register a one-shot compose-operation wake")
-                    .count(),
-                1
-            );
+            assert_eq!(guidance.matches("Arm a one-shot operation wake").count(), 1);
             assert!(!guidance.contains("compose::schema"));
             let contracts_start = guidance
                 .find("engine::functions::info {")
@@ -3498,14 +3518,12 @@ mod tests {
             let approval = guidance
                 .find("if approval is still needed, wait for explicit confirmation before compose::add")
                 .expect("installation honors any outstanding approval requirement");
-            let registration = guidance
-                .find("Register a one-shot compose-operation wake")
-                .unwrap();
+            let registration = guidance.find("Arm a one-shot operation wake").unwrap();
             assert!(approval < registration);
             let payload_start = guidance
-                .find("engine::register_trigger ")
+                .find("harness::observe ")
                 .expect("installation supplies the exact wake call")
-                + "engine::register_trigger ".len();
+                + "harness::observe ".len();
             let wake_payload = serde_json::Deserializer::from_str(&guidance[payload_start..])
                 .into_iter::<Value>()
                 .next()
@@ -3514,8 +3532,11 @@ mod tests {
             assert_eq!(
                 wake_payload,
                 json!({
-                    "trigger_type": "compose-operation",
-                    "config": { "operation_id": "<operation-id>", "terminal_only": true },
+                    "function_id": "compose::on-operation-progress",
+                    "filters": {
+                        "input.operation_id": { "$eq": "<operation-id>" },
+                        "input.terminal": { "$eq": true }
+                    },
                     "once": true
                 })
             );
@@ -3790,11 +3811,17 @@ mod tests {
     }
 
     #[test]
-    fn catalog_entries_skip_errors_internals_and_missing_but_keep_order() {
-        let ids: Vec<String> = ["state::set", "gone::fn", "email::send", "hooks::internal"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+    fn catalog_entries_skip_errors_internals_privates_and_missing_but_keep_order() {
+        let ids: Vec<String> = [
+            "state::set",
+            "gone::fn",
+            "email::send",
+            "hooks::internal",
+            "state::on-changed",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         let mut entries = HashMap::new();
         let mut batch_pool = HashMap::new();
         pool_info_entries(
@@ -3805,6 +3832,8 @@ mod tests {
                 { "function_id": "gone::fn", "error": "not_found" },
                 { "function_id": "hooks::internal", "description": "internal",
                   "metadata": { "internal": true } },
+                { "function_id": "state::on-changed", "description": "an event source",
+                  "private": true },
                 { "description": "no id, skipped" },
             ]}),
             &mut batch_pool,
@@ -3812,7 +3841,7 @@ mod tests {
         entries.extend(batch_pool);
         let catalog = catalog_from_entries(&ids, &entries);
         let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
-        // Listed order, minus the errored, internal, and id-less entries.
+        // Listed order, minus the errored, internal, private and id-less entries.
         assert_eq!(names, ["state::set", "email::send"]);
         assert_eq!(catalog[1].parameters, json!({ "type": "object" }));
         // A schema-less entry falls back to the open object schema.
@@ -4065,13 +4094,13 @@ mod tests {
             functions_generation: generation,
             expose,
         };
-        assert!(registry.hint_decision("s", record("t1", 7, 3, ExposeKind::AgentTrigger)));
+        assert!(registry.hint_decision("s", record("t1", 7, 3, ExposeKind::AgentCall)));
         // Same-step replay re-sends.
-        assert!(registry.hint_decision("s", record("t1", 7, 3, ExposeKind::AgentTrigger)));
+        assert!(registry.hint_decision("s", record("t1", 7, 3, ExposeKind::AgentCall)));
         // A later step stays silent.
-        assert!(!registry.hint_decision("s", record("t1", 8, 3, ExposeKind::AgentTrigger)));
+        assert!(!registry.hint_decision("s", record("t1", 8, 3, ExposeKind::AgentCall)));
         // Generation and exposure changes within the turn do not re-arm.
-        assert!(!registry.hint_decision("s", record("t1", 9, 4, ExposeKind::AgentTrigger)));
+        assert!(!registry.hint_decision("s", record("t1", 9, 4, ExposeKind::AgentCall)));
         assert!(!registry.hint_decision("s", record("t1", 10, 4, ExposeKind::Native)));
         // The hint record survives a catalog fingerprint change (dedupe
         // state resets, hint-once does not).

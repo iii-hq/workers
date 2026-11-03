@@ -64,29 +64,36 @@ re-check with it. Remote and sandbox sessions no longer return a tree:
 plumbing (flagged internal, denied in `iii-permissions.yaml`). Agents use
 `screenshot`.
 
-## Trigger types
+## Observable functions
 
-| Trigger type | Fires when | Payload |
+Each is private (only this worker calls it) and its handler returns the
+event: observers observe that event. A function nobody observes is never
+called.
+
+| Function | Called when | Event |
 |---|---|---|
-| `computer::session-started` | A session connected and probed | `session_id`, `endpoint`, `os`, `screen`, `timestamp` |
-| `computer::session-stopped` | A session ended | `session_id`, `reason` (`stopped` \| `idle`), `timestamp` |
-| `computer::activity` | A `computer::act` call reached a session, or a `computer::run` started on it | `session_id`, `function`, `timestamp` |
+| `computer::on-session-started` | A session connected and probed | `session_id`, `endpoint`, `os`, `screen`, `timestamp` |
+| `computer::on-session-stopped` | A session ended | `session_id`, `reason` (`stopped` \| `idle`), `timestamp` |
+| `computer::on-activity` | A `computer::act` call reached a session, or a `computer::run` started on it | `session_id`, `function`, `timestamp` |
 
-All accept an optional `{ "session_id": "..." }` equality filter. Bind them
-instead of polling `sessions::list`.
+None takes args; select a session with a filter on `input.session_id`
+(`{ "input.session_id": { "$eq": "c1" } }`). Observe them instead of polling
+`sessions::list`.
 
-| Trigger type | Fires when | Payload |
+| Function | Called when | Event |
 |---|---|---|
-| `computer::frame-changed` | The stored newest frame of a session changed: `change` is `updated` (new frame) or `cleared` (screencast/session stopped, capture failed) | `session_id`, `epoch`, `frame_seq`, `change`, `width`, `height`, `mime?`, `bytes?`, `timestamp` |
+| `computer::on-frame-changed` | The stored newest frame of a session changed: `change` is `updated` (new frame) or `cleared` (screencast/session stopped, capture failed) | `session_id`, `epoch`, `frame_seq`, `change`, `width`, `height`, `mime?`, `bytes?`, `timestamp` |
 
-Config `{ "session_id": "..." }` is required; unknown keys are rejected; at most
-64 live bindings. The payload carries no image: read it with `computer::frame`
-(`since_frame` = the `frame_seq` you already have). Order by `(epoch,
-frame_seq)`. Delivery is latest-state only: while a delivery to a binding is in
-flight, newer notifications replace the pending one, so a slow consumer sees
-fewer notifications, never a backlog. Nothing is stored or replayed: bind
-first, then read `computer::frame` for the current frame, and read again after
-a reconnect.
+Args `{ "session_id": "..." }` are required; unknown keys are rejected
+(`INVALID_ARGS`); at most 64 observers (`OBSERVER_LIMIT`). The worker delivers
+each change itself, to the observers of its session whose filters match, and
+its target receives the notification as is. The notification carries no
+image: read it with `computer::frame` (`since_frame` = the `frame_seq` you
+already have). Order by `(epoch, frame_seq)`. Delivery is latest-state only:
+while a call through an observer is in flight, newer notifications replace the
+pending one, so a slow consumer sees fewer notifications, never a backlog.
+Nothing is stored or replayed: observe first, then read `computer::frame` for
+the current frame, and read again after a reconnect.
 
 ## The guardrail split (read this before wiring an agent)
 
@@ -106,7 +113,7 @@ the hub's default; a desktop tree is large, so pin a judge that holds one.
 A raw `act` does what it is told, on a real machine. `computer::run` acts
 in-process, so approving one run approves every accessibility action it
 takes; there is no per-step gate. Anything that should ask a
-human first belongs in an approval-gate `pre-trigger` hook or a dispatch
+human first belongs in an approval-gate `harness::hook::on-pre-call` observer or a dispatch
 allow-list, where the human-facing surface (the console renders every capture
 inline) already is.
 

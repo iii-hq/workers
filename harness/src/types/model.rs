@@ -90,7 +90,7 @@ pub struct ProviderDefaults {
 }
 
 /// Function invocation schema — one provider `tools` array entry. The
-/// harness attaches the single `agent_trigger` entry by default, or one
+/// harness attaches the single `agent_call` entry by default, or one
 /// per allowed function in native exposure mode, plus the synthetic
 /// `submit_result` entry for an output contract using the fallback strategy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

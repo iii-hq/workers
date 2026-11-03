@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 
-const DESCRIPTION: &str = "Object storage across AWS S3, GCS, Cloudflare R2, and a native local filesystem backend. Streamed uploads, signed URLs, and object change triggers.";
+const DESCRIPTION: &str = "Object storage across AWS S3, GCS, Cloudflare R2, and a native local filesystem backend. Streamed uploads, signed URLs, and observable object change events.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

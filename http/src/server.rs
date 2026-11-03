@@ -5,9 +5,9 @@
 //! Ported from the in-engine `iii-http` `RestApiWorker` (`api_core.rs`):
 //! `build_cors_layer`, the `TimeoutLayer` / `ConcurrencyLimitLayer` stack and
 //! the `axum::serve` + `with_graceful_shutdown` task. Routes are dynamic: every
-//! request hits `dynamic_handler`, which matches routes from the shared
-//! [`RouteTable`] at request time, so adding or removing routes needs no router
-//! rebuild.
+//! request hits `dynamic_handler`, which calls `http::on-request`, whose
+//! deliver hook matches routes from the shared [`RouteTable`] at request time,
+//! so adding or removing routes needs no router rebuild.
 //!
 //! ## Hot-swappable layers (Phase A)
 //!
@@ -60,7 +60,8 @@ use tower_http::{
 use crate::config::RestApiConfig;
 use crate::configuration::ConfigCell;
 use crate::handler::{self, AppState};
-use crate::trigger::RouteTable;
+use crate::inflight::InFlightRequests;
+use crate::routes::RouteTable;
 
 /// Sentinel meaning "any origin" in CORS config.
 const ALLOW_ORIGIN_ANY: &str = "*";
@@ -206,8 +207,12 @@ impl Service<Request<Body>> for HotRouter {
         let router_arc = self.inner.clone();
         let state = self.state.clone();
         Box::pin(async move {
-            // Gate BEFORE CORS (which otherwise answers every OPTIONS request)
-            // and again in dynamic_handler (registrations may change meanwhile).
+            // The restricted listener faces the internet: a request no
+            // public route matches is refused here, before CORS (which
+            // answers every OPTIONS request) and before its body is read.
+            // The others reach dynamic_handler, whose call of
+            // `http::on-request` matches them against the public routes
+            // again (routes may change meanwhile).
             if state.public_webhooks_only {
                 let table = state.routes.read().await;
                 if table
@@ -289,6 +294,7 @@ impl<'a> Service<IncomingStream<'a>> for MakeHotRouterService {
 /// so those fields hot-reload too.
 pub async fn serve(
     routes: Arc<RwLock<RouteTable>>,
+    requests: InFlightRequests,
     iii: Arc<IIIClient>,
     config: ConfigCell,
 ) -> anyhow::Result<ServerHandle> {
@@ -309,6 +315,7 @@ pub async fn serve(
         inner: router.clone(),
         state: Arc::new(AppState {
             routes: routes.clone(),
+            requests: requests.clone(),
             iii: iii.clone(),
             config: config.clone(),
             public_webhooks_only: true,
@@ -321,6 +328,7 @@ pub async fn serve(
         inner: router.clone(),
         state: Arc::new(AppState {
             routes,
+            requests,
             iii,
             config,
             public_webhooks_only: false,

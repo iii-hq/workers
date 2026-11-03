@@ -195,7 +195,7 @@ export const Launcher = forwardRef<LauncherHandle, LauncherProps>(
             }
             detail={
               imagesError
-                ? "No sandbox adapter is serving sandbox::*. Run `iii trigger compose::add worker=iii-sandbox`, then add a desktop image to sandbox-libkrun's custom_images; the computer worker's README has the snippet."
+                ? "No sandbox adapter is serving sandbox::*. Run `iii call compose::add worker=iii-sandbox`, then add a desktop image to sandbox-libkrun's custom_images; the computer worker's README has the snippet."
                 : "iii-sandbox lists no desktop image. Add one to sandbox-libkrun's custom_images, such as ghcr.io/trycua/linux:24.04-slim-20261013-36bc520."
             }
           />

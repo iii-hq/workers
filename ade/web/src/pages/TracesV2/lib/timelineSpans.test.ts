@@ -40,7 +40,7 @@ describe('isTraceLive', () => {
     expect(isTraceLive(row(), liveness({}, 100_040))).toBe(false)
   })
 
-  it('is not live for the root close echoing back through the trigger', () => {
+  it('is not live for the root close echoing back through the span source', () => {
     const echo = 100_040 + TRACE_ACTIVITY_ECHO_MS - 1
     expect(isTraceLive(row(), liveness({ 't-1': echo }, echo + 100))).toBe(
       false,

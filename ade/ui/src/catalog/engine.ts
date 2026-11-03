@@ -1,11 +1,13 @@
 /**
- * The engine catalogue calls behind the Functions and Triggers pages, plus
+ * The engine catalogue calls behind the Functions and Observers pages, plus
  * the narrow runtime guards that keep an unexpected wire shape from
  * reaching React as `undefined.map`.
  *
- * Wire source: `iii/engine/src/workers/engine_fn/mod.rs`. Everything here is
- * read-only except `invoke`, which is a plain function call over the tab's
- * bus (`host.iii.trigger`) — the same privilege any worker on the bus has.
+ * Wire source: `iii/engine/src/workers/engine_fn/mod.rs` and
+ * `iii/engine/src/observer/builtins.rs`. Everything here is read-only
+ * except `invoke`, a plain function call over the tab's bus
+ * (`host.iii.call`) — the same privilege any worker on the bus has — and
+ * `disposeObserver`.
  *
  * Parsing is deliberately permissive: unknown fields pass through, absent
  * optionals stay absent, and only the fields the pages actually render are
@@ -21,47 +23,53 @@ export interface FunctionSummary {
   function_id: string
   worker_name: string
   description?: string | null
-}
-
-/** Inline trigger payload on `FunctionDetail` — raw `config`, not a summary. */
-export interface RegisteredTriggerRef {
-  id: string
-  trigger_type: string
-  config?: unknown
+  /** JSON Schema of the args its observers pass; absent when it takes none. */
+  args_format?: unknown
+  /** Only the worker that hosts it calls it: an event source. */
+  private?: boolean
+  /** `false` when nobody may observe it. */
+  observable?: boolean
+  /** Live observers of it, in any state but `disposed`. */
+  observer_count?: number
 }
 
 export interface FunctionDetail extends FunctionSummary {
   request_schema?: unknown
   response_schema?: unknown
   metadata?: unknown
-  registered_triggers: RegisteredTriggerRef[]
 }
 
-/** A trigger TYPE (the catalogue entry a worker publishes). */
-export interface TriggerTypeSummary {
+/** An event source: a function its worker calls with the event (private), or one that takes args. */
+export function isEventSource(fn: FunctionSummary): boolean {
+  return fn.private === true || fn.args_format !== undefined
+}
+
+/** One observer, as `engine::observers::list` / `get` report it. */
+export interface ObserverInfo {
   id: string
-  worker_name: string
-  description?: string | null
-}
-
-export interface TriggerTypeDetail extends TriggerTypeSummary {
-  /** Live bindings of this type. */
-  instance_count?: number
-  /** Per-binding `config` shape accepted by `engine::register_trigger`. */
-  configuration_schema?: unknown
-  /** Payload shape delivered to the bound function when the trigger fires. */
-  request_schema?: unknown
-}
-
-/** A live binding of a trigger type to a function. */
-export interface RegisteredTrigger {
-  id: string
-  trigger_type: string
+  /** The observed function. */
   function_id: string
-  worker_name: string
-  /** The engine sends both the raw object and a stringified summary. */
-  config?: unknown
-  config_summary?: string
+  namespace: string
+  /** Read by the observed function's worker (a route, a schedule, a topic). */
+  args: Record<string, unknown>
+  /** Which calls reach the target, normalized. */
+  filters: Record<string, unknown>
+  target: { function_id: string; namespace: string }
+  capture: string[]
+  on: string
+  deliver: string
+  /** The worker that created the observer. */
+  worker: { worker_id: string; worker_name?: string }
+  state: string
+  reason?: { code: string; message: string }
+  fires: number
+  /** Activations dropped, by reason. */
+  dropped: Record<string, number>
+  activation_failures: Record<string, number>
+  max_fires?: number
+  expires_in_ms?: number
+  max_in_flight?: number
+  created_at_ms?: number
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -70,6 +78,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+function num(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function counts(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {}
+  const out: Record<string, number> = {}
+  for (const [key, n] of Object.entries(value)) {
+    if (typeof n === 'number') out[key] = n
+  }
+  return out
 }
 
 /** `null` and absent both mean "no description"; anything else is dropped. */
@@ -94,26 +115,67 @@ function functionSummary(row: unknown): FunctionSummary | null {
   if (!isRecord(row)) return null
   const function_id = str(row.function_id)
   if (!function_id) return null
-  return {
+  const summary: FunctionSummary = {
     function_id,
     worker_name: str(row.worker_name) ?? 'unknown',
     description: description(row.description),
   }
+  if (row.args_format !== undefined && row.args_format !== null) {
+    summary.args_format = row.args_format
+  }
+  if (row.private === true) summary.private = true
+  if (row.observable === false) summary.observable = false
+  const observers = num(row.observer_count)
+  if (observers !== undefined) summary.observer_count = observers
+  return summary
 }
 
-function triggerRef(row: unknown): RegisteredTriggerRef | null {
+export function observerInfo(row: unknown): ObserverInfo | null {
   if (!isRecord(row)) return null
   const id = str(row.id)
-  const trigger_type = str(row.trigger_type)
-  if (!id || !trigger_type) return null
-  return { id, trigger_type, config: row.config }
+  const function_id = str(row.function_id)
+  if (!id || !function_id) return null
+  const target = isRecord(row.target) ? row.target : {}
+  const worker = isRecord(row.worker) ? row.worker : {}
+  const reason = isRecord(row.reason) ? row.reason : undefined
+  return {
+    id,
+    function_id,
+    namespace: str(row.namespace) ?? 'default',
+    args: isRecord(row.args) ? row.args : {},
+    filters: isRecord(row.filters) ? row.filters : {},
+    target: {
+      function_id: str(target.function_id) ?? '',
+      namespace: str(target.namespace) ?? 'default',
+    },
+    capture: Array.isArray(row.capture)
+      ? row.capture.filter((c): c is string => typeof c === 'string')
+      : [],
+    on: str(row.on) ?? 'success',
+    deliver: str(row.deliver) ?? 'envelope',
+    worker: {
+      worker_id: str(worker.worker_id) ?? '',
+      worker_name: str(worker.worker_name),
+    },
+    state: str(row.state) ?? 'pending',
+    reason: reason
+      ? { code: str(reason.code) ?? '', message: str(reason.message) ?? '' }
+      : undefined,
+    fires: num(row.fires) ?? 0,
+    dropped: counts(row.dropped),
+    activation_failures: counts(row.activation_failures),
+    max_fires: num(row.max_fires),
+    expires_in_ms: num(row.expires_in_ms),
+    max_in_flight: num(row.max_in_flight),
+    created_at_ms: num(row.created_at_ms),
+  }
 }
 
 export async function listFunctions(
   host: Host,
   options: { includeInternal: boolean },
 ): Promise<FunctionSummary[]> {
-  const out = await host.iii.trigger('engine::functions::list', {
+  const out = await host.iii.call('engine::functions::list', {
     include_internal: options.includeInternal,
   })
   return rows(out, 'functions')
@@ -125,7 +187,7 @@ export async function functionInfo(
   host: Host,
   functionId: string,
 ): Promise<FunctionDetail> {
-  const out = await host.iii.trigger('engine::functions::info', {
+  const out = await host.iii.call('engine::functions::info', {
     function_id: functionId,
   })
   const base = functionSummary(out)
@@ -136,9 +198,6 @@ export async function functionInfo(
     request_schema: detail.request_schema,
     response_schema: detail.response_schema,
     metadata: detail.metadata,
-    registered_triggers: rows(out, 'registered_triggers')
-      .map(triggerRef)
-      .filter((t): t is RegisteredTriggerRef => t !== null),
   }
 }
 
@@ -150,7 +209,7 @@ export interface WorkerMeta {
 }
 
 export async function listWorkers(host: Host): Promise<WorkerMeta[]> {
-  const out = await host.iii.trigger('engine::workers::list', {})
+  const out = await host.iii.call('engine::workers::list', {})
   return rows(out, 'workers')
     .map((row): WorkerMeta | null => {
       if (!isRecord(row)) return null
@@ -161,68 +220,31 @@ export async function listWorkers(host: Host): Promise<WorkerMeta[]> {
     .filter((w): w is WorkerMeta => w !== null)
 }
 
-export async function listTriggerTypes(
+/** Every observer, or those of one observed function or one observing worker. */
+export async function listObservers(
   host: Host,
-  options: { includeInternal: boolean },
-): Promise<TriggerTypeSummary[]> {
-  const out = await host.iii.trigger('engine::triggers::list', {
-    include_internal: options.includeInternal,
-  })
-  return rows(out, 'triggers')
-    .map((row): TriggerTypeSummary | null => {
-      if (!isRecord(row)) return null
-      const id = str(row.id)
-      if (!id) return null
-      return {
-        id,
-        worker_name: str(row.worker_name) ?? 'unknown',
-        description: description(row.description),
-      }
-    })
-    .filter((t): t is TriggerTypeSummary => t !== null)
+  filter: { function_id?: string; worker?: string } = {},
+): Promise<ObserverInfo[]> {
+  const out = await host.iii.call('engine::observers::list', filter)
+  return rows(out, 'observers')
+    .map(observerInfo)
+    .filter((o): o is ObserverInfo => o !== null)
 }
 
-export async function triggerTypeInfo(
+export async function getObserver(
   host: Host,
   id: string,
-): Promise<TriggerTypeDetail> {
-  const out = await host.iii.trigger('engine::triggers::info', { id })
-  if (!isRecord(out))
-    throw new Error('engine::triggers::info returned no detail')
-  return {
-    id: str(out.id) ?? id,
-    worker_name: str(out.worker_name) ?? 'unknown',
-    description: description(out.description),
-    instance_count:
-      typeof out.instance_count === 'number' ? out.instance_count : undefined,
-    configuration_schema: out.configuration_schema,
-    request_schema: out.request_schema,
-  }
+): Promise<ObserverInfo> {
+  const out = await host.iii.call('engine::observers::get', { id })
+  const observer = observerInfo(isRecord(out) && isRecord(out.observer) ? out.observer : out)
+  if (!observer) throw new Error('engine::observers::get returned no observer')
+  return observer
 }
 
-export async function listRegisteredTriggers(
-  host: Host,
-  options: { includeInternal: boolean },
-): Promise<RegisteredTrigger[]> {
-  const out = await host.iii.trigger('engine::registered-triggers::list', {
-    include_internal: options.includeInternal,
-  })
-  return rows(out, 'registered_triggers')
-    .map((row): RegisteredTrigger | null => {
-      if (!isRecord(row)) return null
-      const id = str(row.id)
-      const trigger_type = str(row.trigger_type)
-      if (!id || !trigger_type) return null
-      return {
-        id,
-        trigger_type,
-        function_id: str(row.function_id) ?? '',
-        worker_name: str(row.worker_name) ?? 'unknown',
-        config: row.config,
-        config_summary: str(row.config_summary),
-      }
-    })
-    .filter((t): t is RegisteredTrigger => t !== null)
+/** Dispose an observer; resolves `false` when it was already gone. */
+export async function disposeObserver(host: Host, id: string): Promise<boolean> {
+  const out = await host.iii.call('engine::observers::dispose', { id })
+  return isRecord(out) ? out.disposed === true : false
 }
 
 export interface InvokeOutcome {
@@ -240,7 +262,7 @@ export async function invoke(
 ): Promise<InvokeOutcome> {
   const started = performance.now()
   try {
-    const data = await host.iii.trigger(functionId, payload)
+    const data = await host.iii.call(functionId, payload)
     return { ok: true, durationMs: performance.now() - started, data }
   } catch (err) {
     return {
@@ -255,47 +277,51 @@ export async function invoke(
 let hubSeq = 0
 
 /**
- * The engine's own catalogue signals. All are internal trigger types the
- * engine publishes itself, which is why the pages never poll:
+ * The engine's own sources, which is why the pages never poll. Each is a
+ * private function the engine calls with the event:
  *
- * - `engine::functions-available` fires when the function set changes,
- *   carrying the full function list. How it detects that depends on the
- *   engine: newer engines fire ~100ms after a register, re-register
- *   or unregister and fold the burst into that one event; older engines
- *   poll on a 5s tick and compare function ids only, so they lag by up to
- *   5s and miss a re-registration that only changed a schema or description
- * - `engine::workers-available` fires when a worker connects or disconnects
- * - `trace` is a coalesced "spans changed" tick carrying the affected trace
- *   ids; it is a refetch beat, not a span feed, so a live view re-reads
- *   `engine::traces::spans` when it ticks
+ * - `engine::on-functions-changed` is called when the function set changes,
+ *   with the full function list; a burst of registers, re-registers or
+ *   unregisters is folded into one call ~100ms after it
+ * - `engine::on-workers-changed` is called when a worker connects,
+ *   disconnects or updates its metadata
+ * - `engine::on-observers-changed` is called when an observer changes state
+ * - `observability::on-span` is called with a coalesced "spans changed"
+ *   tick carrying the affected trace ids; it is a refetch beat, not a span
+ *   feed, so a live view re-reads `engine::traces::spans` when it arrives
  */
-export type LiveSignal =
-  | 'engine::functions-available'
-  | 'engine::workers-available'
-  | 'trace'
+export type LiveSource =
+  | 'engine::on-functions-changed'
+  | 'engine::on-workers-changed'
+  | 'engine::on-observers-changed'
+  | 'observability::on-span'
+
+/** Engine-hosted sources outside `engine::*` resolve in `default` only when named. */
+function liveSourceNamespace(source: LiveSource): string | undefined {
+  return source.startsWith('engine::') ? undefined : 'default'
+}
 
 /**
- * Subscribe to engine signals for this component's lifetime and call `onTick`
- * when any of them fires, debounced so one change costs one refetch.
+ * Observe engine sources for this component's lifetime and call `onTick`
+ * when any of them is called, debounced so one change costs one refetch.
  *
  * The engine already folds a burst of function changes into one
- * `engine::functions-available` event, but the debounce still earns its
- * keep: one worker connecting raises that event AND
- * `engine::workers-available`, which the engine sends independently; a
- * surface registered over longer than the engine's fold window (or several
- * workers starting together) still arrives as a few events; and `trace`
- * ticks keep coming under load. Each tick would otherwise be a full
- * catalogue re-read.
+ * `engine::on-functions-changed` call, but the debounce still earns its
+ * keep: one worker connecting calls that AND `engine::on-workers-changed`,
+ * which the engine calls independently; a surface registered over longer
+ * than the engine's fold window (or several workers starting together)
+ * still arrives as a few calls; and `observability::on-span` keeps ticking
+ * under load. Each tick would otherwise be a full catalogue re-read.
  *
- * The binding is a per-tab handler under the `iii::` prefix, which keeps the
+ * The target is a per-tab handler under the `iii::` prefix, which keeps the
  * per-event invocations span-suppressed and out of the trace feed — a live
- * view of traces must not feed itself. It is GC'd with the tab like any
- * Message-path trigger. A missing trigger type degrades to the page's manual
- * refresh rather than breaking the page.
+ * view of traces must not feed itself. Its observers are disposed on
+ * unmount and go with the tab. A source nobody hosts leaves its observer
+ * pending, and the page falls back to its manual refresh.
  */
 export function useLiveSignals(
   host: Host,
-  signals: readonly LiveSignal[],
+  sources: readonly LiveSource[],
   onTick: () => void,
   options: { debounceMs?: number } = {},
 ) {
@@ -306,7 +332,7 @@ export function useLiveSignals(
     hubSeq += 1
     return `iii::console-catalog::live-${hubSeq}`
   }, [])
-  const key = signals.join(',')
+  const key = sources.join(',')
 
   useEffect(() => {
     let timer: number | null = null
@@ -319,15 +345,18 @@ export function useLiveSignals(
     }
 
     const offHandler = host.iii.on(handlerId, schedule)
-    const offTriggers = key
-      .split(',')
-      .map((type) => {
+    const target = `${handlerId}::${host.iii.browserId}`
+    const offObservers = (key.split(',') as LiveSource[])
+      .map((source) => {
         try {
-          return host.iii.registerTrigger({
-            type,
-            function_id: `${handlerId}::${host.iii.browserId}`,
-            config: {},
-          })
+          return host.iii.observe(
+            {
+              function_id: source,
+              namespace: liveSourceNamespace(source),
+              deliver: 'output',
+            },
+            target,
+          )
         } catch {
           return null
         }
@@ -336,7 +365,7 @@ export function useLiveSignals(
 
     return () => {
       if (timer !== null) window.clearTimeout(timer)
-      for (const off of offTriggers) off()
+      for (const off of offObservers) off()
       offHandler()
     }
   }, [host, handlerId, key, debounceMs])
@@ -395,10 +424,10 @@ export async function listCalls(
   const options = { timeoutMs: CALLS_TIMEOUT_MS }
   let out: unknown
   try {
-    out = await host.iii.trigger('engine::traces::spans', payload, options)
+    out = await host.iii.call('engine::traces::spans', payload, options)
   } catch (err) {
     if (!isFunctionUnavailable(err)) throw err
-    out = await host.iii.trigger('engine::traces::list', payload, options)
+    out = await host.iii.call('engine::traces::list', payload, options)
   }
   return rows(out, 'spans')
     .map((span): CallRecord | null => {
@@ -473,11 +502,11 @@ export function useResource<T>(work: () => Promise<T>): Resource<T> {
 export type { SpanEvent } from './span-feed'
 
 /**
- * Live feed of executed calls for this component's lifetime: the engine's
- * coalesced `trace` tick (ids only) triggers a bounded re-read of the touched
- * traces (`engine::traces::spans`), and only calls not delivered yet reach
- * `onSpans` (see `./span-feed`). The binding is a per-tab `iii::` handler
- * GC'd with the tab; without the observability trigger type the page
+ * Live feed of executed calls for this component's lifetime: each coalesced
+ * `observability::on-span` tick (ids only) starts a bounded re-read of the
+ * touched traces (`engine::traces::spans`), and only calls not delivered yet
+ * reach `onSpans` (see `./span-feed`). The target is a per-tab `iii::`
+ * handler that goes with the tab; without an observability worker the page
  * degrades to manual refresh.
  */
 export function useSpanFeed(host: Host, onSpans: (spans: SpanEvent[]) => void) {

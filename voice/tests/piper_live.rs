@@ -4,7 +4,7 @@ use base64::Engine as _;
 use std::sync::Arc;
 use voice::{
     config::{TtsBackend, WorkerConfig},
-    events::{Emitter, NoopDeliverer, TriggerSets},
+    events::{Emitter, NoopDeliverer},
     models,
     tts::Speaker,
 };
@@ -30,10 +30,7 @@ async fn piper_portuguese_returns_browser_audio() {
         .await
         .unwrap();
     assert!(model.is_installed(&cfg.models_path()));
-    let speaker = Speaker::new(Arc::new(Emitter::new(
-        TriggerSets::new(),
-        Arc::new(NoopDeliverer),
-    )));
+    let speaker = Speaker::new(Arc::new(Emitter::new(Arc::new(NoopDeliverer))));
     let audio = speaker
         .speak(
             &cfg,

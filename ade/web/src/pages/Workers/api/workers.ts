@@ -33,7 +33,7 @@ export type ComposeStatus = z.infer<typeof composeStatusSchema>
 
 export async function fetchEngineWorkersList(): Promise<WorkersListResponse> {
   const client = await getIiiClient()
-  const raw = await client.trigger<unknown>(WORKERS_RPC.engineList, {})
+  const raw = await client.call<unknown>(WORKERS_RPC.engineList, {})
   const parsed = workersListResponseSchema.safeParse(raw)
   return parsed.success ? parsed.data : { workers: [] }
 }
@@ -42,7 +42,7 @@ export async function fetchEngineWorkerInfo(
   name: string,
 ): Promise<WorkerInfoResponse | null> {
   const client = await getIiiClient()
-  const raw = await client.trigger<unknown>(WORKERS_RPC.engineInfo, { name })
+  const raw = await client.call<unknown>(WORKERS_RPC.engineInfo, { name })
   const parsed = workerInfoResponseSchema.safeParse(raw)
   return parsed.success ? parsed.data : null
 }
@@ -50,7 +50,7 @@ export async function fetchEngineWorkerInfo(
 export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
   const client = await getIiiClient()
   try {
-    const raw = await client.trigger<unknown>(
+    const raw = await client.call<unknown>(
       WORKERS_RPC.composeStatus,
       {},
       { timeoutMs: 10_000 },

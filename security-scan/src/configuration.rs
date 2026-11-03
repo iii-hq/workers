@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::schema_for;
 use serde_json::{json, Value};
 
@@ -48,7 +47,7 @@ pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, Securit
         SecurityScanError::Dependency(format!("could not serialize shipped config: {error}"))
     })?;
     initialization::ensure_with(payload, |function, payload| async move {
-        trigger_with_retry(iii, function, payload)
+        call_with_retry(iii, function, payload)
             .await
             .map_err(|error| match error {
                 SecurityScanError::Dependency(message) => message,
@@ -102,7 +101,7 @@ where
 
 /// Missing entries may be seeded; dependency failures must propagate without writes.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, SecurityScanError> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
+    match call_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
         Ok(response) => response.get("value").cloned().map(Some).ok_or_else(|| {
             SecurityScanError::Dependency("configuration::get returned no `value` field".into())
         }),
@@ -111,7 +110,7 @@ async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, SecurityScanErr
     }
 }
 
-async fn trigger_with_retry(
+async fn call_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -119,8 +118,8 @@ async fn trigger_with_retry(
     let mut last_error = None;
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.into(),
                     payload: payload.clone(),
                     action: None,

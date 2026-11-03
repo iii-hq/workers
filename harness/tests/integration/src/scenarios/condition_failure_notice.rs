@@ -27,7 +27,7 @@ use super::dsl::{
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 const TABLE: &str = "courier_done";
 
 pub(super) fn scenario() -> ScenarioFixture {
@@ -46,8 +46,8 @@ pub(super) fn scenario() -> ScenarioFixture {
     .returns_text("okay");
 
     let register_args = json!({
-        "trigger_type": "database::row-changed",
-        "config": { "db": "primary", "table": TABLE },
+        "function_id": "database::on-row-changed",
+        "args": { "db": "primary", "table": TABLE },
         "once": false,
         "lifecycle": { "max_fires": 1 },
         "conditions": [{ "function_id": checker.id(), "config": {} }],
@@ -64,7 +64,9 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-019")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
+            // An agent observes only what its policy allows.
+            .allow_id("database::on-row-changed")
             .allow_function(&checker),
     )
     // This path serializes two turns around a durable SQLite transaction.
@@ -93,11 +95,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact_after_controls([REGISTER], [checker.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [checker.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
-                REGISTER,
+                OBSERVE,
                 register_args,
                 8,
                 4,
@@ -112,12 +114,12 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [checker.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [checker.tool()]),
             )
             .respond(Response::text("armed: watching courier_done", 10, 2)),
     )
@@ -131,7 +133,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact_after_controls([REGISTER], [checker.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [checker.tool()]),
             )
             .respond(Response::text("condition failure acknowledged", 12, 3)),
     )
@@ -182,7 +184,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .iter()
             .filter_map(|item| item.get("custom"))
             .find(|c| {
-                c.get("custom_type").and_then(Value::as_str) == Some("trigger_fired")
+                c.get("custom_type").and_then(Value::as_str) == Some("observer_fired")
                     && c.pointer("/data/note")
                         .and_then(Value::as_str)
                         .is_some_and(|note| note.contains("undecipherable condition result"))

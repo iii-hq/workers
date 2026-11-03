@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
@@ -243,7 +243,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -358,19 +358,15 @@ pub(crate) async fn try_get_value(
         // A plain read is schema-validated, so an entry persisted as null comes
         // back SCHEMA_INVALID; get_value_with reads that as absent, not fatal.
         return initialization::get_value_with(id, |function, payload| {
-            trigger_configuration_with_retry(iii, function, payload)
+            call_configuration_with_retry(iii, function, payload)
         })
         .await;
     }
-    match trigger_configuration_with_retry(
-        iii,
-        "configuration::get",
-        json!({ "id": id, "raw": raw }),
-    )
-    .await
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": id, "raw": raw }))
+        .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        // `trigger_configuration_with_retry` flattens the structured `Error` to its
+        // `call_configuration_with_retry` flattens the structured `Error` to its
         // Display string, so we token-match the recovered message. Only the
         // configuration worker's uppercase `NOT_FOUND` entry code counts as
         // "nothing stored yet"; the engine's missing-FUNCTION code is lowercase
@@ -441,8 +437,11 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration` trigger.
-pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), Error> {
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` for this worker's entry. The observer lives
+/// as long as the worker's connection; until the configuration worker is up
+/// it stays pending, and [`reconcile`] covers what it missed.
+pub fn observe_config_changes(iii: &IIIClient, state: AppState) {
     let st = state.clone();
     iii.register_function(
         CONFIG_FN_ID,
@@ -457,15 +456,15 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function("configuration::on-updated")
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
 /// Run a config reload under the serialized reload lock. The `fetch` future is
@@ -544,7 +543,7 @@ async fn on_config_change(state: &AppState) -> Result<(), String> {
     // to hot-swap the security policy (denylist, fs jail, sandbox toggle),
     // bypassing configuration::set authorization. Always re-read the authoritative
     // value from the configuration worker and apply that — a spurious direct call
-    // can at most trigger a reload of the already-stored config.
+    // can at most cause a reload of the already-stored config.
     // Reloads are serialized and re-fetch inside the lock, so concurrent
     // configuration:updated events converge to the latest authoritative config
     // and a slow build from an older event cannot roll back a newer policy.
@@ -556,10 +555,10 @@ async fn on_config_change(state: &AppState) -> Result<(), String> {
 }
 
 /// Re-fetch the authoritative config and apply it, serialized with any
-/// trigger-driven reload. Called once at boot right after the trigger is
-/// registered to close the window between the initial fetch and trigger
-/// registration: an update that landed in that window had no listener, and this
-/// picks it up. FAIL-CLOSED: unlike a steady-state hot-reload, a rejected
+/// observer-driven reload. Called once at boot right after the observer is
+/// created to close the window between the initial fetch and the observer
+/// becoming active: an update that landed in that window had no listener, and
+/// this picks it up. FAIL-CLOSED: unlike a steady-state hot-reload, a rejected
 /// (unbuildable) authoritative config aborts startup rather than serving the
 /// stale last-good runtime, and a transient fetch failure also aborts.
 pub async fn reconcile(state: &AppState) -> Result<(), String> {
@@ -585,7 +584,7 @@ where
 
 /// Shared by the config bootstrap here and `ui_state.rs`'s one-time
 /// migration off the legacy `shell-ui` entry.
-pub(crate) async fn trigger_configuration_with_retry(
+pub(crate) async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -593,8 +592,8 @@ pub(crate) async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

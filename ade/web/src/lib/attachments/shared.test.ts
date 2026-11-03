@@ -37,7 +37,7 @@ describe('describeWorkerFailure', () => {
       { message: 'function document::to-markdown not found' },
       'document',
     )
-    expect(described).toContain('iii trigger compose::add worker=document')
+    expect(described).toContain('iii call compose::add worker=document')
   })
 
   it('trims a very long message', () => {

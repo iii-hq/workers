@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 
 use futures_util::future::BoxFuture;
 use futures_util::stream::{self, StreamExt};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -816,7 +816,7 @@ async fn collect_trace_metrics(
     let cfg = deps.cfg().await;
     let response = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::traces::group_by".into(),
             payload: json!({
                 "attribute": "iii.session.id",

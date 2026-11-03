@@ -118,7 +118,7 @@ export function reportSetupStep(
 ): void {
   void getIiiClient()
     .then((client) =>
-      client.trigger(
+      client.call(
         'iii::durable::publish',
         {
           topic: STEP_TOPIC,

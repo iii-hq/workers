@@ -72,7 +72,7 @@ test('keeps hostile user, model, and function content inert after reload', async
   }, MARKERS)
 
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger()
+  await stack.send()
   expect(await completed).toMatchObject({ status: 'completed' })
 
   await openSession(page, stack)

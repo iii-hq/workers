@@ -10,7 +10,7 @@ const heading = (page: Page, name: string) =>
   page.getByRole('heading', { name, exact: true })
 
 // The console's own catalog script (`console/catalog-page.js`) registers the
-// `functions` and `triggers` pages, so the isolated shell has a worker page
+// `functions` and `observers` pages, so the isolated shell has a worker page
 // to render without any extra worker in the stack.
 const settingsModifier = process.platform === 'darwin' ? 'Control' : 'Alt'
 
@@ -19,7 +19,7 @@ test('#/worker/<scope> renders one injected page alone and leaves the workspace 
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger()
+  await stack.send()
   expect(await completed).toMatchObject({ status: 'completed' })
 
   await page.setViewportSize({ width: 1280, height: 800 })
@@ -53,8 +53,8 @@ test('#/worker/<scope> renders one injected page alone and leaves the workspace 
   await expect(strip(page)).toHaveCount(0)
 
   // An explicit page id picks another page of the same worker.
-  await page.goto(`${stack.consoleUrl}#/worker/console/triggers`)
-  await expect(heading(page, 'Triggers')).toBeVisible()
+  await page.goto(`${stack.consoleUrl}#/worker/console/observers`)
+  await expect(heading(page, 'Observers')).toBeVisible()
   await expect(strip(page)).toHaveCount(0)
 
   // The traces explorer has the same standalone shell.
@@ -64,7 +64,7 @@ test('#/worker/<scope> renders one injected page alone and leaves the workspace 
   await expect(page).toHaveTitle('iii - traces')
 
   // Leaving the shell by hash reloads into the workspace, which never saw
-  // any of this: still the one tab, no `functions`/`triggers` screen.
+  // any of this: still the one tab, no `functions`/`observers` screen.
   await page.goto(`${stack.consoleUrl}#/`)
   await expect(tabs(page)).toHaveCount(1)
   await expect(tabs(page).filter({ hasText: 'functions' })).toHaveCount(0)

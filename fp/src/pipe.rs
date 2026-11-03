@@ -1,7 +1,7 @@
-//! `fp::pipe` — a short worker-side pipeline: each step triggers a
+//! `fp::pipe` — a short worker-side pipeline: each step calls a
 //! function and its result lands in the next step's payload (`into`, default
 //! `/value`). Pure `fp::*` transforms run inline; every other step goes
-//! over the bus via `iii.trigger`. Large values thread worker→worker and
+//! over the bus via `iii.call`. Large values thread worker→worker and
 //! never round-trip through the model; the chat gets a receipt with per-step
 //! sizes and a preview.
 //!
@@ -15,14 +15,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
 pub const PIPE_DESC: &str =
-    "Run a worker-side pipeline: each step triggers a function and its result lands in the \
+    "Run a worker-side pipeline: each step calls a function and its result lands in the \
      next step's payload at `into` (default \"/value\"); fp::* steps thread the bare value and a \
      failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step \
      sizes and a preview, not the value.";
@@ -30,7 +30,7 @@ pub const PIPE_DESC: &str =
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
 
-/// ponytail: remaining ceilings — no nested pipes, no trigger-control,
+/// ponytail: remaining ceilings — no nested pipes, no observer-control,
 /// session-write or approval steps, 120s per bus step, and a held (approval) release
 /// re-runs steps from scratch is unsupported: the pipe call itself is what
 /// approvers review. shell::*/coder::* steps ride the harness-forwarded
@@ -87,7 +87,7 @@ pub struct PipeRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipeStep {
-    /// Function id to trigger.
+    /// Function id to call.
     pub function: String,
     /// Base payload for the call.
     #[serde(default)]
@@ -176,8 +176,8 @@ pub(crate) fn forbidden_step(
              step's payload (\"value\": …) instead of wrapping the value in a pipe step",
         );
     }
-    if function_id == "engine::register_trigger" || function_id == "engine::unregister_trigger" {
-        return Some("trigger control calls are not supported in a pipe — call them directly");
+    if function_id == "engine::observers::dispose" {
+        return Some("observer control calls are not supported in a pipe — call them directly");
     }
     // Session READS are only needs_approval for agents (the policy hard-denies
     // the writes and the raw `session::store::*` protocol), and the pipe call
@@ -311,7 +311,7 @@ pub(crate) async fn approval_gate_running(iii: &IIIClient) -> Result<bool, Strin
     // writes ride through. `functions::info` checks RBAC BEFORE existence —
     // NOT_FOUND is only reachable when the session may see the id.
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::info".into(),
             payload: json!({ "function_id": "approval::gate" }),
             action: None,
@@ -522,7 +522,7 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
                 // value at /fs_scope would reach the shell worker as trusted.
                 let args = bus_step_args(&step.function, args, req.fs_scope.as_ref())
                     .map_err(|msg| step_error(i, &step.function, &msg, &receipts))?;
-                iii.trigger(TriggerRequest {
+                iii.call(CallRequest {
                     function_id: step.function.clone(),
                     payload: args,
                     action: None,
@@ -658,7 +658,7 @@ mod tests {
             ("shell::kill-session-jobs", "control-plane"),
             ("shell::workspace::roots", "control-plane"),
             ("fp::pipe", "nest"),
-            ("engine::register_trigger", "trigger control"),
+            ("engine::observers::dispose", "observer control"),
             ("session::append", "worker"),
             ("session::put-attachment", "worker"),
             ("session::store::get-attachment", "worker"),

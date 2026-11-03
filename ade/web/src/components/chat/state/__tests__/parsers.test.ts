@@ -30,7 +30,7 @@ describe('isStateFunction', () => {
 
   it('rejects non-state ids', () => {
     expect(isStateFunction('stateful::x')).toBe(false)
-    expect(isStateFunction('engine::register_trigger')).toBe(false)
+    expect(isStateFunction('engine::observers::list')).toBe(false)
     expect(isStateFunction('state')).toBe(false)
   })
 })

@@ -7,7 +7,7 @@ use std::{
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::{protocol::TriggerRequest, InitOptions};
+use iii_sdk::{protocol::CallRequest, InitOptions};
 use serde_json::{json, Value};
 
 use crate::common::world::CodeWorld;
@@ -26,7 +26,7 @@ async fn live_jailed_shell_code_surface(world: &mut CodeWorld) {
 
     let client = Arc::new(iii_sdk::register_worker(&url, InitOptions::default()));
     for _ in 0..20 {
-        let probe = client.trigger(TriggerRequest {
+        let probe = client.call(CallRequest {
             function_id: "coder::info".to_string(),
             payload: json!({}),
             action: None,

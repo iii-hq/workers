@@ -104,7 +104,7 @@ export function RunCodeDialog({
     setBusy(true)
     setError(null)
     host.iii
-      .trigger('sandbox-code-runner::run', payload, { timeoutMs: 120_000 })
+      .call('sandbox-code-runner::run', payload, { timeoutMs: 120_000 })
       .then((value) => {
         const result = parseExecResult(value)
         const firstLine = code.trim().split('\n')[0].slice(0, 80)

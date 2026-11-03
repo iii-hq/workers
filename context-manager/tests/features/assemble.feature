@@ -12,7 +12,7 @@ Feature: context::assemble — the model-ready context pipeline
   # Regression: console-068cb67f-86fe-4951-b56e-3a94686ba441.
   # A 729,420-character browser screenshot was miscounted as 182,438 text
   # tokens and compacted twice despite a 107,008-token usable window.
-  Scenario: screenshot base64 length does not trigger compaction
+  Scenario: screenshot base64 length does not cause compaction
     Given inline model "evidence" with context window 120000 and max output 8000
     And a user message "capture the page"
     And an assistant function call "shot" to "browser::screenshot"

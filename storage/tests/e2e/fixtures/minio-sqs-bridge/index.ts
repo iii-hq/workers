@@ -1,12 +1,12 @@
 // MinIO bucket-notification → ElasticMQ shim. MinIO can't post directly to
 // AWS SQS, but its webhook target sends an S3-event-shaped envelope whose
 // `Records[]` array is byte-compatible with what the storage worker's SQS
-// poller consumes (see storage/src/triggers/normalize.rs::extract_event,
+// poller consumes (see storage/src/events/normalize.rs::extract_event,
 // which dereferences `/Records/0/eventName`, `/Records/0/s3/bucket/name`,
 // `/Records/0/s3/object/key`, etc.). We just relay the `Records` array as
 // the SQS message body and let the worker do the rest.
 //
-// Why this exists at all: the storage worker's S3 trigger source long-polls
+// Why this exists at all: the storage worker's S3 notifications source long-polls
 // SQS, and the e2e harness uses MinIO (no built-in SQS target). ElasticMQ
 // is a drop-in SQS-compatible broker; this bridge is the missing arrow
 // between MinIO's webhook target and ElasticMQ.

@@ -24,7 +24,7 @@ test('the keyboard reaches the chat, the panes and every page command through âŒ
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger()
+  await stack.send()
   expect(await completed).toMatchObject({ status: 'completed' })
 
   await page.setViewportSize({ width: 1280, height: 800 })

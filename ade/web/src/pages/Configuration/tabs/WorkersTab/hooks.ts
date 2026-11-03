@@ -9,8 +9,8 @@ import { useEffect } from 'react'
 import { useWorkersChanged } from '@/hooks/use-workers-changed'
 import { getDefaultBackend } from '@/lib/backend'
 import { configurationFormFamily } from '@/lib/configuration-family'
-import { subscribeEngineTrigger } from '@/lib/engine-trigger'
 import { notifyHarnessConfigSaved } from '@/lib/harness-config-events'
+import { subscribeObserved } from '@/lib/observe-events'
 import {
   type ConfigurationSchemaView,
   getConfiguration,
@@ -53,17 +53,18 @@ export function useConfigurationsList() {
   })
 }
 
-/** Browser-local handler id bound to `engine::workers-available`. */
+/** Browser-local handler id observing `engine::on-workers-changed`. */
 const WORKER_REGISTRY_WATCH_FN = 'ade::workers-config-watch'
-/** Browser-local handler id bound to the `configuration` trigger. */
+/** Browser-local handler id observing `configuration::on-updated`. */
 const CONFIGURATION_WATCH_FN = 'iii::console::configuration-list-watch'
 
 /**
  * Keep the worker configuration list fresh when workers are added or removed
- * out of band — e.g. `iii trigger compose::add worker=harness` run in a
- * terminal — purely off engine push triggers. No polling. A worker connects
+ * out of band — e.g. `iii call compose::add worker=harness` run in a
+ * terminal — purely off engine-hosted sources. No polling. A worker connects
  * before it registers its entry, so the list is re-pulled on both
- * `engine::workers-available` and `configuration` registered/updated events.
+ * `engine::on-workers-changed` and `configuration::on-updated`
+ * registered/updated events.
  */
 export function useWorkerRegistryReactivity(): void {
   const qc = useQueryClient()
@@ -81,11 +82,17 @@ export function useWorkerRegistryReactivity(): void {
     if (!enabled) return
     let cancelled = false
     let dispose: (() => void) | undefined
-    // No configuration id in the binding: a per-id binding would hold that
+    // No configuration id in the filters: a per-id observer would hold that
     // entry's TTL slot (see waitForConfiguration).
-    subscribeEngineTrigger(
-      'configuration',
-      { event_types: ['configuration:registered', 'configuration:updated'] },
+    subscribeObserved(
+      'configuration::on-updated',
+      {
+        filters: {
+          'input.event_type': {
+            $in: ['configuration:registered', 'configuration:updated'],
+          },
+        },
+      },
       () => {
         qc.invalidateQueries({ queryKey: configurationKeys.list() })
       },

@@ -42,11 +42,11 @@ scenario through one global `allow: ["*"]` policy:
 - `persistent_state`: discovers and performs one exact durable state write,
   evaluated entirely in code.
 - `reactive_automation`: orchestrates three parallel database writers,
-  trigger-spawned aggregate reactors, and a single finalizer. The CI stack uses
-  SQLite, so the scenario proves bounded `database::row-changed` discovery and
-  the namespaced `state`-trigger fallback. The evaluator queries the resulting
-  tables, verifies trigger provenance from session metadata, and checks that all
-  run-owned triggers were removed.
+  observer-driven aggregate reactions, and a single finalizer. The CI stack uses
+  SQLite, so the scenario proves bounded `database::on-row-changed` discovery
+  and the `state::on-changed` barrier wake. The evaluator queries the resulting
+  tables, verifies observer provenance from session metadata, and checks that
+  all run-owned observers were removed.
 - `shell_coder_sandbox`: performs 12 required operations across worker setup,
   `coder`, `shell`, and `sandbox`. It adds both registry workers; inspects,
   creates, updates, moves, and reads an exact Python file; executes it on the
@@ -63,7 +63,7 @@ scenario through one global `allow: ["*"]` policy:
   fired wake turn, and checks automatic binding retirement.
 - `receiving_operation`: runs three least-privilege database couriers, keeps a
   live ledger without model turns, and verifies a single database completion
-  wake with no polling or surviving trigger machinery.
+  wake with no polling, surviving observers or database triggers.
 
 List the code-defined ids used by CI:
 

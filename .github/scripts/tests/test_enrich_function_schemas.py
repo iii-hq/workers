@@ -1,11 +1,11 @@
 """Tests for enrich_functions_with_schemas in collect_worker_interface.py.
 
-`engine::functions::list` returns only `{function_id, worker_name, description}`
-(a `FunctionSummary`); the typed request/response schemas live solely on
-`engine::functions::info` (a `FunctionDetail`). The collector must fetch `::info`
-per target function and merge the schemas into the list rows before normalizing,
-or every function's schema collapses to the empty `{}` the publish-time
-`--assert-typed-schemas` check rejects.
+`engine::functions::list` returns `{function_id, worker_name, description}` and
+the observe fields (a `FunctionSummary`); the typed request/response schemas live
+solely on `engine::functions::info` (a `FunctionDetail`). The collector must
+fetch `::info` per target function and merge the schemas into the list rows
+before normalizing, or every function's schema collapses to the empty `{}` the
+publish-time `--assert-typed-schemas` check rejects.
 """
 from __future__ import annotations
 
@@ -80,3 +80,33 @@ def test_tolerates_missing_info_detail() -> None:
     )
 
     assert "request_schema" not in functions[0]
+
+
+def test_merges_info_observe_fields_into_target_rows() -> None:
+    """`engine::functions::info` states how the function is observed:
+    `args_format` when it takes args, `private: true`, `observable: false`.
+    The detail's fields replace the list row's."""
+    args_format = {"type": "object", "properties": {"expression": {"type": "string"}}}
+    functions = [
+        {"function_id": "cron::on-tick", "worker_name": "cron", "observer_count": 1},
+    ]
+    details = {
+        "cron::on-tick": {
+            "function_id": "cron::on-tick",
+            "worker_name": "cron",
+            "request_schema": REQ,
+            "response_schema": REQ,
+            "args_format": args_format,
+            "private": True,
+            "observer_count": 1,
+        }
+    }
+
+    enrich_functions_with_schemas(
+        functions, ["cron::on-tick"], fetch_detail=_details(details)
+    )
+
+    tick = functions[0]
+    assert tick["args_format"] == args_format
+    assert tick["private"] is True
+    assert "observable" not in tick

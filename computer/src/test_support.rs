@@ -5,10 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::Value;
 
 use crate::driver::{Driver, Screen, Shot};
-use crate::frames::{FrameNotifier, FrameSink, FrameTarget};
+use crate::frames::FrameNotifier;
 use crate::semantic::SemanticSession;
 use crate::session::{now_ms, Session};
 
@@ -83,16 +82,6 @@ impl Driver for FakeDesktop {
     }
 }
 
-/// A frame sink that drops everything.
-pub(crate) struct NullSink;
-
-#[async_trait]
-impl FrameSink for NullSink {
-    async fn deliver(&self, _: &FrameTarget, _: Value) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 pub(crate) fn session_on(
     notifier: &Arc<FrameNotifier>,
     id: &str,
@@ -113,12 +102,7 @@ pub(crate) fn session_sharing(
     act_lock: Arc<tokio::sync::Mutex<()>>,
     semantic: Option<SemanticSession>,
 ) -> (Arc<Session>, Arc<FakeDesktop>) {
-    session_built(
-        &FrameNotifier::new(Arc::new(NullSink)),
-        id,
-        act_lock,
-        semantic,
-    )
+    session_built(&FrameNotifier::detached(), id, act_lock, semantic)
 }
 
 fn session_built(
@@ -157,7 +141,7 @@ fn session_built(
 }
 
 pub(crate) fn session_with(semantic: Option<SemanticSession>) -> (Arc<Session>, Arc<FakeDesktop>) {
-    session_on(&FrameNotifier::new(Arc::new(NullSink)), "c1", semantic)
+    session_on(&FrameNotifier::detached(), "c1", semantic)
 }
 
 /// The wire code of a semantic refusal, or "handler: …" for any other error.
@@ -184,7 +168,7 @@ pub(crate) fn session_driving(
         now_ms(),
         driver,
         crate::config::WorkerConfig::default().into_shared(),
-        FrameNotifier::new(Arc::new(NullSink)),
+        FrameNotifier::detached(),
         Arc::new(tokio::sync::Mutex::new(())),
         semantic,
     )

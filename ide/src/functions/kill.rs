@@ -77,7 +77,7 @@ pub async fn handle(req: KillRequest) -> Result<KillResponse, ExecError> {
     // Branch 3: true sandbox-backed job (host_pid None) — no host child process at
     // all. The in-VM process is reachable only through `sandbox::exec`, which has
     // no cancel hook. Mark the record Killed so shell::status / shell::list reflect
-    // the cancellation; the late trigger response captures stdout/stderr but won't
+    // the cancellation; the late call response captures stdout/stderr but won't
     // overwrite this status (see the `already_killed` guard in
     // functions::exec_bg::spawn_sandbox_job).
     h.record.status = JobStatus::Killed;

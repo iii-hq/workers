@@ -1,6 +1,6 @@
 //! `state::barrier` — fan-in as an ordinary function.
 //!
-//! A barrier answers one question for a trigger binding: "has everything I am
+//! A barrier answers one question for an observer: "has everything I am
 //! waiting for arrived?" It records each arrival idempotently, answers `skip`
 //! while the set is incomplete, and answers `allow` EXACTLY ONCE — on the
 //! arrival that completes it — carrying every arrival's payload.
@@ -8,10 +8,11 @@
 //! It exists because the alternative is worse. Without it, a coordinator
 //! watching N children either wakes once per child (N paid turns to learn one
 //! fact) or hand-rolls a counter whose read-modify-write races. Here the
-//! counting is a condition on the binding: the coordinator's own wake fires
+//! counting is a condition on the observer: the coordinator's own wake fires
 //! once, when the work is actually done.
 //!
-//! Written to the condition contract, so it plugs into a binding as
+//! Written to the condition contract, so it plugs into a `harness::observe`
+//! observer as
 //! `conditions: [{ function_id: "state::barrier", config: { id, expect } }]`.
 //! Nothing about it is harness-specific — it is a function, and the decision
 //! logic below is pure so it can be tested without a store.
@@ -74,7 +75,7 @@ impl Expect {
 /// out of the event.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct BarrierConfig {
-    /// Barrier identity. Two bindings sharing an id share the barrier — that
+    /// Barrier identity. Two observers sharing an id share the barrier — that
     /// is how several predecessors feed one downstream.
     pub id: String,
     /// A count, or the exact set of arrival keys.

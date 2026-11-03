@@ -22,14 +22,15 @@
  *     hand — and offers a button (`label`) that opens it beside the chat.
  *     Open only in a tab that is not showing, the page shows `elsewhere`
  *     and frames that tab.
- *   - `condition` (optional): a real engine trigger the step waits for. The
- *     page binds it, shows what it is waiting for, and when it fires shows
- *     the trigger and its payload. A step with no condition is closed by the
- *     operator with a button.
+ *   - `condition` (optional): a real engine function the step waits on, as an
+ *     observe source (`function_id`, plus `args` or `filters`). The page
+ *     observes it, shows what it is waiting for, and when it fires shows the
+ *     function and the event it delivered. A step with no condition is closed
+ *     by the operator with a button.
  */
 
 /**
- * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
+ * @typedef {{ function_id: string, args?: Record<string, unknown>, filters?: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
  * @typedef {{ text: string, label: string, agent?: string }} Ask
  * @typedef {{ screen: string }} ToClose
  * @typedef {{ screen: string, label: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
@@ -57,17 +58,18 @@ export const TOUR_AGENT = "ade-worker-builder";
  *
  * Its prompt ends by telling the agent to write `step_<id>_completed` into
  * the learn-iii state scope as it ENDS ITS TURN — not merely when it thinks
- * it is done, which it reports too early — and the step waits on a `state`
- * trigger bound to that one key. The page binds every reachable condition when the step is
- * DISPLAYED, before any button is clicked, so the step the operator is
- * looking at is the step the agent is still working on — a long build no
- * longer reads as finished the moment the prompt is sent.
+ * it is done, which it reports too early — and the step waits on
+ * `state::on-changed`, filtered to that one key. The page observes every
+ * reachable condition when the step is DISPLAYED, before any button is
+ * clicked, so the step the operator is looking at is the step the agent is
+ * still working on — a long build reads as finished only once the agent
+ * reports it.
  *
- * The trigger matches the KEY, not the value: whatever shape the agent
- * writes, the write itself is the report.
+ * The filters match the KEY, not the value: whatever shape the agent writes,
+ * the write itself is the report.
  *
  * `tours.test.mjs` holds the two halves together — the sentence and the
- * binding both carry the key, and the test fails when one of them moves.
+ * filter both carry the key, and the test fails when one of them moves.
  */
 const agentStep = (step) => {
   const key = `step_${step.id}_completed`;
@@ -78,8 +80,8 @@ const agentStep = (step) => {
       text: `${step.ask.text} When you are ending your turn, write ${key}: true to state, scope "${STATE_SCOPE}".`,
     },
     condition: {
-      type: "state",
-      config: { scope: STATE_SCOPE, key },
+      function_id: "state::on-changed",
+      filters: { "input.scope": { $eq: STATE_SCOPE }, "input.key": { $eq: key } },
       label: "Waiting for the agent to report this step done",
       hint: `The agent writes ${key} into the "${STATE_SCOPE}" state scope when it has finished.`,
     },
@@ -101,11 +103,10 @@ export const TOURS = [
           agent: TOUR_AGENT,
         },
         title: "Send a message",
-        body: "Say 'hey' to the agent. The button opens a new chat and sets a 'trigger' here which is how iii handles events and reactivity universally. When the agent fires the trigger this worker will react immediately and continue to the next step. This is not a frontend, backend, data, or other type of trigger, it is universal and works everywhere across a iii application.",
+        body: "Say 'hey' to the agent. The button opens a new chat, and this page observes the agent's turns: when a function runs, its observers run, which is how iii handles events and reactivity universally. When the agent's turn finishes this worker reacts immediately and continues to the next step. This is not a frontend, backend, data, or other kind of event, it is universal and works everywhere across a iii application.",
         anchors: [".learn-iii-composer", ".composer-shell"],
         condition: {
-          type: "harness::turn-completed",
-          config: {},
+          function_id: "harness::on-turn-completed",
           label: "Waiting for a harness turn to finish",
           hint: "Say hey in the chat pane.",
         },
@@ -136,7 +137,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Composability",
-        body: "iii is composable like Node or Python, add libraries and other parts of your application can use them. Except when you add to iii you add a fully working service.\n\nWe call these services 'workers'. When one is added every other worker immediately has access to its functions and triggers.\n\nThis means, for example, that your agent will be able to use the database worker without skills, or a long discovery and research process. Now ask the agent to add it.",
+        body: "iii is composable like Node or Python, add libraries and other parts of your application can use them. Except when you add to iii you add a fully working service.\n\nWe call these services 'workers'. When one is added every other worker immediately has access to its functions, and can observe them.\n\nThis means, for example, that your agent will be able to use the database worker without skills, or a long discovery and research process. Now ask the agent to add it.",
       }),
       {
         id: "stay-in-touch",
@@ -149,7 +150,7 @@ export const TOURS = [
       {
         id: "observability",
         title: "Observability",
-        body: "Everything in a iii worker is defined as either a function or a trigger. This property makes it so that all of a iii application is inherently observable, out of the box, truly end-to-end, even the new worker you're building today. No agent, database, or other usecase-specific framework necessary.\n\nThe observability worker lets you see traces in the UI, query traces directly, ask agents for specific details of what happened, and export them to any OpenTelemetry-compatible service.",
+        body: "Everything in a iii worker is a function, and every function can be observed. This property makes it so that all of a iii application is inherently observable, out of the box, truly end-to-end, even the new worker you're building today. No agent, database, or other usecase-specific framework necessary.\n\nThe observability worker lets you see traces in the UI, query traces directly, ask agents for specific details of what happened, and export them to any OpenTelemetry-compatible service.",
         anchors: [".learn-iii-traces", 'section[aria-label="traces"]'],
         // The step's button opens Traces beside the chat. Until then the page
         // points at where it opens by hand too — the + first, then the traces
@@ -194,7 +195,7 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Make the expense tracker reactive, have it fire triggers for new expenses being added. Then create a trigger in the chat that to run when that trigger happens.",
+          text: "Make the expense tracker reactive: give it an event function it calls whenever a new expense is added. Then, from the chat, observe that function so a reaction runs when it happens.",
           label: "Ask the agent",
         },
         title: "Reactivity",

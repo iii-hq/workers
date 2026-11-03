@@ -27,7 +27,7 @@ func (callbackRequest[T]) JSONSchema() *reflectschema.Schema {
 	}
 	var value T
 	schema := reflector.Reflect(value)
-	// HTTP trigger fields are optional: handlers return an HTTP error for an
+	// HTTP request fields are optional: handlers return an HTTP error for an
 	// absent body or verification query. Transport metadata and future fields
 	// remain extensible, and JSON null follows the existing struct decoder.
 	if schema.Type == "object" {
@@ -61,7 +61,7 @@ type callbackConfigurationID struct {
 	ID string `json:"id"`
 }
 
-// secretChangedNotification is the part of a secrets::changed delivery the
+// secretChangedNotification is the part of a secrets::on-changed delivery the
 // worker reads; the rest (name, action, fingerprint, updated_at) is ignored.
 type secretChangedNotification struct {
 	Ref string `json:"ref,omitempty"`

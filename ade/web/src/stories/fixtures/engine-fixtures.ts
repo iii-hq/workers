@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
 const now = Date.now()
@@ -8,11 +8,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionTriggerMessage>,
-): FunctionTriggerMessage {
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input,
     output,
@@ -99,8 +99,7 @@ const ANY_VALUE_SCHEMA = {
 }
 
 /** Mirrors the screenshot: `sandbox::fs::write` with AnyValue placeholders
- * and no registered triggers. The view should collapse the schema slots
- * to "· any" and surface the empty-trigger state cleanly. */
+ * and no observers. The view should collapse the schema slots to "· any". */
 export const engineFunctionInfoAnyValue = base(
   'engine-fn-info-any',
   'engine::functions::info',
@@ -108,15 +107,15 @@ export const engineFunctionInfoAnyValue = base(
   wrapHarness({
     description: 'Stream-upload a file into a sandbox',
     function_id: 'sandbox::fs::write',
-    registered_triggers: [],
+    observer_count: 0,
     request_schema: ANY_VALUE_SCHEMA,
     response_schema: ANY_VALUE_SCHEMA,
     worker_name: 'iii-sandbox',
   }),
 )
 
-/** Rich payload with real JSON Schemas + one registered trigger so the
- * view's expandable schema panes and config block both fire. */
+/** Rich payload with real JSON Schemas + observer facts so the view's
+ * expandable schema panes and the observer chips both fire. */
 export const engineFunctionInfoRich = base(
   'engine-fn-info-rich',
   'engine::functions::info',
@@ -145,13 +144,7 @@ export const engineFunctionInfoRich = base(
         done: { type: 'boolean' },
       },
     },
-    registered_triggers: [
-      {
-        id: '8c7e9d12-2a4f-4b5c-9d3e-1f2a3b4c5d6e',
-        trigger_type: 'http',
-        config: { api_path: '/todos', http_method: 'POST' },
-      },
-    ],
+    observer_count: 1,
   },
 )
 
@@ -177,86 +170,74 @@ export const engineFunctionInfoNotFound = base(
   },
 )
 
-/* ---------------- engine::triggers::list ---------------- */
+/* ---------------- engine::observers::list ---------------- */
 
-export const engineTriggersListDone = base(
-  'engine-tr-list',
-  'engine::triggers::list',
-  {},
+const httpObserver = {
+  id: '6ebe7d64-3717-4acc-a02d-3f050fb86df2',
+  function_id: 'http::on-request',
+  namespace: 'default',
+  args: { method: 'GET', path: '/todos/html' },
+  filters: {},
+  target: { function_id: 'todo::html', namespace: 'default' },
+  capture: ['input', 'output', 'caller'],
+  on: 'success',
+  deliver: 'output',
+  worker: { worker_id: 'w-todo', worker_name: 'todo-app' },
+  state: 'active',
+  fires: 12,
+  dropped: {},
+  activation_failures: {},
+  max_in_flight: 64,
+  created_at_ms: now - 10 * 60 * 1000,
+}
+
+export const engineObserversListDone = base(
+  'engine-obs-list',
+  'engine::observers::list',
+  { function_id: 'http::on-request' },
   wrapHarness({
-    triggers: [
+    observers: [
+      httpObserver,
       {
-        id: 'directory::skills::on-change',
-        worker_name: 'iii-directory',
-        description:
-          'Fires after every successful directory::skills::download that wrote at least one skill.',
-      },
-      { id: 'http', worker_name: 'http', description: 'HTTP API trigger' },
-      { id: 'log', worker_name: 'log', description: 'Log event trigger' },
-      { id: 'state', worker_name: 'state', description: 'State trigger' },
-      {
-        id: 'storage::object-created',
-        worker_name: 'Andersons-MBP.localdomain:28943',
-        description:
-          'Fires when an object is written to a configured bucket whose notifications source is wired up.',
-      },
-      { id: 'stream', worker_name: 'stream', description: 'Stream trigger' },
-    ],
-  }),
-)
-
-export const engineTriggersListFiltered = base(
-  'engine-tr-list-filter',
-  'engine::triggers::list',
-  { search: 'http', include_internal: true },
-  {
-    triggers: [
-      { id: 'http', worker_name: 'http', description: 'HTTP API trigger' },
-    ],
-  },
-)
-
-/* ---------------- engine::registered-triggers::list ---------------- */
-
-export const engineRegisteredTriggersListDone = base(
-  'engine-reg-tr',
-  'engine::registered-triggers::list',
-  { function_id: 'todo::html' },
-  wrapHarness({
-    registered_triggers: [
-      {
-        id: '6ebe7d64-3717-4acc-a02d-3f050fb86df2',
-        trigger_type: 'http',
-        function_id: 'todo::html',
-        worker_name: 'todo-app',
-        config_summary: '{"api_path":"/todos/html","http_method":"GET"}',
-      },
-      {
+        ...httpObserver,
         id: 'f3c6b688-6840-48e8-8e7f-fec48d8cffbf',
-        trigger_type: 'http',
-        function_id: 'todo::html',
-        worker_name: 'todo-app',
-        config_summary: '{"api_path":"/todos/html","http_method":"GET"}',
+        args: { method: 'GET', path: '/todos' },
+        target: { function_id: 'todo::list', namespace: 'default' },
+        fires: 0,
       },
     ],
   }),
 )
 
-export const engineRegisteredTriggersListPlainSummary = base(
-  'engine-reg-tr-plain',
-  'engine::registered-triggers::list',
+export const engineObserversListFiltered = base(
+  'engine-obs-list-state',
+  'engine::observers::list',
   { worker: 'iii-directory' },
   {
-    registered_triggers: [
+    observers: [
       {
+        ...httpObserver,
         id: 'a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d',
-        trigger_type: 'log',
-        function_id: 'directory::log::watch',
-        worker_name: 'iii-directory',
-        config_summary: 'level=info, source=stdout',
+        function_id: 'state::on-changed',
+        args: {},
+        filters: { 'input.scope': { $eq: 'directory' } },
+        target: { function_id: 'directory::reindex', namespace: 'default' },
+        worker: { worker_id: 'w-dir', worker_name: 'iii-directory' },
+        state: 'pending',
+        reason: {
+          code: 'FUNCTION_NOT_FOUND',
+          message: 'state::on-changed is not registered yet',
+        },
       },
     ],
   },
+)
+
+export const engineObserverInfoDone = base(
+  'engine-obs-get',
+  'engine::observers::get',
+  { id: httpObserver.id },
+  wrapHarness(httpObserver),
 )
 
 /* ---------------- error fixture ---------------- */
@@ -269,18 +250,18 @@ export const engineFunctionsListGateError = base(
     error: {
       kind: 'function_error',
       message:
-        'trigger_failed: IIIInvocationError: invocation_failed: handler error',
+        'call_failed: IIIInvocationError: invocation_failed: handler error',
       details: {
         schema_version: 1,
         status: 'denied',
         denied_by: 'gate_unavailable',
         function_id: 'engine::functions::list',
-        reason: 'trigger_failed: directory engine unreachable',
+        reason: 'call_failed: directory engine unreachable',
       },
       content: [
         {
           type: 'text',
-          text: 'trigger_failed: directory engine unreachable',
+          text: 'call_failed: directory engine unreachable',
         },
       ],
     },
@@ -289,7 +270,7 @@ export const engineFunctionsListGateError = base(
 
 export const engineRunning = base(
   'engine-running',
-  'engine::triggers::list',
+  'engine::observers::list',
   {},
   undefined,
   { running: true },
@@ -423,22 +404,9 @@ export const engineWorkerInfoDone = base(
       { function_id: 'todo::list', worker_name: 'todo-app' },
       { function_id: 'todo::update', worker_name: 'todo-app' },
     ],
-    trigger_types: [],
-    registered_triggers: [
-      {
-        id: '6ebe7d64-3717-4acc-a02d-3f050fb86df2',
-        trigger_type: 'http',
-        function_id: 'todo::html',
-        worker_name: 'todo-app',
-        config_summary: '{"api_path":"/todos/html","http_method":"GET"}',
-      },
-      {
-        id: 'aa11bb22-cc33-dd44-ee55-ff6677889900',
-        trigger_type: 'http',
-        function_id: 'todo::list',
-        worker_name: 'todo-app',
-        config_summary: '{"api_path":"/todos","http_method":"GET"}',
-      },
+    observers: [
+      '6ebe7d64-3717-4acc-a02d-3f050fb86df2',
+      'aa11bb22-cc33-dd44-ee55-ff6677889900',
     ],
   }),
 )
@@ -473,11 +441,11 @@ export const engineWorkerInfoInternal = base(
         worker_name: 'iii-engine-functions',
       },
       {
-        function_id: 'engine::triggers::list',
+        function_id: 'engine::observers::list',
         worker_name: 'iii-engine-functions',
       },
       {
-        function_id: 'engine::registered-triggers::list',
+        function_id: 'engine::observers::get',
         worker_name: 'iii-engine-functions',
       },
       {
@@ -493,8 +461,7 @@ export const engineWorkerInfoInternal = base(
         worker_name: 'iii-engine-functions',
       },
     ],
-    trigger_types: [],
-    registered_triggers: [],
+    observers: [],
   },
 )
 
@@ -553,77 +520,65 @@ export const engineWorkerRegisterRunning = base(
   { running: true },
 )
 
-/* ---------------- engine::register_trigger ---------------- */
+/* ---------------- harness::observe ---------------- */
 
-export const engineRegisterTriggerSpawn = base(
-  'engine-register-trigger-spawn',
-  'engine::register_trigger',
+export const harnessObserveCron = base(
+  'harness-observe-cron',
+  'harness::observe',
   {
-    trigger_type: 'state',
-    function_id: 'harness::spawn',
-    config: { key: 'build', scope: 'ops' },
-    metadata: {
-      model: 'claude-sonnet-5',
-      session_id: 'console-f0aac029-62a3-43f8-953b-45d0d903a866',
-      task: 'You are the GATE REVIEWER for a deploy pipeline. Both state records ops/build and ops/tests must be green before you approve.',
-      options: { functions: { allow: ['state::get'] } },
+    function_id: 'cron::on-tick',
+    args: { expression: '0 0 3 * * * *' },
+    target: { function_id: 'ops::nightly-sweep' },
+  },
+  wrapHarness({ observer_id: 'obs-cron-01', once: false }),
+)
+
+export const harnessObserveState = base(
+  'harness-observe-state',
+  'harness::observe',
+  {
+    function_id: 'state::on-changed',
+    filters: {
+      'input.scope': { $eq: 'research' },
+      'input.key': { $eq: 'progress' },
     },
-  },
-  wrapHarness({ id: 'trg-abc123def456' }),
-)
-
-export const engineRegisterTriggerCron = base(
-  'engine-register-trigger-cron',
-  'engine::register_trigger',
-  {
-    trigger_type: 'cron',
-    function_id: 'ops::nightly-sweep',
-    config: { expression: '0 0 3 * * *' },
-  },
-  wrapHarness({ id: 'trg-cron-01' }),
-)
-
-export const engineRegisterTriggerSubscribe = base(
-  'engine-register-trigger-subscribe',
-  'engine::register_trigger',
-  {
-    trigger_type: 'state',
-    config: { key: 'progress', scope: 'research' },
     label: 'research-progress-watch',
-    metadata: { action: 'research progress changed' },
+    action: 'research progress changed',
     once: false,
   },
   wrapHarness({
     once: false,
-    subscription_id: 'sub_6c9c9f043f5f449dab6569d2f27a8c05',
+    observer_id: 'obs_6c9c9f043f5f449dab6569d2f27a8c05',
   }),
 )
 
-export const engineRegisterTriggerRunning = base(
-  'engine-register-trigger-running',
-  'engine::register_trigger',
+export const harnessObserveRunning = base(
+  'harness-observe-running',
+  'harness::observe',
   {
-    trigger_type: 'state',
-    function_id: 'harness::spawn',
-    config: { scope: 'ops' },
-    metadata: { model: 'claude-sonnet-5', task: 'watch for changes' },
+    function_id: 'state::on-changed',
+    filters: { 'input.scope': { $eq: 'ops' } },
+    label: 'ops watch',
   },
   undefined,
   { running: true },
 )
 
-/** A guarded call binding: long scope id, gating condition, call target with
+/** A guarded call observer: long scope id, gating condition, call target with
  * payload, and a bounded lifecycle — exercises every block of the details view. */
-export const engineRegisterTriggerCallGuarded = base(
-  'engine-register-trigger-call-guarded',
-  'engine::register_trigger',
+export const harnessObserveCallGuarded = base(
+  'harness-observe-call-guarded',
+  'harness::observe',
   {
-    trigger_type: 'state',
-    config: {
-      key: 'ready/agent1',
-      scope: 'code-review-console-7a7a991e-2394-4636-ac45-59964ebc57bc-k4m8',
+    function_id: 'state::on-changed',
+    filters: {
+      'input.scope': {
+        $eq: 'code-review-console-7a7a991e-2394-4636-ac45-59964ebc57bc-k4m8',
+      },
+      'input.key': { $eq: 'ready/agent1' },
     },
     label: 'Watching for Agent 1 readiness',
+    action: 'Agent 1 reported ready',
     target: {
       function_id: 'harness::send',
       event_into: 'event',
@@ -636,24 +591,28 @@ export const engineRegisterTriggerCallGuarded = base(
       },
     ],
     lifecycle: { once: true, max_fires: 1, expires_in_ms: 7_200_000 },
-    metadata: { action: 'Agent 1 reported ready', source: 'orchestrator' },
   },
   wrapHarness({
     once: true,
-    subscription_id: 'sub_c8d6d6d6d77b429d85a01dd633106138',
+    observer_id: 'obs_c8d6d6d6d77b429d85a01dd633106138',
   }),
 )
 
-/** Settled without an id: the engine answered but no binding was created. */
-export const engineRegisterTriggerFailed = base(
-  'engine-register-trigger-failed',
-  'engine::register_trigger',
+/** Settled without an id: the harness answered but no observer was created. */
+export const harnessObserveFailed = base(
+  'harness-observe-failed',
+  'harness::observe',
   {
-    trigger_type: 'state',
-    config: { key: 'progress', scope: 'research' },
+    function_id: 'state::on-changed',
+    filters: { 'input.key': { $eq: 'progress' } },
     label: 'research-progress-watch',
   },
-  { registered: false, reason: 'trigger type is not available in this scope' },
+  {
+    error: {
+      code: 'NOT_OBSERVABLE',
+      message: 'state::on-changed is not observable in this scope',
+    },
+  },
 )
 
 export const engineFixtures = [
@@ -663,10 +622,9 @@ export const engineFixtures = [
   engineFunctionInfoAnyValue,
   engineFunctionInfoRich,
   engineFunctionInfoNotFound,
-  engineTriggersListDone,
-  engineTriggersListFiltered,
-  engineRegisteredTriggersListDone,
-  engineRegisteredTriggersListPlainSummary,
+  engineObserversListDone,
+  engineObserversListFiltered,
+  engineObserverInfoDone,
   engineWorkersListDone,
   engineWorkersListFiltered,
   engineWorkersListEmpty,
@@ -675,12 +633,11 @@ export const engineFixtures = [
   engineWorkerInfoNotFound,
   engineWorkerRegisterDone,
   engineWorkerRegisterRunning,
-  engineRegisterTriggerSpawn,
-  engineRegisterTriggerCron,
-  engineRegisterTriggerSubscribe,
-  engineRegisterTriggerRunning,
-  engineRegisterTriggerCallGuarded,
-  engineRegisterTriggerFailed,
+  harnessObserveCron,
+  harnessObserveState,
+  harnessObserveRunning,
+  harnessObserveCallGuarded,
+  harnessObserveFailed,
   engineRunning,
   engineFunctionsListGateError,
 ] as const

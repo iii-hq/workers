@@ -17,10 +17,10 @@ const client = vi.hoisted(() => {
       handlers.set(id, handler)
       return () => handlers.delete(id)
     },
-    registerTrigger: vi.fn(() => vi.fn()),
+    observe: vi.fn(() => vi.fn()),
     // Every `engine::workers::list` read stays pending until the test
     // resolves it, so replies can be delivered in any order. An add fails.
-    trigger: vi.fn((fn: string) =>
+    call: vi.fn((fn: string) =>
       fn === 'compose::add'
         ? Promise.reject(new Error('timed out'))
         : new Promise<Reply>((resolve) => reads.push(resolve)),
@@ -106,7 +106,7 @@ describe('presence re-reads', () => {
     await flush()
     await act(async () => client.reads.shift()?.(listed()))
 
-    // The add fails, so install re-checks presence; a workers-available
+    // The add fails, so install re-checks presence; an engine::on-workers-changed
     // event starts a newer read before that re-check answers.
     await act(async () => status?.install())
     await flush()

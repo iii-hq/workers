@@ -20,7 +20,7 @@ An unregistered provider returns `code: "provider_unavailable"`.
 ## Invocation
 
 1. Read the registered contract with
-   `iii trigger engine::functions::info --json '{"function_id":"judge::evaluate"}'`.
+   `iii call engine::functions::info --json '{"function_id":"judge::evaluate"}'`.
    Use `judge::cancel` as `function_id` for that contract.
    For unfamiliar question/reply shapes,
    read [the mixed request and typed response examples](https://github.com/iii-hq/workers/blob/main/judge/reference.md#evaluate).
@@ -49,7 +49,7 @@ Structured values remain structured in Score legends. Noul can describe just one
 endpoint. Bare numbers and booleans are not top-level descriptions. A minimal mixed call:
 
 ```bash
-iii trigger judge::evaluate --json '{
+iii call judge::evaluate --json '{
   "timeout_ms": 3000,
   "evaluations": [{
     "id": "ticket-42",

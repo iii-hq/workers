@@ -30,7 +30,7 @@ import { formatAgeSecs, truncateId } from './format'
 import { parseSandboxList, type SandboxSummary } from './store'
 
 const CHIP_EVENTS_FN = 'iii::sandbox-code-runner-ui::chip-events'
-const CHIP_EVENT_TRIGGER_TYPE = 'sandbox-code-runner::event'
+const ON_EVENT_FN = 'sandbox-code-runner::on-event'
 
 export function createSandboxSessionChip(host: Host): SessionChipRegistration {
   function SandboxChip(_props: SessionChipProps) {
@@ -39,7 +39,7 @@ export function createSandboxSessionChip(host: Host): SessionChipRegistration {
     useEffect(() => {
       let cancelled = false
       host.iii
-        .trigger('sandbox::list', {})
+        .call('sandbox::list', {})
         .then((value) => {
           if (!cancelled) setSandboxes(parseSandboxList(value))
         })
@@ -47,7 +47,7 @@ export function createSandboxSessionChip(host: Host): SessionChipRegistration {
           if (!cancelled) setSandboxes(null)
         })
       let offHandler: (() => void) | null = null
-      let offTrigger: (() => void) | null = null
+      let offObserver: (() => void) | null = null
       try {
         offHandler = host.iii.on(CHIP_EVENTS_FN, (payload: unknown) => {
           if (cancelled) return
@@ -59,17 +59,16 @@ export function createSandboxSessionChip(host: Host): SessionChipRegistration {
           if (rec.daemon_absent === true) setSandboxes(null)
           else setSandboxes(parseSandboxList({ sandboxes: rec.sandboxes }))
         })
-        offTrigger = host.iii.registerTrigger({
-          type: CHIP_EVENT_TRIGGER_TYPE,
-          function_id: `${CHIP_EVENTS_FN}::${host.iii.browserId}`,
-          config: {},
-        })
+        offObserver = host.iii.observe(
+          { function_id: ON_EVENT_FN, filters: { 'input.kind': { $eq: 'fleet' } } },
+          `${CHIP_EVENTS_FN}::${host.iii.browserId}`,
+        )
       } catch {
         /* worker gone mid-session — the mount read stands */
       }
       return () => {
         cancelled = true
-        offTrigger?.()
+        offObserver?.()
         offHandler?.()
       }
     }, [])

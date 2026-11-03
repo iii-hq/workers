@@ -2,8 +2,8 @@
 name: kanban
 description: >-
   File-backed kanban board: create, read, move and comment on tickets by key
-  or uuid, assign agent profiles, and wake on comments through the
-  kanban:comment trigger instead of polling. Group tickets as subtasks and
+  or uuid, assign agent profiles, and wake on comments by observing
+  kanban::on-comment instead of polling. Group tickets as subtasks and
   file them under projects and releases. Reach for it whenever work is
   planned, dispatched, reported or reviewed as tickets.
 ---
@@ -50,7 +50,7 @@ itself: a due date, an alarm, a source system.
 
 - Not a general task queue or a durable job store; use `queue` for work that
   must be executed, and the board for work that must be planned and reviewed.
-- No author filter on `kanban:change`; use `kanban:comment` with
+- No author arg on `kanban::on-change`; observe `kanban::on-comment` with
   `exclude_author` for a feedback loop that must not wake on your own posts.
 - Deleting and restoring tickets is the human's action; agents move tickets.
 - Creating, shipping or archiving projects and releases, and converting a
@@ -110,12 +110,11 @@ reply, write `@kanban(id="<uuid>")` with the `id` a function returned — the
 console renders it as a ticket pill. (`kanban::mention::search` and
 `kanban::mention::get` serve the composer and that block; they are internal.)
 
-## Reactive triggers
+## Observing the board
 
-Register a `kanban:comment` trigger when a session or function should run
-every time someone comments on one ticket — the reviewer's answer after a
-hand-off, a human's reply, another agent's note — without re-reading the
-board.
+Observe `kanban::on-comment` when a session or function should run every
+time someone comments on one ticket — the reviewer's answer after a hand-off,
+a human's reply, another agent's note — without re-reading the board.
 
 Reach for it when:
 
@@ -125,36 +124,39 @@ Reach for it when:
   comment.
 
 If you only need the comment you just wrote, use the return value of
-`kanban::comment::create`; register a trigger only when a *different* author
-should wake you. `kanban:change` is the board-wide sibling: it fires on every
-event (`ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`,
-`ticket.restored`, `comment.created`) with the whole ticket, filtered by
-ticket and event name only, and is the right primitive for keeping a view in
-sync or for a done-watch on `ticket.moved`. Besides `ticket_id` and `events`
-it takes `parent_id` (fires for the parent and for any of its children) and
-`release_id` (fires for tickets in that release, and for the change that moves
-one out of it).
+`kanban::comment::create`; observe only when a *different* author should wake
+you. `kanban::on-change` is the board-wide sibling: the worker calls it on
+every event (`ticket.created`, `ticket.updated`, `ticket.moved`,
+`ticket.deleted`, `ticket.restored`, `comment.created`) with the whole
+ticket, selected by ticket and event name only, and it is the right function
+for keeping a view in sync or for a done-watch on `ticket.moved`. Besides
+`ticket_id` and `events` its args take `parent_id` (the parent and any of its
+children) and `release_id` (tickets in that release, and the change that
+moves one out of it).
 
-### How to bind
+### How to observe
 
-1. Register a handler, or omit `function_id` from an agent session to be woken.
-2. Register the trigger:
+From an agent session, `harness::observe` arms the wake; omit `target` to be
+woken in this session. A worker calls `iii.observe` with its own handler as
+the target.
 
 ```json
-engine::register_trigger {
-  "trigger_type": "kanban:comment",
-  "config": { "ticket_id": "KAN-7", "exclude_author": "<your profile id>", "ticket": "summary" },
+harness::observe {
+  "function_id": "kanban::on-comment",
+  "args": { "ticket_id": "KAN-7", "exclude_author": "<your profile id>", "ticket": "summary" },
   "once": false,
   "lifecycle": { "max_fires": 20, "expires_in_ms": 3600000 }
 }
 ```
 
-`ticket_id` or `parent_id` is required and matches the uuid or the key;
-`parent_id` fires for comments on the parent or any of its children, so one
-binding replaces one per child. `author`, `exclude_author` and `root_only`
-narrow further. `"ticket": "summary"` on
-either trigger type delivers the board-card fields instead of the whole
-ticket with its thread — the right choice for an agent that re-reads the
-ticket on a wake. Mutations fire triggers; reads do not. The worker delivers only to bindings in its own in-process map,
-so pair a standing wake with a `cron` check-in over `kanban::comment::list`.
-For the payload shape call `get function info` on the trigger type.
+The args belong to the kanban worker. `ticket_id` or `parent_id` is required
+(an observer with neither is rejected with `TICKET_OR_PARENT_REQUIRED`) and
+matches the uuid or the key; `parent_id` covers comments on the parent or any
+of its children, so one observer replaces one per child. `author`,
+`exclude_author` and `root_only` narrow further. `"ticket": "summary"` on
+either function delivers the board-card fields instead of the whole ticket
+with its thread — the right choice for an agent that re-reads the ticket on a
+wake. Writes call the functions; reads do not. Pair a standing wake with a
+`cron::on-tick` check-in over `kanban::comment::list`. For the args and the
+event shape, call `engine::functions::info` on the function (`args_format`,
+`response_format`).

@@ -74,12 +74,12 @@ export interface GetOptions {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Bus triggers                                                       */
+/*  Bus calls                                                          */
 /* ------------------------------------------------------------------ */
 
 export async function listConfigurations(): Promise<ConfigurationSchemaView[]> {
   const client = await getIiiClient()
-  const response = await client.trigger<ListResponse>('configuration::list', {})
+  const response = await client.call<ListResponse>('configuration::list', {})
   return response.configurations ?? []
 }
 
@@ -87,7 +87,7 @@ export async function getConfigurationSchema(
   id: string,
 ): Promise<ConfigurationSchemaView> {
   const client = await getIiiClient()
-  return client.trigger<ConfigurationSchemaView>('configuration::schema', {
+  return client.call<ConfigurationSchemaView>('configuration::schema', {
     id,
   })
 }
@@ -97,7 +97,7 @@ export async function getConfiguration(
   options: GetOptions = {},
 ): Promise<JsonValue> {
   const client = await getIiiClient()
-  const response = await client.trigger<GetResponse>('configuration::get', {
+  const response = await client.call<GetResponse>('configuration::get', {
     id,
     raw: options.raw ?? true,
   })
@@ -113,7 +113,7 @@ export async function setConfiguration(
   payload: SetConfigurationPayload,
 ): Promise<SetResponse> {
   const client = await getIiiClient()
-  return client.trigger<SetResponse>(
+  return client.call<SetResponse>(
     'configuration::set',
     payload as unknown as Record<string, unknown>,
   )

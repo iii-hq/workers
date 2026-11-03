@@ -1,5 +1,6 @@
 //! `worktree::prune` — the reconcile sweep. Every request field defaults so
-//! a cron binding can fire it with an empty `{}` payload.
+//! an observer of `cron::on-tick` can run it with the tick as its payload
+//! (the tick's fields are ignored).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -8,7 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::WError;
-use crate::events::{EventCtx, EventKind, RemovedEvent};
+use crate::events::{EventKind, RemovedEvent};
 use crate::functions::Deps;
 use crate::git::{ops, validate_abs_path};
 use crate::state;
@@ -211,16 +212,12 @@ async fn remove_record_and_emit(
     deps.emitter
         .emit(
             EventKind::Removed,
-            EventCtx {
-                repo_path: &record.repo_path,
-                worktree_id: &record.worktree_id,
-                session_id: record.session_id.as_deref(),
-            },
             &RemovedEvent {
                 worktree_id: record.worktree_id.clone(),
                 repo_path: record.repo_path.clone(),
                 branch: record.branch.clone(),
                 branch_deleted,
+                session_id: record.session_id.clone(),
                 timestamp: now_ms(),
             },
         )

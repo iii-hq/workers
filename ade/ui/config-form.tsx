@@ -1,9 +1,8 @@
 /**
  * Entry for the console worker's own injected UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/config-form.js and
- * served over the `console:script` trigger (see src/ui.rs). The stylesheet
- * is its own asset: styles.css ships over `console:style` as
- * console/styles.css.
+ * shipped as a `script` asset of `console::ui::asset` (see src/ui.rs). The
+ * stylesheet is its own `style` asset: console/styles.css.
  *
  * Contributions: the custom form for the `console` entry and an explicit,
  * declarative form for every configurable worker that does not ship its own

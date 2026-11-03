@@ -5,10 +5,9 @@
 # WebSocket like any external client — sidesteps the libkrun-VM-based
 # managed-worker setup, which is overkill for a test harness.
 #
-# Triggers are registered DYNAMICALLY by the harness via the SDK
-# (`registerTrigger` in runner.ts) so the harness can route dispatches to
-# its own sink functions. We don't list triggers under the worker's
-# config below.
+# The harness observes `storage::on-object-{created,deleted}` at runtime via
+# the SDK (`iii.observe` in runner.ts) so the object events reach its own
+# sink functions.
 
 providers:
   local:

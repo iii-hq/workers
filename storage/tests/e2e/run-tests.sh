@@ -33,7 +33,7 @@ NO_BUILD=0
 NO_PULL=0
 FILTER=""
 PROVIDERS="local"
-TRIGGER_PROVIDERS=""
+EVENT_PROVIDERS=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -42,19 +42,19 @@ for arg in "$@"; do
     --no-pull)              NO_PULL=1 ;;
     --filter=*)             FILTER="${arg#--filter=}" ;;
     --providers=*)          PROVIDERS="${arg#--providers=}" ;;
-    --trigger-providers=*)  TRIGGER_PROVIDERS="${arg#--trigger-providers=}" ;;
+    --event-providers=*)    EVENT_PROVIDERS="${arg#--event-providers=}" ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--providers=local|all|<csv>] [--trigger-providers=<csv>] [--keep] [--no-build] [--no-pull] [--filter=<substr>]
+Usage: $0 [--providers=local|all|<csv>] [--event-providers=<csv>] [--keep] [--no-build] [--no-pull] [--filter=<substr>]
 
   --providers=local           (default) only exercise native local storage.
                               No docker required.
   --providers=all             local + s3 + r2 via docker compose.
   --providers=local,s3        explicit subset (csv of: local, s3, r2).
-  --trigger-providers=<csv>   subset of --providers whose trigger plumbing is
-                              wired here (default: same as --providers). Set to
-                              local,s3 in CI so r2 trigger ERRORs (no Cloudflare
-                              Queue) don't propagate as a non-zero exit.
+  --event-providers=<csv>     subset of --providers whose object-event plumbing
+                              is wired here (default: same as --providers). Set
+                              to local,s3 in CI so r2 object-event ERRORs (no
+                              Cloudflare Queue) don't propagate as a non-zero exit.
   --keep                      Leave compose stack and tests/e2e/data/ in place.
   --no-build                  Skip cargo build of the storage worker.
   --no-pull                   Skip 'docker compose pull'; use cached images.
@@ -350,7 +350,7 @@ echo "[run-tests] storage worker pid=$WORKER_PID"
 
 deadline=$(( $(date +%s) + 30 ))
 while :; do
-  if "$III_BIN" trigger --port "$E2E_PORT" engine::functions::info function_id=storage::listBuckets >/dev/null 2>&1; then
+  if "$III_BIN" call --port "$E2E_PORT" engine::functions::info function_id=storage::listBuckets >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$WORKER_PID" 2>/dev/null; then
@@ -376,13 +376,13 @@ fi
 HARNESS_ENV+=("III_URL=ws://127.0.0.1:$E2E_PORT")
 HARNESS_ENV+=("HARNESS_REPORT_PATH=$REPORT_PATH")
 HARNESS_ENV+=("HARNESS_PROVIDERS=$PROVIDERS")
-# Forward HARNESS_TRIGGER_PROVIDERS — either from --trigger-providers= flag
+# Forward HARNESS_EVENT_PROVIDERS — either from --event-providers= flag
 # or inherited from caller's environment. Both empty → harness defaults to
 # fan-out across every provider in HARNESS_PROVIDERS.
-if [[ -n "$TRIGGER_PROVIDERS" ]]; then
-  HARNESS_ENV+=("HARNESS_TRIGGER_PROVIDERS=$TRIGGER_PROVIDERS")
-elif [[ -n "${HARNESS_TRIGGER_PROVIDERS:-}" ]]; then
-  HARNESS_ENV+=("HARNESS_TRIGGER_PROVIDERS=$HARNESS_TRIGGER_PROVIDERS")
+if [[ -n "$EVENT_PROVIDERS" ]]; then
+  HARNESS_ENV+=("HARNESS_EVENT_PROVIDERS=$EVENT_PROVIDERS")
+elif [[ -n "${HARNESS_EVENT_PROVIDERS:-}" ]]; then
+  HARNESS_ENV+=("HARNESS_EVENT_PROVIDERS=$HARNESS_EVENT_PROVIDERS")
 fi
 
 ( cd "$ROOT_DIR/workers/harness" && env "${HARNESS_ENV[@]}" npm run --silent dev ) > "$HARNESS_LOG" 2>&1 &

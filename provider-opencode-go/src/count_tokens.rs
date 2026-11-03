@@ -392,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn tools_count_in_the_envelope_the_wire_sends() {
         let tool = AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "Invoke an iii function".into(),
             parameters: json!({ "type": "object" }),
             label: None,

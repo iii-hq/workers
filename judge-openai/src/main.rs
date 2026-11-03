@@ -59,14 +59,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)?,
     );
     let secrets = register(&iii, config.clone(), client);
-    judge_provider::secrets::register_secret_trigger(
-        &iii,
-        secrets,
-        judge_openai::SECRET_CHANGED_ID,
-    );
+    judge_provider::secrets::observe_secret_changes(&iii, secrets, judge_openai::SECRET_CHANGED_ID);
     #[cfg(feature = "console-ui")]
     register::register_console_ui(&iii);
-    configuration::register_config_trigger(&iii, config)?
+    configuration::observe_config_changes(&iii, config)
         .run()
         .await;
     let result = wait_for_shutdown().await;

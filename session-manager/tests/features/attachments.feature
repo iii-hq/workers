@@ -51,16 +51,10 @@ Feature: session attachments — keep the original files a message was sent with
     And the response field "attachments.0.attachment_id" is "a_001"
 
   # Prevents: an upload re-ordering session::list or waking message
-  # subscribers before the message that carries it exists.
+  # observers before the message that carries it exists.
   Scenario: uploading is event-silent and leaves the session record alone
-    Given a binding "b1" on "session::message-added" delivering to "obs::all" with config:
-      """
-      {}
-      """
-    And a binding "b2" on "session::meta-updated" delivering to "obs::all" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-added" delivering to "obs::all"
+    And an observer "b2" of "session::on-meta-updated" delivering to "obs::all"
     And the clock advances by 300 ms
     When I call "session::put-attachment" with:
       """

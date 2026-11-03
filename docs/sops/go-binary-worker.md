@@ -68,7 +68,7 @@ to the existing Registry `type: binary` and `binaries` map. Release Control
 still selects the published version independently from source metadata.
 
 Go workers must support `--local-config --collect-interface` for registration
-capture. This mode registers typed functions and triggers against `III_URL`
+capture. This mode registers typed functions against `III_URL`
 without initializing storage, sessions, or external backends. A committed
 `config.collect.yaml`, when present, is hashed into the descriptor and passed
 through `--config` from the selected immutable source. Both PR capture and

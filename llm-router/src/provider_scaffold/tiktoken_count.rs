@@ -126,7 +126,7 @@ mod tests {
     fn system_prompt_and_tools_count_toward_the_total() {
         let base = count_chat_tokens("gpt-5", None, &[], &[user("hi")]);
         let tools = vec![AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "Invoke an iii function".into(),
             parameters: json!({ "type": "object" }),
             label: None,

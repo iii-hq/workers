@@ -26,7 +26,7 @@ export function registerCronPalette(host: Host): void {
         .filter((task) => (task.label ?? '').toLowerCase().includes(needle))
         .slice(0, ROWS)
         .map((task) => ({
-          id: task.subscriptionId,
+          id: task.observerId,
           title: task.label ?? 'Untitled schedule',
           detail: task.expression,
           keywords: [task.expression],
@@ -35,7 +35,7 @@ export function registerCronPalette(host: Host): void {
               pageId: 'cron',
               context: {
                 action: 'schedule',
-                subscriptionId: task.subscriptionId,
+                observerId: task.observerId,
               },
             }),
         }))
@@ -46,7 +46,7 @@ export function registerCronPalette(host: Host): void {
     {
       id: 'open',
       title: 'Open schedules',
-      detail: 'Natural-language and manual cron schedules, and system bindings',
+      detail: 'Natural-language and manual cron schedules, and system observers',
       keywords: ['cron', 'schedule', 'tasks'],
       run: () => host.panels?.open({ pageId: 'cron', context: {} }),
     },

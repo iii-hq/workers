@@ -842,7 +842,7 @@ fn start_on_demand(actions: &Actions, busy: &mut Option<String>, name: String) {
         None => {
             let _ = actions.errors.send(format!(
                 "{name} installs from the registry, not from this tree — \
-                 `iii trigger compose::add worker={name}`"
+                 `iii call compose::add worker={name}`"
             ));
         }
     }
@@ -2194,7 +2194,7 @@ fn draw_menu_overlay(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             styled_if(color, hint_style()),
         )));
         lines.push(Line::from(Span::styled(
-            format!("   iii trigger compose::add worker={name}"),
+            format!("   iii call compose::add worker={name}"),
             styled_if(color, hint_style()),
         )));
     }

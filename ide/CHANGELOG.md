@@ -4,12 +4,13 @@
 
 ### Added
 
-- **No polling in the IDE page.** Two new trigger types replace every timer
-  and focus re-read: `shell::git-changed` (bind `{ path }`; one event per
-  ~200 ms batch naming what moved in the repository — `head`, `index`,
-  `refs`, `worktrees`, `repository` — including a `.git` appearing in a
-  folder that had none) and `shell::turns::changed` (bind
-  `{ session_id }`; fires when the session's change history is stored).
+- **No polling in the IDE page.** Two new observable functions replace
+  every timer and focus re-read: `shell::on-git-changed` (observe with args
+  `{ path }`; one call per ~200 ms batch naming what moved in the
+  repository — `head`, `index`, `refs`, `worktrees`, `repository` —
+  including a `.git` appearing in a folder that had none) and
+  `shell::turns::on-changed` (filter on `input.session_id`; called when the
+  session's change history is stored).
   The branch chip no longer runs three gits on every click and focus
   change: it reads again when the worker says the repository moved, reads
   only `git status` when files change, and leaves a folder in no repository
@@ -18,7 +19,8 @@
   worker's word instead of every 1.5 s, the Source Control status follows
   stages and commits made in a terminal, and "Add to stack" (and the chat
   card of a `coder::scaffold-worker` that started its worker) follows the
-  `compose-operation` events of an operation bound before it starts
+  `compose::on-operation-progress` calls of an operation observed before it
+  starts
   instead of polling `compose::operation` and `compose::status` every
   second.
 - **Branch actions in the branch menu.** The IDE header's branch chip (the
@@ -152,7 +154,7 @@
   another. A diff that cannot load gets the same shape of state.
 - **Several Shell panes in one workspace tab.** The console passes a
   `paneId` to every page; the explorer keys its persisted state, its
-  terminal leases and the engine functions its live triggers call on it, so
+  terminal leases and the functions its live observers call on it, so
   two panes can browse two folders with separate terminal sessions and
   neither hears the other's file changes.
 - **A new empty pane.** The wordmark, the folder sentence with the picker,
@@ -169,6 +171,32 @@
 
 ### Changed
 
+- **iii observe v2 (iii-sdk 0.26.0).** The worker's event sources are
+  private functions whose handler returns the event, observed with
+  `iii.observe` (agents use `harness::observe`): `shell::on-changed` (args
+  `{ path, include_ignored? }`), `shell::on-git-changed` (args `{ path }`),
+  `shell::on-job-finished` (args `{ job_id? }`) and
+  `shell::turns::on-changed` (no args; filter on `input.session_id`).
+  Consumers of `shell::changed`, `shell::git-changed` and
+  `shell::job-finished` pass their old config as args; consumers of
+  `shell::turns::changed` filter on `input.session_id`. Each
+  watch starts with its first observer and stops with its last; a call
+  reaches the observers of its watch or path through the function's match
+  keys, and the observers of its job through its match predicate. An
+  observer of a job added after the job finished receives the retained
+  completion from a call with metadata `{ for_observer: <observer id> }`,
+  which the match hook gives to it alone, delivered with its `deliver`,
+  filters and `on` like a live one; each observer of a job receives the
+  completion once each time iii adds it, and an observer added again after
+  its worker's connection dropped and came back receives a retained
+  completion from a replay. The worker observes
+  `configuration::on-updated`, `harness::hook::on-pre-turn`, `on-post-turn`,
+  `on-pre-call` and
+  `on-post-call` (its handlers are `shell::turns::on-pre-call` and
+  `shell::turns::on-post-call`), and `harness::on-turn-started` /
+  `on-turn-completed`, and calls every function with `iii.call`. The console
+  page observes the same functions and renders `shell::*` calls through
+  `host.functionCalls`.
 - **Dot entries show in the explorer by default** (`.github`, `.gitignore`,
   `.cargo`…), as in other IDEs; the eye in the header still hides them, and
   git's own `.git` folder stays out. The choice is saved as `hideDotfiles`;
@@ -177,8 +205,8 @@
 
 - **Renamed: `shell` → `ide`.** The worker name, binary, Cargo package and
   registry entry carry the new name and dependents pin `ide`; the `shell::*`
-  function ids, the `shell::changed` trigger, the `shell` configuration entry,
-  the `data/shell/` directory and the `#/ext/shell` page are unchanged.
+  function ids, the `shell` configuration entry, the `data/shell/` directory
+  and the `#/ext/shell` page are unchanged.
 - **The explorer's per-pane state moved out of the `configuration` store
   and into the worker's data directory.** What a developer has open in a
   console pane (browsed folder, open tabs, expanded folders, view, diff

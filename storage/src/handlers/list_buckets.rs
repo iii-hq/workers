@@ -48,7 +48,7 @@ pub struct BucketSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_stage: Option<Stage>,
     /// Why the bucket's notifications source is not running (the bucket
-    /// works; its object triggers do not fire).
+    /// works; its object events are not called).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifications_error: Option<String>,
 }

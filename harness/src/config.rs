@@ -109,7 +109,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_router_timeout_ms")]
     pub router_timeout_ms: u64,
 
-    /// RPC timeout for `engine::*` and generic `iii.trigger` dispatch.
+    /// RPC timeout for `engine::*` and generic `iii.call` dispatch.
     /// Milliseconds.
     #[serde(default = "default_dispatch_timeout_ms")]
     pub dispatch_timeout_ms: u64,
@@ -120,7 +120,7 @@ pub struct WorkerConfig {
     pub stream_coalesce_ms: u64,
 
     /// Cron expression (6-field) for the pending-call expiry sweep. The one
-    /// structural field: a change re-binds the cron trigger live.
+    /// structural field: a change replaces the `cron::on-tick` observer live.
     #[serde(default = "default_sweep_expression")]
     pub sweep_expression: String,
 
@@ -208,8 +208,8 @@ impl WorkerConfig {
         schema
     }
 
-    /// The structural signature: the one field consumed by a live trigger
-    /// binding rather than per call. A change to it re-binds the cron sweep.
+    /// The structural signature: the one field consumed by a live observer
+    /// rather than per call. A change to it replaces the cron sweep observer.
     pub fn boot_signature(&self) -> BootSignature {
         BootSignature {
             sweep_expression: self.sweep_expression.clone(),
@@ -323,7 +323,7 @@ fn default_context_timeout_ms() -> u64 {
 }
 fn default_router_timeout_ms() -> u64 {
     // ≥ llm-router's 600s stream budget plus its ack margin: the held-open
-    // router::chat trigger must outlive the longest single provider stream.
+    // router::chat call must outlive the longest single provider stream.
     620_000
 }
 fn default_dispatch_timeout_ms() -> u64 {

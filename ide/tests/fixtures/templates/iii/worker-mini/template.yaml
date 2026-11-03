@@ -9,7 +9,7 @@ files:
   - workers/my-worker/src/index.ts
   - workers/my-worker/scripts/dev.sh
 next_steps:
-  - 'Call it: iii trigger my-worker::hello'
+  - 'Call it: iii call my-worker::hello'
 worker:
   dir: workers/my-worker
   name: my-worker

@@ -17,11 +17,8 @@ Feature: session::set-status — the coarse lifecycle status
 
   # Prevents: status changes that don't notify (spinners would hang) or
   # that report the wrong previous_status (transition animations break).
-  Scenario: a status change fires status_changed with the previous status
-    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
-      """
-      {}
-      """
+  Scenario: a status change calls session::on-status-changed with the previous status
+    Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
@@ -29,7 +26,7 @@ Feature: session::set-status — the coarse lifecycle status
     Then the call succeeds
     And the response field "status" is "working"
     And the response field "previous_status" is "idle"
-    And function "ui::status" received 1 "session::status-changed" delivery
+    And function "ui::status" received 1 "session::on-status-changed" delivery
     And delivery 0 to "ui::status" has "status" = "working"
     And delivery 0 to "ui::status" has "previous_status" = "idle"
     And delivery 0 to "ui::status" has "session_id" = "s_001"
@@ -37,10 +34,7 @@ Feature: session::set-status — the coarse lifecycle status
   # Prevents: duplicate status events on redundant driver calls — the
   # spec promises consumers a no-op fires nothing.
   Scenario: setting the same status again fires nothing
-    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     Given I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
@@ -52,16 +46,13 @@ Feature: session::set-status — the coarse lifecycle status
     Then the call succeeds
     And the response field "status" is "working"
     And the response field "previous_status" is "working"
-    And function "ui::status" received 1 "session::status-changed" delivery
+    And function "ui::status" received 1 "session::on-status-changed" delivery
 
   # Prevents: invisible in-turn phases — a reason change within one
   # "working" stretch must update the stored reason and re-emit so a
   # UI can walk "preparing context" -> "waiting for <model>" live.
   Scenario: a working-phase reason change updates and re-emits
-    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     Given I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working", "reason": "preparing context" }
@@ -75,7 +66,7 @@ Feature: session::set-status — the coarse lifecycle status
       { "session_id": "s_001" }
       """
     Then the response field "meta.status_reason" is "waiting for claude"
-    And function "ui::status" received 2 "session::status-changed" deliveries
+    And function "ui::status" received 2 "session::on-status-changed" deliveries
     And delivery 1 to "ui::status" has "status" = "working"
     And delivery 1 to "ui::status" has "previous_status" = "working"
     And delivery 1 to "ui::status" has "status_reason" = "waiting for claude"
@@ -83,10 +74,7 @@ Feature: session::set-status — the coarse lifecycle status
   # Prevents: duplicate events on redundant stamps — same status AND
   # same reason together stay a strict no-op.
   Scenario: same status with the same reason is still a no-op
-    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     Given I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working", "reason": "preparing context" }
@@ -96,15 +84,12 @@ Feature: session::set-status — the coarse lifecycle status
       { "session_id": "s_001", "status": "working", "reason": "preparing context" }
       """
     Then the call succeeds
-    And function "ui::status" received 1 "session::status-changed" delivery
+    And function "ui::status" received 1 "session::on-status-changed" delivery
 
   # Prevents: failures without a cause — error status must carry the
   # short reason for standalone UIs.
   Scenario: error stores the reason and the event carries it
-    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "error", "reason": "provider quota exhausted" }
@@ -138,10 +123,7 @@ Feature: session::set-status — the coarse lifecycle status
   # Prevents: the full driver lifecycle (idle -> working -> done)
   # emitting anything other than exactly one event per real transition.
   Scenario: a full turn lifecycle emits one event per transition
-    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "working" }
@@ -150,7 +132,7 @@ Feature: session::set-status — the coarse lifecycle status
       """
       { "session_id": "s_001", "status": "done" }
       """
-    Then function "ui::status" received 2 "session::status-changed" deliveries
+    Then function "ui::status" received 2 "session::on-status-changed" deliveries
     And delivery 0 to "ui::status" has "previous_status" = "idle"
     And delivery 1 to "ui::status" has "previous_status" = "working"
     And delivery 1 to "ui::status" has "status" = "done"
@@ -158,10 +140,7 @@ Feature: session::set-status — the coarse lifecycle status
   # Prevents: a user-stopped turn looking identical to a normally completed
   # turn after reconnect, when the transcript event may have been missed.
   Scenario: done retains a terminal reason
-    Given a binding "b1" on "session::status-changed" delivering to "ui::status" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     When I call "session::set-status" with:
       """
       { "session_id": "s_001", "status": "done", "reason": "stopped" }

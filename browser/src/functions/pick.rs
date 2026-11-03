@@ -1,7 +1,7 @@
 //! `browser::pick::start` / `stop` — DevTools inspect mode for the human in
 //! the console UI. Both are registered `internal`: picking is a human
 //! gesture, not an agent function, so they stay out of agent tool lists.
-//! The result arrives as a `browser::picked` trigger event.
+//! The result arrives as a call of `browser::on-picked`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,8 @@ pub struct PickStopInput {
 
 /// Neutral acknowledgement returned by the fire-and-forget internal
 /// functions (pick start/stop/resolve, screencast start/stop): they emit
-/// their result as a trigger event, so the direct return is just `{ ok }`.
+/// their result as an event function call, so the direct return is just
+/// `{ ok }`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AckOutput {
     pub ok: bool,

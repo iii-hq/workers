@@ -102,7 +102,7 @@ async fn happy_land_via_cas_to_unchecked_branch() {
     let branches = git(&s.repo, &["branch", "--list"]);
     assert!(!branches.contains(&format!("iii/{}", s.worktree_id)));
 
-    let landed = s.env.deliverer.events_of("worktree::landed");
+    let landed = s.env.deliverer.events_of("worktree::on-landed");
     assert_eq!(landed.len(), 1);
     assert_eq!(landed[0]["merged_sha"], feature_sha.as_str());
     let job = state::get_job(s.env.state.as_ref(), &job_id)
@@ -127,7 +127,7 @@ async fn happy_land_into_clean_checked_out_primary() {
     assert_eq!(branch_sha(&s.repo, "main"), feature_sha);
     // The primary checkout's tree was fast-forwarded too, never desynced.
     assert!(s.repo.join("feature.txt").is_file());
-    assert_eq!(s.env.deliverer.events_of("worktree::landed").len(), 1);
+    assert_eq!(s.env.deliverer.events_of("worktree::on-landed").len(), 1);
 }
 
 #[tokio::test]
@@ -143,7 +143,7 @@ async fn dirty_checked_out_primary_blocks_with_w413() {
     assert!(result.done);
 
     assert_eq!(branch_sha(&s.repo, "main"), main_before, "main untouched");
-    let blocked = s.env.deliverer.events_of("worktree::land-blocked");
+    let blocked = s.env.deliverer.events_of("worktree::on-land-blocked");
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0]["code"], "W413");
     assert_eq!(blocked[0]["reason"], "target_checked_out_dirty");
@@ -227,7 +227,7 @@ async fn rebase_conflict_left_in_progress_then_w402_then_force_restart() {
     assert!(result.done);
     assert_eq!(result.phase_completed, LandPhase::Rebase);
 
-    let blocked = s.env.deliverer.events_of("worktree::land-blocked");
+    let blocked = s.env.deliverer.events_of("worktree::on-land-blocked");
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0]["code"], "W410");
     assert_eq!(blocked[0]["reason"], "rebase_conflict");
@@ -284,7 +284,7 @@ async fn preflight_dirty_worktree_blocks_with_w220() {
     let deps = land_deps(&s.env).await;
     let result = run_step(&deps, &job_id).await.unwrap();
     assert!(result.done);
-    let blocked = s.env.deliverer.events_of("worktree::land-blocked");
+    let blocked = s.env.deliverer.events_of("worktree::on-land-blocked");
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0]["code"], "W220");
     assert_eq!(blocked[0]["reason"], "dirty");
@@ -315,7 +315,7 @@ async fn test_gate_failure_blocks_with_w411_and_keeps_worktree() {
 
     assert_eq!(branch_sha(&s.repo, "trunk"), trunk_before);
     assert!(s.wt_path.is_dir());
-    let blocked = s.env.deliverer.events_of("worktree::land-blocked");
+    let blocked = s.env.deliverer.events_of("worktree::on-land-blocked");
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0]["code"], "W411");
     assert_eq!(blocked[0]["reason"], "test_failed");
@@ -376,7 +376,7 @@ async fn target_moved_once_cas_retry_succeeds() {
     assert_eq!(job.blocked_code, None);
     // The landed head carries both the racer commit and the feature.
     assert_eq!(branch_sha(&s.repo, "trunk"), job.merged_sha.unwrap());
-    assert_eq!(s.env.deliverer.events_of("worktree::landed").len(), 1);
+    assert_eq!(s.env.deliverer.events_of("worktree::on-landed").len(), 1);
 }
 
 #[tokio::test]
@@ -408,7 +408,7 @@ async fn target_moved_past_retry_bound_blocks_with_w412() {
     assert!(result.done);
 
     assert_eq!(runner.call_count(), 2);
-    let blocked = s.env.deliverer.events_of("worktree::land-blocked");
+    let blocked = s.env.deliverer.events_of("worktree::on-land-blocked");
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0]["code"], "W412");
     assert_eq!(blocked[0]["reason"], "target_moved_exhausted");
@@ -502,7 +502,7 @@ async fn redelivery_at_every_phase_boundary_converges() {
         assert!(job.done, "job terminal after crash at write {fail_at}");
         assert_eq!(job.blocked_code, None);
         assert!(
-            !s.env.deliverer.events_of("worktree::landed").is_empty(),
+            !s.env.deliverer.events_of("worktree::on-landed").is_empty(),
             "landed emitted at least once after crash at write {fail_at}"
         );
 

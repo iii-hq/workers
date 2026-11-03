@@ -343,7 +343,7 @@ pub struct SkillsConfig {
     /// When `true` (default), the worker runs a boot-time reconcile to
     /// auto-download skills for `compose::status` workers that are missing
     /// from the global skills folder, and runs it again whenever a worker
-    /// connects (`engine::workers-available`).
+    /// connects (it observes `engine::on-workers-changed`).
     #[serde(default = "default_auto_download")]
     pub auto_download: bool,
 
@@ -407,7 +407,7 @@ pub struct SkillsConfig {
     pub function_search_judge_min_relevance: f64,
 
     /// Minimum judge relevance for the side lanes (installed skills and
-    /// registered triggers), finite and between 0 and 1 inclusive. Those
+    /// observers), finite and between 0 and 1 inclusive. Those
     /// documents score lower than functions for the same capability, so the
     /// default sits below `function_search_judge_min_relevance`. Hot-reloadable.
     #[serde(
@@ -428,7 +428,7 @@ pub struct SkillsConfig {
 
     /// With `choice`, the best document of each capability is always kept and
     /// every other one needs at least this probability. Finite, between 0 and
-    /// 1. Applies to functions, skills and triggers. Hot-reloadable.
+    /// 1. Applies to functions, skills and observers. Hot-reloadable.
     #[serde(
         default = "default_function_search_judge_choice_min_probability",
         deserialize_with = "deserialize_judge_choice_min_probability"
@@ -574,7 +574,7 @@ impl SkillsConfig {
     /// `skills_folder` / `local_skills_folder` / `agents_folder` /
     /// `agents_skills_folder`, `function_search_model_path` and `function_search_model_download` are baked into
     /// running tasks (and the fs-watch root set), and `auto_download` wires
-    /// the `worker`-trigger subscription + boot reconcile at startup — none
+    /// the worker-connection observer + boot reconcile at startup — none
     /// can be re-wired safely in place.
     pub fn topology(&self) -> Topology {
         Topology {

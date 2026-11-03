@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
 const now = Date.now()
@@ -10,11 +10,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionTriggerMessage>,
-): FunctionTriggerMessage {
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input,
     output,
@@ -249,7 +249,6 @@ export const directoryRegistryInfoDone = base(
           metadata: null,
         },
       ],
-      triggers: [],
     },
     skills_tree: {
       skills: [

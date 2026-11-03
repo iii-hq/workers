@@ -8,7 +8,7 @@
 //! ## What reloads live vs. restart-only
 //!
 //! [`on_config_change`] re-fetches the authoritative config (never trusting
-//! the trigger payload) and applies it in place:
+//! the event payload) and applies it in place:
 //!
 //! - A **`url`** change connects a NEW remote [`IIIClient`] first (background
 //!   connecting — cannot fail synchronously), registers every `expose` entry
@@ -37,7 +37,7 @@
 //! would look "new", get re-registered, and panic the reload task.
 //! [`crate::boot::BootHandle::local_registered`] tracks every id registered
 //! on the local client (seeded at boot with `bridge.invoke` /
-//! `bridge.invoke_async` and the boot forwards; [`register_config_trigger`]
+//! `bridge.invoke_async` and the boot forwards; [`observe_config_changes`]
 //! inserts [`CONFIG_FN_ID`] itself at the point it registers it, so a
 //! `forward` entry that happens to name `bridge::on-config-change` is
 //! correctly recognized as already-registered);
@@ -58,8 +58,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -93,6 +95,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "bridge::on-config-change";
+/// The configuration worker's event source.
+const ON_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// Upper bound on every `configuration::*` bus call (mirrors the engine's
@@ -119,7 +123,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&BridgeConfig>) -> Re
     let seed = seed.cloned().unwrap_or_default().normalized();
     payload["initial_value"] = seed.to_json();
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+        call_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
     })
     .await
 }
@@ -170,7 +174,7 @@ fn is_not_found(error: &str) -> bool {
 
 /// Distinguish an absent entry from a failed lookup before deciding whether to seed.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(
+    match call_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id() }),
@@ -210,12 +214,13 @@ impl ReloadCtx {
     }
 }
 
-/// Register `bridge::on-config-change` and subscribe it to
-/// `configuration:updated` events for the `bridge` entry. The handler ignores
-/// the trigger payload and re-fetches the authoritative value (the bus
-/// function is discoverable, so a caller-supplied payload must not be trusted
-/// to repoint config).
-pub async fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) -> Result<(), Error> {
+/// Register `bridge::on-config-change` and observe `configuration::on-updated`
+/// with it, filtered on the `bridge` entry's `configuration:updated` events.
+/// The handler ignores the event payload and re-fetches the authoritative
+/// value (the bus function is discoverable, so a caller-supplied payload must
+/// not be trusted to repoint config). The observer stays pending while the
+/// configuration worker is absent; the returned handle reports its state.
+pub async fn observe_config_changes(iii: &Arc<IIIClient>, boot: &BootHandle) -> ObserverHandle {
     let ctx = ReloadCtx::from_boot(boot);
     let engine = iii.clone();
     iii.register_function(
@@ -241,15 +246,16 @@ pub async fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) ->
         .await
         .insert(CONFIG_FN_ID.to_string());
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // Lives as long as the connection; dropping the handle keeps it.
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
 }
 
 /// True when the effective remote URL (config value, falling back to
@@ -293,7 +299,7 @@ async fn on_config_change(iii: &Arc<IIIClient>, ctx: &ReloadCtx) {
     // the only acquirer, so this never nests.
     let _guard = ctx.apply_lock.lock().await;
 
-    // 1. Fetch the authoritative value; never trust the trigger payload.
+    // 1. Fetch the authoritative value; never trust the event payload.
     let next = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -426,7 +432,7 @@ async fn on_config_change(iii: &Arc<IIIClient>, ctx: &ReloadCtx) {
     *ctx.cell.write().await = Arc::new(next.normalized());
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -435,8 +441,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -559,7 +565,7 @@ mod tests {
         );
     }
 
-    /// F1 regression: `register_config_trigger` inserts `CONFIG_FN_ID` into
+    /// F1 regression: `observe_config_changes` inserts `CONFIG_FN_ID` into
     /// `local_registered` at the point it registers the function — so a
     /// `forward` entry that happens to name `bridge::on-config-change` must
     /// yield NO addition, or the next reload panics on a duplicate id.

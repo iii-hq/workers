@@ -101,7 +101,7 @@ export function SentinelPage({
   const groups = useWorkerLive({
     iii: host.iii,
     handlerId: `iii::${PAGE_ID}-ui::events::${pane}`,
-    triggers: [EVENT.groupChanged, EVENT.investigationChanged],
+    sources: [EVENT.groupChanged, EVENT.investigationChanged],
     fetch: useCallback(
       () =>
         api
@@ -123,7 +123,7 @@ export function SentinelPage({
     ),
   })
 
-  // `useWorkerLive` re-reads on its triggers and its poll, not when the query
+  // `useWorkerLive` re-reads on its observed calls, not when the query
   // itself changes. Without this the list answers the previous question until
   // the next error arrives, and the search box looks broken.
   const refresh = useRef(groups.refresh)

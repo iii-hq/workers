@@ -83,7 +83,7 @@ export function useCodexAuth(iii: Host['iii']) {
       setView(state)
     }
     const current = (version: number) => !disposed && revision === version
-    const rpc = <T>(method: string, payload: Record<string, unknown> = {}) => iii.trigger<T>(prefix + method, payload)
+    const rpc = <T>(method: string, payload: Record<string, unknown> = {}) => iii.call<T>(prefix + method, payload)
 
     function stopLoginTimers() {
       clearTimeout(pollTimer)

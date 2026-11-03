@@ -436,9 +436,9 @@ function setupCopy(setup: JudgeSetup) {
     busy: starting ? `Starting ${names}…` : `Installing ${names}…`,
     failed: starting ? `Could not start ${names}` : `Could not install ${names}`,
     command: [
-      ...setup.start.map((name) => `iii trigger compose::restart container=${name}`),
+      ...setup.start.map((name) => `iii call compose::restart container=${name}`),
       ...(setup.add.length > 0
-        ? [`iii trigger compose::add ${setup.add.map((name) => `worker=${name}`).join(' ')}`]
+        ? [`iii call compose::add ${setup.add.map((name) => `worker=${name}`).join(' ')}`]
         : []),
     ].join('\n'),
   }
@@ -515,7 +515,7 @@ function JudgeProviderControl({
         detail={
           <>
             computer::run answers judge_unavailable until it is. Pick an installed provider, or add it:
-            <span className="console-worker-config-command">iii trigger compose::add worker=judge-{selected}</span>
+            <span className="console-worker-config-command">iii call compose::add worker=judge-{selected}</span>
           </>
         }
       />

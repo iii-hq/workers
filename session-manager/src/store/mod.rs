@@ -15,6 +15,8 @@
 //! A future SQL/blob backend can implement the same interface.
 
 mod bridge;
+#[cfg(test)]
+pub(crate) mod counting;
 mod fs;
 
 pub use bridge::BridgeStore;

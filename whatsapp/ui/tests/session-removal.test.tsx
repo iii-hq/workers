@@ -69,7 +69,7 @@ async function render(initial = [session('first'), session('second')]) {
   let sessions = initial
   let failure: Error | undefined
   let pendingDelete: Promise<Session> | undefined, pendingList: Promise<Session[]> | undefined
-  const trigger = vi.fn(async (id: string, input?: { session_id?: string }) => {
+  const call = vi.fn(async (id: string, input?: { session_id?: string }) => {
     if (id === 'whatsapp::sessions::list') return pendingList ?? sessions
     if (id !== 'whatsapp::sessions::delete') throw new Error(`Unexpected function: ${id}`)
     if (failure) throw failure
@@ -78,7 +78,7 @@ async function render(initial = [session('first'), session('second')]) {
     sessions = sessions.filter((item) => item !== removed)
     return removed
   })
-  const host = { iii: { trigger, on: () => () => {}, registerTrigger: () => () => {}, browserId: 'test' } } as unknown as Host
+  const host = { iii: { call, on: () => () => {}, observe: () => () => {}, browserId: 'test' } } as unknown as Host
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   await act(async () => root.render(<WhatsAppPage host={host} configurationId="test" paneId="pane" />))
@@ -86,7 +86,7 @@ async function render(initial = [session('first'), session('second')]) {
   const unmount = () => { if (mounted) { act(() => root.unmount()); mounted = false }; container.remove() }
   cleanups.push(unmount)
   return {
-    container, trigger, unmount,
+    container, call, unmount,
     setSessions(value: Session[]) { sessions = value },
     fail(error: Error) { failure = error },
     deferDelete(promise: Promise<Session>) { pendingDelete = promise },
@@ -98,7 +98,7 @@ async function render(initial = [session('first'), session('second')]) {
       await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     },
     selected() { return container.querySelector<HTMLSelectElement>('select')?.value ?? '' },
-    deleteCalls() { return trigger.mock.calls.filter(([id]) => id.endsWith('::delete')) },
+    deleteCalls() { return call.mock.calls.filter(([id]) => id.endsWith('::delete')) },
   }
 }
 beforeEach(() => {
@@ -156,7 +156,7 @@ describe('Session removal', () => {
     confirm.mockResolvedValue(false)
     const view = await render()
     await view.click('Make draft'); await view.click('Remove session')
-    expect(confirm.mock.calls[0][0].details).toEqual(['Your unsent draft will be discarded. A send already requested may still complete.'])
+    expect(confirm.mock.calls[0][0].description).toContain('Your unsent draft will be discarded. A send already requested may still complete.')
     expect(view.deleteCalls()).toHaveLength(0)
     expect(view.selected()).toBe('first')
   })

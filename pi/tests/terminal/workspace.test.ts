@@ -24,7 +24,7 @@ function fakeShell(
   const files: Record<string, string> = { ...options.files };
   const iii = {
     // biome-ignore lint/suspicious/noExplicitAny: minimal stand-in for the SDK client
-    trigger: async (request: any): Promise<any> => {
+    call: async (request: any): Promise<any> => {
       const payload = (request.payload ?? {}) as Record<string, unknown>;
       calls.push({ function_id: request.function_id, payload });
       switch (request.function_id) {

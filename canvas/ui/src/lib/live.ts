@@ -1,16 +1,21 @@
 /**
- * Live canvas events over the state worker's `state` trigger type.
+ * Live canvas events: the page observes the state worker's
+ * `state::on-changed`, filtered to scope "canvas".
  *
  * Canvas records live in state scope "canvas" (`record/<id>` plus the
  * `index` side key), so an agent creating or editing a canvas from chat
  * emits state events this page can stream — one list on mount, pushes
- * after, never polling. The binding is tab-scoped Message-path (the
- * `iii::` handler prefix keeps per-event invocations span-suppressed)
- * and is GC'd with the tab, same shape as the state and editor pages.
+ * after, never polling. The observer's target is a tab-scoped handler (the
+ * `iii::` handler prefix keeps per-event invocations span-suppressed) and
+ * the observer is disposed with the page, same shape as the state and
+ * editor pages.
  */
 
 import { useEffect, useRef } from 'react'
 import type { Host } from '@iii-dev/console-ui'
+
+/** The observed function: one call per committed state change. */
+const ON_CHANGED_FN = 'state::on-changed'
 
 const EVENTS_FN = 'iii::canvas-ui::events'
 
@@ -33,13 +38,12 @@ export function useCanvasStateEvents(
       if (!event || event.type !== 'state' || event.scope !== 'canvas') return
       handlerRef.current(event)
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: 'state',
-      function_id: `${EVENTS_FN}::${host.iii.browserId}`,
-      config: { scope: 'canvas' },
-    })
+    const dispose = host.iii.observe(
+      { function_id: ON_CHANGED_FN, filters: { 'input.scope': { $eq: 'canvas' } }, deliver: 'output' },
+      `${EVENTS_FN}::${host.iii.browserId}`,
+    )
     return () => {
-      offTrigger()
+      dispose()
       offHandler()
     }
   }, [host])

@@ -225,9 +225,19 @@ export function callsOf(host: TestHost, fn: string): Payload[] {
     .map((r) => (r.args.payload ?? {}) as Payload)
 }
 
-/** The live subscriptions bound to `trigger`. */
-export function subsOf(host: TestHost, trigger: string): Payload[] {
-  return [...host.subscriptions.values()].filter((s) => s.trigger === trigger).map((s) => s.config as Payload)
+/** The live observers of `fn` the app holds: their args and filters. */
+export function subsOf(host: TestHost, fn: string): Payload[] {
+  return [...host.subscriptions.values()]
+    .filter((s) => s.fn === fn)
+    .map((s) => ({ args: s.args, filters: s.filters }) as Payload)
+}
+
+/** What an observer of every call of a function holds. */
+export const EVERY_CALL: Payload = { args: {}, filters: {} }
+
+/** What an observer of one tab's calls holds. */
+export function tabObserver(session: string): Payload {
+  return { args: {}, filters: { 'input.session_id': { $eq: session } } }
 }
 
 /** The tab list's items as the host holds them. */

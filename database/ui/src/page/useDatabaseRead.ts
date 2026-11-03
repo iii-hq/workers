@@ -4,9 +4,9 @@ import { errText } from '../lib/errors'
 /**
  * One in-flight database read: run `fetcher` while `enabled`, re-run when
  * the fetcher identity changes (callers memo it on db/table/page deps) or on
- * `refresh`. No polling and no live trigger bindings on purpose — the worker
- * emits no change events yet (`database::row-change` is not functional), so
- * the page refreshes on demand instead of guessing.
+ * `refresh`. No polling and no observer on purpose: the Changes panel follows
+ * writes (`useRowChanges`) and offers the reload, so a read refreshes on
+ * demand instead of guessing.
  */
 
 export interface DatabaseRead<T> {

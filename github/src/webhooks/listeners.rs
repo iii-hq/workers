@@ -1,8 +1,8 @@
 //! A watch lives only while someone listens to it.
 //!
-//! `github::pr::event` bindings are the listeners. When the last binding that
-//! matched a watch goes away (its chat was deleted, or it unregistered), the
-//! watch is stopped; cleanup then releases its tunnel lease and deletes the
+//! Observers of `github::pr::on-event` are the listeners. When the last
+//! observer that matched a watch goes away (its chat was deleted, or it was
+//! disposed), the watch is stopped; cleanup then releases its tunnel lease and deletes the
 //! repository hook once no live watch remains there. The quick-tunnel stops
 //! with its last lease.
 
@@ -10,8 +10,8 @@ use super::types::{Data, EventFilter, Watch, WatchState};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::BTreeSet;
 
-/// Whether a binding with this filter receives events of this watch.
-/// Categories are ignored: a narrowed binding still listens to the watch.
+/// Whether an observer with this filter receives events of this watch.
+/// Categories are ignored: a narrowed observer still listens to the watch.
 pub fn listens(filter: &EventFilter, watch_id: &str, watch: &Watch) -> bool {
     filter.watch_id.as_ref().is_none_or(|v| v == watch_id)
         && filter
@@ -21,9 +21,9 @@ pub fn listens(filter: &EventFilter, watch_id: &str, watch: &Watch) -> bool {
         && filter.number.is_none_or(|v| v == watch.spec.number)
 }
 
-/// Live watches that a removed binding listened to and that no remaining
-/// binding listens to. A watch nobody ever armed a binding for is never
-/// selected: only losing a listener can orphan a watch.
+/// Live watches that a removed observer listened to and that no remaining
+/// observer listens to. A watch nobody ever observed is never selected: only
+/// losing a listener can orphan a watch.
 pub fn orphaned(data: &Data, removed: &[EventFilter]) -> Vec<String> {
     data.watches
         .iter()
@@ -33,15 +33,27 @@ pub fn orphaned(data: &Data, removed: &[EventFilter]) -> Vec<String> {
         .collect()
 }
 
-/// Local binding copies the engine no longer has. `known` must be read before
-/// listing the engine, so a binding registered meanwhile is never dropped.
-pub fn stale(known: &BTreeSet<String>, engine: &BTreeSet<String>) -> Vec<String> {
-    known.difference(engine).cloned().collect()
+/// Local subscribers to drop: those without an observer in `observed` that
+/// were also absent at the previous reconciliation (`absent_before`), so an
+/// observer the engine has not announced yet after a restart is never
+/// dropped. `known` must be read before `observed`, so an observer added
+/// meanwhile is never dropped. Returns the subscribers to drop and the ones
+/// absent for the first time, to check again next time.
+pub fn stale(
+    known: &BTreeSet<String>,
+    observed: &BTreeSet<String>,
+    absent_before: &BTreeSet<String>,
+) -> (Vec<String>, BTreeSet<String>) {
+    let (stale, absent): (Vec<String>, Vec<String>) = known
+        .difference(observed)
+        .cloned()
+        .partition(|id| absent_before.contains(id));
+    (stale, absent.into_iter().collect())
 }
 
-/// Mark the watches a removed binding left without listeners (an earlier mark
-/// is kept). They are not stopped yet: a one-shot wake is unregistered right
-/// after it fires and re-armed at the end of its turn.
+/// Mark the watches a removed observer left without listeners (an earlier mark
+/// is kept). They are not stopped yet: a one-shot wake is disposed right
+/// after it fires and observed again at the end of its turn.
 pub fn mark_orphans(data: &mut Data, removed: &[EventFilter], now: DateTime<Utc>) -> Vec<String> {
     let ids = orphaned(data, removed);
     for id in &ids {
@@ -53,7 +65,7 @@ pub fn mark_orphans(data: &mut Data, removed: &[EventFilter], now: DateTime<Utc>
 }
 
 /// Stop marked watches still without listeners after `grace`; clear the mark
-/// of those a binding listens to again. Returns the stopped ids.
+/// of those an observer listens to again. Returns the stopped ids.
 pub fn expire_orphans(data: &mut Data, now: DateTime<Utc>, grace: Duration) -> Vec<String> {
     let marked: Vec<String> = data
         .watches

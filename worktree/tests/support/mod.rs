@@ -15,12 +15,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::RwLock;
 
 use worktree::config::WorkerConfig;
 use worktree::error::{codes, WError};
-use worktree::events::{Emitter, EventDeliverer, EventKind, TriggerSets};
+use worktree::events::{Emitter, EventDeliverer};
 use worktree::functions::{create, Deps};
 use worktree::land::test_gate::{TestOutcome, TestRunner};
 use worktree::land::Enqueuer;
@@ -198,19 +198,19 @@ pub fn branch_sha(dir: &Path, branch: &str) -> String {
 // Fakes
 // ---------------------------------------------------------------------------
 
-/// Records every event delivery for assertions.
+/// Records every event call for assertions.
 #[derive(Default)]
 pub struct RecordingDeliverer {
     seen: Mutex<Vec<(String, Value)>>,
 }
 
 impl RecordingDeliverer {
-    pub fn events_of(&self, trigger_type: &str) -> Vec<Value> {
+    pub fn events_of(&self, function_id: &str) -> Vec<Value> {
         self.seen
             .lock()
             .unwrap()
             .iter()
-            .filter(|(t, _)| t == trigger_type)
+            .filter(|(f, _)| f == function_id)
             .map(|(_, v)| v.clone())
             .collect()
     }
@@ -222,37 +222,23 @@ impl RecordingDeliverer {
 
 #[async_trait]
 impl EventDeliverer for RecordingDeliverer {
-    async fn deliver(
-        &self,
-        trigger_type: &str,
-        _function_id: &str,
-        _namespace: Option<String>,
-        payload: Value,
-    ) {
+    fn is_observed(&self, _function_id: &str) -> bool {
+        true
+    }
+
+    async fn deliver(&self, function_id: &str, payload: Value) {
         self.seen
             .lock()
             .unwrap()
-            .push((trigger_type.to_string(), payload));
+            .push((function_id.to_string(), payload));
     }
 }
 
-/// An emitter with a catch-all binding on every trigger type, so every
+/// An emitter whose every event function counts as observed, so every
 /// emitted event lands in the recorder.
 pub fn recording_emitter() -> (Arc<Emitter>, Arc<RecordingDeliverer>) {
-    let sets = TriggerSets::new();
-    for kind in EventKind::all() {
-        sets.for_kind(kind)
-            .add(iii_sdk::trigger::TriggerConfig {
-                id: format!("test-{}", kind.trigger_type()),
-                function_id: "test::recv".into(),
-                config: json!({}),
-                metadata: None,
-                namespace: None,
-            })
-            .unwrap();
-    }
     let deliverer = Arc::new(RecordingDeliverer::default());
-    (Arc::new(Emitter::new(sets, deliverer.clone())), deliverer)
+    (Arc::new(Emitter::new(deliverer.clone())), deliverer)
 }
 
 /// Records enqueue calls; never dispatches.

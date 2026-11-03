@@ -140,7 +140,7 @@ export async function inspect(
 ): Promise<Inspection> {
   const bytes_base64 = await fileToBase64(file)
 
-  const classify = await iii.trigger<ClassifyResponse>(
+  const classify = await iii.call<ClassifyResponse>(
     'pdf::classify',
     { bytes_base64 },
     { timeoutMs: 60_000 },
@@ -150,7 +150,7 @@ export async function inspect(
     return { classify, markdown: null }
   }
 
-  const markdown = await iii.trigger<MarkdownResponse>(
+  const markdown = await iii.call<MarkdownResponse>(
     'pdf::to-markdown',
     { bytes_base64, max_chars: 0, per_page: true },
     { timeoutMs: 120_000 },

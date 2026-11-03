@@ -75,7 +75,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     // A direct parentless spawn carrying the starving whitelist — work
     // function only, no discovery. A parentless spawn inherits nothing, so
     // model, provider, and the native exposure (the suite's pinned-toolset
-    // surface; a requested policy defaults to agent_trigger) are explicit.
+    // surface; a requested policy defaults to agent_call) are explicit.
     .probe_after(
         1,
         SPAWN,

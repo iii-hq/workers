@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::evidence::{Evidence, FinalReport};
 use super::names::ScenarioNames;
 use super::{ASSESSMENTS, EXPECTED_ORDERS, EXPECTED_WRITERS, ORDERS_PER_WRITER};
-use super::{FINALIZATION_CLEANUP, PARALLEL_WRITES, REACTIVE_AGGREGATES, TRIGGER_ORCHESTRATION};
+use super::{FINALIZATION_CLEANUP, OBSERVER_ORCHESTRATION, PARALLEL_WRITES, REACTIVE_AGGREGATES};
 use crate::scenarios::{assessment, ObjectiveEvaluation};
 
 pub(super) fn missing_database() -> ObjectiveEvaluation {
@@ -33,7 +33,7 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
         .is_some_and(|first_spawn| {
             evidence
                 .watch
-                .trigger_catalog
+                .contract_read
                 .is_some_and(|catalog| catalog < first_spawn)
                 && evidence
                     .watch
@@ -122,7 +122,7 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
         && report_identity_matches
         && report_checks_pass
         && finalizer_completed
-        && evidence.active_run_triggers == 0;
+        && evidence.active_run_observers == 0;
 
     assessment::build_evaluation([
         PARALLEL_WRITES.full_or_zero(
@@ -137,7 +137,7 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
             aggregates_passed,
             format!("totals_match={totals_match}, report_counts_match={report_counts_match}"),
         ),
-        TRIGGER_ORCHESTRATION.full_or_zero(
+        OBSERVER_ORCHESTRATION.full_or_zero(
             orchestration_passed,
             format!(
                 "watch_before_writers={watch_before_writers}, \
@@ -153,7 +153,7 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
                  report_checks={report_checks_pass}, completion_wake={}, \
                  report_watch_before_finalizer={}, report_wake={}, finalizer_spawns={}, \
                  finalizer_in_tree={}, finalizer_wrote_report={}, root_wrote_report={}, \
-                 active_run_triggers={}",
+                 active_run_observers={}",
                 evidence.reports.len(),
                 evidence.completion_wake_delivered,
                 evidence.report_wake_before_finalizer,
@@ -162,7 +162,7 @@ pub(super) fn score(evidence: &Evidence, names: &ScenarioNames) -> ObjectiveEval
                 evidence.finalizer_in_tree,
                 evidence.finalizer_wrote_report,
                 evidence.root_wrote_report,
-                evidence.active_run_triggers,
+                evidence.active_run_observers,
             ),
         ),
     ])
@@ -191,7 +191,7 @@ fn watch_documented(report: Option<&FinalReport>) -> bool {
     };
     contains(report.watch_mechanism.as_deref(), "database")
         && report.reaction_function_id.as_deref() == Some("database::execute")
-        && contains(report.reaction_event.as_deref(), "database::row-changed")
+        && contains(report.reaction_event.as_deref(), "database::on-row-changed")
         && report
             .fallback_reason
             .as_deref()

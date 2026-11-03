@@ -54,7 +54,7 @@ async function render(currentStatus = status, narrow = false, tunnelEnabled = fa
   const pending: Array<Promise<MessagePage>> = []
   let statusError: Error | undefined
   let navigationAllowed = true
-  const trigger = vi.fn(async (id: string, input: { chat_id?: string; cursor?: string } = {}) => {
+  const call = vi.fn(async (id: string, input: { chat_id?: string; cursor?: string } = {}) => {
     if (id === 'whatsapp::cloud::status') { if (statusError) throw statusError; return currentStatus }
     if (id === 'whatsapp::cloud::tunnel::stop') tunnelEnabled = false
     if (id === 'whatsapp::cloud::tunnel::status' || id === 'whatsapp::cloud::tunnel::stop') return { enabled: tunnelEnabled, status: tunnelEnabled ? 'ready' : 'stopped', tunnel_id: 'webhooks', public_url: null, webhook_url: null, webhook_path: status.webhook_path, error: null }
@@ -65,7 +65,7 @@ async function render(currentStatus = status, narrow = false, tunnelEnabled = fa
       : page(input.chat_id!))
     throw new Error(`Unexpected function: ${id}`)
   })
-  const host = { iii: { trigger, on: () => () => {}, registerTrigger: () => () => {}, browserId: 'test' } } as unknown as Host
+  const host = { iii: { call, on: () => () => {}, observe: () => () => {}, browserId: 'test' } } as unknown as Host
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -75,7 +75,7 @@ async function render(currentStatus = status, narrow = false, tunnelEnabled = fa
   await act(async () => show())
   cleanups.push(() => { act(() => root.unmount()); container.remove() })
   return {
-    container, pending, errors, trigger, navigate,
+    container, pending, errors, call, navigate,
     setStatus(value: CloudStatus) { currentStatus = value },
     failStatus(error: Error) { statusError = error },
     restoreStatus() { statusError = undefined },
@@ -116,8 +116,8 @@ afterEach(() => {
 describe('Cloud conversation context', () => {
   it.each([false, true])('shows the recipient once in the header after a new message is accepted (narrow: %s)', async (narrow) => {
     const view = await render(status, narrow)
-    const original = view.trigger.getMockImplementation()!
-    view.trigger.mockImplementation(async (id, input) => id === 'whatsapp::cloud::messages::send_text'
+    const original = view.call.getMockImplementation()!
+    view.call.mockImplementation(async (id, input) => id === 'whatsapp::cloud::messages::send_text'
       ? { chat_id: chats[0].chat_id, message_id: 'wamid.header-test', status: 'accepted' }
       : original(id, input))
     await view.click('Test templates or attachments')
@@ -131,7 +131,7 @@ describe('Cloud conversation context', () => {
     expect(header.querySelector('[aria-label="Back to Cloud tests"]')).not.toBeNull()
     expect(header.querySelector('[aria-label="Refresh Cloud messages"]')).not.toBeNull()
     expect(view.container.querySelector(`[aria-label="Stored Cloud messages with ${chats[0].chat_id}"]`)).not.toBeNull()
-    expect(view.trigger.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
     expect(view.errors).not.toHaveBeenCalled()
   })
 
@@ -144,7 +144,7 @@ describe('Cloud conversation context', () => {
     expect(header.querySelector('.wa-ui-identity')?.textContent).toBe(chats[0].chat_id)
     expect(header.textContent?.split(chats[0].chat_id)).toHaveLength(2)
     expect(view.container.querySelector(`[aria-label="Stored Cloud messages with ${chats[0].title}"]`)).not.toBeNull()
-    expect(view.trigger.mock.calls.some(([id]) => id.includes('::send_'))).toBe(false)
+    expect(view.call.mock.calls.some(([id]) => id.includes('::send_'))).toBe(false)
   })
 
   it.each([false, true])('keeps recipient and message type help in the new-message header (narrow: %s)', async (narrow) => {
@@ -154,7 +154,7 @@ describe('Cloud conversation context', () => {
     expect(header.querySelector('h3.wa-ui-title')?.textContent).toBe('New Cloud message')
     expect(header.querySelector('.wa-ui-identity')?.textContent).toBe('Choose a recipient and message type.')
     expect(view.container.querySelector('[aria-label="Send a Cloud message"]')).not.toBeNull()
-    expect(view.trigger.mock.calls.some(([id]) => id.includes('::send_'))).toBe(false)
+    expect(view.call.mock.calls.some(([id]) => id.includes('::send_'))).toBe(false)
   })
 
   it.each([undefined, 'configured-whatsapp-worker'])('opens the Cloud configuration shortcut for %s without changing worker state', async (configurationId) => {
@@ -162,7 +162,7 @@ describe('Cloud conversation context', () => {
     expect(configurationBridge.mock.calls.every(([id]) => id === null)).toBe(true)
     await view.click('Configure Cloud API')
     expect(configurationBridge).toHaveBeenLastCalledWith(configurationId ?? 'whatsapp')
-    expect(view.trigger.mock.calls.every(([id]) => id === 'whatsapp::cloud::status')).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => id === 'whatsapp::cloud::status')).toBe(true)
     expect(view.container.querySelector('[aria-label="Send a Cloud message"]')).toBeNull()
   })
 
@@ -179,7 +179,7 @@ describe('Cloud conversation context', () => {
     expect(view.container.querySelector('[aria-label="Send a Cloud message"]')).toBeNull()
     expect(view.container.querySelector('[aria-label="Development webhook"]')).toBeNull()
     await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
-    expect(view.trigger.mock.calls.every(([id]) => id === 'whatsapp::cloud::status')).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => id === 'whatsapp::cloud::status')).toBe(true)
     expect(view.errors).not.toHaveBeenCalled()
   })
 
@@ -193,7 +193,7 @@ describe('Cloud conversation context', () => {
     view.restoreStatus()
     await view.click('Try again')
     expect(view.container.textContent).not.toContain('Could not refresh Cloud API status')
-    expect(view.trigger.mock.calls.every(([id]) => id === 'whatsapp::cloud::status')).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => id === 'whatsapp::cloud::status')).toBe(true)
   })
 
   it('opens the test workspace after account setup without starting a tunnel or sending', async () => {
@@ -204,7 +204,7 @@ describe('Cloud conversation context', () => {
     expect(view.container.textContent).not.toContain('Set up Meta Cloud API')
     expect(view.container.querySelector('[aria-label="Cloud API integration test"]')).not.toBeNull()
     expect(view.container.querySelector('aside')).not.toBeNull()
-    expect(view.trigger.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
   })
 
   it.each([false, true])('keeps stored conversations accessible during incomplete setup (narrow: %s)', async (narrow) => {
@@ -215,7 +215,7 @@ describe('Cloud conversation context', () => {
     await view.click('Customer A')
     expect(view.texts()).toEqual([`${chats[0].chat_id}: middle`, `${chats[0].chat_id}: new`])
     expect(view.container.querySelector('[aria-label="Send a Cloud message"]')).toBeNull()
-    expect(view.trigger.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
     await view.click('Back to setup')
     expect(view.container.textContent).toContain('Set up Meta Cloud API')
   })
@@ -227,8 +227,8 @@ describe('Cloud conversation context', () => {
     const stop = Array.from(view.container.querySelectorAll('button')).find((button) => button.textContent === 'Stop tunnel')!
     expect(stop?.disabled).toBe(false)
     await view.click('Stop tunnel')
-    expect(view.trigger.mock.calls.filter(([id]) => id === 'whatsapp::cloud::tunnel::stop')).toHaveLength(1)
-    expect(view.trigger.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start'))).toBe(true)
+    expect(view.call.mock.calls.filter(([id]) => id === 'whatsapp::cloud::tunnel::stop')).toHaveLength(1)
+    expect(view.call.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start'))).toBe(true)
   })
 
   it('keeps an active tunnel mounted and stoppable during a transient status failure', async () => {
@@ -239,8 +239,8 @@ describe('Cloud conversation context', () => {
     expect(view.container.querySelector('[aria-label="Development webhook"]')).toBe(tunnel)
     expect(view.container.textContent).toContain('Could not refresh Cloud API status')
     await view.click('Stop tunnel')
-    expect(view.trigger.mock.calls.filter(([id]) => id === 'whatsapp::cloud::tunnel::stop')).toHaveLength(1)
-    expect(view.trigger.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start'))).toBe(true)
+    expect(view.call.mock.calls.filter(([id]) => id === 'whatsapp::cloud::tunnel::stop')).toHaveLength(1)
+    expect(view.call.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start'))).toBe(true)
   })
 
   it.each(['test', 'conversation'] as const)('preserves the %s draft through a transient status failure', async (form) => {
@@ -261,7 +261,7 @@ describe('Cloud conversation context', () => {
     view.restoreStatus()
     await view.click('Try again')
     expect(view.container.querySelector<HTMLTextAreaElement>(selector)?.value).toBe('Keep this unsent draft')
-    expect(view.trigger.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start'))).toBe(true)
   })
 
   it.each([false, true])('makes both first-test routes discoverable before the form (narrow: %s)', async (narrow) => {
@@ -277,13 +277,13 @@ describe('Cloud conversation context', () => {
     expect(heading.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     const check = Array.from(view.container.querySelectorAll('button')).find((button) => button.textContent === 'Check connection')!
     expect(check.closest('[hidden]')).toBeNull()
-    expect(view.trigger.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('templates::list'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('templates::list'))).toBe(true)
     await view.click('Use an approved template')
     expect(view.container.querySelector('[aria-label="Cloud API integration test"]')).toBeNull()
     expect(view.container.querySelector<HTMLSelectElement>('[aria-label="Cloud message type"]')?.value).toBe('template')
     expect(view.container.querySelector('[aria-label="Cloud message template"]')?.textContent).toContain('request_update')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
-    expect(view.trigger.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.every(([id]) => !id.includes('send_') && !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
   })
 
   it('respects draft navigation before opening the template starter', async () => {
@@ -298,11 +298,11 @@ describe('Cloud conversation context', () => {
     expect(view.navigate).toHaveBeenCalledTimes(1)
     expect(view.container.querySelector('.wa-ui-test-form textarea')).toBe(textarea)
     expect(textarea.value).toBe('Keep this unsent test')
-    expect(view.trigger.mock.calls.some(([id]) => id.endsWith('templates::list'))).toBe(false)
+    expect(view.call.mock.calls.some(([id]) => id.endsWith('templates::list'))).toBe(false)
     view.allowNavigation()
     await view.click('Use an approved template')
     expect(view.container.querySelector<HTMLSelectElement>('[aria-label="Cloud message type"]')?.value).toBe('template')
-    expect(view.trigger.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
+    expect(view.call.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
   })
 
   it('keeps the template draft and selected mode during a failed status refresh and recovery', async () => {
@@ -326,8 +326,8 @@ describe('Cloud conversation context', () => {
     expect(field.value).toBe('Ada')
     expect(recipient.value).toBe('US.ENT.Customer123')
     expect(send.disabled).toBe(false)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
-    expect(view.trigger.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
   })
 
   it('opens regular conversations and new messages in text mode after using the template starter', async () => {
@@ -337,15 +337,15 @@ describe('Cloud conversation context', () => {
     expect(view.container.querySelector<HTMLSelectElement>('[aria-label="Cloud message type"]')?.value).toBe('text')
     await view.click('New Cloud message')
     expect(view.container.querySelector<HTMLSelectElement>('[aria-label="Cloud message type"]')?.value).toBe('text')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
-    expect(view.trigger.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
   })
 
   it.each(['text', 'template'])('keeps a new %s message receipt when it becomes a conversation', async (mode) => {
     const view = await render()
-    const original = view.trigger.getMockImplementation()!
+    const original = view.call.getMockImplementation()!
     const messageId = `wamid.accepted-${mode}`
-    view.trigger.mockImplementation(async (id, input) => id === `whatsapp::cloud::messages::send_${mode}`
+    view.call.mockImplementation(async (id, input) => id === `whatsapp::cloud::messages::send_${mode}`
       ? { chat_id: chats[0].chat_id, message_id: messageId, status: 'accepted' }
       : original(id, input))
     await view.click(mode === 'template' ? 'Use an approved template' : 'New Cloud message')
@@ -365,13 +365,13 @@ describe('Cloud conversation context', () => {
     expect(view.container.textContent).not.toContain('Accepted by Meta')
     await view.click('Customer A')
     expect(view.container.querySelector<HTMLInputElement>('[id$="-message-id"]')?.value).toBe(messageId)
-    expect(view.trigger.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
   })
 
   it('keeps the chosen template mode after a successful send from the general new-message entry', async () => {
     const view = await render()
-    const original = view.trigger.getMockImplementation()!
-    view.trigger.mockImplementation(async (id, input) => id === 'whatsapp::cloud::messages::send_template'
+    const original = view.call.getMockImplementation()!
+    view.call.mockImplementation(async (id, input) => id === 'whatsapp::cloud::messages::send_template'
       ? { chat_id: chats[0].chat_id, message_id: 'wamid.template-general', status: 'accepted' }
       : original(id, input))
     await view.click('Test templates or attachments')
@@ -386,13 +386,13 @@ describe('Cloud conversation context', () => {
     expect(view.container.querySelector<HTMLInputElement>('[id$="-body:customer"]')?.value).toBe('')
     expect(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Cloud template parameters"]')?.value).toBe('')
     expect(Array.from(view.container.querySelectorAll('button')).find((button) => button.textContent === 'Send template')?.disabled).toBe(true)
-    expect(view.trigger.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
   })
 
   it('restores composer recipient, selected type and receipt after the Cloud transport remounts, scoped to its account', async () => {
     const view = await render()
-    const original = view.trigger.getMockImplementation()!
-    view.trigger.mockImplementation(async (id, input) => id === 'whatsapp::cloud::messages::send_template'
+    const original = view.call.getMockImplementation()!
+    view.call.mockImplementation(async (id, input) => id === 'whatsapp::cloud::messages::send_template'
       ? { chat_id: chats[0].chat_id, message_id: 'wamid.retained-template', status: 'accepted' }
       : original(id, input))
     await view.click('Use an approved template')
@@ -412,14 +412,14 @@ describe('Cloud conversation context', () => {
     view.setStatus(status)
     await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
     expect(view.container.querySelector<HTMLInputElement>('[id$="-message-id"]')?.value).toBe('wamid.retained-template')
-    expect(view.trigger.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
   })
 
   it.each(['draft', 'unknown'])('does not resurrect a prior accepted receipt beside a later %s attempt after remount', async (nextAttempt) => {
     const view = await render()
-    const original = view.trigger.getMockImplementation()!
+    const original = view.call.getMockImplementation()!
     let sendCount = 0
-    view.trigger.mockImplementation(async (id, input) => {
+    view.call.mockImplementation(async (id, input) => {
       if (id !== 'whatsapp::cloud::messages::send_text') return original(id, input)
       if (++sendCount === 1) return { chat_id: chats[0].chat_id, message_id: 'wamid.previous-accepted', status: 'accepted' }
       throw new Error('Request timed out; outcome unknown')
@@ -441,13 +441,13 @@ describe('Cloud conversation context', () => {
       expect(view.container.textContent).toContain('Send not confirmed')
       expect(view.container.textContent).toContain('Send again')
     }
-    expect(view.trigger.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(nextAttempt === 'unknown' ? 2 : 1)
+    expect(view.call.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(nextAttempt === 'unknown' ? 2 : 1)
   })
 
   it('checks the existing uncertain-send conversation by refreshing its archive without navigating or sending', async () => {
     const view = await render()
-    const original = view.trigger.getMockImplementation()!
-    view.trigger.mockImplementation(async (id, input) => {
+    const original = view.call.getMockImplementation()!
+    view.call.mockImplementation(async (id, input) => {
       if (id === 'whatsapp::cloud::messages::send_text') throw new Error('Request timed out')
       return original(id, input)
     })
@@ -455,20 +455,20 @@ describe('Cloud conversation context', () => {
     await view.fill('Cloud message text', 'Uncertain attempt')
     await view.click('Send')
     const navigationCount = view.navigate.mock.calls.length
-    const reads = view.trigger.mock.calls.filter(([id]) => id === 'whatsapp::cloud::messages::list').length
+    const reads = view.call.mock.calls.filter(([id]) => id === 'whatsapp::cloud::messages::list').length
     await view.click('Check this conversation')
     expect(view.navigate).toHaveBeenCalledTimes(navigationCount)
-    expect(view.trigger.mock.calls.filter(([id]) => id === 'whatsapp::cloud::messages::list')).toHaveLength(reads + 1)
-    expect(view.trigger.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id === 'whatsapp::cloud::messages::list')).toHaveLength(reads + 1)
+    expect(view.call.mock.calls.filter(([id]) => id.includes('::send_'))).toHaveLength(1)
     expect(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Cloud message text"]')?.value).toBe('Uncertain attempt')
     expect(view.container.textContent).toContain('Send not confirmed')
   })
 
   it('announces the connection check failure and its recovery result', async () => {
     const view = await render()
-    const original = view.trigger.getMockImplementation()!
+    const original = view.call.getMockImplementation()!
     let failed = true
-    view.trigger.mockImplementation(async (id, input) => {
+    view.call.mockImplementation(async (id, input) => {
       if (id !== 'whatsapp::cloud::check_connection') return original(id, input)
       if (failed) throw new Error('Check the account credentials and try again.')
       return { phone: { id: '456', display_phone_number: '+1 555 123 4567' }, phone_in_business_account: true, subscribed_apps: [] }
@@ -480,7 +480,7 @@ describe('Cloud conversation context', () => {
     expect(view.container.querySelector('[role="status"]')?.textContent).toContain('Business number verified')
     expect(view.container.querySelector('.wa-ui-test-preparation')?.textContent).toContain('+1 555 123 4567')
     expect(view.container.querySelector('.wa-ui-test-preparation')?.textContent).not.toContain('Check connection above')
-    expect(view.trigger.mock.calls.some(([id]) => id.includes('::send_'))).toBe(false)
+    expect(view.call.mock.calls.some(([id]) => id.includes('::send_'))).toBe(false)
   })
 
   it('keeps the test visible on narrow panes and provides a route to stored history', async () => {
@@ -507,7 +507,7 @@ describe('Cloud conversation context', () => {
     expect(panel.textContent).toContain('Development webhook')
     await view.click('Webhook setup')
     expect(panel.hidden).toBe(true)
-    expect(view.trigger.mock.calls.every(([id]) => !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => !id.endsWith('::start') && !id.endsWith('::stop'))).toBe(true)
   })
 
   it('opens connection details when webhook configuration is incomplete', async () => {
@@ -551,7 +551,7 @@ describe('Cloud conversation context', () => {
     expect(view.texts()).toEqual(expected)
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
     expect(view.texts()).toEqual(expected)
-    expect(view.trigger.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
+    expect(view.call.mock.calls.some(([id]) => id.includes('send_'))).toBe(false)
   })
 
   it('removes the history when starting a new conversation', async () => {

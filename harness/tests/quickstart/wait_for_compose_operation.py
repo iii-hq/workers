@@ -94,10 +94,10 @@ def fetch_operation(
         completed = subprocess.run(
             [
                 iii_bin,
-                "trigger",
+                "call",
                 "compose::operation",
-                "--port",
-                str(engine_port),
+                "--engine",
+                f"ws://127.0.0.1:{engine_port}",
                 "--timeout-ms",
                 str(request_timeout_ms),
                 "--json",

@@ -115,7 +115,7 @@ func run() error {
 		if e != nil {
 			return nil, errors.New("invalid migration request")
 		}
-		return client.Trigger(ctx, iii.TriggerRequest{FunctionID: id, Namespace: ns, Data: data, Timeout: 30 * time.Second})
+		return client.Call(ctx, iii.CallRequest{FunctionID: id, Namespace: ns, Payload: data, Timeout: 30 * time.Second})
 	}
 	if err = databasestore.Validate(ctx, call, *dbName, 30*time.Second); err != nil {
 		return err

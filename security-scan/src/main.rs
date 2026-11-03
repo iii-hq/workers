@@ -4,9 +4,8 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, Deliver, InitOptions, Source};
 use security_scan::{
     configuration, events, functions, manifest, IiiRuntime, RunStatusV1, SecurityScanExecutor,
     SecurityScanService,
@@ -75,31 +74,21 @@ async fn main() -> Result<()> {
         executor: executor.clone(),
         action_executor: action_executor.clone(),
     });
-    // Worker-owned change trigger types (run, reconciliation, action); register
+    // Worker-owned change functions (run, reconciliation, action); register
     // them before the functions and UI that consumers pair with them.
-    events::register_trigger_types(&iii, &runtime.change_feed());
+    events::register_functions(&iii);
     functions::register_all(&iii, &deps);
     security_scan::ui::register(&iii);
 
-    let mut schedule_handles =
-        security_scan::schedule::register(&iii, deps.service.clone(), Arc::new(config.clone()))
-            .await;
-    let initial_schedule_count = schedule_handles.bound_schedule_count();
+    let schedule_handles =
+        security_scan::schedule::register(&iii, deps.service.clone(), Arc::new(config.clone()));
 
-    let _completion_trigger = match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "harness::turn-completed".into(),
-        function_id: functions::TURN_COMPLETED_ID.into(),
-        config: serde_json::json!({}),
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    }) {
-        Ok(trigger) => Some(trigger),
-        Err(error) => {
-            tracing::warn!(%error, "Harness completion doorbell binding failed; polling remains active");
-            None
-        }
-    };
+    // Harness completion doorbell. The observer stays pending while the
+    // harness is not running; polling covers that gap.
+    let _turn_completed = iii.observe(
+        Source::function(functions::HARNESS_ON_TURN_COMPLETED_FN).deliver(Deliver::Output),
+        functions::TURN_COMPLETED_ID,
+    );
 
     let recovery_runtime = runtime.clone();
     let recovery_executor = executor.clone();
@@ -117,7 +106,6 @@ async fn main() -> Result<()> {
         interval.tick().await;
         loop {
             interval.tick().await;
-            schedule_handles.recover_bindings().await;
             reconcile_runs(
                 &recovery_runtime,
                 &recovery_executor,
@@ -129,13 +117,12 @@ async fn main() -> Result<()> {
 
     tracing::info!(
         repositories = deps.service.configured_repository_count(),
-        schedules = initial_schedule_count,
+        schedules = schedule_handles.schedule_count(),
         "security-scan ready"
     );
     tokio::signal::ctrl_c().await?;
     recovery.abort();
     let _ = recovery.await;
-    events::unregister_trigger_types(&iii);
     iii.shutdown_async().await;
     Ok(())
 }

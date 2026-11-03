@@ -37,7 +37,7 @@ export async function listHarnessProjects(
   providedClient?: IiiClient,
 ): Promise<HarnessProject[]> {
   const client = providedClient ?? (await getIiiClient())
-  const response = await client.trigger<ProjectListResponse>(
+  const response = await client.call<ProjectListResponse>(
     HARNESS_PROJECTS_LIST_FUNCTION_ID,
     {},
   )
@@ -51,7 +51,7 @@ export async function upsertHarnessProject(
   name?: string,
 ): Promise<HarnessProject> {
   const client = await getIiiClient()
-  const response = await client.trigger<ProjectUpsertResponse>(
+  const response = await client.call<ProjectUpsertResponse>(
     HARNESS_PROJECTS_UPSERT_FUNCTION_ID,
     name === undefined ? { path } : { path, name },
   )
@@ -66,7 +66,7 @@ export async function upsertHarnessProject(
 
 export async function deleteHarnessProject(path: string): Promise<boolean> {
   const client = await getIiiClient()
-  const response = await client.trigger<ProjectDeleteResponse>(
+  const response = await client.call<ProjectDeleteResponse>(
     HARNESS_PROJECTS_DELETE_FUNCTION_ID,
     { path },
   )

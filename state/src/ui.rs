@@ -4,15 +4,16 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `state/page.js` (`console:script`) — a state-manager page (scopes →
-//!   keys → JSON value editor), plus the function-trigger renderer and the
+//! - `state/page.js` (a `script` asset) — a state-manager page (scopes →
+//!   keys → JSON value editor), plus the function-call renderer and the
 //!   custom configuration form its `setup(host)` registers.
-//! - `state/styles.css` (`console:style`) — the stylesheet, every rule
+//! - `state/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="state"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `state::ui-content`, one
-//! Message-path trigger per asset, `III_STATE_UI_WATCH` hot-reload watcher)
+//! `console::ui::asset` observer per asset with args `{ kind, path }`,
+//! `III_STATE_UI_WATCH` hot-reload watcher)
 //! lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and
 //! embeds their bytes.
@@ -21,8 +22,8 @@
 //! external — they resolve through the console's import map at runtime) and
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_STATE_UI_WATCH` to the build output directory
-//! (or `1` for `ui/dist`): the worker polls both files and re-registers a
-//! changed asset's trigger — every open console tab hot-swaps it.
+//! (or `1` for `ui/dist`): the worker polls both files and replaces a
+//! changed asset's observer — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

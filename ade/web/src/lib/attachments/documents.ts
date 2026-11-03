@@ -23,14 +23,14 @@ import {
   ATTACHED_FILE_PREFIX,
   type AttachmentFailure,
   type AttachmentReadSummary,
+  type CallFn,
+  callOr,
   describeWorkerFailure,
   escapeAttr,
   extensionOf,
   failureBlock,
   fileToBase64,
   reportDropped,
-  type TriggerFn,
-  triggerOr,
 } from './shared'
 
 export const TO_MARKDOWN_FUNCTION_ID = 'document::to-markdown'
@@ -125,12 +125,12 @@ interface MarkdownWire {
  */
 export async function expandDocumentAttachments(
   attachments: Attachment[],
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<ExpandedDocuments> {
   const documents = attachments.filter((a) => isDocumentAttachment(a) && a.file)
   if (documents.length === 0) return { blocks: [], read: [], failures: [] }
 
-  const call = triggerOr(trigger)
+  const call = callOr(invoke)
 
   const blocks: string[] = []
   const read: AttachmentReadSummary[] = []
@@ -171,7 +171,7 @@ interface ExpandOutcome {
 
 async function expandOne(
   attachment: Attachment,
-  call: TriggerFn,
+  call: CallFn,
 ): Promise<ExpandOutcome> {
   const bytes_base64 = await fileToBase64(attachment.file as File)
 

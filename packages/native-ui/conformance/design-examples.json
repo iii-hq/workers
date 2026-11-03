@@ -348,7 +348,7 @@
     {
       "id": "requests.send",
       "dir": "fromVm",
-      "message": "[[20,7,1,{\"fn\":\"browser::sessions::list\",\"payload\":{}}],[20,8,2,{\"sub\":3,\"trigger\":\"browser::session-started\",\"config\":{}}]]",
+      "message": "[[20,7,1,{\"fn\":\"browser::sessions::list\",\"payload\":{}}],[20,8,2,{\"sub\":3,\"fn\":\"browser::on-session-started\",\"args\":{},\"filters\":{}}]]",
       "decoded": [
         {
           "op": "request",
@@ -365,8 +365,9 @@
           "method": "on",
           "args": {
             "sub": 3,
-            "trigger": "browser::session-started",
-            "config": {}
+            "fn": "browser::on-session-started",
+            "args": {},
+            "filters": {}
           }
         }
       ],
@@ -395,12 +396,12 @@
       "flow": "requests.json"
     },
     {
-      "id": "requests.trigger",
+      "id": "requests.observed",
       "dir": "toVm",
       "message": "[[9,3,{\"session_id\":\"s1\",\"url\":\"about:blank\",\"headless\":true,\"preview\":false,\"timestamp\":1761151200000}]]",
       "decoded": [
         {
-          "op": "trigger",
+          "op": "observed",
           "sub": 3,
           "payload": {
             "session_id": "s1",

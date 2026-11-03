@@ -45,3 +45,20 @@ test('every registered function publishes typed request and response schemas', (
     `untyped schemas would fail --assert-typed-schemas at publish: ${violations.join(', ')}`,
   );
 });
+
+test('gantry::on-function-registration publishes the engine input, observe-v2 fields included', () => {
+  const request = formatFor(FUNCTION_FORMATS['gantry::on-function-registration'].request);
+  assert.equal(request.type, 'object');
+  assert.deepEqual(request.required, ['function_id']);
+  assert.deepEqual(request.properties.private, { type: 'boolean' });
+  assert.deepEqual(request.properties.observable, { type: 'boolean' });
+  assert.equal(request.properties.args_format.type, 'object');
+  for (const key of ['description', 'metadata', 'namespace', 'context']) {
+    assert.ok(key in request.properties, `request_format names ${key}`);
+  }
+  // The engine owns the envelope: fields it adds later must not fail the schema.
+  assert.notEqual(request.additionalProperties, false);
+
+  const response = formatFor(FUNCTION_FORMATS['gantry::on-function-registration'].response);
+  assert.deepEqual(Object.keys(response.properties), ['function_id']);
+});

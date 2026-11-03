@@ -9,7 +9,7 @@ import {
 } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import {
-  BROWSER_NETWORK_EVENT_TRIGGER,
+  BROWSER_ON_NETWORK_EVENT_FUNCTION_ID,
   type BrowserNetworkEntry,
   errorMessage,
   formatTime,
@@ -21,8 +21,8 @@ import { useBrowserSessionEvent } from '../lib/events'
 
 /**
  * Network feed for the selected session: seeded from `browser::network::read`,
- * then appended through the session-filtered `browser::network-event`
- * binding, the same seed-then-stream shape as the console panel. The
+ * then appended through an observer of `browser::on-network-event` for the
+ * session, the same seed-then-stream shape as the console panel. The
  * failed-only toggle filters both the seed and the live entries.
  */
 
@@ -85,7 +85,7 @@ export function NetworkPanel({ host, sessionId, enabled }: NetworkPanelProps) {
   useBrowserSessionEvent({
     host,
     enabled,
-    triggerType: BROWSER_NETWORK_EVENT_TRIGGER,
+    functionId: BROWSER_ON_NETWORK_EVENT_FUNCTION_ID,
     sessionId,
     fnId: NETWORK_FEED_FN,
     onEvent: (payload) => {

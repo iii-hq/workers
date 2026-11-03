@@ -244,8 +244,8 @@ def test_required_capture_needs_present_non_empty_interface(tmp_path: Path) -> N
         )
 
     collected = tmp_path / "collected-interface.json"
-    collected.write_text('{"functions":[],"triggers":[]}', encoding="utf-8")
-    with pytest.raises(SystemExit, match="must contain a function or trigger"):
+    collected.write_text('{"functions":[]}', encoding="utf-8")
+    with pytest.raises(SystemExit, match="must contain a function"):
         deployment_interface.snapshot(
             snapshot_args(descriptor, prepared, collected, snapshot)
         )
@@ -253,7 +253,6 @@ def test_required_capture_needs_present_non_empty_interface(tmp_path: Path) -> N
     collected.write_text(
         json.dumps({
             "functions": [{"name": "web::fetch"}],
-            "triggers": [],
         }),
         encoding="utf-8",
     )
@@ -275,7 +274,6 @@ def test_required_capture_compares_canonical_published_surface(tmp_path: Path) -
                 {"name": "web::z", "request_schema": {}, "response_schema": {}},
                 {"name": "web::a", "request_schema": {}, "response_schema": {}},
             ],
-            "triggers": [],
         }),
         encoding="utf-8",
     )
@@ -287,7 +285,6 @@ def test_required_capture_compares_canonical_published_surface(tmp_path: Path) -
     published.write_text(
         json.dumps({
             "functions": list(reversed(json.loads(collected.read_text())["functions"])),
-            "triggers": [],
         }),
         encoding="utf-8",
     )
@@ -299,7 +296,7 @@ def test_required_capture_compares_canonical_published_surface(tmp_path: Path) -
     )) == 0
 
     published.write_text(
-        '{"functions":[{"name":"web::different"}],"triggers":[]}',
+        '{"functions":[{"name":"web::different"}]}',
         encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="differs"):
@@ -310,15 +307,18 @@ def test_required_capture_compares_canonical_published_surface(tmp_path: Path) -
         ))
 
 
-def test_required_trigger_only_interface_is_valid(tmp_path: Path) -> None:
+def test_required_interface_of_one_event_source_is_valid(tmp_path: Path) -> None:
     descriptor, prepared = write_prepared_inputs(tmp_path)
-    collected = tmp_path / "trigger-only.json"
+    collected = tmp_path / "event-source.json"
     collected.write_text(
         json.dumps({
-            "functions": [],
-            "triggers": [{
+            "functions": [{
                 "name": "web::on-event",
-                "invocation_schema": {"type": "object"},
+                "request_schema": {"type": "object"},
+                "response_schema": {"type": "object"},
+                "args_format": {"type": "object"},
+                "private": True,
+                "observable": True,
             }],
         }),
         encoding="utf-8",
@@ -329,8 +329,23 @@ def test_required_trigger_only_interface_is_valid(tmp_path: Path) -> None:
         snapshot_args(descriptor, prepared, collected, snapshot)
     ) == 0
     captured = json.loads(snapshot.read_text(encoding="utf-8"))
-    assert captured["interface"]["functions"] == []
-    assert captured["interface"]["triggers"][0]["name"] == "web::on-event"
+    [function] = captured["interface"]["functions"]
+    assert function["name"] == "web::on-event"
+    assert function["private"] is True
+
+
+def test_interface_with_fields_beside_functions_is_rejected(tmp_path: Path) -> None:
+    descriptor, prepared = write_prepared_inputs(tmp_path)
+    collected = tmp_path / "collected-interface.json"
+    collected.write_text(
+        json.dumps({"functions": [{"name": "web::fetch"}], "types": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="only functions"):
+        deployment_interface.snapshot(
+            snapshot_args(descriptor, prepared, collected, tmp_path / "deployment-interface.json")
+        )
 
 
 @pytest.mark.parametrize("worker", ["acp", "lsp"])
@@ -356,7 +371,7 @@ def test_evidence_verification_rejects_missing_interface_artifact(tmp_path: Path
     descriptor, prepared = write_prepared_inputs(tmp_path)
     collected = tmp_path / "collected-interface.json"
     collected.write_text(
-        '{"functions":[{"name":"web::fetch"}],"triggers":[]}',
+        '{"functions":[{"name":"web::fetch"}]}',
         encoding="utf-8",
     )
     snapshot = tmp_path / "deployment-interface.json"
@@ -390,7 +405,7 @@ def test_evidence_verification_rejects_required_empty_interface(tmp_path: Path) 
             "descriptor_sha256": "b" * 64,
             "prepared_sha256": deployment_interface.sha256(prepared),
             "interface_capture": "required",
-            "interface": {"functions": [], "triggers": []},
+            "interface": {"functions": []},
         }),
         encoding="utf-8",
     )
@@ -415,7 +430,7 @@ def test_evidence_inventory_covers_interface_and_prepared_bytes_and_detects_tamp
     descriptor, prepared = write_prepared_inputs(tmp_path)
     collected = tmp_path / "collected-interface.json"
     collected.write_text(
-        '{"functions":[{"name":"web::fetch"}],"triggers":[]}',
+        '{"functions":[{"name":"web::fetch"}]}',
         encoding="utf-8",
     )
     snapshot = tmp_path / "deployment-interface.json"

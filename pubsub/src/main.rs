@@ -2,7 +2,8 @@
 //!
 //! Boot: parse CLI, connect to the engine, register the `pubsub` configuration
 //! schema, fetch the authoritative value, start the hub via `boot::start`,
-//! wire the `configuration:updated` reload trigger, then sleep until Ctrl+C.
+//! observe `configuration::on-updated` for live reloads, then sleep until
+//! Ctrl+C.
 //! The optional `--config` YAML file is a seed only.
 
 use std::sync::Arc;
@@ -99,15 +100,13 @@ async fn main() -> Result<()> {
     // re-running this.
     iii_pubsub::deprecation::warn_worker_startup();
 
-    configuration::register_config_trigger(
+    configuration::observe_config_changes(
         &iii,
         boot.hub.clone(),
-        boot.invoker.clone(),
+        boot.relay.clone(),
         boot.config.clone(),
         boot.apply_lock.clone(),
-    )
-    .map_err(anyhow::Error::msg)
-    .context("binding configuration trigger")?;
+    );
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-pubsub shutting down");

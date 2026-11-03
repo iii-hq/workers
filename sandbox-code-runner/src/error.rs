@@ -128,7 +128,7 @@ pub fn classify_sandbox_error(raw: &str) -> SandboxFailure {
         "S400" => SandboxFailure::Capacity(message),
         // S003 (ConcurrentExec) is the daemon's own guard against two execs
         // racing one sandbox — reachable despite our own `exec_lock` because
-        // the bus trigger deadline (timeout_ms + margin) outlives the
+        // the bus call deadline (timeout_ms + margin) outlives the
         // daemon's in-daemon exec deadline (timeout_ms): a daemon slower
         // than that margin can leave `exec_in_progress` true after
         // sandbox-code-runner already released its lock. The daemon's own message
@@ -162,7 +162,7 @@ pub enum ProbeOutcome {
 
 /// Classify a raw `engine::functions::info` error against the `target`
 /// function id that was probed. Mirrors the disambiguation in
-/// `iii/engine/src/cli_trigger/help.rs`'s `fetch_function_info`: a
+/// `iii/engine/src/cli_call/help.rs`'s `fetch_function_info`: a
 /// "not found" naming the probe itself means the DISPATCHER couldn't find
 /// `engine::functions::info`, not that `target` is absent.
 pub fn classify_probe_error(raw: &str, target: &str) -> ProbeOutcome {

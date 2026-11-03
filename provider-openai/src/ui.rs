@@ -4,7 +4,7 @@
 //! transcript), so the console needs a renderer that fetches the preview
 //! from this worker over the tab's bus client. Assets are built from `ui/`
 //! by build.rs and embedded here; `ConsoleUi` registers the content function
-//! and one Message-path trigger per asset (hot-reloadable, GC'd on disconnect).
+//! and one `console::ui::asset` observer per asset (hot-reloadable, GC'd on disconnect).
 
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ mod tests {
 
     #[test]
     fn embedded_page_registers_the_image_renderer() {
-        assert!(PAGE_JS.contains("functionTriggers"));
+        assert!(PAGE_JS.contains("functionCalls"));
         // The ids are assembled from a prefix in the bundle.
         assert!(PAGE_JS.contains("provider::openai::"));
         assert!(PAGE_JS.contains("image::generate"));

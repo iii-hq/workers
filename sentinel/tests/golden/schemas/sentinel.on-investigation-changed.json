@@ -1,0 +1,180 @@
+{
+  "description": "Called when an investigation is created, records a diagnosis, or finishes. No args; filter on input.group_id, input.investigation_id or input.op.",
+  "function_id": "sentinel::on-investigation-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "InvestigationChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "finished"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A diagnosis was recorded in it.",
+            "enum": [
+              "recorded"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`sentinel::on-investigation-changed`: what an investigation changed to, for the console and for siblings. Unknown fields are ignored on input, as for `sentinel::on-group-changed`.",
+    "properties": {
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "group_id": {
+        "type": "string"
+      },
+      "investigation_id": {
+        "type": "string"
+      },
+      "op": {
+        "$ref": "#/definitions/InvestigationChangedOpV1"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/InvestigationStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "investigation_id",
+      "op",
+      "session_id",
+      "status"
+    ],
+    "title": "InvestigationChangedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "InvestigationChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "finished"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A diagnosis was recorded in it.",
+            "enum": [
+              "recorded"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`sentinel::on-investigation-changed`: what an investigation changed to, for the console and for siblings. Unknown fields are ignored on input, as for `sentinel::on-group-changed`.",
+    "properties": {
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "group_id": {
+        "type": "string"
+      },
+      "investigation_id": {
+        "type": "string"
+      },
+      "op": {
+        "$ref": "#/definitions/InvestigationChangedOpV1"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/InvestigationStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "investigation_id",
+      "op",
+      "session_id",
+      "status"
+    ],
+    "title": "InvestigationChangedEventV1",
+    "type": "object"
+  }
+}

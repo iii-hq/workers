@@ -27,7 +27,7 @@ console.log(`[harness] code-runner e2e harness registered url=${URL} filter=${FI
     const deadline = Date.now() + 30000
     for (;;) {
       try {
-        await iii.trigger({ function_id: 'code-runner::run', payload: { lang: 'node', code: '1' }, timeoutMs: 5000 })
+        await iii.call({ function_id: 'code-runner::run', payload: { lang: 'node', code: '1' }, timeoutMs: 5000 })
         break
       } catch (e) {
         if (Date.now() > deadline) throw new Error(`code-runner never became callable: ${e}`)

@@ -1,4 +1,4 @@
-import { triggerActivityPairKey } from '@/components/trigger-activity/grouping'
+import { observerActivityPairKey } from '@/components/observer-activity/grouping'
 import type { Message } from '@/types/chat'
 
 export type TurnVisualPhase =
@@ -11,7 +11,7 @@ export type TurnVisualPhase =
 export interface TurnVisualState {
   phase: TurnVisualPhase
   showWaiting: boolean
-  /** The user input or trigger activity that began the current turn. */
+  /** The user input or observer activity that began the current turn. */
   turnKey?: string
   /** A visible result exists and the active turn is waiting for its next step. */
   betweenSteps: boolean
@@ -29,16 +29,16 @@ export function deriveTurnVisualState(
   let turnKey: string | undefined
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]
-    // Trigger notifications are model inputs too. Their durable entry id
-    // resets the waiting clock for trigger-only sessions just as a human
+    // Observer notifications are model inputs too. Their durable entry id
+    // resets the waiting clock for observer-only sessions just as a human
     // prompt does; the paired system record does not create a second reset.
-    const triggerPairKey = triggerActivityPairKey(message)
-    const isTriggerRecord =
+    const observerPairKey = observerActivityPairKey(message)
+    const isObserverRecord =
       message.role === 'system' &&
-      message.kind === 'trigger-fired' &&
-      Boolean(message.trigger)
-    if (message.role === 'user' || isTriggerRecord) {
-      turnKey = triggerPairKey ? `trigger:${triggerPairKey}` : message.id
+      message.kind === 'observer-fired' &&
+      Boolean(message.observer)
+    if (message.role === 'user' || isObserverRecord) {
+      turnKey = observerPairKey ? `observer:${observerPairKey}` : message.id
       break
     }
   }
@@ -53,9 +53,13 @@ export function deriveTurnVisualState(
   }
 
   // A lifecycle record can precede the model-input notification. Treat that
-  // first half as the start of the trigger turn, not as progress left over
+  // first half as the start of the observer turn, not as progress left over
   // from the previous turn; its paired notification keeps the same turnKey.
-  if (last.role === 'system' && last.kind === 'trigger-fired' && last.trigger) {
+  if (
+    last.role === 'system' &&
+    last.kind === 'observer-fired' &&
+    last.observer
+  ) {
     return {
       phase: 'waiting',
       showWaiting: true,
@@ -80,7 +84,7 @@ export function deriveTurnVisualState(
         }
   }
 
-  if (last.role === 'function-trigger') {
+  if (last.role === 'function-call') {
     if (last.running || last.pendingApproval) {
       return {
         phase: 'calling',

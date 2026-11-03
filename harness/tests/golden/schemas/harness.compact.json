@@ -72,7 +72,7 @@
         ]
       }
     },
-    "description": "How an explicit compaction ended — also what `harness::compaction` carries on completion.",
+    "description": "How an explicit compaction ended — also what `harness::on-compaction` carries on completion.",
     "properties": {
       "compaction_id": {
         "type": "string"

@@ -16,12 +16,12 @@ function exec(overrides: Partial<{ exit_code: number; stdout: string; stderr: st
 }
 
 function hostWith(handlers: Record<string, (payload: Record<string, unknown>) => unknown>) {
-  const trigger = vi.fn(async (fn: string, payload: Record<string, unknown>) => {
+  const call = vi.fn(async (fn: string, payload: Record<string, unknown>) => {
     const handler = handlers[fn]
     if (!handler) throw new Error(`unexpected ${fn}`)
     return handler(payload)
   })
-  return { host: { iii: { trigger } } as unknown as Parameters<typeof loadDiffContents>[0], trigger }
+  return { host: { iii: { call } } as unknown as Parameters<typeof loadDiffContents>[0], call }
 }
 
 const noTurns = { get: async () => null }
@@ -182,14 +182,14 @@ describe('loadDiffContents', () => {
 
 describe('loadRevisionFile', () => {
   it('reads the file at the commit from the root, and says when the commit lacks it', async () => {
-    const { host, trigger } = hostWith({
+    const { host, call } = hostWith({
       'shell::exec': ({ args }) =>
         (args as string[])[1] === 'abc1234:./../lib/x.ts'
           ? exec({ stdout: 'then\n' })
           : exec({ exit_code: 128, stderr: "fatal: path 'gone.ts' does not exist in 'abc1234'" }),
     })
     expect(await loadRevisionFile(host, '/r/app', '../lib/x.ts', 'abc1234')).toBe('then\n')
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'shell::exec',
       expect.objectContaining({ args: ['show', 'abc1234:./../lib/x.ts'], cwd: '/r/app' }),
     )
@@ -209,10 +209,10 @@ describe('loadTurnDiff', () => {
   })
 
   it('uses the stored before and the next turn pre-image as after', async () => {
-    const { host, trigger } = hostWith({})
+    const { host, call } = hostWith({})
     const out = await loadTurnDiff(host, '/r', 'a.ts', turn([record({ before: { content: 'v1' }, after: { content: 'v2' } })]))
     expect(out).toEqual({ oldContents: 'v1', newContents: 'v2', note: undefined, worktreeRevision: undefined })
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('falls back to the working copy when no later turn kept the body', async () => {
@@ -268,13 +268,13 @@ describe('createTurnCache', () => {
       () => ({ turn: null }),
       () => ({ turn }),
     ]
-    const { host, trigger } = hostWith({ 'shell::turns::get': () => answers.shift()?.() })
+    const { host, call } = hostWith({ 'shell::turns::get': () => answers.shift()?.() })
     const cache = createTurnCache(host, 's1')
     expect(await cache.get('t1')).toBeNull()
     expect(await cache.get('t1')).toBeNull()
     expect(await cache.get('t1')).toBe(turn)
     expect(await cache.get('t1')).toBe(turn)
-    expect(trigger).toHaveBeenCalledTimes(3)
+    expect(call).toHaveBeenCalledTimes(3)
   })
 })
 

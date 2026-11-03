@@ -11,11 +11,11 @@ pub struct WorkerConfig {
     pub default_pending_timeout_ms: u64,
 
     /// Cron expression (6-field) for the pending-call expiry sweep. The one
-    /// structural field: a change re-binds the cron trigger live.
+    /// structural field: a change replaces the `cron::on-tick` observer live.
     #[serde(default = "default_sweep_expression")]
     pub sweep_expression: String,
 
-    /// RPC timeout for `engine::*` and generic `iii.trigger` dispatch.
+    /// RPC timeout for `engine::*` and generic `iii.call` dispatch.
     /// Milliseconds.
     #[serde(default = "default_dispatch_timeout_ms")]
     pub dispatch_timeout_ms: u64,

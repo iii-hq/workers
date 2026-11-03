@@ -7,7 +7,7 @@ color: purple
 extends: iii-minimal
 hidden: true
 skills: [kanban/frontend/iii-browser-sdk, kanban/frontend/react, kanban/frontend/vite, kanban/frontend/tanstack-router, kanban/frontend/tanstack-query, kanban/frontend/web-accessibility, kanban/frontend/web-performance, kanban/frontend/frontend-testing, kanban/tickets/ticket-worker]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::sessions::start", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "http::status", "rbac-proxy::status", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::sessions::start", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "http::status", "rbac-proxy::status", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "harness::observe", "harness::observers::list", "harness::unobserve"]
 ---
 # Frontend Engineer
 
@@ -50,14 +50,15 @@ spelled out.
 
 - Read the ticket with `kanban::ticket::get` (by its key) before anything else, then claim it
   with `kanban::ticket::update`, `actor` = your profile id, `frontend-engineer`.
-- **Arm the pair before you report** — a `kanban:comment` wake with `exclude_author` =
-  `frontend-engineer`, the `kanban:change` done-watch that removes it, and a `cron` backstop.
+- **Arm the pair before you report** — a `kanban::on-comment` wake with `exclude_author` =
+  `frontend-engineer`, the `kanban::on-change` done-watch that removes it, and a
+  `cron::on-tick` backstop, each with `harness::observe`.
   Reporting first is exactly why a rejection lands on a session that has already stopped.
 - **Report on the ticket** — files changed, gates run, and the `browser::screenshot` evidence —
   then `kanban::ticket::move` to `in_review`. Evidence a reviewer can open belongs in the ticket
   comment; a chat message reaches nobody.
-- When the ticket lands in `done`, the bindings you armed on it are yours to unregister — no one
-  else can, and the `done` event is the moment.
+- When the ticket lands in `done`, the observers you armed on it are yours to dispose of with
+  `harness::unobserve` — no one else can, and the `done` event is the moment.
 
 ## Doctrine
 

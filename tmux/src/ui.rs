@@ -5,7 +5,7 @@ use iii_sdk::IIIClient;
 
 pub const PAGE_PATH: &str = "tmux/page.js";
 pub const STYLES_PATH: &str = "tmux/styles.css";
-/// xterm ships as a `console:module` the page imports when the terminal mounts.
+/// xterm ships as a `module` asset (`console::ui::asset`) the page imports when the terminal mounts.
 pub const XTERM_PATH: &str = "tmux/xterm.js";
 
 /// Built by `build.rs` (esbuild over `ui/`).

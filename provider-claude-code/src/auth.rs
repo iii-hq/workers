@@ -20,9 +20,9 @@ use serde_json::{json, Value};
 /// Refresh proactively when the token expires within this margin.
 const EXPIRY_MARGIN_SECS: i64 = 60;
 
-/// Function id the vault stores in the credential record and triggers on
+/// Function id the vault stores in the credential record and calls on
 /// refresh-when-expiring. Implemented out-of-band (oauth-claude-code); this
-/// provider only *triggers* it when the token is near expiry.
+/// provider only *calls* it when the token is near expiry.
 pub const REFRESH_FN_ID: &str = "oauth::claude-code::refresh";
 
 /// Token expiry (seconds since epoch) from the credential's `expires_at`.
@@ -219,7 +219,7 @@ pub fn read_claude_home_credential() -> Option<(Value, &'static str)> {
 
 /// Fetch a usable credential for either streaming or model discovery.
 ///
-/// The vault is authoritative when present. A near-expiry vault token triggers
+/// The vault is authoritative when present. A near-expiry vault token calls
 /// the vault-owned refresh. Local development falls back to the Claude Code
 /// CLI's own read-only credential store when no vault credential is available.
 pub async fn fetch_fresh_credential(iii: &IIIClient) -> Option<Value> {

@@ -146,7 +146,7 @@ O procedimento abaixo é o usado nos experimentos. Desde o append-only window (#
    - enviar em seções: a parte estável (`cache_boundary: true`) e o `aid`;
    - incluir o `cache_intent` com o digest gravado no snapshot.
 4. Montar as ferramentas a partir da exposição gravada:
-   - `agent_trigger` usa o schema fixo dessa ferramenta;
+   - `agent_call` usa o schema fixo dessa ferramenta;
    - `submit_result`, quando o turno tinha contrato de saída;
    - a exposição `native` fica fora da v1 e cai em "não reproduzível".
 5. Aplicar as edições de `change`.
@@ -173,7 +173,7 @@ Cada amostra recebe:
     - `repeated_error_call`: a resposta repete a última chamada que falhou, com payload equivalente.
   - Sem regra: a pergunta do `signal` respondida pelo Jev (`judge::evaluate`, Choice `yes`/`no`/`unclear`), recebendo só as chamadas e o texto da amostra.
   - Regras novas entram no catálogo quando o mesmo tipo de pergunta se repete.
-- **Ação:** as funções chamadas (via `agent_trigger`) ou "resposta final sem chamada". Isso alimenta a linha de efeitos colaterais.
+- **Ação:** as funções chamadas (via `agent_call`) ou "resposta final sem chamada". Isso alimenta a linha de efeitos colaterais.
 
 ### 6.6 Estatística e frase do resultado
 

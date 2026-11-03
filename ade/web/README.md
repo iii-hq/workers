@@ -35,7 +35,7 @@ visible and there is active work:
 - Voice dictation is starting, listening, or flushing its final transcription.
 
 Concurrent activities share a lock; completion, errors and cancellation release
-their own leases. Idle/done/error sessions, unsent drafts, armed future triggers,
+their own leases. Idle/done/error sessions, unsent drafts, armed observers,
 background catalog/trace refreshes and an open WebSocket do not keep it awake.
 Audio playback alone is not a reason to force the screen on.
 
@@ -97,9 +97,9 @@ normal auto-lock resumes after all activity finishes or is cancelled.
   cleared after the next outgoing message.
 - **Sidebar** listing conversations backed by the
   [session-manager](../../session-manager/architecture/integration.md)
-  worker (`session::list`; live via the `session::*` trigger types).
+  worker (`session::list`; live by observing its `session::on-*` functions).
   Transcripts hydrate from `session::messages` and stream live from
-  `session::message-added` / `session::message-updated` snapshots —
+  `session::on-message-added` / `session::on-message-updated` snapshots —
   localStorage keeps only UI affordances (active id, last model).
   Double-click a row to rename inline (writes through `session::set-meta`);
   hover to reveal the delete affordance (`session::delete`).
@@ -128,16 +128,16 @@ src/
     worktree-claims.ts   # console-made claims + auto-release decision
     sessions/            # session-manager integration
       api.ts             #     session::* calls (list/ensure/set_meta/delete/messages)
-      events.ts          #     bindings for the six session::* trigger types
+      events.ts          #     observers of the six session::on-* functions
       entry-mapper.ts    #     SessionEntry → UI Message segments + reconcile
       types.ts           #     wire types (SessionMeta, TranscriptItem, events)
     backend/             # ← the seam. ChatBackend interface + impls
       types.ts           #     StreamEvent, ChatBackend, ChatStreamOptions
       harness-send.ts    #     harness::send / stop / status wire helpers
-      turn-events-live.ts     # harness::turn-completed subscription
-      approval-events-live.ts # approval::pending-* subscription + list-pending
-      translate.ts       #     trigger payloads → StreamEvent
-      real.ts            #     harness::send kickoff + turn/approval triggers
+      turn-events-live.ts     # harness::on-turn-completed observer
+      approval-events-live.ts # approval::on-pending-* observers + list-pending
+      translate.ts       #     observed events → StreamEvent
+      real.ts            #     harness::send kickoff + turn/approval observers
       index.ts           #     getDefaultBackend()
   types/chat.ts          # Conversation, Message, Mode, ModelId, Attachment
   hooks/
@@ -145,7 +145,7 @@ src/
     use-hash-route.ts    # #/traces #/configuration #/worktrees
     use-worktree-status.ts   # worker presence probe (gates the surface)
     use-worktree-binding.ts  # working dir -> managed worktree for the badge
-    use-worktree-events.ts   # landed / land-blocked trigger bindings
+    use-worktree-events.ts   # observers of worktree::on-landed / on-land-blocked
     use-theme.ts         # theme + persistence
   components/
     ui/                  # iii Schematic primitives (+ co-located *.stories.tsx)
@@ -231,5 +231,5 @@ Worker-owned renderers have focused authoring guides:
 
 - [`docs/custom-function-components.md`](docs/custom-function-components.md)
   for function invocation request/result UI;
-- [`docs/custom-trigger-components.md`](docs/custom-trigger-components.md)
-  for source-specific trigger registration, firing, and retirement UI.
+- [`docs/custom-observer-components.md`](docs/custom-observer-components.md)
+  for source-specific observe, fire, and retirement UI.

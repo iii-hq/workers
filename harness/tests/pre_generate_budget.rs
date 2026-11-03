@@ -15,7 +15,12 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
+mod support;
+use support::host;
+
 const STATIC: &str = "STATIC fp guidance";
+/// Static text scoped to another session, by `sessions` glob or by filter.
+const ELSEWHERE: &str = "ELSEWHERE guidance";
 const DYNAMIC: &str = "DYNAMIC code-runner guidance";
 /// What `context::count-tokens` charges for the dynamic hook's text: more
 /// than the flat 256 reserve, as code-runner's guidance is live.
@@ -137,11 +142,18 @@ impl Stack {
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let mut engine = host::Host::default();
+            socket
+                .send(Message::Text(host::hello().to_string().into()))
+                .await
+                .unwrap();
             let _ = ready_tx.send(());
             loop {
                 let frame = tokio::select! {
                     Some(message) = pushed.recv() => {
-                        socket.send(Message::Text(message.to_string().into())).await.unwrap();
+                        if let Some(message) = engine.announce(message) {
+                            socket.send(Message::Text(message.to_string().into())).await.unwrap();
+                        }
                         continue;
                     }
                     frame = socket.next() => match frame {
@@ -153,6 +165,13 @@ impl Stack {
                 else {
                     continue;
                 };
+                if let Some(answer) = engine.answer(&message) {
+                    socket
+                        .send(Message::Text(answer.to_string().into()))
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 if message["type"] != "invokefunction" {
                     continue;
                 }
@@ -198,21 +217,32 @@ impl Stack {
         }
     }
 
-    /// Bind a pre_generate hook the way the engine does.
-    async fn bind(&self, id: &str, function_id: &str, metadata: Value) {
-        let before = self.deps.hooks.pre_generate.ordered().len();
+    /// Add an observer of the pre-generate hook function the way the engine
+    /// does, and wait until the harness accepted it.
+    async fn bind(&self, id: &str, target: &str, args: Value) {
+        self.bind_filtered(id, target, args, json!({})).await;
+    }
+
+    /// [`Stack::bind`] with the observer's filters.
+    async fn bind_filtered(&self, id: &str, target: &str, args: Value, filters: Value) {
+        let point = harness::hooks::HookPoint::PreGenerate;
+        let before = self.deps.hooks.bindings(point).len();
         self.push
-            .send(json!({"type": "registertrigger", "id": id,
-                "trigger_type": harness::hooks::PRE_GENERATE, "function_id": function_id,
-                "config": {}, "metadata": metadata}))
+            .send(host::observer_added(
+                id,
+                harness::hooks::ON_PRE_GENERATE_FN,
+                target,
+                args,
+                filters,
+            ))
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while self.deps.hooks.pre_generate.ordered().len() == before {
+            while self.deps.hooks.bindings(point).len() == before {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("the hook binding registers");
+        .expect("the hook observer is accepted");
     }
 
     fn turn(&self) -> Value {
@@ -273,6 +303,21 @@ async fn static_hook_text_is_assembled_and_dynamic_hook_text_sizes_the_next_rese
         )
         .await;
     stack.bind("dynamic", "test::dynamic-hook", json!({})).await;
+    stack
+        .bind(
+            "glob-elsewhere",
+            "web::guidance",
+            json!({"inject_prompt": ELSEWHERE, "sessions": ["other-*"]}),
+        )
+        .await;
+    stack
+        .bind_filtered(
+            "filter-elsewhere",
+            "browser::guidance",
+            json!({"inject_prompt": ELSEWHERE}),
+            json!({"input.session_id": {"$eq": "other"}}),
+        )
+        .await;
 
     stack.send("first").await;
     let (assemble, counted) = stack.step().await;
@@ -280,6 +325,10 @@ async fn static_hook_text_is_assembled_and_dynamic_hook_text_sizes_the_next_rese
     assert!(
         assembled.contains(STATIC),
         "assembly budgets the static text: {assembled}"
+    );
+    assert!(
+        !assembled.contains(ELSEWHERE),
+        "static text scoped to another session stays out: {assembled}"
     );
     assert!(
         !assembled.contains(DYNAMIC),

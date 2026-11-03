@@ -31,10 +31,10 @@ const PARALLEL_WRITES: AssessmentSpec = AssessmentSpec::hard_gated(
 const REACTIVE_AGGREGATES: AssessmentSpec = AssessmentSpec::hard_gated(
     "reactive_aggregates",
     30,
-    "A mechanical trigger call maintains totals that exactly match the source rows.",
+    "A mechanical observer call maintains totals that exactly match the source rows.",
 );
-const TRIGGER_ORCHESTRATION: AssessmentSpec = AssessmentSpec::hard_gated(
-    "trigger_orchestration",
+const OBSERVER_ORCHESTRATION: AssessmentSpec = AssessmentSpec::hard_gated(
+    "observer_orchestration",
     25,
     "The aggregate call and barrier wake are armed before writers start and proven by delivery records.",
 );
@@ -46,7 +46,7 @@ const FINALIZATION_CLEANUP: AssessmentSpec = AssessmentSpec::hard_gated(
 const ASSESSMENTS: &[AssessmentSpec] = &[
     PARALLEL_WRITES,
     REACTIVE_AGGREGATES,
-    TRIGGER_ORCHESTRATION,
+    OBSERVER_ORCHESTRATION,
     FINALIZATION_CLEANUP,
 ];
 

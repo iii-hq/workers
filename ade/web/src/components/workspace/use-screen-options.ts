@@ -25,7 +25,7 @@ import {
   SquareTerminal,
   Ticket,
 } from 'lucide-react'
-import { TriggerIcon } from '@/components/ui/TriggerIcon'
+import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { buildViewOptions } from '@/lib/nav-options'
 import { useExtPages } from '@/lib/ui-slots'
 import {
@@ -134,9 +134,9 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     icon: HardDrive,
     description: 'Shared runtime state.',
   },
-  triggers: {
-    icon: TriggerIcon,
-    description: 'Event and schedule triggers.',
+  observers: {
+    icon: ObserverIcon,
+    description: 'Observers and the functions they observe.',
   },
   voice: {
     icon: Mic,
@@ -152,7 +152,7 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
 /**
  * Every screen a workspace tab can attach: the chat view, the first-party
  * pages, and the worker-injected pages (whose presence already tracks
- * worker connectedness via trigger GC). Configuration is absent by
+ * worker connectedness through their scripts' observers). Configuration is absent by
  * design — console settings open as an overlay page, not a tab screen.
  */
 export function useScreenOptions(): {

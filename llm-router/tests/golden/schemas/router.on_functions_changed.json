@@ -3,7 +3,7 @@
   "function_id": "router::on_functions_changed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Advisory `engine::functions-available` event delivered to `router::on_functions_changed`. The engine sends `{ event: \"functions_changed\", functions: [...] }` with the full current function list; it does not say which worker or function changed. The handler ignores event values (the `functions` list is not deserialized) and re-fetches the authoritative registry before nudging live providers.",
+    "description": "Advisory `engine::on-functions-changed` event delivered to `router::on_functions_changed`. The engine sends `{ event: \"functions_changed\", functions: [...] }` with the full current function list; it does not say which worker or function changed. The handler ignores event values (the `functions` list is not deserialized) and re-fetches the authoritative registry before nudging live providers.",
     "properties": {
       "event": {
         "description": "Engine event tag, `\"functions_changed\"` (advisory).",
@@ -18,7 +18,7 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Generic acknowledgement returned by trigger-bound handlers whose result is not consumed by callers (kept typed so the response schema is concrete).",
+    "description": "Generic acknowledgement returned by observer targets whose result is not consumed by callers (kept typed so the response schema is concrete).",
     "properties": {
       "ok": {
         "type": "boolean"

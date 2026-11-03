@@ -43,9 +43,13 @@ async fn check_boot(shutdown_signal: Option<&str>) {
         let mut socket = accept_async(stream).await.unwrap();
         socket
             .send(Message::Text(
-                json!({"type":"workerregistered","worker_id":"boot-test"})
-                    .to_string()
-                    .into(),
+                json!({
+                    "type": "workerregistered",
+                    "worker_id": "boot-test",
+                    "features": ["observe.v1", "observe.v2"]
+                })
+                .to_string()
+                .into(),
             ))
             .await
             .unwrap();
@@ -182,27 +186,37 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     }
                     functions.insert(id.to_owned());
                 }
-                "registertrigger" if value["trigger_type"] == "configuration" => {
-                    assert_eq!(value["function_id"], "judge-laya::on-config-change");
+                "observe" if value["source"]["function_id"] == "configuration::on-updated" => {
                     assert_eq!(
-                        value["config"],
+                        value["target"]["function_id"],
+                        "judge-laya::on-config-change"
+                    );
+                    assert_eq!(
+                        value["source"]["filters"],
                         json!({
-                            "configuration_id": "laya-boot-test",
-                            "event_types": ["configuration:updated"]
+                            "input.id": { "$eq": "laya-boot-test" },
+                            "input.event_type": { "$eq": "configuration:updated" }
                         })
                     );
+                    assert_eq!(value["source"]["deliver"], "output");
                     reload = true;
                 }
-                "registertrigger" if value["trigger_type"] == "console:script" => {
+                "observe"
+                    if value["source"]["function_id"] == "console::ui::asset"
+                        && value["source"]["args"]["kind"] == "script" =>
+                {
                     assert!(console_ui_enabled);
-                    assert_eq!(value["function_id"], "judge-laya::ui-content");
-                    assert_eq!(value["config"]["path"], "judge-laya/page.js");
+                    assert_eq!(value["target"]["function_id"], "judge-laya::ui-content");
+                    assert_eq!(value["source"]["args"]["path"], "judge-laya/page.js");
                     script = true;
                 }
-                "registertrigger" if value["trigger_type"] == "console:style" => {
+                "observe"
+                    if value["source"]["function_id"] == "console::ui::asset"
+                        && value["source"]["args"]["kind"] == "style" =>
+                {
                     assert!(console_ui_enabled);
-                    assert_eq!(value["function_id"], "judge-laya::ui-content");
-                    assert_eq!(value["config"]["path"], "judge-laya/styles.css");
+                    assert_eq!(value["target"]["function_id"], "judge-laya::ui-content");
+                    assert_eq!(value["source"]["args"]["path"], "judge-laya/styles.css");
                     style = true;
                 }
                 "invocationresult" if value["function_id"] == "judge-laya::evaluate" => {

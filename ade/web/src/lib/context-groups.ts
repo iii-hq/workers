@@ -11,7 +11,7 @@ const GROUP_LABELS: Record<ContextGroup, string> = {
   prs: 'Pull requests',
   assets: 'Assets',
   subagents: 'Sub-agents',
-  triggers: 'Triggers',
+  observers: 'Observers',
   links: 'Links',
   tracking: 'Tracking',
 }
@@ -27,6 +27,11 @@ export interface ContextSectionInfo {
   source?: string
 }
 
+/** The id this browser kept for a group before it was renamed. */
+const RENAMED_GROUPS: Readonly<Record<string, ContextGroup>> = {
+  triggers: 'observers',
+}
+
 /** A list of ids kept in this browser, for every chat. */
 function idListStore(key: string) {
   let value: readonly string[] | null = null
@@ -36,7 +41,9 @@ function idListStore(key: string) {
     try {
       const stored: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
       value = Array.isArray(stored)
-        ? stored.filter((id): id is string => typeof id === 'string')
+        ? stored
+            .filter((id): id is string => typeof id === 'string')
+            .map((id) => RENAMED_GROUPS[id] ?? id)
         : []
     } catch {
       value = []

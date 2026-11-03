@@ -32,9 +32,8 @@ license, description, dependency ranges, configuration, and discovery tags in
 the public manifest. Fixtures use private `publish: false` and are never
 deployment targets.
 
-When a worker needs a minimum iii engine, declare it in the public manifest as
-`iii_engine_version`, a semver range like Node's `engines` (e.g. `">=0.26.0"`;
-no `v`, prerelease, wildcard or hyphen range). The field is optional; CI rejects
+Set `iii_engine_version: ">=0.26.0"` (a semver range like Node's `engines`; no
+`v`, prerelease, wildcard or hyphen range) in the public manifest of every worker built on the 0.26 SDK; CI rejects
 any other shape.
 
 Never put API keys, tokens, `III_*` connection settings, or mutable external

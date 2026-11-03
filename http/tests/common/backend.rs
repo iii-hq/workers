@@ -1,22 +1,26 @@
 #![allow(dead_code)]
-// These backends bind routes as old consumers do, with the deprecated
-// `register_trigger` on the `http` trigger type.
-#![allow(deprecated)]
-//! Test backend: an echo function bound to an `http` trigger.
+//! Test backends: functions that serve a route by observing
+//! `http::on-request` with `{ method, path }` as args.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 
+use iii_http::on_request::ON_REQUEST_FN;
 use iii_http::types::HttpRequest;
 
-/// Register `test.echo` (returns a 200 whose body echoes the request) and bind
-/// it to an `http` trigger for `api_path` + `http_method`. The echoed body has
+/// Observes `http::on-request` with `args` (the route) and `function_id` as
+/// the target. The observer stays until the handle is disposed or the client
+/// disconnects; dropping the handle keeps it.
+pub fn serve_route(iii: &IIIClient, function_id: &str, args: Value) -> ObserverHandle {
+    iii.observe(Source::function(ON_REQUEST_FN).args(args), function_id)
+}
+
+/// Register `test.echo` (returns a 200 whose body echoes the request) and serve
+/// it on `api_path` + `http_method`. The echoed body has
 /// shape `{ method, path_params, query_params, headers, body }`, so
 /// `HttpResponse::from_function_return` yields a 200 carrying it.
 ///
@@ -41,17 +45,16 @@ pub async fn register_echo_backend(iii: &Arc<IIIClient>, api_path: &str, http_me
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger");
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    );
 }
 
-/// Register `test.trace` bound to an `http` trigger; on every invocation the
-/// function records the W3C trace id it runs under — i.e. the trace context the
-/// http worker propagated onto the outbound trigger — into the returned slot.
+/// Register `test.trace` serving a route; on every invocation the function
+/// records the W3C trace id it runs under — i.e. the trace context the http
+/// worker propagated onto the outbound call — into the returned slot.
 ///
 /// The captured value is 32 lowercase hex chars; an all-zero id
 /// (`00000000000000000000000000000000`) means the function ran under no/invalid
@@ -86,25 +89,23 @@ pub async fn register_trace_capturing_backend(
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger");
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    );
 
     slot
 }
 
-/// Like [`register_echo_backend`], but returns the trigger handle so a test can
-/// call [`Trigger::unregister`] to remove the route and assert the subsequent
-/// 404. The trigger does NOT unregister on drop, so ignoring the returned
-/// handle keeps the route registered.
+/// Like [`register_echo_backend`], but returns the observer handle so a test
+/// can call [`ObserverHandle::dispose`] to remove the route and assert the
+/// subsequent 404. Dropping the handle keeps the route registered.
 pub async fn register_removable_echo_backend(
     iii: &Arc<IIIClient>,
     api_path: &str,
     http_method: &str,
-) -> Trigger {
+) -> ObserverHandle {
     let function_id = format!("test.echo {http_method} {api_path}");
 
     iii.register_function(
@@ -117,17 +118,16 @@ pub async fn register_removable_echo_backend(
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger")
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    )
 }
 
-/// Register `test.echo` (same as [`register_echo_backend`]) bound to an
-/// `http` trigger that also carries `middleware_function_ids`, so the
-/// per-route middleware path runs before the handler. The function id embeds
+/// Register `test.echo` (same as [`register_echo_backend`]) on a route whose
+/// args also carry `middleware_function_ids`, so the per-route middleware
+/// path runs before the handler. The function id embeds
 /// method+path+a marker so it doesn't collide with [`register_echo_backend`]
 /// routes registered elsewhere in the same test binary.
 pub async fn register_echo_backend_with_middleware(
@@ -154,16 +154,15 @@ pub async fn register_echo_backend_with_middleware(
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
+    serve_route(
+        iii,
+        &function_id,
         json!({
-            "api_path": api_path,
-            "http_method": http_method,
+            "path": api_path,
+            "method": http_method,
             "middleware_function_ids": middleware_function_ids,
         }),
-    ))
-    .expect("register http trigger with middleware");
+    );
 }
 
 /// Register a middleware function that always returns `{"action": "continue"}`.
@@ -211,66 +210,7 @@ pub fn register_respond_middleware(iii: &Arc<IIIClient>, function_id: &str) -> A
     calls
 }
 
-/// Register `test.echo` (same as [`register_echo_backend`]) bound to an
-/// `http` trigger that also carries `condition_function_id`, so the
-/// conditional-execution path runs before the per-route middleware/handler.
-/// The function id embeds method+path+a marker so it doesn't collide with
-/// other routes registered elsewhere in the same test binary.
-pub async fn register_echo_backend_with_condition(
-    iii: &Arc<IIIClient>,
-    api_path: &str,
-    http_method: &str,
-    condition_function_id: &str,
-) {
-    let function_id = format!("test.echo.cond {http_method} {api_path}");
-
-    iii.register_function(
-        function_id.clone(),
-        RegisterFunction::new_async(move |req: HttpRequest| async move {
-            Ok::<Value, Error>(json!({
-                "status_code": 200,
-                "body": {
-                    "method": req.method,
-                    "path_params": req.path_params,
-                    "query_params": req.query_params,
-                    "headers": req.headers,
-                    "body": req.body,
-                }
-            }))
-        }),
-    );
-
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({
-            "api_path": api_path,
-            "http_method": http_method,
-            "condition_function_id": condition_function_id,
-        }),
-    ))
-    .expect("register http trigger with condition");
-}
-
-/// Register a condition function that always returns `true` (so the gated
-/// route proceeds to its handler).
-pub fn register_condition_pass(iii: &Arc<IIIClient>, function_id: &str) {
-    iii.register_function(
-        function_id.to_string(),
-        RegisterFunction::new_async(|_req: Value| async move { Ok::<Value, Error>(json!(true)) }),
-    );
-}
-
-/// Register a condition function that always returns `false` (so the gated
-/// route is skipped with `422 CONDITION_NOT_MET`).
-pub fn register_condition_fail(iii: &Arc<IIIClient>, function_id: &str) {
-    iii.register_function(
-        function_id.to_string(),
-        RegisterFunction::new_async(|_req: Value| async move { Ok::<Value, Error>(json!(false)) }),
-    );
-}
-
-/// Register `test.slow` bound to an `http` trigger; the function sleeps for
+/// Register `test.slow` serving a route; the function sleeps for
 /// `sleep_ms` before returning 200. Used by timeout-parity tests to force the
 /// request past `default_timeout` and observe whether the tower
 /// `TimeoutLayer` (504) or the handler's own invocation-timeout mapping (500)
@@ -294,15 +234,14 @@ pub async fn register_slow_backend(
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger");
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    );
 }
 
-/// Register `test.sleep` bound to an `http` trigger; the function sleeps for
+/// Register `test.sleep` serving a route; the function sleeps for
 /// `sleep_ms` then returns 200. Used by the concurrency-limit test: several
 /// concurrent requests each sleep briefly so the `ConcurrencyLimitLayer` has a
 /// chance to queue excess requests behind the configured permit count.
@@ -325,15 +264,14 @@ pub async fn register_sleep_backend(
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger");
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    );
 }
 
-/// Register `test.error` bound to an `http` trigger; the function always
+/// Register `test.error` serving a route; the function always
 /// fails with a structured `Error::Remote { code: "CUSTOM_BOOM", .. }`. Used
 /// to assert the worker's 500 envelope propagates the function's own
 /// code/message instead of a hard-coded `INTERNAL_ERROR`.
@@ -351,10 +289,9 @@ pub async fn register_erroring_backend(iii: &Arc<IIIClient>, api_path: &str, htt
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger");
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    );
 }

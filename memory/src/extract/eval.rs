@@ -676,7 +676,7 @@ const CASES: &[Case] = &[
         &[
             (
                 "notice",
-                r#"[notification] daily-digest: {"trigger":"cron","job_id":"daily-digest","scheduled_time":"2026-10-14T09:00:00Z","actual_time":"2026-10-14T09:00:02Z"}"#,
+                r#"[notification] daily-digest: {"expression":"0 0 9 * * *","scheduled_time":"2026-10-14T09:00:00Z","actual_time":"2026-10-14T09:00:02Z"}"#,
             ),
             (
                 "assistant",
@@ -706,16 +706,16 @@ const CASES: &[Case] = &[
         &[
             (
                 "notice",
-                "[notification] binding b_7f3 `deploy-watch` watching `state` {\"key\":\"deploy/prod\"} \
-                 fired but was NOT delivered: condition function deploy::ready timed out. The binding \
-                 stays armed and every fire will keep skipping until the condition call succeeds. If \
-                 the condition is misconfigured, unregister the binding, re-register it corrected, \
-                 and then read the watched state once — events from before the new registration \
-                 will never fire it.",
+                "[notification] observer b_7f3 `deploy-watch` observing `state::on-changed` \
+                 {\"input.key\":{\"$eq\":\"deploy/prod\"}} fired but was NOT delivered: condition \
+                 function deploy::ready timed out. The observer stays active and every fire will keep \
+                 skipping until the condition call succeeds. If the condition is misconfigured, dispose \
+                 the observer, observe again corrected, and then read the watched state once — events \
+                 from before the new observer will never reach it.",
             ),
             (
                 "assistant",
-                "The deploy watch's condition timed out; I re-registered the binding and read deploy/prod once.",
+                "The deploy watch's condition timed out; I observed it again, corrected, and read deploy/prod once.",
             ),
         ],
         &[],

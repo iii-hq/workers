@@ -23,14 +23,14 @@ const cleanups: Array<() => void> = []
 
 async function render(initial: ConfigStatus) {
   let backend = initial
-  const trigger = vi.fn(async () => backend)
-  const host = { iii: { trigger, on: () => () => {}, registerTrigger: () => () => {}, browserId: 'test' } } as unknown as Host
+  const call = vi.fn(async () => backend)
+  const host = { iii: { call, on: () => () => {}, observe: () => () => {}, browserId: 'test' } } as unknown as Host
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
   await act(async () => root.render(<RuntimeStatus host={host} quietWhenApplied />))
   cleanups.push(() => { act(() => root.unmount()); container.remove() })
-  return { container, trigger, setBackend(next: ConfigStatus) { backend = next } }
+  return { container, call, setBackend(next: ConfigStatus) { backend = next } }
 }
 
 afterEach(() => {
@@ -47,7 +47,7 @@ describe('configuration environment overrides', () => {
     expect(view.container.querySelector('summary')?.textContent).toBe('View overridden fields (2)')
     expect(view.container.textContent).toContain('Access token: WHATSAPP_CLOUD_ACCESS_TOKEN')
     expect(view.container.textContent).toContain('Enable Cloud API: WHATSAPP_CLOUD_ENABLED')
-    expect(view.trigger).toHaveBeenCalledWith('whatsapp::config-status')
+    expect(view.call).toHaveBeenCalledWith('whatsapp::config-status')
   })
 
   it.each([undefined, {}])('keeps quiet status empty when there are no reported overrides: %s', async (environment_overrides) => {

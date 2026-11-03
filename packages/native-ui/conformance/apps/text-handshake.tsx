@@ -1,16 +1,17 @@
 /**
  * The edit-count handshake (design §5.6): the script lower-cases what the
- * person types, and a trigger fills the field. A write that reaches the host
- * after the person typed again carries an old count and is dropped; the
- * person's text wins and reaches the script as the next text entry.
+ * person types, and an observed event fills the field. A write that reaches
+ * the host after the person typed again carries an old count and is
+ * dropped; the person's text wins and reaches the script as the next text
+ * entry.
  */
-import { Column, createSignal, defineApp, Page, Text, TextField, useTrigger } from '@iii-dev/native-ui'
+import { Column, createSignal, defineApp, Page, Text, TextField, useObserve } from '@iii-dev/native-ui'
 
 function Form() {
   const [name, setName] = createSignal('')
   const [submitted, setSubmitted] = createSignal('')
-  useTrigger<{ text: string }>(
-    'demo::fill',
+  useObserve<{ text: string }>(
+    'demo::on-fill',
     () => ({}),
     (payload) => setName(payload.text),
   )

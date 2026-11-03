@@ -185,11 +185,11 @@ function reply(overrides: Partial<{ exit_code: number; stdout: string; stderr: s
 
 function hostAnswering(answer: (args: string[]) => ReturnType<typeof reply>) {
   const calls: string[][] = []
-  const trigger = vi.fn(async (_fn: string, payload: { args: string[] }) => {
+  const call = vi.fn(async (_fn: string, payload: { args: string[] }) => {
     calls.push(payload.args)
     return answer(payload.args)
   })
-  return { host: { iii: { trigger } } as unknown as Parameters<typeof checkoutBranch>[0], calls }
+  return { host: { iii: { call } } as unknown as Parameters<typeof checkoutBranch>[0], calls }
 }
 
 describe('branch verbs', () => {

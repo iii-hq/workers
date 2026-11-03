@@ -7,7 +7,7 @@ import pytest
 import collect_worker_interface as collector
 
 
-def registration_sequence(monkeypatch, snapshots, *, trigger_snapshots=None, workers=None):
+def registration_sequence(monkeypatch, snapshots, *, workers=None):
     """Replace only engine I/O and wall time; exercise real worker resolution."""
     clock = {"now": 0.0, "index": 0}
     monkeypatch.setattr(collector.time, "monotonic", lambda: clock["now"])
@@ -20,12 +20,12 @@ def registration_sequence(monkeypatch, snapshots, *, trigger_snapshots=None, wor
         if function_id == "engine::workers::list":
             assert payload == {}
             return {"workers": workers if workers is not None else [{"name": "whatsapp"}, {"name": "other"}]}
-        if function_id == "engine::triggers::list":
-            assert payload == {"include_internal": False}
-            sample = min(max(clock["index"] - 1, 0), len(trigger_snapshots) - 1) if trigger_snapshots else 0
-            return {"triggers": trigger_snapshots[sample] if trigger_snapshots else []}
-        if function_id == "engine::triggers::info":
-            return {"id": payload["id"], "configuration_schema": {"type": "object"}, "request_schema": {"type": "object"}}
+        if function_id == "engine::functions::info":
+            return {
+                "function_id": payload["function_id"],
+                "request_schema": {"type": "object"},
+                "response_schema": {"type": "object"},
+            }
         assert function_id == "engine::functions::list"
         assert payload == {"include_internal": True}
         clock["index"] += 1
@@ -152,29 +152,29 @@ def test_cli_reports_registration_timeout_without_writing_interface(monkeypatch,
     assert not output.exists()
 
 
-def test_trigger_only_capture_waits_for_all_registrations_and_publishes_them(monkeypatch, tmp_path):
-    first = {"id": "whatsapp::first-event", "worker_name": "whatsapp", "namespace": "default"}
-    second = {"id": "whatsapp::second-event", "worker_name": "whatsapp", "namespace": "default"}
-    clock = registration_sequence(monkeypatch, [{"whatsapp": []}], trigger_snapshots=[
-        [first], [first], [first, second], [second, first], [first, second],
+def test_capture_publishes_event_sources_held_until_the_engine_advertises_observe_v2(monkeypatch, tmp_path):
+    # A v2 SDK registers a private event source only once the engine has
+    # advertised observe.v2, so it can land after the worker's other functions.
+    clock = registration_sequence(monkeypatch, [
+        {"whatsapp": ["whatsapp::send"]},
+        {"whatsapp": ["whatsapp::send"]},
+        {"whatsapp": ["whatsapp::send", "whatsapp::on-events"]},
+        {"whatsapp": ["whatsapp::on-events", "whatsapp::send"]},
+        {"whatsapp": ["whatsapp::send", "whatsapp::on-events"]},
     ])
     output = tmp_path / "interface.json"
     monkeypatch.setattr(sys, "argv", [
         "collect_worker_interface.py", "--worker", "whatsapp", "--wait-seconds", "20", "--out", str(output),
         "--assert-non-empty",
     ])
-
     assert collector.main() == 0
     interface = json.loads(output.read_text())
-    assert interface["functions"] == []
-    assert [row["name"] for row in interface["triggers"]] == ["whatsapp::first-event", "whatsapp::second-event"]
-    assert clock["now"] == 20
+    assert [row["name"] for row in interface["functions"]] == ["whatsapp::send", "whatsapp::on-events"]
+    assert clock["now"] == 4 * collector.SAMPLE_INTERVAL_SECONDS
 
 
-def test_other_workers_triggers_cannot_make_an_empty_target_ready(monkeypatch):
-    clock = registration_sequence(monkeypatch, [{"whatsapp": []}], trigger_snapshots=[[
-        {"id": "other::ready", "worker_name": "other", "namespace": "default"},
-    ]])
+def test_other_workers_functions_cannot_make_an_empty_target_ready(monkeypatch):
+    clock = registration_sequence(monkeypatch, [{"whatsapp": [], "other": ["other::ready"]}])
 
     with pytest.raises(TimeoutError, match="whatsapp.*stabilize"):
         collector.wait_for_worker("whatsapp", 5)
@@ -182,63 +182,10 @@ def test_other_workers_triggers_cannot_make_an_empty_target_ready(monkeypatch):
     assert clock["now"] == 5
 
 
-def test_trigger_registrations_cannot_make_an_absent_worker_ready(monkeypatch):
-    clock = registration_sequence(monkeypatch, [{"whatsapp": []}], workers=[], trigger_snapshots=[[
-        {"id": "whatsapp::event", "worker_name": "whatsapp", "namespace": "default"},
-    ]])
+def test_functions_cannot_make_an_absent_worker_ready(monkeypatch):
+    clock = registration_sequence(monkeypatch, [{"whatsapp": ["whatsapp::event"]}], workers=[])
 
     with pytest.raises(TimeoutError, match="whatsapp.*stabilize"):
         collector.wait_for_worker("whatsapp", 5)
 
     assert clock["now"] == 5
-
-
-def test_delayed_functions_reset_trigger_only_readiness(monkeypatch):
-    clock = registration_sequence(monkeypatch, [
-        {"whatsapp": []}, {"whatsapp": []}, {"whatsapp": ["whatsapp::first"]},
-        {"whatsapp": ["whatsapp::first", "whatsapp::second"]},
-        {"whatsapp": ["whatsapp::first", "whatsapp::second"]},
-        {"whatsapp": ["whatsapp::first", "whatsapp::second"]},
-    ], trigger_snapshots=[[
-        {"id": "whatsapp::event", "worker_name": "whatsapp", "namespace": "default"},
-    ]])
-
-    _, functions = collector.wait_for_worker("whatsapp", 20)
-
-    assert names(functions) == ["whatsapp::first", "whatsapp::second"]
-    assert clock["now"] == 5 * collector.SAMPLE_INTERVAL_SECONDS
-
-
-def test_trigger_only_readiness_cannot_hide_functions_registered_after_a_long_pause(monkeypatch):
-    clock = registration_sequence(monkeypatch, [
-        {"whatsapp": []}, {"whatsapp": []}, {"whatsapp": []},
-        {"whatsapp": ["whatsapp::ready"]}, {"whatsapp": ["whatsapp::ready"]},
-        {"whatsapp": ["whatsapp::ready"]},
-    ], trigger_snapshots=[[
-        {"id": "whatsapp::event", "worker_name": "whatsapp", "namespace": "default"},
-    ]])
-
-    _, functions = collector.wait_for_worker("whatsapp", 20)
-
-    assert names(functions) == ["whatsapp::ready"]
-    assert clock["now"] == 5 * collector.SAMPLE_INTERVAL_SECONDS
-
-
-def test_functions_arriving_during_final_sleep_cannot_publish_stale_trigger_only_interface(monkeypatch):
-    clock = registration_sequence(monkeypatch, [{"whatsapp": []}], trigger_snapshots=[[
-        {"id": "whatsapp::event", "worker_name": "whatsapp", "namespace": "default"},
-    ]])
-    engine_call = collector.run_iii
-
-    def run_iii(function_id, payload):
-        result = engine_call(function_id, payload)
-        if function_id == "engine::functions::list" and clock["now"] >= 5:
-            return {"functions": [{"function_id": "whatsapp::late", "worker_name": "whatsapp"}]}
-        return result
-
-    monkeypatch.setattr(collector, "run_iii", run_iii)
-
-    with pytest.raises(TimeoutError, match="whatsapp.*stabilize"):
-        collector.wait_for_worker("whatsapp", 6)
-
-    assert clock["now"] == 6

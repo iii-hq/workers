@@ -35,7 +35,7 @@ export const NeutralSelection: Story = {
             <ListItem
               leading={<Cpu className="size-4" />}
               label="llm-router"
-              description="7 triggers · healthy"
+              description="7 observers · healthy"
               trailing={<Chip>internal</Chip>}
             />
             <ListItem

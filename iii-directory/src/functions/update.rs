@@ -1,6 +1,6 @@
 //! Single-file write paths for skills and system prompts.
 //!
-//! Public API (reachable by any worker over `iii.trigger`):
+//! Public API (reachable by any worker over `iii.call`):
 //!
 //!   * `directory::skills::{update,create,delete}` — overwrite one
 //!     EXISTING skill markdown file, author a NEW one under the global
@@ -29,9 +29,9 @@
 //!     `description`, and a valid `name` when the frontmatter declares
 //!     one (the scanner would otherwise skip the file on next scan).
 //!
-//! Writes are atomic (tmp + rename, same as download) and fan out the
-//! same `directory::skills::on-change` / `directory::system-prompts::on-change`
-//! triggers with `{ op: "update", ... }` payloads.
+//! Writes are atomic (tmp + rename, same as download) and call the same
+//! `directory::skills::on-change` / `directory::system-prompts::on-change`
+//! with `{ op: "update", ... }` payloads.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{SharedConfig, SkillsConfig};
+use crate::events;
 use crate::fs_source::{self, FsPrompt, FsSkill, SkillFrontmatter};
 use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
 use crate::functions::prompts::validate_name;
@@ -53,7 +54,6 @@ use crate::functions::skills::{
     SKILL_BODY_MAX_BYTES,
 };
 use crate::sources::{mark_self_write, write_file_atomic};
-use crate::trigger_types;
 
 /// Recovery pointers for a missed skill update/delete target.
 const SKILL_UPDATE_NOT_FOUND_NEXT: &[NextAction] = &[
@@ -230,43 +230,41 @@ pub struct SystemPromptDeleteOutput {
 pub fn register(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subscribers: &super::Subscribers,
+    sources: &super::ChangeSources,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
-    register_update_skill(iii, cfg, &subscribers.skills, cache);
-    register_create_skill(iii, cfg, &subscribers.skills, cache);
-    register_delete_skill(iii, cfg, &subscribers.skills, cache);
-    register_update_system_prompt(iii, cfg, &subscribers.system_prompts);
-    register_create_system_prompt(iii, cfg, &subscribers.system_prompts);
-    register_delete_system_prompt(iii, cfg, &subscribers.system_prompts);
+    register_update_skill(iii, cfg, sources.skills, cache);
+    register_create_skill(iii, cfg, sources.skills, cache);
+    register_delete_skill(iii, cfg, sources.skills, cache);
+    register_update_system_prompt(iii, cfg, sources.system_prompts);
+    register_create_system_prompt(iii, cfg, sources.system_prompts);
+    register_delete_system_prompt(iii, cfg, sources.system_prompts);
 }
 
 fn register_update_skill(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
+    source: events::ChangeSource,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     let cache_inner = cache.clone();
     iii.register_function(
         "directory::skills::update",
         RegisterFunction::new_async(move |req: SkillUpdateInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             let cache = cache_inner.clone();
             async move {
                 let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
                 let out = update_skill_in(&visible, &req, &cfg.resolved_agents_skills_roots())
                     .map_err(Error::Handler)?;
                 let namespace = out.id.split('/').next().unwrap_or("").to_string();
-                trigger_types::dispatch(
+                events::emit(
                     &iii,
-                    &subs,
-                    json!({ "op": "update", "namespace": namespace, "id": out.id }),
+                    source,
+                    json!({ "op": "update", "namespace": namespace, "name": out.id, "id": out.id }),
                 )
                 .await;
                 Ok::<_, Error>(out)
@@ -284,19 +282,17 @@ fn register_update_skill(
 fn register_create_skill(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
+    source: events::ChangeSource,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     let cache_inner = cache.clone();
     iii.register_function(
         "directory::skills::create",
         RegisterFunction::new_async(move |req: SkillCreateInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             let cache = cache_inner.clone();
             async move {
                 let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
@@ -311,10 +307,10 @@ fn register_create_skill(
                 let out = create_skill_in(&cfg, &visible, registered.as_ref(), &req)
                     .map_err(Error::Handler)?;
                 let namespace = out.id.split('/').next().unwrap_or("").to_string();
-                trigger_types::dispatch(
+                events::emit(
                     &iii,
-                    &subs,
-                    json!({ "op": "create", "namespace": namespace, "id": out.id }),
+                    source,
+                    json!({ "op": "create", "namespace": namespace, "name": out.id, "id": out.id }),
                 )
                 .await;
                 Ok::<_, Error>(out)
@@ -333,28 +329,26 @@ fn register_create_skill(
 fn register_delete_skill(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
+    source: events::ChangeSource,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     let cache_inner = cache.clone();
     iii.register_function(
         "directory::skills::delete",
         RegisterFunction::new_async(move |req: SkillDeleteInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             let cache = cache_inner.clone();
             async move {
                 let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
                 let out = delete_skill_in(&cfg, &visible, &req).map_err(Error::Handler)?;
                 let namespace = out.id.split('/').next().unwrap_or("").to_string();
-                trigger_types::dispatch(
+                events::emit(
                     &iii,
-                    &subs,
-                    json!({ "op": "delete", "namespace": namespace, "id": out.id }),
+                    source,
+                    json!({ "op": "delete", "namespace": namespace, "name": out.id, "id": out.id }),
                 )
                 .await;
                 Ok::<_, Error>(out)
@@ -371,21 +365,18 @@ fn register_delete_skill(
 fn register_update_system_prompt(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
+    source: events::ChangeSource,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::system-prompts::update",
         RegisterFunction::new_async(move |req: SystemPromptUpdateInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = update_system_prompt(&cfg, &req).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.name }))
-                    .await;
+                events::emit(&iii, source, json!({ "op": "update", "name": out.name })).await;
                 Ok::<_, Error>(out)
             }
         })
@@ -402,21 +393,18 @@ fn register_update_system_prompt(
 fn register_create_system_prompt(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
+    source: events::ChangeSource,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::system-prompts::create",
         RegisterFunction::new_async(move |req: SystemPromptCreateInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = create_system_prompt(&cfg, &req).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "create", "name": out.name }))
-                    .await;
+                events::emit(&iii, source, json!({ "op": "create", "name": out.name })).await;
                 Ok::<_, Error>(out)
             }
         })
@@ -432,28 +420,25 @@ fn register_create_system_prompt(
 fn register_delete_system_prompt(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
+    source: events::ChangeSource,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::system-prompts::delete",
         RegisterFunction::new_async(move |req: SystemPromptDeleteInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = delete_system_prompt(&cfg, &req).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "delete", "name": out.name }))
-                    .await;
+                events::emit(&iii, source, json!({ "op": "delete", "name": out.name })).await;
                 Ok::<_, Error>(out)
             }
         })
         .description(
             "Permanently delete one EXISTING filesystem-backed system prompt by name. \
              Resolves against the same merged scan as directory::system-prompts::list, \
-             removes only that prompt's markdown file, and fans out \
+             removes only that prompt's markdown file, and calls \
              directory::system-prompts::on-change with { op: \"delete\" }.",
         )
         .metadata(json!({"tool": {"label": "Delete system prompt"}})),

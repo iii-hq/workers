@@ -10,8 +10,7 @@
 use std::sync::OnceLock;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -19,7 +18,7 @@ use tokio::sync::Mutex as AsyncMutex;
 /// legacy entry when the intended worker is unavailable.
 async fn shell_config_id(iii: &IIIClient) -> Result<String, Error> {
     let identity = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "ide::configuration-id".into(),
             payload: json!({}),
             action: None,
@@ -76,8 +75,8 @@ pub async fn add_host_root(iii: &IIIClient, requested_root: &str) -> Result<(), 
     let _guard = host_root_lock().lock().await;
     let config_id = shell_config_id(iii).await?;
     let reply = iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: "configuration::get".into(),
                 payload: json!({ "id": config_id, "raw": true }),
                 action: None,
@@ -94,8 +93,8 @@ pub async fn add_host_root(iii: &IIIClient, requested_root: &str) -> Result<(), 
             Error::Handler("IDE configuration is not an object; refusing to replace it".into())
         })?;
     let next = with_host_root(&current, requested_root);
-    iii.trigger(
-        TriggerRequest {
+    iii.call(
+        CallRequest {
             function_id: "configuration::set".into(),
             payload: json!({ "id": config_id, "value": next }),
             action: None,

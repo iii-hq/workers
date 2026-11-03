@@ -166,12 +166,11 @@ pub struct SecurityScanResponseV1 {
     pub deduplicated: bool,
 }
 
-/// Payload emitted by the iii cron trigger. Values are observability data
-/// only; scan inputs come from operator configuration.
+/// The `cron::on-tick` event, delivered as output. Values are observability
+/// data only; scan inputs come from operator configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SecurityScanScheduleEventV1 {
-    pub trigger: String,
-    pub job_id: String,
+    pub expression: String,
     pub scheduled_time: String,
     pub actual_time: String,
 }

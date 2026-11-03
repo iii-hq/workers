@@ -1,0 +1,513 @@
+//! Route table: one route per `http::on-request` observer, matched against
+//! incoming requests (method + path) with path params extracted.
+//!
+//! Ported from the in-engine `iii-http` worker's `RestApiWorker`
+//! (`route_signature` / `register_router` conflict check in `api_core.rs`,
+//! `extract_path_params` in `views.rs`), adapted to a standalone, axum-free
+//! `RouteTable` keyed by observer id.
+
+use std::collections::HashMap;
+
+use colored::Colorize;
+
+/// A single registered HTTP route, declared by the args of one
+/// `http::on-request` observer.
+#[derive(Debug, Clone)]
+pub struct Route {
+    /// The observer that declared the route. The server names it on each call
+    /// of `http::on-request`, whose deliver hook calls through it.
+    pub observer_id: String,
+    pub http_path: String,
+    pub http_method: String,
+    pub public_webhook: bool,
+    pub middleware_function_ids: Vec<String>,
+}
+
+impl Route {
+    /// The route's id: its observer's id.
+    pub fn id(&self) -> &str {
+        &self.observer_id
+    }
+}
+
+/// Same registration lines as the engine's builtin iii-http (api_core.rs).
+/// `target` is the observer's target, read from the observer at hand.
+pub(crate) fn log_registered(route: &Route, target: &str) {
+    tracing::info!(
+        "{} Endpoint {} → {}",
+        "[REGISTERED]".green(),
+        format!("{} {}", route.http_method, route.http_path)
+            .bright_yellow()
+            .bold(),
+        target.purple()
+    );
+}
+
+pub(crate) fn log_unregistered(route: &Route, target: &str) {
+    tracing::info!(
+        "{} Endpoint {} → {}",
+        "[UNREGISTERED]".yellow(),
+        format!("{} {}", route.http_method, route.http_path)
+            .bright_yellow()
+            .bold(),
+        target.purple()
+    );
+}
+
+/// Computes a route's "shape" signature: method + path with every `:param`
+/// segment collapsed to a positional placeholder. Two routes with the same
+/// signature collide regardless of their param names (e.g. `/a/:x/:y` and
+/// `/a/:y/:x`).
+pub fn route_signature(http_method: &str, http_path: &str) -> String {
+    let shape = http_path
+        .split('/')
+        .map(|segment| {
+            if segment.starts_with(':') {
+                "{}"
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<&str>>()
+        .join("/");
+    format!("{}:{}", http_method.to_uppercase(), shape)
+}
+
+/// Counts the `:param` segments in a registered path. Used to rank matching
+/// routes so literal segments win over parameters.
+fn param_segment_count(registered_path: &str) -> usize {
+    registered_path
+        .split('/')
+        .filter(|s| s.starts_with(':'))
+        .count()
+}
+
+/// Matches `actual_path` against `registered_path` (which may contain
+/// `:param` segments), returning extracted path params. Returns `None` if
+/// the segment counts differ or any literal segment doesn't match exactly.
+pub fn extract_path_params(
+    registered_path: &str,
+    actual_path: &str,
+) -> Option<HashMap<String, String>> {
+    let registered_segments: Vec<&str> = registered_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let actual_segments: Vec<&str> = actual_path.split('/').filter(|s| !s.is_empty()).collect();
+
+    if registered_segments.len() != actual_segments.len() {
+        return None;
+    }
+
+    let mut params = HashMap::new();
+    for (registered_seg, actual_seg) in registered_segments.iter().zip(actual_segments.iter()) {
+        if let Some(param_name) = registered_seg.strip_prefix(':') {
+            params.insert(param_name.to_string(), actual_seg.to_string());
+        } else if registered_seg != actual_seg {
+            return None;
+        }
+    }
+
+    Some(params)
+}
+
+fn listener_path_params(
+    registered: &str,
+    actual: &str,
+    public_only: bool,
+) -> Option<HashMap<String, String>> {
+    if !public_only {
+        return extract_path_params(registered, actual);
+    }
+    let registered: Vec<_> = registered.split('/').collect();
+    let actual: Vec<_> = actual.split('/').collect();
+    if registered.len() != actual.len() {
+        return None;
+    }
+    let mut params = HashMap::new();
+    for (expected, received) in registered.iter().zip(actual) {
+        if let Some(name) = expected.strip_prefix(':') {
+            if received.is_empty() {
+                return None;
+            }
+            params.insert(name.to_string(), received.to_string());
+        } else if *expected != received {
+            return None;
+        }
+    }
+    Some(params)
+}
+
+/// Registry of routes, keyed by observer id so a route can be removed by id
+/// alone. Rejects inserting a route whose method+path shape conflicts with
+/// another observer's route already registered (same shape, different param
+/// names): matching it would be ambiguous. The later observer is rejected
+/// with `HTTP_ROUTE_CONFLICT`. Re-inserting under the same id replaces the
+/// entry.
+#[derive(Default)]
+pub struct RouteTable {
+    by_id: HashMap<String, Route>,
+}
+
+impl RouteTable {
+    /// Inserts or replaces a route. Fails if another observer already owns a
+    /// route with the same method+path signature.
+    pub fn insert(&mut self, route: Route) -> Result<(), String> {
+        let signature = route_signature(&route.http_method, &route.http_path);
+        let conflict = self.by_id.values().find(|existing| {
+            existing.observer_id != route.observer_id
+                && route_signature(&existing.http_method, &existing.http_path) == signature
+        });
+        if let Some(existing) = conflict {
+            return Err(format!(
+                "Route '{} {}' conflicts with already-registered route '{} {}': \
+                 routes with identical structure but different path-parameter \
+                 names are not supported",
+                route.http_method.to_uppercase(),
+                route.http_path,
+                existing.http_method.to_uppercase(),
+                existing.http_path
+            ));
+        }
+
+        self.by_id.insert(route.observer_id.clone(), route);
+        Ok(())
+    }
+
+    /// Removes and returns the route the observer `id` declared, if any.
+    pub fn remove(&mut self, id: &str) -> Option<Route> {
+        self.by_id.remove(id)
+    }
+
+    /// The route the observer `id` declared, if any.
+    pub fn get(&self, id: &str) -> Option<&Route> {
+        self.by_id.get(id)
+    }
+
+    /// Finds the registered route whose method matches (case insensitive) and
+    /// whose path matches `actual_path`, returning a clone of the route plus
+    /// its extracted path params.
+    ///
+    /// When several routes match (e.g. `/items/:id` and `/items/copy` both
+    /// match `/items/copy`), the more literal route wins: candidates are
+    /// scored by their number of `:param` segments and the lowest score is
+    /// chosen. Iteration order over the backing `HashMap` is nondeterministic,
+    /// so this scoring is what makes the result stable. The engine gets the
+    /// same precedence for free from axum's matcher.
+    pub fn match_route(
+        &self,
+        method: &str,
+        actual_path: &str,
+    ) -> Option<(Route, HashMap<String, String>)> {
+        self.match_route_for_listener(method, actual_path, false)
+    }
+
+    /// Same registry and precedence, filtered before matching on the restricted
+    /// listener. No decoding, slash normalization, or method aliasing there.
+    pub fn match_route_for_listener(
+        &self,
+        method: &str,
+        actual_path: &str,
+        public_only: bool,
+    ) -> Option<(Route, HashMap<String, String>)> {
+        let method = if public_only {
+            method.to_string()
+        } else {
+            method.to_uppercase()
+        };
+        self.by_id
+            .values()
+            .filter(|route| {
+                (!public_only || route.public_webhook) && route.http_method.to_uppercase() == method
+            })
+            .filter_map(|route| {
+                listener_path_params(&route.http_path, actual_path, public_only)
+                    .map(|params| (param_segment_count(&route.http_path), route.clone(), params))
+            })
+            .min_by_key(|(score, _, _)| *score)
+            .map(|(_, route, params)| (route, params))
+    }
+
+    /// Methods registered for any route whose path pattern matches
+    /// `actual_path` (ignoring HTTP method). Used to distinguish 404 (no such
+    /// path) from 405 (path exists, method not allowed). Returns uppercased
+    /// methods, deduped, in sorted order.
+    pub fn allowed_methods(&self, actual_path: &str) -> Vec<String> {
+        self.allowed_methods_for_listener(actual_path, false)
+    }
+
+    /// Private routes must not leak through a restricted listener's Allow header.
+    pub fn allowed_methods_for_listener(
+        &self,
+        actual_path: &str,
+        public_only: bool,
+    ) -> Vec<String> {
+        let mut methods: Vec<String> = self
+            .by_id
+            .values()
+            .filter(|route| !public_only || route.public_webhook)
+            .filter(|route| {
+                listener_path_params(&route.http_path, actual_path, public_only).is_some()
+            })
+            .map(|route| route.http_method.to_uppercase())
+            .collect();
+        methods.sort();
+        methods.dedup();
+        methods
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(observer_id: &str, method: &str, path: &str) -> Route {
+        Route {
+            observer_id: observer_id.to_string(),
+            http_path: path.to_string(),
+            http_method: method.to_string(),
+            public_webhook: false,
+            middleware_function_ids: Vec::new(),
+        }
+    }
+
+    // =========================================================================
+    // route_signature
+    // =========================================================================
+
+    #[test]
+    fn route_signature_collapses_param_names() {
+        let a = route_signature("GET", "/a/:x/:y");
+        let b = route_signature("GET", "/a/:y/:x");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn route_signature_distinguishes_method() {
+        let get = route_signature("GET", "/items/:id");
+        let post = route_signature("POST", "/items/:id");
+        assert_ne!(get, post);
+    }
+
+    #[test]
+    fn route_signature_distinguishes_literal_segments() {
+        let a = route_signature("GET", "/items/:id/calls");
+        let b = route_signature("GET", "/items/:id/messages");
+        assert_ne!(a, b);
+    }
+
+    // =========================================================================
+    // extract_path_params
+    // =========================================================================
+
+    #[test]
+    fn extract_path_params_matches_single_param() {
+        let params = extract_path_params("/users/:id", "/users/42").unwrap();
+        assert_eq!(params.get("id"), Some(&"42".to_string()));
+    }
+
+    #[test]
+    fn extract_path_params_rejects_different_segment_count() {
+        assert!(extract_path_params("/users/:id", "/users/42/extra").is_none());
+    }
+
+    #[test]
+    fn extract_path_params_rejects_literal_mismatch() {
+        assert!(extract_path_params("/users/:id/calls", "/users/42/messages").is_none());
+    }
+
+    #[test]
+    fn extract_path_params_matches_no_params() {
+        let params = extract_path_params("/health", "/health").unwrap();
+        assert!(params.is_empty());
+    }
+
+    // =========================================================================
+    // RouteTable
+    // =========================================================================
+
+    #[test]
+    fn restricted_matching_filters_routes_methods_and_path_variants() {
+        let mut table = RouteTable::default();
+        table.insert(route("private", "GET", "/private")).unwrap();
+        table.insert(route("delete", "DELETE", "/hook")).unwrap();
+        let mut public = route("public", "POST", "/hook");
+        public.public_webhook = true;
+        table.insert(public).unwrap();
+        for path in [
+            "/private",
+            "/private/",
+            "//private",
+            "/%70rivate",
+            "/private%2f",
+        ] {
+            assert!(table.match_route_for_listener("GET", path, true).is_none());
+            assert!(table.allowed_methods_for_listener(path, true).is_empty());
+        }
+        assert!(table
+            .match_route_for_listener("POST", "/hook", true)
+            .is_some());
+        assert_eq!(
+            table.allowed_methods_for_listener("/hook", true),
+            vec!["POST"]
+        );
+        for method in ["GET", "HEAD", "DELETE", "OPTIONS", "post"] {
+            assert!(table
+                .match_route_for_listener(method, "/hook", true)
+                .is_none());
+        }
+        for path in ["/hook/", "//hook", "/%68ook", "/hook%2f"] {
+            assert!(table.match_route_for_listener("POST", path, true).is_none());
+        }
+        // Existing normal-listener normalization stays backwards compatible.
+        assert!(table.match_route("get", "/private/").is_some());
+        let mut revoked = route("public", "POST", "/hook");
+        revoked.public_webhook = false;
+        table.insert(revoked).unwrap();
+        assert!(table
+            .match_route_for_listener("POST", "/hook", true)
+            .is_none());
+    }
+
+    #[test]
+    fn restricted_parameter_route_never_selects_private_handler() {
+        let mut table = RouteTable::default();
+        let mut public = route("public", "POST", "/hooks/:id");
+        public.public_webhook = true;
+        table.insert(public).unwrap();
+        table
+            .insert(route("private", "POST", "/hooks/admin"))
+            .unwrap();
+        let (matched, params) = table
+            .match_route_for_listener("POST", "/hooks/admin", true)
+            .unwrap();
+        assert_eq!(matched.id(), "public");
+        assert_eq!(params["id"], "admin");
+        assert_eq!(
+            table.match_route("POST", "/hooks/admin").unwrap().0.id(),
+            "private"
+        );
+        assert!(table
+            .match_route_for_listener("POST", "/hooks/", true)
+            .is_none());
+    }
+
+    #[test]
+    fn match_route_extracts_path_params() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+
+        let (matched, params) = table.match_route("GET", "/users/42").unwrap();
+        assert_eq!(matched.id(), "t1");
+        assert_eq!(params.get("id"), Some(&"42".to_string()));
+    }
+
+    #[test]
+    fn match_route_prefers_literal_over_param() {
+        // `/items/copy` and `/items/:id` both match `/items/copy`; the literal
+        // route must win regardless of HashMap iteration order.
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/items/:id")).unwrap();
+        table.insert(route("t2", "GET", "/items/copy")).unwrap();
+
+        let (matched, params) = table.match_route("GET", "/items/copy").unwrap();
+        assert_eq!(matched.id(), "t2");
+        assert!(params.is_empty());
+
+        // A non-literal path still falls through to the param route.
+        let (matched, params) = table.match_route("GET", "/items/42").unwrap();
+        assert_eq!(matched.id(), "t1");
+        assert_eq!(params.get("id"), Some(&"42".to_string()));
+    }
+
+    #[test]
+    fn match_route_returns_none_for_wrong_method() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+
+        assert!(table.match_route("POST", "/users/42").is_none());
+    }
+
+    #[test]
+    fn match_route_returns_none_for_nonexistent_path() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+
+        assert!(table.match_route("GET", "/orders/42").is_none());
+    }
+
+    #[test]
+    fn insert_rejects_conflicting_signature_from_different_observer() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/a/:x")).unwrap();
+
+        let result = table.insert(route("t2", "GET", "/a/:y"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn insert_allows_same_observer_id_reinsert_as_replace() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/a/:x")).unwrap();
+
+        let result = table.insert(route("t1", "GET", "/a/:x/:y"));
+        assert!(result.is_ok());
+
+        let (matched, _) = table.match_route("GET", "/a/1/2").unwrap();
+        assert_eq!(matched.id(), "t1");
+    }
+
+    #[test]
+    fn allowed_methods_lists_all_methods_for_matching_path() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+        table.insert(route("t2", "POST", "/users/:id")).unwrap();
+
+        assert_eq!(table.allowed_methods("/users/42"), vec!["GET", "POST"]);
+    }
+
+    #[test]
+    fn allowed_methods_empty_for_nonmatching_path() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+
+        assert!(table.allowed_methods("/orders/42").is_empty());
+    }
+
+    #[test]
+    fn remove_removes_then_reports_none() {
+        let mut table = RouteTable::default();
+        table.insert(route("t1", "GET", "/users/:id")).unwrap();
+
+        assert_eq!(
+            table.get("t1").map(|r| r.http_path.as_str()),
+            Some("/users/:id")
+        );
+        assert!(table.remove("t1").is_some());
+        assert!(table.remove("t1").is_none());
+        assert!(table.get("t1").is_none());
+        assert!(table.match_route("GET", "/users/42").is_none());
+    }
+
+    #[test]
+    fn brace_and_colon_routes_share_a_shape() {
+        let mut table = RouteTable::default();
+        table
+            .insert(route(
+                "t1",
+                "GET",
+                &crate::types::normalize_api_path("/tasks/{tid}"),
+            ))
+            .unwrap();
+        let (matched, params) = table.match_route("GET", "/tasks/123").unwrap();
+        assert_eq!(matched.http_path, "/tasks/:tid");
+        assert_eq!(params.get("tid"), Some(&"123".to_string()));
+        assert!(table
+            .insert(route(
+                "t2",
+                "GET",
+                &crate::types::normalize_api_path("/tasks/{other}")
+            ))
+            .is_err());
+    }
+}

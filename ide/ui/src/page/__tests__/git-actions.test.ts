@@ -39,14 +39,14 @@ function reply(
 
 function hostWith(...responses: unknown[]) {
   const calls: unknown[] = []
-  const trigger = vi.fn(async (_fn: string, payload: unknown) => {
+  const call = vi.fn(async (_fn: string, payload: unknown) => {
     calls.push(payload)
     const next = responses.shift()
     if (next instanceof Error) throw next
     if (next === undefined) throw new Error('unexpected call')
     return next
   })
-  return { host: { iii: { trigger } } as unknown as Parameters<typeof gitTags>[0], calls, trigger }
+  return { host: { iii: { call } } as unknown as Parameters<typeof gitTags>[0], calls, call }
 }
 
 describe('discardStep', () => {
@@ -93,7 +93,7 @@ describe('gitDiscard', () => {
   })
 
   it('discards many files in one call per step, in each change’s order', async () => {
-    const { host, calls, trigger } = hostWith(reply(), reply(), {
+    const { host, calls, call } = hostWith(reply(), reply(), {
       results: [{ success: true }, { success: false, error: { code: 'io', message: 'busy' } }, { success: true }],
     })
     const results = await gitDiscard(host, '/r', [
@@ -102,7 +102,7 @@ describe('gitDiscard', () => {
       { path: 'add.ts', status: 'added', staged: true },
       { path: 'b.ts', status: 'renamed', staged: true, from: 'a.ts' },
     ])
-    expect(trigger).toHaveBeenCalledTimes(3)
+    expect(call).toHaveBeenCalledTimes(3)
     expect((calls[0] as { args: string[] }).args.slice(4)).toEqual(['--', 'm.ts', 'a.ts'])
     expect((calls[1] as { args: string[] }).args).toEqual(['restore', '--staged', '--', 'add.ts', 'b.ts'])
     expect(calls[2]).toEqual({ paths: ['/r/new.ts', '/r/add.ts', '/r/b.ts'], recursive: false })
@@ -115,16 +115,16 @@ describe('gitDiscard', () => {
   })
 
   it('deletes untracked files through coder::delete-file', async () => {
-    const { host, trigger } = hostWith({ results: [{ path: '/r/new.ts', success: true, removed: true }] })
+    const { host, call } = hostWith({ results: [{ path: '/r/new.ts', success: true, removed: true }] })
     const results = await gitDiscard(host, '/r', [{ path: 'new.ts', status: 'untracked', staged: false }])
     expect(results[0].error).toBeNull()
-    expect(trigger).toHaveBeenCalledWith('coder::delete-file', { paths: ['/r/new.ts'], recursive: false })
+    expect(call).toHaveBeenCalledWith('coder::delete-file', { paths: ['/r/new.ts'], recursive: false })
   })
 
   it('reports a failed call by its handler message', async () => {
-    const { host, trigger } = hostWith()
+    const { host, call } = hostWith()
     // The bus rejects with the handler's error body, not an Error.
-    trigger.mockRejectedValueOnce({ message: 'handler error: {"code":"C210","message":"path escapes the root"}' })
+    call.mockRejectedValueOnce({ message: 'handler error: {"code":"C210","message":"path escapes the root"}' })
     const results = await gitDiscard(host, '/r', [{ path: 'new.ts', status: 'untracked', staged: false }])
     expect(results).toEqual([{ path: 'new.ts', error: 'C210: path escapes the root' }])
   })
@@ -408,7 +408,7 @@ describe('.gitignore', () => {
   it('creates the file when it is missing and writes against the revision read', async () => {
     // The bus rejects with the handler's error body, not an Error.
     const created = hostWith({ results: [{ path: '/r/.gitignore', success: true, bytes_written: 6 }] })
-    created.trigger.mockRejectedValueOnce({
+    created.call.mockRejectedValueOnce({
       message: 'handler error: {"code":"C211","message":"/r/.gitignore: not found or not accessible."}',
     })
     await expect(gitIgnore(created.host, '/r', ['out/'])).resolves.toBe(1)

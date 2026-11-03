@@ -1,5 +1,5 @@
 //! Bridge worker: connects the local engine to a remote iii instance.
-//! Registers NO trigger type — only functions (`bridge.invoke`,
+//! Provides no event functions — only callable functions (`bridge.invoke`,
 //! `bridge.invoke_async`, plus configured forward/expose entries).
 
 pub mod boot;

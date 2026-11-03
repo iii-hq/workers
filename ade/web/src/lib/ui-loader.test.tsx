@@ -6,7 +6,7 @@ import type {
   ConfigFormProps,
   ConsoleApi,
   SetupFn,
-  UiAssetsPush,
+  UiAssetsEvent,
 } from '../types/injectable-ui'
 import {
   markComposerUsed,
@@ -21,14 +21,15 @@ import {
 } from './panel-context'
 import {
   type ConversationAdapter,
+  ON_ASSETS_CHANGED_FN,
   startUiLoader,
   UI_ASSETS_FN,
 } from './ui-loader'
 import {
   getExtConfigForm,
+  getExtObserverActivityRenderers,
   getExtPage,
   getExtProviderConfigForm,
-  getExtTriggerActivityRenderers,
   getUiAssetsStatus,
   setUiAssetsStatus,
 } from './ui-slots'
@@ -61,12 +62,12 @@ function setupForm(label: string): UiModule {
   }
 }
 
-function setupTriggerRenderer(label: string): UiModule {
+function setupObserverRenderer(label: string): UiModule {
   return {
     default(host) {
-      host.triggerRenderers.register({
+      host.observerRenderers.register({
         id: `cron-${label}`,
-        isMatch: (triggerType) => triggerType === 'cron',
+        isMatch: (functionId) => functionId === 'cron::on-tick',
         tryRender: () => <p>{label}</p>,
       })
     },
@@ -100,18 +101,24 @@ function createHarness({
   importModule?: (url: string) => Promise<UiModule>
   manifest?: Promise<{ disabled: boolean }>
 } = {}) {
-  let handler: ((payload: UiAssetsPush) => void | Promise<void>) | undefined
+  let handler: ((payload: UiAssetsEvent) => void | Promise<void>) | undefined
   const offHandler = vi.fn()
-  const offTrigger = vi.fn()
+  const offObserver = vi.fn()
   const client = {
     browserId: 'test-browser',
-    trigger: vi.fn(() => manifest),
+    call: vi.fn(() => manifest),
     on: vi.fn((functionId, nextHandler) => {
       expect(functionId).toBe(UI_ASSETS_FN)
       handler = nextHandler
       return offHandler
     }),
-    registerTrigger: vi.fn(() => offTrigger),
+    observe: vi.fn((source, target, options) => {
+      expect(source).toBe(ON_ASSETS_CHANGED_FN)
+      expect(target).toBe(`${UI_ASSETS_FN}::test-browser`)
+      // One event at a time, in the order the asset queue sends them.
+      expect(options).toEqual({ max_in_flight: 1 })
+      return offObserver
+    }),
   } as unknown as IiiClient
   const api = {
     iii: client,
@@ -126,12 +133,12 @@ function createHarness({
     importModule,
   })
   return {
-    emit(payload: UiAssetsPush) {
+    emit(payload: UiAssetsEvent) {
       if (!handler) throw new Error('asset handler was not registered')
       return handler(payload)
     },
     offHandler,
-    offTrigger,
+    offObserver,
     client,
     stop,
   }
@@ -186,24 +193,20 @@ describe('extension screen leases', () => {
           .mockResolvedValue({ default: () => undefined }),
       })
       harness.emit({
-        event: 'sync',
+        op: 'sync',
         assets: [{ path: 'voice/page.js', kind: 'script', hash: 'one' }],
       })
       await vi.waitFor(() => expect(getUiAssetsStatus()).toBe('ready'))
       if (action === 'stop') harness.stop()
       else if (action === 'delete') {
         harness.emit({
-          event: 'delete',
+          op: 'delete',
           path: 'voice/page.js',
-          kind: 'script',
-          hash: 'one',
         })
       } else {
         harness.emit({
-          event: 'set',
-          path: 'voice/page.js',
-          kind: 'script',
-          hash: 'two',
+          op: 'set',
+          asset: { path: 'voice/page.js', kind: 'script', hash: 'two' },
         })
       }
       await vi.waitFor(() => expect(teardown).toHaveBeenCalledTimes(1))
@@ -232,7 +235,7 @@ describe('extension screen leases', () => {
       }),
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'voice/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(1))
@@ -259,7 +262,7 @@ describe('extension screen leases', () => {
       }),
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'voice/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(finished).toHaveBeenCalledTimes(1))
@@ -279,7 +282,7 @@ describe('injectable UI loader readiness', () => {
 
     expect(getUiAssetsStatus()).toBe('loading')
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'llm-router/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(renderCurrentForm()).toBe(''))
@@ -340,7 +343,7 @@ describe('host.panels.open in the isolated #/worker shell', () => {
       importModule: vi.fn(async () => setupTwoPages()),
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'kanban/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(getExtPage('ticket')).toBeDefined())
@@ -363,7 +366,7 @@ describe('host.panels.open in the isolated #/worker shell', () => {
       importModule: vi.fn(async () => setupTwoPages()),
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'kanban/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(getExtPage('ticket')).toBeDefined())
@@ -389,7 +392,7 @@ describe('host.panels.openScreen', () => {
       })),
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'learn-iii/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(captured).toBeDefined())
@@ -449,7 +452,7 @@ describe('host.chat.compose', () => {
       })),
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'ide/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(captured).toBeDefined())
@@ -573,7 +576,7 @@ describe('injectable page configuration metadata', () => {
     })
 
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'browser/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(getExtPage('configured-page')).toBeDefined())
@@ -603,16 +606,14 @@ describe('injectable UI script updates', () => {
     const harness = createHarness({ importModule })
 
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'llm-router/page.js', kind: 'script', hash: 'old' }],
     })
     await vi.waitFor(() => expect(renderCurrentForm()).toContain('old form'))
 
     harness.emit({
-      event: 'set',
-      path: 'llm-router/page.js',
-      kind: 'script',
-      hash: 'new',
+      op: 'set',
+      asset: { path: 'llm-router/page.js', kind: 'script', hash: 'new' },
     })
     await vi.waitFor(() => expect(importModule).toHaveBeenCalledTimes(2))
     expect(renderCurrentForm()).toContain('old form')
@@ -633,16 +634,14 @@ describe('injectable UI script updates', () => {
     const harness = createHarness({ importModule })
 
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'llm-router/page.js', kind: 'script', hash: 'old' }],
     })
     await vi.waitFor(() => expect(renderCurrentForm()).toContain('old form'))
 
     harness.emit({
-      event: 'set',
-      path: 'llm-router/page.js',
-      kind: 'script',
-      hash: 'broken',
+      op: 'set',
+      asset: { path: 'llm-router/page.js', kind: 'script', hash: 'broken' },
     })
     await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(1))
     expect(renderCurrentForm()).toContain('old form')
@@ -650,48 +649,46 @@ describe('injectable UI script updates', () => {
     harness.stop()
   })
 
-  it('hot-reloads trigger renderers atomically and cleans them up on stop', async () => {
+  it('hot-reloads observer renderers atomically and cleans them up on stop', async () => {
     const candidate = deferred<UiModule>()
     const importModule = vi
       .fn<(url: string) => Promise<UiModule>>()
-      .mockResolvedValueOnce(setupTriggerRenderer('old'))
+      .mockResolvedValueOnce(setupObserverRenderer('old'))
       .mockImplementationOnce(() => candidate.promise)
     const harness = createHarness({ importModule })
 
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'cron/page.js', kind: 'script', hash: 'old' }],
     })
     await vi.waitFor(() =>
       expect(
-        getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+        getExtObserverActivityRenderers().map(({ renderer }) => renderer.id),
       ).toEqual(['cron-old']),
     )
 
     harness.emit({
-      event: 'set',
-      path: 'cron/page.js',
-      kind: 'script',
-      hash: 'new',
+      op: 'set',
+      asset: { path: 'cron/page.js', kind: 'script', hash: 'new' },
     })
     await vi.waitFor(() => expect(importModule).toHaveBeenCalledTimes(2))
     expect(
-      getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+      getExtObserverActivityRenderers().map(({ renderer }) => renderer.id),
     ).toEqual(['cron-old'])
 
-    candidate.resolve(setupTriggerRenderer('new'))
+    candidate.resolve(setupObserverRenderer('new'))
     await vi.waitFor(() =>
       expect(
-        getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+        getExtObserverActivityRenderers().map(({ renderer }) => renderer.id),
       ).toEqual(['cron-new']),
     )
 
     harness.stop()
-    expect(getExtTriggerActivityRenderers()).toEqual([])
+    expect(getExtObserverActivityRenderers()).toEqual([])
   })
 })
 
-describe('console:module assets', () => {
+describe('module assets (console::ui::asset kind module)', () => {
   const base = 'http://console.test/base/ui'
   // Lets queued `delete`/`sync` pushes apply; neither has a visible effect.
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -700,7 +697,7 @@ describe('console:module assets', () => {
     const importModule = vi.fn(async () => ({}))
     const harness = createHarness({ importModule })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'w/heavy.js', kind: 'module', hash: 'one' }],
     })
     await vi.waitFor(() => expect(getUiAssetsStatus()).toBe('ready'))
@@ -724,7 +721,7 @@ describe('console:module assets', () => {
     const harness = createHarness({ importModule })
     // Listed after the script: its setup still sees the module's hash.
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [
         { path: 'w/page.js', kind: 'script', hash: 'one' },
         { path: 'w/heavy.js', kind: 'module', hash: 'one' },
@@ -735,23 +732,19 @@ describe('console:module assets', () => {
     await expect(imported).resolves.toBe(heavy)
 
     harness.emit({
-      event: 'delete',
+      op: 'delete',
       path: 'w/heavy.js',
-      kind: 'module',
-      hash: 'one',
     })
     await settle()
     await host?.importModule?.('w/heavy.js')
     expect(importModule).toHaveBeenLastCalledWith(`${base}/w/heavy.js`)
 
     harness.emit({
-      event: 'set',
-      path: 'w/heavy.js',
-      kind: 'module',
-      hash: 'two',
+      op: 'set',
+      asset: { path: 'w/heavy.js', kind: 'module', hash: 'two' },
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'w/page.js', kind: 'script', hash: 'one' }],
     })
     await settle()
@@ -766,16 +759,12 @@ describe('console:module assets', () => {
       importModule: vi.fn(async () => ({ default: () => teardown })),
     })
     harness.emit({
-      event: 'set',
-      path: 'w/heavy.js',
-      kind: 'script',
-      hash: 'one',
+      op: 'set',
+      asset: { path: 'w/heavy.js', kind: 'script', hash: 'one' },
     })
     harness.emit({
-      event: 'set',
-      path: 'w/heavy.js',
-      kind: 'module',
-      hash: 'two',
+      op: 'set',
+      asset: { path: 'w/heavy.js', kind: 'module', hash: 'two' },
     })
     await vi.waitFor(() => expect(teardown).toHaveBeenCalledOnce())
     harness.stop()
@@ -804,7 +793,7 @@ describe('injectable UI conversation adapters', () => {
     })
 
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'harness-e2e/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(openDraft).toHaveBeenCalledOnce())
@@ -813,7 +802,7 @@ describe('injectable UI conversation adapters', () => {
       title: 'Execution investigation',
     })
     expect(selectConversation).not.toHaveBeenCalled()
-    expect(harness.client.trigger).not.toHaveBeenCalledWith(
+    expect(harness.client.call).not.toHaveBeenCalledWith(
       expect.stringMatching(/session::|harness::send/),
       expect.anything(),
     )
@@ -852,11 +841,11 @@ describe('injectable UI conversation adapters', () => {
     })
 
     first.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'first/page.js', kind: 'script', hash: 'one' }],
     })
     second.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'second/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(observed).toHaveLength(2))
@@ -868,10 +857,8 @@ describe('injectable UI conversation adapters', () => {
 
     first.stop()
     second.emit({
-      event: 'set',
-      path: 'second/page.js',
-      kind: 'script',
-      hash: 'two',
+      op: 'set',
+      asset: { path: 'second/page.js', kind: 'script', hash: 'two' },
     })
     await vi.waitFor(() => expect(selectB).toHaveBeenCalledTimes(2))
     expect(selectA).toHaveBeenCalledTimes(1)

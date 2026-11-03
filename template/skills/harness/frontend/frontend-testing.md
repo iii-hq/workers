@@ -92,7 +92,7 @@ export const handlers = [
 - Override per test with `server.use(...)`; the shared handlers stay the happy path.
 - Same handlers can run in the browser during development, so the fake data is exercised twice.
 - For an iii app, the boundary is the engine: wrap the `iii-browser-sdk` client in a thin
-  adapter (`{ trigger, registerFunction }`) and inject a fake for tests. Mocking the SDK's
+  adapter (`{ call, observe, registerFunction }`) and inject a fake for tests. Mocking the SDK's
   internals makes your tests depend on a third party's module shape.
 
 ## Async, timers, and flake traps

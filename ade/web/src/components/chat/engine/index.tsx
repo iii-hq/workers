@@ -1,29 +1,26 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { FunctionInfoView } from './FunctionInfoView'
 import { FunctionsListView } from './FunctionsListView'
+import { ObserverInfoView } from './ObserverInfoView'
+import { ObserversListView } from './ObserversListView'
+import { ObserverAddedDisplay, ObserveView } from './ObserveView'
 import {
   coerceJsonObject,
   isEngineListFunction,
+  OBSERVE_FUNCTION_ID,
   parseFunctionInfoResponse,
-  parseTriggerInfoResponse,
+  parseObserverInfoResponse,
   unwrapEnvelope,
 } from './parsers'
-import { RegisteredTriggersListView } from './RegisteredTriggersListView'
-import {
-  RegisterTriggerView,
-  TriggerRegisteredDisplay,
-} from './RegisterTriggerView'
-import { TriggerInfoView } from './TriggerInfoView'
-import { TriggersListView } from './TriggersListView'
-import { UnregisterTriggerView } from './UnregisterTriggerView'
+import { UnobserveView } from './UnobserveView'
 import { WorkerInfoView } from './WorkerInfoView'
 import { WorkersListView } from './WorkersListView'
 import { WorkersRegisterView } from './WorkersRegisterView'
 
 /**
- * Header label for `engine::*::list` ids. Mirrors the other families'
+ * Header label for `engine::*` ids. Mirrors the other families'
  * FunctionIdLabels: dims the namespace prefix so the tail is readable in
  * the FCM header.
  */
@@ -40,7 +37,7 @@ export function EngineFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
+function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   if (!isEngineListFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -74,26 +71,21 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
       if (!details) return null
       return <FunctionInfoView input={input} details={details} />
     }
-    case 'engine::triggers::list':
+    case 'engine::observers::list':
       return (
-        <TriggersListView input={input} output={output} running={running} />
+        <ObserversListView input={input} output={output} running={running} />
       )
-    case 'engine::triggers::info': {
-      if (running) return <TriggerInfoView input={input} running />
+    case 'engine::observers::get': {
+      if (running) return <ObserverInfoView input={input} running />
       // Same contract as functions::info: unparseable settled output returns
       // null so the card falls back to the generic panes, never a blank tab.
-      const detail = parseTriggerInfoResponse(rawOutput)
-      if (!detail) return null
-      return <TriggerInfoView input={input} detail={detail} />
+      const observer = parseObserverInfoResponse(rawOutput)
+      if (!observer) return null
+      return <ObserverInfoView input={input} observer={observer} />
     }
-    case 'engine::registered-triggers::list':
-      return (
-        <RegisteredTriggersListView
-          input={input}
-          output={output}
-          running={running}
-        />
-      )
+    case 'engine::observers::dispose':
+    case 'harness::unobserve':
+      return <UnobserveView input={input} output={output} running={running} />
     case 'engine::workers::list':
       return <WorkersListView input={input} output={output} running={running} />
     case 'engine::workers::info':
@@ -102,18 +94,10 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
       return (
         <WorkersRegisterView input={input} output={output} running={running} />
       )
-    case 'engine::register_trigger':
+    case OBSERVE_FUNCTION_ID:
       return (
-        <RegisterTriggerView
+        <ObserveView
           messageId={message.id}
-          input={input}
-          output={output}
-          running={running}
-        />
-      )
-    case 'engine::unregister_trigger':
-      return (
-        <UnregisterTriggerView
           input={input}
           output={output}
           running={running}
@@ -125,13 +109,13 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
 }
 
 /**
- * Engine list calls are read-only and don't go through the approval gate,
- * so there's nothing meaningful to preview. Returning `null` lets the
+ * Engine reads don't go through the approval gate, so there's nothing
+ * meaningful to preview. Returning `null` lets the
  * default request JSON pane render if a `pendingApproval` message ever
  * reaches the renderer.
  */
 function tryRenderPreview(
-  _message: FunctionTriggerMessage,
+  _message: FunctionCallMessage,
 ): React.ReactNode | null {
   return null
 }
@@ -143,11 +127,11 @@ export const EngineToolView = {
   tryRenderPreview,
 }
 
-function tryRenderRegisterTriggerDisplay(
-  message: FunctionTriggerMessage,
+function tryRenderObserveDisplay(
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (
-    message.functionId !== 'engine::register_trigger' ||
+    message.functionId !== OBSERVE_FUNCTION_ID ||
     message.pendingApproval ||
     message.running ||
     parseSandboxErrorDisplay(message.output)
@@ -155,7 +139,7 @@ function tryRenderRegisterTriggerDisplay(
     return null
   }
   return (
-    <TriggerRegisteredDisplay
+    <ObserverAddedDisplay
       messageId={message.id}
       input={coerceJsonObject(unwrapEnvelope(message.input))}
       output={
@@ -168,21 +152,21 @@ function tryRenderRegisterTriggerDisplay(
   )
 }
 
-const isRegisterTriggerFunction = (functionId: string) =>
-  functionId === 'engine::register_trigger'
+const isObserveFunction = (functionId: string) =>
+  functionId === OBSERVE_FUNCTION_ID
 
-function tryRenderRegisterTrigger(
-  message: FunctionTriggerMessage,
+function tryRenderObserve(
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
-  if (!isRegisterTriggerFunction(message.functionId)) return null
+  if (!isObserveFunction(message.functionId)) return null
   return tryRender(message)
 }
 
-/** Focused entry registered ahead of the engine family so registrations get
- * a compact prominent receipt without promoting every engine function. */
-export const EngineRegisterTriggerToolView = {
-  isRegisterTriggerFunction,
-  tryRender: tryRenderRegisterTrigger,
-  tryRenderRunning: tryRenderRegisterTrigger,
-  tryRenderDisplay: tryRenderRegisterTriggerDisplay,
+/** Focused entry registered ahead of the engine family so an agent's observe
+ * gets a compact prominent receipt without promoting every engine function. */
+export const ObserveToolView = {
+  isObserveFunction,
+  tryRender: tryRenderObserve,
+  tryRenderRunning: tryRenderObserve,
+  tryRenderDisplay: tryRenderObserveDisplay,
 }

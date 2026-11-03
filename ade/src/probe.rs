@@ -1,5 +1,6 @@
-//! `POST /probe` — run a trigger-catalog test request from the console
-//! process instead of the browser tab.
+//! `POST /probe` — run the Observers page's test request for an
+//! `http::on-request` observer from the console process instead of the
+//! browser tab.
 //!
 //! A browser `fetch` cannot show a redirect's status code: following the 3xx
 //! lands on the (often cross-origin) target and trips CORS, while
@@ -19,7 +20,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -199,8 +200,8 @@ async fn resolve_http_base(
     namespace: Option<&str>,
 ) -> Result<String, String> {
     let identity = iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: "http::configuration-id".to_string(),
                 payload: json!({}),
                 action: None,
@@ -216,8 +217,8 @@ async fn resolve_http_base(
         .filter(|id| !id.trim().is_empty())
         .ok_or("HTTP worker returned an invalid configuration identity")?;
     let entry = iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: "configuration::get".to_string(),
                 payload: json!({ "id": id }),
                 action: None,

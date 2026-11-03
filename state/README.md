@@ -1,17 +1,17 @@
 # state
 
-Distributed key-value state storage with scope-based organization and
-reactive change triggers. Values are addressed by a `scope` (namespace) and a
+Distributed key-value state storage with scope-based organization and an
+observable change event. Values are addressed by a `scope` (namespace) and a
 `key`, shared across every worker connected to the engine, and persisted
 through a pluggable adapter (`kv` or `redis`). Callers reach the store
-through six functions — `state::set`, `state::get`, `state::delete`,
-`state::update`, `state::list`, `state::list_groups` — and this worker also
-registers the `state` trigger type, which fires `state:created`,
-`state:updated`, or `state:deleted` after every successful mutation so
-downstream functions can react to data changes without polling. On iii 0.25
-engines the same events can also be observed through the `state::on-changed`
-function. This worker is the standalone migration of the engine's legacy
-built-in state service.
+through `state::set`, `state::get`, `state::delete`, `state::update`,
+`state::compare-and-set`, `state::list`, `state::list_keys` and
+`state::list_groups` (the [Functions](#functions) table lists every function
+the worker provides), and after every
+successful mutation the worker calls `state::on-changed` with a
+`state:created`, `state:updated`, or `state:deleted` event, so downstream
+functions observe data changes without polling. This worker is the
+standalone migration of the engine's legacy built-in state service.
 
 ## Install
 
@@ -25,10 +25,10 @@ The private response includes `durable: true` only after a requested flush
 succeeds, allowing callers to detect workers that do not support the option.
 
 ```bash
-iii trigger compose::add worker=state
+iii call compose::add worker=state
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Functions
@@ -39,11 +39,16 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 | `state::get` | `{ scope, key }` | the value, or `null` | — |
 | `state::delete` | `{ scope, key }` | the deleted value, or `null` | `state:deleted` (even when the key did not exist) |
 | `state::update` | `{ scope, key, ops }` — ordered atomic ops: `set`, `merge`, `increment`, `decrement`, `append`, `remove` | `{ old_value, new_value, errors }` | `state:created` or `state:updated` |
+| `state::compare-and-set` | `{ scope, key, expected?, value }` — writes `value` only when the stored value equals `expected`; without `expected`, only when the key is absent | `{ swapped, current? }` — `current` is the stored value when the swap did not happen | `state:created` or `state:updated` when it swaps |
+| `state::barrier` | `{ event, condition_config: { id, expect, key_from?, carry? } }` — records one arrival at the barrier `id`: `expect` is a count or the list of arrival keys, `key_from` a JSON pointer to the arrival key in `event` (default `/key`), `carry` a JSON pointer to the value to keep (default: the whole event) | `{ decision: "allow", payload, reason }` exactly once, on the arrival that completes the set (`payload` carries every arrival's value); `{ decision: "skip", reason }` otherwise | — |
+| `state::claim-namespace` | `{ functions_prefix, scopes }` — `functions_prefix` must equal the calling worker's name | `{ claimed, scopes, functions }` — the scopes leave the public `state::*` functions and `state::on-changed`; `claimed` is `false` when the worker already owned them all; `functions` names its accessors (next row) | — |
+| `<prefix>::state::get`, `<prefix>::state::list`, `<prefix>::state::compare-and-set` | as `state::get`, `state::list` and `state::compare-and-set`, limited to the scopes the worker `<prefix>` claimed; `compare-and-set` also takes `durable` (see [Install](#install)) | as their public counterparts; `compare-and-set` adds `durable` | — (internal: registered by the first `state::claim-namespace` of `<prefix>`, and at every boot for each namespace claimed before) |
 | `state::list` | `{ scope }` | flat array of every value in the scope | — |
 | `state::list_keys` | `{ scope }` | `{ keys }` — the keys stored in the scope, adapter order (additive; no builtin counterpart — added for the console state UI, whose per-item navigation `state::list`'s values-only shape cannot drive) | — |
 | `state::list_groups` | `{}` | `{ groups }` — sorted, deduplicated scope names | — |
 | `state::ui-content` | `{ path }` | `{ content, content_type }` — content function for the injected console UI (internal; see [Console UI](#console-ui)) | — |
-| `state::on-changed` | the change event (see [Observing changes](#observing-changes-iii-025)) | `null` | — (observe it; only this worker may invoke it) |
+| `state::on-changed` | the change event (see [Observing changes](#observing-changes)) | the same event | — (observe it; private: only this worker calls it) |
+| `state::on-config-change` | the `configuration:updated` event of the worker's entry (ignored) | `{ ok: true }` — internal: the target of the worker's observer of `configuration::on-updated`; it re-reads the entry and applies it (see [Configuration](#configuration)) | — |
 
 The `harness_binding` and `harness_binding_owner` scopes are reserved
 control-plane state: public functions reject direct access, omit them from
@@ -58,60 +63,64 @@ one module each under `ui/src/`:
 | Module | Slot | What it does |
 |---|---|---|
 | `ui/src/page/` | `host.pages` | the state-manager page (page `state-manager`): browse scopes → keys → edit one value as JSON and save it back with `state::set` |
-| `ui/src/configuration/` | `host.configForms` | deliberate form for the `state` entry in global Settings (adapter picker, persistence, trigger gate, limits) |
-| `ui/src/function-trigger-message/` | `host.functionTriggers` | how `state::set` / `state::get` triggers render in chat and the traces span view (overrides the console's built-in family for those two ids; errors and other `state::*` ids fall through) |
+| `ui/src/configuration/` | `host.configForms` | deliberate form for the `state` entry in global Settings (adapter picker, persistence, change-event gate, limits) |
+| `ui/src/function-call-message/` | `host.functionCalls` | how `state::set` / `state::get` calls render in chat and the traces span view (overrides the console's built-in family for those two ids; errors and other `state::*` ids fall through) |
 
 `ui/page.tsx` is the esbuild entry: a thin `setup(host)` composing the three
 registrations plus the shared scoped stylesheet (`ui/src/lib/styles.ts`).
 
-The page is **live**: it registers one tab-scoped `state` trigger binding
-(empty config = every scope/key) whose function_id is a per-tab handler
-(`iii::state-ui::events::<browserId>`), and applies the
+The page is **live**: it observes `state::on-changed` once per tab (no
+filters = every scope/key, `deliver: 'output'`) with a per-tab handler as
+the target (`iii::state-ui::events::<browserId>`), and applies the
 created/updated/deleted events in place — new scopes and keys appear as
 they are written, an open item editor updates in place when clean, and
 unsaved edits are never clobbered (a "changed on the server" notice offers
-the incoming value instead). The binding is GC'd with the tab; the `iii::`
-prefix keeps the per-event invocations out of the trace feed.
+the incoming value instead). The observer is disposed with the page; the
+`iii::` prefix keeps the per-event invocations out of the trace feed.
 
 - Build: esbuild over `ui/page.tsx` and `ui/styles.css` (`cd ui && pnpm
   build`; `build.rs` does this automatically) with `react` and
   `@iii-dev/console-ui` external — they resolve through the console's
   import map at runtime. Types come from the workspace-linked
   `packages/console-ui` (repo-root pnpm workspace).
-- Deployment: boot registers a `console:script` trigger for `state/page.js`
-  and a `console:style` trigger for `state/styles.css`, both with
-  `function_id` `state::ui-content`; the console fetches, hashes, and
-  serves the assets, and disposes them when this worker disconnects. The
+- Deployment: boot observes `console::ui::asset` twice, with args
+  `{ kind: 'script', path: 'state/page.js' }` and
+  `{ kind: 'style', path: 'state/styles.css' }`, both targeting
+  `state::ui-content`; the console fetches, hashes, and serves the assets,
+  and drops them when this worker disconnects. The
   stylesheet is scoped under `[data-iii-ui="state"]` and mounted as a
   `<link>` (styles-before-scripts on boot, link-swap on change).
 - Dev loop: run `cd ui && pnpm watch` and start the worker with
-  `III_STATE_UI_WATCH=1` — it polls `ui/dist/` and re-registers a changed
-  asset's trigger, hot-swapping it in every open console tab.
+  `III_STATE_UI_WATCH=1` — it polls `ui/dist/` and replaces a changed
+  asset's observer, hot-swapping it in every open console tab.
 
-## Trigger type
+## Observing changes
 
-This worker always registers the `state` trigger type. Bind a function to it
-with:
+`state::on-changed` is the change event. After every committed write the
+worker calls it with the event, and its handler returns that event, so
+observers see it as the call's `input` and `output`.
 
-| Field | Required | Default | Description |
+| Function | Args | Delivery | Event |
 |---|---|---|---|
-| `scope` | no | any scope | Only fire for writes in this scope. |
-| `key` | no | any key | Only fire for writes to this key. |
-| `condition_function_id` | no | — | Function invoked first with the event; only an explicit `false` return skips the handler (null/no result passes, an error skips and logs). |
-
-Trigger delivery is asynchronous: handlers run after the write completes and
-a handler failure never rolls the write back. Duplicate trigger ids replace
-the previous binding silently (builtin parity).
+| `state::on-changed` | none; filter on `input.scope`, `input.key`, `input.event_type` | iii delivers every call to each observer whose filters match | `{ type: "state", event_type, scope, key, old_value, new_value }` |
 
 ```typescript
-iii.registerTrigger({
-  type: 'state',
-  function_id: 'orders::on-status-change',
-  config: { scope: 'orders', key: 'status' },
+iii.registerFunction('orders::on-status-change', (event: StateEvent) => {
+  // event: { type, event_type, scope, key, old_value, new_value }
 })
+
+const observer = iii.observe(
+  {
+    function_id: 'state::on-changed',
+    filters: { 'input.scope': { $eq: 'orders' }, 'input.key': { $eq: 'status' } },
+    deliver: 'output',
+  },
+  'orders::on-status-change',
+)
+await observer.ready()
 ```
 
-The handler receives the event payload:
+The target receives the event:
 
 ```json
 {
@@ -124,75 +133,48 @@ The handler receives the event payload:
 }
 ```
 
-`event_type` is one of `state:created`, `state:updated`, `state:deleted`;
-`old_value` is `null` for created keys and `new_value` is `null` for deleted
-keys.
-
-## Observing changes (iii 0.25)
-
-On an engine with observe (iii 0.25 and later) the same events are the input
-of `state::on-changed`, an auto-delivered function: observe it with no args
-and select with filters instead of a trigger config.
-
-```typescript
-iii.registerFunction('orders::on-status-change', ({ input, caller }) => {
-  // input: { type, event_type, scope, key, old_value, new_value }
-})
-
-const observer = iii.observe(
-  {
-    function_id: 'state::on-changed',
-    filters: { 'input.scope': { $eq: 'orders' }, 'input.key': { $eq: 'status' } },
-  },
-  'orders::on-status-change',
-)
-await observer.ready()
-```
-
-- The input is the document a `state` trigger handler receives (above), so
-  filters read `input.scope`, `input.key`, `input.event_type`,
-  `input.old_value.*` and `input.new_value.*`. `deliver: 'input'` hands the
-  target that document alone instead of the `Observed` envelope.
-- The envelope's `caller` is this worker; `caller.function_id` is the
-  `state::*` function that made the write and `caller.parent` the worker
-  (and function) that called it.
-- Every committed write emits, as for the trigger type: `state::set`,
-  `state::update`, `state::delete` and a swapped `state::compare-and-set`.
-  Private namespaces never emit, and `triggers_enabled: false` silences
-  both paths.
-- The worker calls the function in-process after each write, which is what
-  activates its observers. With nobody observing it, nothing is built or
-  sent.
-- Only this worker emits it. Any other invocation (another worker, `iii
-  trigger`, an observer activation) is refused with `FORBIDDEN`, so an
-  observer with the default `on: 'success'` sees real changes only;
-  `on: 'error'` / `'complete'` observers see refused invocations as errors.
-- `condition_function_id` has no counterpart: filters replace it.
-- The `state` trigger type keeps working next to it, on 0.24 and 0.25
-  engines. The two paths are independent: a function both bound with
-  `registerTrigger` and targeted by an observer runs twice per change. On a
-  0.24 engine `observe()` fails with `UNSUPPORTED`; bind the trigger type
-  there.
+- `event_type` is one of `state:created`, `state:updated`, `state:deleted`;
+  `old_value` is `null` for created keys and `new_value` is `null` for
+  deleted keys.
+- Filters read any field of the event: `input.scope`, `input.key`,
+  `input.event_type`, `input.old_value.*`, `input.new_value.*`. With no
+  filters an observer receives every change.
+- With the default `deliver` the target receives the `Observed` envelope:
+  its `caller.function_id` is the `state::*` function that made the write
+  and `caller.parent` the worker (and function) that called it. Filters on
+  `caller.parent.worker_name` select or skip one writer's changes.
+- Every committed write emits: `state::set`, `state::update`,
+  `state::delete` (even of a missing key) and a swapped
+  `state::compare-and-set`. Private namespaces never emit, and
+  `events_enabled: false` silences the function.
+- Delivery is asynchronous: targets run after the write completes, and a
+  target's failure never rolls the write back. With nobody observing,
+  nothing is built or called.
+- The function is private: any call from another worker is refused with
+  `FORBIDDEN`, so its observers see real changes only. The observer's
+  metadata reaches the target as the call's metadata sidecar.
 
 ## Configuration
 
 | Field | Default | Description |
 |---|---|---|
 | `adapter` | `kv` | Storage adapter: `kv` (in-process; `store_method: file_based` — the default, persisting under `file_path`, default `data/state` relative to `III_COMPOSE_DIR` — or `in_memory`, volatile) or `redis` (`redis_url`, default `redis://localhost:6379`). Restart-tier: a runtime change is logged and takes effect at the next worker start. |
-| `triggers_enabled` | `true` | Globally enable/disable state change-trigger fan-out, and `state::on-changed` emission. Applied live. |
+| `events_enabled` | `true` | Call `state::on-changed` after every committed write. Applied live. |
 | `max_value_bytes` | unset (no limit) | Reject `state::set` writes whose JSON-serialized value exceeds this many bytes (`VALUE_TOO_LARGE`). Minimum `1`. Applied live. |
 | `save_interval_ms` | `5000` | Persistence flush cadence (ms) for the file-backed `kv` adapter. `100`–`3600000`. Applied live by respawning the adapter's save loop (hot-retune; no-op for in-memory/redis). |
 
 Configuration is owned by the `configuration` worker — edit it from the
 console (**Configuration → Workers → state**) or seed it once via the
-worker's config block in `config.yaml` on first boot. `triggers_enabled` and
+worker's config block in `config.yaml` on first boot. `events_enabled` and
 `max_value_bytes` apply on the next write, `save_interval_ms` hot-retunes
-the save loop, and `adapter` takes effect on the next restart.
+the save loop, and `adapter` takes effect on the next restart. An entry or
+seed written by a release before 0.26 names the `events_enabled` knob
+differently; the worker rewrites the stored entry to the field names above
+when it boots, before it reads it.
 
 ### Requires removing the legacy built-in state service
 
-The legacy built-in state service also owns the `state` trigger type and the
-`state::*` functions. Two owners of the same surface on one engine collide —
+The legacy built-in state service also owns the `state::*` functions. Two owners of the same surface on one engine collide —
 whichever registers last wins — so this worker requires it to be
 absent: omit it from the engine's `config.yaml` (a config that doesn't list
 a worker won't run it).
@@ -200,7 +182,7 @@ a worker won't run it).
 On boot, this worker queries the engine for connected workers and refuses to
 start with a clear error if the legacy built-in is still active, so a stale config
 fails loudly instead of silently racing the built-in worker for ownership of
-`state`.
+`state::*`.
 
 **Store migration:** if the builtin used a file-based `kv` store, point this
 worker's `adapter.config.file_path` at the builtin's existing directory
@@ -223,10 +205,9 @@ externalized builtin. A formal benchmark was waived by project decision
 |---|---|---|
 | Function ids | `state::set/get/delete/update/list/list_groups` | same (exact) |
 | `set` input | `{scope, key, value}` (`data` alias) | same |
-| Events | `state:created`/`updated`/`deleted`, payload `{type:"state", event_type, scope, key, old_value, new_value}` | same |
-| Trigger config | `{scope?, key?, condition_function_id?}`; only explicit `false` blocks | same |
-| Duplicate trigger id | silent replace | same |
-| Trigger `metadata` | forwarded to handlers via call_with_metadata | not forwarded (iii-sdk 0.20 TriggerRequest has no metadata field; same limitation as the http worker) |
+| Events | `state:created`/`updated`/`deleted`, payload `{type:"state", event_type, scope, key, old_value, new_value}` | same, as the input and output of `state::on-changed` |
+| Selecting events | `scope` / `key` equality, `condition_function_id` | observer filters on any event field (`input.scope`, `input.key`, `input.event_type`, …) |
+| Per-subscriber metadata | forwarded to handlers via call_with_metadata | the observer's `metadata`, delivered by iii as the sidecar |
 | Store adapters | kv (in_memory/file_based), redis, bridge | kv, redis (bridge not ported — see docs/adr/0001) |
 | kv on-disk format | rkyv `.bin` per scope | identical — builtin data loads as-is |
 | `save_interval_ms` | default 5000ms, floor 100ms, hot-retune | same |

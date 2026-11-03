@@ -96,7 +96,7 @@ function useCatalog<T>(host: Host, fetch: (host: Host) => Promise<T[]>): Catalog
 
 const fetchSkills = (host: Host) =>
   host.iii
-    .trigger<{
+    .call<{
       skills: { id: string; title: string; description: string }[]
     }>('directory::skills::list', { include_description: true })
     .then((out) =>
@@ -117,7 +117,7 @@ interface EngineFunctionRow {
 /** The live function registry — what a profile's preloaded functions are
  * picked from. Ids are the labels: they ARE the contract the model calls. */
 const fetchFunctions = (host: Host): Promise<PickItem[]> =>
-  host.iii.trigger<{ functions?: EngineFunctionRow[] }>('engine::functions::list', {}).then((out) =>
+  host.iii.call<{ functions?: EngineFunctionRow[] }>('engine::functions::list', {}).then((out) =>
     (out.functions ?? [])
       .flatMap((row) => {
         const id = row.function_id.trim()
@@ -134,7 +134,7 @@ interface AgentCatalogRow {
 }
 
 const fetchAgents = (host: Host): Promise<AgentCatalogRow[]> =>
-  host.iii.trigger<{ agents?: AgentCatalogRow[] }>('directory::agents::list').then((out) => out.agents ?? [])
+  host.iii.call<{ agents?: AgentCatalogRow[] }>('directory::agents::list').then((out) => out.agents ?? [])
 
 interface CatalogModelRow {
   id?: unknown
@@ -163,7 +163,7 @@ function parseReasoningEfforts(value: unknown) {
 }
 
 const fetchModels = (host: Host): Promise<ModelOption[]> =>
-  host.iii.trigger<{ models?: CatalogModelRow[] }>('router::models::list', {}).then((out) =>
+  host.iii.call<{ models?: CatalogModelRow[] }>('router::models::list', {}).then((out) =>
     (out.models ?? []).flatMap((row) => {
       const id = typeof row.id === 'string' ? row.id.trim() : ''
       const provider = typeof row.provider === 'string' ? row.provider.trim() : ''

@@ -13,17 +13,17 @@ publish = false
 
 # NO iii-sdk, and no feature to add one back.
 #
-# The bus seam is `trait Engine` (engine.rs) — five methods over `BoxFuture`
+# The bus seam is `trait Engine` (engine.rs) — seven methods over `BoxFuture`
 # and `serde_json::Value`, nothing else. The production implementation lives
 # in the worker that owns a connection; this crate never sees one.
 #
 # A `default-features = false` feature gate (the llm-router → provider-*
 # pattern) was considered and rejected: it would preserve the OPTION of
-# pulling `iii-sdk = "=0.21.6"` in here, which is exactly the exact-pin
-# collision crates/console-ui/Cargo.toml documents — workers on this repo's
-# SDK line carry their own pins (0.21.6 for most, 0.21.8 for harness/eval)
-# and a crate in the middle must never be what forces one of them. A crate
-# with no SDK dependency has no pin to collide.
+# pulling an exact `iii-sdk` pin in here, which is exactly the exact-pin
+# collision crates/console-ui/Cargo.toml documents — every worker in this
+# repo carries its own exact iii-sdk pin, and a crate in the middle must
+# never be what forces one of them. A crate with no SDK dependency has no
+# pin to collide.
 [dependencies]
 deno_core = "=0.409.0"
 deno_error = "0.7"

@@ -1,0 +1,31 @@
+llama.cpp b11379 frees each Metal device from a static destructor at exit and
+asserts there that no residency set is left (ggml-metal-device.m:1039,
+`GGML_ASSERT([rsets->data count] == 0)`). A process that exits with a model
+or context still loaded aborts with SIGABRT: a judge worker stopped by SIGINT
+or SIGTERM with its model in its slot, or a test binary holding its model in
+a static. With residency sets (macOS 15 and later) that is every such exit.
+A device whose sets are not empty at exit is left to the OS: its buffers may
+still be in use on another thread. Upstream: not filed yet.
+
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -1374,6 +1374,19 @@
+ void ggml_metal_device_free(ggml_metal_device_t dev) {
+     assert(dev != NULL);
+ 
++    // Only the device list's static destructor frees a device, at exit. A
++    // buffer still allocated then (a model or context the process never
++    // freed) still holds its residency set, and may still be in use on
++    // another thread: leave the device to the OS instead of freeing it.
++    if (dev->rsets != NULL) {
++        [dev->rsets->lock lock];
++        const NSUInteger n_sets = [dev->rsets->data count];
++        [dev->rsets->lock unlock];
++        if (n_sets > 0) {
++            return;
++        }
++    }
++
+     @autoreleasepool {
+         ggml_metal_fusion_info_free(dev->finfo);
+ 

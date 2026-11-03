@@ -32,7 +32,7 @@ describe('isFunctionNotFound', () => {
 })
 
 describe('errText', () => {
-  it('renders the wire error object a rejected trigger throws', () => {
+  it('renders the wire error object a rejected call throws', () => {
     /* `String(err)` gives "[object Object]" here, which is the bug this
        exists to stop. */
     const wire = {

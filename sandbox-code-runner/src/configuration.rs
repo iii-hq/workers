@@ -1,9 +1,10 @@
 //! This worker's entry in the builtin `configuration` worker (plumbing
 //! shared via `crates/config-client`): register the schema (+ default seed)
-//! at boot, read the authoritative value, and bind a `configuration`
-//! trigger so `configuration:updated` re-fetches and applies the change —
-//! which here means binding or unbinding the
-//! `sandbox-code-runner::inject-guidance` pre-generate hook at runtime.
+//! at boot, read the authoritative value, and observe
+//! `configuration::on-updated` so every `configuration:updated` of the entry
+//! re-fetches and applies the change — which here means observing
+//! `harness::hook::on-pre-generate` with `sandbox-code-runner::inject-guidance`,
+//! or disposing that observer, at runtime.
 //!
 //! Deliberately separate from [`crate::config`]: that is the operator FILE
 //! config (timeouts, idle TTL) loaded once at boot; this entry carries the
@@ -12,9 +13,7 @@
 use std::sync::Arc;
 
 use iii_config_client as config_client;
-use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::IIIClient;
+use iii_sdk::{IIIClient, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -40,6 +39,9 @@ pub fn config_id() -> &'static str {
 /// `register_function` cannot claim it.
 pub const CONFIG_FN_ID: &str = "sandbox-code-runner::on-config-change";
 
+/// The harness hook point the guidance observes.
+const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
+
 /// The `sandbox-code-runner` configuration entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -48,7 +50,7 @@ pub struct RunnerSharedConfig {
     /// prompt via the harness `pre-generate` hook. On by default; turn it
     /// off to shrink prompts (the harness's `# Granted functions` catalog
     /// still advertises the `sandbox-code-runner::*` ids). Hot-applies —
-    /// the worker binds or unbinds the hook on change.
+    /// the worker observes the hook point or disposes its observer on change.
     pub inject_guidance: bool,
 }
 
@@ -105,30 +107,30 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<RunnerSharedConfig, String>
     }
 }
 
-/// The live pre-generate guidance binding, if any. Shared with the
-/// configuration change handler so a config flip can bind/unbind at runtime.
-pub type GuidanceState = config_client::BindingSlot;
+/// The live pre-generate guidance observer, if any. Shared with the
+/// configuration change handler so a config flip can observe or dispose at
+/// runtime.
+pub type GuidanceState = config_client::ObserverSlot;
 
-/// Reconcile the live guidance binding with the configured `inject_guidance`
-/// value: on → bind once; off → unregister and drop the handle. Idempotent
-/// under repeated config events, and a failed bind retries on the next event.
+/// Reconcile the live guidance observer with the configured
+/// `inject_guidance` value: on → observe once; off → dispose the observer
+/// and drop the handle. Idempotent under repeated config events. The
+/// observer stays `pending` while the harness is absent.
 ///
 /// `on_error: fail_open` is MANDATORY — `pre_generate` defaults to
 /// fail-CLOSED, and a missing guidance line must never abort an agent's turn.
+/// The guidance travels as the hook's `inject_prompt` arg: the harness reads
+/// args, never observer metadata.
 pub fn apply_guidance(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
     state.reconcile(
         enabled,
         || {
-            config_client::try_bind(
-                iii,
-                RegisterTriggerInput::new(
-                    "harness::hook::pre-generate".to_string(),
-                    inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-                    json!({ "on_error": "fail_open" }),
-                )
-                .with_metadata(json!({
-                    "inject_prompt": inject_guidance::CODE_RUNNER_GUIDANCE
+            iii.observe(
+                Source::function(PRE_GENERATE_HOOK_FN).args(json!({
+                    "on_error": "fail_open",
+                    "inject_prompt": inject_guidance::CODE_RUNNER_GUIDANCE,
                 })),
+                inject_guidance::GUIDANCE_HOOK_ID,
             )
         },
         "inject_guidance on: appending sandbox-code-runner guidance to agent system prompts",
@@ -136,15 +138,13 @@ pub fn apply_guidance(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
     );
 }
 
-/// Register `sandbox-code-runner::on-config-change` and bind it to
-/// `configuration:updated` for this worker's entry. Every delivery
-/// re-fetches the authoritative value under the shared reload lock and
-/// reconciles the guidance binding; the returned [`config_client::Reload`]
-/// lets boot run one extra pass to close the fetch→bind gap.
-pub fn register_config_trigger(
-    iii: &Arc<IIIClient>,
-    state: GuidanceState,
-) -> Result<config_client::Reload, Error> {
+/// Register `sandbox-code-runner::on-config-change` and observe
+/// `configuration::on-updated` with it for this worker's entry. Every
+/// delivery re-fetches the authoritative value under the shared reload lock
+/// and reconciles the guidance observer; the returned
+/// [`config_client::Reload`] lets boot run one extra pass to close the
+/// fetch→observe gap.
+pub fn observe_config_changes(iii: &Arc<IIIClient>, state: GuidanceState) -> config_client::Reload {
     let engine = iii.clone();
     config_client::on_change(
         iii,

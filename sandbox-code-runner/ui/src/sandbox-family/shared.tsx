@@ -98,7 +98,7 @@ export function Terminal({ command, running, chips, children, footer }: Terminal
         <div className="cr-fam-chips-row">{chips}</div>
       ) : null}
 
-      {running ? <div className={cx('cr-fam-running', uiClasses.pulse)}>triggering…</div> : children}
+      {running ? <div className={cx('cr-fam-running', uiClasses.pulse)}>calling…</div> : children}
 
       {footer ? <div className="cr-fam-foot">{footer}</div> : null}
     </div>

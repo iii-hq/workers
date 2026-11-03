@@ -1,5 +1,5 @@
-//! `approval::on-session-deleted` — bound to session-manager's
-//! `session::deleted` trigger type. Purges the session's settings record,
+//! `approval::on-session-deleted` — the target of this worker's observer of
+//! session-manager's `session::on-deleted`. Purges the session's settings record,
 //! every pending record, the filesystem-access-watch attempt counters, and the
 //! filesystem-access-watch denied-directory memory (the cascade the prior deployment
 //! lacked).
@@ -12,7 +12,7 @@ use crate::filesystem_access_state;
 use crate::settings;
 use crate::types::EventAck;
 
-/// `session::deleted` payload (only the field we read).
+/// `session::on-deleted` event (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SessionDeletedEvent {
     pub session_id: String,
@@ -51,7 +51,9 @@ mod tests {
     use super::*;
     use crate::pending::PENDING_SCOPE;
     use crate::settings::SETTINGS_SCOPE;
-    use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
+    use crate::testkit::{
+        log_snapshot, settle, state_get, state_set, wait_for, with_stack, BootOpts,
+    };
 
     async fn seed_pending(iii: &iii_sdk::IIIClient, sid: &str, cid: &str) {
         state_set(
@@ -98,6 +100,12 @@ mod tests {
                 .await
                 .is_null());
 
+            // Delivery to observers does not wait for them.
+            assert!(
+                wait_for(3_000, || log_snapshot(&stack.resolved).len() >= 2).await,
+                "pending_resolved should reach the recorder"
+            );
+            settle().await;
             let events = log_snapshot(&stack.resolved);
             assert_eq!(events.len(), 2);
             assert!(events.iter().all(|e| e["outcome"] == json!("aborted")));

@@ -1,6 +1,6 @@
 //! Register the codex::* surface. Handlers parse at the unknown boundary and
 //! delegate to the codex turn loop; schemas are published via request_format
-//! so `iii trigger codex::run --help` prints the parameter table.
+//! so `iii call codex::run --help` prints the parameter table.
 
 pub mod types;
 
@@ -62,7 +62,7 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             .description(
                 "Run a Codex coding-agent turn and wait for its result. Accepts `prompt` or a \
                  `messages` array plus a `codex_config` pass-through; delivers raw Codex events on \
-                 codex::raw-event and AgentEvent frames on codex::agent-event, and returns \
+                 codex::on-raw-event and AgentEvent frames on codex::on-agent-event, and returns \
                  {session_id, result, usage}.",
             ),
         );
@@ -115,9 +115,9 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
                 "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
             }))
             .description(
-                "Start a Codex turn and return immediately; bind codex::agent-event (or \
-                 codex::raw-event) with { session_id } for progress and turn_end, or poll \
-                 codex::status.",
+                "Start a Codex turn and return immediately; observe codex::on-agent-event (or \
+                 codex::on-raw-event) with args { session_id } for progress and turn_end, or \
+                 poll codex::status.",
             ),
         );
     }

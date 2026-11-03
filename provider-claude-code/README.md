@@ -32,10 +32,10 @@ This worker is a **dumb token consumer** — login and refresh live out-of-band:
 
 1. **Vault (intended authority):** the `auth-credentials`
    worker (`auth::get_token`), populated by an `oauth-claude-code` sign-in flow.
-   A near-expiry token triggers the vault-owned refresh
-   (`oauth::claude-code::refresh`); this provider never calls the OAuth token
-   endpoint itself. That worker/flow is out of scope here — this provider only
-   *consumes* and *triggers*. The credential record it expects is
+   A near-expiry token makes this provider call the vault-owned refresh
+   (`oauth::claude-code::refresh`); it never calls the OAuth token endpoint
+   itself. That worker/flow is out of scope here — this provider only
+   *consumes* and *calls*. The credential record it expects is
    `{ type: "oauth", access_token, refresh_token?, expires_at?(seconds),
    provider_extra: { subscription_type?, scopes? }, refresh_fn:
    "oauth::claude-code::refresh" }`.
@@ -57,7 +57,8 @@ provider id `anthropic`.
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with backoff,
-  and re-declares on the `router::ready` trigger. It advertises dynamic model
+  and re-declares on every `router::on-ready` event (it observes that function
+  at boot). It advertises dynamic model
   listing and `credential_env_var: None` (OAuth-only); identity binds via the
   `registration_token` persisted in state (scope `provider-claude-code`).
 - **Models:** attempts the authenticated `GET /v1/models` at startup, on

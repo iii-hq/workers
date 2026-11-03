@@ -5,7 +5,6 @@
 use std::sync::Arc;
 
 use iii_config_client::{EntrySpec, Reload};
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 
 use crate::config::{SecretsConfig, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME};
@@ -51,11 +50,11 @@ pub async fn fetch(iii: &IIIClient) -> Result<SecretsConfig, String> {
     }
 }
 
-/// Bind `configuration:updated` → refetch → re-point the store. A new env
+/// Observe `configuration:updated` → refetch → re-point the store. A new env
 /// file is followed from then on, and every shared variable whose value
-/// differs there is reported on `secrets::changed`. Run the returned handle
-/// once at boot to close the subscription gap.
-pub fn bind_reload(iii: &Arc<IIIClient>, ctx: Arc<Ctx>) -> Result<Reload, Error> {
+/// differs there is reported on `secrets::on-changed`. Run the returned
+/// handle once at boot to close the gap before the observer is active.
+pub fn bind_reload(iii: &Arc<IIIClient>, ctx: Arc<Ctx>) -> Reload {
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,

@@ -4,7 +4,7 @@ Self-asserting smoke harness for the `database` worker. Validates the
 function surface (query / execute / prepareStatement / runStatement /
 transaction), the **interactive-transaction** surface (begin /
 transactionQuery / transactionExecute / commit / rollback),
-`database::row-changed` delivery, the query-history caps (via
+`database::on-row-changed` observers, the query-history caps (via
 harness-registered mock `state::*` functions), and the
 side-channel-finalization repros
 from the `/review` of branch
@@ -116,8 +116,8 @@ accepted; outside-tx COUNT=1`).
 | `workers/harness/fixtures/database.schema.json` | JSON Schema fixture (sync with Rust via export test) |
 | `workers/harness/` | TypeScript smoke-test worker (runs as a host process) |
 | `workers/harness/src/cases-interactive-tx.ts` | Interactive-transaction lifecycle cases |
-| `workers/harness/src/cases-row-changed.ts` | Row-change trigger delivery cases |
-| `workers/harness/src/cases-native-capture.ts` | `capture: native` cases for postgres (LISTEN/NOTIFY, `pg_native_db`), sqlite (changelog + fs watch, `sqlite_native_db`), and mysql (binlog stream, `mysql_native_db`) — cross-client delivery, no double-fire on own writes, table-less binding rejection, commit/rollback gating through interactive transactions, multi-subscriber fan-out with ops filters across trigger reinstall, bulk-statement coalescing (100 rows = 1 event) |
+| `workers/harness/src/cases-row-changed.ts` | `database::on-row-changed` observer cases: ops and commit gating, canonical table args, a refused call from another worker |
+| `workers/harness/src/cases-native-capture.ts` | `capture: native` cases for postgres (LISTEN/NOTIFY, `pg_native_db`), sqlite (changelog + fs watch, `sqlite_native_db`), and mysql (binlog stream, `mysql_native_db`) — cross-client delivery, no double-fire on own writes, table-less observer rejection, commit/rollback gating through interactive transactions, multi-observer fan-out with ops args sharing one capture install, bulk-statement coalescing (100 rows = 1 event) |
 | `mysql-init/grant-replication.sql` | Replication grants for the `iii` mysql user (binlog capture streams as a replica). Applied on first volume init only — on an older volume run `docker compose down -v` once |
 | `workers/harness/src/cases-history.ts` | Query-history cap cases (MOT-4372). No state worker runs in this stack, so the harness registers mock `state::get`/`state::set`/`state::update` and observes every history write: entry/byte rotation against the tiny caps seeded in `database-config.ts`, oversized-backlog trim, unreadable-value blind-write self-heal, and a `state::update` regression guard. Sqlite only — the write path is driver-agnostic |
 | `workers/harness/src/cases-tx-control-bypass.ts` | Side-channel-finalization repros |

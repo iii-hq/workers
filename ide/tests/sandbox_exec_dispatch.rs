@@ -11,9 +11,9 @@ use iii_sdk::errors::Error;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use ide::calls::CallFwd;
 use ide::exec::sandbox::SandboxExecBackend;
 use ide::exec::{ExecBackend, ExecOverrides};
-use ide::triggers::TriggerFwd;
 
 struct StubFwd {
     captured: Mutex<Vec<(String, Value)>>,
@@ -33,8 +33,8 @@ impl StubFwd {
 }
 
 #[async_trait]
-impl TriggerFwd for StubFwd {
-    async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
+impl CallFwd for StubFwd {
+    async fn call(&self, fid: &str, payload: Value) -> Result<Value, Error> {
         self.captured.lock().unwrap().push((fid.into(), payload));
         self.next
             .lock()

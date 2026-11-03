@@ -43,10 +43,7 @@ Feature: session::append — append one entry, idempotent on entry_id
   # Prevents: re-running a durable harness step from duplicating
   # transcript entries — THE core idempotency guarantee of this worker.
   Scenario: appending an existing entry_id is a complete no-op
-    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-added" delivering to "ui::recv"
     When I call "session::append" with:
       """
       { "session_id": "s_001", "entry_id": "turn1-user",
@@ -60,7 +57,7 @@ Feature: session::append — append one entry, idempotent on entry_id
     Then the call succeeds
     And the response field "entry_id" is "turn1-user"
     And the response field "parent_id" is null
-    And function "ui::recv" received 1 "session::message-added" delivery
+    And function "ui::recv" received 1 "session::on-message-added" delivery
     When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "turn1-user" }
@@ -76,10 +73,7 @@ Feature: session::append — append one entry, idempotent on entry_id
   # active leaf making every idempotent retry return success while the message
   # remains outside the visible transcript.
   Scenario: retry completes an entry left by a partial append
-    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-added" delivering to "ui::recv"
     And an incomplete user entry "original" with id "turn1-user" persisted to "s_001"
     When I call "session::append" with:
       """
@@ -87,7 +81,7 @@ Feature: session::append — append one entry, idempotent on entry_id
         "message": { "role": "user", "content": [{ "type": "text", "text": "DIFFERENT" }], "timestamp": 2 } }
       """
     Then the call succeeds
-    And function "ui::recv" received 1 "session::message-added" delivery
+    And function "ui::recv" received 1 "session::on-message-added" delivery
     When I call "session::messages" with:
       """
       { "session_id": "s_001" }
@@ -144,10 +138,7 @@ Feature: session::append — append one entry, idempotent on entry_id
   # Prevents: writer-supplied correlation (turn_id) being lost between
   # the request and the event consumers stitch traces with.
   Scenario: origin is echoed on the emitted event
-    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-added" delivering to "ui::recv"
     When I call "session::append" with:
       """
       { "session_id": "s_001", "origin": { "turn_id": "t_9" },
@@ -233,13 +224,10 @@ Feature: session::append — append one entry, idempotent on entry_id
   # Prevents: custom (bookkeeping) entries polluting message_count or
   # being dropped from events entirely.
   Scenario: appending a custom entry emits an event but does not count as a message
-    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-added" delivering to "ui::recv"
     When I append a custom entry of type "compaction" to "s_001"
     Then the call succeeds
-    And function "ui::recv" received 1 "session::message-added" delivery
+    And function "ui::recv" received 1 "session::on-message-added" delivery
     And delivery 0 to "ui::recv" has "custom.custom_type" = "compaction"
     And delivery 0 to "ui::recv" has no field "message"
     When I call "session::get" with:

@@ -9,7 +9,7 @@ For maintainers changing this worker. The integration contract lives in
 | Module | Responsibility |
 |---|---|
 | `types.rs` | Every wire type (serde + schemars), id validation (`/` is the reserved key separator), `metadata_matches` subset-equality. |
-| `state.rs` / `harness.rs` / `session.rs` | Thin per-target `iii.trigger` wrappers (state kv, `harness::function::resolve`, `session::get`). No transport abstraction; tests run against a real engine via `testkit/engine.rs`. |
+| `state.rs` / `harness.rs` / `session.rs` | Thin per-target `iii.call` wrappers (state kv, `harness::function::resolve`, `session::get`). No transport abstraction; tests run against a real engine via `testkit/engine.rs`. |
 | `decision.rs` | **Pure** evaluation order (no I/O): human-only prefix check, mode/allow-list short-circuits, `*`-glob matching. |
 | `permissions/` | Inline rule compiler + evaluator (first match wins; no match → hold). Built-in default: deny `approval::*` only. |
 | `denial.rs` | `DenialEnvelope` assembly + text rendering; reason strings ported verbatim from the prior art. |
@@ -17,10 +17,10 @@ For maintainers changing this worker. The integration contract lives in
 | `settings.rs` | Effective-settings computation, lazy seeding, immutable mutation helpers, tolerant vs strict reads. |
 | `pending.rs` | Inbox record store: `get`/`put`/`list_all` and **`delete_with_gate`** — the single deletion helper. |
 | `config.rs` | The single `WorkerConfig` (Path B): serde + schemars schema, `from_yaml`/`from_json`/`to_json`/`json_schema` and `permissions()` (compiles the inline `rules`). |
-| `configuration.rs` | `configuration` worker integration: `register_config` / `fetch_config`, the `ConfigCell` snapshot, `reloadable`, and the typed, re-fetching `approval::on-config-change` trigger handler. |
-| `events.rs` | The two custom trigger types, `SubscriberSet`s, binding filters, the `EventSink` trait + `Emitter` (Void-action fan-out). |
+| `configuration.rs` | `configuration` worker integration: `register_config` / `fetch_config`, the `ConfigCell` snapshot, `reloadable`, the typed, re-fetching `approval::on-config-change` handler and its observer of `configuration::on-updated`, and the fixed observers of the harness hook functions. |
+| `events.rs` | The two event functions (private, handler returns the event), the `EventSink` trait + `Emitter` (Void-action calls, made only while observed). |
 | `functions/` | One file per `approval::*` function; `mod.rs` holds `Deps` and the typed registration helper. |
-| `main.rs` | Boot order: register+fetch config (fatal) → trigger types → functions → best-effort hook/session bindings → `register_config_trigger` (last). |
+| `main.rs` | Boot order: register+fetch config (fatal) → event functions → functions → hook/session observers → `observe_config_changes` (last). |
 
 Every handler takes `Deps { iii, sink, config }` — a `ConfigCell` it snapshots
 once per call via `deps.config().await` — and reaches siblings
@@ -59,8 +59,9 @@ adapt to).
    - Record written **synchronously before returning hold** — write failure
      → deny (`gate_unavailable`), never hold blind. A non-null `old_value`
      on the write means a concurrent duplicate won the race: skip emission.
-   - `pending_created` emits via `tokio::spawn` **after** the hook returns —
-     fan-out never blocks the trigger hot path.
+   - `approval::on-pending-created` is called via `tokio::spawn` **after**
+     the hook returns — the notification call never blocks the hook's hot
+     path.
 
 ## State lifecycle and the emit gate
 
@@ -68,8 +69,8 @@ Two scopes, both with explicit deletion paths:
 
 | Scope/key | Created | Deleted by |
 |---|---|---|
-| `approval_pending/<sid>/<cid>` | in-hook, before `hold` returns | resolve · `harness::turn-completed` · `session::deleted` |
-| `approval_settings/<sid>` | first user mutation (lazy; reads never write) | `session::deleted` · `approval::clear-settings` |
+| `approval_pending/<sid>/<cid>` | in-hook, before `hold` returns | resolve · `harness::on-turn-completed` · `session::on-deleted` |
+| `approval_settings/<sid>` | first user mutation (lazy; reads never write) | `session::on-deleted` · `approval::clear-settings` |
 
 All three pending-deletion paths funnel through
 `pending::delete_with_gate`, which is where exactly-once emission is decided:
@@ -82,7 +83,8 @@ All three pending-deletion paths funnel through
    return forever (verified against the engine source, `builtins/kv.rs`).
    The follow-up delete removes it. A failed cleanup is benign: readers
    skip nulls (`parse_record`), and the next deletion attempt re-deletes.
-3. Only a caller that got `Some(record)` back emits `pending_resolved`.
+3. Only a caller that got `Some(record)` back calls
+   `approval::on-pending-resolved`.
 
 Why not `state::delete` alone? The engine's delete handler is get-then-delete
 (non-atomic at the worker layer) — two racing deleters could both read the
@@ -120,11 +122,13 @@ boot. The register/fetch pair is **required** — a failed register/fetch aborts
 boot. When nothing is stored, the built-in defaults are seeded and used.
 
 The live value is held in a `ConfigCell` (`Arc<RwLock<Arc<WorkerConfig>>>`)
-that every handler snapshots per call. `register_config_trigger` registers the
-**typed** `approval::on-config-change` handler and binds the `configuration`
-trigger. On `configuration:updated` it **re-fetches** via `configuration::get`
-(ignoring the trigger payload) and swaps the cell. The harness `pre_trigger`
-hook binding is fixed at worker startup (`["*"]`, 5s, fail-closed). The config
+that every handler snapshots per call. `observe_config_changes` registers
+the **typed** `approval::on-config-change` handler and observes
+`configuration::on-updated` with it (filters on `input.id` and
+`input.event_type: configuration:updated`, delivered as output). On each
+update it **re-fetches** via `configuration::get` (ignoring the delivered
+event) and swaps the cell. The observer of `harness::hook::on-pre-call` is
+fixed at worker startup (`["*"]`, 5s, fail-closed). The config
 parse is **strict** (`deny_unknown_fields`): an unparseable stored value is
 rejected and the last-good snapshot kept, so a typo'd operator edit can't
 silently widen access. (Per-session settings records keep their own tolerant
@@ -148,22 +152,25 @@ Verified against the engine source (`~/workspaces/personal/motia/iii`):
   is **stored**, not a delete (hence the two-step delete above).
 - `state::get` / `state::delete` return the (old) value or null;
   `state::list` returns the scope's **values only**, no keys, no pagination.
-- `register_trigger` acks asynchronously: `Ok` means "request sent"; a
-  missing trigger type surfaces later as an SDK-level
-  `trigger_type_not_found` error log. Boot therefore never depends on
-  binding success.
+- `observe` returns a handle at once: an observer is `pending` until the
+  observed function's worker registers it and accepts the observer, then
+  `active`. Boot therefore never depends on a sibling being up; the hook
+  observers log when they become active and when the harness refuses one.
 
 ## Testing
 
 - **Unit** (`cargo test`): every module has a suite beside it. Pure-logic
   modules (`decision`, `redact`, `denial`, `settings`, `permissions`, `types`, …) run with
   no engine. The `approval::*` handlers run against a real spawned engine via
-  `testkit::engine` (`III_ENGINE_BIN` or `iii` on PATH; self-skips
-  otherwise), so `delete_with_gate`'s null-tombstone invariant is exercised
-  against the genuine kv contract. The gate suite reproduces the seven
+  `testkit::engine` (`III_ENGINE_BIN` or `iii` on PATH, plus the standalone
+  `state` worker at `III_STATE_BIN`; self-skips otherwise), so
+  `delete_with_gate`'s null-tombstone invariant is exercised against the
+  genuine kv contract. The gate suite reproduces the seven
   prior-art permission-matrix cases plus the fail-closed rows.
 - **Integration** (`cargo test --test integration`): spawns a real engine
-  (`III_ENGINE_BIN` or `iii` on PATH; self-skips otherwise) with
-  `configuration` + `state` real and the unbuilt siblings faked
+  (`III_ENGINE_BIN` or `iii` on PATH) and the standalone `state` worker
+  (`III_STATE_BIN`; self-skips without either) with `configuration` +
+  `state` real and the unbuilt siblings faked
   in-process. Verifies the no-tombstone invariant, exactly-once event
-  delivery through real engine fan-out, and reactive configuration reload.
+  delivery to observers through the engine, and reactive configuration
+  reload.

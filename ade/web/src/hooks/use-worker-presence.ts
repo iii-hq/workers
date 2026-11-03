@@ -5,16 +5,16 @@ import { useWorkersChanged } from './use-workers-changed'
 /**
  * Generic presence probe for an OPTIONAL standalone engine worker. Answers a
  * single question — "is worker `workerName` connected right now?" — so callers
- * can gate worker-specific UI + RPC on it and never trigger "function not
- * found".
+ * can gate worker-specific UI + RPC on it and never call a function that is
+ * not registered.
  *
  * Presence is an `engine::workers::list` read on mount, read again on every
- * `engine::workers-available` event, so the UI reacts the instant the worker
- * is added or removed — whether from the CLI (`iii trigger compose::add
- * worker=<name>`) or another surface.
+ * `engine::on-workers-changed` event, so the UI reacts the instant the worker
+ * is added or removed — whether from the CLI (`iii call compose::add`) or
+ * another surface.
  *
  * Each consumer MUST pass a unique `watchFnId` for its browser-local
- * `engine::workers-available` handler.
+ * `engine::on-workers-changed` handler.
  */
 
 export interface WorkerPresence {
@@ -24,22 +24,28 @@ export interface WorkerPresence {
   loading: boolean
 }
 
+/** Whether an `engine::workers::list` answer lists a worker named `name`. */
+export function workerListed(response: unknown, name: string): boolean {
+  const workers = (response as { workers?: unknown } | null)?.workers
+  return (
+    Array.isArray(workers) &&
+    workers.some(
+      (worker) => (worker as { name?: unknown } | null)?.name === name,
+    )
+  )
+}
+
 async function checkWorkerPresent(
   client: IiiClient,
   name: string,
 ): Promise<boolean> {
-  const res = await client.trigger<{ workers?: Array<{ name?: unknown }> }>(
-    'engine::workers::list',
-    {},
-  )
-  const workers = Array.isArray(res?.workers) ? res.workers : []
-  return workers.some((w) => w?.name === name)
+  return workerListed(await client.call('engine::workers::list', {}), name)
 }
 
 export interface UseWorkerPresenceOptions {
   /** Engine worker name to probe, e.g. `shell` or `approval-gate`. */
   workerName: string
-  /** Unique base id for this probe's browser-local trigger handler. */
+  /** Unique base id for this probe's browser-local workers-changed handler. */
   watchFnId: string
   /**
    * Only run against the real backend; pass `false` for the mock/Storybook
@@ -80,7 +86,7 @@ export function useWorkerPresence({
 
   useWorkersChanged({ enabled, fnId: watchFnId, onChange: recheck })
 
-  // Presence probe on mount; later changes arrive through the trigger above.
+  // Presence probe on mount; later changes arrive through the observer above.
   useEffect(() => {
     if (!enabled) {
       setLoading(false)
@@ -109,7 +115,7 @@ export function useWorkerPresence({
 }
 
 /**
- * Whether the probed worker is connected and its functions safe to trigger.
+ * Whether the probed worker is connected and its functions safe to call.
  * False during the initial presence probe and while the worker is absent.
  */
 export function isWorkerPresent(status: WorkerPresence): boolean {

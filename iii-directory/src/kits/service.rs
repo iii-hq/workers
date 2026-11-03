@@ -167,7 +167,7 @@ fn planned_message(plan: &Plan) -> String {
     };
     format!(
         "{verb} is planned{extra}. Review it in the ADE: Directory → Kits, or apply it with \
-         `iii trigger directory::kits::apply plan_id={}`.",
+         `iii call directory::kits::apply plan_id={}`.",
         plan.plan_id
     )
 }

@@ -1,6 +1,7 @@
 //! Post-turn memory extraction: one `router::complete` call per completed
 //! turn (one per run of a long span, [`chunks`]), off the hot path (spawned
-//! from the `harness::turn-completed` handler, never inside a turn).
+//! from the target of the `harness::on-turn-completed` observer, never
+//! inside a turn).
 //!
 //! Extraction adds; it never edits a memory in place or deletes one. The
 //! model sees what the bank already holds about the excerpt, so it returns
@@ -26,7 +27,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1507,7 +1508,7 @@ const MAX_PAGES: usize = 10_000;
 /// retries instead of re-reading old turns into this turn's bank.
 async fn cursor_get(iii: &IIIClient, session_id: &str) -> Result<Option<String>, String> {
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".into(),
             payload: json!({ "scope": CURSOR_SCOPE, "key": session_id }),
             action: None,
@@ -1542,7 +1543,7 @@ fn transient(e: &Error) -> bool {
 /// (fingerprints keep re-extraction harmless, just not free).
 async fn cursor_set(iii: &IIIClient, session_id: &str, entry_id: &str) {
     let res = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::set".into(),
             payload: json!({
                 "scope": CURSOR_SCOPE,
@@ -1558,10 +1559,11 @@ async fn cursor_set(iii: &IIIClient, session_id: &str, entry_id: &str) {
     }
 }
 
-/// Drop a session's cursor (bound to `session::deleted`).
+/// Drop a session's cursor (from the target of the `session::on-deleted`
+/// observer).
 pub async fn cursor_delete(iii: &IIIClient, session_id: &str) {
     let _ = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::delete".into(),
             payload: json!({ "scope": CURSOR_SCOPE, "key": session_id }),
             action: None,
@@ -1594,7 +1596,7 @@ async fn fetch_span(
             payload["cursor"] = json!(c);
         }
         let reply = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "session::messages".into(),
                 payload,
                 action: None,
@@ -1817,7 +1819,7 @@ pub(crate) async fn turn_end(
 /// A session's newest `session::messages-tail` page; `None` when
 /// session-manager cannot say.
 pub(crate) async fn messages_tail(iii: &IIIClient, session_id: &str) -> Option<Value> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "session::messages-tail".into(),
         payload: json!({
             "session_id": session_id,
@@ -1922,7 +1924,7 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
         return Ok(configured.to_string());
     }
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::models::list".into(),
             payload: json!({}),
             action: None,
@@ -1964,7 +1966,7 @@ async fn child_agents(iii: &IIIClient, session_id: &str) -> Result<Vec<String>, 
             payload["cursor"] = json!(c);
         }
         let reply = match iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "session::list".into(),
                 payload,
                 action: None,
@@ -2021,7 +2023,7 @@ async fn extract_items(
     instructions: bool,
 ) -> Result<Vec<ExtractedItem>, String> {
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::complete".into(),
             payload: json!({
                 "model": model,

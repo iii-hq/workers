@@ -250,7 +250,7 @@ echo "[run-tests] database worker pid=$DATABASE_PID"
 # 12. Wait for database::query to succeed (worker startup + pool build).
 deadline=$(( $(date +%s) + 30 ))
 while :; do
-  if "$III_BIN" trigger database::query db=sqlite_db sql='SELECT 1' >/dev/null 2>&1; then
+  if "$III_BIN" call database::query db=sqlite_db sql='SELECT 1' >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$DATABASE_PID" 2>/dev/null; then

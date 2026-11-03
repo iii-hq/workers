@@ -9,8 +9,9 @@
 //!
 //!   * [`config`] — YAML-backed [`config::McpConfig`] (`hidden_prefixes`,
 //!     `require_expose`, `api_path`).
-//!   * [`functions`] — registers the `mcp::handler` function and bridges
-//!     iii's HTTP trigger envelope into [`handler::handle_mcp_body`].
+//!   * [`functions`] — registers the `mcp::handler` function, observes
+//!     `http::on-request` with its route, and bridges the http worker's
+//!     request into [`handler::handle_mcp_body`].
 //!   * [`handler`] — JSON-RPC dispatch; pins the protocol version and
 //!     fans out to `tools/*`, `resources/*`, `prompts/*`.
 //!   * [`jsonrpc`] — JSON-RPC 2.0 wire types and helpers.

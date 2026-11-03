@@ -25,7 +25,7 @@ export async function gh(
   timeoutMs = 30_000,
   stdin?: string,
 ): Promise<ExecResponse> {
-  return host.iii.trigger<ExecResponse>(
+  return host.iii.call<ExecResponse>(
     'shell::exec',
     { command: 'gh', args, cwd, timeout_ms: timeoutMs, ...(stdin === undefined ? {} : { stdin }) },
     { timeoutMs: timeoutMs + 10_000 },

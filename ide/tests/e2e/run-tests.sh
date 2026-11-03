@@ -217,7 +217,7 @@ echo "[run-tests] shell worker pid=$WORKER_PID"
 
 deadline=$(( $(date +%s) + 30 ))
 while :; do
-  if "$III_BIN" trigger --port "$E2E_PORT" engine::functions::info function_id=shell::exec >/dev/null 2>&1; then
+  if "$III_BIN" call --port "$E2E_PORT" engine::functions::info function_id=shell::exec >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$WORKER_PID" 2>/dev/null; then

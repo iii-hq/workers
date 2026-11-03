@@ -7,10 +7,10 @@ import {
   startDeviceLogin,
 } from './device-login'
 
-const trigger = vi.fn()
+const call = vi.fn()
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger }),
+  getIiiClient: async () => ({ call }),
 }))
 
 vi.mock('./api', () => ({
@@ -142,12 +142,12 @@ const copilot = DEVICE_PROVIDERS[0]
 
 describe('device login', () => {
   beforeEach(() => {
-    trigger.mockReset()
+    call.mockReset()
   })
 
   it('follows the login id Codex hands out, until its deadline', async () => {
     if (!codex) throw new Error('Codex signs in from the ADE')
-    trigger.mockResolvedValue({
+    call.mockResolvedValue({
       login_id: 'login-1',
       user_code: 'ABCD-1234',
       verification_uri: 'https://auth.openai.com/codex/device',
@@ -155,7 +155,7 @@ describe('device login', () => {
       interval: 5,
     })
     const code = await startDeviceLogin(codex, () => undefined)
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'provider::openai-codex::login::start',
       {},
     )
@@ -169,7 +169,7 @@ describe('device login', () => {
 
   it('polls Codex by login id and stops on an error or a replaced sign-in', async () => {
     if (!codex) throw new Error('Codex signs in from the ADE')
-    trigger
+    call
       .mockResolvedValueOnce({ status: 'pending' })
       .mockResolvedValueOnce({
         status: 'error',
@@ -178,7 +178,7 @@ describe('device login', () => {
       .mockResolvedValueOnce({ status: 'canceled' })
       .mockResolvedValueOnce({ status: 'ok' })
     expect(await pollDeviceLogin(codex, 'login-1')).toBe('pending')
-    expect(trigger).toHaveBeenLastCalledWith(
+    expect(call).toHaveBeenLastCalledWith(
       'provider::openai-codex::login::poll',
       { login_id: 'login-1' },
     )
@@ -188,11 +188,10 @@ describe('device login', () => {
   })
 
   it('still polls GitHub Copilot by device code', async () => {
-    trigger.mockResolvedValue({ status: 'slow_down' })
+    call.mockResolvedValue({ status: 'slow_down' })
     expect(await pollDeviceLogin(copilot, 'device-1')).toBe('slow_down')
-    expect(trigger).toHaveBeenCalledWith(
-      'provider::github-copilot::login::poll',
-      { device_code: 'device-1' },
-    )
+    expect(call).toHaveBeenCalledWith('provider::github-copilot::login::poll', {
+      device_code: 'device-1',
+    })
   })
 })

@@ -1,0 +1,30 @@
+{
+  "function_id": "harness::unobserve",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Agent-facing unobserve contract. The id is the `observer_id` `harness::observe` returned.",
+    "properties": {
+      "id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "UnobserveArgs",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "removed": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "removed"
+    ],
+    "title": "UnobserveResponse",
+    "type": "object"
+  }
+}

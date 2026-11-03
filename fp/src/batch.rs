@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
-use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
+use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use iii_sdk::IIIClient;
 
 use crate::pipe;
@@ -77,7 +77,7 @@ pub struct BatchCall {
     /// Echoed on the result; defaults to the call's position (`"0"`, `"1"`, …).
     #[serde(default)]
     pub id: Option<String>,
-    /// Function id to trigger.
+    /// Function id to call.
     pub function: String,
     #[serde(default)]
     pub payload: Option<Value>,
@@ -212,17 +212,17 @@ async fn one(
     let outcome: Result<Value, (String, String)> = match util::apply(&function, &args) {
         Some(result) => result.map_err(|message| ("INVALID_ARGS".to_string(), message)),
         None => {
-            let request = TriggerRequest {
+            let request = CallRequest {
                 function_id: function.clone(),
                 payload: args,
                 action: None,
                 timeout_ms: Some(timeout_ms),
             };
-            let request: TriggerRequestWithMetadata = match call.namespace {
+            let request: CallRequestWithMetadata = match call.namespace {
                 Some(namespace) => request.namespace(namespace),
                 None => request.into(),
             };
-            iii.trigger(request).await.map_err(|e| error_parts(&e))
+            iii.call(request).await.map_err(|e| error_parts(&e))
         }
     };
     match outcome {

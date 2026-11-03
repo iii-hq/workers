@@ -10,7 +10,7 @@ description: >-
 # fp
 
 The fp worker moves bulk data worker→worker. `fp::pipe` runs a short
-pipeline in one call: each step triggers a function and its result lands in
+pipeline in one call: each step calls a function and its result lands in
 the next step's payload at `into` (default `/value`); the caller receives
 per-step sizes and a preview — never the value itself. The ten `fp::*`
 transforms mirror their lodash namesakes, take input at `value`, and run
@@ -39,8 +39,8 @@ for small values).
 - Pipe steps run with the fp worker's authority, not the calling agent's
   per-step dispatch policy, so `fp::pipe` is not agent-callable without
   approval by default; the pure transforms are (see iii-permissions.yaml).
-- Refused as steps: `shell::*`/`coder::*`, trigger control
-  (`engine::register_trigger`/`engine::unregister_trigger`), nested pipes,
+- Refused as steps: `shell::*`/`coder::*`, observer control
+  (`engine::observers::dispose`; observe through `harness::observe`), nested pipes,
   and the agent-policy hard-denied classes (session writes/`approval::*`,
   credentials via `configuration::*`/`oauth::*`, model spend via
   `router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus

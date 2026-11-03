@@ -9,7 +9,7 @@
 
 mod support;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use support::engine::{fixture_path, with_stack};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -235,10 +235,12 @@ async fn caller_mistakes_come_back_as_errors() {
 }
 
 /// This worker is called on demand, so it must cost a turn that has nothing to
-/// do with a document exactly nothing. It registers no harness hook and binds no
-/// trigger type: an agent finds it through the function registry, and a person
-/// finds it through the console page. A hook here would run on every single
-/// generation, which is what a turn-loop worker is for, not this one.
+/// do with a document exactly nothing. Its only observers are its console UI
+/// assets (`console::ui::asset`) and its configuration reload
+/// (`configuration::on-updated`): none of `harness::hook::on-*` or any other
+/// turn source. It hosts no event source either (no private function). An
+/// agent finds it through the function registry, and a person finds it
+/// through the console page.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_worker_never_runs_on_a_turn_that_does_not_ask_for_it() {
     with_stack(|stack| async move {
@@ -246,16 +248,64 @@ async fn the_worker_never_runs_on_a_turn_that_does_not_ask_for_it() {
             .call("engine::functions::list", json!({ "search": "pdf" }))
             .await
             .expect("engine::functions::list");
-
         let listed = serde_json::to_string(&out).expect("serializes");
         assert!(
             listed.contains("pdf::classify"),
             "an agent must be able to discover this worker: {listed}"
         );
+
+        let info = stack
+            .call("engine::workers::info", json!({ "name": "pdf" }))
+            .await
+            .expect("engine::workers::info");
+        let functions = info["functions"].as_array().expect("functions");
         assert!(
-            !listed.contains("inject-guidance"),
-            "this worker must register no harness hook: {listed}"
+            functions
+                .iter()
+                .any(|f| f["function_id"] == "pdf::classify"),
+            "{info}"
         );
+        for function in functions {
+            assert!(
+                function.get("private").is_none(),
+                "this worker must host no event source: {function}"
+            );
+        }
+
+        let listed = stack
+            .call("engine::observers::list", json!({ "worker": "pdf" }))
+            .await
+            .expect("engine::observers::list");
+        let observers = listed["observers"].as_array().expect("observers");
+        let mut observed: Vec<(&str, &str)> = observers
+            .iter()
+            .map(|o| {
+                (
+                    o["function_id"].as_str().unwrap_or_default(),
+                    o["target"]["function_id"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        observed.sort_unstable();
+        assert_eq!(
+            observed,
+            [
+                ("configuration::on-updated", "pdf::on-config-change"),
+                ("console::ui::asset", "pdf::ui-content"),
+                ("console::ui::asset", "pdf::ui-content"),
+            ],
+            "pdf observes its UI assets and its configuration, nothing else: {listed}"
+        );
+        let mut ids: Vec<&str> = observers.iter().filter_map(|o| o["id"].as_str()).collect();
+        let mut owned: Vec<&str> = info["observers"]
+            .as_array()
+            .expect("observers")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        ids.sort_unstable();
+        owned.sort_unstable();
+        assert_eq!(ids, owned, "engine::workers::info lists the same observers");
     })
     .await;
 }

@@ -21,7 +21,7 @@ export function useRemoteChoices(source: RemoteChoices | undefined): readonly Ch
     let live = true
     // `resolve().then` turns a synchronous throw (no connection yet) into the same empty list.
     Promise.resolve()
-      .then(() => host.iii.trigger(source.functionId, {}, { timeoutMs: RPC_TIMEOUT_MS }))
+      .then(() => host.iii.call(source.functionId, {}, { timeoutMs: RPC_TIMEOUT_MS }))
       .then((reply) => source.choices(reply))
       .catch(() => [])
       .then((list) => {

@@ -20,7 +20,6 @@ INTERFACE = {
         "name": "smoke::run", "description": "", "request_schema": {},
         "response_schema": {}, "metadata": {},
     }],
-    "triggers": [],
 }
 
 
@@ -282,7 +281,7 @@ def test_skipped_interface_capture_yields_an_empty_interface(tmp_path: Path) -> 
     )
     manifest = written(write_args(root, receipt(root, "smoke"), "smoke"))
     assert manifest["interface_capture"] == "skipped"
-    assert manifest["interface"] == {"functions": [], "triggers": []}
+    assert manifest["interface"] == {"functions": []}
 
 
 OCI_FILES = {

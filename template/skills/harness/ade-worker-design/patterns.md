@@ -207,9 +207,9 @@ close the modal, then open the new record as its own pane (§3).
 
 ## 6. Chat card for agent calls
 
-Register one `FunctionTriggerRenderer` that claims the worker's record
+Register one `FunctionCallRenderer` that claims the worker's record
 functions. Unwrap the harness envelope first (see console-injectable-ui.md,
-`host.functionTriggers`): the record lives at `output.details`.
+`host.functionCalls`): the record lives at `output.details`.
 
 - `metadata: { display: true }` so the card stays visible in collapsed call
   groups; `tryRenderDisplay` returns the compact card, `tryRender` the full one
@@ -242,16 +242,17 @@ the settings action; never render a Configure button or mount
 
 ## 8. Live updates
 
-- The worker owns a trigger type `<worker>:change` (see index.md → Live
-  updates) and fires an event for every mutation carrying the **whole record**
-  (`{ type, event, record_id, record, comment?, activity? }`) plus a
-  `store.reloaded` event when the backing store changes. The type also supports
-  trigger metadata — a `metadata` field in its config — and forwards it on every
-  `iii.trigger`, so a binding's handler receives it as its second argument.
-- The UI keeps **one binding per tab** shared by every mounted page: a module
-  hub with a listener set that registers `host.iii.on(fn, …)` and the
-  `registerTrigger` with `function_id: \`${fn}::${host.iii.browserId}\`` on
-  the first subscriber and tears both down on the last.
+- The worker hosts a private event function `<worker>::on-change` (see
+  `iii-node` → Live updates) and calls it after every mutation with the
+  **whole record** (`{ type, event, record_id, record, comment?, activity? }`),
+  plus a `store.reloaded` event when the backing store changes. It takes no
+  args; observers narrow it with filters on `input.record_id` or
+  `input.event`. An observer's `metadata` reaches its target as the handler's
+  second argument; the worker never forwards it.
+- The UI keeps **one observer per tab** shared by every mounted page: a module
+  hub with a listener set that registers `host.iii.on(fn, …)` and calls
+  ``host.iii.observe('<worker>::on-change', `${fn}::${host.iii.browserId}`)``
+  on the first subscriber, and disposes both on the last.
 - Collections **upsert from the payload** (remove when `deleted_at` is set) and
   refetch only on `store.reloaded` or events without a payload. Record screens
   merge the record and append unseen comments/activity by id.

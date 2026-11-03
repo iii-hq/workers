@@ -89,7 +89,7 @@ func TestCloudSecretReferencesEngine(t *testing.T) {
 		}
 	})
 	cloudStatus := func() map[string]any {
-		status, err := smokeTrigger(engine, engineURL, namespace, "whatsapp::cloud::status", map[string]any{})
+		status, err := smokeCall(engine, engineURL, namespace, "whatsapp::cloud::status", map[string]any{})
 		if err != nil {
 			last = err
 			return nil
@@ -109,12 +109,12 @@ func TestCloudSecretReferencesEngine(t *testing.T) {
 		status := cloudStatus()
 		return status != nil && status["access_token_set"] == true && status["configured"] == true && problem(status) == ""
 	})
-	stored, err := smokeTrigger(engine, engineURL, "default", "configuration::get", map[string]any{"id": namespace, "raw": true})
+	stored, err := smokeCall(engine, engineURL, "default", "configuration::get", map[string]any{"id": namespace, "raw": true})
 	if err != nil || strings.Contains(fmt.Sprint(stored), token) {
 		t.Fatalf("stored configuration must hold only the reference: %v", err)
 	}
 
-	// Revoking WhatsApp's access reaches it through secrets::changed.
+	// Revoking WhatsApp's access reaches it through secrets::on-changed.
 	if _, err = smokeValue(engine, engineURL, namespace, "secrets::access", map[string]any{"name": "WA_TOKEN", "consumers": []string{}}); err != nil {
 		t.Fatal(err)
 	}

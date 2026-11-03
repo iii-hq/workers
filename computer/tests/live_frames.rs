@@ -1,6 +1,6 @@
 //! Live end-to-end check of the frame pipeline against a running engine:
 //! the real `computer` binary, a fake guest-executor desktop, and consumer
-//! workers bound to `computer::frame-changed`. Opt-in (needs an engine):
+//! workers observing `computer::on-frame-changed`. Opt-in (needs an engine):
 //!
 //! ```sh
 //! COMPUTER_LIVE_III_URL=ws://127.0.0.1:49651 COMPUTER_LIVE_DESKTOP_PORT=49652 \
@@ -15,8 +15,10 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, CallRequest, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
+    RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
@@ -93,16 +95,19 @@ fn viewer(iii: &IIIClient, function_id: &str, delay: Duration) -> Seen {
     seen
 }
 
-fn bind(iii: &IIIClient, function_id: &str, config: Value) -> iii_sdk::trigger::Trigger {
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "computer::frame-changed".to_string(),
-        function_id: function_id.to_string(),
-        config,
-        metadata: Some(json!({ "viewer": function_id })),
-        namespace: None,
-        trigger_namespace: None,
-    })
-    .expect("register frame-changed binding")
+/// An observer of `computer::on-frame-changed` with `args`, targeting the
+/// viewer `function_id`; active once the worker's added hook accepted it.
+async fn observe(iii: &IIIClient, function_id: &str, args: Value) -> ObserverHandle {
+    let handle = iii.observe_with(
+        Source::function("computer::on-frame-changed").args(args),
+        function_id,
+        ObserverOptions::default().metadata(json!({ "viewer": function_id })),
+    );
+    tokio::time::timeout(Duration::from_secs(10), handle.ready())
+        .await
+        .expect("frame observer never became active")
+        .expect("frame observer refused");
+    handle
 }
 
 /// The engine keeps one live worker per (namespace, name): name each client.
@@ -120,7 +125,7 @@ fn client(url: &str, name: &str) -> IIIClient {
 }
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
@@ -224,7 +229,7 @@ async fn live_frames_without_iii_stream() {
         .to_string();
     eprintln!("[live] sessions {c1}, {c2}");
 
-    // A frame stored before anyone binds: only the initial read shows it.
+    // A frame stored before anyone observes: only the initial read shows it.
     call(
         &iii,
         "computer::screencast::start",
@@ -258,9 +263,9 @@ async fn live_frames_without_iii_stream() {
     let a = viewer(&consumer, "live::viewer-a", Duration::ZERO);
     let b = viewer(&consumer, "live::viewer-b", Duration::ZERO);
     let s = viewer(&consumer, "live::viewer-slow", Duration::from_millis(300));
-    let _ta = bind(&consumer, "live::viewer-a", json!({ "session_id": c1 }));
-    let _tb = bind(&consumer, "live::viewer-b", json!({ "session_id": c2 }));
-    let ts = bind(&consumer, "live::viewer-slow", json!({ "session_id": c1 }));
+    let _oa = observe(&consumer, "live::viewer-a", json!({ "session_id": c1 })).await;
+    let _ob = observe(&consumer, "live::viewer-b", json!({ "session_id": c2 })).await;
+    let os = observe(&consumer, "live::viewer-slow", json!({ "session_id": c1 })).await;
 
     wait_for("A notifications", Duration::from_secs(10), || {
         seqs(&a).len() >= 10
@@ -338,7 +343,9 @@ async fn live_frames_without_iii_stream() {
         slow.len(),
         fast.len()
     );
-    ts.unregister();
+    os.dispose()
+        .await
+        .expect("dispose the slow viewer's observer");
 
     // Cleanup on session end: c1 stops -> `cleared`, the frame is gone.
     let stopped = call(

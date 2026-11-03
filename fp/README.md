@@ -6,7 +6,7 @@ through the model.
 
 ## Install
 
-    iii trigger compose::add worker=fp
+    iii call compose::add worker=fp
 
 The worker is a `deploy: binary` Rust worker with no configuration.
 
@@ -14,23 +14,24 @@ The worker is a `deploy: binary` Rust worker with no configuration.
 
 An agent that fetches a document and re-types it into the next call's
 arguments burns its context window and stalls the provider stream mid-call.
-`fp::pipe` runs the whole move in one call — each step triggers a function
+`fp::pipe` runs the whole move in one call — each step calls a function
 and its result lands in the next step's payload — so the value flows
 worker→worker and the chat only ever sees per-step sizes and a preview.
 
 While connected (and unless turned off) the worker also injects a usage
-section into the agent system prompt via the harness `pre-generate` hook
-(`fp::inject-guidance`). The knob lives in the builtin `configuration`
+section into the agent system prompt: `fp::inject-guidance` observes the
+harness's `harness::hook::on-pre-generate` with args
+`{ on_error: "fail_open", inject_prompt: <the guidance> }`. The knob lives in the builtin `configuration`
 worker under the `fp` entry: `inject_guidance` is ON by default; turn it
 off in global Settings (or via `configuration::set`) to save
 the ~750 tokens per generation (the harness's `# Granted functions` catalog
-still advertises the `fp::*` ids) — it hot-applies, the worker binds or
-unbinds the hook on the spot, no restart. The Console renders the entry with
-its explicit worker settings form. The guidance stays presence-gated either way
-(no fp worker, no prompt text). When enabled, the binding relies on the
-engine's recoverable triggers (iii #1962): bound before the harness is up,
-it parks as a pending intent and activates when the harness registers the
-trigger type.
+still advertises the `fp::*` ids) — it hot-applies, the worker observes the
+hook or disposes the observer on the spot, no restart. The Console renders the
+entry with its explicit worker settings form. The guidance stays
+presence-gated either way (no fp worker, no prompt text). When enabled before
+the harness is up, the observer stays `pending` and becomes active when the
+harness registers the hook function. The worker also observes
+`configuration::on-updated` for its own entry (`fp::on-config-change`).
 
 ## Functions
 
@@ -61,6 +62,8 @@ trigger type.
 | `fp::max` | `_.max` / `_.maxBy` | `{ value, path? }` — largest NUMBER (not the element holding it); an empty array errors |
 | `fp::groupBy` | `_.groupBy` | `{ value, path }` — `{ key: [elements] }` bucketed by a plucked key (`""` = the element itself) |
 | `fp::countBy` | `_.countBy` | `{ value, path }` — `{ key: count }` with the same key rules |
+| `fp::when` | — | `{ value, path?, op, to? }` — `{ passed, value }`; as a pipe step a failing comparison stops the pipe (`short_circuited: true`) |
+| `fp::condition` | — | `{ event, condition_config: { path?, op, to?, negate? } }` — `{ decision: "allow" \| "skip", reason }`: the `fp::when` comparison as a guard in a harness observer's `conditions` (`harness::observe`) |
 
 The reductions are the worker's arithmetic: all-integer inputs fold to an
 integer (so the result compares cleanly in a `fp::when` guard), a non-numeric
@@ -107,7 +110,7 @@ fp::pipe { through: [
   (a fetch, a `state::get`) or seed a leading transform via `payload.value`.
   An unseeded leading transform fails validation before anything runs.
 - `fp::*` transform steps run inline in this worker; every other step is
-  one bus trigger with a 120 s budget. The whole pipe must also fit the
+  one bus call with a 120 s budget. The whole pipe must also fit the
   caller's own dispatch timeout on `fp::pipe`.
 - 1–12 steps. The response is receipts only: `{ steps: [{function, chars}],
   value_preview }` (`preview_chars` sizes the preview, default 400, capped at
@@ -153,8 +156,8 @@ fp::batch { calls: [
   directory, or a non-harness caller — cron, worker-to-worker) scoped steps
   are refused, fail-closed. A path-access rejection inside a pipe just fails
   the step; only a direct call offers the access-grant ladder.
-- Statically refused as steps: `engine::register_trigger`/`engine::unregister_trigger`
-  (need the harness trusted-session stamp), nested pipes, and every class the
+- Statically refused as steps: `engine::observers::dispose` (observer
+  control; agents observe through `harness::observe`), nested pipes, and every class the
   agent policy hard-denies — session writes and `session::store::*`,
   `approval::*`, `configuration::*`/`oauth::*` (credentials),
   `router::*`/`provider::*` (model spend), `harness::*`/`run::*` (turn

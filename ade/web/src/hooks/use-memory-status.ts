@@ -14,7 +14,7 @@ import {
 
 /** Engine worker name for the memory worker. */
 const MEMORY_WORKER_NAME = 'memory'
-/** Base id for the browser-local `engine::workers-available` handler. */
+/** Base id for the browser-local `engine::on-workers-changed` handler. */
 const MEMORY_WATCH_FN = 'ade::memory-watch'
 
 export type MemoryStatus = WorkerPresence
@@ -33,7 +33,7 @@ export function useMemoryStatus(enabled: boolean): MemoryStatus {
 }
 
 /**
- * Whether the memory worker's functions are registered and safe to trigger.
+ * Whether the memory worker's functions are registered and safe to call.
  * False during the initial presence probe and while the worker is absent.
  */
 export function isMemoryAvailable(status: MemoryStatus): boolean {

@@ -8,13 +8,14 @@
 //! - `skills_folder` — tempdir scenarios write fixture markdown into.
 //! - `stash` — typed outcome slots a `Then` step can read after the
 //!   matching `When` step wrote.
+//! - `observers` — the observers a scenario created, disposed after it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use cucumber::World;
-use iii_sdk::IIIClient;
+use iii_sdk::{IIIClient, ObserverHandle};
 use serde_json::Value;
 
 use iii_directory::config::SkillsConfig;
@@ -33,6 +34,8 @@ pub struct IiiSkillsWorld {
     /// up by a download scenario. The download step uses this to point
     /// the worker at the mock instead of the real registry.
     pub registry_url: Option<String>,
+    /// Observers the scenario created; disposed after it.
+    pub observers: Vec<ObserverHandle>,
 }
 
 impl std::fmt::Debug for IiiSkillsWorld {
@@ -52,6 +55,7 @@ impl IiiSkillsWorld {
             stash: HashMap::new(),
             skills_folder: None,
             registry_url: None,
+            observers: Vec::new(),
         }
     }
 }

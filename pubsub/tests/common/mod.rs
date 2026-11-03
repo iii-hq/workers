@@ -12,5 +12,5 @@ pub async fn wait_for_deliveries(counter: &Arc<AtomicUsize>, n: usize) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("subscribers never reached {n} deliver(ies)");
+    panic!("observers never reached {n} deliver(ies)");
 }

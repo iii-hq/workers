@@ -1,5 +1,5 @@
 import {
-  type FunctionTriggerMessage,
+  type FunctionCallMessage,
   type Host,
   Markdown,
   type MentionRendererProps,
@@ -13,14 +13,16 @@ import {
   ShadcnTableHead,
   ShadcnTableHeader,
   ShadcnTableRow,
-  type TriggerActivityMessage,
+  type ObserverActivityMessage,
 } from '@iii-dev/console-ui'
 import { formatRelative, unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { ChevronRight, CircleX, Folder, MessageSquare, Milestone } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
-import { formatTarget, plural, releaseStatusText, triggerScope } from './plan-rules'
+import { formatTarget, observerScope, plural, releaseStatusText } from './plan-rules'
 import {
   api,
+  CHANGE_FN,
+  COMMENT_FN,
   type Column,
   PROJECTS_PAGE_ID,
   PriorityChip,
@@ -495,7 +497,7 @@ export function createPlanRenderer(host: Host) {
         : null
   const verbOf = (functionId: string, kind: 'release' | 'project') =>
     (kind === 'release' ? RELEASE_VERBS : PROJECT_VERBS)[functionId.split('::')[2] ?? '']
-  const card = (message: FunctionTriggerMessage) => {
+  const card = (message: FunctionCallMessage) => {
     const kind = kindOf(message.functionId)
     const details = unwrapDetails(message.output)
     if (!kind || details === undefined) return null
@@ -512,7 +514,7 @@ export function createPlanRenderer(host: Host) {
     isMatch: (functionId: string) => kindOf(functionId) !== null,
     metadata: { display: true },
     tryRenderDisplay: card,
-    tryRender: (message: FunctionTriggerMessage) => {
+    tryRender: (message: FunctionCallMessage) => {
       const single = card(message)
       if (single) return single
       const kind = kindOf(message.functionId)
@@ -525,7 +527,7 @@ export function createPlanRenderer(host: Host) {
 }
 
 export function createTicketRenderer(host: Host) {
-  const resolved = (message: FunctionTriggerMessage): Ticket | null => {
+  const resolved = (message: FunctionCallMessage): Ticket | null => {
     const details = unwrapDetails(message.output)
     if (details === undefined) return null
     return asTicketLike(details)
@@ -535,12 +537,12 @@ export function createTicketRenderer(host: Host) {
     id: 'kanban/page.js#ticket',
     isMatch: (functionId: string) => TICKET_FUNCTIONS.includes(functionId),
     metadata: { display: true },
-    tryRenderDisplay: (message: FunctionTriggerMessage) => {
+    tryRenderDisplay: (message: FunctionCallMessage) => {
       const ticket = resolved(message)
       if (!ticket) return null
       return <TicketCard host={host} ticket={ticket} verb={ticketVerb(message.functionId)} />
     },
-    tryRender: (message: FunctionTriggerMessage) => {
+    tryRender: (message: FunctionCallMessage) => {
       const details = unwrapDetails(message.output)
       if (details === undefined) return null
       const ticket = asTicketLike(details)
@@ -572,63 +574,63 @@ export function createTicketMentionRenderer(host: Host): MentionRendererRegistra
   }
 }
 
-export function createKanbanTriggerRenderer(host: Host) {
-  const isKanbanType = (triggerType: string) => triggerType === 'kanban:change' || triggerType === 'kanban:comment'
+export function createKanbanObserverRenderer(host: Host) {
+  const isKanbanSource = (functionId: string) => functionId === CHANGE_FN || functionId === COMMENT_FN
 
-  const describe = (activity: TriggerActivityMessage): string => {
+  const describe = (activity: ObserverActivityMessage): string => {
     const payload = activity.payload as Record<string, unknown> | undefined
     const event = payload && typeof payload.event === 'string' ? payload.event : null
     const key = payload && typeof payload.ticket_key === 'string' ? payload.ticket_key : null
     if (event && key) return `${event} · ${key}`
     if (event) return event
-    return activity.action ?? activity.triggerType
+    return activity.action ?? activity.functionId
   }
 
   return {
-    id: 'kanban/page.js#trigger-activity',
-    isMatch: isKanbanType,
-    tryRenderDisplay: (activity: TriggerActivityMessage) => (
+    id: 'kanban/page.js#observer-activity',
+    isMatch: isKanbanSource,
+    tryRenderDisplay: (activity: ObserverActivityMessage) => (
       <span className="kb-chat kb-chat-line">
         <span className="kb-chat-line__title">{describe(activity)}</span>
       </span>
     ),
-    tryRender: (activity: TriggerActivityMessage) => {
+    tryRender: (activity: ObserverActivityMessage) => {
       const payload = activity.payload as Record<string, unknown> | undefined
-      const config = (activity.config ?? {}) as Record<string, unknown>
+      const args = activity.args ?? {}
       return (
-        <div className="kb-chat kb-trigger-detail">
-          <div className="kb-trigger-detail__row">
-            <span className="kb-trigger-detail__label">Fires on</span>
-            <span className="kb-chat-mono">{triggerScope(activity.triggerType, config)}</span>
+        <div className="kb-chat kb-observer-detail">
+          <div className="kb-observer-detail__row">
+            <span className="kb-observer-detail__label">Watches</span>
+            <span className="kb-chat-mono">{observerScope(activity.functionId, args)}</span>
           </div>
-          {typeof config.author === 'string' && config.author ? (
-            <div className="kb-trigger-detail__row">
-              <span className="kb-trigger-detail__label">Only author</span>
-              <span className="kb-chat-mono">{config.author}</span>
+          {typeof args.author === 'string' && args.author ? (
+            <div className="kb-observer-detail__row">
+              <span className="kb-observer-detail__label">Only author</span>
+              <span className="kb-chat-mono">{args.author}</span>
             </div>
           ) : null}
-          {typeof config.exclude_author === 'string' && config.exclude_author ? (
-            <div className="kb-trigger-detail__row">
-              <span className="kb-trigger-detail__label">Except author</span>
-              <span className="kb-chat-mono">{config.exclude_author}</span>
+          {typeof args.exclude_author === 'string' && args.exclude_author ? (
+            <div className="kb-observer-detail__row">
+              <span className="kb-observer-detail__label">Except author</span>
+              <span className="kb-chat-mono">{args.exclude_author}</span>
             </div>
           ) : null}
           {payload ? (
-            <div className="kb-trigger-detail__row">
-              <span className="kb-trigger-detail__label">Last event</span>
+            <div className="kb-observer-detail__row">
+              <span className="kb-observer-detail__label">Last event</span>
               <span className="kb-chat-mono">{describe(activity)}</span>
             </div>
           ) : null}
         </div>
       )
     },
-    tryRenderDetails: (activity: TriggerActivityMessage) => {
+    tryRenderDetails: (activity: ObserverActivityMessage) => {
       const payload = activity.payload as { ticket?: unknown; comment?: unknown } | undefined
       const ticket = payload ? asTicket(payload.ticket) : null
       if (!ticket) return null
       const comment = payload?.comment as { body?: string; author?: string } | undefined
       return (
-        <div className="kb-chat kb-trigger-detail">
+        <div className="kb-chat kb-observer-detail">
           <TicketCard host={host} ticket={ticket} />
           {comment && typeof comment.body === 'string' ? (
             <div className="kb-chat-prose">

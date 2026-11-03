@@ -6,7 +6,7 @@ const COMPLETED_FN = 'iii::eval-ui::completed'
 
 type Listener = (event: CompletedEvent) => void
 
-// One `eval::completed` binding per tab, shared by every mounted page: two
+// One `eval::on-completed` observer per tab, shared by every mounted page: two
 // pages calling `host.iii.on` with the same id would fight over it.
 const listeners = new Set<Listener>()
 let teardown: (() => void) | null = null
@@ -17,13 +17,9 @@ function subscribe(host: Host, listener: Listener): () => void {
     const offHandler = host.iii.on<CompletedEvent>(COMPLETED_FN, (event) => {
       for (const current of listeners) current(event)
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: 'eval::completed',
-      function_id: `${COMPLETED_FN}::${host.iii.browserId}`,
-      config: {},
-    })
+    const offObserver = host.iii.observe('eval::on-completed', `${COMPLETED_FN}::${host.iii.browserId}`)
     teardown = () => {
-      offTrigger()
+      offObserver()
       offHandler()
     }
   }

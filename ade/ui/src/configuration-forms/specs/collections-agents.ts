@@ -243,12 +243,12 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
               stringList('deny', 'Deny', 'Function IDs or globs removed from the allow set.', {
                 itemLabel: 'Function glob',
               }),
-              select('expose', 'Exposure mode', [choice('agent_trigger', 'Agent trigger'), choice('native', 'Native')]),
+              select('expose', 'Exposure mode', [choice('agent_call', 'Agent call'), choice('native', 'Native')]),
             ],
             'Policy used by a parentless spawn with no explicit function list. Turning it off stores null (deny all).',
             {
               optional: true,
-              defaultValue: { allow: ['*'], deny: [], expose: 'agent_trigger' },
+              defaultValue: { allow: ['*'], deny: [], expose: 'agent_call' },
               disabledValue: null,
             },
           ),

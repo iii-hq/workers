@@ -9,13 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-/// Ids and concepts the harness no longer serves. A prompt naming one sends
+/// Ids and concepts the harness does not serve. A prompt naming one sends
 /// every agent into a registration error.
-const REMOVED: &[&str] = &[
-    "harness::react",
-    "harness::notify_agent",
-    "harness::trigger-call",
-];
+const REMOVED: &[&str] = &["harness::react", "harness::notify_agent"];
 
 /// Prompts must not name a worker the agent is meant to DISCOVER: naming one
 /// preempts discovery and skews any evaluation of whether the agent finds it.
@@ -131,7 +127,7 @@ fn every_identity_prompt_teaches_the_live_surface() {
         let body = std::fs::read_to_string(&path).expect("prompt is readable");
         let normalized = body.replace('\n', " ");
         assert!(
-            body.contains("engine::register_trigger"),
+            body.contains("harness::observe"),
             "{name} never mentions the callback primitive"
         );
         assert!(
@@ -214,8 +210,8 @@ fn default_prompt_teaches_asking_the_user() {
 }
 
 /// Phrases that prescribe an orchestration PROCESS — a fixed ordering, a
-/// topology recipe, a mandated shared-state flow. The runtime no longer has a
-/// trigger→spawn path, and the prompts must not smuggle its doctrine back in:
+/// topology recipe, a mandated shared-state flow. The runtime has no
+/// event→spawn path, and the prompts must not smuggle that doctrine in:
 /// orchestration guidance is opt-in (harness/skills/orchestration.md, or the
 /// task prompt), never baked into an identity.
 const PRESCRIBED_PROCESS: &[&str] = &[
@@ -228,7 +224,6 @@ const PRESCRIBED_PROCESS: &[&str] = &[
     "results come back only through",
     "fan-out",
     "fan-in",
-    "react trigger",
     "reaction graph",
     r#"function_id: "harness::spawn""#,
 ];

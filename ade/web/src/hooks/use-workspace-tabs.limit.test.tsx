@@ -41,7 +41,7 @@ const strip = (count: number): WorkspaceLayoutValue => ({
 const client = () => ({
   browserId: 'browser-1',
   on: () => () => {},
-  registerTrigger: () => () => {},
+  observe: () => () => {},
 })
 
 function Probe({ options }: { options?: UseWorkspaceTabsOptions }) {

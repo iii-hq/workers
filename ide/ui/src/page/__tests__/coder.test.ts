@@ -86,7 +86,7 @@ describe('path helpers', () => {
 
 describe('coderWriteFile', () => {
   it('forwards the prior revision and returns the newly written revision', async () => {
-    const trigger = vi.fn(async () => ({
+    const call = vi.fn(async () => ({
       results: [
         {
           path: '/work/a.ts',
@@ -97,7 +97,7 @@ describe('coderWriteFile', () => {
       ],
     }))
     const host = {
-      iii: { trigger },
+      iii: { call },
     } as unknown as Parameters<typeof coderWriteFile>[0]
 
     const result = await coderWriteFile(
@@ -108,7 +108,7 @@ describe('coderWriteFile', () => {
       'sha256:old',
     )
 
-    expect(trigger).toHaveBeenCalledWith('coder::create-file', {
+    expect(call).toHaveBeenCalledWith('coder::create-file', {
       files: [
         {
           path: '/work/a.ts',
@@ -125,11 +125,11 @@ describe('coderWriteFile', () => {
 
 describe('coderDelete', () => {
   it('asks to remove protected files only when the user confirmed it', async () => {
-    const trigger = vi.fn(async () => ({ results: [] }))
-    const host = { iii: { trigger } } as unknown as Parameters<typeof coderDelete>[0]
+    const call = vi.fn(async () => ({ results: [] }))
+    const host = { iii: { call } } as unknown as Parameters<typeof coderDelete>[0]
     await coderDelete(host, ['/r/d'], true)
     await coderDelete(host, ['/r/d'], true, true)
-    expect(trigger.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+    expect(call.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
       { paths: ['/r/d'], recursive: true },
       { paths: ['/r/d'], recursive: true, include_protected: true },
     ])
@@ -145,19 +145,19 @@ describe('coderDelete', () => {
 
 describe('deleteEntry', () => {
   it('deletes a folder recursively, its protected entries only when confirmed', async () => {
-    const trigger = vi.fn(async () => ({ results: [{ path: '/r/pkg', success: true, removed: true }] }))
-    const host = { iii: { trigger } } as unknown as Parameters<typeof deleteEntry>[0]
+    const call = vi.fn(async () => ({ results: [{ path: '/r/pkg', success: true, removed: true }] }))
+    const host = { iii: { call } } as unknown as Parameters<typeof deleteEntry>[0]
     await deleteEntry(host, '/r', 'pkg', true)
     await deleteEntry(host, '/r', 'pkg', true, true)
-    expect(trigger.mock.calls).toEqual([
+    expect(call.mock.calls).toEqual([
       ['coder::delete-file', { paths: ['/r/pkg'], recursive: true }],
       ['coder::delete-file', { paths: ['/r/pkg'], recursive: true, include_protected: true }],
     ])
   })
 
   it("throws the worker's error for a path it could not delete", async () => {
-    const trigger = vi.fn(async () => ({ results: [{ success: false, error: { message: 'x' } }] }))
-    const host = { iii: { trigger } } as unknown as Parameters<typeof deleteEntry>[0]
+    const call = vi.fn(async () => ({ results: [{ success: false, error: { message: 'x' } }] }))
+    const host = { iii: { call } } as unknown as Parameters<typeof deleteEntry>[0]
     await expect(deleteEntry(host, '/r', 'pkg', true)).rejects.toThrow(/^x$/)
   })
 })

@@ -19,7 +19,8 @@ models listing is always read from that endpoint's `/models` sibling.
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The declaration carries no models and
   `credential_env_var: DEEPSEEK_API_KEY`; the post-register refresh
   discovers the catalog, gated on a configured credential (no key → empty

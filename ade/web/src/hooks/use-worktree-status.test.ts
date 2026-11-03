@@ -8,7 +8,7 @@ import {
 describe('worktree presence probe wiring', () => {
   it('probes the worktree worker with its own watch handler id', () => {
     expect(WORKTREE_WORKER_NAME).toBe('worktree')
-    // Must be unique per presence probe so the browser-local trigger
+    // Must be unique per presence probe so the browser-local workers-changed
     // handlers never collide (shell uses ade::shell-watch).
     expect(WORKTREE_WATCH_FN).toBe('ade::worktree-watch')
   })

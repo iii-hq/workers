@@ -70,7 +70,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 
 use crate::deps::Deps;
 use crate::functions::metrics::{self, ModelUsageV1, SessionMetricsRequestV1, SessionUsageV1};
@@ -883,7 +883,7 @@ async fn cas_machine(
     }
     let resp = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: STATE_CAS_ID.into(),
             payload,
             action: None,
@@ -915,7 +915,7 @@ fn machine_row(value: &Value) -> MachineRow {
 async fn publish(deps: &Deps, data: Value, timeout_ms: u64) -> bool {
     let sent = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: PUBLISH_ID.into(),
             payload: json!({ "topic": USAGE_TOPIC, "data": data }),
             action: None,

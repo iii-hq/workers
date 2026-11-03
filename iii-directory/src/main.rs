@@ -3,18 +3,18 @@
 //! Boot sequence:
 //!   1. Parse CLI / load YAML config (with fallback to defaults).
 //!   2. Connect to the iii engine over WebSocket.
-//!   3. Register the custom trigger types
+//!   3. Register the change functions
 //!      `directory::skills::on-change` /
 //!      `directory::system-prompts::on-change` /
-//!      `directory::agents::on-change`.
+//!      `directory::agents::on-change` / `directory::kits::on-change`.
 //!   4. Register every public function against the engine — every
 //!      registration sits under `directory::*` (search, skills, system
 //!      prompts, agents, registry, and one engine-info wrapper).
 //!   5. (Optional) Run a boot reconcile for missing skills, and run its
-//!      worker pass again whenever a worker connects
-//!      (`engine::workers-available`), so workers added later get theirs.
+//!      worker pass again whenever a worker connects (it observes
+//!      `engine::on-workers-changed`), so workers added later get theirs.
 //!   6. Start the filesystem watch so external edits under the directory
-//!      roots fire the matching `on-change` (best-effort, never fatal).
+//!      roots call the matching `on-change` (best-effort, never fatal).
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
 //! Write paths are `directory::skills::download*` (bulk materialization)
@@ -34,10 +34,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
-use serde_json::json;
+use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use serde_json::Value;
 
 use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use iii_directory::functions::download::{
@@ -48,7 +47,7 @@ use iii_directory::functions::skills::{
     compose_status_request, make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
 };
 use iii_directory::sources::registry::VersionSpec;
-use iii_directory::{configuration, functions, manifest, trigger_types};
+use iii_directory::{configuration, events, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -185,22 +184,22 @@ async fn main() -> Result<()> {
     let registry_cache = RegistryCache::new_shared(cache_ttl_ms.clone());
     let cfg_handle: SharedConfig = cfg.into_shared();
 
-    // Custom trigger types come first because the download function captures
-    // the subscriber sets it'll fan out to on success.
-    let registered = trigger_types::register_all(&iii);
+    // The change functions come first: the write functions call them on
+    // success.
+    let sources = events::register_all(&iii);
     functions::register_all_with_cache(
         &iii,
         &cfg_handle,
-        &registered,
+        &sources,
         &registered_cache,
         registry_cache.clone(),
     );
     functions::log_fs_health(&cfg_handle.load_full());
 
     // Function search: seed the engine-catalog snapshot (best effort — the
-    // functions-available push refreshes it), register
+    // engine::on-functions-changed observer refreshes it), register
     // directory::search_functions + its internal hook/preview/listener, and
-    // reconcile the pre-generate hint binding with the inject_hint knob.
+    // reconcile the pre-generate hint observer with the inject_hint knob.
     let search_catalog: functions::search::CatalogCell =
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
     let semantic =
@@ -226,7 +225,7 @@ async fn main() -> Result<()> {
     functions::search::register(&iii, &search_deps);
     // The same model, as router::embed's local embedder.
     functions::embed_provider::register(&iii, &semantic);
-    functions::search::bind_best_effort(&iii);
+    functions::search::observe_catalog_changes(&iii);
     // The judge's context window (compact options, tournament) follows the
     // hub's default provider: re-read it as soon as the hub's configuration
     // changes instead of when the cache expires.
@@ -275,16 +274,16 @@ async fn main() -> Result<()> {
             }
         });
     }
-    let hint_binding = iii_directory::hook::HintBindingState::default();
-    iii_directory::hook::apply(&iii, &hint_binding, cfg_handle.load().inject_hint);
+    let hint_observer = iii_directory::hook::HintObserverSlot::default();
+    iii_directory::hook::apply(&iii, &hint_observer, cfg_handle.load().inject_hint);
 
     // Injectable console UI: the directory editor page, the
-    // directory::* function-trigger renderer, and the configuration form.
+    // directory::* function-call renderer, and the configuration form.
     iii_directory::ui::register(&iii);
 
     // Auto-download: boot reconcile, then the worker pass again on every
-    // worker connection. Wired from the boot value of `auto_download` (a
-    // topology field — changing it requires a restart).
+    // worker connection (observed). Wired from the boot value of
+    // `auto_download` (a topology field — changing it requires a restart).
     if auto_download {
         let in_flight = Arc::new(InFlightGuard::new());
         setup_auto_download(&iii, &cfg_handle, &registered_cache, &in_flight);
@@ -296,20 +295,19 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Bind the configuration-change trigger so tunable fields hot-reload.
+    // Observe configuration changes so tunable fields hot-reload.
     let state = configuration::SharedState::new(
         cfg_handle.clone(),
         cache_ttl_ms,
         registry_cache,
         registered_cache,
         boot_topology,
-        hint_binding,
+        hint_observer,
         search_deps.clone(),
     );
-    configuration::register_config_trigger(&iii, state)
-        .context("registering configuration change trigger")?;
+    configuration::observe_config_changes(&iii, state);
 
-    // Filesystem watch: external edits under the directory roots fire the
+    // Filesystem watch: external edits under the directory roots call the
     // matching on-change with { op: "external" }. Failure to start is a
     // degradation (tabs refresh on interaction only), never fatal.
     let cfg_now = cfg_handle.load_full();
@@ -328,7 +326,7 @@ async fn main() -> Result<()> {
     // user-global `~/.iii/agents` root only when it already exists — this
     // worker edits profiles there in place but never materializes the
     // directory itself. A directory already watched under another kind is
-    // added again under this one: its edits must reach both subscriber sets.
+    // added again under this one: its edits must reach both change functions.
     for (i, profiles_root) in cfg_now.resolved_agents_roots().into_iter().enumerate() {
         if i > 0 && !profiles_root.is_dir() {
             continue;
@@ -351,25 +349,16 @@ async fn main() -> Result<()> {
         }
     }
     let watch_iii = iii.clone();
-    // Named fields, not a tuple: transposing two positional subscriber sets
-    // would compile, pass every test, and route pasted system prompts to the
-    // wrong subscribers.
-    let watch_sets = trigger_types::RegisteredTriggerTypes {
-        skills: registered.skills.clone(),
-        system_prompts: registered.system_prompts.clone(),
-        agents: registered.agents.clone(),
-        kits: registered.kits.clone(),
-    };
     let rt = tokio::runtime::Handle::current();
     let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {
-        let set = match kind {
-            iii_directory::fs_source::SourceKind::Skill => watch_sets.skills.clone(),
-            iii_directory::fs_source::SourceKind::SystemPrompt => watch_sets.system_prompts.clone(),
-            iii_directory::fs_source::SourceKind::Agent => watch_sets.agents.clone(),
+        let source = match kind {
+            iii_directory::fs_source::SourceKind::Skill => sources.skills,
+            iii_directory::fs_source::SourceKind::SystemPrompt => sources.system_prompts,
+            iii_directory::fs_source::SourceKind::Agent => sources.agents,
         };
         let iii = watch_iii.clone();
         rt.spawn(async move {
-            trigger_types::dispatch(&iii, &set, serde_json::json!({ "op": "external" })).await;
+            events::emit(&iii, source, serde_json::json!({ "op": "external" })).await;
         });
     }) {
         Ok(h) => {
@@ -390,9 +379,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// `engine::workers-available` payload for `directory::__on_workers_changed`.
-/// Only `event` is read; declared as a struct so the function publishes a
-/// typed schema.
+/// The `engine::on-workers-changed` event, delivered as output to
+/// `directory::__on_workers_changed`. Only `event` is read; declared as a
+/// struct so the function publishes a typed schema.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 struct WorkersChanged {
     #[serde(default)]
@@ -412,11 +401,14 @@ struct WorkersChangedAck {
     ok: bool,
 }
 
-/// Register the internal `directory::__on_workers_changed` handler and bind
-/// it to the engine's `engine::workers-available` trigger type: each worker
-/// connection re-runs the boot reconcile's worker pass over
-/// `compose::status`, which skips every namespace already on disk and
-/// every worker version already tried.
+/// The engine's worker connection events.
+const WORKERS_ON_CHANGED_FN: &str = "engine::on-workers-changed";
+
+/// Register the internal `directory::__on_workers_changed` handler and
+/// observe `engine::on-workers-changed` with it: each worker connection
+/// re-runs the boot reconcile's worker pass over `compose::status`, which
+/// skips every namespace already on disk and every worker version already
+/// tried.
 fn setup_auto_download(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
@@ -439,9 +431,9 @@ fn setup_auto_download(
                 // The installed set may have changed; the next read refetches it.
                 cache.invalidate().await;
                 if change.is_connect() {
-                    // Off the trigger's path: a download takes seconds.
+                    // Off the observer's path: a download takes seconds.
                     tokio::spawn(async move {
-                        let status = match iii.trigger(compose_status_request(10_000)).await {
+                        let status = match iii.call(compose_status_request(10_000)).await {
                             Ok(status) => status,
                             Err(e) => {
                                 tracing::debug!(error = %e, "compose::status unavailable; no worker pass");
@@ -460,41 +452,23 @@ fn setup_auto_download(
         .metadata(serde_json::json!({ "internal": true })),
     );
 
-    // Bind the trigger with a retry backoff.
-    let iii_sub = iii.clone();
-    tokio::spawn(async move {
-        for attempt in 1..=5 {
-            let result = iii_sub.register_trigger(RegisterTriggerInput::new(
-                "engine::workers-available".to_string(),
-                "directory::__on_workers_changed".to_string(),
-                json!({}),
-            ));
-            match result {
-                Ok(_) => {
-                    tracing::info!("subscribed to engine::workers-available for auto-download");
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        attempt,
-                        error = %e,
-                        "failed to subscribe to engine::workers-available; retrying"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(attempt * 2)).await;
-                }
-            }
-        }
-        tracing::warn!(
-            "exhausted retries subscribing to engine::workers-available; \
-             workers added after boot get their skills on the next restart"
-        );
-    });
+    // Every event, unfiltered: each one invalidates the installed set. The
+    // observer stays `pending` until the engine source is registered, and
+    // lives as long as the worker's connection.
+    let handle = iii.observe(
+        Source::function(WORKERS_ON_CHANGED_FN).deliver(Deliver::Output),
+        "directory::__on_workers_changed",
+    );
+    tracing::info!(
+        observer_id = handle.id(),
+        "observing worker connections for auto-download"
+    );
 }
 
 /// The `(container, version)` pairs of a `compose::status` reply; the
 /// version is empty when Compose reports none. `None` without a
 /// `containers` array.
-fn worker_versions(status: &serde_json::Value) -> Option<Vec<(String, String)>> {
+fn worker_versions(status: &Value) -> Option<Vec<(String, String)>> {
     let containers = status.get("containers")?.as_array()?;
     Some(
         containers
@@ -513,12 +487,8 @@ fn worker_versions(status: &serde_json::Value) -> Option<Vec<(String, String)>> 
 
 /// A worker connection's pass over `compose::status`. Only a worker version
 /// this process has not tried reaches the registry, so a connection that
-/// adds no worker (an `iii trigger` client, a browser tab) asks it nothing.
-async fn worker_pass(
-    cfg: &SkillsConfig,
-    in_flight: &Arc<InFlightGuard>,
-    status: &serde_json::Value,
-) -> u32 {
+/// adds no worker (an `iii call` client, a browser tab) asks it nothing.
+async fn worker_pass(cfg: &SkillsConfig, in_flight: &Arc<InFlightGuard>, status: &Value) -> u32 {
     reconcile_workers(cfg, in_flight, &worker_versions(status).unwrap_or_default()).await
 }
 
@@ -601,7 +571,7 @@ async fn reconcile_one(
 async fn fetch_worker_names_with_retry(iii: &IIIClient) -> Option<Vec<(String, String)>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let result = iii.trigger(compose_status_request(10_000)).await;
+        let result = iii.call(compose_status_request(10_000)).await;
 
         match result {
             Ok(val) => {
@@ -706,9 +676,10 @@ fn spawn_boot_reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    /// The payload the engine's `engine::workers-available` sends: only a
-    /// connection runs a worker pass.
+    /// The `engine::on-workers-changed` event: only a connection runs a
+    /// worker pass.
     #[test]
     fn only_a_worker_connection_runs_a_worker_pass() {
         let change = |event: &str| {

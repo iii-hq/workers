@@ -1,12 +1,13 @@
 # Custom function components
 
-How to add bespoke UI for `function-trigger` messages in the console chat, instead of the default request/response JSON panes.
+How to add bespoke UI for `function-call` messages in the console chat, instead of the default request/response JSON panes.
 
-To customize a trigger such as `cron` across registration, firing, and
-retirement — source section, compact timeline display, or complete expanded
-details — use [`custom-trigger-components.md`](custom-trigger-components.md)
-and `host.triggerRenderers` instead. Do not match
-`engine::register_trigger` as though each trigger type were a function family.
+To customize how the observers of a function such as `cron::on-tick` look
+when an agent observes it, when they fire, and when they retire — source
+section, compact timeline display, or complete expanded details — use
+[`custom-observer-components.md`](custom-observer-components.md) and
+`host.observerRenderers`. Do not match `harness::observe` as though each
+observed function were a function family.
 
 **Reference implementations:** `ide/ui/` (worker-owned file-change artifact), `browser/ui/` (worker-owned screenshots), and `src/components/chat/sandbox/` (first-party terminal cards).
 
@@ -16,7 +17,7 @@ and `host.triggerRenderers` instead. Do not match
 
 ## How it works today
 
-Every tool invocation becomes a `FunctionTriggerMessage` (`src/types/chat.ts`). `FunctionTriggerCard.tsx` renders:
+Every tool invocation becomes a `FunctionCallMessage` (`src/types/chat.ts`). `FunctionCallCard.tsx` renders:
 
 1. **Header** — status dot, the agent's short activity description (or a legacy function-id fallback), and duration. Expanding it reveals the concrete function id.
 2. **Body** — depends on lifecycle and whether a custom renderer returned a node.
@@ -28,7 +29,7 @@ Custom renderers opt in by returning a React node from `tryRender` / `tryRenderP
 
 ```mermaid
 flowchart TB
-  subgraph host [FunctionTriggerCard.tsx]
+  subgraph host [FunctionCallCard.tsx]
     H[Activity label; expand for function id]
     P[Pending preview slot]
     R[Running body slot]
@@ -50,7 +51,7 @@ flowchart TB
   TR -->|null| JSON[ValuePane JSON fallback]
 ```
 
-Injected worker renderers register through `host.functionTriggers` and dispatch before first-party renderers. The host calls `tryRender*` only when `isMatch(functionId)` returns true; among matching renderers, the first non-null node wins, and presentation metadata is read from that same winning renderer.
+Injected worker renderers register through `host.functionCalls` and dispatch before first-party renderers. The host calls `tryRender*` only when `isMatch(functionId)` returns true; among matching renderers, the first non-null node wins, and presentation metadata is read from that same winning renderer.
 
 ---
 
@@ -58,10 +59,10 @@ Injected worker renderers register through `host.functionTriggers` and dispatch 
 
 ```typescript
 // src/types/chat.ts
-interface FunctionTriggerMessage extends BaseMessage {
-  role: 'function-trigger'
+interface FunctionCallMessage extends BaseMessage {
+  role: 'function-call'
   functionId: string      // e.g. "sandbox::exec", "shell::run"
-  description?: string    // short activity from agent_trigger; absent on history
+  description?: string    // short activity from agent_call; absent on history
   input: unknown
   output?: unknown
   durationMs?: number
@@ -95,7 +96,7 @@ What the Rust/Python handler returns, e.g. sandbox `ExecResponse`:
 
 ### 2. Harness agent envelope
 
-Added by `workers/harness/src/turn-orchestrator/agent-trigger.ts` for many agent turns:
+Added by the harness's `agent_call` dispatch (`harness/src/call.rs`) for many agent turns:
 
 ```json
 {
@@ -135,7 +136,7 @@ What you see when invocation fails before the handler body is parsed, e.g. `gate
 {
   "error": {
     "kind": "function_error",
-    "message": "trigger_failed: ... {\"code\":\"S220\",...}",
+    "message": "call_failed: ... {\"code\":\"S220\",...}",
     "details": {
       "status": "denied",
       "denied_by": "gate_unavailable",
@@ -231,9 +232,9 @@ One renderer per tool (or per response shape). Include:
 Worker-owned UI is the default for new worker functions:
 
 ```tsx
-import type { FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import type { FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 
-const renderer: FunctionTriggerRenderer = {
+const renderer: FunctionCallRenderer = {
   id: 'myfeature/page.js#result',
   isMatch: (functionId) => functionId === 'myfeature::do-thing',
   tryRender: (message) => renderResult(message),
@@ -244,7 +245,7 @@ const renderer: FunctionTriggerRenderer = {
 }
 
 export default function setup(host: Host) {
-  host.functionTriggers.register(renderer)
+  host.functionCalls.register(renderer)
 }
 ```
 

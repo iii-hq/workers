@@ -53,7 +53,7 @@ run_suite judge-openai engine \
   independent_consumer_evaluates_mixed_decisions_and_lists_models \
   cancellation_is_scoped_to_the_persistent_engine_caller
 run_suite crates/judge-provider engine \
-  secrets_changed_reaches_a_binding_made_before_its_provider
+  secrets_changed_reaches_an_observer_made_before_its_provider
 run_suite judge engine \
   hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_caller \
   hub_routes_judge_openai_by_provider_and_session_baggage

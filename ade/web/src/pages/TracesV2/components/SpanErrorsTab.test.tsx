@@ -1,7 +1,7 @@
 /**
  * Closes the fourth sibling-tab instance of console-UI review finding #1:
  * SpanErrorsTab reads `exception.message`/`exception.stacktrace` off the
- * SAME `exception` event `functionTriggerFromSpan.ts`'s `exceptionOutput()`
+ * SAME `exception` event `functionCallFromSpan.ts`'s `exceptionOutput()`
  * reads to build the info tab's redacted error output, renders them
  * verbatim, and has its own ungated stack-trace copy button.
  *

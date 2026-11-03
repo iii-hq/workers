@@ -6,8 +6,8 @@ pub enum WorkflowError {
     InvalidDef(String),
     #[error("state error: {0}")]
     State(String),
-    #[error("trigger error: {0}")]
-    Trigger(String),
+    #[error("call error: {0}")]
+    Call(String),
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
 }

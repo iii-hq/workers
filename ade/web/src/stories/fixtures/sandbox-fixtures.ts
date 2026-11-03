@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 
 const now = Date.now()
 const SB = 'sb_abc123def456'
@@ -19,11 +19,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionTriggerMessage>,
-): FunctionTriggerMessage {
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input,
     output,
@@ -332,18 +332,18 @@ export const sandboxFsWriteGateError = base(
     error: {
       kind: 'function_error',
       message:
-        'trigger_failed: IIIInvocationError: invocation_failed: handler error',
+        'call_failed: IIIInvocationError: invocation_failed: handler error',
       details: {
         schema_version: 1,
         status: 'denied',
         denied_by: 'gate_unavailable',
         function_id: 'sandbox::fs::write',
-        reason: 'trigger_failed: approval gate unreachable',
+        reason: 'call_failed: approval gate unreachable',
       },
       content: [
         {
           type: 'text',
-          text: 'trigger_failed: approval gate unreachable',
+          text: 'call_failed: approval gate unreachable',
         },
       ],
     },

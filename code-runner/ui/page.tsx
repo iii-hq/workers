@@ -1,13 +1,14 @@
 /**
  * Entry for the code-runner worker's injected console UI — compiled by esbuild
- * (react + @iii-dev/console-ui external into dist/page.js) and served over the
- * `console:script` trigger (see src/ui.rs). The stylesheet is its own asset:
- * ./styles.css ships over `console:style` as code-runner/styles.css — the
+ * (react + @iii-dev/console-ui external into dist/page.js) and served through an
+ * observer of `console::ui::asset` with `kind: 'script'` (see src/ui.rs). The
+ * stylesheet is its own asset: ./styles.css ships with `kind: 'style'` as
+ * code-runner/styles.css — the
  * console mounts and link-swaps it, styles-before-scripts on boot.
  *
  * The worker's console contributions, one module each:
  *
- * - src/function-trigger-message/ — the per-op cards (run, register_function,
+ * - src/function-call-message/ — the per-op cards (run, register_function,
  *   teardown)
  * - src/configuration/           — deliberate form for the `code-runner`
  *   configuration entry in global Settings
@@ -20,10 +21,10 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { CodeRunnerConfigForm } from './src/configuration'
-import { createCodeRunnerRenderers } from './src/function-trigger-message'
+import { createCodeRunnerRenderers } from './src/function-call-message'
 
 export default function setup(host: Host) {
-  const removers = createCodeRunnerRenderers(host).map((renderer) => host.functionTriggers.register(renderer))
+  const removers = createCodeRunnerRenderers(host).map((renderer) => host.functionCalls.register(renderer))
 
   removers.push(host.configForms.register('code-runner', CodeRunnerConfigForm))
 

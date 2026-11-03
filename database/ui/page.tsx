@@ -1,12 +1,13 @@
 /**
  * Entry for the database worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served over
- * the `console:script` trigger (see src/ui.rs). The stylesheet is its own
- * asset: ../styles.css ships over `console:style` as database/styles.css —
- * the console mounts and link-swaps it, styles-before-scripts on boot.
+ * a `console::ui::asset` observer with `{ kind: 'script' }` (see src/ui.rs).
+ * The stylesheet is its own asset: ../styles.css ships as a `style` asset,
+ * database/styles.css — the console mounts and link-swaps it,
+ * styles-before-scripts on boot.
  *
  * `setup(host)` registers three contributions:
- * - src/function-trigger-message/ — how every database::* call renders in
+ * - src/function-call-message/ — how every database::* call renders in
  *   chat and traces (SQL, request chips, result tables).
  * - src/page/ — the `database` page: schema tree, sortable row
  *   grid, row inspector, and a read-only SQL editor (shared Monaco). Reads
@@ -22,12 +23,12 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { DatabaseConfigForm } from './src/configuration'
-import { createDatabaseTriggerRenderer } from './src/function-trigger-message'
+import { createDatabaseCallRenderer } from './src/function-call-message'
 import { DatabasePage } from './src/page'
 import { registerDatabasePalette } from './src/palette'
 
 export default function setup(host: Host) {
-  host.functionTriggers.register(createDatabaseTriggerRenderer(host))
+  host.functionCalls.register(createDatabaseCallRenderer(host))
   registerDatabasePalette(host)
 
   host.pages.register({

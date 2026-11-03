@@ -193,25 +193,29 @@ The screencast pump is one task per session. It captures at `screencast_fps`
 and stores each frame in the session's single `latest_frame` slot, replacing
 (and freeing) the previous one: resident frame memory is at most one frame per
 live session (`max_sessions` caps sessions), and there is no frame history.
-Only AFTER the slot holds the new frame does it fire `computer::frame-changed`
+Only AFTER the slot holds the new frame does it call `computer::on-frame-changed`
 (`frames.rs`), so a viewer that reads `computer::frame` on a notification
 always finds that frame or a newer one. The notification is ~200 bytes and
 carries no image on purpose: frames are 60-250 KB of JPEG (native, sandbox) up
 to 0.5-2 MB of PNG (remote executors), 15 times a second, and copying them
-into every binding's payload would turn a slow viewer into a backlog.
+into every observer's payload would turn a slow viewer into a backlog.
 
-`frames.rs` keeps the fan-out bounded: at most 64 bindings, a required
-`session_id` filter, and per binding one coalescing slot (one delivery in
-flight, one pending notification; newer replaces pending). Delivery is a
-synchronous call with a 5 s timeout, so a slow consumer keeps its slot busy
-and only loses intermediate notifications; the pump never waits on a viewer.
-Each binding's `namespace` and `metadata` are forwarded unchanged.
+`frames.rs` keeps the fan-out bounded: at most 64 observers (the added hook
+rejects more with `OBSERVER_LIMIT`), a required `session_id` arg that the match
+hook files each observer under, and per observer one coalescing slot (one
+delivery in flight, one pending notification; newer replaces pending), opened
+by the added hook and closed by the removed hook. The deliver hook offers each
+change to the slots of the matched observers whose filters match; each slot
+calls through its observer with a 5 s timeout, so a slow consumer keeps its
+slot busy and only loses intermediate notifications; the pump never waits on a
+viewer. The engine applies each observer's target namespace and metadata. A
+screencast whose session has had no observer for 10 seconds stops itself.
 
 `epoch` (ms when this process created or restored the session object) orders
 frames across worker restarts, where `frame_seq` restarts at 1. A capture
 failure stops the pump rather than looping on a broken driver;
 `stop_screencast` (also run by session stop, idle stop and worker shutdown)
-and a capture failure clear the slot and fire `change: "cleared"`, so a
+and a capture failure clear the slot and call it with `change: "cleared"`, so a
 stopped session never leaves a multi-megabyte image resident.
 
 ## macOS permission gates

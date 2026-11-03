@@ -1,5 +1,5 @@
-//! Harness integration: the `pre-generate` injection hook and the
-//! `turn-completed` extraction trigger.
+//! Harness integration: the `harness::hook::on-pre-generate` injection hook
+//! and the `harness::on-turn-completed` extraction pass.
 //!
 //! Injection contract (harness/src/hooks/runner.rs). The prefix a model
 //! reasoned under must never change mid-session (append-only), and every
@@ -11,8 +11,8 @@
 //! - recalled memories arrive as ONE APPENDED MESSAGE on a turn's first
 //!   step only (the persisted copy carries them through later steps).
 //!
-//! Both handlers are registered `internal` and the harness binding is
-//! `on_error: fail_open` — a memory failure must never block or fail a
+//! Both handlers are registered `internal` and the pre-generate observer
+//! takes `on_error: fail_open` — a memory failure must never block or fail a
 //! turn. Handlers are idempotent: redelivered steps re-run them safely.
 
 use std::collections::{HashMap, HashSet};
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
@@ -35,10 +35,87 @@ pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
 pub const EXTRACT_JOB_FN: &str = "memory::extract-job";
 pub const SESSION_DELETED_FN: &str = "memory::on-session-deleted";
+
+pub const PRE_GENERATE_DESC: &str =
+    "Internal: target of the harness::hook::on-pre-generate observer — injects the session \
+     bank's rules into the system prompt and recalled memories as one appended message. \
+     Never denies.";
+pub const TURN_COMPLETED_DESC: &str =
+    "Internal: target of the harness::on-turn-completed observer — enqueues one durable \
+     extraction job (a single router::complete call) for the finished turn; inline fallback \
+     without a queue.";
+pub const EXTRACT_JOB_DESC: &str =
+    "Internal: target of the queue::on-message observer on the memory-extraction topic — \
+     runs one extraction job; errors propagate so the queue retries and dead-letters instead \
+     of losing the pass.";
+pub const SESSION_DELETED_DESC: &str =
+    "Internal: target of the session::on-deleted observer — drops the session's extraction \
+     cursor.";
 /// Durable queue (iii-queue builtin or the queue worker) carrying one
 /// extraction job per completed turn: retries + DLQ instead of a lost
 /// pass when this worker restarts mid-extraction.
 pub const EXTRACTION_QUEUE: &str = "memory-extraction";
+
+/// The name the memory binary registers under, unless its supervisor names it.
+pub const WORKER_NAME: &str = "memory";
+
+/// The name this worker registers under: a non-empty `III_WORKER_NAME` (the
+/// name a supervisor gives it, which the SDK applies), else [`WORKER_NAME`].
+pub fn worker_name() -> String {
+    std::env::var("III_WORKER_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| WORKER_NAME.to_string())
+}
+
+/// The engine's longest observer id, in bytes.
+const MAX_OBSERVER_ID_LEN: usize = 128;
+
+/// What follows the worker name in a digest id: `:queue:fnv1a64:` and the
+/// digest's 16 hex digits.
+const DIGEST_ID_TAIL_LEN: usize = ":queue:fnv1a64:".len() + 16;
+
+/// The id of the observer that consumes the extraction topic `topic`
+/// (`queue::on-message`): `<worker name>:queue:<topic>`, preceded by
+/// `<namespace>/` when the worker has a namespace
+/// (`memory:queue:memory-extraction` by default).
+///
+/// Every process of the worker observes under it, so after a restart the
+/// new process's `observe` replaces the observer the previous process left
+/// suspended (the engine disposes that one and announces the new one to the
+/// queue worker), and the queue worker hands the new process the jobs the
+/// previous one left unacked. An id longer than the engine's 128 bytes
+/// becomes `<worker name>:queue:fnv1a64:<digest of the whole id>`, with the
+/// worker name cut to its first 97 bytes (on a char boundary), so the whole
+/// digest always fits: two namespaces, or two long worker names, get two
+/// ids.
+pub fn extraction_observer_id(namespace: Option<&str>, worker_name: &str, topic: &str) -> String {
+    let id = match namespace {
+        Some(namespace) => format!("{namespace}/{worker_name}:queue:{topic}"),
+        None => format!("{worker_name}:queue:{topic}"),
+    };
+    if id.len() <= MAX_OBSERVER_ID_LEN {
+        return id;
+    }
+    let mut end = worker_name
+        .len()
+        .min(MAX_OBSERVER_ID_LEN - DIGEST_ID_TAIL_LEN);
+    while !worker_name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}:queue:fnv1a64:{:016x}",
+        &worker_name[..end],
+        fnv1a64(id.as_bytes())
+    )
+}
+
+/// 64-bit FNV-1a: the same digest in every process and every build.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
 
 /// Envelope the harness posts to `pre-generate` hooks. Only the fields
 /// this worker reads are typed; everything else is ignored.
@@ -100,7 +177,7 @@ impl HookResponse {
     }
 }
 
-/// `harness::turn-completed` payload (the fields this worker reads).
+/// The `harness::on-turn-completed` event (the fields this worker reads).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TurnCompletedInput {
     #[serde(default)]
@@ -1012,7 +1089,7 @@ pub async fn turn_completed(
         .unwrap_or_else(|| format!("t{}", now_ms()));
     let enqueued = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::queue::enqueue".into(),
             payload: json!({
                 "queue": EXTRACTION_QUEUE,
@@ -1081,7 +1158,7 @@ pub async fn extract_job(deps: &Arc<Deps>, input: ExtractJobInput) -> Result<Ack
     Ok(AckResponse { ok: true })
 }
 
-/// `session::deleted` payload (the field this worker reads).
+/// The `session::on-deleted` event (the field this worker reads).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SessionDeletedInput {
     #[serde(default)]
@@ -1384,6 +1461,90 @@ fn last_user_text(messages: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_extraction_observer_id_is_the_worker_and_its_topic() {
+        assert_eq!(
+            extraction_observer_id(None, WORKER_NAME, EXTRACTION_QUEUE),
+            "memory:queue:memory-extraction"
+        );
+        assert_eq!(
+            extraction_observer_id(Some("ops"), "memory-2", EXTRACTION_QUEUE),
+            "ops/memory-2:queue:memory-extraction"
+        );
+        // Over the engine's 128 bytes: the worker name and a digest of the
+        // whole id, the same on every call, distinct per namespace.
+        let namespace = "n".repeat(120);
+        let long = extraction_observer_id(Some(&namespace), WORKER_NAME, EXTRACTION_QUEUE);
+        assert!(long.len() <= MAX_OBSERVER_ID_LEN, "{long}");
+        assert!(long.starts_with("memory:queue:fnv1a64:"), "{long}");
+        assert_eq!(
+            long,
+            extraction_observer_id(Some(&namespace), WORKER_NAME, EXTRACTION_QUEUE)
+        );
+        let other = "m".repeat(120);
+        assert_ne!(
+            long,
+            extraction_observer_id(Some(&other), WORKER_NAME, EXTRACTION_QUEUE)
+        );
+        // The published FNV-1a 64 test vectors.
+        assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    /// The digest id's worker name and digest, checked whole.
+    fn digest_id_parts(id: &str) -> (&str, &str) {
+        assert!(id.len() <= MAX_OBSERVER_ID_LEN, "{} bytes: {id}", id.len());
+        let (name, digest) = id.rsplit_once(":queue:fnv1a64:").expect(id);
+        assert_eq!(digest.len(), 16, "{id}");
+        assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        (name, digest)
+    }
+
+    #[test]
+    fn a_long_worker_name_leaves_the_whole_digest_in_the_id() {
+        // Up to 97 bytes the name stays whole beside the digest; past it, the
+        // name gives up its tail and the digest stays whole. Two namespaces
+        // of the same length put every id over 128 bytes.
+        let (ops, dev) = ("o".repeat(30), "d".repeat(30));
+        for len in [96, 97, 98, 113, 128, 300] {
+            let name = "w".repeat(len);
+            let in_ops = extraction_observer_id(Some(&ops), &name, EXTRACTION_QUEUE);
+            let in_dev = extraction_observer_id(Some(&dev), &name, EXTRACTION_QUEUE);
+            for id in [&in_ops, &in_dev] {
+                let (kept, _) = digest_id_parts(id);
+                assert_eq!(kept, &name[..len.min(97)], "{id}");
+            }
+            // The digest covers the namespace and the whole name.
+            assert_ne!(
+                in_ops, in_dev,
+                "the same {len}-byte worker name in two namespaces"
+            );
+            let (_, digest) = digest_id_parts(&in_ops);
+            let whole = format!("{ops}/{name}:queue:{EXTRACTION_QUEUE}");
+            assert_eq!(digest, format!("{:016x}", fnv1a64(whole.as_bytes())));
+        }
+        // Without a namespace, a name over 104 bytes takes the digest form.
+        let name = "w".repeat(105);
+        let bare = extraction_observer_id(None, &name, EXTRACTION_QUEUE);
+        let (kept, _) = digest_id_parts(&bare);
+        assert_eq!(kept, &name[..97]);
+        // Two long names that share their first 97 bytes get two ids.
+        let base = "w".repeat(120);
+        assert_ne!(
+            extraction_observer_id(None, &format!("{base}-a"), EXTRACTION_QUEUE),
+            extraction_observer_id(None, &format!("{base}-b"), EXTRACTION_QUEUE)
+        );
+        // A multibyte name is cut on a char boundary: 48 two-byte chars.
+        let name = "é".repeat(70);
+        let id = extraction_observer_id(Some("ops"), &name, EXTRACTION_QUEUE);
+        let (kept, _) = digest_id_parts(&id);
+        assert_eq!(kept, "é".repeat(48), "{id}");
+        assert_ne!(
+            id,
+            extraction_observer_id(Some("dev"), &name, EXTRACTION_QUEUE)
+        );
+    }
 
     #[test]
     fn last_user_text_takes_newest_and_skips_injected() {
@@ -1772,10 +1933,9 @@ Formal."
     /// nothing in `injection` reaches the client.
     fn offline_deps(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
         let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
-        let sets = crate::events::register_trigger_types(&iii);
         let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
         Deps {
-            emitter: Arc::new(crate::events::Emitter::new(sets, iii.clone())),
+            emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
             iii,
             store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
             config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),

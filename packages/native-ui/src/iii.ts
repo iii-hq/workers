@@ -1,14 +1,14 @@
 /**
  * The capability object (design §4.2): everything a script can do outside
  * its own tree goes through `iii`, as a request the host checks. Calls and
- * trigger bindings are limited to the app's own namespace here too (D8), so
- * a mistake fails at once with a clear error instead of a round trip.
+ * observers are limited to the app's own namespace here too (D8), so a
+ * mistake fails at once with a clear error instead of a round trip.
  */
 
 import { batch, createSignal, type Setter } from 'solid-js'
 import { declaredPages, type PageRef } from './app'
 import { ENUMS, IN, LIMITS, METHOD } from './generated/catalog'
-import { IiiError, notify, onEntry, reportError, request, run, subscribe } from './runtime/wire'
+import { IiiError, notify, observe, onEntry, reportError, request, run } from './runtime/wire'
 import type { JsonObject, JsonValue, NodeRef, Unsubscribe } from './types'
 
 export { IiiError }
@@ -32,6 +32,14 @@ export interface Env {
 export interface CallOptions {
   /** Default 30 000, at most 120 000. */
   timeoutMs?: number
+}
+
+/** What an observer of a function asks for: its `args` (for a function that takes them) and `filters`. */
+export interface ObserveSource {
+  /** Validated by the engine against the function's `args_format`. */
+  args?: JsonObject
+  /** Select calls by `input`, `output`, `error`, `caller` and `metadata`: `{ "input.session_id": { "$eq": id } }`. */
+  filters?: JsonObject
 }
 
 export interface MenuAction {
@@ -103,12 +111,13 @@ export interface Iii {
   /** Calls a function of the app's own namespace (`<ns>::…`); any other fails with `forbidden`. */
   call<T = JsonValue>(fn: string, payload?: JsonValue, opts?: CallOptions): Promise<T>
   /**
-   * Binds a trigger type of the app's own namespace (`<ns>::…` or `<ns>:…`) to `handler` (the host uses EngineSession.watch).
-   * Bind before reading: whoever needs initial state reads after the `ready` Promise resolves.
+   * Observes a function of the app's own namespace (`<ns>::…`) and runs `handler` with each event (the
+   * function's output). Observe before reading: whoever needs initial state reads after the `ready`
+   * Promise resolves, when the observer is active.
    */
   on<P = JsonValue>(
-    triggerType: string,
-    config: JsonObject,
+    functionId: string,
+    source: ObserveSource,
     handler: (payload: P) => void,
   ): Unsubscribe & { ready: Promise<void> }
   readonly nav: Nav
@@ -142,22 +151,15 @@ export function host(): Readonly<JsonObject> | null {
 }
 
 /**
- * Functions are `<ns>::…`; trigger types are `<ns>::…` or `<ns>:…` (the
- * kanban worker's are `kanban:change` and `kanban:comment`). Never `iii::`
- * or `engine::`. The host's policy checks the same.
+ * Calls and observers name functions of the app's namespace, `<ns>::…`;
+ * never `iii::` or `engine::`. The host's policy checks the same.
  */
-function checkOwn(kind: 'call' | 'bind', id: string): void {
+function checkOwn(kind: 'call' | 'observe', id: string): void {
   if (typeof id !== 'string' || !id) throw new IiiError('invalid', `iii.${kind === 'call' ? 'call' : 'on'} needs an id`)
   const ns = app.ns
   if (!ns) return // before init, without a built-in namespace: the host decides
-  const prefix = kind === 'call' ? `${ns}::` : `${ns}:`
-  if (id.startsWith(prefix) && !id.startsWith('iii::') && !id.startsWith('engine::')) return
-  throw new IiiError(
-    'forbidden',
-    kind === 'call'
-      ? `${ns} may only call ${ns}::… functions (not ${id})`
-      : `${ns} may only bind ${ns}:… or ${ns}::… triggers (not ${id})`,
-  )
+  if (id.startsWith(`${ns}::`) && !id.startsWith('iii::') && !id.startsWith('engine::')) return
+  throw new IiiError('forbidden', `${ns} may only ${kind} ${ns}::… functions (not ${id})`)
 }
 
 // ── Env ─────────────────────────────────────────────────────────────────────
@@ -350,9 +352,14 @@ export const iii: Iii = {
     }
     return request(METHOD.call, args({ fn, payload, timeoutMs })) as Promise<T>
   },
-  on<P = JsonValue>(triggerType: string, config: JsonObject, handler: (payload: P) => void) {
-    checkOwn('bind', triggerType)
-    const { ready, off } = subscribe(triggerType, (config ?? {}) as JsonObject, handler as (p: JsonValue) => void)
+  on<P = JsonValue>(functionId: string, source: ObserveSource, handler: (payload: P) => void) {
+    checkOwn('observe', functionId)
+    const { ready, off } = observe(
+      functionId,
+      source?.args ?? {},
+      source?.filters ?? {},
+      handler as (p: JsonValue) => void,
+    )
     return Object.assign(off, { ready })
   },
   nav,

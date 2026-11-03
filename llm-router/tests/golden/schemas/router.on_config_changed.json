@@ -3,7 +3,7 @@
   "function_id": "router::on_config_changed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Advisory configuration-change event delivered to `router::on_config_changed`. The handler ignores event values and re-fetches the authoritative entry before replacing its in-memory snapshot.",
+    "description": "Advisory `configuration::on-updated` event delivered to `router::on_config_changed`. The handler ignores event values and re-fetches the authoritative entry before replacing its in-memory snapshot.",
     "properties": {
       "id": {
         "description": "Configuration id that changed (advisory).",
@@ -18,7 +18,7 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Generic acknowledgement returned by trigger-bound handlers whose result is not consumed by callers (kept typed so the response schema is concrete).",
+    "description": "Generic acknowledgement returned by observer targets whose result is not consumed by callers (kept typed so the response schema is concrete).",
     "properties": {
       "ok": {
         "type": "boolean"

@@ -1,6 +1,6 @@
 //! `secrets::*` over a real, isolated engine: the console stores a key for
 //! `llm-router`, lists it (metadata only), the router resolves it and is
-//! told about rotations through `secrets::changed`, and any other worker is
+//! told about rotations by observing `secrets::on-changed`, and any other worker is
 //! refused; the same for a key kept in the project's `.env` and referenced
 //! as `env://NAME`, including an edit made to the file by hand. Run with
 //! `III_ENGINE_BIN=/abs/path/to/iii cargo test --test engine -- --ignored`.
@@ -10,13 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{RegisterFunction, Source};
+use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use secrets::access::CallerDirectory;
 use secrets::api::ids;
 use secrets::crypto::MasterKey;
 use secrets::detect::Detector;
-use secrets::events::Subscribers;
 use secrets::keys::EnvKey;
 use secrets::{Ctx, Store, StorePaths};
 use serde_json::{json, Value};
@@ -31,6 +29,22 @@ fn remote_code(error: Error) -> String {
         Error::Remote { code, .. } => code,
         other => panic!("expected a remote error, got {other}"),
     }
+}
+
+/// Observe `secrets::on-changed` for one reference, the event delivered as
+/// output, and wait until the observer is active.
+async fn observe_changes(iii: &IIIClient, reference: &str, target: &str) -> ObserverHandle {
+    let handle = iii.observe(
+        Source::function(ids::ON_CHANGED)
+            .filters(json!({ "input.ref": { "$eq": reference } }))
+            .deliver(Deliver::Output),
+        target,
+    );
+    tokio::time::timeout(Duration::from_secs(10), handle.ready())
+        .await
+        .expect("observer becomes active")
+        .expect("secrets::on-changed accepts the observer");
+    handle
 }
 
 #[tokio::test]
@@ -53,7 +67,6 @@ async fn console_stores_router_resolves_others_are_refused() {
         iii: worker.clone(),
         store,
         callers: CallerDirectory::new(worker.clone()),
-        subscribers: Subscribers::default(),
         detector: Detector {
             process_env: false,
             dotenv: None,
@@ -83,25 +96,12 @@ async fn console_stores_router_resolves_others_are_refused() {
             }
         }),
     );
-    #[allow(deprecated)]
-    router
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: ids::CHANGED_TRIGGER.into(),
-            function_id: "router-test::on-secret-changed".into(),
-            config: json!({"names":["secret://ANTHROPIC_API_KEY"]}),
-            metadata: None,
-            namespace: None,
-            trigger_namespace: None,
-        })
-        .unwrap();
-    // Registration is asynchronous; wait until the worker holds the binding.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while ctx.subscribers.is_empty() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("subscriber bound");
+    observe_changes(
+        &router,
+        "secret://ANTHROPIC_API_KEY",
+        "router-test::on-secret-changed",
+    )
+    .await;
 
     let meta = invoke(
         &console,
@@ -166,7 +166,7 @@ async fn console_stores_router_resolves_others_are_refused() {
         assert_eq!(remote_code(refused), "NOT_OBSERVABLE", "{id}");
     }
 
-    // Rotation reaches the subscriber and the next resolve.
+    // Rotation reaches the observer and the next resolve.
     invoke(
         &console,
         ids::SET,
@@ -285,7 +285,6 @@ async fn env_variables_are_shared_written_and_followed() {
         iii: worker.clone(),
         store,
         callers: CallerDirectory::new(worker.clone()),
-        subscribers: Subscribers::default(),
         detector: Detector {
             process_env: false,
             dotenv: Some(dotenv.clone()),
@@ -314,24 +313,12 @@ async fn env_variables_are_shared_written_and_followed() {
             }
         }),
     );
-    #[allow(deprecated)]
-    router
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: ids::CHANGED_TRIGGER.into(),
-            function_id: "router-test::on-env-changed".into(),
-            config: json!({"names":["env://OPENAI_API_KEY"]}),
-            metadata: None,
-            namespace: None,
-            trigger_namespace: None,
-        })
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while ctx.subscribers.is_empty() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("subscriber bound");
+    observe_changes(
+        &router,
+        "env://OPENAI_API_KEY",
+        "router-test::on-env-changed",
+    )
+    .await;
 
     // The console pastes a key and keeps it in .env.
     let meta = invoke(

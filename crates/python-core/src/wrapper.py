@@ -59,16 +59,16 @@ def _install_iii(run_dir):
     namespace = cfg.get("namespace", "")
     stdout = sys.stdout
 
-    def trigger(request):
+    def call(request):
         if not isinstance(request, dict):
-            raise TypeError("iii.trigger: request must be a dict")
+            raise TypeError("iii.call: request must be a dict")
         fn = request.get("function_id")
         if not isinstance(fn, str) or not fn:
-            raise TypeError("iii.trigger: function_id must be a non-empty string")
+            raise TypeError("iii.call: function_id must be a non-empty string")
         # allow_nan=False: the bare `NaN`/`Infinity` tokens the default emits
         # are not JSON, and the host's strict parser would fail the FRAME —
         # a broken bridge — instead of this call. The ValueError this raises
-        # is an ordinary tenant exception at the trigger call site.
+        # is an ordinary tenant exception at the call site.
         frame = json.dumps(
             {
                 "function_id": fn,
@@ -85,11 +85,11 @@ def _install_iii(run_dir):
         # Length-prefixed on the way back, so the body needs no escaping.
         body = _read_frame()
         if body is None:
-            raise OSError("iii.trigger: the host closed the bridge")
+            raise OSError("iii.call: the host closed the bridge")
         answer = json.loads(body)
         if answer.get("ok"):
             return answer.get("value")
-        raise RuntimeError("iii.trigger: " + str(answer.get("value")))
+        raise RuntimeError("iii.call: " + str(answer.get("value")))
 
     class _Iii:
         """An agent's first move against an unknown global is printing it."""
@@ -100,12 +100,15 @@ def _install_iii(run_dir):
             # right-hand side would skip the local and raise NameError.
             self.namespace = ns
 
-        def trigger(self, request):
-            return trigger(request)
+        def call(self, request):
+            return call(request)
+
+        # The same function under its earlier name, as in every iii SDK.
+        trigger = call
 
         def __repr__(self):
             return (
-                "<iii: host client. e.g. iii.trigger({'function_id': 'worker::fn', "
+                "<iii: host client. e.g. iii.call({'function_id': 'worker::fn', "
                 "'payload': {}}); iii.namespace is the prefix this runtime may "
                 "register under>"
             )

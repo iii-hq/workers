@@ -76,9 +76,15 @@ pub enum ScenarioIntervention {
     StopHeldCall,
 }
 
+/// The probe action that observes rather than calls: its payload is
+/// `{ function_id, args?, filters?, target }`, and the probe creates that
+/// observer and waits until it is active.
+pub const OBSERVE_ACTION: &str = "probe::observe";
+
 /// A function the PROBE (test infra, not a model turn) invokes at a completion
 /// boundary — the seam that lets a scenario trip a state key after the main
-/// turn is idle instead of mid-turn.
+/// turn is idle instead of mid-turn. [`OBSERVE_ACTION`] creates an observer
+/// instead.
 #[derive(Debug, Clone)]
 pub struct ProbeAction {
     pub after_turns: usize,

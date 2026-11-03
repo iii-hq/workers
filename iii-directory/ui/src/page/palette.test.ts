@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest'
 import { registerDirectoryPalette } from './palette'
 
 it('searches skills and agents without command prompts', async () => {
-  const trigger = vi.fn(async (functionId: string) => {
+  const call = vi.fn(async (functionId: string) => {
     if (functionId === 'directory::skills::list') {
       return { skills: [{ id: 'one', title: 'One', description: '' }] }
     }
@@ -14,7 +14,7 @@ it('searches skills and agents without command prompts', async () => {
   })
   const registerSource = vi.fn()
   const host = {
-    iii: { trigger },
+    iii: { call },
     palette: { registerSource },
     commands: { register: vi.fn() },
   } as unknown as Host
@@ -27,5 +27,5 @@ it('searches skills and agents without command prompts', async () => {
   await expect(
     source.search('one', { signal: new AbortController().signal }),
   ).resolves.toHaveLength(1)
-  expect(trigger).not.toHaveBeenCalledWith('directory::system-prompts::list', {})
+  expect(call).not.toHaveBeenCalledWith('directory::system-prompts::list', {})
 })

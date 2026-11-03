@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use mention_contract::{
     color, tone, MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionProvider,
@@ -93,7 +93,7 @@ async fn get(iii: &IIIClient, request: MentionGetRequest) -> Result<Option<Menti
 /// no traces to mention, so that error reads as an empty list.
 async fn list_traces(iii: &IIIClient, payload: Value) -> Result<Vec<TraceRow>, Error> {
     let response = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: TRACES_LIST_ID.into(),
             payload,
             action: None,

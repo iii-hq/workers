@@ -27,7 +27,8 @@ pub mod ids {
     pub const DETECT: &str = "secrets::detect";
     pub const IMPORT: &str = "secrets::import";
     pub const STATUS: &str = "secrets::status";
-    pub const CHANGED_TRIGGER: &str = "secrets::changed";
+    /// Private and observable: called with every change event.
+    pub const ON_CHANGED: &str = "secrets::on-changed";
     pub const ALL_FUNCTIONS: [&str; 10] = [
         SET,
         COMPARE_AND_SET,

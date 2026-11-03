@@ -1,9 +1,10 @@
-/* The iii-directory console stylesheet (`console:style` asset): every rule is
-   scoped under [data-iii-ui="iii-directory"], the wrapper the console mounts
-   around injected renders. Tokens only; sans for chrome, mono for machine
-   values; shared recipes (`iii-ui-*`) own the primitives. */
+/* The iii-directory console stylesheet (the `console::ui::asset` of kind
+   style, iii-directory/styles.css): every rule is scoped under
+   [data-iii-ui="iii-directory"], the wrapper the console mounts around
+   injected renders. Tokens only; sans for chrome, mono for machine values;
+   shared recipes (`iii-ui-*`) own the primitives. */
 
-/* ── function-trigger cards ─────────────────────────────────────────── */
+/* ── function-call cards ─────────────────────────────────────────── */
 
 [data-iii-ui="iii-directory"] .dir-ui-mono {
   font-family: var(--font-mono);

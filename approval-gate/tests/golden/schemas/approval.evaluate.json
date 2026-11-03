@@ -1,5 +1,5 @@
 {
-  "description": "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before binding a trigger to an ordinary function, since a trigger-fired call runs outside any turn and cannot ask a human.",
+  "description": "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before an agent observes a function with an ordinary function as the target, since an observer's target runs outside any turn and cannot ask a human.",
   "function_id": "approval::evaluate",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -45,7 +45,7 @@
             "type": "string"
           },
           {
-            "description": "Would hold for human approval — which a trigger-fired call, running outside any turn, has no way to obtain.",
+            "description": "Would hold for human approval — which an observer's target, running outside any turn, has no way to obtain.",
             "enum": [
               "needs_approval"
             ],

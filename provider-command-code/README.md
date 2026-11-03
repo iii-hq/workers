@@ -16,10 +16,10 @@ directly.
 ## Install
 
 ```bash
-iii trigger compose::add worker=provider-command-code worker=llm-router
+iii call compose::add worker=provider-command-code worker=llm-router
 ```
 
-`iii trigger compose::add` resolves the workers and their dependencies, writes
+`iii call compose::add` resolves the workers and their dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
@@ -36,16 +36,20 @@ The provider discovers the live catalog after registration. Then call the
 router with a namespaced model id:
 
 ```ts
-const result = await iii.trigger('router::complete', {
-  model: 'command-code/gpt-5.4',
-  messages: [
-    {
-      role: 'user',
-      content: [{ type: 'text', text: 'Explain this function.' }],
-      timestamp: Date.now(),
-    },
-  ],
-}, { timeout_ms: 320_000 });
+const result = await iii.call({
+  function_id: 'router::complete',
+  payload: {
+    model: 'command-code/gpt-5.4',
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Explain this function.' }],
+        timestamp: Date.now(),
+      },
+    ],
+  },
+  timeoutMs: 320_000,
+});
 ```
 
 For token-by-token output, call `router::chat` with an iii channel as described

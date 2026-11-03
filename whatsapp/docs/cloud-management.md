@@ -67,6 +67,10 @@ for recovery until an independently documented API contract is available.
 | `whatsapp::cloud::phone_numbers::set_pin` | `{"pin":"654321"}` | `{"success":true}` |
 | `whatsapp::cloud::phone_numbers::set_display_name` | `{"new_display_name":"Example Support"}` | `{"success":true}`; follow review status and re-register explicitly after approval. |
 
+`verify_code`, `register` and `set_pin` carry the verification code or the
+two-step verification PIN in their input, so they are registered with
+`observable: false`: observing them fails with `NOT_OBSERVABLE`.
+
 Profile update also accepts `address`, `description` and `profile_picture_handle`.
 The picture handle must come from Meta's **Resumable Upload API**, not the ordinary
 Cloud document/media upload ID. Profile updates only send supplied fields; empty

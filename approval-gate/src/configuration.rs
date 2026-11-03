@@ -4,8 +4,9 @@
 //! [`session-manager`](../../session-manager/src/configuration.rs).
 //!
 //! Every configuration field hot-reloads via a snapshot swap — nothing
-//! requires a restart. The harness `pre_trigger` hook binding is fixed at
-//! worker startup (consult on all calls, fail closed).
+//! requires a restart. The observer of the harness's
+//! `harness::hook::on-pre-call` is fixed at worker startup (consult on all
+//! calls, fail closed).
 //!
 //! `configuration` is a REQUIRED boot dependency: a failed register/fetch
 //! aborts startup (the gate must run on a known, authoritative policy
@@ -15,8 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{
+    CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -49,22 +51,31 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "approval::on-config-change";
+const CONFIG_FN_DESC: &str = "Internal: hot-reload approval-gate from the authoritative \
+     configuration when it changes — swaps the per-call snapshot (default_mode, rules, \
+     grant_reask_limit).";
+/// The configuration worker's change event, observed by
+/// [`observe_config_changes`].
+const CONFIG_ON_UPDATED_FN: &str = "configuration::on-updated";
+/// The harness's hook functions this worker observes.
+pub const HOOK_ON_PRE_CALL_FN: &str = "harness::hook::on-pre-call";
+pub const HOOK_ON_POST_CALL_FN: &str = "harness::hook::on-post-call";
 const CONFIG_RETRIES: u32 = 3;
 /// Base backoff between configuration RPC retries; multiplied by the
 /// attempt number for a linear backoff (250ms, 500ms, …).
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
-/// Fixed `harness::hook::pre-trigger` binding — approval-gate consults on
-/// every function call.
+/// Fixed args of the `harness::hook::on-pre-call` observer — approval-gate
+/// consults on every function call.
 const HOOK_FUNCTIONS: &[&str] = &["*"];
 const HOOK_TIMEOUT_MS: u64 = 5_000;
 const HOOK_ON_ERROR: &str = "fail_closed";
-const HOOK_RETRY_INTERVAL_MS: u64 = 500;
 
-/// Fixed `harness::hook::post-trigger` binding for `approval::filesystem-access-watch`
-/// — only `shell::*` / `coder::*` dispatch results carry a `filesystem_access_request`
-/// worth watching for. `fail_open` (unlike the pre_trigger gate): a
-/// crashed/timed-out filesystem-access-watch must never turn an already-decided
+/// Fixed args of the `harness::hook::on-post-call` observer for
+/// `approval::filesystem-access-watch` — only `shell::*` / `coder::*`
+/// dispatch results carry a `filesystem_access_request` worth watching for.
+/// `fail_open`, where the pre-call gate fails closed: a crashed/timed-out
+/// filesystem-access-watch must never turn an already-decided
 /// function_result into a stuck call.
 const FILESYSTEM_ACCESS_WATCH_FUNCTIONS: &[&str] = &["shell::*", "coder::*"];
 const FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS: u64 = 5_000;
@@ -128,7 +139,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -148,7 +159,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// Returns `Ok(None)` only for a missing entry. A missing service
 /// (`function_not_found`) must propagate rather than authorize seeding.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -162,106 +173,72 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Bind the fixed `harness::hook::pre-trigger` hook at worker startup.
-pub fn bind_hook(iii: &IIIClient) {
-    match iii.register_trigger(RegisterTriggerInput::new(
-        "harness::hook::pre-trigger".to_string(),
-        "approval::gate".to_string(),
-        json!({
-            "functions": HOOK_FUNCTIONS,
-            "timeout_ms": HOOK_TIMEOUT_MS,
-            "on_error": HOOK_ON_ERROR,
-        }),
-    )) {
-        Ok(_) => tracing::info!(
-            trigger_type = "harness::hook::pre-trigger",
-            function_id = "approval::gate",
-            "trigger binding requested"
+/// Observe `harness::hook::on-pre-call` with `approval::gate` at worker
+/// startup. The observer stays pending while the harness is not running and
+/// becomes active once the harness registers its hook function, so start
+/// order does not matter.
+pub fn observe_hook(iii: &IIIClient) -> ObserverHandle {
+    observe_hook_point(
+        iii,
+        hook_source(
+            HOOK_ON_PRE_CALL_FN,
+            HOOK_FUNCTIONS,
+            HOOK_TIMEOUT_MS,
+            HOOK_ON_ERROR,
         ),
-        Err(e) => tracing::warn!(
-            trigger_type = "harness::hook::pre-trigger",
-            function_id = "approval::gate",
-            error = %e,
-            "trigger binding failed (sibling absent?)"
-        ),
-    }
+        crate::functions::GATE_ID,
+    )
 }
 
-/// Bind the fixed `harness::hook::post-trigger` hook for
-/// `approval::filesystem-access-watch` at worker startup — beside `bind_hook`, same
-/// best-effort discipline (a standalone deployment without the harness
-/// still boots; a missing binding surfaces as a log, never an `Err` here).
-pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
-    match iii.register_trigger(RegisterTriggerInput::new(
-        "harness::hook::post-trigger".to_string(),
-        "approval::filesystem-access-watch".to_string(),
-        json!({
-            "functions": FILESYSTEM_ACCESS_WATCH_FUNCTIONS,
-            "timeout_ms": FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS,
-            "on_error": FILESYSTEM_ACCESS_WATCH_ON_ERROR,
-        }),
-    )) {
-        Ok(_) => tracing::info!(
-            trigger_type = "harness::hook::post-trigger",
-            function_id = "approval::filesystem-access-watch",
-            "trigger binding requested"
+/// Observe `harness::hook::on-post-call` with
+/// `approval::filesystem-access-watch` at worker startup — beside
+/// [`observe_hook`], pending in the same way while the harness is absent.
+pub fn observe_filesystem_access_watch_hook(iii: &IIIClient) -> ObserverHandle {
+    observe_hook_point(
+        iii,
+        hook_source(
+            HOOK_ON_POST_CALL_FN,
+            FILESYSTEM_ACCESS_WATCH_FUNCTIONS,
+            FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS,
+            FILESYSTEM_ACCESS_WATCH_ON_ERROR,
         ),
-        Err(e) => tracing::warn!(
-            trigger_type = "harness::hook::post-trigger",
-            function_id = "approval::filesystem-access-watch",
-            error = %e,
-            "trigger binding failed (sibling absent?)"
-        ),
-    }
+        crate::functions::FILESYSTEM_ACCESS_WATCH_ID,
+    )
 }
 
-/// Retry hook bindings until the harness has registered the hook trigger
-/// types. Approval-gate may start before harness; a one-shot registration in
-/// that order fails asynchronously and silently leaves the gate detached.
-pub fn retry_hook_bindings(iii: IIIClient) {
-    tokio::spawn(async move {
-        loop {
-            let pre_trigger_ready = trigger_instance_count(&iii, "harness::hook::pre-trigger")
-                .await
-                .is_some_and(|count| count > 0);
-            if !pre_trigger_ready {
-                bind_hook(&iii);
-            }
+/// The harness hook function with this observer's args: the called function
+/// globs it consults on, the per-call timeout and the failure policy.
+fn hook_source(function_id: &str, functions: &[&str], timeout_ms: u64, on_error: &str) -> Source {
+    Source::function(function_id).args(json!({
+        "functions": functions,
+        "timeout_ms": timeout_ms,
+        "on_error": on_error,
+    }))
+}
 
-            let post_trigger_ready = trigger_instance_count(&iii, "harness::hook::post-trigger")
-                .await
-                .is_some_and(|count| count > 0);
-            if !post_trigger_ready {
-                bind_filesystem_access_watch_hook(&iii);
-            }
-
-            if pre_trigger_ready && post_trigger_ready {
-                tracing::info!("approval-gate hook bindings confirmed");
-                break;
-            }
-
-            tokio::time::sleep(Duration::from_millis(HOOK_RETRY_INTERVAL_MS)).await;
+fn observe_hook_point(iii: &IIIClient, source: Source, target: &'static str) -> ObserverHandle {
+    let hook = source.function_id().to_string();
+    let handle = iii.observe(source, target);
+    let _ = handle.on_state_change(move |state, reason| match state {
+        ObserverState::Active => {
+            tracing::info!(hook = %hook, function_id = target, "hook observer active")
         }
+        ObserverState::Error => tracing::warn!(
+            hook = %hook,
+            function_id = target,
+            reason = ?reason,
+            "the harness refused the hook observer"
+        ),
+        _ => {}
     });
+    handle
 }
 
-async fn trigger_instance_count(iii: &IIIClient, trigger_type: &str) -> Option<u64> {
-    let response = iii
-        .trigger(TriggerRequest {
-            function_id: "engine::triggers::info".to_string(),
-            payload: json!({ "id": trigger_type }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await
-        .ok()?;
-    response.get("instance_count").and_then(Value::as_u64)
-}
-
-/// Internal `approval::on-config-change` trigger payload. The handler
-/// re-fetches the authoritative configuration, so this carries only the
-/// (advisory) configuration id; a struct (not `Value`) keeps the request
-/// schema concrete and unknown fields are ignored.
+/// The `configuration::on-updated` event, delivered as output to the
+/// internal `approval::on-config-change`. The handler re-fetches the
+/// authoritative configuration, so only the (advisory) configuration id is
+/// read; a struct (not `Value`) keeps the request schema concrete and unknown
+/// fields are ignored.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
     /// Configuration id that changed (advisory; the handler re-fetches the value).
@@ -275,10 +252,12 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. The handler re-fetches via `configuration::get` and ignores the
-/// trigger payload, so a direct call can never inject config.
-pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it: this entry's `configuration:updated`
+/// events, delivered as output. The handler re-fetches via
+/// `configuration::get` and ignores the event, so a direct call can never
+/// inject config.
+pub fn observe_config_changes(iii: &IIIClient, cell: ConfigCell) -> ObserverHandle {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -291,27 +270,29 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
-        .description(
-            "Internal: hot-reload approval-gate from the authoritative configuration when it \
-             changes — swaps the per-call snapshot (timeouts + approval defaults).",
-        )
+        .description(CONFIG_FN_DESC)
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_ON_UPDATED_FN)
+            .filters(config_update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn config_update_filters(config_id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": config_id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Reload from the AUTHORITATIVE configuration.
 ///
-/// The caller-supplied trigger payload is intentionally ignored:
+/// The delivered event is intentionally ignored:
 /// `approval::on-config-change` is a discoverable bus function, so
 /// trusting `payload.new_value` would let any caller inject arbitrary
 /// config without updating persisted state. Re-fetch the stored value via
@@ -332,7 +313,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
     tracing::info!("approval-gate configuration reloaded");
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -340,8 +321,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -432,6 +413,64 @@ mod tests {
 
     use super::*;
     use crate::types::PermissionMode;
+
+    #[test]
+    fn hooks_observe_the_harness_hook_functions_with_fixed_args() {
+        assert_eq!(
+            hook_source(
+                HOOK_ON_PRE_CALL_FN,
+                HOOK_FUNCTIONS,
+                HOOK_TIMEOUT_MS,
+                HOOK_ON_ERROR
+            ),
+            Source::function("harness::hook::on-pre-call").args(serde_json::json!({
+                "functions": ["*"],
+                "timeout_ms": 5_000,
+                "on_error": "fail_closed",
+            }))
+        );
+        assert_eq!(
+            hook_source(
+                HOOK_ON_POST_CALL_FN,
+                FILESYSTEM_ACCESS_WATCH_FUNCTIONS,
+                FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS,
+                FILESYSTEM_ACCESS_WATCH_ON_ERROR
+            ),
+            Source::function("harness::hook::on-post-call").args(serde_json::json!({
+                "functions": ["shell::*", "coder::*"],
+                "timeout_ms": 5_000,
+                "on_error": "fail_open",
+            }))
+        );
+    }
+
+    #[test]
+    fn config_changes_select_one_entrys_updates() {
+        assert_eq!(
+            config_update_filters("approval-gate"),
+            serde_json::json!({
+                "input.id": { "$eq": "approval-gate" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
+    }
+
+    /// The hot-reload description names every field the snapshot swap
+    /// replaces: each top-level property of the configuration schema.
+    #[test]
+    fn config_change_description_names_every_config_field() {
+        let schema = WorkerConfig::json_schema();
+        let fields = schema["properties"]
+            .as_object()
+            .expect("schema has a properties object");
+        assert!(!fields.is_empty());
+        for field in fields.keys() {
+            assert!(
+                CONFIG_FN_DESC.contains(field.as_str()),
+                "approval::on-config-change's description does not name `{field}`"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn apply_config_swaps_snapshot() {

@@ -29,9 +29,9 @@ const DESIGN = {
   'text.edit': '[[4,20,2,"ab"]]',
   'text.write': '[[2,20,16,["https://ab",2]]]',
   'requests.send':
-    '[[20,7,1,{"fn":"browser::sessions::list","payload":{}}],[20,8,2,{"sub":3,"trigger":"browser::session-started","config":{}}]]',
+    '[[20,7,1,{"fn":"browser::sessions::list","payload":{}}],[20,8,2,{"sub":3,"fn":"browser::on-session-started","args":{},"filters":{}}]]',
   'requests.responses': '[[8,8,1,null],[8,7,1,{"sessions":[]}]]',
-  'requests.trigger':
+  'requests.observed':
     '[[9,3,{"session_id":"s1","url":"about:blank","headless":true,"preview":false,"timestamp":1761151200000}]]',
   'requests.error': '[[8,9,0,{"code":"forbidden","message":"browser may only call browser::… functions"}]]',
   'nav.push': '[[20,12,10,{"page":"console","params":{"session":"s1"}}]]',
@@ -107,15 +107,20 @@ const MEANING: Record<string, unknown[]> = {
   'text.write': [{ op: 'set', id: 20, prop: 'value', value: ['https://ab', 2] }],
   'requests.send': [
     { op: 'request', reqId: 7, method: 'call', args: { fn: 'browser::sessions::list', payload: {} } },
-    { op: 'request', reqId: 8, method: 'on', args: { sub: 3, trigger: 'browser::session-started', config: {} } },
+    {
+      op: 'request',
+      reqId: 8,
+      method: 'on',
+      args: { sub: 3, fn: 'browser::on-session-started', args: {}, filters: {} },
+    },
   ],
   'requests.responses': [
     { op: 'response', reqId: 8, ok: true, value: null },
     { op: 'response', reqId: 7, ok: true, value: { sessions: [] } },
   ],
-  'requests.trigger': [
+  'requests.observed': [
     {
-      op: 'trigger',
+      op: 'observed',
       sub: 3,
       payload: { session_id: 's1', url: 'about:blank', headless: true, preview: false, timestamp: 1761151200000 },
     },

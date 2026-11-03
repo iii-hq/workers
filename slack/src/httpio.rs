@@ -1,6 +1,6 @@
 //! Raw HTTP request/response over the engine's stream channels.
 //!
-//! HTTP-trigger handlers that need the **raw** request body (Slack signature
+//! HTTP route targets that need the **raw** request body (Slack signature
 //! verification) read it from the engine-issued `request_body` read channel and
 //! write the response onto the paired write channel.
 

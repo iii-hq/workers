@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Deps;
 use crate::error::SessionError;
+use crate::events::EventKind;
 use crate::types::{AgentMessage, CustomPayload, JsonMap};
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -48,7 +49,8 @@ pub async fn handle(deps: &Deps, req: AppendRequest) -> Result<AppendResponse, S
     let started = Instant::now();
     // Timed before `?`: a store that took seconds to fail is the same
     // signal as one that took seconds to succeed.
-    let result = deps.service.append(req).await;
+    let wants_event = deps.sink.wants(EventKind::MessageAdded);
+    let result = deps.service.append(req, wants_event).await;
     let elapsed = started.elapsed();
     if elapsed > SLOW_APPEND {
         tracing::warn!(

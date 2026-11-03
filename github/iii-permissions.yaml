@@ -7,6 +7,8 @@
 # runs arbitrary gh commands; github::api reaches any REST endpoint including
 # writes) deliberately stay at the needs_approval default.
 # github::on-config-change is the internal hot-reload hook and is denied.
+# github::on-called and github::pr::on-event are private (only this worker
+# calls them) and observed, never called by agents.
 #
 # NOTE: the policy the checked-in harness actually loads is the repo-root
 # iii-permissions.yaml, which carries these same rules. This per-worker copy
@@ -22,6 +24,8 @@ rules:
   - github::setup::webhooks-status
   # watch, unwatch and recover intentionally retain needs_approval.
   - '!github::on-config-change'
+  - '!github::on-called'
+  - '!github::pr::on-event'
   - github::pr::list
   - github::pr::view
   - github::pr::diff

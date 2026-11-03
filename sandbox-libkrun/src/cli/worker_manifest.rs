@@ -25,7 +25,7 @@ use serde_yaml::Value as YamlValue;
 /// terminal-bound error or warning. Manifest keys are third-party (a cloned
 /// worker's `iii.worker.yaml`), so an unknown key like `"\x1b]2;…\x07"`
 /// must not reach the user's terminal raw. Mirrors the established
-/// terminal-sanitization pattern in `engine/src/cli_trigger/help.rs`.
+/// terminal-sanitization pattern in `engine/src/cli_call/help.rs`.
 /// `is_control` covers only Cc, so the invisible Cf-category spoofing chars
 /// (bidi overrides, zero-widths) are filtered explicitly — U+202E alone can
 /// visually reverse an echoed key and disguise what the error points at.

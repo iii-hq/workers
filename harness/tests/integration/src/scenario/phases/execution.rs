@@ -124,6 +124,7 @@ impl ScenarioRunner<'_> {
         services
             .probe()
             .forget_observer_bindings()
+            .await
             .map_err(|error| {
                 RunError::runner(phase, "discard pre-restart observer bindings", error)
             })?;
@@ -145,10 +146,10 @@ impl ScenarioRunner<'_> {
             .respawn_engine()
             .map_err(|error| RunError::runner(phase, "respawn engine after fault", error))?;
 
-        // Bind through the probe connection first: its replayed function
-        // registrations are ordered before this acknowledged RPC, and
-        // recoverable lifecycle bindings park until the harness trigger type
-        // returns. This minimizes the post-restart completion race.
+        // Observe through the probe connection first: its replayed function
+        // registrations are ordered before these observers, and the harness's
+        // observers stay pending until its functions return. This minimizes
+        // the post-restart completion race.
         services
             .probe()
             .bind_observers(&self.session_id, deadline)

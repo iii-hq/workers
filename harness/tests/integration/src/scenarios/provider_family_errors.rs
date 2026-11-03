@@ -82,9 +82,9 @@ fn scenario(case: FamilyCase) -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request()
-                    .system_prompt_regex("agent_trigger")
+                    .system_prompt_regex("agent_call")
                     .messages_exact([Message::user(&message)])
-                    .tools_subset([Tool::named("agent_trigger")]),
+                    .tools_subset([Tool::named("agent_call")]),
             )
             .fails(case.reason),
     )
@@ -93,13 +93,13 @@ fn scenario(case: FamilyCase) -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("agent_trigger")
+                    .system_prompt_regex("agent_call")
                     .messages_exact([
                         Message::user(&message),
                         Message::assistant_empty(&model),
                         Message::user(RECOVERY_MESSAGE),
                     ])
-                    .tools_subset([Tool::named("agent_trigger")]),
+                    .tools_subset([Tool::named("agent_call")]),
             )
             .respond(Response::text(RECOVERY_TEXT, 12, 4)),
     )

@@ -14,7 +14,6 @@ NON_EMPTY_INTERFACE = {
         "response_schema": {"type": "object"},
         "metadata": {},
     }],
-    "triggers": [],
 }
 
 
@@ -45,7 +44,7 @@ def test_payload_contains_only_current_registry_contract() -> None:
     assert set(payload) == {
         "worker_name", "version", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme", "repo",
-        "functions", "triggers", "binaries",
+        "functions", "binaries",
     }
     assert payload["license"] == "Apache-2.0"
     assert payload["binaries"]["x86_64-unknown-linux-gnu"]["sha256"] == "b" * 64
@@ -54,6 +53,55 @@ def test_payload_contains_only_current_registry_contract() -> None:
     assert "channel" not in payload
     assert "tag" not in payload
     assert payload["version"] == "1.0.0-beta"
+
+
+def test_payload_function_rows_state_how_each_function_is_observed() -> None:
+    payload = build_binary_payload()
+    assert payload["functions"] == [{
+        "name": "smoke::run",
+        "description": "Run the smoke operation",
+        "request_schema": {"type": "object"},
+        "response_schema": {"type": "object"},
+        "args_format": None,
+        "private": False,
+        "observable": True,
+        "metadata": {},
+    }]
+
+
+def test_payload_carries_an_event_source_args_format_and_private_flag() -> None:
+    projection = {
+        "worker_name": "smoke", "type": "binary", "description": "smoke",
+        "license": "Apache-2.0", "tags": [], "dependencies": [], "config": {},
+        "experimental": False, "readme": "# Smoke\n",
+    }
+    args_format = {"type": "object", "properties": {"expression": {"type": "string"}}}
+    payload = build_payload(
+        registry_projection=projection,
+        published_version="1.0.0",
+        repo_url="https://github.com/iii-hq/workers",
+        interface={"functions": [{
+            "name": "smoke::on-tick",
+            "description": "A tick",
+            "request_schema": {"type": "object"},
+            "response_schema": {"type": "object"},
+            "args_format": args_format,
+            "private": True,
+            "metadata": {},
+        }, {
+            "name": "smoke::resolve",
+            "description": "Carries a credential",
+            "request_schema": {"type": "object"},
+            "response_schema": {"type": "object"},
+            "observable": False,
+            "metadata": {},
+        }]},
+        interface_capture="required",
+        artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}}},
+    )
+    tick, resolve = payload["functions"]
+    assert (tick["args_format"], tick["private"], tick["observable"]) == (args_format, True, True)
+    assert (resolve["args_format"], resolve["private"], resolve["observable"]) == (None, False, False)
 
 
 @pytest.mark.parametrize("config", [None, {}], ids=["null", "empty-mapping"])
@@ -121,12 +169,12 @@ def test_required_interface_capture_rejects_empty_registry_surface() -> None:
         "experimental": False, "readme": "# Web\n",
     }
 
-    with pytest.raises(ValueError, match="required.*function or trigger"):
+    with pytest.raises(ValueError, match="required.*function"):
         build_payload(
             registry_projection=projection,
             published_version="1.2.13",
             repo_url="https://github.com/iii-hq/workers",
-            interface={"functions": [], "triggers": []},
+            interface={"functions": []},
             interface_capture="required",
             artifacts={
                 "kind": "rust-binary",
@@ -152,7 +200,7 @@ def test_skipped_interface_capture_allows_explicit_empty_surface(worker_name: st
         registry_projection=projection,
         published_version="1.0.0",
         repo_url="https://github.com/iii-hq/workers",
-        interface={"functions": [], "triggers": []},
+        interface={"functions": []},
         interface_capture="skipped",
         artifacts={
             "kind": "rust-binary",
@@ -166,7 +214,6 @@ def test_skipped_interface_capture_allows_explicit_empty_surface(worker_name: st
     )
 
     assert payload["functions"] == []
-    assert payload["triggers"] == []
 
 
 def test_engine_builtins_are_not_deployment_targets() -> None:

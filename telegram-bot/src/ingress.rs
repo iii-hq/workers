@@ -1,16 +1,21 @@
-//! Telegram update ingress supervisor — polling loop or webhook registration.
+//! Telegram update ingress supervisor — polling loop or webhook route.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use tokio::time::{sleep, Duration};
+use iii_sdk::ObserverHandle;
+use tokio::time::{sleep, timeout, Duration};
 use tokio_util::sync::CancellationToken;
 
 use crate::clients::telegram;
 use crate::config::{PollingConfig, UpdatesAdapter, WorkerConfig};
 use crate::deps::Deps;
 use crate::functions::{self, webhook};
+
+/// How long the webhook route may stay `pending` before `setWebhook` runs
+/// anyway.
+const ROUTE_READY_WAIT: Duration = Duration::from_secs(10);
 
 /// Start ingress for the initial config (called once at boot).
 pub async fn start(deps: &Arc<Deps>) {
@@ -39,12 +44,12 @@ async fn apply_updates_adapter(deps: &Arc<Deps>, _prev: Option<&WorkerConfig>, c
 
     match cfg.resolve_updates() {
         UpdatesAdapter::Polling(polling) => {
-            // Stop Telegram POSTing *before* removing the engine route, so there
-            // is no window where the route is gone but updates still arrive.
+            // Stop Telegram POSTing *before* removing the route, so there is
+            // no window where the route is gone but updates still arrive.
             if let Err(e) = telegram::delete_webhook(deps).await {
                 tracing::warn!(error = %e, "deleteWebhook failed (may already be unset)");
             }
-            unregister_webhook_trigger(deps).await;
+            dispose_webhook_route(deps).await;
             start_poller(deps.clone(), polling).await;
             tracing::info!("updates adapter: polling");
         }
@@ -53,12 +58,12 @@ async fn apply_updates_adapter(deps: &Arc<Deps>, _prev: Option<&WorkerConfig>, c
                 tracing::warn!("updates adapter: webhook (base_url not set; ingress inactive)");
                 return;
             };
-            // The engine route must exist before Telegram is told to POST to it,
-            // otherwise early updates hit an unregistered path. If registration
-            // fails, leave the trigger unset so the next reload retries and skip
-            // setWebhook.
-            if let Err(e) = ensure_webhook_trigger(deps).await {
-                tracing::error!(error = %e, "failed to register webhook http trigger; skipping setWebhook");
+            // The route must exist before Telegram is told to POST to it,
+            // otherwise early updates hit an unserved path. If the http worker
+            // refuses the route, leave it unset so the next reload retries and
+            // skip setWebhook.
+            if let Err(e) = ensure_webhook_route(deps).await {
+                tracing::error!(error = %e, "webhook http route refused; skipping setWebhook");
                 return;
             }
             match telegram::set_webhook(deps, &url, webhook.secret.as_deref()).await {
@@ -69,32 +74,54 @@ async fn apply_updates_adapter(deps: &Arc<Deps>, _prev: Option<&WorkerConfig>, c
     }
 }
 
-/// Register the webhook ingress HTTP route if it is not already registered,
-/// retaining the [`iii_sdk::Trigger`] handle in [`Deps`]. Idempotent: a second
-/// call while the route is held (e.g. a webhook→webhook URL change) is a no-op,
-/// so the engine never accumulates duplicate UUID-keyed routes.
-async fn ensure_webhook_trigger(deps: &Arc<Deps>) -> Result<(), Error> {
-    let mut guard = deps.runtime.webhook_trigger.lock().await;
+/// Observe `http::on-request` with the webhook ingress route if it is not
+/// already held, retaining the [`ObserverHandle`] in [`Deps`]. Idempotent: a
+/// second call while the route is held (e.g. a webhook→webhook URL change) is
+/// a no-op, so the http worker never sees a duplicate route.
+///
+/// Waits up to [`ROUTE_READY_WAIT`] for the route to become active. A route
+/// the http worker refuses (`HTTP_ROUTE_CONFLICT`) is disposed and returned as
+/// the error; a route still `pending` (the http worker is not running) is kept
+/// and serves once the http worker registers.
+async fn ensure_webhook_route(deps: &Arc<Deps>) -> Result<(), Error> {
+    let mut guard = deps.runtime.webhook_route.lock().await;
     if guard.is_some() {
         return Ok(());
     }
-    let trigger = functions::register_webhook_trigger(&deps.iii)?;
-    *guard = Some(trigger);
-    tracing::info!(
-        api_path = crate::config::WEBHOOK_API_PATH,
-        "webhook http trigger registered"
-    );
+    let route = functions::observe_webhook_route(&deps.iii);
+    let ready = timeout(ROUTE_READY_WAIT, route.ready()).await;
+    match ready {
+        Ok(Ok(())) => tracing::info!(
+            api_path = crate::config::WEBHOOK_API_PATH,
+            "webhook http route active"
+        ),
+        Ok(Err(e)) => {
+            dispose(route).await;
+            return Err(e);
+        }
+        Err(_) => tracing::warn!(
+            api_path = crate::config::WEBHOOK_API_PATH,
+            "webhook http route pending (is the http worker running?)"
+        ),
+    }
+    *guard = Some(route);
     Ok(())
 }
 
-/// Remove the webhook ingress HTTP route if one is registered. `take()` +
-/// `unregister()` is mandatory — `Trigger` has no `Drop`, so dropping the handle
-/// silently would leave the route live on the engine.
-async fn unregister_webhook_trigger(deps: &Arc<Deps>) {
-    let handle = deps.runtime.webhook_trigger.lock().await.take();
-    if let Some(trigger) = handle {
-        trigger.unregister();
-        tracing::info!("webhook http trigger unregistered");
+/// Remove the webhook ingress route if one is held. `take()` + `dispose()` is
+/// mandatory — dropping an [`ObserverHandle`] does not dispose the observer,
+/// so the route would stay live.
+async fn dispose_webhook_route(deps: &Arc<Deps>) {
+    let handle = deps.runtime.webhook_route.lock().await.take();
+    if let Some(route) = handle {
+        dispose(route).await;
+        tracing::info!("webhook http route removed");
+    }
+}
+
+async fn dispose(route: ObserverHandle) {
+    if let Err(e) = route.dispose().await {
+        tracing::warn!(error = %e, observer_id = route.id(), "webhook route dispose failed");
     }
 }
 
@@ -116,10 +143,10 @@ async fn start_poller(deps: Arc<Deps>, _polling: PollingConfig) {
 
 /// Stop the background poller and remove the webhook route on shutdown, so a
 /// graceful restart starts from a clean slate rather than relying on engine-side
-/// cleanup of a disconnected worker's triggers.
+/// cleanup of a disconnected worker's observers.
 pub async fn shutdown(deps: &Arc<Deps>) {
     stop_poller(deps).await;
-    unregister_webhook_trigger(deps).await;
+    dispose_webhook_route(deps).await;
 }
 
 async fn stop_poller(deps: &Arc<Deps>) {

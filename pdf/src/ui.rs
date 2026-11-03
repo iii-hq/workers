@@ -2,14 +2,15 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `pdf/page.js` (`console:script`) — a page that takes a document and shows
+//! - `pdf/page.js` (a `script` asset) — a page that takes a document and shows
 //!   what the agent sees: the classification verdict, the per-page OCR
 //!   decision, and the extracted markdown.
-//! - `pdf/styles.css` (`console:style`) — the stylesheet, every rule scoped
+//! - `pdf/styles.css` (a `style` asset) — the stylesheet, every rule scoped
 //!   under `[data-iii-ui="pdf"]`.
 //!
 //! The registration machinery (content function `pdf::ui-content`, one
-//! Message-path trigger per asset, the `III_PDF_UI_WATCH` hot-reload watcher)
+//! `console::ui::asset` observer per asset, the `III_PDF_UI_WATCH` hot-reload
+//! watcher)
 //! lives in the shared `iii-console-ui` crate; this module only names the
 //! assets and embeds their bytes.
 //!

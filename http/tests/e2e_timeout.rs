@@ -4,12 +4,13 @@
 //! `http/src/server.rs` wraps the whole router in a tower `TimeoutLayer`
 //! (`StatusCode::GATEWAY_TIMEOUT`) sized from `config.default_timeout` --
 //! mirroring the engine, which relies on the same layer to 504 a slow
-//! request. `http/src/handler.rs` ALSO bounds the target function's
-//! invocation with `iii.trigger(TriggerRequest { timeout_ms: Some(default_timeout),
-//! .. })`, which on expiry surfaces `Err(Error::Timeout)` and gets mapped to a
-//! 500 by the handler's generic call-error arm. A slow HANDLER function must
-//! still surface as 504 (the tower layer owns the request deadline, matching
-//! the engine) -- see `function_timeout_returns_504_not_500` below.
+//! request. `http/src/handler.rs` ALSO bounds its call of `http::on-request`
+//! (and the deliver hook its call of the target) with
+//! `CallRequest { timeout_ms: Some(default_timeout), .. }`, which on expiry
+//! surfaces an error mapped to a 500 by the handler's generic call-error arm.
+//! A slow HANDLER function must still surface as 504 (the tower layer owns the
+//! request deadline, matching the engine) -- see
+//! `function_timeout_returns_504_not_500` below.
 //!
 //! Mirrors the harness used by `e2e_errors.rs` -- see that file's module doc
 //! for the connect-or-skip / per-test-worker rationale.
@@ -23,12 +24,10 @@ use serial_test::serial;
 
 /// A HANDLER function that sleeps well past `default_timeout` must surface as
 /// `504 Gateway Timeout` to the client -- the tower `TimeoutLayer` owns the
-/// request deadline, exactly like the engine's `iii-http`. Before the fix,
-/// `handler::dynamic_handler` also bounded the invocation itself with the
-/// same `default_timeout` via `iii.trigger(.., timeout_ms: Some(..))`; that
-/// inner timeout raced the outer tower layer and could surface as a 500
-/// `INTERNAL_ERROR` (`Err(Error::Timeout)` mapped by the generic call-error
-/// arm) instead of the engine-parity 504.
+/// request deadline, exactly like the engine's `iii-http`. The handler's own
+/// call bound (the same `default_timeout`, `CallRequest { timeout_ms, .. }`)
+/// starts later than the tower layer's, so the tower layer answers first with
+/// the engine-parity 504 rather than the generic call-error arm's 500.
 #[tokio::test]
 #[serial]
 async fn function_timeout_returns_504_not_500() {

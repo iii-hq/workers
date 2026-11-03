@@ -15,12 +15,13 @@ defaults:
 approval_gate: false
 
 # Event feeds are not configured here: AgentEvent frames are published on the
-# claude::agent-event trigger type and raw Claude Code messages on
-# claude::raw-event (bind either with { session_id }). See README "Event feeds".
+# claude::on-agent-event function and raw Claude Code messages on
+# claude::on-raw-event (observe either with args { session_id }). See README
+# "Event feeds".
 
 # Append the iii runtime context to the system prompt: teaches the agent
 # live discovery against the engine catalog through the iii CLI
-# (engine::functions::list, `iii trigger <fn> --help`). Per-turn override
+# (engine::functions::list, `iii call <fn> --help`). Per-turn override
 # via the iii_context payload field; a caller-supplied system_prompt
 # always wins and gets nothing appended.
 iii_context: true

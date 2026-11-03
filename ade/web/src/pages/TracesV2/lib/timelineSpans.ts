@@ -11,8 +11,8 @@
  *   percentages so the window is exactly [0, total_duration_ms].
  *
  * `isTraceLive` (per-trace last span-close activity from the engine's
- * `trace` trigger) also lives here: the trace LIST's rows are root spans
- * that close instantly for queue-triggered traces, so the rows' pulsing
+ * `observability::on-span` source) also lives here: the trace LIST's rows are root spans
+ * that close instantly for queue-driven traces, so the rows' pulsing
  * status dot needs the activity signal to know the trace is still working.
  */
 
@@ -23,7 +23,7 @@ import type {
 } from '../components/timeline/layout'
 import type { TraceActivityMap } from '../hooks/useTraceActivity'
 import type { TraceListItem } from '../hooks/useTraceData'
-import { explicitFunctionId } from './functionTriggerFromSpan'
+import { explicitFunctionId } from './functionCallFromSpan'
 import {
   inheritedTags,
   internalFamilyOf,
@@ -88,10 +88,10 @@ export const TRACE_ACTIVITY_IDLE_MS = 2_000
 
 /**
  * Activity within this of the row's own end is the row's own close echoing
- * back through the trigger (engine coalesce ≤300ms + delivery), not evidence
- * of work beyond the root. Without this dead-band every single-span trace
- * would go "live" for a moment just because its own arrival fired the
- * activity trigger.
+ * back through the span source (engine coalesce ≤300ms + delivery), not
+ * evidence of work beyond the root. Without this dead-band every single-span
+ * trace would go "live" for a moment just because its own arrival produced
+ * a span event.
  */
 export const TRACE_ACTIVITY_ECHO_MS = 1_000
 
@@ -105,7 +105,7 @@ export interface TraceLiveness {
 /**
  * Last-activity timestamp for a trace, but only once it clears the echo
  * dead-band past the row's own end — i.e. evidence of work beyond the root,
- * not the root's own arrival echoing back through the trigger. `null` when
+ * not the root's own arrival echoing back through the span source. `null` when
  * there's no such evidence.
  */
 function activityBeyondRoot(
@@ -176,13 +176,13 @@ interface ShapedStoredSpan {
 }
 
 /**
- * The span that TRIGGERED this one, hopping over skipped routing wrappers:
+ * The span that STARTED this one, hopping over skipped routing wrappers:
  * walk the parent chain until it leaves the routing layer. An id that isn't
  * in the feed at all is kept as-is — the parent may simply not have arrived
  * yet (self-heals on the next mapping pass), and layouts already treat
  * unresolvable parents as roots.
  */
-function resolveTriggerParent(
+function resolveCauseParent(
   span: StoredSpan,
   byId: ReadonlyMap<string, ShapedStoredSpan>,
 ): string | undefined {
@@ -205,7 +205,7 @@ function resolveTriggerParent(
  * the worker's own `execute` span, and the detail views collapse those
  * wrappers too. Each bar's `parentId` is the nearest NON-routing ancestor
  * (the hierarchy stays connected across the skipped wrappers — this is the
- * V2 strip's "what triggered what" edge). Labels follow the waterfall's
+ * V2 strip's "what started what" edge). Labels follow the waterfall's
  * rules (producer `iii.tag.display_name` override, else the verb-stripped
  * span name), a pending span is a LIVE bar (`endTime: null`, grows along
  * the now-edge), and every bar carries the shared filter keys so the funnel
@@ -251,7 +251,7 @@ export function storedSpansToTimelineSpans(
     out.push({
       id: span.span_id,
       traceId: span.trace_id,
-      parentId: resolveTriggerParent(span, byId),
+      parentId: resolveCauseParent(span, byId),
       startTime: toMs(span.start_time_unix_nano),
       endTime: pending ? null : toMs(span.end_time_unix_nano),
       status:

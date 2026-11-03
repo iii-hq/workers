@@ -17,8 +17,8 @@ Consumer READMEs are **not** architecture docs. See [`worker-readme.md`](../../w
 
 Add a folder when **any** of these apply:
 
-- Other workers or clients integrate via many function ids + trigger types
-  (handoff contract needed).
+- Other workers or clients integrate via many function ids and observed
+  event functions (handoff contract needed).
 - Storage, event, or security model is non-obvious from the README.
 - Maintainers need internals separate from integrator docs.
 
@@ -34,14 +34,14 @@ the reference:
 <worker>/architecture/
 ├── README.md         # index: one paragraph, diagram, vocabulary, doc map
 ├── internals.md      # maintainers: storage, pipelines, invariants
-└── integration.md    # consumers: function ids, triggers, permissions, sequences
+└── integration.md    # consumers: function ids, observers, permissions, sequences
 ```
 
 | File | Write for | Content |
 |---|---|---|
 | `README.md` | Everyone landing here | System in one paragraph + diagram; table pointing to children |
 | `internals.md` | People changing the worker | Data structures, backends, concurrency, error paths |
-| `integration.md` | People calling the worker | Stable API contract; trigger subscription patterns; what *not* to do |
+| `integration.md` | People calling the worker | Stable API contract; how to observe its event functions (args, filters); what *not* to do |
 
 ## Executable spec
 

@@ -2,7 +2,7 @@
 //!
 //! Boot: parse CLI, connect to the LOCAL engine, register the `bridge`
 //! configuration schema, fetch the authoritative value, start the bridge via
-//! `boot::start`, wire the `configuration:updated` reload trigger, then sleep
+//! `boot::start`, observe `configuration::on-updated` for reloads, then sleep
 //! until Ctrl+C. The optional `--config` YAML file is a **seed only**: it is
 //! used to populate the configuration entry the first time, after which the
 //! configuration worker is the source of truth. The REMOTE engine URL comes
@@ -108,12 +108,9 @@ async fn main() -> Result<()> {
     tracing::info!(remote = %config.effective_url(), "iii-bridge ready");
     let boot = iii_bridge::boot::start(iii.clone(), config).await?;
 
-    // Subscribe to configuration:updated so the remote client, forward table,
+    // Observe configuration::on-updated so the remote client, forward table,
     // and expose table reload live on a config change (see configuration).
-    configuration::register_config_trigger(&iii, &boot)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    let _config_observer = configuration::observe_config_changes(&iii, &boot).await;
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-bridge shutting down");

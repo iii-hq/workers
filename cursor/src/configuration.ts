@@ -12,6 +12,7 @@ import {
 import { jsonSchema } from './schema.js';
 
 const CONFIG_FN_ID = 'cursor::on-config-change';
+const ON_UPDATED_FN = 'configuration::on-updated';
 const TIMEOUT_MS = 5_000;
 const RETRY_DELAYS_MS = [250, 500, 1_000];
 
@@ -33,7 +34,7 @@ export async function registerCursorConfig(
     initial_value: initialValue,
   };
   try {
-    await triggerWithRetry(iii, 'configuration::ensure', payload);
+    await callWithRetry(iii, 'configuration::ensure', payload);
     return;
   } catch (error) {
     if (!isFunctionNotFound(error)) throw error;
@@ -47,7 +48,7 @@ export async function registerCursorConfig(
   }
   let existing: unknown;
   try {
-    const response = await triggerWithRetry(iii, 'configuration::get', { id, raw: true });
+    const response = await callWithRetry(iii, 'configuration::get', { id, raw: true });
     if (
       !response ||
       typeof response !== 'object' ||
@@ -65,7 +66,7 @@ export async function registerCursorConfig(
   }
   const registration = { ...payload };
   if (existing !== null) delete registration.initial_value;
-  await triggerWithRetry(iii, 'configuration::register', registration);
+  await callWithRetry(iii, 'configuration::register', registration);
 }
 
 const warnedLegacy = new Set<string>();
@@ -85,7 +86,7 @@ function isFunctionNotFound(error: unknown, functionId = 'configuration::ensure'
 
 /** Fetch and validate the applied Cursor configuration; missing or malformed values are errors. */
 export async function fetchRuntime(iii: IIIClient): Promise<Config> {
-  const response = await triggerWithRetry(iii, 'configuration::get', {
+  const response = await callWithRetry(iii, 'configuration::get', {
     id: configId(),
     raw: false,
   });
@@ -93,8 +94,8 @@ export async function fetchRuntime(iii: IIIClient): Promise<Config> {
   return ConfigSchema.parse(parsed.value);
 }
 
-/** Subscribe before the initial read, serialize reloads, and retain the last valid config on failure. */
-export async function bindConfigTrigger(iii: IIIClient, holder: ConfigHolder): Promise<void> {
+/** Observe before the initial read, serialize reloads, and retain the last valid config on failure. */
+export async function observeConfigChanges(iii: IIIClient, holder: ConfigHolder): Promise<void> {
   let reload = Promise.resolve();
   const refresh = async () => {
     const next = await fetchRuntime(iii);
@@ -134,16 +135,22 @@ export async function bindConfigTrigger(iii: IIIClient, holder: ConfigHolder): P
       metadata: { internal: true },
     },
   );
-  iii.registerTrigger({
-    type: 'configuration',
-    function_id: CONFIG_FN_ID,
-    config: { configuration_id: configId(), event_types: ['configuration:updated'] },
-  });
+  iii.observe(
+    {
+      function_id: ON_UPDATED_FN,
+      filters: {
+        'input.id': { $eq: configId() },
+        'input.event_type': { $eq: 'configuration:updated' },
+      },
+      deliver: 'output',
+    },
+    CONFIG_FN_ID,
+  );
   await refresh();
 }
 
 /** Retry transient configuration RPC failures; a definite missing entry returns immediately. */
-async function triggerWithRetry(
+async function callWithRetry(
   iii: IIIClient,
   functionId: string,
   payload: Record<string, unknown>,
@@ -151,7 +158,7 @@ async function triggerWithRetry(
   let lastError: unknown;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      return await iii.trigger({
+      return await iii.call({
         function_id: functionId,
         namespace: 'default',
         payload,

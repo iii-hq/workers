@@ -1,41 +1,36 @@
 # Engine function overrides
 
 This is the addition over the engine's RBAC contract. An engine RBAC listener
-gates **invocation** of functions, but it only partially filters the
-**discovery** surface. `EngineFunctions`
-(`iii/sdk/packages/rust/iii/src/engine.rs:15-25`) holds **nine** ids — **eight
-discovery surfaces** (`engine::functions::list/info`,
-`engine::workers::list/info`, `engine::triggers::list/info`,
-`engine::registered-triggers::list/info`) plus `engine::workers::register` (a
-write/setup call in the infrastructure carve-out). Of the eight discovery
-functions, just `engine::functions::list` and `engine::functions::info` are
-session-aware in the engine, and even those filter against an in-process
-`Session` a remote proxy never has (see
+gates **invocation** of functions, but it filters the **discovery** surface by
+an in-process `Session` that a remote proxy never has (see
 [rbac.md § The proxy has no engine `Session`](rbac.md#the-proxy-has-no-engine-session)).
-The result is that a gated worker that *can* reach the discovery functions (they
-are gated by `expose_functions` like any other function — they are **not** in
-the carve-out) can still *enumerate* — via `engine::workers::list`,
-`engine::triggers::list`, `engine::registered-triggers::list`, and the `::info`
-variants — functions, workers, and triggers it can never call, including their
-schemas, owners, and host metadata.
+Six engine functions are **discovery surfaces**: `engine::functions::list/info`,
+`engine::workers::list/info` and `engine::observers::list/get`. A gated worker
+that *can* reach them (they are gated by `expose_functions` like any other
+function — they are **not** in the carve-out) would otherwise *enumerate*
+functions, workers and observers it can never call, including their schemas,
+owners, host metadata and observer targets.
 
-`rbac-proxy` closes that gap. It **result-filters the eight discovery functions**
+`rbac-proxy` closes that gap. It **result-filters the six discovery functions**
 and rewrites their results to the caller's boundaries before they reach the
 downstream worker, so discovery shows exactly the surface the caller is allowed
-to invoke — nothing more. The ninth id, `engine::workers::register`, is
-intercepted only as the session's own setup call (carve-out pass-through, no
-result rewrite).
+to invoke — nothing more. Two more engine functions are gated by the
+interceptor instead: `engine::workers::register` is the session's own setup
+call (carve-out, no result rewrite), and `engine::observers::dispose` is
+forwarded only for an observer the connection created (the engine lets a
+caller without a session dispose any observer).
 
 ## How the override works
 
 The override does not replace the engine's implementation — the engine still
 computes the answer. The proxy intercepts the **request** to record that this
 `invocation_id` is an overridable `engine::*` call, lets the engine compute the
-full result, then intercepts the **result** and filters it. Two of the eight
-discovery functions cannot be filtered from their own response alone — a trigger
-**type** carries no function binding, and `engine::workers::list` carries a
-`function_count` but no per-function ids — so the filter also consults the
-proxy's [catalog & binding caches](#catalog--binding-caches):
+full result, then intercepts the **result** and filters it. Two kinds of rows
+cannot be filtered from their own response alone — `engine::workers::list`
+carries a `function_count` but no per-function ids, and an observer row names
+its observed function and its target without their metadata — so the filter
+also consults the proxy's [catalog cache](#catalog-cache) when a metadata filter
+is configured:
 
 ```mermaid
 sequenceDiagram
@@ -60,20 +55,21 @@ never disagree.
 ## Per-function rewrite table
 
 `A(id)` below means "`is_function_allowed(id)` against this connection's
-`ProxySession`" — i.e. the access-resolution decision flow. `strip(id)` removes
-the session's own `{prefix}::` ([Prefix in results](#prefix-in-results)).
+`ProxySession`", in the namespace the row names — i.e. the access-resolution
+decision flow. `strip(id)` removes the session's own `{prefix}::`
+([Prefix in results](#prefix-in-results)). `own(o)` is true for an observer
+this connection created.
 
 | Function | Request | Result rewrite | Empty / denied policy |
 |---|---|---|---|
 | `engine::functions::list` | pass through | keep `functions[]` entries where `A(function_id)`; `strip` ids and worker names | return the (possibly empty) filtered list |
-| `engine::functions::info` | pass through | if `!A(function_id)` → error; else `strip` ids; drop `registered_triggers[]` whose target fails `A` | **`FORBIDDEN`** when `!A(function_id)` (engine parity — see note); `NOT_FOUND` when genuinely missing |
-| `engine::triggers::list` | pass through | trigger **types** are capability metadata (`id`, `worker_name`, `description` — no function binding, no caller data), so pass through by default. **Optional hardening:** hide a type that exists *solely* to serve denied functions, derived from the [binding index](#catalog--binding-caches) | unchanged (or hardened-filtered) list |
-| `engine::triggers::info` | pass through | recompute `instance_count` to the accessible subset via the [binding index](#catalog--binding-caches) so it cannot leak how many *hidden* functions use the type; keep schemas | visible by default (capability metadata); `NOT_FOUND` under optional hardening when all bindings are denied |
-| `engine::registered-triggers::list` | pass through | drop entries where `!A(function_id)`; `strip` `function_id` | filtered list |
-| `engine::registered-triggers::info` | pass through | deny if `!A(function_id)`; null out nested `function` / `trigger` envelopes that reference denied functions | `FORBIDDEN` when `!A(function_id)` |
-| `engine::workers::list` | pass through | resolve each worker's function set via the [catalog cache](#catalog--binding-caches) (the response has only a `function_count`, no ids); drop workers with zero accessible functions; recompute `function_count`; strip worker-internal fields per [policy](#worker-internals-leak-policy) | filtered list |
-| `engine::workers::info` | pass through | filter the nested `functions[]` / `trigger_types[]` / `registered_triggers[]` (this response *does* carry them) to accessible ones; recompute `function_count`; strip worker-internal envelope fields | `NOT_FOUND` when zero accessible functions |
-| `engine::workers::register` | the session's own setup call (infra carve-out) | none (response is `{ success }`) | pass through; the proxy may stamp the session's own worker identity onto the call |
+| `engine::functions::info` | pass through | if `!A(function_id)` → error; else `strip` ids (the row names no other function: `observer_count` is a count) | **`FORBIDDEN`** when `!A(function_id)` (engine parity — see note); `NOT_FOUND` when genuinely missing |
+| `engine::workers::list` | pass through | resolve each worker's function set via the [catalog cache](#catalog-cache) (the response has only a `function_count`, no ids); drop workers with zero accessible functions; recompute `function_count`; strip worker-internal fields per [policy](#worker-internals-leak-policy) | filtered list |
+| `engine::workers::info` | pass through | filter the nested `functions[]` (this response *does* carry them) to accessible ones; recompute `function_count`; strip worker-internal envelope fields. `observers[]` are opaque ids; `engine::observers::get` filters each one | `NOT_FOUND` when zero accessible functions |
+| `engine::observers::list` | pass through | keep `observers[]` rows where `own(o)`, or `A(function_id)` and `A(target.function_id)`; `strip` both ids | filtered list |
+| `engine::observers::get` | pass through | as one row of `engine::observers::list` | **`OBSERVER_NOT_FOUND`** when the row is hidden (engine parity: an observer the caller may not see does not exist for it) |
+| `engine::observers::dispose` | forwarded only when `own(id)`; else `FORBIDDEN` | none | — |
+| `engine::workers::register` | the session's own setup call (infra carve-out) | none (response is `{ success }`) | pass through; the proxy declares the worker as `rbac-proxy:<prefix>::<name>` (`rbac-proxy:<name>` without a prefix), so the engine's one live worker per name and its replacement of a suspended observer from a new connection of its worker (observe v2 decision 51) stay within one prefix, and every proxied worker's name starts with `rbac-proxy:` |
 
 > **Denied-call error code (engine parity vs hardening).** The engine's
 > `engine::functions::info` returns `FORBIDDEN` for a function the session may
@@ -87,39 +83,35 @@ the session's own `{prefix}::` ([Prefix in results](#prefix-in-results)).
 > [rbac.md § Intentional divergences](rbac.md#intentional-divergences-from-the-engine).
 
 Response shapes the proxy parses to do this (from
-`engine/src/workers/engine_fn/mod.rs`) — the fields that leak and must be
-filtered:
+`engine/src/workers/engine_fn/mod.rs` and `engine/src/observer/builtins.rs`) —
+the fields that leak and must be filtered:
 
 ```rust
 // engine::functions::list
-struct FunctionSummary { function_id, worker_name, description?, metadata? }
+struct FunctionSummary { function_id, namespace, worker_name, description?, metadata?,
+                         args_format?, private?, observable?, observer_count }
 // engine::functions::info
-struct FunctionDetail { function_id, worker_name, description?, request_schema?,
-                        response_schema?, metadata?, registered_triggers: Vec<RegisteredTriggerRef> }
-struct RegisteredTriggerRef { id, trigger_type, config }
-// engine::triggers::list  — NOTE: no function_id, no bound-functions list
-struct TriggerTypeSummary { id, worker_name, description }
-// engine::triggers::info  — NOTE: no function_id; instance_count is one aggregate integer
-struct TriggerTypeDetail { id, worker_name, description, configuration_schema?,
-                           request_schema?, response_schema?, instance_count }
-// engine::registered-triggers::list / ::info  — these DO carry function_id
-struct RegisteredTriggerSummary { id, trigger_type, function_id, worker_name, config, config_summary }
-struct RegisteredTriggerDetail  { id, trigger_type, function_id, worker_name, config, metadata?,
-                                  trigger: Option<TriggerTypeDetail>, function: Option<FunctionDetail> }
+struct FunctionDetail { function_id, namespace, worker_name, description?, request_schema?,
+                        response_schema?, metadata?, args_format?, private?, observable?,
+                        observer_count }
 // engine::workers::list  — only a function_count, NO functions[] array
 struct WorkerSummary { name?, description?, version?, id, runtime?, os?, status,
                        function_count, connected_at_ms, active_invocations, isolation?, ip_address? }
-// engine::workers::info  — DOES nest the function/trigger arrays
+// engine::workers::info  — DOES nest the functions; observers are ids
 struct WorkerInfoOutput { worker: WorkerDetailEnvelope, functions: Vec<FunctionSummary>,
-                          trigger_types: Vec<TriggerTypeSummary>,
-                          registered_triggers: Vec<RegisteredTriggerSummary> }
+                          observers: Vec<String> }
 struct WorkerDetailEnvelope { /* WorkerSummary + */ pid?, internal, latest_metrics? }
+// engine::observers::list → { observers: Vec<ObserverInfo> }; engine::observers::get → ObserverInfo
+struct ObserverInfo { id, function_id, namespace, args, filters,
+                      target: { function_id, namespace }, capture, on, deliver,
+                      worker: { worker_id, worker_name? }, state, reason?, fires, dropped,
+                      activation_failures, max_fires?, expires_in_ms?, max_in_flight, created_at_ms }
 ```
 
-The asymmetry matters: `engine::triggers::list/info` and `engine::workers::list`
-do **not** carry the function ids needed to filter them, so the proxy must
-cross-reference its caches (next section). Only `engine::workers::info` nests the
-per-function arrays directly.
+The asymmetry matters: `engine::workers::list` does **not** carry the function
+ids needed to filter it, and observer rows carry no function metadata, so the
+proxy cross-references its cache (next section). Only `engine::workers::info`
+nests the per-function array directly.
 
 ## Worker-internals leak policy
 
@@ -149,13 +141,17 @@ When a session has a `function_registration_prefix`, its **own** functions live
 in the engine registry as `{prefix}::{id}` and surface that way in discovery
 results (`engine::functions::list` would show `tenant1::foo`). The worker
 registered them bare (`foo`) and must see them bare. So the proxy **strips its
-own session prefix** from every id and worker name in a discovery result:
+own session prefix** from every id and worker name in a discovery result that
+starts with `{prefix}::`:
 
 - `function_id` / referenced `function_id` that start with `{prefix}::` → strip
   to the bare id the worker knows.
 - A foreign function (another session's namespace, or an unprefixed global) is
   shown with its canonical id — it is not the caller's prefix and is not
   stripped.
+- A proxied worker's name starts with `rbac-proxy:` and keeps the prefix: the
+  session's own workers are listed as `rbac-proxy:<prefix>::<declared name>`,
+  the name `engine::workers::info` takes.
 
 This is symmetric with the dispatch-path strip in
 [protocol-interception.md § Prefix resolution](protocol-interception.md#prefix-resolution):
@@ -173,29 +169,26 @@ sees `foo`.
 > function** (per-session `allowed_functions` / `forbidden_functions`, or a
 > per-tenant `expose` policy) rather than relying on a global metadata filter.
 
-## Catalog & binding caches
+## Catalog cache
 
 Several rewrites need data the invocation/discovery frame does not carry. The
-proxy maintains two small TTL caches over its **control connection**, both
-keyed by the **engine** id (prefixed where applicable, since that is what
-discovery results and filters operate on):
+proxy maintains a small TTL cache over its **control connection**, keyed by
+`(namespace, function_id)` with the **engine** id (prefixed where applicable,
+since that is what discovery results and filters operate on):
 
 - **Function catalog** (`function_id → { worker_name, metadata }`) from
   `engine::functions::list`. Needed for (a) **metadata** filters —
   `is_function_allowed` for `expose_functions: [{ metadata: { public: true } }]`
-  needs the target's registered `metadata`; and (b) `engine::workers::list`,
-  whose `WorkerSummary` carries a `function_count` but no ids — the proxy
-  derives each worker's accessible-function set (hence the recomputed count and
-  the drop-empty-workers rule) from this cache.
-- **Binding index** (`registered_trigger_id → { trigger_type, function_id }`,
-  plus a `trigger_type → [function_id]` rollup) from
-  `engine::registered-triggers::list`. Needed for the `engine::triggers::info`
-  `instance_count` recompute and the optional trigger-type hardening — a trigger
-  *type* has no function binding in its own response, so type → bound functions
-  comes only from the registered-trigger instances.
+  needs the registered `metadata` of an observer row's function and target, and
+  of a call's target; and (b) `engine::workers::list`, whose `WorkerSummary`
+  carries a `function_count` but no ids — the proxy derives each worker's
+  accessible-function set (hence the recomputed count and the
+  drop-empty-workers rule) from this cache.
 
-Both are refreshed lazily on a short TTL (seconds) and proactively on the
-`engine::functions-available` trigger; mirror `console`'s function-list cache.
+It is refreshed lazily on a short TTL (5 s) and proactively whenever
+`engine::on-functions-changed` is called: the control connection observes it
+with `rbac-proxy::on-functions-changed`, which invalidates the cache. Mirror
+`console`'s function-list cache.
 
 **Cache-miss semantics.** A miss is not uniformly fail-closed — it depends on
 the filter kind:
@@ -209,7 +202,7 @@ the filter kind:
 
 ## Why not just patch the engine?
 
-Making all eight discovery functions session-aware in the engine is the smaller
+Making the discovery functions session-aware in the engine is the smaller
 change *if* RBAC stays in-engine — and it is the right fix for `worker-gateway`.
 But it does nothing for the out-of-process use case this spec targets: a proxy
 fronting a **remote or managed** engine cannot patch that engine. Doing the

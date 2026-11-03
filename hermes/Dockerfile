@@ -32,22 +32,28 @@ RUN mkdir -p /opt/hermes-agent \
 
 # Download the exact iii release asset for the BuildKit target architecture,
 # validate its reviewed checksum, and install only the binary from the archive.
+# The agent runs `iii call <function>` (src/iii_prompt.py), so the build fails
+# when the bundled CLI has no `call` subcommand.
 RUN case "${TARGETARCH}" in \
-      amd64) iii_target=x86_64-unknown-linux-gnu; iii_sha=a64afb84fe0fd466db15ae6598f82914a8b6829fe934c3eb084c6558a5e39b03 ;; \
-      arm64) iii_target=aarch64-unknown-linux-gnu; iii_sha=cec4ac67e1e104e99ba0c8e1f6eec1a89ae94048d47438dfe2cf072ec7656693 ;; \
+      amd64) iii_target=x86_64-unknown-linux-gnu; iii_sha=7369fcdafdb94f5493ef3d51adacdd5e3d4f15de23c14538f55e43dd3027bbc3 ;; \
+      arm64) iii_target=aarch64-unknown-linux-gnu; iii_sha=eea6d4bb14ac81798f2e32b604b24d2f9be30d492686f32f1be9cbcc74fa03f8 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 2 ;; \
     esac \
     && iii_archive="iii-${iii_target}.tar.gz" \
-    && iii_url="https://github.com/iii-hq/iii/releases/download/iii/v0.23.0-rc.7/${iii_archive}" \
+    && iii_url="https://github.com/iii-hq/iii/releases/download/iii/v0.26.0-rc.4/${iii_archive}" \
     && python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "${iii_url}" "/tmp/${iii_archive}" \
     && echo "${iii_sha}  /tmp/${iii_archive}" | sha256sum -c - \
     && tar -xzf "/tmp/${iii_archive}" -C /usr/local/bin iii \
-    && test -x /usr/local/bin/iii
+    && test -x /usr/local/bin/iii \
+    && iii --no-update-check call --help >/dev/null
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY src/ src/
-RUN UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --frozen --no-dev --no-editable \
+# The environment is installed from uv.lock as committed; `uv lock --check`
+# first fails the build when the lock does not satisfy pyproject.toml.
+RUN env -u UV_FROZEN uv lock --check \
+    && UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --frozen --no-dev --no-editable \
     && find /app/.venv -path '*.dist-info/uv_cache.json' -delete \
     && find /app/.venv -path '*.dist-info/RECORD' -exec sed -i '/uv_cache\.json,/d' {} + \
     && rm -rf /tmp/uv-cache \

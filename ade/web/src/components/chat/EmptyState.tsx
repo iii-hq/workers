@@ -50,7 +50,7 @@ export interface EmptyStateProps {
   worktreePicker?: WorktreePickerOptions
 }
 
-const HARNESS_INSTALL_COMMAND = 'iii trigger compose::add worker=harness'
+const HARNESS_INSTALL_COMMAND = 'iii call compose::add worker=harness'
 
 // One heading and one body style for every variant, the welcome hero's.
 const HEADING_CLASS =
@@ -227,7 +227,7 @@ function InstallingBody({
 
 /**
  * Install console — `Terminal` chrome framed as the equivalent
- * `iii trigger compose::add worker=harness` run.
+ * `iii call compose::add worker=harness` run.
  */
 function InstallConsole({ running }: { running: boolean }) {
   return (

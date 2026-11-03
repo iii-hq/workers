@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ACTION_CHANGED_TRIGGER } from './live-triggers.js'
+import { ON_ACTION_CHANGED_FN } from './live-sources.js'
 import { actionUpdateFromEvent, createSecurityActionsStore, securityActionKey } from './security-actions.js'
 
 const KEY = securityActionKey('run-1', 2, 'issue')
@@ -39,27 +39,27 @@ function action(status, updatedAt = status === 'completed' ? 3 : 2) {
   }
 }
 
-/** A host whose binding and connection state the test drives. */
+/** A host whose observers and connection state the test drives. */
 function liveHost() {
   let handler = null
   let connection = null
-  const bindings = []
+  const calls = []
   return {
-    bindings,
+    calls,
     host: {
       iii: {
         browserId: 'browser-1',
         on(id, next) {
           handler = next
-          bindings.push({ on: id })
+          calls.push({ on: id })
           return () => {
             handler = null
           }
         },
-        registerTrigger(input) {
-          bindings.push(input)
+        observe(source, target) {
+          calls.push({ observe: source, target })
           return () => {
-            bindings.push({ unregistered: input.type })
+            calls.push({ disposed: source })
           }
         },
         addConnectionStateListener(next) {
@@ -80,7 +80,7 @@ function liveHost() {
   }
 }
 
-/** The flat `security-scan::action-changed` payload, with the field the engine adds. */
+/** The `security-scan::on-action-changed` event, with an extra field the parser ignores. */
 function changed(status, updatedAt = 3, actionId = 'action-1') {
   return {
     action_id: actionId,
@@ -104,26 +104,25 @@ async function settle() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve()
 }
 
-test('binds the worker-owned action trigger type to a tab-scoped handler', () => {
+test('observes the worker-owned action change function with a tab-scoped handler', () => {
   const harness = liveHost()
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'bind',
+    instanceId: 'tab',
     requestAction: async () => request,
     readAction: async () => null,
     errorText: String,
   })
   store.start()
-  assert.deepEqual(harness.bindings, [
-    { on: 'iii::security-scan-ui::actions::bind' },
+  assert.deepEqual(harness.calls, [
+    { on: 'iii::security-scan-ui::actions::tab' },
     {
-      type: ACTION_CHANGED_TRIGGER,
-      function_id: 'iii::security-scan-ui::actions::bind::browser-1',
-      config: {},
+      observe: ON_ACTION_CHANGED_FN,
+      target: 'iii::security-scan-ui::actions::tab::browser-1',
     },
   ])
   store.dispose()
-  assert.deepEqual(harness.bindings.at(-1), { unregistered: ACTION_CHANGED_TRIGGER })
+  assert.deepEqual(harness.calls.at(-1), { disposed: ON_ACTION_CHANGED_FN })
 })
 
 test('extracts action updates from action-changed payloads only', () => {
@@ -151,7 +150,7 @@ test('initial read after the request, then a live update re-reads the record', a
   let readCount = 0
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'one',
+    instanceId: 'one',
     requestAction: async () => request,
     readAction: async () => {
       readCount += 1
@@ -178,7 +177,7 @@ test('ignores notifications for actions this tab is not tracking', async () => {
   let readCount = 0
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'untracked',
+    instanceId: 'untracked',
     requestAction: async () => request,
     readAction: async () => {
       readCount += 1
@@ -199,7 +198,7 @@ test('duplicate notifications coalesce into one in-flight read plus one re-read'
   const pending = []
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'dup',
+    instanceId: 'dup',
     requestAction: async () => request,
     readAction: () => {
       const read = deferred()
@@ -234,7 +233,7 @@ test('reads apply in issue order, so a slow earlier read cannot overwrite a late
   const pending = []
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'order',
+    instanceId: 'order',
     requestAction: async () => request,
     readAction: () => {
       const read = deferred()
@@ -265,7 +264,7 @@ test('an out-of-order older notification does not roll the optimistic status bac
   const harness = liveHost()
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'stale',
+    instanceId: 'stale',
     requestAction: async () => request,
     // Authoritative reads fail, so the optimistic request status stays visible.
     readAction: async () => {
@@ -292,7 +291,7 @@ test('reconnect re-reads every tracked action once', async () => {
   let readCount = 0
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'reconnect',
+    instanceId: 'reconnect',
     requestAction: async () => request,
     readAction: async () => {
       readCount += 1
@@ -318,7 +317,7 @@ test('keeps a pending response separate when authoritative reads fail', async ()
   const harness = liveHost()
   const store = createSecurityActionsStore({
     host: harness.host,
-    bindingId: 'two',
+    instanceId: 'two',
     requestAction: async () => request,
     readAction: async () => {
       throw new Error('temporarily unavailable')
@@ -345,15 +344,15 @@ test('reads once through the request path when live updates are unavailable', as
         on() {
           return () => {}
         },
-        registerTrigger() {
-          throw new Error('trigger type unavailable')
+        observe() {
+          throw new Error('observe unavailable')
         },
         addConnectionStateListener() {
           throw new Error('connection unavailable')
         },
       },
     },
-    bindingId: 'three',
+    instanceId: 'three',
     requestAction: async () => request,
     readAction: async () => {
       reads += 1

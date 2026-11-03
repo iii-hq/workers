@@ -1,6 +1,6 @@
 //! Register the grok::* surface. Handlers parse at the unknown boundary and
 //! delegate to the grok turn loop; schemas are published via request_format
-//! so `iii trigger grok::run --help` prints the parameter table.
+//! so `iii call grok::run --help` prints the parameter table.
 
 pub mod types;
 
@@ -60,8 +60,8 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             .response_format(run_response_schema())
             .description(
                 "Run a Grok coding-agent turn and wait for its result. Accepts `prompt` or a \
-                 `messages` array; delivers raw Grok events on grok::raw-event and AgentEvent \
-                 frames on grok::agent-event; returns {session_id, result, stop_reason}.",
+                 `messages` array; delivers raw Grok events on grok::on-raw-event and AgentEvent \
+                 frames on grok::on-agent-event; returns {session_id, result, stop_reason}.",
             ),
         );
     }
@@ -113,8 +113,8 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
                 "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
             }))
             .description(
-                "Start a Grok turn and return immediately; bind grok::agent-event (or \
-                 grok::raw-event) with { session_id } for progress and turn_end, or poll \
+                "Start a Grok turn and return immediately; observe grok::on-agent-event (or \
+                 grok::on-raw-event) with args { session_id } for progress and turn_end, or poll \
                  grok::status.",
             ),
         );

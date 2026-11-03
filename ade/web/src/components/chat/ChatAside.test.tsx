@@ -15,7 +15,7 @@ import type { AsideRequest } from './ChatAside'
 
 const mocks = vi.hoisted(() => ({
   ctx: null as Record<string, unknown> | null,
-  trigger: vi.fn(),
+  call: vi.fn(),
   setSessionMeta: vi.fn(),
   deleteSession: vi.fn(),
 }))
@@ -24,7 +24,7 @@ vi.mock('@/lib/conversations-context', () => ({
   useConversationsCtx: () => mocks.ctx,
 }))
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: () => Promise.resolve({ trigger: mocks.trigger }),
+  getIiiClient: () => Promise.resolve({ call: mocks.call }),
 }))
 vi.mock('@/lib/sessions/api', () => ({
   setSessionMeta: mocks.setSessionMeta,
@@ -139,8 +139,8 @@ function render(
           sheetOpen={phone}
           onSheetOpenChange={() => {}}
           request={request}
-          triggers={[]}
-          onUnregisterTrigger={() => {}}
+          observers={[]}
+          onDisposeObserver={() => {}}
           pendingQuote={pendingQuote}
           onPendingQuoteChange={pending}
           onJumpToMessage={() => {}}
@@ -167,7 +167,7 @@ const button = (label: string) =>
 
 /** The session worker: tails for the main chat and the fork, and the fork. */
 function route(fork: () => Promise<unknown>) {
-  mocks.trigger.mockImplementation(
+  mocks.call.mockImplementation(
     (fn: string, payload: Record<string, unknown>) => {
       if (fn === 'session::fork') return fork()
       if (fn === 'session::messages-tail') {
@@ -202,7 +202,7 @@ beforeEach(() => {
   window.localStorage.clear()
   resetFoldedGroups()
   sideChatsMadeHere.clear()
-  mocks.trigger.mockReset()
+  mocks.call.mockReset()
   mocks.setSessionMeta.mockReset()
   mocks.deleteSession.mockReset()
   mocks.setSessionMeta.mockResolvedValue({})
@@ -217,7 +217,7 @@ afterEach(() => {
 })
 
 const forkCalls = () =>
-  mocks.trigger.mock.calls.filter(([fn]) => fn === 'session::fork')
+  mocks.call.mock.calls.filter(([fn]) => fn === 'session::fork')
 
 describe('ChatAside side chat', () => {
   it('forks once at the last spoken entry, tags, anchors and unlinks it', async () => {
@@ -519,7 +519,7 @@ describe('ChatAside context', () => {
 describe('ChatAside auto-fix rounds', () => {
   it('tells the agent what is new on a watched PR, once, and keeps the state', async () => {
     const gh: string[] = []
-    mocks.trigger.mockImplementation(
+    mocks.call.mockImplementation(
       (fn: string, payload: Record<string, unknown>) => {
         if (fn !== 'shell::exec') return Promise.reject(new Error(fn))
         const args = payload.args as string[]
@@ -584,7 +584,7 @@ describe('ChatAside auto-fix rounds', () => {
   })
 
   it('waits while the agent is working', async () => {
-    mocks.trigger.mockReset()
+    mocks.call.mockReset()
     mocks.ctx = { ...makeCtx([main]), shellAvailable: true }
     const ask = vi.fn()
     render(
@@ -609,6 +609,6 @@ describe('ChatAside auto-fix rounds', () => {
     )
     await settle()
     expect(ask).not.toHaveBeenCalled()
-    expect(mocks.trigger).not.toHaveBeenCalled()
+    expect(mocks.call).not.toHaveBeenCalled()
   })
 })

@@ -1,0 +1,93 @@
+{
+  "function_id": "worktree::on-created",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::on-created` — a new managed worktree exists.",
+    "properties": {
+      "base_ref": {
+        "type": "string"
+      },
+      "base_sha": {
+        "type": "string"
+      },
+      "branch": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "repo_path": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "base_ref",
+      "base_sha",
+      "branch",
+      "path",
+      "repo_path",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "CreatedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::on-created` — a new managed worktree exists.",
+    "properties": {
+      "base_ref": {
+        "type": "string"
+      },
+      "base_sha": {
+        "type": "string"
+      },
+      "branch": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "repo_path": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "base_ref",
+      "base_sha",
+      "branch",
+      "path",
+      "repo_path",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "CreatedEvent",
+    "type": "object"
+  }
+}

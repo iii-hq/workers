@@ -459,7 +459,7 @@
    a band of empty space between the prose and the card it introduces. The
    actions still paint into the gap on hover; they just stop reserving it. */
 .chat-message-stack > .chat-live-row:has(
-    + .chat-live-row > [data-function-trigger-group]
+    + .chat-live-row > [data-function-call-group]
   )
   > .chat-message[data-message-role="assistant"]
   > .chat-message-actions {
@@ -470,7 +470,7 @@
 
 .chat-message-stack
   > .chat-live-row:has(> .chat-message[data-message-role="assistant"])
-  + .chat-live-row:has(> [data-function-trigger-group]) {
+  + .chat-live-row:has(> [data-function-call-group]) {
   margin-top: calc(var(--chat-stack-gap) * -1 + 18px);
 }
 

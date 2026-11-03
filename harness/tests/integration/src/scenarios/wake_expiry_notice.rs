@@ -13,7 +13,7 @@
 //! The fix under test: the binding's own deadline timer retires it at
 //! `expires_at` (delete-first, so it can never race a real fire — and no
 //! periodic sweep is involved), injects a `[notification]` naming the
-//! watch, the deadline, and the finality, and writes the same `trigger_fired`
+//! watch, the deadline, and the finality, and writes the same `observer_fired`
 //! record every delivery outcome writes. The woken turn then completes
 //! TERMINAL — proven here by the run finishing at all, since the completion
 //! waiter only counts terminal turns.
@@ -32,7 +32,7 @@ use super::dsl::{
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 const SCOPE: &str = "e2e-012";
 const KEY: &str = "never";
 /// Relative to REGISTRATION (server-side resolution), so a slow machine can
@@ -60,8 +60,8 @@ pub(super) fn scenario() -> ScenarioFixture {
     // A one-shot WAKE on a state key NOTHING will ever write — the discovery
     // run's exact shape — with the lifecycle deadline the fix makes real.
     let register_args = json!({
-        "trigger_type": "state",
-        "config": { "scope": SCOPE, "key": KEY },
+        "function_id": "state::on-changed",
+        "filters": { "input.scope": { "$eq": SCOPE }, "input.key": { "$eq": KEY } },
         "once": true,
         "label": "doomed",
         "lifecycle": { "expires_in_ms": EXPIRES_IN_MS }
@@ -78,7 +78,9 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-012")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
+            // An agent observes only what its policy allows.
+            .allow_id("state::on-changed")
             .allow_function(&record),
     )
     // The arm turn completes PARKED (armed unexpired wake ⇒ terminal: false);
@@ -95,11 +97,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
-                REGISTER,
+                OBSERVE,
                 register_args,
                 8,
                 4,
@@ -114,19 +116,19 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("armed and parked", 10, 2)),
     )
     // The expiry-woken turn: a fresh externally initiated turn carrying the
-    // wake-lost notification as its user message. The expiry's engine-side
-    // unregister changes the registry, but not the functions this session may
-    // call (REGISTER and `record`), so no registry-changed notice may reach
+    // wake-lost notification as its user message. The expiry's observer
+    // disposal changes the registry, but not the functions this session may
+    // call (OBSERVE and `record`), so no registry-changed notice may reach
     // it. Advisory tail messages are invisible to matchers (the scripted
     // router strips them — their timing is stack noise elsewhere), so the
     // notice's absence is asserted over the raw router evidence in verify
@@ -144,7 +146,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "assistant" }),
                         json!({ "role": "user" }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("expiry noted", 10, 2)),
     )
@@ -217,7 +219,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         }
 
         // The durable record: same custom_type as every delivery outcome,
-        // with the expiry note, on the derived e_trigexpired_* entry id.
+        // with the expiry note, on the derived e_obsexpired_* entry id.
         let records: Vec<&Value> = run
             .transcript
             .iter()
@@ -225,12 +227,12 @@ pub(super) fn scenario() -> ScenarioFixture {
                 item.get("custom")
                     .and_then(|c| c.get("custom_type"))
                     .and_then(Value::as_str)
-                    == Some("trigger_fired")
+                    == Some("observer_fired")
             })
             .collect();
         anyhow::ensure!(
             records.len() == 1,
-            "expected exactly 1 trigger_fired record, got {}",
+            "expected exactly 1 observer_fired record, got {}",
             records.len()
         );
         let data = records[0]
@@ -262,8 +264,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             .and_then(Value::as_str)
         {
             anyhow::ensure!(
-                id.starts_with("e_trigexpired_"),
-                "expiry record id must be the derived e_trigexpired_* form, got {id}"
+                id.starts_with("e_obsexpired_"),
+                "expiry record id must be the derived e_obsexpired_* form, got {id}"
             );
         }
 

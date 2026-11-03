@@ -4,32 +4,37 @@
 //!
 //! Ships three assets into any running console:
 //!
-//! - `ide/page.js` (`console:script`) — the shell explorer page
+//! - `ide/page.js` (kind `script`) — the shell explorer page
 //!   (page `ide`: file tree / git / search sidebar beside the shared
 //!   Monaco editor and FileDiff pane), plus the `shell::*`
-//!   function-trigger renderer its `setup(host)` registers (moved out of
+//!   function-call renderer its `setup(host)` registers (moved out of
 //!   the console SPA, the iii-directory precedent).
-//! - `ide/styles.css` (`console:style`) — the stylesheet, every rule
+//! - `ide/styles.css` (kind `style`) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="ide"]`.
-//! - `ide/xterm.js` (`console:module`) — the xterm terminal emulator, which
+//! - `ide/xterm.js` (kind `module`) — the xterm terminal emulator, which
 //!   page.js imports with `host.importModule` only when a terminal opens.
 //!
-//! The registration machinery (content function `shell::ui-content`, one
-//! Message-path trigger per asset, `III_IDE_UI_WATCH` hot-reload
-//! watcher) lives in the shared `iii-console-ui` crate (path-linked from
-//! `workers/crates/console-ui`); this module only names the assets and
-//! embeds their bytes. The page's per-pane state (browsed folder, open
-//! tabs, terminal layout) is served by `ui_state.rs` from the worker's
-//! data directory — it used to live in a `shell-ui` configuration entry,
-//! which the worker no longer registers.
+//! Modules first: the console commits assets in the order their observers
+//! arrive, and `ide/xterm.js` is observed before `ide/page.js`, which
+//! imports it. After a reconnect the SDK replays the observers in the order
+//! they were created, so the module arrives before the page again.
+//!
+//! The registration machinery (content function `ide::ui-content`, one
+//! `console::ui::asset` observer per asset with args `{ kind, path }`,
+//! `III_IDE_UI_WATCH` hot-reload watcher) lives in the shared
+//! `iii-console-ui` crate (path-linked from `workers/crates/console-ui`);
+//! this module only names the assets and embeds their bytes. The page's
+//! per-pane state (browsed folder, open tabs, terminal layout) is served by
+//! `ui_state.rs` from the worker's data directory, never a configuration
+//! entry; the legacy `shell-ui` entry is imported once at boot.
 //!
 //! The assets are compiled from `ui/` by esbuild (react +
 //! @iii-dev/console-ui external — they resolve through the console's
 //! import map at runtime) and embedded at compile time so the worker
 //! stays one self-contained binary. For the dev loop, set
 //! `III_IDE_UI_WATCH` to the build output directory (or `1` for
-//! `ui/dist`): the worker polls every built asset and re-registers a changed
-//! asset's trigger — every open console tab hot-swaps it (xterm.js alone
+//! `ui/dist`): the worker polls every built asset and observes a changed
+//! asset afresh — every open console tab hot-swaps it (xterm.js alone
 //! reaches a tab's terminals once page.js reloads: page.js keeps the module
 //! it imported).
 

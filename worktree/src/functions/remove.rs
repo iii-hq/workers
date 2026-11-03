@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{codes, WError};
-use crate::events::{EventCtx, EventKind, RemovedEvent};
+use crate::events::{EventKind, RemovedEvent};
 use crate::functions::create::require_record;
 use crate::functions::Deps;
 use crate::git::ops;
@@ -151,16 +151,12 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     deps.emitter
         .emit(
             EventKind::Removed,
-            EventCtx {
-                repo_path: &record.repo_path,
-                worktree_id: &record.worktree_id,
-                session_id: record.session_id.as_deref(),
-            },
             &RemovedEvent {
                 worktree_id: record.worktree_id.clone(),
                 repo_path: record.repo_path.clone(),
                 branch: record.branch.clone(),
                 branch_deleted,
+                session_id: record.session_id.clone(),
                 timestamp: now_ms(),
             },
         )

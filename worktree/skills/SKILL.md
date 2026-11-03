@@ -110,41 +110,49 @@ repository not in `gates.repos`, `W504` per-repo worktree budget hit. The
 message names the exact key; do not retry, surface that key to the
 operator (or drop the force flag) instead.
 
-## Reactive triggers
+## Observing lifecycle events
 
-Register a `worktree::*` trigger when a different worker should react to
+Observe a `worktree::on-*` function when a different worker should react to
 lifecycle changes without polling `worktree::list` — announce lands in
 chat, start a follow-up agent when a sibling's branch merges, or alert on
 blocked lands.
 
 Reach for it when:
 
-- A land's outcome should drive the next step (`worktree::landed`,
-  `worktree::land-blocked` with `reason` and `conflict_files`).
-- Ownership changes matter to an orchestrator (`worktree::claimed`,
-  `worktree::released`).
-- Cleanup should cascade (`worktree::removed`).
+- A land's outcome should drive the next step (`worktree::on-landed`,
+  `worktree::on-land-blocked` with `reason` and `conflict_files`).
+- Ownership changes matter to an orchestrator (`worktree::on-claimed`,
+  `worktree::on-released`).
+- Cleanup should cascade (`worktree::on-removed`).
 
 The caller of `worktree::land` gets only `{ job_id, queued }` back; the
-outcome arrives on these triggers, so a landing workflow should always bind
-one instead of polling.
+outcome arrives as a call of these functions, so a landing workflow should
+always observe one instead of polling.
 
-### How to bind
+### How to observe
 
 1. Register a handler: `registerFunction('notify::on-land', handler)`.
-2. Register the trigger:
+2. Observe the function, selecting events with filters:
 
 ```typescript
-iii.registerTrigger({
-  type: 'worktree::landed',
-  function_id: 'notify::on-land',
-  config: {
-    // optional equality filters:
-    // repo_path, worktree_id, session_id
+iii.observe(
+  {
+    function_id: 'worktree::on-landed',
+    // optional filters on input.repo_path, input.worktree_id, input.session_id
+    filters: { 'input.repo_path': { $eq: '/home/me/project' } },
+    deliver: 'output', // the handler receives the event itself
   },
-})
+  'notify::on-land',
+)
 ```
 
-All six types accept the same three optional filters; unknown config keys
-are rejected at registration. For event payload shapes, call
-`get function info` on the trigger type.
+From an agent turn, the same observer goes through `harness::observe`:
+
+```json
+{ "function_id": "worktree::on-landed", "filters": { "input.worktree_id": { "$eq": "<worktree_id>" } } }
+```
+
+All six functions take no args and carry `repo_path`, `worktree_id` and
+`session_id` (when a session is involved) on the event. For event payload
+shapes, call `get function info` on the function: its response format is the
+event.

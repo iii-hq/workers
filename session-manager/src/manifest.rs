@@ -18,7 +18,7 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
-            "Durable, reactive, branching store of typed conversation entries with six emitted trigger types."
+            "Durable, reactive, branching store of typed conversation entries with six observable session event functions."
                 .to_string(),
         default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],

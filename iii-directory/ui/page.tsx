@@ -1,8 +1,8 @@
 /**
  * Entry for the iii-directory worker's injected console UI — compiled by
  * esbuild (react + @iii-dev/console-ui external) into dist/page.js and
- * served over the `console:script` trigger (see src/ui.rs). The stylesheet
- * is its own asset: ../styles.css ships over `console:style` as
+ * served as a `script` asset of `console::ui::asset` (see src/ui.rs). The
+ * stylesheet is its own `style` asset: ../styles.css ships as
  * iii-directory/styles.css.
  *
  * `setup(host)` composes the worker's four console contributions, one
@@ -10,7 +10,7 @@
  *
  * - src/page/             — the skills & agent profiles browser/editor
  * - src/configuration/    — custom form for the `iii-directory` configuration entry
- * - src/function-trigger/ — how directory::* function triggers render in chat/traces
+ * - src/function-call/    — how directory::* function calls render in chat/traces
  *
  * Registrations go through `host` so the loader disposes them on hot
  * reload / worker disconnect.
@@ -18,10 +18,10 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { DirectoryConfigForm } from './src/configuration'
-import { createDirectoryTriggerRenderer } from './src/function-trigger'
+import { createDirectoryCallRenderer } from './src/function-call'
 import { DirectoryPage } from './src/page'
 import { registerDirectoryPalette } from './src/page/palette'
-import { createSearchTriggerRenderer } from './src/search/search-card'
+import { createSearchCallRenderer } from './src/search/search-card'
 
 /**
  * The pre-generate hook's transcript annotations (`origin.directory`) stay
@@ -44,8 +44,8 @@ export default function setup(host: Host) {
 
   registerDirectoryPalette(host)
 
-  host.functionTriggers.register(createDirectoryTriggerRenderer(host))
-  host.functionTriggers.register(createSearchTriggerRenderer())
+  host.functionCalls.register(createDirectoryCallRenderer(host))
+  host.functionCalls.register(createSearchCallRenderer())
 
   host.configForms.register('iii-directory', DirectoryConfigForm)
 

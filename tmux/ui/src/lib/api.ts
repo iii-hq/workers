@@ -29,7 +29,7 @@ function credentials(terminal: TerminalCredentials) {
 
 export function createApi(iii: ExtensionIii) {
   const call = <T>(fn: string, payload: Record<string, unknown>, timeoutMs: number) =>
-    iii.trigger<T>(fn, payload, { timeoutMs })
+    iii.call<T>(fn, payload, { timeoutMs })
 
   return {
     listSessions: () => call<SessionsSnapshot>('tmux::sessions::list', {}, READ_TIMEOUT_MS),

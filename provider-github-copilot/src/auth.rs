@@ -11,8 +11,7 @@
 //!    `~/.config/github-copilot/apps.json` (VS Code / copilot.vim), then
 //!    pi's `~/.pi/agent/auth.json`. Never written back — the editor owns
 //!    its own file.
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 use crate::state;
@@ -86,7 +85,7 @@ pub fn read_local_editor_credential() -> Option<String> {
 
 pub async fn load_stored_oauth(iii: &IIIClient) -> Option<String> {
     let value = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".into(),
             payload: json!({ "scope": state::STATE_SCOPE, "key": state::OAUTH_TOKEN_KEY }),
             action: None,
@@ -109,7 +108,7 @@ pub async fn load_stored_oauth(iii: &IIIClient) -> Option<String> {
 }
 
 pub async fn store_oauth(iii: &IIIClient, token: &str) -> Result<(), iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".into(),
         payload: json!({
             "scope": state::STATE_SCOPE,

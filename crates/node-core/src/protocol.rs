@@ -46,12 +46,13 @@ pub fn wrap_eval(code: &str) -> String {
 }
 
 /// Source that invokes a registered JS handler, or — when `method` is given —
-/// one of a registered trigger TYPE's two callback methods. `fn_id`/`type_id`
-/// and the payload are escaped as JS string literals; the payload crosses as
-/// JSON text the prelude parses. `method` reaches `__iii.invoke` as a bare
-/// JS argument (a quoted string literal, or the literal token `undefined`)
-/// rather than JSON text, matching how the prelude's `invoke(id, payloadJson,
-/// method)` reads it directly with no `JSON.parse`.
+/// one of the function's two observer hooks (`observerAdded`,
+/// `observerRemoved`). `fn_id` and the payload are escaped as JS string
+/// literals; the payload crosses as JSON text the prelude parses. `method`
+/// reaches `__iii.invoke` as a bare JS argument (a quoted string literal, or
+/// the literal token `undefined`) rather than JSON text, matching how the
+/// prelude's `invoke(id, payloadJson, method)` reads it directly with no
+/// `JSON.parse`.
 pub fn wrap_invoke(fn_id: &str, payload: &Value, method: Option<&str>) -> String {
     let payload_json = serde_json::to_string(payload).expect("payload serializes");
     let method_arg = match method {
@@ -291,7 +292,7 @@ mod tests {
         assert!(!src.contains("\n"));
     }
 
-    /// A plain function invocation (the pre-Task-12 shape) sends the literal
+    /// A plain function invocation sends the literal
     /// token `undefined` as the third argument, not a string — the prelude's
     /// `invoke(id, payloadJson, method)` branches on `method` being falsy,
     /// and `"undefined"` (a quoted string) is truthy.
@@ -304,11 +305,11 @@ mod tests {
         );
     }
 
-    /// A trigger-type callback carries its method name as a proper JS string
-    /// literal, escaped exactly like `fn_id` and the payload.
+    /// An observer-hook callback carries its method name as a proper JS
+    /// string literal, escaped exactly like `fn_id` and the payload.
     #[test]
     fn wrap_invoke_escapes_a_method_name() {
-        let src = wrap_invoke("app::mytype", &json!({}), Some(r#"a"b"#));
+        let src = wrap_invoke("app::x", &json!({}), Some(r#"a"b"#));
         assert!(src.contains(r#""a\"b""#), "method not escaped: {src}");
     }
 

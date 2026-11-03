@@ -155,9 +155,9 @@ pub const CHROMIUM_INSTALL_ID: &str = "browser::chromium::install";
 pub const CHROMIUM_INSTALL_DESC: &str =
     "Download Chromium (Chrome for Testing, Stable, about 200 MB) into the worker's cache \
      (~/.cache/iii/browser/chrome) for a machine with no Chrome or Chromium. Returns at once \
-     with a job_id; progress arrives on the browser::chromium-install-progress trigger and in \
-     browser::chromium::status. A Chrome installed on the system still takes precedence. Does \
-     nothing when a Chromium is already found, unless force=true.";
+     with a job_id; progress arrives as calls of browser::on-chromium-install-progress (observe \
+     it) and in browser::chromium::status. A Chrome installed on the system still takes \
+     precedence. Does nothing when a Chromium is already found, unless force=true.";
 pub const HANDOFF_ID: &str = "browser::handoff";
 pub const HANDOFF_DESC: &str =
     "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
@@ -195,10 +195,10 @@ pub const STYLES_WRITE_DESC: &str =
      page's source files are untouched, and the edit dies with the next navigation.";
 pub const SCREENCAST_START_ID: &str = "browser::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
-    "Internal: start the live viewport feed — frames arrive on the browser::frame-event \
-     trigger and browser::frame reads the newest. With a viewer_id the viewer holds a lease: \
-     repeat the start to renew it, or it lapses. Console-UI plumbing; agents use \
-     browser::screenshot. Not an agent function.";
+    "Internal: start the live viewport feed — frames arrive as calls of \
+     browser::on-frame-event (observe it with { session_id } args) and browser::frame reads the \
+     newest. With a viewer_id the viewer holds a lease: repeat the start to renew it, or it \
+     lapses. Console-UI plumbing; agents use browser::screenshot. Not an agent function.";
 pub const SCREENCAST_STOP_ID: &str = "browser::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
     "Internal: stop the live frame push. Idempotent. Not an agent function.";
@@ -206,7 +206,7 @@ pub const FRAME_ID: &str = "browser::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No \
      capture round-trip: a viewer reads it once for its first paint, then frames arrive on \
-     browser::frame-event. Not an agent function.";
+     browser::on-frame-event. Not an agent function.";
 pub const RECORDING_START_ID: &str = "browser::recording::start";
 pub const RECORDING_START_DESC: &str =
     "Record a session's live viewport to a video file (webm or mp4). Turns the screencast on \
@@ -226,7 +226,7 @@ pub const PICK_START_DESC: &str =
      agent function.";
 pub const PICK_RESOLVE_ID: &str = "browser::pick::resolve";
 pub const PICK_RESOLVE_DESC: &str =
-    "Internal: resolve the element at a clicked viewport point and emit browser::picked. The \
+    "Internal: resolve the element at a clicked viewport point and emit browser::on-picked. The \
      console calls this on a pick-mode click. Not an agent function.";
 pub const PICK_STOP_ID: &str = "browser::pick::stop";
 pub const PICK_STOP_DESC: &str =
@@ -283,11 +283,13 @@ pub const RESIZE_DESC: &str =
      phone (touch input, an Android Chrome user agent); reload once when mode_changed.";
 pub const COOKIES_LIST_ID: &str = "browser::cookies::list";
 pub const COOKIES_LIST_DESC: &str =
-    "List the cookies on the session's current page (name, value, domain, path, flags).";
+    "List the cookies on the session's current page (name, value, domain, path, flags). Cookie \
+     values are credentials (logged-in sessions), so the function is not observable.";
 pub const COOKIES_SET_ID: &str = "browser::cookies::set";
 pub const COOKIES_SET_DESC: &str =
     "Set cookies on the session, like importing a cookie file. A cookie without a domain is \
-     scoped to the current page's URL. same_site is Strict, Lax, or None.";
+     scoped to the current page's URL. same_site is Strict, Lax, or None. Cookie values are \
+     credentials (logged-in sessions), so the function is not observable.";
 pub const COOKIES_CLEAR_ID: &str = "browser::cookies::clear";
 pub const COOKIES_CLEAR_DESC: &str =
     "Delete the cookies the tab's current page can see (its site's cookies). Other sites keep \
@@ -2735,7 +2737,9 @@ fn register_cookies_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 Ok::<_, Error>(cookies::CookiesListOutput { cookies })
             }
         })
-        .description(COOKIES_LIST_DESC),
+        .description(COOKIES_LIST_DESC)
+        // The output carries cookie values: credentials.
+        .observable(false),
     );
 }
 
@@ -2782,7 +2786,9 @@ fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 Ok::<_, Error>(cookies::CookiesSetOutput { ok: true, count })
             }
         })
-        .description(COOKIES_SET_DESC),
+        .description(COOKIES_SET_DESC)
+        // The input carries cookie values: credentials.
+        .observable(false),
     );
 }
 

@@ -26,7 +26,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Hot-swappable config snapshot: handlers `load()` per call (lock-free),
-/// the configuration trigger `store()`s a whole new value.
+/// the configuration reload `store()`s a whole new value.
 pub type SharedConfig = Arc<ArcSwap<CodeRunnerConfig>>;
 
 fn default_true() -> bool {

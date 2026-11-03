@@ -76,16 +76,10 @@ Feature: session::set-active-leaf — branch switching within a session
     Then the call fails with code "session/entry_not_found"
 
   # Prevents: set_active_leaf emitting spurious events — the spec gives
-  # it none of the six trigger types.
+  # it none of the six event functions.
   Scenario: a branch switch emits no events
-    Given a binding "b1" on "session::message-added" delivering to "obs::all" with config:
-      """
-      {}
-      """
-    And a binding "b2" on "session::meta-updated" delivering to "obs::all" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-added" delivering to "obs::all"
+    And an observer "b2" of "session::on-meta-updated" delivering to "obs::all"
     When I call "session::set-active-leaf" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }

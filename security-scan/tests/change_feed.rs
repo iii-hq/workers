@@ -1,40 +1,19 @@
-//! Drives the change trigger types the way the engine does: register
-//! callbacks, a committed change, then unregister callbacks.
+//! The change functions as consumers see them: the events a committed run or
+//! action change produces, and an emitter that calls nothing while the
+//! functions are unobserved.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::IIIClient;
 use security_scan::events::{
-    ActionChangedEventV1, ChangeDeliverer, ChangeFeed, ChangeKind, ChangeTriggerHandler, Delivery,
-    RunChangedEventV1, ACTION_CHANGED, RUN_CHANGED,
+    self, ActionChangedEventV1, ChangeFeed, ChangeKind, RunChangedEventV1, ON_ACTION_CHANGED_FN,
+    ON_RECONCILIATION_CHANGED_FN, ON_RUN_CHANGED_FN,
 };
 use security_scan::{
     RunRecordV1, RunStatusV1, ScanModeV1, SecurityActionKindV1, SecurityActionRecordV1,
     SecurityActionStatusV1,
 };
-use serde_json::{json, Value};
-
-#[derive(Default)]
-struct Recorder(Mutex<Vec<Delivery>>);
-
-#[async_trait]
-impl ChangeDeliverer for Recorder {
-    async fn deliver(&self, delivery: Delivery) -> Result<(), String> {
-        self.0.lock().unwrap().push(delivery);
-        Ok(())
-    }
-}
-
-fn binding(id: &str, function_id: &str, config: Value, namespace: Option<&str>) -> TriggerConfig {
-    TriggerConfig {
-        id: id.into(),
-        function_id: function_id.into(),
-        config,
-        metadata: None,
-        namespace: namespace.map(str::to_owned),
-    }
-}
+use serde_json::json;
 
 fn run(repository: &str, run_id: &str, status: RunStatusV1, updated_at: i64) -> RunRecordV1 {
     RunRecordV1 {
@@ -61,52 +40,8 @@ fn run(repository: &str, run_id: &str, status: RunStatusV1, updated_at: i64) -> 
     }
 }
 
-#[tokio::test]
-async fn ui_bindings_receive_committed_changes_until_unregistered() {
-    let recorder = Arc::new(Recorder::default());
-    let feed = Arc::new(ChangeFeed::new(recorder.clone()));
-    let runs = ChangeTriggerHandler::new(ChangeKind::Run, feed.clone());
-    let actions = ChangeTriggerHandler::new(ChangeKind::Action, feed.clone());
-
-    // A console tab binds every run change; another consumer scopes to one repository.
-    runs.register_trigger(binding(
-        "tab",
-        "iii::security-scan-ui::runs::browser-1",
-        json!({}),
-        Some("default"),
-    ))
-    .await
-    .unwrap();
-    runs.register_trigger(binding(
-        "scoped",
-        "audit::on-run",
-        json!({ "repository": "workers" }),
-        None,
-    ))
-    .await
-    .unwrap();
-    actions
-        .register_trigger(binding(
-            "tab-actions",
-            "iii::security-scan-ui::actions::r1::browser-1",
-            Value::Null,
-            Some("default"),
-        ))
-        .await
-        .unwrap();
-
-    let queued = run("iii", "sec_1", RunStatusV1::Queued, 10);
-    let sent = feed
-        .emit(
-            ChangeKind::Run,
-            &queued.repository,
-            &queued.run_id,
-            &RunChangedEventV1::from(&queued),
-        )
-        .await;
-    assert_eq!(sent, 1, "the repository-scoped binding must not see iii");
-
-    let action = SecurityActionRecordV1 {
+fn action() -> SecurityActionRecordV1 {
+    SecurityActionRecordV1 {
         schema_version: "1".into(),
         action_id: "act_1".into(),
         run_id: "sec_1".into(),
@@ -128,90 +63,64 @@ async fn ui_bindings_receive_committed_changes_until_unregistered() {
         updated_at: 11,
         completed_at: None,
         cleanup_completed_at: None,
-    };
-    assert_eq!(
-        feed.emit(
-            ChangeKind::Action,
-            &action.repository,
-            &action.run_id,
-            &ActionChangedEventV1::from(&action),
-        )
-        .await,
-        1
-    );
+    }
+}
 
-    let seen = recorder.0.lock().unwrap().clone();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[0].trigger_type, RUN_CHANGED);
+#[test]
+fn committed_changes_project_to_small_public_events() {
+    let queued = run("iii", "sec_1", RunStatusV1::Queued, 10);
     assert_eq!(
-        seen[0].function_id,
-        "iii::security-scan-ui::runs::browser-1"
+        serde_json::to_value(RunChangedEventV1::from(&queued)).unwrap(),
+        json!({
+            "run_id": "sec_1",
+            "repository": "iii",
+            "status": "queued",
+            "attempt": 1,
+            "updated_at": 10,
+            "completed_at": null,
+        })
     );
-    assert_eq!(seen[0].namespace.as_deref(), Some("default"));
-    assert_eq!(seen[0].payload["run_id"], "sec_1");
-    assert_eq!(seen[0].payload["status"], "queued");
-    assert_eq!(seen[0].payload["updated_at"], 10);
-    assert_eq!(seen[1].trigger_type, ACTION_CHANGED);
-    assert_eq!(seen[1].payload["action_id"], "act_1");
+    assert_eq!(
+        serde_json::to_value(ActionChangedEventV1::from(&action())).unwrap(),
+        json!({
+            "action_id": "act_1",
+            "run_id": "sec_1",
+            "repository": "iii",
+            "status": "queued",
+            "updated_at": 11,
+        })
+    );
+}
 
-    // The tab closes: the engine sends unregister callbacks; nothing more is sent to it.
-    runs.unregister_trigger(binding("tab", "", Value::Null, None))
-        .await
-        .unwrap();
-    actions
-        .unregister_trigger(binding("tab-actions", "", Value::Null, None))
-        .await
-        .unwrap();
-    let workers_run = run("workers", "sec_2", RunStatusV1::Completed, 12);
+#[test]
+fn each_kind_names_its_function() {
+    assert_eq!(ChangeKind::Run.function_id(), ON_RUN_CHANGED_FN);
     assert_eq!(
-        feed.emit(
-            ChangeKind::Run,
-            &queued.repository,
-            &queued.run_id,
-            &RunChangedEventV1::from(&queued),
-        )
-        .await,
-        0
+        ChangeKind::Reconciliation.function_id(),
+        ON_RECONCILIATION_CHANGED_FN
     );
-    assert_eq!(
-        feed.emit(
-            ChangeKind::Run,
-            &workers_run.repository,
-            &workers_run.run_id,
-            &RunChangedEventV1::from(&workers_run),
-        )
-        .await,
-        1
-    );
-    assert_eq!(
-        feed.emit(
-            ChangeKind::Action,
-            &action.repository,
-            &action.run_id,
-            &ActionChangedEventV1::from(&action),
-        )
-        .await,
-        0
-    );
-    let seen = recorder.0.lock().unwrap().clone();
-    assert_eq!(seen.len(), 3);
-    assert_eq!(seen[2].function_id, "audit::on-run");
-    assert_eq!(seen[2].payload["repository"], "workers");
+    assert_eq!(ChangeKind::Action.function_id(), ON_ACTION_CHANGED_FN);
 }
 
 #[tokio::test]
-async fn legacy_stream_shaped_configs_are_rejected() {
-    let feed = Arc::new(ChangeFeed::new(Arc::new(Recorder::default())));
-    let runs = ChangeTriggerHandler::new(ChangeKind::Run, feed.clone());
-    let error = runs
-        .register_trigger(binding(
-            "old",
-            "ui::runs",
-            json!({ "stream_name": "security-scan:runs", "group_id": "all" }),
-            None,
-        ))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("unknown field"), "{error}");
-    assert_eq!(feed.binding_count(ChangeKind::Run), 0);
+async fn an_unobserved_change_is_never_called() {
+    // `IIIClient::new` builds local state only: no engine, no observers.
+    let iii = Arc::new(IIIClient::new("ws://127.0.0.1:1"));
+    events::register_functions(&iii);
+    let feed = ChangeFeed::new(iii.clone());
+
+    for kind in ChangeKind::ALL {
+        assert!(!iii.is_observed(kind.function_id()));
+    }
+    let queued = run("iii", "sec_1", RunStatusV1::Queued, 10);
+    assert!(
+        !feed
+            .emit(ChangeKind::Run, &RunChangedEventV1::from(&queued))
+            .await
+    );
+    assert!(
+        !feed
+            .emit(ChangeKind::Action, &ActionChangedEventV1::from(&action()))
+            .await
+    );
 }

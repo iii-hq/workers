@@ -15,9 +15,7 @@ export const AUTH_INPUT_FIELDS: FieldRow[] = [
 export const AUTH_RESULT_FIELDS: FieldRow[] = [
   { name: 'allowed_functions', type: 'string[] = []', desc: 'allow beyond expose_functions.' },
   { name: 'forbidden_functions', type: 'string[] = []', desc: 'deny even if exposed. highest precedence.' },
-  { name: 'allowed_trigger_types', type: 'string[] | omitted', desc: 'trigger types the worker may bind. omitted = all.' },
-  { name: 'allow_trigger_type_registration', type: 'boolean = false', desc: 'may register new trigger types.' },
-  { name: 'allow_function_registration', type: 'boolean = true', desc: 'may register new functions.' },
+  { name: 'allow_function_registration', type: 'boolean = true', desc: 'may register new functions, event sources included.' },
   { name: 'function_registration_prefix', type: 'string | omitted', desc: 'private namespace prefix.' },
   { name: 'context', type: 'object = {}', desc: 'forwarded to middleware + hooks.' },
 ]
@@ -25,7 +23,7 @@ export const AUTH_RESULT_FIELDS: FieldRow[] = [
 export const MIDDLEWARE_FIELDS: FieldRow[] = [
   { name: 'function_id', type: 'string', desc: 'the function the worker wants to invoke.' },
   { name: 'payload', type: 'object', desc: 'the payload the worker sent.' },
-  { name: 'action', type: 'TriggerAction | omitted', desc: 'enqueue / void, if any.' },
+  { name: 'action', type: 'CallAction | omitted', desc: 'enqueue / void, if any.' },
   { name: 'context', type: 'object', desc: 'auth result context for this session.' },
 ]
 
@@ -39,17 +37,12 @@ export const HOOK_ROWS: HookRow[] = [
   {
     hook: 'on_function_registration',
     firesOn: 'RegisterFunction',
-    result: '{ function_id?, description?, metadata? }',
+    result: '{ function_id?, description?, metadata?, private?, observable?, args_format? }',
   },
   {
-    hook: 'on_trigger_registration',
-    firesOn: 'RegisterTrigger',
-    result: '{ trigger_id?, trigger_type?, function_id?, config? }',
-  },
-  {
-    hook: 'on_trigger_type_registration',
-    firesOn: 'RegisterTriggerType',
-    result: '{ trigger_type_id?, description? }',
+    hook: 'on_observer_registration',
+    firesOn: 'Observe',
+    result: '{ function_id?, target_function_id?, args?, filters?, metadata? }',
   },
 ]
 
@@ -82,15 +75,15 @@ export const DIVERGENCES: Divergence[] = [
     why: 'hardening for hostile multi-tenant discovery.',
   },
   {
-    title: 'registration-denial frame',
-    engine: 'denies a trigger/type registration silently, with no result frame.',
-    proxy: 'replies TriggerRegistrationResult{ error: REGISTRATION_DENIED } so the worker learns why.',
-    why: 'a silent drop is hard to debug; the sdk already handles the frame.',
+    title: 'observer targets and sources',
+    engine: 'checks a session’s access to an observer’s function and target.',
+    proxy: 'runs the same checks, and refuses engine:: targets and sources whose calls list functions, workers or observers.',
+    why: 'a proxied connection has no engine session: an engine:: target would run unrestricted.',
   },
   {
-    title: 'trigger target access',
-    engine: 'gates RegisterTrigger only by trigger-type perms + the optional hook.',
-    proxy: 'also resolves the bound function_id and runs access resolution on it.',
-    why: 'trigger firing bypasses the invoke gate; without this a worker binds to a function it cannot call.',
+    title: 'call-chain claims',
+    engine: 'keeps the caller an sdk sets on a call or a report.',
+    proxy: 'keeps it only when it names a call the engine routed to that connection, and writes it from that call.',
+    why: 'observers filter on caller; a worker must not place its calls in another worker’s chain.',
   },
 ]

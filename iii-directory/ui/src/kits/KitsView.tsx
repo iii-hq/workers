@@ -455,7 +455,7 @@ function Overview({
             ) : null}
           </form>
           <p className="dir-ui-kit-fine">Nothing is written until you review the plan. From a terminal:</p>
-          <TerminalCommandLine command="iii trigger directory::download-kit kit=<author>/<kit>" copy />
+          <TerminalCommandLine command="iii call directory::download-kit kit=<author>/<kit>" copy />
         </section>
 
         <section aria-label="Installed kits">

@@ -14,9 +14,11 @@ const client = vi.hoisted(() => {
       handlers.set(id, handler)
       return () => handlers.delete(id)
     },
-    registerTrigger: vi.fn(
-      (_input: { type: string; function_id: string; config: unknown }) =>
-        vi.fn(),
+    observe: vi.fn(
+      (
+        _source: { function_id: string; filters?: unknown },
+        _target: string,
+      ) => vi.fn(),
     ),
   }
 })
@@ -46,13 +48,15 @@ describe('useWorkerRegistryReactivity', () => {
       )
     })
 
-    const binding = client.registerTrigger.mock.calls
-      .map(([input]) => input)
-      .find((input) => input.type === 'configuration')
-    expect(binding?.config).toEqual({
-      event_types: ['configuration:registered', 'configuration:updated'],
+    const call = client.observe.mock.calls.find(
+      ([source]) => source.function_id === 'configuration::on-updated',
+    )
+    expect(call?.[0].filters).toEqual({
+      'input.event_type': {
+        $in: ['configuration:registered', 'configuration:updated'],
+      },
     })
-    client.handlers.get(binding?.function_id.replace(/::tab$/, '') ?? '')?.({
+    client.handlers.get(call?.[1].replace(/::tab$/, '') ?? '')?.({
       event_type: 'configuration:registered',
       id: 'ide',
     })

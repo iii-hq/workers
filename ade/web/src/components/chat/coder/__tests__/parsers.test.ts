@@ -637,9 +637,9 @@ describe('searchRequestSchema', () => {
   it('reads `pattern` as a regex `query` when `query` is absent, like the worker', () => {
     const r = safeParseRequest(searchRequestSchema, {
       path: 'src',
-      pattern: 'registerTrigger|subscribe',
+      pattern: 'registerFunction|subscribe',
     })
-    expect(r?.query).toBe('registerTrigger|subscribe')
+    expect(r?.query).toBe('registerFunction|subscribe')
     expect(r?.regex).toBe(true)
     expect(r?.path).toBe('src')
   })

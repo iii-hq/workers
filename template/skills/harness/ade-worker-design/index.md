@@ -2,7 +2,7 @@
 name: ade-worker-design
 description: >-
   Design and build the UI an iii worker injects into the ADE console — pages,
-  function and trigger-activity renderers, configuration forms and scoped
+  function and observer-activity renderers, configuration forms and scoped
   stylesheets — against the console's host contract, its design system and the
   record-shaped interaction patterns. Read it before adding or changing any
   worker console UI.
@@ -11,23 +11,24 @@ description: >-
 # ade-worker-design
 
 The ADE console is the host every worker can inject UI into at runtime: a
-worker registers a `console:script` and a `console:style` asset, every open
-tab imports the module, calls its `setup(host)`, and hot-reloads it on
-re-registration. No console rebuild, no iframe. This skill is the designer's
-half of building such a worker: what the host accepts, how the console looks
-and behaves, and which interaction pattern fits which kind of data. The
-worker's service half — package shape, functions, configuration, delivery,
-compose wiring — is the `iii-node` skill and belongs to the Backend Engineer.
+worker observes `console::ui::asset` once for its script and once for its
+style, every open tab imports the module, calls its `setup(host)`, and
+hot-reloads it when the asset changes. No console rebuild, no iframe. This
+skill is the designer's half of building such a worker: what the host
+accepts, how the console looks and behaves, and which interaction pattern
+fits which kind of data. The worker's service half — package shape,
+functions, configuration, delivery, compose wiring — is the `iii-node` skill
+and belongs to the Backend Engineer.
 
 ## The three references
 
 Read them in this order, fully rather than skimmed:
 
 - `console-injectable-ui` — the authoring contract: the wire contract and
-  asset rules, the `setup(host)` slots (pages, panels, function-trigger and
-  trigger-activity renderers, configuration forms, provider forms, chat
-  slots), `host.iii` for live data, build with exactly five externals,
-  scoping, hot reload, debugging, testing and the delivery checks.
+  asset rules, the `setup(host)` slots (pages, panels, function-call and
+  observer-activity renderers, configuration forms, provider forms, chat
+  slots), `host.iii` for calls and live data, build with exactly five
+  externals, scoping, hot reload, debugging, testing and the delivery checks.
 - `console-design` — the iii Schematic design system: surface ramp, tokens,
   typography, radius, motion, icons, selection, responsive rules and the
   component grammar every injected page must compose from.
@@ -48,8 +49,9 @@ Fetch any of them with `directory::skills::get { "id": "harness/ade-worker-desig
   declared there, it does not exist.
 - Every rule in the worker stylesheet is scoped under
   `[data-iii-ui="<worker>"]`; an unscoped rule restyles the whole console.
-- Asset triggers go through the SDK Message path, never the durable
-  `engine::register_trigger`, and never `console:assets`.
+- Assets are `console::ui::asset` observers made over the worker's own
+  connection, so they leave with the worker; never observe the tab-only
+  `console::ui::on-assets-changed`.
 - Done means the UI was seen in the running console at phone, narrow-split
   and wide widths, in both themes, with the manifest free of warnings — not
   that the build passed.

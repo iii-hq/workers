@@ -302,14 +302,14 @@ function makeHarness() {
   responses.set(CATALOG_FN, () => ({ images: [] }))
   responses.set(RUNTIMES_FN, () => ({ runtimes: [] }))
 
-  const trigger = async (functionId: string) => {
+  const call = async (functionId: string) => {
     calls.push(functionId)
     const responder = responses.get(functionId)
     if (!responder) throw new Error(`no responder for ${functionId}`)
     return responder()
   }
 
-  const store = createFleetStore(trigger, {
+  const store = createFleetStore(call, {
     setTimer: (fn, ms) => {
       const timer: Timer = { fn, ms, cleared: false }
       timers.push(timer)

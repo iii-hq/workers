@@ -35,7 +35,7 @@ pub const REFRESH_MODELS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openrouter::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

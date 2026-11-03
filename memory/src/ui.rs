@@ -4,18 +4,18 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `memory/page.js` (`console:script`) — the `memory` page: banks in
+//! - `memory/page.js` (a `script` asset) — the `memory` page: banks in
 //!   a left rail, the selected bank's memories (pin/edit/tombstone in place),
 //!   a schematic graph, its always-injected markdown rules, and a turn-preview
-//!   dry run. Everything re-reads live off the `memory::item-changed` /
-//!   `memory::bank-changed` trigger types over a tab-scoped binding.
-//! - `memory/styles.css` (`console:style`) — the stylesheet, every rule
+//!   dry run. Everything re-reads live off `memory::on-item-changed` /
+//!   `memory::on-bank-changed` through tab-scoped observers.
+//! - `memory/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="memory"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `memory::ui-content`, one
-//! Message-path trigger per asset, `III_MEMORY_UI_WATCH` hot-reload watcher)
-//! lives in the shared `iii-console-ui` crate (path-linked from
+//! `console::ui::asset` observer per asset, `III_MEMORY_UI_WATCH` hot-reload
+//! watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and embeds
 //! their bytes.
 //!
@@ -23,8 +23,8 @@
 //! external — they resolve through the console's import map at runtime) and
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_MEMORY_UI_WATCH` to the build output directory
-//! (or `1` for `ui/dist`): the worker polls both files and re-registers a
-//! changed asset's trigger — every open console tab hot-swaps it.
+//! (or `1` for `ui/dist`): the worker polls both files and observes a
+//! changed asset afresh — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

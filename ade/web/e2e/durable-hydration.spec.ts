@@ -7,7 +7,7 @@ test('hydrates a durable transcript after reload even when the first response is
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger()
+  await stack.send()
   expect(await completed).toMatchObject({ status: 'completed' })
 
   await openSession(page, stack)

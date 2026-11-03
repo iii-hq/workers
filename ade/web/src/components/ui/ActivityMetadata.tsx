@@ -75,7 +75,7 @@ export interface MetaRowProps extends React.HTMLAttributes<HTMLDivElement> {
   items?: readonly MetaRowItem[]
 }
 
-/** The wrapping metadata strip a function-trigger card opens with. */
+/** The wrapping metadata strip a function-call card opens with. */
 export function MetaRow({
   items,
   children,

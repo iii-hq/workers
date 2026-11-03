@@ -64,7 +64,7 @@ fn evaluate<'a>(
         let expected = expected(run_id);
         let observed = common::state_value(
             context
-                .trigger("state::get", json!({ "scope": scope, "key": KEY }))
+                .call("state::get", json!({ "scope": scope, "key": KEY }))
                 .await?,
         );
         let calls = common::function_calls(&observation.transcript);
@@ -128,7 +128,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let scope = scope(run_id);
         let _: Value = context
-            .trigger("state::delete", json!({ "scope": scope, "key": KEY }))
+            .call("state::delete", json!({ "scope": scope, "key": KEY }))
             .await?;
         Ok(())
     })

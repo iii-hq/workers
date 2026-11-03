@@ -45,20 +45,17 @@ export function useFollowAnalysisChat(
       if (!openAnalysisConversation(host, event.session_id)) return
       onFollowedRef.current()
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: 'session::created',
-      function_id: `${FOLLOW_FN}::${host.iii.browserId}`,
-      config: {},
-    })
+    const offObserver = host.iii.observe('session::on-created', `${FOLLOW_FN}::${host.iii.browserId}`)
     return () => {
-      offTrigger()
+      offObserver()
       offHandler()
     }
   }, [host])
 
-  // One attempt for a conversation that already exists; a conversation created
-  // later arrives on the `session::created` binding above. No retry timer:
-  // the event is the only other thing that can change the answer.
+  // One attempt for a conversation that already exists; a conversation
+  // created later arrives through the `session::on-created` observer above.
+  // No retry timer: the event is the only other thing that can change the
+  // answer.
   useEffect(() => {
     if (!followRunId) return
     let cancelled = false

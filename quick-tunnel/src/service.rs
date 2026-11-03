@@ -1,15 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use iii_sdk::{
-    protocol::{TriggerRequest, TriggerRequestWithMetadata},
-    trigger::{TriggerConfig, TriggerHandler},
-    Error, IIIClient, RegisterFunction, RegisterTriggerType,
-};
-use tokio::{
-    sync::{broadcast, RwLock},
-    task::JoinHandle,
-};
+use iii_sdk::{CallAction, CallRequest, Error, IIIClient, RegisterFunction};
+use tokio::{sync::broadcast, task::JoinHandle};
 
 use crate::{api::*, manager::Manager};
 
@@ -33,104 +25,43 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for EngineRequest<
 pub const ACQUIRE: &str = "quick-tunnel::acquire";
 pub const RELEASE: &str = "quick-tunnel::release";
 pub const STATUS: &str = "quick-tunnel::status";
-pub const CHANGED: &str = "quick-tunnel::changed";
+/// Observable: each call is one tunnel lifecycle snapshot.
+pub const ON_CHANGED_FN: &str = "quick-tunnel::on-changed";
 
-#[derive(Clone)]
-pub struct Changes {
-    targets: Arc<Vec<String>>,
-    bindings: Arc<RwLock<BTreeMap<String, (ChangedConfig, TriggerConfig)>>>,
-}
-
-impl Changes {
-    pub fn new(targets: Vec<String>) -> Self {
-        Self {
-            targets: Arc::new(targets),
-            bindings: Arc::default(),
-        }
+/// Calls [`ON_CHANGED_FN`] with `snapshot` when something observes it.
+/// Fire-and-forget: iii delivers the call to the observers whose filters
+/// match, and a slow observer never holds the lease task.
+pub async fn emit(iii: &IIIClient, snapshot: &Snapshot) {
+    if !iii.is_observed(ON_CHANGED_FN) {
+        return;
     }
-
-    async fn dispatch(&self, iii: &IIIClient, event: &Snapshot) {
-        let bindings: Vec<_> = self
-            .bindings
-            .read()
-            .await
-            .values()
-            .filter(|(filter, _)| {
-                filter
-                    .tunnel_id
-                    .as_ref()
-                    .is_none_or(|id| id == &event.tunnel_id)
-            })
-            .map(|(_, binding)| binding.clone())
-            .collect();
-        for binding in bindings {
-            match routed_request(&binding, event) {
-                Ok(request) => {
-                    if let Err(error) = iii.trigger(request).await {
-                        tracing::warn!(trigger_id = %binding.id, %error, "changed delivery failed; consumer must reconcile status");
-                    }
-                }
-                Err(error) => tracing::error!(%error, "changed serialization failed"),
-            }
+    let payload = match serde_json::to_value(snapshot) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::error!(%error, "changed serialization failed");
+            return;
         }
-    }
-}
-
-/// Preserve target metadata and resolved namespace, including the legacy default.
-pub fn routed_request(
-    binding: &TriggerConfig,
-    event: &Snapshot,
-) -> Result<TriggerRequestWithMetadata, Error> {
-    let mut request: TriggerRequestWithMetadata = TriggerRequest {
-        function_id: binding.function_id.clone(),
-        payload: serde_json::to_value(event)?,
-        action: None,
-        timeout_ms: Some(5_000),
-    }
-    .namespace(binding.namespace.as_deref().unwrap_or("default"));
-    if let Some(metadata) = &binding.metadata {
-        request = request.metadata(metadata.clone());
-    }
-    Ok(request)
-}
-
-#[async_trait]
-impl TriggerHandler for Changes {
-    async fn register_trigger(&self, binding: TriggerConfig) -> Result<(), Error> {
-        let filter: ChangedConfig = serde_json::from_value(binding.config.clone())?;
-        if filter
-            .tunnel_id
-            .as_ref()
-            .is_some_and(|id| !self.targets.contains(id))
-        {
-            return Err(Error::Handler("unknown tunnel_id".into()));
-        }
-        if binding
-            .namespace
-            .as_deref()
-            .is_some_and(|ns| ns.trim().is_empty())
-        {
-            return Err(Error::Handler("empty namespace".into()));
-        }
-        let mut bindings = self.bindings.write().await;
-        if bindings.len() >= 1024 && !bindings.contains_key(&binding.id) {
-            return Err(Error::Handler("subscription limit reached".into()));
-        }
-        bindings.insert(binding.id.clone(), (filter, binding));
-        Ok(())
-    }
-    async fn unregister_trigger(&self, binding: TriggerConfig) -> Result<(), Error> {
-        self.bindings.write().await.remove(&binding.id);
-        Ok(())
+    };
+    let request = CallRequest {
+        function_id: ON_CHANGED_FN.into(),
+        payload,
+        action: Some(CallAction::Void),
+        timeout_ms: None,
+    };
+    if let Err(error) = iii.call(request).await {
+        tracing::warn!(tunnel_id = %snapshot.tunnel_id, %error, "changed call failed; observers reconcile with quick-tunnel::status");
     }
 }
 
 /// Registers only local SDK handlers; never invokes cloudflared during registration.
 pub fn register(iii: Arc<IIIClient>, manager: Manager, targets: Vec<String>) -> JoinHandle<()> {
-    let changes = Changes::new(targets.clone());
     let mut events = manager.subscribe();
-    iii.register_trigger_type(RegisterTriggerType::new(CHANGED, "Tunnel lifecycle snapshot changed; subscribe before acquire, then read status to close races", changes.clone())
-        .trigger_request_format::<ChangedConfig>().call_request_format::<Snapshot>());
+    iii.register_function(
+        ON_CHANGED_FN,
+        RegisterFunction::new(|snapshot: Snapshot| Ok::<_, Error>(snapshot))
+            .description("Tunnel lifecycle snapshot changed. Observe it before acquire, filtered on input.tunnel_id, then read status to close races")
+            .private(),
+    );
     let acquire = manager.clone();
     iii.register_function(ACQUIRE, RegisterFunction::new_async(move |EngineRequest(request): EngineRequest<AcquireRequest>| {
         let manager = acquire.clone();
@@ -175,7 +106,7 @@ pub fn register(iii: Arc<IIIClient>, manager: Manager, targets: Vec<String>) -> 
     tokio::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(event) => changes.dispatch(&iii, &event).await,
+                Ok(event) => emit(&iii, &event).await,
                 Err(broadcast::error::RecvError::Lagged(count)) => {
                     tracing::warn!(count, "changed receiver lagged; reconciling snapshots");
                     for id in &targets {
@@ -185,7 +116,7 @@ pub fn register(iii: Arc<IIIClient>, manager: Manager, targets: Vec<String>) -> 
                             })
                             .await
                         {
-                            changes.dispatch(&iii, &status.snapshot).await;
+                            emit(&iii, &status.snapshot).await;
                         }
                     }
                 }

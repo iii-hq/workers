@@ -15,7 +15,10 @@ use crate::ids;
 pub const REPEATED_CONTRACT_DISCOVERY: &str = "repeated_contract_discovery";
 pub const REPEATED_TOOL_ERROR: &str = "repeated_tool_error";
 const CONTRACT_INFO: &str = "engine::functions::info";
-const TRIGGERS_INFO: &str = "engine::triggers::info";
+/// The 0.25 engine's trigger-type lookup. Transcripts recorded against a 0.25
+/// engine probe it in the default namespace, where `NOT_FOUND` is the expected
+/// answer.
+const STORED_TYPE_LOOKUP: &str = "engine::triggers::info";
 use harness::window::MODEL_NOTICE;
 const REGISTRY_CHANGED: &str = "registry-changed";
 const UNCHANGED_IN_CONTEXT: &str = "unchanged_in_context";
@@ -76,12 +79,12 @@ pub fn detect(session_id: &str, entries: &[Value]) -> Detection {
     for (at, entry) in entries.iter().enumerate() {
         match role(entry) {
             "assistant" => match serde_json::from_value::<AgentMessage>(entry["message"].clone()) {
-                // `Native` unwraps only `agent_trigger` wrappers; any other
+                // `Native` unwraps only `agent_call` wrappers; any other
                 // block already names its target.
                 Ok(AgentMessage::Assistant(message)) => calls.extend(
                     plan_calls(&message, ExposeMode::Native)
                         .into_iter()
-                        .filter(|call| call.kind == CallKind::Trigger)
+                        .filter(|call| call.kind == CallKind::Call)
                         .map(|call| Call {
                             at,
                             id: call.id,
@@ -359,7 +362,7 @@ fn diagnostic(
 
 /// Protocol probes that are expected to fail and are not recovery attempts.
 fn expected_probe(target: &str, code: &str, payload: &Value) -> bool {
-    target == TRIGGERS_INFO
+    target == STORED_TYPE_LOOKUP
         && code.eq_ignore_ascii_case("NOT_FOUND")
         && payload
             .get("namespace")
@@ -517,7 +520,7 @@ mod tests {
     fn wrapped(id: &str, function: &str, payload: Value) -> ContentBlock {
         ContentBlock::FunctionCall {
             id: id.into(),
-            function_id: "agent_trigger".into(),
+            function_id: harness::policy::AGENT_CALL_NAME.into(),
             arguments: json!({"function": function, "description": "work", "payload": payload}),
         }
     }
@@ -849,38 +852,32 @@ mod tests {
     }
 
     #[test]
-    fn default_namespace_trigger_probe_is_expected_but_other_namespaces_are_not() {
+    fn a_stored_default_namespace_type_lookup_is_expected_but_other_namespaces_are_not() {
         let probe = |payload: Value| {
             vec![
-                assistant(0, vec![wrapped("a", TRIGGERS_INFO, payload.clone())]),
-                error("a", TRIGGERS_INFO, "NOT_FOUND"),
-                assistant(1, vec![wrapped("b", TRIGGERS_INFO, payload)]),
-                error("b", TRIGGERS_INFO, "NOT_FOUND"),
+                assistant(0, vec![wrapped("a", STORED_TYPE_LOOKUP, payload.clone())]),
+                error("a", STORED_TYPE_LOOKUP, "NOT_FOUND"),
+                assistant(1, vec![wrapped("b", STORED_TYPE_LOOKUP, payload)]),
+                error("b", STORED_TYPE_LOOKUP, "NOT_FOUND"),
             ]
         };
-        let quiet = detect("s", &probe(json!({"trigger_type": "x"})));
+        let quiet = detect("s", &probe(json!({})));
         assert!(quiet.diagnostics.is_empty());
         assert_eq!(
             quiet.excluded_probes.len(),
             1,
             "the skipped probe is recorded"
         );
-        assert_eq!(quiet.excluded_probes[0].target, TRIGGERS_INFO);
+        assert_eq!(quiet.excluded_probes[0].target, STORED_TYPE_LOOKUP);
         assert_eq!(quiet.excluded_probes[0].code, "NOT_FOUND");
         assert_eq!(quiet.excluded_probes[0].calls, ["a", "b"]);
-        assert!(detect(
-            "s",
-            &probe(json!({"trigger_type": "x", "namespace": "default"}))
-        )
-        .diagnostics
-        .is_empty());
-        assert_eq!(
-            detect(
-                "s",
-                &probe(json!({"trigger_type": "x", "namespace": "crm"}))
-            )
+        assert!(detect("s", &probe(json!({"namespace": "default"})))
             .diagnostics
-            .len(),
+            .is_empty());
+        assert_eq!(
+            detect("s", &probe(json!({"namespace": "crm"})))
+                .diagnostics
+                .len(),
             1
         );
     }

@@ -32,7 +32,7 @@ pub struct WorkerConfig {
     pub default_bank: String,
 
     /// Inject the bank's markdown rules into the system prompt
-    /// (`harness::hook::pre-generate`). The section is rendered on a
+    /// (`harness::hook::on-pre-generate`). The section is rendered on a
     /// session's first step and sent verbatim after that; a later change
     /// (this flag included) reaches running sessions as one appended update
     /// message, never as a system-prompt edit.
@@ -280,6 +280,22 @@ mod tests {
             assert!(
                 prop.get("description").is_some(),
                 "config field `{name}` is missing a doc comment (the console renders it)"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_names_the_observed_hook_function() {
+        let schema = WorkerConfig::json_schema().to_string();
+        assert!(schema.contains("`harness::hook::on-pre-generate`"));
+        for removed in [
+            "harness::hook::pre-generate",
+            "harness::turn-completed",
+            "session::deleted",
+        ] {
+            assert!(
+                !schema.contains(removed),
+                "the config schema names the removed id {removed}"
             );
         }
     }

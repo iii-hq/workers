@@ -29,6 +29,16 @@ describe('context section order', () => {
     expect(kept()).toEqual(['links', 'project', 'sentinel-errors'])
   })
 
+  it('reads a stored Triggers group as Observers', () => {
+    window.localStorage.setItem(
+      'iii-context-order',
+      JSON.stringify(['triggers', 'project']),
+    )
+    resetFoldedGroups()
+    moveSection(['observers', 'project'], 'project', { before: 'observers' })
+    expect(kept()).toEqual(['project', 'observers'])
+  })
+
   it('moves after a neighbour', () => {
     moveSection(['project', 'tickets', 'links'], 'project', { after: 'links' })
     expect(kept()).toEqual(['tickets', 'links', 'project'])

@@ -10,16 +10,16 @@ and `iii-permissions.yaml` blocks agent access to `provider::anthropic::*`.
 ## Install
 
 ```bash
-iii trigger compose::add worker=provider-anthropic
+iii call compose::add worker=provider-anthropic
 ```
 
 The provider does nothing on its own — it plugs into the router:
 
 ```bash
-iii trigger compose::add worker=llm-router
+iii call compose::add worker=llm-router
 ```
 
-`iii trigger compose::add` resolves each worker and its dependencies, writes
+`iii call compose::add` resolves each worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
@@ -37,10 +37,14 @@ in the catalog (`router::models::list`). Then make a first call — Node shown,
 any SDK works:
 
 ```ts
-const res = await iii.trigger('router::complete', {
-  model: 'claude-sonnet-4-6',
-  messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
-}, { timeout_ms: 320_000 }); // outer timeout ≥ the router's 300s stream budget
+const res = await iii.call({
+  function_id: 'router::complete',
+  payload: {
+    model: 'claude-sonnet-4-6',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
+  },
+  timeoutMs: 320_000, // outer timeout ≥ the router's 300s stream budget
+});
 // res: { message, usage, provider, model } — message is the final AssistantMessage
 ```
 

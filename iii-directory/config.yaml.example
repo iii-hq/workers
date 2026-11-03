@@ -78,11 +78,11 @@ function_search_mode: judge
 function_search_judge_timeout_ms: 3000
 # Finite 0..1 inclusive; 0.5 is an initial calibration value.
 function_search_judge_min_relevance: 0.5
-# Finite 0..1 inclusive; floor for the installed-skills and registered-triggers sections.
+# Finite 0..1 inclusive; floor for the installed-skills and observers sections.
 function_search_judge_side_lane_min_relevance: 0.3
 # A valid result with no relevant functions stays empty. The judge scores a
 # per-capability shortlist (BM25 fused with MiniLM, 16 deep) of functions,
-# registry contracts, skills and triggers; judge failures fall back to Hybrid,
+# registry contracts, skills and observers; judge failures fall back to Hybrid,
 # then Lexical if the local model is disabled, missing, unready or fails.
 # Registry judge ranking evaluates only the pool returned by upstream lexical
 # search; it cannot recover workers that the registry did not return.
@@ -97,8 +97,9 @@ function_search_judge_side_lane_min_relevance: 0.3
 # bundle is provisioned by hand.
 function_search_model_download: true
 
-# Bind the directory::pre-generate hook so the conditional search hint can
-# be injected into agent generations. Off unbinds the hook entirely.
+# Observe harness::hook::on-pre-generate with directory::pre-generate so the
+# conditional search hint can be injected into agent generations. Off disposes
+# the observer.
 inject_hint: true
 
 # Only inject the search hint when the session's surface spans at least

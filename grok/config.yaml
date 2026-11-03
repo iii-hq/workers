@@ -7,10 +7,10 @@ defaults:
   cwd: ""
   always_approve: true # auto-approve tool/command execution on headless turns
 
-# Event feeds are fixed trigger types, not configurable streams: bind
-# `grok::agent-event` (translated AgentEvent frames) or `grok::raw-event`
-# (verbatim Grok streaming-json events) with { session_id }. The retired
-# events_stream / raw_events_stream keys are ignored if still present.
+# Event feeds: observe `grok::on-agent-event` (translated AgentEvent frames)
+# or `grok::on-raw-event` (verbatim Grok streaming-json events) with args
+# { session_id }. `events_stream` and `raw_events_stream` keys are accepted
+# and ignored.
 
 # Deliver the iii runtime context as the leading agent instructions: teaches
 # the agent live discovery against the engine catalog through the iii CLI.

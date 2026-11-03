@@ -134,7 +134,8 @@ export interface TestHost {
   readonly saved: Json[]
   readonly opened: string[]
   readonly focusRequests: Json[]
-  readonly subscriptions: Map<number, { trigger: string; config: Json }>
+  /** The observers the app holds, by subscription id. */
+  readonly subscriptions: Map<number, { fn: string; args: Json; filters: Json }>
   readonly storage: Map<string, Json>
   readonly deck: Card[]
   readonly roots: Map<number, number>
@@ -156,7 +157,8 @@ export interface TestHost {
   respond(reqId: number, value: Json): Promise<void>
   fail(reqId: number, code: string, message: string): Promise<void>
   env(changes: Partial<Env>): Promise<void>
-  emitTrigger(type: string, payload: Json): Promise<number>
+  /** A call of `fn` whose output is `payload`, delivered to every observer of `fn`; resolves with how many got it. */
+  emitObserved(fn: string, payload: Json): Promise<number>
   find(target: Target): NodeView
   findAll(target: Target, options?: { templates?: boolean; within?: number }): NodeView[]
   tree(page?: number): NodeView | null

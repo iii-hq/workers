@@ -2,25 +2,25 @@
 //!
 //! Ships four assets into any running console:
 //!
-//! - `canvas/page.js` (`console:script`) — the canvas page (list, edit, draw)
+//! - `canvas/page.js` (a `script` asset) — the canvas page (list, edit, draw)
 //!   plus the chat renderer for `canvas::*` calls.
-//! - `canvas/styles.css` (`console:style`) — the stylesheet, every rule scoped
+//! - `canvas/styles.css` (a `style` asset) — the stylesheet, every rule scoped
 //!   under `[data-iii-ui="canvas"]`.
-//! - `canvas/mermaid.js` (`console:script`) — the bundled mermaid renderer,
+//! - `canvas/mermaid.js` (a `script` asset) — the bundled mermaid renderer,
 //!   lazily `import()`ed by page.js via `ui/src/lib/loaders.ts`.
-//! - `canvas/freeform.js` (`console:script`) — the bundled excalidraw
+//! - `canvas/freeform.js` (a `script` asset) — the bundled excalidraw
 //!   whiteboard + mermaid→excalidraw converter, same lazy-load path.
 //!
 //! The vendor bundles are `.js`, not `.mjs`: the console only accepts script
 //! paths ending in `.js` (the `iii-console-ui` builder panics on anything
-//! else). And because the console eagerly `import()`s every `console:script`
-//! asset and calls its default export as `setup(host)`, both vendor entries
+//! else). And because the console eagerly `import()`s every `script` asset
+//! and calls its default export as `setup(host)`, both vendor entries
 //! default-export a no-op setup and carry their real payload as named exports
 //! (see `ui/mermaid-entry.ts` / `ui/freeform-entry.ts`).
 //!
 //! The registration machinery (content function `canvas::ui-content`, one
-//! Message-path trigger per asset, the `III_CANVAS_UI_WATCH` hot-reload
-//! watcher) lives in the shared `iii-console-ui` crate; this module only names
+//! `console::ui::asset` observer per asset, the `III_CANVAS_UI_WATCH`
+//! hot-reload watcher) lives in the shared `iii-console-ui` crate; this module only names
 //! the assets and embeds their bytes.
 //!
 //! The assets are compiled from `ui/` by esbuild (react and
@@ -88,7 +88,7 @@ mod tests {
         );
     }
 
-    /// The console eagerly imports every `console:script` asset and calls its
+    /// The console eagerly imports every `script` asset and calls its
     /// default export as `setup(host)`; a vendor bundle without one logs a
     /// loader error in every tab.
     #[test]

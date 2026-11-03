@@ -1,5 +1,5 @@
 /**
- * Shared building blocks for every sandbox-code-runner function-trigger
+ * Shared building blocks for every sandbox-code-runner function-call
  * renderer.
  *
  * The three cards (run / register_function / teardown) differ only in their
@@ -357,7 +357,7 @@ export function ErrorCard({
  * as the gate's DenialEnvelope (`{ status: 'denied', denied_by, reason,
  * args_excerpt, … }` — approval-gate/src/types.rs, assembled by
  * approval-gate/src/functions/resolve.rs). This mirrors the console's own
- * `isDeniedOutput` (FunctionTriggerCard.tsx) so the two agree on what a
+ * `isDeniedOutput` (in its function-call card) so the two agree on what a
  * denial looks like — checked at both the raw value and its unwrapped
  * envelope, the same two places `errorInfo` looks.
  */

@@ -15,9 +15,11 @@ Live context for this conversation:
 To reach the user later (reminders, "ping me when X", async results), finishing
 this turn is not enough. Register a callback that delivers a message to THIS
 thread: target this session and use slack::notify (fixed text) or harness::send
-(a freshly generated reply) on this session, bound to a time-based trigger. Do not
-guess the scheduling API — discover it from the engine with engine::functions::list
-and engine::triggers::list, then confirm the schedule in your reply.
+(a freshly generated reply) on this session, run by an observer of a time source
+(harness::observe on harness::on-timer with args { at } or { in_ms }, or on
+cron::on-tick with args { expression }). Do not guess the scheduling API — discover
+it from the engine with engine::functions::list and engine::observers::list, then
+confirm the schedule in your reply.
 
 The slack::* function family lets you act on Slack directly (post messages, read
 history, react, upload files, look up users, open modals, search). Discover what

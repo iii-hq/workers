@@ -3,15 +3,20 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
-from iii import IIIClient
+from iii import IIIClient, ObserverHandle
 from iii_helpers.http import HttpRequest, HttpResponse
+
+#: The http worker's request function: each observer serves one route.
+HTTP_ON_REQUEST_FN = "http::on-request"
 
 
 def use_api(
     iii: IIIClient,
     config: dict[str, Any],
     handler: Callable[[HttpRequest[Any], logging.Logger], Awaitable[HttpResponse[Any]]],
-) -> None:
+) -> ObserverHandle:
+    """Register `handler` as a function and serve `http_method api_path` with
+    it by observing `http::on-request` with the route as args."""
     api_path = config["api_path"]
     http_method = config["http_method"]
     # Prefer an explicit, ::-namespaced function_id (callers always pass one).
@@ -30,18 +35,16 @@ def use_api(
     iii.register_function(
         function_id,
         wrapped,
+        description=config.get("description"),
         request_format=config.get("request_format"),
         response_format=config.get("response_format"),
     )
-    iii.register_trigger(
-        {
-            "type": "http",
-            "function_id": function_id,
-            "config": {
-                "api_path": api_path,
-                "http_method": http_method,
-                "description": config.get("description"),
-                "metadata": config.get("metadata"),
-            },
-        }
+    # Serve the route: the http worker calls `function_id` with each matching
+    # request and answers with its return value. The observer stays pending
+    # while the http worker is absent.
+    metadata = config.get("metadata")
+    return iii.observe(
+        {"function_id": HTTP_ON_REQUEST_FN, "args": {"method": http_method, "path": api_path}},
+        function_id,
+        {"metadata": metadata} if metadata is not None else None,
     )

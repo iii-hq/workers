@@ -1,4 +1,4 @@
-/** useCall, useTrigger with `enabled`, onEnv, usePage().replace and the other pages. */
+/** useCall, useObserve with `enabled`, onEnv, usePage().replace and the other pages. */
 import {
   Button,
   Column,
@@ -11,8 +11,8 @@ import {
   Text,
   useCall,
   useEnv,
+  useObserve,
   usePage,
-  useTrigger,
 } from '@iii-dev/native-ui'
 
 const [envLog, setEnvLog] = createSignal<string[]>([])
@@ -26,9 +26,9 @@ function Root() {
     const q = query()
     return q === undefined ? undefined : { q }
   })
-  useTrigger(
-    'demo::tick',
-    () => ({ every: 1 }),
+  useObserve(
+    'demo::on-tick',
+    () => ({ args: { every: 1 }, filters: { 'input.kind': { $eq: 'tick' } } }),
     () => setEvents(events() + 1),
     { enabled: live },
   )

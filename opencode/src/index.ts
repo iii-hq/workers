@@ -11,9 +11,9 @@ import { registerWorker } from 'iii-sdk';
 import { createAgentFeeds } from './agent-feed.js';
 import { type Config, loadConfig } from './config.js';
 import {
-  bindConfigTrigger,
   type ConfigHolder,
   fetchRuntime,
+  observeConfigChanges,
   registerOpencodeConfig,
 } from './configuration.js';
 import { resolveOpencodeExecutable } from './executable.js';
@@ -55,9 +55,9 @@ const refresh = async () => {
   holder.current = merged;
 };
 
-await bindConfigTrigger(iii, refresh);
+await observeConfigChanges(iii, refresh);
 
-// Owned feeds: opencode::agent-event and opencode::raw-event (bind with { session_id }).
+// Event feeds: opencode::on-agent-event and opencode::on-raw-event (observe with args { session_id }).
 const { emit, emitRaw } = createAgentFeeds(iii);
 register(iii, () => holder.current, emit, emitRaw);
 

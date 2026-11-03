@@ -18,8 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Capture, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -53,7 +52,11 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "rbac-proxy::on-config-change";
-const FUNCTIONS_AVAILABLE_FN_ID: &str = "rbac-proxy::on-functions-available";
+const FUNCTIONS_CHANGED_FN_ID: &str = "rbac-proxy::on-functions-changed";
+/// The configuration worker's change event.
+const CONFIG_UPDATED_SOURCE: &str = "configuration::on-updated";
+/// The engine's function-set change event.
+const FUNCTIONS_CHANGED_SOURCE: &str = "engine::on-functions-changed";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
@@ -135,7 +138,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -152,7 +155,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// `Ok(None)` when the entry does not exist. Engine missing-entry codes vary in
 /// case, so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -166,7 +169,8 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Internal `rbac-proxy::on-config-change` trigger payload. The handler
+/// What `rbac-proxy::on-config-change` receives: the
+/// `configuration::on-updated` event, delivered as output. The handler
 /// re-fetches the authoritative config and ignores this advisory id.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
@@ -179,26 +183,40 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. The handler re-fetches via `configuration::get` and ignores the
-/// trigger payload, so a direct call can never inject config. Registered LAST
-/// in boot so the handler closes over the fully-built server handle.
-pub fn register_config_trigger(
+/// Selects the `configuration:updated` events of this worker's entry.
+fn config_update_filters() -> Value {
+    json!({
+        "input.id": { "$eq": config_id() },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
+}
+
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it, filtered to this worker's entry. The
+/// handler re-fetches via `configuration::get` and ignores the event, so a
+/// direct call can never inject config. Registered LAST in boot so the
+/// handler closes over the fully-built server handle.
+///
+/// Once the observer is active, the handler runs one more pass: an update
+/// that landed between the boot-time fetch and the observer becoming active
+/// reached no one, and would otherwise wait for the next update or a restart.
+pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
     server: Arc<ServerHandle>,
     default_engine_url: String,
-) -> Result<(), Error> {
+) {
     let cell_fn = cell.clone();
     let iii_fn = iii.clone();
     let server_fn = server.clone();
+    let url_fn = default_engine_url.clone();
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
             let cell = cell_fn.clone();
             let iii = iii_fn.clone();
             let server = server_fn.clone();
-            let url = default_engine_url.clone();
+            let url = url_fn.clone();
             async move {
                 on_config_change(&iii, &cell, &server, &url).await;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
@@ -211,18 +229,27 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the control connection; dropping the
+    // handle does not dispose it.
+    let observer = iii.observe(
+        Source::function(CONFIG_UPDATED_SOURCE)
+            .filters(config_update_filters())
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
+    let iii = iii.clone();
+    tokio::spawn(async move {
+        match observer.ready().await {
+            Ok(()) => on_config_change(&iii, &cell, &server, &default_engine_url).await,
+            Err(e) => tracing::warn!(
+                error = %e,
+                "the configuration change observer did not become active; configuration changes apply on restart"
+            ),
+        }
+    });
 }
 
-/// Reload from the AUTHORITATIVE configuration (the trigger payload is ignored).
+/// Reload from the AUTHORITATIVE configuration (the event is ignored).
 async fn on_config_change(
     iii: &IIIClient,
     cell: &ConfigCell,
@@ -260,58 +287,61 @@ async fn on_config_change(
 // function is reflected sooner than the lazy TTL. Best-effort; the TTL is the
 // backstop.
 //
-// How promptly this fires depends on the engine. Engines that notify from the
-// function registry send one coalesced event shortly (~100ms) after a burst of
-// registrations, overwrites or removals. Older engines poll every 5s and
-// compare only the set of function ids, so a re-registration that changes
-// only metadata is never signalled there. Trigger (binding) changes are not
-// signalled by this trigger on any engine. `CACHE_TTL` covers both gaps.
+// The engine calls `engine::on-functions-changed` once, shortly (~100ms)
+// after a burst of registrations, overwrites or removals. `CACHE_TTL` bounds
+// staleness for whatever it misses.
 // ---------------------------------------------------------------------------
 
-/// The `engine::functions-available` payload is
-/// `{ event: "functions_changed", functions: [...] }`. The handler only
+/// What `rbac-proxy::on-functions-changed` receives: the `Observed` envelope
+/// of an `engine::on-functions-changed` call, captured without its payloads
+/// (`capture: []`: ids, status and timing only). The handler only
 /// invalidates the cache, so it reads nothing; undeclared fields are ignored.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-pub struct FunctionsAvailableEvent {
+pub struct FunctionsChangedEvent {
     #[serde(default)]
-    pub event: Option<String>,
+    pub invocation_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct FunctionsAvailableAck {
+pub struct FunctionsChangedAck {
     pub ok: bool,
 }
 
-/// Register the internal `engine::functions-available` handler and bind it.
-pub fn bind_catalog_refresh(iii: &Arc<IIIClient>, catalog: Arc<CatalogCache>) {
+/// Register the internal `rbac-proxy::on-functions-changed` handler and
+/// observe `engine::on-functions-changed` with it.
+pub fn observe_catalog_changes(iii: &Arc<IIIClient>, catalog: Arc<CatalogCache>) {
     let c = catalog.clone();
     iii.register_function(
-        FUNCTIONS_AVAILABLE_FN_ID,
-        RegisterFunction::new_async(move |_e: FunctionsAvailableEvent| {
+        FUNCTIONS_CHANGED_FN_ID,
+        RegisterFunction::new_async(move |_e: FunctionsChangedEvent| {
             let c = c.clone();
             async move {
                 c.invalidate().await;
-                Ok::<FunctionsAvailableAck, Error>(FunctionsAvailableAck { ok: true })
+                Ok::<FunctionsChangedAck, Error>(FunctionsChangedAck { ok: true })
             }
         })
         .description(
-            "Internal: invalidate the discovery catalog cache when the engine's available function set changes.",
-        ),
+            "Internal: invalidate the discovery catalog cache when the engine's function set changes.",
+        )
+        .metadata(json!({ "internal": true })),
     );
 
-    match iii.register_trigger(RegisterTriggerInput::new(
-        "engine::functions-available".to_string(),
-        FUNCTIONS_AVAILABLE_FN_ID.to_string(),
-        json!({}),
-    )) {
-        Ok(_) => tracing::info!("bound catalog-refresh trigger (engine::functions-available)"),
-        Err(e) => {
-            tracing::warn!(error = %e, "catalog-refresh trigger binding failed; relying on the TTL refresh")
+    let observer = iii.observe(
+        Source::function(FUNCTIONS_CHANGED_SOURCE).capture(Vec::<Capture>::new()),
+        FUNCTIONS_CHANGED_FN_ID,
+    );
+    tokio::spawn(async move {
+        match observer.ready().await {
+            Ok(()) => tracing::info!("observing {FUNCTIONS_CHANGED_SOURCE} for the catalog cache"),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "the {FUNCTIONS_CHANGED_SOURCE} observer did not become active; relying on the TTL refresh"
+            ),
         }
-    }
+    });
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -319,15 +349,7 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
-                    function_id: function_id.to_string(),
-                    payload: payload.clone(),
-                    action: None,
-                    timeout_ms: None,
-                }
-                .namespace("default"),
-            )
+            .call(CallRequest::new(function_id, payload.clone()).namespace("default"))
             .await
         {
             Ok(v) => return Ok(v),

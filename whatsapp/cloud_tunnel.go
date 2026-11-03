@@ -460,7 +460,7 @@ func registerDevelopmentTunnel(ctx context.Context, client *iii.Client, manager 
 		if err != nil {
 			return nil, err
 		}
-		return client.Trigger(ctx, iii.TriggerRequest{FunctionID: id, Namespace: Namespace(), Data: body, Timeout: 10 * time.Second})
+		return client.Call(ctx, iii.CallRequest{FunctionID: id, Namespace: Namespace(), Payload: body, Timeout: 10 * time.Second})
 	}
 	var t *DevelopmentTunnel
 	if manager.interfaceOnly {
@@ -470,7 +470,7 @@ func registerDevelopmentTunnel(ctx context.Context, client *iii.Client, manager 
 		t = newDevelopmentTunnel(ctx, manager.ConfigContext, rpc)
 	}
 	manager.tunnel = t
-	if err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::tunnel::changed", func(context.Context, callbackRequest[callbackNotification]) (callbackAccepted, error) {
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::tunnel::changed", func(context.Context, callbackRequest[callbackNotification]) (callbackAccepted, error) {
 		if manager.interfaceOnly {
 			return callbackAccepted{}, interfaceCallbackError()
 		}
@@ -479,8 +479,11 @@ func registerDevelopmentTunnel(ctx context.Context, client *iii.Client, manager 
 	}, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}); err != nil {
 		return err
 	}
-	config := json.RawMessage(`{"tunnel_id":"webhooks"}`)
-	if err := client.RegisterTriggerNamespaced(t.intent.ConsumerID+"-changed", "quick-tunnel::changed", "whatsapp::cloud::tunnel::changed", Namespace(), config); err != nil {
+	if err := observeFunction(client, iii.Source{
+		FunctionID: "quick-tunnel::on-changed",
+		Filters:    iii.Filters{"input.tunnel_id": iii.Op{"$eq": "webhooks"}},
+		Deliver:    iii.DeliverOutput,
+	}, "whatsapp::cloud::tunnel::changed"); err != nil {
 		return err
 	}
 	if !manager.interfaceOnly {

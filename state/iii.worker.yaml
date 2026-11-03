@@ -2,11 +2,12 @@ iii: v1
 name: state
 language: rust
 deploy: binary
+iii_engine_version: ">=0.26.0"
 manifest: Cargo.toml
 license: Apache-2.0
 bin: state
 tags: [key-value, kv, state, distributed, cache]
-description: Distributed key-value state management with reactive change triggers — registers the `state` trigger type, the observable `state::on-changed` function (iii 0.25) and the `state::*` functions.
+description: Distributed key-value state management — registers the `state::*` functions and `state::on-changed`, a private function observers watch for every committed change.
 config:
   adapter:
     name: kv

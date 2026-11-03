@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
+import { workerListed } from './use-worker-presence'
 import { useWorkersChanged } from './use-workers-changed'
 
 /**
@@ -8,18 +9,18 @@ import { useWorkersChanged } from './use-workers-changed'
  * it via `compose::add`.
  *
  * `present` is an `engine::workers::list` read on mount, read again on every
- * `engine::workers-available` event, so the UI reacts the instant harness is
- * added — whether from the in-app CTA or a `iii trigger compose::add
- * worker=harness` run in the operator's own terminal (this is the
- * educational, "you can do this in the CLI too" angle).
+ * `engine::on-workers-changed` event, so the UI reacts the instant harness is
+ * added — whether from the in-app CTA or an `iii call compose::add` run in
+ * the operator's own terminal (this is the educational, "you can do this in
+ * the CLI too" angle).
  *
- * `install()` triggers `compose::add` for the registry `harness` worker and
+ * `install()` calls `compose::add` for the registry `harness` worker and
  * resolves off its result and a presence re-check.
  */
 
 /** Registry name + engine worker name for the harness meta-worker. */
 const HARNESS_WORKER_NAME = 'harness'
-/** Base id for the browser-local `engine::workers-available` handler. */
+/** Base id for the browser-local `engine::on-workers-changed` handler. */
 const HARNESS_WATCH_FN = 'ade::harness-watch'
 
 export interface HarnessStatus {
@@ -38,19 +39,17 @@ export interface HarnessStatus {
 }
 
 async function checkHarnessPresent(client: IiiClient): Promise<boolean> {
-  const res = await client.trigger<{ workers?: Array<{ name?: unknown }> }>(
-    'engine::workers::list',
-    {},
+  return workerListed(
+    await client.call('engine::workers::list', {}),
+    HARNESS_WORKER_NAME,
   )
-  const workers = Array.isArray(res?.workers) ? res.workers : []
-  return workers.some((w) => w?.name === HARNESS_WORKER_NAME)
 }
 
 /** Add harness to the active Compose project and wait for reconciliation. */
 export async function addHarnessToCompose(
-  client: Pick<IiiClient, 'trigger'>,
+  client: Pick<IiiClient, 'call'>,
 ): Promise<void> {
-  await client.trigger('compose::add', {
+  await client.call('compose::add', {
     workers: [HARNESS_WORKER_NAME],
   })
 }
@@ -91,7 +90,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
 
   useWorkersChanged({ enabled, fnId: HARNESS_WATCH_FN, onChange: recheck })
 
-  // Presence probe on mount; later changes arrive through the trigger above.
+  // Presence probe on mount; later changes arrive through the observer above.
   // No polling, no focus re-checks.
   useEffect(() => {
     if (!enabled) {
@@ -125,7 +124,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
       const client = await getIiiClient()
       try {
         await addHarnessToCompose(client)
-        // Terminal success. A workers-available event may have already set
+        // Terminal success. A workers-changed event may have already set
         // present; setting it again is harmless. Reads still in flight are
         // older than this and must not undo it.
         applyPresence(++reads.current.issued, true)
@@ -165,7 +164,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
 
 /**
  * Whether harness-owned bus functions (`router::models::list`, etc.) are
- * registered and safe to trigger. False during the initial presence probe and
+ * registered and safe to call. False during the initial presence probe and
  * while the worker is absent.
  *
  * NOTE: `approval::*` is NOT harness-owned — it lives on the standalone,

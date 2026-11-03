@@ -36,7 +36,7 @@ async function sh(worker, command, args, { cwd, timeoutMs } = {}) {
   if (worker) {
     let res = null;
     try {
-      res = await worker.trigger({
+      res = await worker.call({
         function_id: 'shell::exec',
         payload: {
           command,

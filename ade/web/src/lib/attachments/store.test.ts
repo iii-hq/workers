@@ -48,23 +48,22 @@ function stored(name: string, mime: string, size: number) {
 
 describe('uploadAttachments', () => {
   it('stores every attachment with bytes and returns its file block', async () => {
-    const trigger = vi.fn(
-      async (_fn: string, payload: Record<string, unknown>) =>
-        stored(
-          payload.name as string,
-          payload.mime as string,
-          (payload.data as string).length,
-        ),
+    const call = vi.fn(async (_fn: string, payload: Record<string, unknown>) =>
+      stored(
+        payload.name as string,
+        payload.mime as string,
+        (payload.data as string).length,
+      ),
     )
     const result = await uploadAttachments(
       's-1',
       [picked('notes.txt'), picked('shot.png', '\x89PNG', 'image/png')],
-      trigger,
+      call,
     )
 
-    expect(trigger).toHaveBeenCalledTimes(2)
-    expect(trigger.mock.calls[0][0]).toBe(PUT_ATTACHMENT_FUNCTION_ID)
-    expect(trigger.mock.calls[0][1]).toEqual({
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(call.mock.calls[0][0]).toBe(PUT_ATTACHMENT_FUNCTION_ID)
+    expect(call.mock.calls[0][1]).toEqual({
       session_id: 's-1',
       name: 'notes.txt',
       mime: 'text/plain',
@@ -84,12 +83,11 @@ describe('uploadAttachments', () => {
   /* A file dragged out of an archive often has no type at all; the store
      requires one, and the generic binary type is what it gets. */
   it('falls back to application/octet-stream for a typeless file', async () => {
-    const trigger = vi.fn(
-      async (_fn: string, payload: Record<string, unknown>) =>
-        stored(payload.name as string, payload.mime as string, 3),
+    const call = vi.fn(async (_fn: string, payload: Record<string, unknown>) =>
+      stored(payload.name as string, payload.mime as string, 3),
     )
-    await uploadAttachments('s-1', [picked('blob.bin', 'abc', '')], trigger)
-    expect(trigger.mock.calls[0][1]).toMatchObject({
+    await uploadAttachments('s-1', [picked('blob.bin', 'abc', '')], call)
+    expect(call.mock.calls[0][1]).toMatchObject({
       mime: 'application/octet-stream',
     })
   })
@@ -97,7 +95,7 @@ describe('uploadAttachments', () => {
   /* Nothing on the send path throws: a store that is down turns into a
      notice, and the message still goes with its expansions. */
   it('turns a rejected upload into a failure and keeps going', async () => {
-    const trigger = vi.fn(
+    const call = vi.fn(
       async (_fn: string, payload: Record<string, unknown>) => {
         if (payload.name === 'big.pdf') {
           throw { message: 'session/attachment_too_large: 90 MB > 64 MB' }
@@ -108,7 +106,7 @@ describe('uploadAttachments', () => {
     const result = await uploadAttachments(
       's-1',
       [picked('big.pdf', 'x', 'application/pdf'), picked('ok.txt')],
-      trigger,
+      call,
     )
     expect(result.failures).toEqual([
       { name: 'big.pdf', reason: 'larger than the attachment store accepts' },
@@ -120,8 +118,8 @@ describe('uploadAttachments', () => {
   })
 
   it('treats an answer without a block as a failure', async () => {
-    const trigger = vi.fn(async () => ({}))
-    const result = await uploadAttachments('s-1', [picked('a.txt')], trigger)
+    const call = vi.fn(async () => ({}))
+    const result = await uploadAttachments('s-1', [picked('a.txt')], call)
     expect(result.blocks).toEqual([])
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0].name).toBe('a.txt')
@@ -130,13 +128,13 @@ describe('uploadAttachments', () => {
   /* A conversation reloaded from history carries chips, not bytes; those
      were stored when they were sent. */
   it('skips attachments without bytes', async () => {
-    const trigger = vi.fn()
+    const call = vi.fn()
     const result = await uploadAttachments(
       's-1',
       [{ id: 'old', name: 'old.pdf', size: 9, type: 'application/pdf' }],
-      trigger,
+      call,
     )
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     expect(result).toEqual({ blocks: [], uploaded: [], failures: [] })
   })
 
@@ -144,9 +142,8 @@ describe('uploadAttachments', () => {
      restored one was stored before the refresh). Sending it must reference
      that copy, not upload a second one. */
   it('reuses already-stored chips instead of uploading them again', async () => {
-    const trigger = vi.fn(
-      async (_fn: string, payload: Record<string, unknown>) =>
-        stored(payload.name as string, payload.mime as string, 5),
+    const call = vi.fn(async (_fn: string, payload: Record<string, unknown>) =>
+      stored(payload.name as string, payload.mime as string, 5),
     )
     const result = await uploadAttachments(
       's-1',
@@ -168,10 +165,10 @@ describe('uploadAttachments', () => {
           file: new File(['ab'], 'blob'),
         },
       ],
-      trigger,
+      call,
     )
-    expect(trigger).toHaveBeenCalledTimes(1)
-    expect(trigger.mock.calls[0][1]).toMatchObject({ name: 'fresh.txt' })
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call.mock.calls[0][1]).toMatchObject({ name: 'fresh.txt' })
     expect(result.blocks).toEqual([
       {
         type: 'file',

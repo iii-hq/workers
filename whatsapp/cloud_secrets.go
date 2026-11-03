@@ -22,7 +22,7 @@ import (
 const (
 	secretsResolveTimeout = 3 * time.Second
 	// While a reference is unresolved it is retried this often; resolved ones
-	// are re-read at the slower interval in case a secrets::changed was missed.
+	// are re-read at the slower interval in case a secrets::on-changed was missed.
 	secretsRetryInterval   = 10 * time.Second
 	secretsRefreshInterval = 5 * time.Minute
 )
@@ -99,7 +99,7 @@ func busSecretResolver(client *iii.Client) secretResolver {
 		if err != nil {
 			return "", err
 		}
-		result, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: "secrets::resolve", Data: data, Timeout: secretsResolveTimeout, Namespace: Namespace()})
+		result, err := client.Call(ctx, iii.CallRequest{FunctionID: "secrets::resolve", Payload: data, Timeout: secretsResolveTimeout, Namespace: Namespace()})
 		if err != nil {
 			return "", err
 		}
@@ -116,7 +116,7 @@ func busSecretResolver(client *iii.Client) secretResolver {
 // resolveCloudCredentials returns next with each referenced credential
 // replaced by its value. previous is the active configuration: while the
 // secrets worker cannot be reached a reference keeps its last value, unless
-// it is suspect (a secrets::changed event named it). A refusal from the secrets
+// it is suspect (a secrets::on-changed event named it). A refusal from the secrets
 // worker always drops the value, so revoking access takes effect.
 func resolveCloudCredentials(ctx context.Context, resolve secretResolver, next, previous CloudConfig, suspect string) CloudConfig {
 	values, last := next.credentialValues(), previous.credentialValues()

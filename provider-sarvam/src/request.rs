@@ -85,7 +85,7 @@ mod tests {
 
     fn tool() -> AgentFunction {
         AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "d".into(),
             parameters: serde_json::json!({ "type": "object" }),
             label: None,
@@ -118,7 +118,7 @@ mod tests {
         a.tools = vec![tool()];
         let body = build_body(&a);
         assert_eq!(body["reasoning_effort"], "high");
-        assert_eq!(body["tools"][0]["function"]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["function"]["name"], "agent__call");
         assert!(body.get("tool_stream").is_none());
     }
 

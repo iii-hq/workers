@@ -4,8 +4,8 @@ Feature: session::set-draft — park the unsent composer input
   Contract: `session::set-draft` stores the text a user has typed but not
   sent, so a client reload can restore it. It is event-silent and never
   bumps `updated_at` — drafts are written at keystroke cadence, and a save
-  must neither re-order `session::list` nor spam `session::meta-updated`
-  subscribers. The draft reads back as `meta.draft` on `session::get` /
+  must neither re-order `session::list` nor spam `session::on-meta-updated`
+  observers. The draft reads back as `meta.draft` on `session::get` /
   `session::list`; `session::set-meta` never touches it. Empty or
   whitespace-only text clears the stored draft.
 
@@ -31,12 +31,9 @@ Feature: session::set-draft — park the unsent composer input
     Then the response field "meta.draft" is "half-typed thought"
 
   # Prevents: keystroke-cadence saves re-ordering session::list (updated_at)
-  # or notifying meta-updated subscribers on every keypress.
+  # or notifying session::on-meta-updated observers on every keypress.
   Scenario: saving a draft fires no event and keeps updated_at
-    Given a binding "b1" on "session::meta-updated" delivering to "ui::meta" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"
     Given the clock advances by 250 ms
     When I call "session::set-draft" with:
       """

@@ -1,0 +1,222 @@
+{
+  "description": "Called when an error group is created, takes a new occurrence, or changes state. No args; filter on input.group_id or input.op (created, occurrence or status). Occurrence events are coalesced per group over one second; re-read the group rather than trusting the event.",
+  "function_id": "sentinel::on-group-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GroupChangeReasonV1": {
+        "description": "Why a group changed, as `sentinel::on-group-changed` tells its observers.",
+        "enum": [
+          "regression",
+          "ignore_expired",
+          "resolved",
+          "ignored",
+          "diagnosed",
+          "reopened",
+          "investigating"
+        ],
+        "type": "string"
+      },
+      "GroupChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "status"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence on a group that is otherwise unchanged. Coalesced.",
+            "enum": [
+              "occurrence"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`sentinel::on-group-changed`: the event siblings and the console observe. Unknown fields are ignored on input, so a call routed through the engine (which stamps `_caller_worker_id`) still parses.",
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "occurrence_count": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "op": {
+        "$ref": "#/definitions/GroupChangedOpV1"
+      },
+      "previous_status": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupStatusV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupChangeReasonV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/GroupStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "occurrence_count",
+      "op",
+      "status"
+    ],
+    "title": "GroupChangedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GroupChangeReasonV1": {
+        "description": "Why a group changed, as `sentinel::on-group-changed` tells its observers.",
+        "enum": [
+          "regression",
+          "ignore_expired",
+          "resolved",
+          "ignored",
+          "diagnosed",
+          "reopened",
+          "investigating"
+        ],
+        "type": "string"
+      },
+      "GroupChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "status"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence on a group that is otherwise unchanged. Coalesced.",
+            "enum": [
+              "occurrence"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`sentinel::on-group-changed`: the event siblings and the console observe. Unknown fields are ignored on input, so a call routed through the engine (which stamps `_caller_worker_id`) still parses.",
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "occurrence_count": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "op": {
+        "$ref": "#/definitions/GroupChangedOpV1"
+      },
+      "previous_status": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupStatusV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupChangeReasonV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/GroupStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "occurrence_count",
+      "op",
+      "status"
+    ],
+    "title": "GroupChangedEventV1",
+    "type": "object"
+  }
+}

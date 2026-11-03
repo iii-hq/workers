@@ -14,7 +14,7 @@ functions:
   - shell::exec_bg
   - shell::status
   - shell::kill
-  - engine::register_trigger
+  - harness::observe
 ---
 # Deepwork Verifier
 

@@ -1,5 +1,5 @@
 //! Request payloads. Each derives `JsonSchema` so the engine publishes the
-//! parameter table for `iii trigger <fn> --help`, and `Deserialize` so the
+//! parameter table for `iii call <fn> --help`, and `Deserialize` so the
 //! handler parses at the unknown boundary.
 
 use schemars::JsonSchema;

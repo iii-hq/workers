@@ -1,0 +1,111 @@
+{
+  "function_id": "session::on-status-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "What an event function is called with and returns, so what its observers observe: the event's fields plus the session's metadata.",
+    "properties": {
+      "previous_status": {
+        "$ref": "#/definitions/SessionStatus"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation (for `session::on-deleted`, as of just before deletion); omitted when the session has none. Observers filter on `input.session_metadata.<key>`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/SessionStatus"
+      },
+      "status_reason": {
+        "description": "Short lifecycle detail retained on `working`, `done`, and `error`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "previous_status",
+      "session_id",
+      "status",
+      "timestamp"
+    ],
+    "title": "WithSessionMetadata_for_StatusChangedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "What an event function is called with and returns, so what its observers observe: the event's fields plus the session's metadata.",
+    "properties": {
+      "previous_status": {
+        "$ref": "#/definitions/SessionStatus"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation (for `session::on-deleted`, as of just before deletion); omitted when the session has none. Observers filter on `input.session_metadata.<key>`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/SessionStatus"
+      },
+      "status_reason": {
+        "description": "Short lifecycle detail retained on `working`, `done`, and `error`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "previous_status",
+      "session_id",
+      "status",
+      "timestamp"
+    ],
+    "title": "WithSessionMetadata_for_StatusChangedEvent",
+    "type": "object"
+  }
+}

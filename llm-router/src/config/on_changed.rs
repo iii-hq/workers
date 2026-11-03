@@ -1,5 +1,5 @@
-//! `router::on_config_changed` — the iii function bound to the engine's
-//! `configuration` trigger (paste-a-key flow, spec § Triggers bound).
+//! `router::on_config_changed` — the target of the router's observer of
+//! `configuration::on-updated` for its own entry (paste-a-key flow).
 //! Fingerprint → diff → resolve the changed slices' `secret://` references →
 //! debounce → `provider::<id>::refresh_models` (fire-and-forget iii call) +
 //! whole-snapshot configuration refresh.
@@ -55,10 +55,10 @@ pub fn make_on_config_changed(
         let secrets = secrets.clone();
         let refresh = refresh.clone();
         Box::pin(async move {
-            // The trigger payload is advisory and this function is also
+            // The event is advisory and this function is also
             // discoverable on the bus. Re-fetching prevents a direct caller
             // from injecting an arbitrary in-memory configuration. The read
-            // retries with a short backoff: the trigger is not redelivered,
+            // retries with a short backoff: the event is not redelivered,
             // so dropping it would strand the router on the previous
             // snapshot until the NEXT configuration change.
             const READ_ATTEMPTS: u32 = 3;

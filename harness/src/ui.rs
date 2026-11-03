@@ -4,17 +4,18 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `harness/page.js` (`console:script`) — the `context` session chip
+//! - `harness/page.js` (a `script` asset) — the `context` session chip
 //!   (live context-window usage with a category-breakdown popover; the
 //!   `chat.registerSessionChip` slot is feature-detected, older consoles
-//!   skip it) plus the `harness::metrics` function-trigger renderer its
+//!   skip it) plus the `harness::metrics` function-call renderer its
 //!   `setup(host)` registers.
-//! - `harness/styles.css` (`console:style`) — the stylesheet, every rule
+//! - `harness/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="harness"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `harness::ui-content`, one
-//! Message-path trigger per asset, `III_HARNESS_UI_WATCH` hot-reload watcher)
+//! `console::ui::asset` observer per asset, `III_HARNESS_UI_WATCH` hot-reload
+//! watcher)
 //! lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and
 //! embeds their bytes.
@@ -24,8 +25,7 @@
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_HARNESS_UI_WATCH` to the build output
 //! directory (or `1` for `ui/dist`): the worker polls both files and
-//! re-registers a changed asset's trigger — every open console tab
-//! hot-swaps it.
+//! observes a changed asset anew — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

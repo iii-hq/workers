@@ -337,13 +337,13 @@ async fn otel_span_propagates_inbound_traceparent() {
 }
 
 /// Phase 3 (outbound): the worker must propagate its HTTP span's trace context
-/// onto the trigger it fires at the matched function, so `HTTP GET -> worker ->
+/// onto the call that reaches the matched function, so `HTTP GET -> worker ->
 /// function` is ONE trace rather than two disjoint ones. We register a backend
 /// that records the trace id it runs under, drive a request with NO inbound
 /// `traceparent` (so the worker's HTTP span is the trace root), and assert the
 /// function ran under the SAME trace id as the worker's exported HTTP span.
 ///
-/// Buggy behaviour (no context attached to the outbound trigger): the worker
+/// Buggy behaviour (no context attached to the outbound call): the worker
 /// injects no `traceparent`, the receiving SDK starts a fresh root trace, and
 /// the function's trace id differs from the HTTP span's -> assertion fails.
 #[tokio::test]

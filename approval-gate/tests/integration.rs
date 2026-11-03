@@ -45,7 +45,7 @@ async fn hold_writes_record_emits_once_and_is_idempotent() {
 
         assert!(
             wait_for(3_000, || !log_snapshot(&stack.created).is_empty()).await,
-            "pending_created should reach the bound recorder"
+            "approval::on-pending-created should reach the observing recorder"
         );
         settle().await;
         assert_eq!(log_snapshot(&stack.created).len(), 1);
@@ -102,7 +102,7 @@ async fn resolve_allow_releases_and_deny_delivers_through_the_fake_harness() {
 
         assert!(
             wait_for(3_000, || log_snapshot(&stack.resolved).len() >= 2).await,
-            "pending_resolved should reach the bound recorder"
+            "approval::on-pending-resolved should reach the observing recorder"
         );
         settle().await;
         assert_eq!(log_snapshot(&stack.resolved).len(), 2);

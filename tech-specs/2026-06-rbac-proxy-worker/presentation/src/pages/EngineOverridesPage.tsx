@@ -24,7 +24,7 @@ export function EngineOverridesPage() {
 
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
-          the eight rewrites
+          the six rewrites
         </div>
         <div className="border border-rule bg-bg overflow-x-auto">
           <div className="min-w-[680px] flex flex-col">
@@ -56,17 +56,10 @@ export function EngineOverridesPage() {
       </div>
 
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4">
-        <CodeBlock title="the two caches, over the control connection">
-          <C>{'// function catalog, for metadata filters + workers::list'}</C>
+        <CodeBlock title="the catalog cache, over the control connection">
+          <C>{'// function catalog, for metadata filters, observer rows + workers::list'}</C>
           {'\n'}
-          <K>function_id</K> <M>→</M> <M>{'{'}</M> worker_name, metadata <M>{'}'}</M>
-          {'\n\n'}
-          <C>{'// binding index, for triggers::info instance_count'}</C>
-          {'\n'}
-          <K>registered_trigger_id</K> <M>→</M> <M>{'{'}</M> trigger_type, function_id{' '}
-          <M>{'}'}</M>
-          {'\n'}
-          <K>trigger_type</K> <M>→</M> <M>[</M> function_id <M>]</M>
+          <K>(namespace, function_id)</K> <M>→</M> <M>{'{'}</M> worker_name, metadata <M>{'}'}</M>
         </CodeBlock>
 
         <SpecSheet title="cache-miss semantics" meta="not uniformly fail-closed" defaultOpen>
@@ -80,9 +73,9 @@ export function EngineOverridesPage() {
               function is briefly invisible until the catalog refreshes, never
               wrongly exposed.
             </SpecRow>
-            <SpecRow name="refresh" type="ttl + trigger">
-              lazy on a short ttl, proactively on engine::functions-available,
-              mirroring console&apos;s function-list cache.
+            <SpecRow name="refresh" type="ttl + observer">
+              lazy on a short ttl, proactively when engine::on-functions-changed
+              is called, mirroring console&apos;s function-list cache.
             </SpecRow>
           </div>
         </SpecSheet>

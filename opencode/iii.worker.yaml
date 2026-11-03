@@ -2,10 +2,11 @@ iii: v1
 name: opencode
 language: javascript
 deploy: bundle
+iii_engine_version: ">=0.26.0"
 manifest: package.json
 license: Apache-2.0
 tags: [coding-agent, opencode, cli, headless, agent]
-description: OpenCode as an iii worker — opencode::* functions run headless OpenCode turns, deliver raw JSON events on the opencode::raw-event trigger type and AgentEvent frames on opencode::agent-event.
+description: OpenCode as an iii worker — opencode::* functions run headless OpenCode turns, deliver raw JSON events on the opencode::on-raw-event function and AgentEvent frames on opencode::on-agent-event.
 
 runtime:
   kind: javascript

@@ -17,7 +17,7 @@ Two surfaces in one worker:
 | `configuration.rs` | `configuration::register` + Tier-1 hot-reload; reconciles ingress on change |
 | `clients/slack.rs` | Slack Web API client (`call`, `call_user`, `auth_test`) |
 | `clients/{harness,router,state,approval}.rs` | engine sibling clients (bridge) |
-| `functions/*` | typed `slack::*` Web API functions + `notify`, `events`, `interactions`, `bindings` |
+| `functions/*` | typed `slack::*` Web API functions + `notify`, `events`, `interactions`, `bindings` (observer targets and the observers of session, harness and approval events) |
 | `response.rs` | `SlackResponse` typed response wrapper |
 | `httpio.rs` | raw HTTP over engine channels (request_body read channel + response write channel); signature gate |
 | `signing.rs` | Slack v0 HMAC verification (constant-time, replay window) |
@@ -25,7 +25,7 @@ Two surfaces in one worker:
 | `turn.rs` | model resolution, thread backfill, `harness::send` |
 | `stream.rs` | native `chat.startStream`/`appendStream`/`stopStream` (+ `chat.update` fallback) |
 | `kv.rs` | thread↔session mapping, pending context buffer, approval callbacks (state) |
-| `ingress.rs` | register/unregister the events + interactions HTTP routes per config |
+| `ingress.rs` | observe `http::on-request` for the events + interactions routes per config; dispose on disable |
 | `surface.rs` | typed function catalog for golden schema tests |
 
 See [`internals.md`](internals.md) for the request/turn/stream flows and

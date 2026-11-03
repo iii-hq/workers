@@ -3,8 +3,8 @@
 //! Each source produces a [`DownloadResult`] describing what landed on
 //! disk. The high-level `skills::download` function in
 //! [`crate::functions::download`] picks one of these based on the
-//! incoming arguments and fires the `skills::on-change` /
-//! `system-prompts::on-change` / `agents::on-change` triggers afterwards.
+//! incoming arguments and calls `skills::on-change` /
+//! `system-prompts::on-change` / `agents::on-change` afterwards.
 
 pub mod git;
 pub mod registry;
@@ -42,7 +42,7 @@ pub struct SkippedAgent {
 
 /// Outcome of a single `skills::download` invocation. The high-level
 /// function turns this into a JSON response and uses the counts to
-/// decide which `on-change` triggers to fan out.
+/// decide which `on-change` functions to call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadResult {
     pub namespace: String,

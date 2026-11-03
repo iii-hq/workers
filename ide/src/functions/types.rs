@@ -132,7 +132,7 @@ pub struct ExecRequest {
 // Extends `ExecRequest` with a caller-supplied background job ID.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecBgRequest {
-    /// Optional non-blank ID for registering shell::job-finished before
+    /// Optional non-blank ID for observing shell::on-job-finished before
     /// execution. Must be unique among retained jobs in this worker. Omit
     /// or pass null to generate a job-UUID automatically.
     #[serde(default)]

@@ -7,17 +7,17 @@
  *
  * Two halves, one worker: `pi::run` drives pi headless from here, and
  * `pi::terminal::*` drives the same agent in a `shell::pty` session a person
- * types into. Both report onto the same `pi::agent-event` feed (raw Pi events:
- * `pi::raw-event`).
+ * types into. Both report onto the same `pi::on-agent-event` feed (raw Pi events:
+ * `pi::on-raw-event`).
  */
 
 import { parseArgs } from 'node:util';
 import { registerWorker } from 'iii-sdk';
 import { type Config, loadConfig } from './config.js';
 import {
-  bindConfigTrigger,
   type ConfigHolder,
   fetchRuntime,
+  observeConfigChanges,
   registerPiConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
@@ -46,7 +46,7 @@ const bootConfig: Config = { ...seed, engine_url: url };
 // (it discovers `.pi/extensions/` from the run's cwd, which IS the terminal
 // workspace). This mark tells it so: the worker reports its own headless turns,
 // and a second report from inside the same process would duplicate the run on
-// `pi::agent-event` under a different session id.
+// `pi::on-agent-event` under a different session id.
 (globalThis as { __iiiPiWorker?: boolean }).__iiiPiWorker = true;
 
 const iii = registerWorker(url, { workerName: 'pi' });
@@ -109,10 +109,10 @@ const refresh = async () => {
   reconcileTerminal();
 };
 
-await bindConfigTrigger(iii, refresh);
+await observeConfigChanges(iii, refresh);
 
-// The two owned event feeds: pi::agent-event (AgentEvent frames) and
-// pi::raw-event (verbatim Pi events), each with its own binding table and
+// The two event feeds: pi::on-agent-event (AgentEvent frames) and
+// pi::on-raw-event (verbatim Pi events), each with its own observers and
 // sequence counter.
 const feeds = registerAgentFeeds(iii);
 const emit = feeds.agent.emit;

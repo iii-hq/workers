@@ -1,0 +1,48 @@
+{
+  "function_id": "worktree::rest",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The `HttpRequest` fields the adapter reads. The http worker sends more (`method`, `query_params`, `path_params` and the stream channels); they are ignored.",
+    "properties": {
+      "body": {
+        "default": null,
+        "description": "The request body parsed as JSON; `null` when it is empty or not JSON."
+      },
+      "headers": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": {},
+        "description": "The request headers. `content-length` and `transfer-encoding` tell a body that is not JSON from an empty one.",
+        "type": "object"
+      },
+      "path": {
+        "description": "The matched route's path: `/worktree/...`, the function id with `::` as `/`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "RestRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The `HttpResponse` the http worker answers with.",
+    "properties": {
+      "body": true,
+      "status_code": {
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "body",
+      "status_code"
+    ],
+    "title": "RestResponse",
+    "type": "object"
+  }
+}

@@ -4,8 +4,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient};
+use iii_sdk::{register_worker, CallRequest, IIIClient};
 use llm_router::register::register_router;
 use provider_xai::register::register_provider;
 use serde_json::{json, Value};
@@ -22,7 +21,7 @@ async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -67,7 +66,7 @@ struct StubUpstream {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
-    use iii_sdk::{errors::Error, protocol::RegisterTriggerInput, RegisterFunction};
+    use iii_sdk::{errors::Error, Deliver, RegisterFunction, Source};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let engine = engine_or_skip!();
     let iii = register_worker(&engine.url, test_init_options());
@@ -91,16 +90,18 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
             }
         }),
     );
-    iii.register_trigger(RegisterTriggerInput::new(
-        "router::models::changed",
+    let observer = iii.observe(
+        Source::function("router::models::on-changed")
+            .filters(json!({ "input.provider": { "$eq": "xai" } }))
+            .deliver(Deliver::Output),
         "probe::discovery_event",
-        json!({}),
-    ))
-    .unwrap();
-    // A bus roundtrip ensures the fixture subscription is registered before production.
-    call(&iii, "router::provider::list", json!({}))
+    );
+    // The router calls router::models::on-changed only while it is observed:
+    // wait until the fixture's observer is active before production.
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
         .await
-        .unwrap();
+        .expect("router::models::on-changed observer active in time")
+        .expect("router::models::on-changed observer accepted");
     provider_xai::state::store_token(&iii, token).await.unwrap();
     let response = Arc::new(std::sync::Mutex::new((403, json!({"code":"permission-denied", "error":"team-PRIVATE has no credits or reached its monthly spending limit; sk-PRIVATE https://private.invalid"}).to_string())));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -443,7 +444,7 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -489,7 +490,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -576,7 +577,7 @@ async fn provider_redeclares_on_router_ready() {
         .await
         .expect("router reboots");
 
-    // router::ready trigger → provider re-declares with its persisted token
+    // router::on-ready → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let list = call(&router2, "router::provider::list", json!({}))

@@ -1,13 +1,14 @@
 //! Reactive function-registry cache. Native exposure needs the set of callable
 //! functions to build the model's tools; instead of re-listing the registry on
 //! every turn, the harness keeps a cached snapshot and lets the engine push
-//! changes. `engine::functions-available` fires when functions are
-//! registered/unregistered, and the handler re-fetches the authoritative
-//! `engine::functions::list` and swaps the snapshot. This mirrors the
-//! `configuration` hot-reload pattern (a shared cell + a targeted refresh).
+//! changes. The engine calls `engine::on-functions-changed` when functions
+//! are registered/unregistered, the harness observes it, and the handler
+//! re-fetches the authoritative `engine::functions::list` and swaps the
+//! snapshot. This mirrors the `configuration` hot-reload pattern (a shared
+//! cell + a targeted refresh).
 //!
 //! Re-fetching `engine::functions::list` on each change — rather than trusting
-//! the trigger's payload snapshot — keeps the cache identical to what the
+//! the event's payload snapshot — keeps the cache identical to what the
 //! per-turn list returned (same internal-hiding filter), so the loop's read is
 //! an exact drop-in. `list` carries no parameter schemas, so each descriptor is
 //! then hydrated from `engine::functions::info` for native exposure.
@@ -24,30 +25,24 @@
 //! notice a mid-conversation registry change and tell the model its cached
 //! contracts may be stale.
 //!
-//! The trigger only fires ON CHANGE and has no catch-up snapshot, so the
+//! The event comes only ON CHANGE and has no catch-up snapshot, so the
 //! snapshot is seeded once at boot; after that two event sources keep it
 //! live, and no timer reloads anything:
 //!
-//! - `engine::functions-available` runs the internal handler. What fires it
-//!   depends on the engine. Released engines up to v0.24.5-rc.2 poll every
-//!   5 s and hash only the sorted function-ID set: they fire on adds and
-//!   removes, but never when an existing id is re-registered with a new
-//!   schema or description. Engines with registry-driven notification
-//!   (iii-hq/iii#2283) fire on every registration, overwrites included, and
-//!   on every removal, folding a burst into one event ~100 ms later. The
-//!   payload carries no schemas either way, so the handler re-reads the
-//!   registry and picks its hydration from what moved (`change_hydration`).
-//! - Every worker announce (`engine::workers-available` →
+//! - `engine::on-functions-changed` runs the internal handler on every
+//!   registration, overwrites included, and on every removal, folding a
+//!   burst into one event ~100 ms later. The payload carries no schemas, so
+//!   the handler re-reads the registry and picks its hydration from what
+//!   moved (`change_hydration`).
+//! - Every worker announce (`engine::on-workers-changed` →
 //!   [`crate::engine_events`]) runs [`refresh`], which re-reads every schema
-//!   rather than carrying the cached ones forward. On an id-set-only engine
-//!   this is the only path that sees a restarted worker's new contracts under
-//!   unchanged ids, so it stays even though newer engines report them too.
+//!   rather than carrying the cached ones forward, so a restarted worker's
+//!   new contracts under unchanged ids are read even when its change event
+//!   folded into the same burst as an id add or remove.
 //!
-//! Still invisible: on an id-set-only engine, a live worker re-registering an
-//! existing id with a new schema without reconnecting (no event at all); on a
-//! newer engine, such an overwrite folded into the same burst as an id add or
-//! remove (the event reads as an id change), until the next announce or
-//! overwrite of that id.
+//! Still invisible until the next announce or overwrite of that id: an
+//! overwrite folded into the same burst as an id add or remove (the event
+//! reads as an id change).
 //!
 //! [`build_tools`](crate::turn_loop) reads the snapshot under
 //! [`Deps::functions`](crate::deps::Deps::functions).
@@ -58,8 +53,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -99,10 +93,10 @@ impl FunctionsSnapshot {
 pub type FunctionsCell = Arc<RwLock<Arc<FunctionsSnapshot>>>;
 
 const FUNCTIONS_FN_ID: &str = "harness::on-functions-change";
-const FUNCTIONS_TRIGGER_TYPE: &str = "engine::functions-available";
+const ON_FUNCTIONS_CHANGED_FN: &str = "engine::on-functions-changed";
 
 /// An empty registry snapshot (generation 0) — seeded at boot, then kept live
-/// by the trigger. The boot seed bumps it to 1 on the first non-empty apply.
+/// by the `engine::on-functions-changed` observer. The boot seed bumps it to 1 on the first non-empty apply.
 pub fn new_cell() -> FunctionsCell {
     Arc::new(RwLock::new(Arc::new(snapshot_of(Vec::new()))))
 }
@@ -220,7 +214,7 @@ enum Hydration {
     All,
 }
 
-/// The hydration for a `functions-available` event, from what the fresh
+/// The hydration for an `engine::on-functions-changed` event, from what the fresh
 /// registry read moved relative to the cached snapshot. The payload carries
 /// no schemas, so it cannot say which contract changed. When neither the
 /// public nor the full id set moved, the event can only be an overwrite of an
@@ -338,7 +332,7 @@ fn apply_fetched(carried: &mut [FunctionDescriptor], fetched: &HashMap<String, O
 }
 
 /// Fetch the authoritative registry, hydrate schemas, and swap the snapshot;
-/// returns the count. `mode: None` is a `functions-available` event: the
+/// returns the count. `mode: None` is an `engine::on-functions-changed` event: the
 /// hydration is picked by [`change_hydration`] from what the read moved.
 async fn reload(
     iii: &Arc<IIIClient>,
@@ -370,7 +364,7 @@ pub async fn refresh(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64
     reload(iii, cell, timeout_ms, Some(Hydration::All)).await
 }
 
-/// Seed the snapshot from the registry. The trigger fires only on change, so
+/// Seed the snapshot from the registry. The change event comes only on change, so
 /// without this the cache would stay empty until the first change. The
 /// unhydrated list is applied first for a fast boot (`build_tools` tolerates
 /// `None` schemas), then hydrated and re-applied.
@@ -400,12 +394,12 @@ pub struct OnFunctionsChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal change handler and bind the
-/// `engine::functions-available` trigger. Best-effort: a failed bind warns (the
-/// seeded snapshot still serves, refreshed on worker announces) rather than
-/// bricking boot. The handler is tagged `internal` so it stays off the public
-/// catalog (and out of the very cache it maintains).
-pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, timeout_ms: u64) {
+/// Register the internal change handler and observe
+/// `engine::on-functions-changed` with it. The seeded snapshot serves until
+/// the first change, and worker announces refresh it as well. The handler is
+/// tagged `internal` so it stays off the public catalog (and out of the very
+/// cache it maintains).
+pub fn observe_function_changes(iii: &Arc<IIIClient>, cell: FunctionsCell, timeout_ms: u64) {
     let engine = iii.clone();
     iii.register_function(
         FUNCTIONS_FN_ID,
@@ -420,28 +414,21 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
         })
         .description(
             "Internal: refresh the cached function-registry snapshot when functions are \
-             registered, re-registered or unregistered (driven by the \
-             engine::functions-available trigger).",
+             registered, re-registered or unregistered (an observer of \
+             engine::on-functions-changed).",
         )
         .metadata(json!({ "internal": true })),
     );
 
-    match iii.register_trigger(RegisterTriggerInput::new(
-        FUNCTIONS_TRIGGER_TYPE.to_string(),
-        FUNCTIONS_FN_ID.to_string(),
-        json!({}),
-    )) {
-        Ok(_) => tracing::info!(
-            trigger_type = FUNCTIONS_TRIGGER_TYPE,
-            function_id = FUNCTIONS_FN_ID,
-            "function-registry change trigger bound"
-        ),
-        Err(e) => tracing::warn!(
-            trigger_type = FUNCTIONS_TRIGGER_TYPE,
-            error = %e,
-            "binding engine::functions-available failed; cache refreshes only on worker announces"
-        ),
-    }
+    let _observer = iii.observe(
+        Source::function(ON_FUNCTIONS_CHANGED_FN).deliver(Deliver::Output),
+        FUNCTIONS_FN_ID,
+    );
+    tracing::info!(
+        source = ON_FUNCTIONS_CHANGED_FN,
+        function_id = FUNCTIONS_FN_ID,
+        "observing function-registry changes"
+    );
 }
 
 #[cfg(test)]

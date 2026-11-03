@@ -58,7 +58,7 @@ def test_ordered_workers_replaces_harness_selector_and_moves_it_last() -> None:
 def test_worker_stops_isolated_project_when_initial_up_errors(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_trigger(
+    def fake_call(
         _namespace: str,
         function_id: str,
         _payload: dict[str, Any],
@@ -68,7 +68,7 @@ def test_worker_stops_isolated_project_when_initial_up_errors(monkeypatch) -> No
             return None, {"code": "CLI_TIMEOUT", "message": "timed out"}
         return {"status": "ok"}, None
 
-    monkeypatch.setattr(registry_worker_smoke, "trigger", fake_trigger)
+    monkeypatch.setattr(registry_worker_smoke, "call", fake_call)
     monkeypatch.setattr(
         registry_worker_smoke,
         "compose_text",
@@ -88,7 +88,7 @@ def test_worker_uses_add_result_and_always_stops_isolated_project(
 ) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
-    def fake_trigger(
+    def fake_call(
         _namespace: str,
         function_id: str,
         payload: dict[str, Any],
@@ -114,7 +114,7 @@ def test_worker_uses_add_result_and_always_stops_isolated_project(
             }, None
         return {"status": "ok"}, None
 
-    monkeypatch.setattr(registry_worker_smoke, "trigger", fake_trigger)
+    monkeypatch.setattr(registry_worker_smoke, "call", fake_call)
     monkeypatch.setattr(
         registry_worker_smoke,
         "compose_text",
@@ -144,7 +144,7 @@ def test_worker_uses_add_result_and_always_stops_isolated_project(
 
 
 def test_worker_reports_ready_add_result_as_pass(monkeypatch) -> None:
-    def fake_trigger(
+    def fake_call(
         _namespace: str,
         function_id: str,
         _payload: dict[str, Any],
@@ -160,7 +160,7 @@ def test_worker_reports_ready_add_result_as_pass(monkeypatch) -> None:
             }, None
         return {"status": "ok", "containers": []}, None
 
-    monkeypatch.setattr(registry_worker_smoke, "trigger", fake_trigger)
+    monkeypatch.setattr(registry_worker_smoke, "call", fake_call)
     monkeypatch.setattr(
         registry_worker_smoke,
         "compose_text",

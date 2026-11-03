@@ -436,7 +436,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
               }),
               toggle('notify_resolved_threads', 'Notify resolved threads', undefined, { visibleWhen: filtered }),
             ],
-            'Default for every agent; a github::pr::event binding can override it. Changes apply live.',
+            'Default for every agent; a github::pr::on-event observer can override it with its notifications arg. Changes apply live.',
           ),
         ],
       },

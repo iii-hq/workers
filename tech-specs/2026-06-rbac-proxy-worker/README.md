@@ -5,8 +5,8 @@ access control **in front of** the engine instead of inside it. It opens its own
 configurable WebSocket port, speaks the iii worker protocol verbatim, and
 transparently proxies every frame (functions **and** channels) to a trusted
 engine listener — authenticating the connection, gating each invocation,
-namespacing registrations, gating trigger bindings to permitted targets, running
-middleware and registration hooks, and
+namespacing registrations, gating observers (their source and their target),
+running middleware and registration hooks, and
 **rewriting the results of the built-in `engine::*` discovery functions** so a
 caller only ever sees what its boundaries allow.
 
@@ -21,7 +21,7 @@ The same RBAC surface already ships **inside** the engine. The
 `iii-worker-manager` built-in opens one or more WebSocket listeners, and any
 non-first listener can carry its own `auth_function_id`, `middleware_function_id`,
 `expose_functions`, forbidden/allowed lists, `function_registration_prefix`, and
-the three registration hooks; channels are mounted per listener at
+the registration hooks; channels are mounted per listener at
 `/ws/channels/{channel_id}`. The in-flight dev-experience overhaul goes further
 and promotes that listener to a first-class engine concept,
 [`worker-gateway`](../../../iii/tech-specs/2026-06-devexp/engine-and-gateway.md),
@@ -38,7 +38,7 @@ properties a proxy worker has that an engine-native listener cannot:
 | Can front a **remote or managed** engine you don't own (hosted iii, a teammate's engine) | No — RBAC config is engine/compose config | **Yes** — it is just another worker pointed at an engine URL |
 | Deploy / scale / restart / harden independently of the engine | No | **Yes** |
 | Blast radius of an auth bug | The engine | The proxy only |
-| Filters the `engine::*` discovery results to the caller | Partial — only `engine::functions::list` / `::info` are session-aware, and only **in-process** | **All eight** discovery functions, rewritten client-side (see [engine-overrides.md](engine-overrides.md)) |
+| Filters the `engine::*` discovery results to the caller | Partial — only `engine::functions::list` / `::info` are session-aware, and only **in-process** | **All six** discovery functions, rewritten client-side (see [engine-overrides.md](engine-overrides.md)) |
 | Wire protocol | iii worker protocol, unchanged | iii worker protocol, unchanged |
 
 This is not a re-implementation of the engine for its own sake. The crucial
@@ -87,7 +87,7 @@ flowchart LR
   c1 -.->|"/ws/channels/{id}"| CH
   I -->|"one upstream WS per<br/>downstream connection"| E
   CH -->|"bridge frames to<br/>engine /ws/channels/{id}"| E
-  CTL -->|"iii.trigger(auth/mw/hook)"| E
+  CTL -->|"iii.call(auth/mw/hook)"| E
   CTL --> CFG
   CTL --> AUTHFN
 
@@ -104,7 +104,7 @@ The proxy maintains **two kinds of engine connection**:
 - **One control connection** — the proxy's own worker identity (like `console`'s
   `register_worker(...)`). It registers `rbac-proxy::status`, integrates with the
   `configuration` worker, and invokes the operator's `auth` / `middleware` /
-  registration-hook functions via `iii.trigger`. This mirrors how the engine's
+  registration-hook functions via `iii.call`. This mirrors how the engine's
   own worker-manager calls those functions with `engine.call(...)`.
 - **One data connection per downstream worker** — exactly the `console` model: a
   fresh outbound WebSocket to the engine's internal listener, frames pumped both
@@ -122,19 +122,19 @@ sequenceDiagram
   participant E as engine (internal)
 
   W->>P: WS upgrade (headers, query, ip)
-  P->>A: iii.trigger(auth_function_id, AuthInput)
+  P->>A: iii.call(auth_function_id, AuthInput)
   alt auth throws / returns nothing
     P-->>W: {"type":"error","error":{code,message}} + Close
   else AuthResult
-    P->>P: build per-connection RBAC session<br/>(allowed/forbidden/expose/prefix/context/trigger perms)
+    P->>P: build per-connection RBAC session<br/>(allowed/forbidden/expose/prefix/context)
     P->>E: open upstream WS (internal listener)
     E-->>P: WorkerRegistered{worker_id}
     P-->>W: WorkerRegistered{worker_id}
     loop per frame
-      W->>P: RegisterFunction / RegisterTrigger / InvokeFunction / ...
-      P->>P: intercept (gate / prefix / hook / trigger-target check / middleware / engine:: override)
+      W->>P: RegisterFunction / Observe / InvokeFunction / ...
+      P->>P: intercept (gate / prefix / hook / observer source + target check / middleware / engine:: override)
       P->>E: forward (rewritten) or synthesize a reply
-      E-->>P: InvocationResult / InvokeFunction (dispatch) / ...
+      E-->>P: InvocationResult / InvokeFunction (dispatch) / FunctionRegistered / ...
       P->>P: rewrite (engine:: filter / strip prefix)
       P-->>W: forward
     end
@@ -145,8 +145,9 @@ Each numbered concern has a home:
 
 1. **Authenticate on upgrade** — [rbac.md § Authentication](rbac.md#authentication).
 2. **Gate every invocation** — [rbac.md § Access resolution](rbac.md#access-resolution-order).
-3. **Gate trigger bindings** — [rbac.md § Trigger registration RBAC](rbac.md#trigger-registration-rbac)
-   (verify the bound `function_id` before forwarding `RegisterTrigger`).
+3. **Gate observers** — [rbac.md § Observer registration RBAC](rbac.md#observer-registration-rbac)
+   (verify the observed function and the target before forwarding `Observe`),
+   and the host frames in [protocol-interception.md § Observers](protocol-interception.md#observers).
 4. **Namespace registrations** — [rbac.md § Function registration prefix](rbac.md#function-registration-prefix)
    and the wire rewrites in [protocol-interception.md](protocol-interception.md).
 5. **Middleware & registration hooks** — [rbac.md § Middleware](rbac.md#middleware)
@@ -170,8 +171,10 @@ config.
   handler (binary-worker.md §7).
 - **No committed `config.yaml`.** Runtime config lives in the `configuration`
   worker under id `rbac-proxy`; `WorkerConfig::default()` seeds first boot.
-- **Two-step reactive binding** (`registerFunction` then `registerTrigger`) for
-  the one trigger the proxy binds (its own `configuration` change feed).
+- **Register, then observe.** The proxy's own reactions (its `configuration`
+  change feed and catalog-cache invalidation) are functions it registers and
+  then names as the targets of its observers (`registerFunction`, then
+  `observe`).
 
 ## Spec index
 
@@ -181,17 +184,17 @@ config.
   agent exposure, dependencies, and testing.
 - [rbac.md](rbac.md) — the RBAC contract, structured exactly like the existing
   [`worker-rbac.mdx`](../../../iii/docs/0-11-0/how-to/worker-rbac.mdx) how-to:
-  auth function, `expose_functions`, middleware, the three registration hooks,
+  auth function, `expose_functions`, middleware, the registration hooks,
   channels, full example config, and the types reference — adapted to the proxy.
 - [protocol-interception.md](protocol-interception.md) — the iii worker wire
   protocol the proxy parses, the per-frame interception/rewrite rules, the
   out-of-band rejection frame, the prefix mechanics, request/response
   correlation, and the channel bridge.
 - [engine-overrides.md](engine-overrides.md) — **the new addition**: how the
-  proxy rewrites the results of the eight discovery functions among the nine
-  `EngineFunctions` (`iii/sdk/packages/rust/iii/src/engine.rs:15-25`) to the
-  caller's boundaries — with a per-function filter table, the catalog/binding
-  caches the rewrites depend on, and the worker-internals leak policy.
+  proxy rewrites the results of the six discovery functions (the function,
+  worker and observer listings) to the caller's boundaries — with a
+  per-function filter table, the catalog cache the rewrites depend on, and the
+  worker-internals leak policy.
 
 ## Prior art
 

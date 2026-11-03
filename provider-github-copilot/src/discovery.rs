@@ -126,7 +126,7 @@ async fn probe_model(http: &reqwest::Client, api_url: &str, bearer: &str, model:
 /// Verdicts persist (`state::ProbeResults`), so a model is probed once and
 /// then answered from cache until the TTL lapses. That matters for cost: a
 /// successful probe on a premium model spends a premium request, not just a
-/// token, and a refresh runs at boot, on every `router::ready` rebind, and
+/// token, and a refresh runs at boot, on every `router::on-ready` event, and
 /// after each sign-in.
 async fn retain_callable(
     iii: &IIIClient,

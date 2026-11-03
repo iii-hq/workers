@@ -13,7 +13,8 @@
 #
 # Deliberately uses a random high port, never 49134: a developer's own stack
 # usually holds that one, and a harness that hijacks it would take their
-# workers down with it.
+# workers down with it. III_E2E_PORT=<port> sets the port.
+# The worker binary is built into $CARGO_TARGET_DIR when it is set.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,7 +60,16 @@ pick_port() {
   done
   return 1
 }
-PORT="$(pick_port)" || { echo "FAIL: could not find a free port" >&2; exit 1; }
+if [ -n "${III_E2E_PORT:-}" ]; then
+  PORT="$III_E2E_PORT"
+  if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+    exec 3>&- 2>/dev/null || true
+    echo "FAIL: III_E2E_PORT=$PORT already accepts connections" >&2
+    exit 1
+  fi
+else
+  PORT="$(pick_port)" || { echo "FAIL: could not find a free port" >&2; exit 1; }
+fi
 URL="ws://127.0.0.1:$PORT"
 echo "==> engine port $PORT"
 
@@ -90,12 +100,16 @@ trap cleanup EXIT INT TERM
 echo "==> building code-runner (release)"
 ( cd "$ROOT/code-runner" && cargo build --release --bin code-runner ) \
   > "$LOGS/build.log" 2>&1 || { echo "FAIL: build failed, see $LOGS/build.log" >&2; tail -30 "$LOGS/build.log"; exit 1; }
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$ROOT/code-runner/$TARGET_DIR" ;; esac
+WORKER_BIN="$TARGET_DIR/release/code-runner"
 
 RUN_CFG="$LOGS/engine.config.yaml"
 sed "s|\${III_E2E_PORT}|$PORT|" "$HERE/config.yaml" > "$RUN_CFG"
 
 echo "==> starting engine"
-( cd "$LOGS" && "$III_BIN" -c "$RUN_CFG" --no-update-check ) > "$LOGS/engine.log" 2>&1 &
+# `exec`, so $! is the engine's own PID and cleanup's kill reaches it.
+( cd "$LOGS" && exec "$III_BIN" -c "$RUN_CFG" --no-update-check ) > "$LOGS/engine.log" 2>&1 &
 ENGINE_PID=$!
 
 for i in $(seq 1 60); do
@@ -107,7 +121,7 @@ done
 echo "==> engine up"
 
 echo "==> starting code-runner worker"
-( cd "$ROOT/code-runner" && ./target/release/code-runner --url "$URL" --config "$HERE/code-runner.config.yaml" ) \
+( cd "$ROOT/code-runner" && exec "$WORKER_BIN" --url "$URL" --config "$HERE/code-runner.config.yaml" ) \
   > "$LOGS/code-runner.log" 2>&1 &
 WORKER_PID=$!
 sleep 1

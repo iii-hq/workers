@@ -104,7 +104,7 @@ export function MapSection() {
             </SpecRow>
             <SpecRow name="cleanup" type="inherited">
               downstream close → upstream close; the engine&apos;s per-connection
-              teardown removes that connection&apos;s functions and triggers.
+              teardown removes that connection&apos;s functions and observers.
             </SpecRow>
           </div>
         </SpecSheet>

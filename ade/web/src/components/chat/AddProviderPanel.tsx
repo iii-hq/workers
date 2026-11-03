@@ -22,7 +22,7 @@ import { ProviderIcon } from './ProviderIcon'
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-/** Base id for the browser-local `engine::workers-available` handler. */
+/** Base id for the browser-local `engine::on-workers-changed` handler. */
 const PROVIDER_ADD_WATCH_FN = 'ade::provider-add-watch'
 
 type AddStatus =
@@ -45,8 +45,8 @@ export interface AddProviderPanelProps {
 
 /**
  * Every provider worker the public registry publishes, with a one-tap add.
- * Adding runs `compose::add` — exactly what `iii trigger compose::add
- * worker=<name>` does in a terminal — and the row shows it adding until
+ * Adding runs `compose::add` — exactly what `iii call compose::add` does in
+ * a terminal — and the row shows it adding until
  * the add settles. A worker added from a terminal shows as installed once it
  * connects. Once the worker registers with the router the
  * picker's provider list updates on its own; this panel only has to offer
@@ -129,7 +129,7 @@ export function AddProviderPanel({
       void (async () => {
         const client = await getIiiClient()
         try {
-          await client.trigger(
+          await client.call(
             'compose::add',
             { workers: [name] },
             { timeoutMs: 600_000 },
@@ -327,7 +327,7 @@ export function AddProviderPanel({
       <p className="shrink-0 px-4 pb-3 font-sans text-[12px] leading-relaxed text-ink-ghost">
         Adding a provider runs <span className="font-mono">compose::add</span> —
         the same as{' '}
-        <span className="font-mono">iii trigger compose::add worker=…</span> in
+        <span className="font-mono">iii call compose::add worker=…</span> in
         your terminal. New providers still need credentials: configure them once
         they appear in the list.
       </p>

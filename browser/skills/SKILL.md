@@ -82,7 +82,7 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::sessions::stop` — close a tab for good; idempotent. An attached
   session closes only a tab it opened and releases an adopted user tab
   untouched.
-- `browser::sessions::attach` — bind a session to an already-running browser
+- `browser::sessions::attach` — attach a session to an already-running browser
   over CDP (start Chrome with `--remote-debugging-port`): open a fresh tab
   the session owns, or adopt an existing logged-in tab by URL substring.
   Off unless `allow_attach` is set in config.
@@ -94,8 +94,8 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::chromium::status` — read-only: whether a Chromium is found, its
   path, version and source, and whether a download is available here.
 - `browser::chromium::install` — download Chromium (~200 MB) when the
-  machine has none; returns a `job_id` at once, progress on
-  `browser::chromium-install-progress`. A session error starting with
+  machine has none; returns a `job_id` at once, progress as calls of
+  `browser::on-chromium-install-progress`. A session error starting with
   `chromium_missing:` means exactly this: tell the user, and offer the ADE's
   Set up the harness → Browser step or this call (it needs their approval).
 - `browser::recording::start` / `browser::recording::stop` — capture a
@@ -182,10 +182,12 @@ a second call to parse what you fetched. Each takes a single `url` or a bulk
   default, capped by `max_pages` (20) and `max_depth` (2). The response holds
   only a ≤10-item sample; page through every item with
   `browser::crawl::items { crawl_id: <crawl.id>, after?, limit? }` (retained
-  in memory for 1 h, last 32 crawls). For items live while it runs, bind
-  `browser::crawl-item` with `{ crawl_id }` first, then call
-  `browser::crawl { crawl_id }`; missed or dropped events (`seq` gaps,
-  `dropped_events`) are read back with `browser::crawl::items`.
+  in memory for 1 h, last 32 crawls). For items live while it runs, observe
+  `browser::on-crawl-item` with args `{ crawl_id }`, wait until the observer
+  is active, then call `browser::crawl { crawl_id }`. The crawl waits for
+  each observer to answer (5 s each), so a slow consumer slows it; missed
+  events (`seq` gaps, `dropped_events`) are read back with
+  `browser::crawl::items`.
   `stream_name` is deprecated and ignored (a `warnings` entry says so).
 
 Safe mode refuses private, loopback and cloud-metadata addresses on every one
@@ -312,39 +314,61 @@ fill the context window and force a compaction. Read economically:
   do not re-snapshot after every action, only after the page actually
   changed.
 
-## Reactive triggers
+## Reacting to events
 
-Bind a `browser::*` trigger when another function should react to session
-activity as it happens instead of polling the read functions. The types:
-`browser::session-started`, `browser::session-stopped`, `browser::navigated`,
-`browser::console-event` (one captured entry per firing; high volume),
-`browser::picked` (a human picked an element in the console UI; the payload
-carries a ref that `browser::act` accepts directly), and
-`browser::handoff-requested` (a session is paused waiting for a human; the
-console surfaces it beside the live viewport). `browser::crawl-item` is the
-one non-session type: one event per crawled page of a `browser::crawl`,
-filtered by `crawl_id` instead of `session_id`.
+Observe the worker's event functions when something should react to browser
+activity as it happens instead of polling the read functions. Each returns
+the event it is called with: `browser::on-session-started`,
+`browser::on-session-stopped`, `browser::on-session-updated`,
+`browser::on-navigated`, `browser::on-console-event` (one captured entry per
+call; high volume), `browser::on-network-event`, `browser::on-picked` (a
+human picked an element in the console UI; the event carries a ref that
+`browser::act` accepts directly), `browser::on-handoff-requested` (a session
+is paused waiting for a human; the console surfaces it beside the live
+viewport), `browser::on-handoff-resolved` and
+`browser::on-download-changed`. These take no args: narrow to one tab with a
+filter on `input.session_id`, or leave filters out to hear every tab.
+Two functions are not tied to a tab. `browser::on-crawl-item` is called once
+per crawled page of a `browser::crawl` and once when it ends, with args
+`{ crawl_id? }`: with a `crawl_id` the observer receives that crawl, without
+one every crawl. `browser::on-chromium-install-progress` reports a
+`browser::chromium::install` job and takes no args: filter on `input.job_id`
+or `input.phase`.
 
 If you just ran `browser::navigate` yourself, its return value already tells
-you the outcome; bind triggers when a different worker needs to observe
-sessions it does not drive.
+you the outcome; observe when you need to follow sessions you do not drive.
 
-### How to bind
+### How to observe
 
-1. Register a handler: `registerFunction('mywatcher::on-console', handler)`.
-2. Register the trigger:
+As an agent, call `harness::observe`. Without a `target`, each event wakes
+this session:
 
-```typescript
-iii.registerTrigger({
-  type: 'browser::console-event',
-  function_id: 'mywatcher::on-console',
-  config: { session_id: 'b1' },
-})
+```json
+{
+  "function_id": "browser::on-console-event",
+  "filters": { "input.session_id": { "$eq": "b1" } },
+  "label": "errors on the checkout tab"
+}
 ```
 
-Every session `browser::*` binding accepts the optional `session_id`
-equality filter; omit it to receive events for all sessions
-(`browser::crawl-item` takes `crawl_id` instead). `browser::console-event` fires
-per entry, so filter by session and treat `browser::console::read` as the
-durable record. For event payload shapes, call `get function info` on the
-trigger type.
+`harness::unobserve { id }` removes it again.
+
+From worker code, register the handler and observe with it as the target:
+
+```typescript
+iii.registerFunction('mywatcher::on-console', handler)
+iii.observe(
+  {
+    function_id: 'browser::on-console-event',
+    filters: { 'input.session_id': { $eq: 'b1' } },
+    deliver: 'output',
+  },
+  'mywatcher::on-console',
+)
+```
+
+`deliver: 'output'` hands the handler the event itself. Filters always take
+an explicit operator (`$eq`, `$in`). `browser::on-console-event` fires per
+entry, so filter by session and treat `browser::console::read` as the
+durable record. For event shapes, read the function's `response_format`
+(`engine::functions::info`).

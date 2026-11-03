@@ -10,7 +10,7 @@ export const STATIC_FUNCTIONS: FunctionEntry[] = [
   { id: 'engine::info', description: 'inspect a worker' },
   { id: 'functions::list', description: 'list every function' },
   { id: 'functions::info', description: 'inspect a function' },
-  { id: 'trigger::run', description: 'fire a trigger' },
+  { id: 'engine::observers::list', description: 'list every observer' },
   { id: 'directory::index', description: 'index a worker skill bundle' },
   { id: 'directory::resolve', description: 'resolve an iii:// link' },
   {

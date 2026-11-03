@@ -7,11 +7,11 @@
  * - graph (default, the hero): a live commit DAG of the working repo —
  *   colored lanes, merge routing, ref labels — refreshing as the agent
  *   works (GitGraph).
- * - activity: the live feed of `github::called` events, one row per
+ * - activity: the live feed of `github::on-called` events, one row per
  *   finished call (ActivityFeed, from ./index).
  *
  * Only the selected view is mounted, so each view owns its own
- * `github::called` subscription only while visible — the two never run at
+ * `github::on-called` observer only while visible — the two never run at
  * once (the same lifecycle the previous Radix Tabs gave us). The selected
  * view persists per workspace tab (`tabId` namespaces the localStorage
  * key; workspace tabs survive reloads).

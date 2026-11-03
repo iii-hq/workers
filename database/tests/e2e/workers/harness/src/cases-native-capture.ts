@@ -7,10 +7,10 @@
  * `sqlite_db`, `mysql_native_db` ↔ `mysql_db`). A write that enters through
  * the sibling's pool is — from the native handle's perspective — an
  * external client: different pool, different connections, invisible to SQL
- * classification. If the native subscriber still hears it, the cross-client
- * claim holds end-to-end (postgres: DDL triggers → pg_notify → dedicated
- * LISTEN connection; sqlite: DDL triggers → changelog table → fs-watch
- * drain; mysql: the binlog replication stream, nothing installed).
+ * classification. If the native observer still hears it, the cross-client
+ * claim holds end-to-end (postgres: database triggers → pg_notify →
+ * dedicated LISTEN connection; sqlite: database triggers → changelog table →
+ * fs-watch drain; mysql: the binlog replication stream, nothing installed).
  *
  * Cases carry `applies` for the sibling driver so they run once inside that
  * driver's loop, and address the native handle explicitly in payloads.
@@ -18,13 +18,14 @@
 
 import type { DriverKey } from './dialect.ts'
 import type { TestCase } from './cases.ts'
-import { expect, expectEqual } from './cases.ts'
+import { expect, expectEqual, observeRowChanged, refusalCode } from './cases.ts'
 
 const EVENT_TIMEOUT_MS = 5_000
 const SILENCE_WINDOW_MS = 500
 
 interface RowChangedEvent {
   db: string
+  schema: string | null
   table: string | null
   op: 'insert' | 'update' | 'delete' | 'other'
   affected_rows: number
@@ -44,8 +45,8 @@ interface NativeTarget {
   nativeDb: string
   idColumnDDL: string
   ph: (i: number) => string
-  /** How the database reports the table in events (pg schema-qualifies). */
-  eventTable: (table: string) => string
+  /** The schema events name (pg reports one; the table itself is canonical). */
+  eventSchema: string | null
   /**
    * How the id column's value appears in an event's `returning`: the same
    * encoding `database::query` uses for that column — pg's BIGSERIAL is a
@@ -60,19 +61,11 @@ interface NativeTarget {
    */
   triggerCountSql?: (table: string) => { sql: string; params: unknown[] }
   /**
-   * Whether a native binding spelled in the WRONG case still captures.
-   * pg: no — the table name is quoted verbatim into DDL and quoted
-   * postgres identifiers are case-sensitive, so install fails loudly.
-   * sqlite: yes — quoted identifiers match case-insensitively.
-   * mysql: yes — no DDL at all; the bus filter matches case-insensitively.
-   */
-  uppercaseBindingCaptures: boolean
-  /**
-   * Whether registering against a table that does not exist is ACCEPTED.
+   * Whether an observer of a table that does not exist is ACCEPTED.
    * pg/sqlite reject at DDL install; mysql has nothing to install, so the
-   * binding is accepted and starts capturing when the table appears.
+   * observer is accepted and starts hearing when the table appears.
    */
-  missingTableBindingAccepted: boolean
+  missingTableObserverAccepted: boolean
 }
 
 const TARGETS: NativeTarget[] = [
@@ -81,7 +74,7 @@ const TARGETS: NativeTarget[] = [
     nativeDb: 'pg_native_db',
     idColumnDDL: 'BIGSERIAL PRIMARY KEY',
     ph: (i) => `$${i}`,
-    eventTable: (table) => `public.${table}`,
+    eventSchema: 'public',
     keyOf: (id) => String(id),
     // `$1::text::regclass`, not `$1::regclass` — a bare regclass cast makes
     // the driver bind the parameter AS regclass (22P03); text binds cleanly
@@ -90,35 +83,32 @@ const TARGETS: NativeTarget[] = [
       sql: `SELECT count(*) AS n FROM pg_trigger WHERE tgrelid = $1::text::regclass AND tgname LIKE 'iii_row_changed_%'`,
       params: [table],
     }),
-    uppercaseBindingCaptures: false,
-    missingTableBindingAccepted: false,
+    missingTableObserverAccepted: false,
   },
   {
     applies: 'sqlite_db',
     nativeDb: 'sqlite_native_db',
     idColumnDDL: 'INTEGER PRIMARY KEY AUTOINCREMENT',
     ph: () => '?',
-    eventTable: (table) => table,
+    eventSchema: null,
     keyOf: (id) => id,
-    // lower() on both sides: a reinstall from a differently-cased binding
+    // lower() on both sides: an install from a differently-cased spelling
     // stores tbl_name with THAT spelling, and sqlite's `=` is case-sensitive.
     triggerCountSql: (table) => ({
       sql: `SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger' AND lower(tbl_name) = lower(?1) AND name LIKE 'iii_row_changed_%'`,
       params: [table],
     }),
-    uppercaseBindingCaptures: true,
-    missingTableBindingAccepted: false,
+    missingTableObserverAccepted: false,
   },
   {
     applies: 'mysql_db',
     nativeDb: 'mysql_native_db',
     idColumnDDL: 'BIGINT AUTO_INCREMENT PRIMARY KEY',
     ph: () => '?',
-    eventTable: (table) => table,
+    eventSchema: null,
     keyOf: (id) => id,
     // Binlog capture installs nothing to probe for.
-    uppercaseBindingCaptures: true,
-    missingTableBindingAccepted: true,
+    missingTableObserverAccepted: true,
   },
 ]
 
@@ -140,14 +130,16 @@ function sink(events: RowChangedEvent[], label: string) {
 }
 
 /**
- * Wait until native capture is actually delivering for this target.
- * Registration acks race the first write otherwise — and delivery is
- * at-most-once, so a racing write is silently unheard.
+ * Wait until native capture is actually delivering for this target, after
+ * the observers are active. Delivery is at-most-once, so a write that races
+ * the capture is silently unheard.
  *
- * Trigger-based targets (pg, sqlite): poll the catalog through the worker
- * until the three capture triggers exist. Binlog capture (mysql) installs
- * nothing to probe, so prove the stream is attached empirically: a warmup
- * table with its own binding is poked until an event comes back.
+ * Database-trigger targets (pg, sqlite): the added hook installed the DDL
+ * before the observer became active; the catalog poll through the worker
+ * confirms the three capture triggers exist. Binlog capture (mysql) installs
+ * nothing to probe and its stream attaches on its own schedule, so prove it
+ * empirically: a warmup table with its own observer is poked until an event
+ * comes back.
  */
 async function waitForCaptureReady(
   call: (functionId: string, payload: unknown) => Promise<any>,
@@ -184,12 +176,9 @@ async function waitForCaptureReady(
     },
     { description: 'Warmup sink proving the capture stream is attached.' },
   )
-  const triggerRef = iii.registerTrigger({
-    type: 'database::row-changed',
-    function_id: fnId,
-    config: { db: target.nativeDb, table: warmupTable },
-  })
+  const observer = observeRowChanged(iii, { db: target.nativeDb, table: warmupTable }, fnId)
   try {
+    await observer.ready()
     const deadline = Date.now() + 15_000
     while (events.length === 0) {
       if (Date.now() > deadline) {
@@ -204,7 +193,7 @@ async function waitForCaptureReady(
       while (events.length === 0 && Date.now() - poked < 700) await sleep(20)
     }
   } finally {
-    triggerRef.unregister()
+    await observer.dispose()
     fnRef.unregister()
     await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${warmupTable}` })
   }
@@ -220,12 +209,12 @@ function crossClientCase(target: NativeTarget): TestCase {
       const classifiedFnId = `harness::native_capture_classified_${target.applies}`
       const nativeEvents: RowChangedEvent[] = []
       const classifiedEvents: RowChangedEvent[] = []
-      const native = sink(nativeEvents, 'native subscriber')
-      const classified = sink(classifiedEvents, 'classified subscriber')
+      const native = sink(nativeEvents, 'native observer')
+      const classified = sink(classifiedEvents, 'classified observer')
       const ph = target.ph
 
-      // The watched table must exist before the binding registers — the
-      // worker installs the capture triggers at registration time.
+      // The watched table must exist before the observer is added — the
+      // worker installs the capture triggers in its added hook.
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       await call('database::execute', {
         db: target.nativeDb,
@@ -240,12 +229,8 @@ function crossClientCase(target: NativeTarget): TestCase {
         },
         { description: 'Native-capture E2E event sink.' },
       )
-      const nativeTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: nativeFnId,
-        config: { db: target.nativeDb, table },
-      })
-      // Statements-path subscriber on the sibling handle, watching the SAME
+      const nativeObserver = observeRowChanged(iii, { db: target.nativeDb, table }, nativeFnId)
+      // Statements-path observer on the sibling handle, watching the SAME
       // physical table. Proves the two capture modes coexist and attribute
       // correctly.
       const classifiedFn = iii.registerFunction(
@@ -256,11 +241,7 @@ function crossClientCase(target: NativeTarget): TestCase {
         },
         { description: 'Statements-path E2E event sink for the native-capture table.' },
       )
-      const classifiedTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: classifiedFnId,
-        config: { db: target.applies, table },
-      })
+      const classifiedObserver = observeRowChanged(iii, { db: target.applies, table }, classifiedFnId)
 
       const expectNative = (
         event: RowChangedEvent,
@@ -269,7 +250,8 @@ function crossClientCase(target: NativeTarget): TestCase {
         ids: number[],
       ): void => {
         expectEqual(event.db, target.nativeDb, 'native event db')
-        expectEqual(event.table, target.eventTable(table), 'native event table')
+        expectEqual(event.table, table, 'native event table (canonical)')
+        expectEqual(event.schema, target.eventSchema, 'native event schema')
         expectEqual(event.op, op, 'native event op')
         expectEqual(event.affected_rows, affectedRows, 'native event affected_rows')
         // Native events name the changed rows by primary key — identity
@@ -288,23 +270,14 @@ function crossClientCase(target: NativeTarget): TestCase {
       }
 
       try {
-        // Wait until BOTH bindings are visible to the engine before writing.
-        const registered = await call('engine::registered-triggers::list', {})
-        for (const fn of [nativeFnId, classifiedFnId]) {
-          expect(
-            registered.registered_triggers.some(
-              (t: { trigger_type: string; function_id: string }) =>
-                t.trigger_type === 'database::row-changed' && t.function_id === fn,
-            ),
-            `trigger registration for ${fn} is visible to the engine`,
-          )
-        }
+        // Wait until BOTH observers are active before writing…
+        await Promise.all([nativeObserver.ready(), classifiedObserver.ready()])
         // …and until the worker's DDL install has landed in the database.
         await waitForCaptureReady(call, iii, target, table)
 
         // 1. External write: enters through the sibling pool. The native
-        // subscriber must hear it via the database; the classified
-        // subscriber hears the same write attributed to the sibling.
+        // observer must hear it via the database; the classified
+        // observer hears the same write attributed to the sibling.
         await call('database::execute', {
           db: target.applies,
           sql: `INSERT INTO ${table} (n) VALUES (${ph(1)}), (${ph(2)})`,
@@ -352,9 +325,9 @@ function crossClientCase(target: NativeTarget): TestCase {
         native.expectDrained()
         classified.expectDrained()
       } finally {
-        nativeTrigger.unregister()
+        await nativeObserver.dispose()
         nativeFn.unregister()
-        classifiedTrigger.unregister()
+        await classifiedObserver.dispose()
         classifiedFn.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -364,7 +337,7 @@ function crossClientCase(target: NativeTarget): TestCase {
 
 function tablelessRejectionCase(target: NativeTarget): TestCase {
   return {
-    name: 'native capture rejects table-less bindings',
+    name: 'native capture rejects table-less observers',
     applies: [target.applies],
     async run({ call, iii }) {
       const table = `e2e_native_tableless_${target.applies}`
@@ -372,7 +345,7 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
       const tablelessFnId = `harness::native_capture_tableless_${target.applies}`
       const sentinelEvents: RowChangedEvent[] = []
       const tablelessEvents: RowChangedEvent[] = []
-      const sentinel = sink(sentinelEvents, 'sentinel subscriber')
+      const sentinel = sink(sentinelEvents, 'sentinel observer')
 
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       await call('database::execute', {
@@ -380,8 +353,8 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
         sql: `CREATE TABLE ${table} (id ${target.idColumnDDL}, n INT NOT NULL)`,
       })
 
-      // Valid table-scoped binding: installs the triggers and proves events
-      // DO flow for this table — without it, the table-less binding's
+      // Valid table-scoped observer: installs the triggers and proves events
+      // DO flow for this table — without it, the table-less observer's
       // silence below would be vacuous (no triggers, nothing to hear).
       const sentinelFn = iii.registerFunction(
         sentinelFnId,
@@ -391,32 +364,29 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
         },
         { description: 'Valid table-scoped sink proving events flow.' },
       )
-      const sentinelTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: sentinelFnId,
-        config: { db: target.nativeDb, table },
-      })
-      // A db-wide binding is invalid on a native database: per-table
-      // triggers are what make external writes visible, so the worker must
-      // refuse it. If it were wrongly accepted, its filter (db, no table)
-      // would match the sentinel table's events.
+      const sentinelObserver = observeRowChanged(iii, { db: target.nativeDb, table }, sentinelFnId)
+      // A db-wide observer is invalid on a native database: per-table
+      // database triggers are what make external writes visible, so the
+      // worker must refuse it. If it were wrongly accepted, its args (db, no
+      // table) would match the sentinel table's events.
       const tablelessFn = iii.registerFunction(
         tablelessFnId,
         async (payload: RowChangedEvent) => {
           tablelessEvents.push(payload)
           return null
         },
-        { description: 'Sink that must never receive events (rejected binding).' },
+        { description: 'Sink that must never receive events (rejected observer).' },
       )
-      const tablelessTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: tablelessFnId,
-        config: { db: target.nativeDb },
-      })
+      const tablelessObserver = observeRowChanged(iii, { db: target.nativeDb }, tablelessFnId)
 
       try {
+        await sentinelObserver.ready()
+        expectEqual(
+          await refusalCode(tablelessObserver),
+          'NATIVE_CAPTURE_REQUIRES_TABLE',
+          'the table-less observer is refused',
+        )
         await waitForCaptureReady(call, iii, target, table)
-        await sleep(SILENCE_WINDOW_MS) // let the table-less registration settle too
         await call('database::execute', {
           db: target.nativeDb,
           sql: `INSERT INTO ${table} (n) VALUES (${target.ph(1)})`,
@@ -425,11 +395,11 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
         const heard = await sentinel.next()
         expectEqual(heard.op, 'insert', 'sentinel hears the insert')
         await sleep(SILENCE_WINDOW_MS)
-        expectEqual(tablelessEvents.length, 0, 'rejected table-less binding received an event')
+        expectEqual(tablelessEvents.length, 0, 'rejected table-less observer received an event')
       } finally {
-        tablelessTrigger.unregister()
+        await tablelessObserver.dispose()
         tablelessFn.unregister()
-        sentinelTrigger.unregister()
+        await sentinelObserver.dispose()
         sentinelFn.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -453,7 +423,7 @@ function txGatingCase(target: NativeTarget): TestCase {
       const table = `e2e_native_tx_${target.applies}`
       const fnId = `harness::native_tx_${target.applies}`
       const events: RowChangedEvent[] = []
-      const native = sink(events, 'native tx subscriber')
+      const native = sink(events, 'native tx observer')
       const ph = target.ph
 
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
@@ -469,14 +439,11 @@ function txGatingCase(target: NativeTarget): TestCase {
         },
         { description: 'Native-capture transaction-gating E2E sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: fnId,
-        config: { db: target.nativeDb, table },
-      })
+      const observer = observeRowChanged(iii, { db: target.nativeDb, table }, fnId)
 
       let activeTransaction: string | undefined
       try {
+        await observer.ready()
         await waitForCaptureReady(call, iii, target, table)
 
         // 1. Uncommitted writes are invisible…
@@ -515,9 +482,9 @@ function txGatingCase(target: NativeTarget): TestCase {
         await call('database::commitTransaction', { transaction_id: activeTransaction })
         activeTransaction = undefined
 
-        // Exactly two events, one per statement — but back-to-back Void
-        // dispatches carry no cross-event ordering guarantee, so assert the
-        // set, not the sequence.
+        // Exactly two events, one per statement — the native listener sees
+        // them as the database reports them, so assert the set, not the
+        // sequence.
         const committed = [await native.next(), await native.next()]
         const ops = committed.map((e) => e.op).sort()
         expectEqual(ops, ['insert', 'update'], 'committed transaction delivers both events')
@@ -555,7 +522,7 @@ function txGatingCase(target: NativeTarget): TestCase {
             /* transaction may already be finalized */
           }
         }
-        triggerRef.unregister()
+        await observer.dispose()
         fnRef.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -564,15 +531,15 @@ function txGatingCase(target: NativeTarget): TestCase {
 }
 
 /**
- * Fan-out and filtering on the native path: an all-ops subscriber and a
- * delete-only subscriber share one table. Registering the second binding
- * REINSTALLS the capture DDL (pg/sqlite) — the first subscriber must keep
- * hearing through it. After both unregister, external writes still succeed
- * (orphaned triggers are inert, not broken) and deliver to no one.
+ * Fan-out and filtering on the native path: an all-ops observer and a
+ * delete-only observer share one table, and one capture install (the
+ * worker counts the observers holding it). After both are disposed,
+ * external writes still succeed (orphaned database triggers are inert, not
+ * broken) and deliver to no one.
  */
 function fanOutOpsCase(target: NativeTarget): TestCase {
   return {
-    name: 'native capture fans out, filters ops, and survives trigger reinstall',
+    name: 'native capture fans out, filters ops, and outlives its observers',
     applies: [target.applies],
     async run({ call, iii }) {
       const table = `e2e_native_fanout_${target.applies}`
@@ -580,8 +547,8 @@ function fanOutOpsCase(target: NativeTarget): TestCase {
       const deletesFnId = `harness::native_fanout_deletes_${target.applies}`
       const allEvents: RowChangedEvent[] = []
       const deleteEvents: RowChangedEvent[] = []
-      const all = sink(allEvents, 'all-ops subscriber')
-      const deletes = sink(deleteEvents, 'delete-only subscriber')
+      const all = sink(allEvents, 'all-ops observer')
+      const deletes = sink(deleteEvents, 'delete-only observer')
       const ph = target.ph
 
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
@@ -597,13 +564,9 @@ function fanOutOpsCase(target: NativeTarget): TestCase {
         },
         { description: 'Native-capture fan-out E2E sink (all ops).' },
       )
-      const allTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: allFnId,
-        config: { db: target.nativeDb, table },
-      })
-      // Second binding on the SAME table: worker-side this re-runs the DDL
-      // install (DROP + CREATE trigger) while the first binding is live.
+      const allObserver = observeRowChanged(iii, { db: target.nativeDb, table }, allFnId)
+      // Second observer on the SAME table: it shares the first one's
+      // capture install.
       const deletesFn = iii.registerFunction(
         deletesFnId,
         async (payload: RowChangedEvent) => {
@@ -612,35 +575,19 @@ function fanOutOpsCase(target: NativeTarget): TestCase {
         },
         { description: 'Native-capture fan-out E2E sink (deletes only).' },
       )
-      const deletesTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: deletesFnId,
-        config: { db: target.nativeDb, table, ops: ['delete'] },
-      })
+      const deletesObserver = observeRowChanged(iii, { db: target.nativeDb, table, ops: ['delete'] }, deletesFnId)
 
-      let bindingsLive = true
-      const unregisterBindings = () => {
-        if (!bindingsLive) return
-        bindingsLive = false
-        allTrigger.unregister()
-        deletesTrigger.unregister()
+      let observersLive = true
+      const disposeObservers = async () => {
+        if (!observersLive) return
+        observersLive = false
+        await allObserver.dispose()
+        await deletesObserver.dispose()
       }
 
       try {
-        const registered = await call('engine::registered-triggers::list', {})
-        for (const fn of [allFnId, deletesFnId]) {
-          expect(
-            registered.registered_triggers.some(
-              (t: { trigger_type: string; function_id: string }) =>
-                t.trigger_type === 'database::row-changed' && t.function_id === fn,
-            ),
-            `trigger registration for ${fn} is visible to the engine`,
-          )
-        }
+        await Promise.all([allObserver.ready(), deletesObserver.ready()])
         await waitForCaptureReady(call, iii, target, table)
-        // The second registration's reinstall races the engine ack; give the
-        // worker a beat so no write lands mid DROP/CREATE.
-        await sleep(300)
 
         // Insert (external client): all-ops hears, delete-only does not.
         await call('database::execute', {
@@ -648,7 +595,7 @@ function fanOutOpsCase(target: NativeTarget): TestCase {
           sql: `INSERT INTO ${table} (n) VALUES (${ph(1)})`,
           params: [10],
         })
-        expectEqual((await all.next()).op, 'insert', 'all-ops subscriber hears insert')
+        expectEqual((await all.next()).op, 'insert', 'all-ops observer hears insert')
         await sleep(SILENCE_WINDOW_MS)
         deletes.expectDrained()
 
@@ -658,23 +605,23 @@ function fanOutOpsCase(target: NativeTarget): TestCase {
           sql: `DELETE FROM ${table} WHERE n = ${ph(1)}`,
           params: [10],
         })
-        expectEqual((await all.next()).op, 'delete', 'all-ops subscriber hears delete')
-        expectEqual((await deletes.next()).op, 'delete', 'delete-only subscriber hears delete')
+        expectEqual((await all.next()).op, 'delete', 'all-ops observer hears delete')
+        expectEqual((await deletes.next()).op, 'delete', 'delete-only observer hears delete')
 
-        // Unregister both; external writes still succeed and nobody hears.
-        unregisterBindings()
+        // Dispose both; external writes still succeed and nobody hears.
+        await disposeObservers()
         await sleep(SILENCE_WINDOW_MS)
         const r = await call('database::execute', {
           db: target.applies,
           sql: `INSERT INTO ${table} (n) VALUES (${ph(1)})`,
           params: [20],
         })
-        expectEqual(r.affected_rows, 1, 'write succeeds after unregister (orphan capture is inert)')
+        expectEqual(r.affected_rows, 1, 'write succeeds after dispose (orphan capture is inert)')
         await sleep(SILENCE_WINDOW_MS)
         all.expectDrained()
         deletes.expectDrained()
       } finally {
-        unregisterBindings()
+        await disposeObservers()
         allFn.unregister()
         deletesFn.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
@@ -701,7 +648,7 @@ function bulkCoalescingCase(target: NativeTarget): TestCase {
       const table = `e2e_native_bulk_${target.applies}`
       const fnId = `harness::native_bulk_${target.applies}`
       const events: RowChangedEvent[] = []
-      const native = sink(events, 'bulk subscriber')
+      const native = sink(events, 'bulk observer')
       const ROWS = 150
       const expectCapped = (event: RowChangedEvent, label: string): void => {
         expectEqual(event.affected_rows, ROWS, `${label}: the count stays exact past the cap`)
@@ -722,13 +669,10 @@ function bulkCoalescingCase(target: NativeTarget): TestCase {
         },
         { description: 'Native-capture bulk-coalescing E2E sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: fnId,
-        config: { db: target.nativeDb, table },
-      })
+      const observer = observeRowChanged(iii, { db: target.nativeDb, table }, fnId)
 
       try {
+        await observer.ready()
         await waitForCaptureReady(call, iii, target, table)
 
         const values = Array.from({ length: ROWS }, (_, i) => `(${i})`).join(', ')
@@ -761,7 +705,7 @@ function bulkCoalescingCase(target: NativeTarget): TestCase {
         await sleep(SILENCE_WINDOW_MS)
         native.expectDrained()
       } finally {
-        triggerRef.unregister()
+        await observer.dispose()
         fnRef.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -770,17 +714,15 @@ function bulkCoalescingCase(target: NativeTarget): TestCase {
 }
 
 /**
- * Table-name casing on the NATIVE path is driver-specific, and the
- * difference is deliberate, documented behavior — pin it: an
- * uppercase-spelled binding on a lowercase table captures on sqlite
- * (case-insensitive quoted identifiers) and mysql (no DDL; the bus filter
- * matches case-insensitively), but is rejected at DDL install on postgres
- * (quoted identifiers are case-sensitive). An exact-spelling sentinel
- * binding proves events flow either way — silence is never vacuous.
+ * An observer names its table canonically (bare, unquoted, lowercase) on
+ * every driver: an uppercase spelling is refused when it is created
+ * (`NON_CANONICAL_TABLE`) and installs nothing, so it can never add a second
+ * capture set. An exact-spelling sentinel observer proves events flow, so the
+ * single event below is never vacuous.
  */
 function caseSensitivityCase(target: NativeTarget): TestCase {
   return {
-    name: 'native capture table casing behaves per driver contract',
+    name: 'native capture refuses a non-canonical table spelling',
     applies: [target.applies],
     async run({ call, iii }) {
       const table = `e2e_native_case_${target.applies}`
@@ -788,8 +730,8 @@ function caseSensitivityCase(target: NativeTarget): TestCase {
       const upperFnId = `harness::native_case_upper_${target.applies}`
       const exactEvents: RowChangedEvent[] = []
       const upperEvents: RowChangedEvent[] = []
-      const exact = sink(exactEvents, 'exact-spelling subscriber')
-      const upper = sink(upperEvents, 'uppercase subscriber')
+      const exact = sink(exactEvents, 'exact-spelling observer')
+      const upper = sink(upperEvents, 'uppercase observer')
       const ph = target.ph
 
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
@@ -803,32 +745,23 @@ function caseSensitivityCase(target: NativeTarget): TestCase {
           exactEvents.push(payload)
           return null
         },
-        { description: 'Exact-spelling native binding (sentinel).' },
+        { description: 'Exact-spelling native observer (sentinel).' },
       )
-      const exactTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: exactFnId,
-        config: { db: target.nativeDb, table },
-      })
+      const exactObserver = observeRowChanged(iii, { db: target.nativeDb, table }, exactFnId)
       const upperFn = iii.registerFunction(
         upperFnId,
         async (payload: RowChangedEvent) => {
           upperEvents.push(payload)
           return null
         },
-        { description: 'Uppercase-spelled native binding.' },
+        { description: 'Uppercase-spelled native observer.' },
       )
-      const upperTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: upperFnId,
-        config: { db: target.nativeDb, table: table.toUpperCase() },
-      })
+      const upperObserver = observeRowChanged(iii, { db: target.nativeDb, table: table.toUpperCase() }, upperFnId)
 
       try {
+        await exactObserver.ready()
+        expectEqual(await refusalCode(upperObserver), 'NON_CANONICAL_TABLE', 'the uppercase spelling is refused')
         await waitForCaptureReady(call, iii, target, table)
-        // Let the uppercase registration finish its install attempt (which
-        // on pg fails, on sqlite reinstalls the same triggers).
-        await sleep(500)
 
         await call('database::execute', {
           db: target.applies,
@@ -836,22 +769,15 @@ function caseSensitivityCase(target: NativeTarget): TestCase {
           params: [1],
         })
         const heard = await exact.next()
-        expectEqual(heard.op, 'insert', 'exact-spelling binding hears the write')
-
-        if (target.uppercaseBindingCaptures) {
-          const viaUpper = await upper.next()
-          expectEqual(viaUpper.op, 'insert', 'uppercase binding hears the write')
-        }
-        // Exactly one event per subscriber, ever: a differently-cased
-        // reinstall must converge on ONE trigger set — a second set would
-        // double-log every write and fail here.
+        expectEqual(heard.op, 'insert', 'exact-spelling observer hears the write')
+        // Exactly one event, ever: one capture set per table.
         await sleep(SILENCE_WINDOW_MS)
         exact.expectDrained()
         upper.expectDrained()
       } finally {
-        upperTrigger.unregister()
+        await upperObserver.dispose().catch(() => {})
         upperFn.unregister()
-        exactTrigger.unregister()
+        await exactObserver.dispose()
         exactFn.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -860,12 +786,12 @@ function caseSensitivityCase(target: NativeTarget): TestCase {
 }
 
 /**
- * Two tables, two bindings, no cross-talk: per-table capture installation
- * and per-binding filtering keep each subscriber scoped to its own table.
+ * Two tables, two observers, no cross-talk: per-table capture installation
+ * and per-observer keys keep each observer scoped to its own table.
  */
 function twoTableIsolationCase(target: NativeTarget): TestCase {
   return {
-    name: 'native capture isolates bindings per table',
+    name: 'native capture isolates observers per table',
     applies: [target.applies],
     async run({ call, iii }) {
       const tableA = `e2e_native_iso_a_${target.applies}`
@@ -874,8 +800,8 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
       const fnB = `harness::native_iso_b_${target.applies}`
       const eventsA: RowChangedEvent[] = []
       const eventsB: RowChangedEvent[] = []
-      const sinkA = sink(eventsA, 'table-A subscriber')
-      const sinkB = sink(eventsB, 'table-B subscriber')
+      const sinkA = sink(eventsA, 'table-A observer')
+      const sinkB = sink(eventsB, 'table-B observer')
       const ph = target.ph
 
       for (const table of [tableA, tableB]) {
@@ -893,11 +819,7 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
         },
         { description: 'Table-A isolation E2E sink.' },
       )
-      const triggerA = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: fnA,
-        config: { db: target.nativeDb, table: tableA },
-      })
+      const observerA = observeRowChanged(iii, { db: target.nativeDb, table: tableA }, fnA)
       const fnBRef = iii.registerFunction(
         fnB,
         async (payload: RowChangedEvent) => {
@@ -906,13 +828,10 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
         },
         { description: 'Table-B isolation E2E sink.' },
       )
-      const triggerB = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: fnB,
-        config: { db: target.nativeDb, table: tableB },
-      })
+      const observerB = observeRowChanged(iii, { db: target.nativeDb, table: tableB }, fnB)
 
       try {
+        await Promise.all([observerA.ready(), observerB.ready()])
         await waitForCaptureReady(call, iii, target, tableA)
         await waitForCaptureReady(call, iii, target, tableB)
 
@@ -921,7 +840,7 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
           sql: `INSERT INTO ${tableA} (n) VALUES (${ph(1)})`,
           params: [1],
         })
-        expectEqual((await sinkA.next()).op, 'insert', 'A subscriber hears table A')
+        expectEqual((await sinkA.next()).op, 'insert', 'A observer hears table A')
         await sleep(SILENCE_WINDOW_MS)
         sinkB.expectDrained()
 
@@ -930,13 +849,13 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
           sql: `INSERT INTO ${tableB} (n) VALUES (${ph(1)})`,
           params: [2],
         })
-        expectEqual((await sinkB.next()).op, 'insert', 'B subscriber hears table B')
+        expectEqual((await sinkB.next()).op, 'insert', 'B observer hears table B')
         await sleep(SILENCE_WINDOW_MS)
         sinkA.expectDrained()
       } finally {
-        triggerA.unregister()
+        await observerA.dispose()
         fnARef.unregister()
-        triggerB.unregister()
+        await observerB.dispose()
         fnBRef.unregister()
         for (const table of [tableA, tableB]) {
           await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
@@ -947,21 +866,22 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
 }
 
 /**
- * Registering against a table that does not exist: pg/sqlite must reject
- * at DDL install — and stay silent even after the table is created,
- * proving the rejection was final, not deferred. mysql has nothing to
- * install, so the binding is accepted and starts capturing the moment the
- * table appears in the binlog. The asymmetry is contract; pin both sides.
+ * Observing a table that does not exist: pg/sqlite refuse the observer at
+ * DDL install (`CAPTURE_INSTALL_FAILED`) — and stay silent even after the
+ * table is created, proving the rejection was final, not deferred. mysql has
+ * nothing to install, so the observer is accepted and starts hearing the
+ * moment the table appears in the binlog. The asymmetry is contract; pin
+ * both sides.
  */
 function missingTableRegistrationCase(target: NativeTarget): TestCase {
   return {
-    name: 'native capture registration against a missing table behaves per driver contract',
+    name: 'native capture observer of a missing table behaves per driver contract',
     applies: [target.applies],
     async run({ call, iii }) {
       const table = `e2e_native_missing_${target.applies}`
       const fnId = `harness::native_missing_${target.applies}`
       const events: RowChangedEvent[] = []
-      const native = sink(events, 'missing-table subscriber')
+      const native = sink(events, 'missing-table observer')
       const ph = target.ph
 
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
@@ -971,19 +891,20 @@ function missingTableRegistrationCase(target: NativeTarget): TestCase {
           events.push(payload)
           return null
         },
-        { description: 'Missing-table registration E2E sink.' },
+        { description: 'Missing-table observer E2E sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: fnId,
-        config: { db: target.nativeDb, table },
-      })
+      const observer = observeRowChanged(iii, { db: target.nativeDb, table }, fnId)
 
       try {
-        // Let the registration (and, on pg/sqlite, its failing DDL install)
-        // fully settle BEFORE the table exists — creating it too early
-        // would let the install succeed and test nothing.
-        await sleep(1_000)
+        // The observer settles (its DDL install fails on pg/sqlite) BEFORE
+        // the table exists — creating it too early would let the install
+        // succeed and test nothing.
+        const refusal = await refusalCode(observer)
+        if (target.missingTableObserverAccepted) {
+          expectEqual(refusal, undefined, 'the observer of a missing table is accepted')
+        } else {
+          expectEqual(refusal, 'CAPTURE_INSTALL_FAILED', 'the observer of a missing table is refused')
+        }
 
         await call('database::execute', {
           db: target.nativeDb,
@@ -995,15 +916,15 @@ function missingTableRegistrationCase(target: NativeTarget): TestCase {
           params: [1],
         })
 
-        if (target.missingTableBindingAccepted) {
+        if (target.missingTableObserverAccepted) {
           const heard = await native.next()
-          expectEqual(heard.op, 'insert', 'accepted binding captures once the table exists')
+          expectEqual(heard.op, 'insert', 'accepted observer hears once the table exists')
         } else {
           await sleep(SILENCE_WINDOW_MS)
           native.expectDrained()
         }
       } finally {
-        triggerRef.unregister()
+        await observer.dispose()
         fnRef.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -1028,8 +949,8 @@ function keyShapesCase(target: NativeTarget): TestCase {
       const keylessFnId = `harness::native_keyless_${target.applies}`
       const compositeEvents: RowChangedEvent[] = []
       const keylessEvents: RowChangedEvent[] = []
-      const compositeSink = sink(compositeEvents, 'composite-key subscriber')
-      const keylessSink = sink(keylessEvents, 'keyless subscriber')
+      const compositeSink = sink(compositeEvents, 'composite-key observer')
+      const keylessSink = sink(keylessEvents, 'keyless observer')
       const ph = target.ph
 
       for (const t of [composite, keyless]) {
@@ -1052,11 +973,7 @@ function keyShapesCase(target: NativeTarget): TestCase {
         },
         { description: 'Composite-key native capture E2E sink.' },
       )
-      const compositeTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: compositeFnId,
-        config: { db: target.nativeDb, table: composite },
-      })
+      const compositeObserver = observeRowChanged(iii, { db: target.nativeDb, table: composite }, compositeFnId)
       const keylessFn = iii.registerFunction(
         keylessFnId,
         async (payload: RowChangedEvent) => {
@@ -1065,13 +982,10 @@ function keyShapesCase(target: NativeTarget): TestCase {
         },
         { description: 'Keyless-table native capture E2E sink.' },
       )
-      const keylessTrigger = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: keylessFnId,
-        config: { db: target.nativeDb, table: keyless },
-      })
+      const keylessObserver = observeRowChanged(iii, { db: target.nativeDb, table: keyless }, keylessFnId)
 
       try {
+        await Promise.all([compositeObserver.ready(), keylessObserver.ready()])
         await waitForCaptureReady(call, iii, target, composite)
         await waitForCaptureReady(call, iii, target, keyless)
 
@@ -1103,9 +1017,9 @@ function keyShapesCase(target: NativeTarget): TestCase {
         compositeSink.expectDrained()
         keylessSink.expectDrained()
       } finally {
-        compositeTrigger.unregister()
+        await compositeObserver.dispose()
         compositeFn.unregister()
-        keylessTrigger.unregister()
+        await keylessObserver.dispose()
         keylessFn.unregister()
         for (const t of [composite, keyless]) {
           await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${t}` })
@@ -1132,7 +1046,7 @@ function pgByteCapCase(): TestCase {
       const table = 'e2e_native_pg_bytes'
       const fnId = 'harness::native_pg_bytes'
       const events: RowChangedEvent[] = []
-      const native = sink(events, 'pg byte-cap subscriber')
+      const native = sink(events, 'pg byte-cap observer')
 
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       await call('database::execute', {
@@ -1147,13 +1061,10 @@ function pgByteCapCase(): TestCase {
         },
         { description: 'Postgres NOTIFY byte-budget E2E sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: fnId,
-        config: { db: target.nativeDb, table },
-      })
+      const observer = observeRowChanged(iii, { db: target.nativeDb, table }, fnId)
 
       try {
+        await observer.ready()
         await waitForCaptureReady(call, iii, target, table)
         const rows = Array.from({ length: 20 }, (_, i) => `('${'x'.repeat(1000)}${i}', ${i})`)
         const written = await call('database::execute', {
@@ -1172,7 +1083,7 @@ function pgByteCapCase(): TestCase {
         )
         expectEqual(event.truncated, true, 'the dropped keys are flagged')
       } finally {
-        triggerRef.unregister()
+        await observer.dispose()
         fnRef.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -1200,7 +1111,7 @@ function sqliteLegacyChangelogCase(): TestCase {
       const table = 'e2e_native_legacy'
       const fnId = 'harness::native_legacy'
       const events: RowChangedEvent[] = []
-      const native = sink(events, 'legacy-changelog subscriber')
+      const native = sink(events, 'legacy-changelog observer')
 
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       // Simulate the changelog as the previous worker left it: no `key`.
@@ -1232,13 +1143,10 @@ function sqliteLegacyChangelogCase(): TestCase {
         },
         { description: 'Legacy-changelog migration E2E sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: fnId,
-        config: { db: target.nativeDb, table },
-      })
+      const observer = observeRowChanged(iii, { db: target.nativeDb, table }, fnId)
 
       try {
+        await observer.ready()
         // The install is what migrates the changelog (ALTER … ADD COLUMN).
         // If it had not, this INSERT would fail in the trigger and the
         // capture would be silently absent — the event below is the proof.
@@ -1257,7 +1165,7 @@ function sqliteLegacyChangelogCase(): TestCase {
           'keys flow through a migrated changelog',
         )
       } finally {
-        triggerRef.unregister()
+        await observer.dispose()
         fnRef.unregister()
         await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       }

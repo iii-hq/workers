@@ -7,7 +7,7 @@ import { parseArgs, promisify } from 'node:util';
 import { registerWorker } from 'iii-sdk';
 import { uiPage, uiStyles } from 'virtual:vscode-ui';
 import { type Config, expandHome, loadConfig } from './config.js';
-import { bindConfigTrigger, fetchRuntime, registerVscodeConfig } from './configuration.js';
+import { fetchRuntime, observeConfigChanges, registerVscodeConfig } from './configuration.js';
 import {
   type Instance,
   instanceIdFor,
@@ -220,7 +220,7 @@ iii.registerFunction(
 
 type UiAsset = {
   file: string;
-  type: 'console:script' | 'console:style';
+  kind: 'script' | 'style';
   content_type: string;
   content: string;
 };
@@ -228,13 +228,13 @@ type UiAsset = {
 const uiAssets: Record<string, UiAsset> = {
   'vscode/page.js': {
     file: 'page.js',
-    type: 'console:script',
+    kind: 'script',
     content_type: 'text/javascript',
     content: uiPage,
   },
   'vscode/styles.css': {
     file: 'styles.css',
-    type: 'console:style',
+    kind: 'style',
     content_type: 'text/css',
     content: uiStyles,
   },
@@ -265,15 +265,15 @@ iii.registerFunction('vscode::ui-content', (input: { path: string }) => uiConten
   ]),
 });
 
-function registerUiAsset(path: string) {
-  return iii.registerTrigger({
-    type: uiAssets[path].type,
-    function_id: 'vscode::ui-content',
-    config: { path },
-  });
+/** The console fetches the asset through this observer, calling `vscode::ui-content` with `{ path }`. */
+function observeUiAsset(path: string) {
+  return iii.observe(
+    { function_id: 'console::ui::asset', args: { kind: uiAssets[path].kind, path } },
+    'vscode::ui-content',
+  );
 }
 
-const uiTriggers = new Map(Object.keys(uiAssets).map((path) => [path, registerUiAsset(path)]));
+const uiObservers = new Map(Object.keys(uiAssets).map((path) => [path, observeUiAsset(path)]));
 
 if (uiWatchEnabled) {
   const pending = new Map<string, NodeJS.Timeout>();
@@ -284,9 +284,9 @@ if (uiWatchEnabled) {
     pending.set(
       path,
       setTimeout(() => {
-        const previous = uiTriggers.get(path);
-        uiTriggers.set(path, registerUiAsset(path));
-        previous?.unregister();
+        const previous = uiObservers.get(path);
+        uiObservers.set(path, observeUiAsset(path));
+        void previous?.dispose();
         console.error(`[vscode] reloaded ui asset ${path}`);
       }, 150),
     );
@@ -300,7 +300,7 @@ try {
   console.warn(`configuration initialization failed; continuing with the seed: ${String(err)}`);
 }
 
-await bindConfigTrigger(iii, async () => {
+await observeConfigChanges(iii, async () => {
   const runtime = await fetchRuntime(iii);
   if (runtime) holder.current = { engine_url: url, ...runtime };
 });

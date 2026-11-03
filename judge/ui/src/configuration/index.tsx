@@ -27,14 +27,14 @@ export interface RegisteredProvider {
 interface FunctionsList {
   functions?: { function_id: string; namespace?: string; worker_name?: string }[]
 }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'call'>
 
 /** Every `judge-<provider>` worker, one row per provider (by its `evaluate` or
  * its configuration id). A local provider loads its model on first use. */
 export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> {
   // Providers register their functions as internal (callers use the hub), so
   // they only show up when internal registrations are included.
-  const reply = await iii.trigger<FunctionsList>(
+  const reply = await iii.call<FunctionsList>(
     'engine::functions::list',
     { include_internal: true },
     { timeoutMs: 10_000 },
@@ -79,9 +79,9 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
   const focusField = props.focusField?.[0]
   useEffect(() => {
     if (focusField !== 'provider') return
-    const trigger = rootRef.current?.querySelector<HTMLElement>('#judge-cfg-provider')
-    trigger?.scrollIntoView?.({ block: 'center' })
-    trigger?.focus()
+    const field = rootRef.current?.querySelector<HTMLElement>('#judge-cfg-provider')
+    field?.scrollIntoView?.({ block: 'center' })
+    field?.focus()
   }, [focusField])
 
   if (props.value !== null && (typeof props.value !== 'object' || Array.isArray(props.value))) {

@@ -526,20 +526,20 @@
   font-weight: 500;
 }
 
-[data-iii-ui="kanban"] .kb-trigger-detail {
+[data-iii-ui="kanban"] .kb-observer-detail {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-[data-iii-ui="kanban"] .kb-trigger-detail__row {
+[data-iii-ui="kanban"] .kb-observer-detail__row {
   display: flex;
   align-items: baseline;
   gap: 12px;
   font-size: 13px;
 }
 
-[data-iii-ui="kanban"] .kb-trigger-detail__label {
+[data-iii-ui="kanban"] .kb-observer-detail__label {
   flex: none;
   width: 104px;
   color: var(--color-ink-faint);

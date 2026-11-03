@@ -26,7 +26,7 @@ export async function revertTurn(
   turnId: string,
   paths?: readonly string[],
 ): Promise<RevertResult> {
-  return host.iii.trigger<RevertResult>('shell::turns::revert', {
+  return host.iii.call<RevertResult>('shell::turns::revert', {
     session_id: sessionId,
     turn_id: turnId,
     ...(paths !== undefined ? { paths: [...paths] } : {}),

@@ -4,8 +4,8 @@ Feature: session::create — create a session at status idle
   Contract (session-manager.md § session::create): a new session starts
   at status "idle" with message_count 0, title/description defaulting to
   "", optional app-defined metadata persisted onto SessionMeta, and
-  created_at == updated_at. Every create fires exactly one
-  session::created event.
+  created_at == updated_at. Every create calls session::on-created
+  exactly once.
 
   Deterministic test stack: ids are sequential (s_001, e_001, ...) and
   the clock starts at 1000000 ms, so scenarios assert exact values.
@@ -76,18 +76,15 @@ Feature: session::create — create a session at status idle
     And I call "session::create" with "{}"
     Then the response field "session_id" is "s_002"
 
-  # Prevents: silent creates — consumers bind session::created to render
-  # new conversations live; a create that does not emit is invisible.
-  Scenario: create fires exactly one session::created event with the full payload
-    Given a binding "b1" on "session::created" delivering to "obs::created" with config:
-      """
-      {}
-      """
+  # Prevents: silent creates — consumers observe session::on-created to
+  # render new conversations live; a create that does not emit is invisible.
+  Scenario: create calls session::on-created once with the full payload
+    Given an observer "b1" of "session::on-created" delivering to "obs::created"
     When I call "session::create" with:
       """
       { "title": "T", "description": "D", "metadata": { "owner": "u_1" } }
       """
-    Then function "obs::created" received 1 "session::created" delivery
+    Then function "obs::created" received 1 "session::on-created" delivery
     And delivery 0 to "obs::created" has "session_id" = "s_001"
     And delivery 0 to "obs::created" has "title" = "T"
     And delivery 0 to "obs::created" has "description" = "D"
@@ -96,11 +93,11 @@ Feature: session::create — create a session at status idle
     And delivery 0 to "obs::created" has no field "forked_from"
 
   # Prevents: leaking other tenants' session creations to a
-  # metadata-filtered subscriber.
+  # metadata-filtered observer.
   Scenario: created events respect the metadata filter
-    Given a binding "b1" on "session::created" delivering to "obs::u1" with config:
+    Given an observer "b1" of "session::on-created" delivering to "obs::u1" with filters:
       """
-      { "metadata": { "owner": "u_1" } }
+      { "input.session_metadata.owner": { "$eq": "u_1" } }
       """
     When I call "session::create" with:
       """

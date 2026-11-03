@@ -1,9 +1,9 @@
 //! `computer::screencast::start` / `stop` / `computer::frame` — the live-view
 //! pipeline behind the console viewport. The worker polls the driver
 //! screenshot at the configured fps and keeps ONLY the newest frame per
-//! session in memory; after each frame it fires the worker-owned
-//! `computer::frame-changed` trigger type (a small notification, no image,
-//! see `crate::frames`), and `computer::frame` hands out the stored frame
+//! session in memory; after each frame it calls the observable function
+//! `computer::on-frame-changed` (a small notification, no image, see
+//! `crate::frames`), and `computer::frame` hands out the stored frame
 //! without a capture round-trip (initial read, and the read behind every
 //! notification). All three are internal console-UI plumbing, not agent
 //! surface — agents read the desktop with `computer::screenshot` and

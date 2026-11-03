@@ -172,9 +172,9 @@ describe('missing-model download control', () => {
     expect(percent({ ...event, received_bytes: 200 })).toBe(100)
   })
   it('sends the selected id with a download-sized timeout and propagates failures', async () => {
-    const trigger = vi.fn().mockRejectedValue(new Error('network unavailable'))
-    const iii = { trigger } as unknown as ExtensionIii
+    const call = vi.fn().mockRejectedValue(new Error('network unavailable'))
+    const iii = { call } as unknown as ExtensionIii
     await expect(modelsDownload(iii, { id: model.id })).rejects.toThrow('network unavailable')
-    expect(trigger).toHaveBeenCalledWith('voice::models::download', { id: model.id }, { timeoutMs: 3_600_000 })
+    expect(call).toHaveBeenCalledWith('voice::models::download', { id: model.id }, { timeoutMs: 3_600_000 })
   })
 })

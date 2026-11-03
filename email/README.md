@@ -2,9 +2,9 @@
 
 Email worker for the iii engine. SMTP send + real-time IMAP read with
 `IDLE` push. The worker refuses to fall back to polling: an IMAP server
-without `IDLE` fails fast at startup with `E610`. Inbound messages flow
-through the `email::new-mail` trigger type, fanned out the moment the
-server pushes `EXISTS`.
+without `IDLE` fails fast at startup with `E610`. Each inbound message is a
+call of `email::on-new-mail`, made the moment the server pushes `EXISTS`;
+observe that function to react to new mail.
 
 Accounts, limits, and logins live in the worker's `configuration` entry
 (hot-reloaded; see Configuration below), so a compose file is the whole
@@ -40,13 +40,13 @@ npx skills add iii-hq/workers --all
 ## Quickstart
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, protocol::TriggerRequest};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let worker = register_worker("ws://localhost:49134", InitOptions::default());
-    let result = worker.trigger(TriggerRequest {
+    let result = worker.call(CallRequest {
         function_id: "email::send".into(),
         payload: json!({
             "account": "support",
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 import { registerWorker } from 'iii-sdk'
 
 const worker = registerWorker('ws://localhost:49134')
-await worker.trigger({
+await worker.call({
   function_id: 'email::send',
   payload: {
     account: 'support',
@@ -81,7 +81,7 @@ await worker.trigger({
 from iii import register_worker
 
 worker = register_worker("ws://localhost:49134")
-worker.trigger({
+worker.call({
     "function_id": "email::send",
     "payload": {
         "account": "support",
@@ -170,25 +170,46 @@ that run a credentials vault. For Gmail, generate an app password at
 https://myaccount.google.com/apppasswords — the worker accepts both spaced
 (`abcd efgh ijkl mnop`) and joined (`abcdefghijklmnop`) formats.
 
-## Triggers
+## Functions observers observe
 
-| Name | Fires when |
-|---|---|
-| `email::new-mail` | IMAP `IDLE` push delivers a new message to a configured `(account, folder)`. |
+| Function | Args | Delivery | Called when |
+|---|---|---|---|
+| `email::on-new-mail` | none; filter on `input.account`, `input.folder` | iii delivers each call to every observer whose filters match | IMAP `IDLE` pushes a new message to a configured `(account, folder)` |
 
-Subscriber config:
+`email::on-new-mail` is private: only this worker calls it, and any worker
+may observe it. Its handler returns the event it is called with, so an
+observer that delivers `output` receives the event:
 
-```yaml
-triggers:
-  - type: email::new-mail
-    function_id: my-worker::on-mail
-    config:
-      account: support
-      folder: INBOX                # optional, default "INBOX"
-      handler_timeout_ms: 30000    # optional, default 30000
+```typescript
+iii.observe(
+  {
+    function_id: 'email::on-new-mail',
+    filters: {
+      'input.account': { $eq: 'support' },
+      'input.folder': { $eq: 'INBOX' },
+    },
+    deliver: 'output',
+  },
+  'my-worker::on-mail',
+)
 ```
 
-Payload your function receives per inbound message:
+```rust
+use iii_sdk::{Deliver, Source};
+use serde_json::json;
+
+iii.observe(
+    Source::function("email::on-new-mail")
+        .filters(json!({
+            "input.account": { "$eq": "support" },
+            "input.folder": { "$eq": "INBOX" },
+        }))
+        .deliver(Deliver::Output),
+    "my-worker::on-mail",
+);
+```
+
+The event (`NewMailEvent`), once per inbound message:
 
 ```json
 {
@@ -203,8 +224,11 @@ Payload your function receives per inbound message:
 }
 ```
 
-The dispatch is event-driven off the server's `EXISTS` push — within
-milliseconds of a new message landing in the watched folder.
+The call is event-driven off the server's `EXISTS` push, within
+milliseconds of a new message landing in the watched folder. The worker
+watches every folder listed in an account's `imap.folders`; an observer of a
+folder no account lists receives nothing. While nothing observes the
+function, the worker builds no event.
 
 ## Local development & testing
 
@@ -216,7 +240,7 @@ iii
 cargo run --release -- --url ws://127.0.0.1:49134 --config ./docs/examples/config.yaml
 ```
 
-The worker registers 8 functions + 1 trigger type, then spawns one
+The worker registers 8 functions plus `email::on-new-mail`, then spawns one
 persistent IMAP+IDLE supervisor per `(account, folder)` configured with
 `provider: imap`. Reads (`list`/`get`/`search`/`flag`/`move`/`attachment::get`)
 borrow an on-demand session from a separate pool so the half-duplex IMAP
@@ -227,7 +251,7 @@ function: `smtp.username` / `smtp.password` (and the `imap.*` pair) in the
 configuration, or, when a vault worker serves `auth::get_token`, seed it with:
 
 ```bash
-iii trigger auth::set_token \
+iii call auth::set_token \
   provider=email::support \
   credential='{"type":"api_key","username":"you@example.com","password":"<app-password>"}'
 ```
@@ -241,7 +265,7 @@ cargo run -- --manifest | jq .
 ### Tests
 
 ```bash
-cargo test                       # unit tests (config, manifest, triggers)
+cargo test                       # unit tests (config, manifest, new-mail event)
 cargo test --test bdd            # cucumber: --manifest subprocess contract
 ```
 

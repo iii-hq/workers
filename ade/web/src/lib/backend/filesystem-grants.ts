@@ -32,7 +32,7 @@ export async function listGrantedDirs(
 ): Promise<ListGrantedDirsResult> {
   try {
     const client = await getIiiClient()
-    const raw = await client.trigger<FilesystemGrantsResponse>(
+    const raw = await client.call<FilesystemGrantsResponse>(
       'harness::filesystem::grants',
       { session_id: sessionId },
     )
@@ -47,7 +47,7 @@ export async function revokeDir(
   root: string,
 ): Promise<string[]> {
   const client = await getIiiClient()
-  const raw = await client.trigger<FilesystemGrantsResponse>(
+  const raw = await client.call<FilesystemGrantsResponse>(
     'harness::filesystem::revoke',
     { session_id: sessionId, root },
   )

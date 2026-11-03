@@ -12,7 +12,7 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { EllipsisVertical } from 'lucide-react'
-import type { SessionCronTask, SystemCronBinding } from '../lib/api'
+import type { SessionCronTask, SystemCronObserver } from '../lib/api'
 import { describeCron, nextCronRun, untilLabel } from '../lib/cron'
 import { statusView } from './status'
 
@@ -35,6 +35,22 @@ export function cadenceLabel(expression: string): string {
 function nextRunLabel(expression: string, now: Date): string {
   const next = nextCronRun(expression, now)
   return next ? untilLabel(next, now) : 'unknown'
+}
+
+/** An observer's engine state, as the status column shows it. */
+export function observerStateView(state: string): { label: string; tone: 'accent' | 'warn' | 'alert' | 'ink' } {
+  switch (state) {
+    case 'active':
+      return { label: 'Active', tone: 'accent' }
+    case 'pending':
+      return { label: 'Pending', tone: 'warn' }
+    case 'suspended':
+      return { label: 'Suspended', tone: 'warn' }
+    case 'error':
+      return { label: 'Error', tone: 'alert' }
+    default:
+      return { label: state.charAt(0).toUpperCase() + state.slice(1), tone: 'ink' }
+  }
 }
 
 function runsLabel(task: SessionCronTask): string {
@@ -81,7 +97,7 @@ export function TaskRow({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <IconButton
-              label={`Actions for ${task.label ?? task.subscriptionId}`}
+              label={`Actions for ${task.label ?? task.observerId}`}
               onClick={(event: React.MouseEvent) => event.stopPropagation()}
             >
               <EllipsisVertical className={uiClasses.icon} aria-hidden />
@@ -91,8 +107,8 @@ export function TaskRow({
             <DropdownMenuItem onSelect={onOpen}>Open details</DropdownMenuItem>
             <DropdownMenuItem onSelect={onOpenConversation}>Open conversation</DropdownMenuItem>
             <DropdownMenuItem onSelect={onReplace}>Replace…</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onCopyId}>Copy subscription id</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onRemove}>Unregister</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onCopyId}>Copy observer id</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onRemove}>Remove</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </TableCell>
@@ -100,32 +116,33 @@ export function TaskRow({
   )
 }
 
-export function BindingRow({
-  binding,
+export function ObserverRow({
+  observer,
   now,
   selected,
   onOpen,
 }: {
-  binding: SystemCronBinding
+  observer: SystemCronObserver
   now: Date
   selected: boolean
   onOpen: () => void
 }) {
+  const view = observerStateView(observer.state)
   return (
     <TableRow interactive selected={selected} aria-current={selected ? 'true' : undefined} onClick={onOpen}>
       <TableCell>
         <span className="cron-ui-status">
-          <StatusDot tone="accent" aria-hidden />
-          <span>Active</span>
+          <StatusDot tone={view.tone} aria-hidden />
+          <span>{view.label}</span>
         </span>
       </TableCell>
-      <TableCell className="cron-ui-cell-strong">{binding.workerName}</TableCell>
+      <TableCell className="cron-ui-cell-strong">{observer.workerName}</TableCell>
       <TableCell>
-        <Badge className="cron-ui-target">{binding.functionId}</Badge>
+        <Badge className="cron-ui-target">{observer.functionId}</Badge>
       </TableCell>
-      <TableCell>{cadenceLabel(binding.expression)}</TableCell>
-      <TableCell>{nextRunLabel(binding.expression, now)}</TableCell>
-      <TableCell className="cron-ui-cell-numeric">—</TableCell>
+      <TableCell>{cadenceLabel(observer.expression)}</TableCell>
+      <TableCell>{nextRunLabel(observer.expression, now)}</TableCell>
+      <TableCell className="cron-ui-cell-numeric">{observer.fires}</TableCell>
       <TableCell className="cron-ui-cell-actions" />
     </TableRow>
   )
@@ -157,13 +174,13 @@ export function TaskListRow({
   )
 }
 
-export function BindingListRow({
-  binding,
+export function ObserverListRow({
+  observer,
   now,
   selected,
   onOpen,
 }: {
-  binding: SystemCronBinding
+  observer: SystemCronObserver
   now: Date
   selected: boolean
   onOpen: () => void
@@ -172,9 +189,10 @@ export function BindingListRow({
     <ListItem
       selected={selected}
       onClick={onOpen}
-      leading={<StatusDot tone="accent" aria-hidden />}
-      label={binding.functionId}
-      description={`${binding.workerName} · ${cadenceLabel(binding.expression)} · ${nextRunLabel(binding.expression, now)}`}
+      leading={<StatusDot tone={observerStateView(observer.state).tone} aria-hidden />}
+      label={observer.functionId}
+      description={`${observer.workerName} · ${cadenceLabel(observer.expression)} · ${nextRunLabel(observer.expression, now)}`}
+      trailing={<span className="cron-ui-list-meta">{observer.fires}</span>}
     />
   )
 }

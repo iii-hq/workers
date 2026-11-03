@@ -1,31 +1,37 @@
 @engine
-Feature: engine reactivity — real trigger bindings receive filtered events
+Feature: engine reactivity — real observers receive filtered events
 
-  The full reactive loop over a LIVE engine: a subscriber registers a
-  function and binds it to a session::* trigger type with a config; the
-  engine routes the registration into this worker's TriggerHandler; a
-  mutation then fans matched events back out through the engine to the
-  subscriber function (TriggerAction::Void, at-least-once).
+  The full reactive loop over a LIVE engine: a consumer registers a
+  function and observes a session::on-* event function with it, with
+  filters on the event; a mutation then calls the event function
+  (CallAction::Void, fire-and-forget), and iii delivers the event to every
+  observer whose filters match it.
 
   This is the spec's sequence diagram (session-manager.md § Reactivity
-  model) running for real — bind once, render live, no polling.
+  model) running for real — observe once, render live, no polling.
 
-  # Prevents: the wire-level subscribe -> mutate -> deliver loop
-  # breaking anywhere along engine routing, config filtering, or fan-out.
-  Scenario: a streamed turn reaches filtered subscribers live
+  # Prevents: the wire-level observe -> mutate -> deliver loop breaking
+  # anywhere along engine routing, filtering, or delivery.
+  Scenario: a streamed turn reaches filtered observers live
     Given the iii engine is reachable
     And a fresh unique marker as "M1"
-    And an engine subscriber "R_DELTAS" on "session::message-updated" with config:
+    And an engine observer "R_DELTAS" of "session::on-message-updated" with filters:
       """
-      { "roles": ["assistant"], "metadata": { "test_run": "${M1}" } }
+      {
+        "input.message.role": { "$in": ["assistant"] },
+        "input.session_metadata.test_run": { "$eq": "${M1}" }
+      }
       """
-    And an engine subscriber "R_STATUS" on "session::status-changed" with config:
+    And an engine observer "R_STATUS" of "session::on-status-changed" with filters:
       """
-      { "metadata": { "test_run": "${M1}" } }
+      { "input.session_metadata.test_run": { "$eq": "${M1}" } }
       """
-    And an engine subscriber "R_USER_ONLY" on "session::message-added" with config:
+    And an engine observer "R_USER_ONLY" of "session::on-message-added" with filters:
       """
-      { "roles": ["user"], "metadata": { "test_run": "${M1}" } }
+      {
+        "input.message.role": { "$in": ["user"] },
+        "input.session_metadata.test_run": { "$eq": "${M1}" }
+      }
       """
 
     # -- the driver flow --
@@ -65,7 +71,7 @@ Feature: engine reactivity — real trigger bindings receive filtered events
       """
 
     # -- assistant deltas: both updates, monotonic revisions --
-    Then within 10 seconds the engine subscriber "R_DELTAS" receives at least 2 deliveries
+    Then within 10 seconds the engine observer "R_DELTAS" receives at least 2 deliveries
     And every engine delivery to "R_DELTAS" has "session_id" = "${S1}"
     And every engine delivery to "R_DELTAS" has "entry_id" = "reply-1"
     And some engine delivery to "R_DELTAS" has "revision" = 1
@@ -73,20 +79,20 @@ Feature: engine reactivity — real trigger bindings receive filtered events
     And some engine delivery to "R_DELTAS" has "message.content.0.text" = "It works."
 
     # -- status frames: working then done --
-    And within 10 seconds the engine subscriber "R_STATUS" receives at least 2 deliveries
+    And within 10 seconds the engine observer "R_STATUS" receives at least 2 deliveries
     And some engine delivery to "R_STATUS" has "status" = "working"
     And some engine delivery to "R_STATUS" has "status" = "done"
     And some engine delivery to "R_STATUS" has "previous_status" = "working"
 
-    # -- the roles filter held: the assistant append never reached the
-    #    user-only subscriber --
-    And within 10 seconds the engine subscriber "R_USER_ONLY" receives at least 1 delivery
-    And after 1 second the engine subscriber "R_USER_ONLY" has received exactly 1 delivery
+    # -- the input.message.role filter held: the assistant append never
+    #    reached the user-only observer --
+    And within 10 seconds the engine observer "R_USER_ONLY" receives at least 1 delivery
+    And after 1 second the engine observer "R_USER_ONLY" has received exactly 1 delivery
     And every engine delivery to "R_USER_ONLY" has "message.role" = "user"
 
-  # Prevents: session_id-scoped subscribers receiving another session's
+  # Prevents: session_id-scoped observers receiving another session's
   # events when both sessions mutate concurrently.
-  Scenario: a session_id-scoped subscriber only sees its session
+  Scenario: a session_id-scoped observer only sees its session
     Given the iii engine is reachable
     And a fresh unique marker as "M1"
     Given over the engine I call "session::create" with:
@@ -99,9 +105,9 @@ Feature: engine reactivity — real trigger bindings receive filtered events
       { "metadata": { "test_run": "${M1}" } }
       """
     And over the engine I alias the response field "session_id" as "S2"
-    And an engine subscriber "R_S1" on "session::message-added" with config:
+    And an engine observer "R_S1" of "session::on-message-added" with filters:
       """
-      { "session_id": "${S1}" }
+      { "input.session_id": { "$eq": "${S1}" } }
       """
     When over the engine I call "session::append" with:
       """
@@ -113,14 +119,14 @@ Feature: engine reactivity — real trigger bindings receive filtered events
       { "session_id": "${S1}",
         "message": { "role": "user", "content": [{ "type": "text", "text": "signal" }], "timestamp": 2 } }
       """
-    Then within 10 seconds the engine subscriber "R_S1" receives at least 1 delivery
-    And after 1 second the engine subscriber "R_S1" has received exactly 1 delivery
+    Then within 10 seconds the engine observer "R_S1" receives at least 1 delivery
+    And after 1 second the engine observer "R_S1" has received exactly 1 delivery
     And every engine delivery to "R_S1" has "session_id" = "${S1}"
     And some engine delivery to "R_S1" has "message.content.0.text" = "signal"
 
   # Prevents: deletions going dark for tenancy-filtered dashboards (the
   # meta row is already gone when the event must still match).
-  Scenario: a deleted session still notifies its metadata-filtered subscriber
+  Scenario: a deleted session still notifies its metadata-filtered observer
     Given the iii engine is reachable
     And a fresh unique marker as "M1"
     Given over the engine I call "session::create" with:
@@ -128,14 +134,14 @@ Feature: engine reactivity — real trigger bindings receive filtered events
       { "metadata": { "test_run": "${M1}" } }
       """
     And over the engine I alias the response field "session_id" as "S1"
-    And an engine subscriber "R_DEL" on "session::deleted" with config:
+    And an engine observer "R_DEL" of "session::on-deleted" with filters:
       """
-      { "metadata": { "test_run": "${M1}" } }
+      { "input.session_metadata.test_run": { "$eq": "${M1}" } }
       """
     When over the engine I call "session::delete" with:
       """
       { "session_id": "${S1}" }
       """
     Then the engine response field "deleted" is true
-    And within 10 seconds the engine subscriber "R_DEL" receives at least 1 delivery
+    And within 10 seconds the engine observer "R_DEL" receives at least 1 delivery
     And every engine delivery to "R_DEL" has "session_id" = "${S1}"

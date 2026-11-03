@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -121,7 +121,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 const APPEND_BATCH: usize = 200;
 
 async fn rpc(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,

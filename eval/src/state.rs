@@ -2,8 +2,7 @@
 //! their evidence assets live in separate scopes so `list` and the sweep never
 //! carry transcripts in one engine frame.
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -260,7 +259,7 @@ async fn list<T: DeserializeOwned>(iii: &IIIClient, scope: &str) -> Result<Vec<T
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, EvalError> {
     let scope = payload["scope"].as_str().unwrap_or_default().to_string();
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,

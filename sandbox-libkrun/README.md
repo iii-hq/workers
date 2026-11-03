@@ -14,11 +14,12 @@ add it by hand on iii 0.26 or later, use the `iii-sandbox` alias, which pins
 the adapter to the sandbox contract major the engine supports:
 
 ```bash
-iii trigger compose::add worker=iii-sandbox
+iii call compose::add worker=iii-sandbox
 ```
 
 Older Compose has no such alias, so pin the range yourself (0.2.x implements
-sandbox contract 1):
+sandbox contract 1). On iii 0.25 and earlier the command is `iii trigger`
+(iii 0.26 accepts it as an alias of `iii call`):
 
 ```bash
 iii trigger compose::add worker=sandbox-libkrun@^0.2
@@ -32,7 +33,7 @@ Calling `sandbox::*` through the router needs iii 0.26 or later; the
 Run code in a fresh VM through the router, which forwards to this adapter:
 
 ```bash
-iii trigger sandbox::run --timeout-ms 300000 \
+iii call sandbox::run --timeout-ms 300000 \
   --json '{"image":"python","code":"print(6*7)","lang":"python"}'
 ```
 

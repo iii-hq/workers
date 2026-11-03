@@ -2,26 +2,29 @@ import type { Host } from '@iii-dev/console-ui'
 
 /** What a step's condition looked like when it fired. */
 export interface Fired {
-  trigger_type: string
+  /** The observed function whose call closed the step. */
+  function_id: string
   payload: unknown
   at: number
 }
 
+/** The function a step waits on, as an observe source, plus what the page says about it. */
 export interface Condition {
-  type: string
-  config: Record<string, unknown>
+  function_id: string
+  args?: Record<string, unknown>
+  filters?: Record<string, unknown>
   label: string
   hint?: string
   prompt?: string
 }
 
 /**
- * Bind one step's condition to a browser-local handler, the same way the
- * console's own live pages do: a per-tab function id, then an engine trigger
- * pointed at it. Returns the unbind.
+ * Observe one step's condition with a browser-local handler, the same way the
+ * console's own live pages do: a per-tab function id, then an observer of the
+ * condition's function with that id as its target. Returns the disposer.
  *
- * The trigger is real — the tour is not simulating one — so what the page
- * shows the operator is the payload the engine delivered.
+ * The observer is real — the tour is not simulating one — so what the page
+ * shows the operator is the event the engine delivered.
  */
 export function bindCondition(
   host: Host,
@@ -30,47 +33,61 @@ export function bindCondition(
   onFire: (fired: Fired) => void,
 ): () => void {
   const localId = `learn-iii::condition::${key}`
-  // The handler is registered before the trigger, so a throw from
-  // `registerTrigger` must take it back down. A live handler with no trigger
-  // behind it would fire alongside the next successful bind.
+  // The handler is registered before the observer, so a throw from `observe`
+  // must take it back down. A live handler with no observer behind it would
+  // fire alongside the next successful bind.
   let offHandler: () => void = () => {}
   try {
     offHandler = host.iii.on(localId, (payload: unknown) => {
-      onFire({ trigger_type: condition.type, payload, at: Date.now() })
+      onFire({ function_id: condition.function_id, payload, at: Date.now() })
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: condition.type,
-      function_id: `${localId}::${host.iii.browserId}`,
-      config: condition.config,
-    })
+    const offObserver = host.iii.observe(
+      {
+        function_id: condition.function_id,
+        ...(condition.args ? { args: condition.args } : {}),
+        ...(condition.filters ? { filters: condition.filters } : {}),
+      },
+      `${localId}::${host.iii.browserId}`,
+    )
     return () => {
-      offTrigger()
+      offObserver()
       offHandler()
     }
   } catch {
-    // The trigger type's worker may be down or restarting. The step stays
-    // waiting and rebinds on the next mount.
+    // The console may be restarting. The step stays waiting and binds again
+    // on the next mount.
     offHandler()
     return () => {}
   }
 }
 
+/** The `input.<field>` a filter selects with `$eq`, when it does. */
+function equalsFilter(filters: Record<string, unknown> | undefined, field: string): unknown {
+  const filter = filters?.[`input.${field}`]
+  return filter && typeof filter === 'object' && '$eq' in filter ? (filter as { $eq: unknown }).$eq : undefined
+}
+
 /**
  * What a condition waits on, read once: the fired event when it has already
- * happened, else `null`. Only a `state` condition can be read back — its key
- * stays written — so a step the agent reported done while nothing was
- * listening still closes. Event-only conditions (a harness turn) leave no
+ * happened, else `null`. Only a `state::on-changed` condition can be read back
+ * — its key stays written — so a step the agent reported done while nothing
+ * was observing still closes. Event-only conditions (a harness turn) leave no
  * trace to read; the console reports those itself when it has one
  * (`learn-iii::steps::observe`).
  */
 export async function reconcileCondition(host: Host, condition: Condition): Promise<Fired | null> {
-  if (condition.type !== 'state') return null
-  const { scope, key } = condition.config as { scope?: unknown; key?: unknown }
+  if (condition.function_id !== 'state::on-changed') return null
+  const scope = equalsFilter(condition.filters, 'scope')
+  const key = equalsFilter(condition.filters, 'key')
   if (typeof scope !== 'string' || typeof key !== 'string') return null
   try {
-    const value = await host.iii.trigger<unknown>('state::get', { scope, key })
+    const value = await host.iii.call<unknown>('state::get', { scope, key })
     if (value === null || value === undefined) return null
-    return { trigger_type: 'state', payload: { scope, key, value, read_back: true }, at: Date.now() }
+    return {
+      function_id: condition.function_id,
+      payload: { scope, key, value, read_back: true },
+      at: Date.now(),
+    }
   } catch {
     return null
   }
