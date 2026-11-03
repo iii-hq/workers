@@ -257,7 +257,10 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(" ");
                 assert!(
-                    head.contains("IF NOT EXISTS") || statement.contains("IF NOT EXISTS") || statement.contains("ON CONFLICT (investigation_id, group_id) DO NOTHING"),
+                    head.contains("IF NOT EXISTS")
+                        || statement.contains("IF NOT EXISTS")
+                        || statement
+                            .contains("ON CONFLICT (investigation_id, group_id) DO NOTHING"),
                     "v{version} statement is not reentrant: {head}"
                 );
             }

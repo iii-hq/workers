@@ -76,17 +76,26 @@ impl<D: Db> Investigations<D> {
         };
 
         let outcome = if joint {
-            self.store().record_joint_diagnosis(&investigation.id, &request.group_id, caller.turn_id.as_deref(), source, &request.diagnosis).await?
-        } else { self
-            .store()
-            .record_diagnosis(
-                &investigation.id,
-                &investigation.group_id,
-                caller.turn_id.as_deref(),
-                source,
-                &request.diagnosis,
-            )
-            .await? };
+            self.store()
+                .record_joint_diagnosis(
+                    &investigation.id,
+                    &request.group_id,
+                    caller.turn_id.as_deref(),
+                    source,
+                    &request.diagnosis,
+                )
+                .await?
+        } else {
+            self.store()
+                .record_diagnosis(
+                    &investigation.id,
+                    &investigation.group_id,
+                    caller.turn_id.as_deref(),
+                    source,
+                    &request.diagnosis,
+                )
+                .await?
+        };
 
         let mut events = vec![Announcement::Investigation(InvestigationChangedEventV1 {
             op: InvestigationChangedOpV1::Recorded,

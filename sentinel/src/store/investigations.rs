@@ -55,27 +55,27 @@ impl<D: Db> Store<D> {
         write: &InvestigationWrite,
     ) -> Result<bool, SentinelError> {
         let mut statements = vec![Statement::new(
-                "INSERT INTO sentinel_investigations \
+            "INSERT INTO sentinel_investigations \
                  (id, group_id, occurrence_id, session_id, mode, nudged, model, provider, \
                   repository_id, checkout_ref, investigated_version, status, requested_by, \
                   created_ms) \
                  VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
-                vec![
-                    json!(write.id),
-                    json!(write.group_id),
-                    json!(write.occurrence_id),
-                    json!(write.session_id),
-                    json!(write.mode.as_str()),
-                    json!(write.model),
-                    json!(write.provider),
-                    json!(write.repository_id),
-                    json!(write.checkout_ref),
-                    json!(write.investigated_version),
-                    json!(write.status.as_str()),
-                    json!(write.requested_by),
-                    json!(write.created_ms),
-                ],
-            )];
+            vec![
+                json!(write.id),
+                json!(write.group_id),
+                json!(write.occurrence_id),
+                json!(write.session_id),
+                json!(write.mode.as_str()),
+                json!(write.model),
+                json!(write.provider),
+                json!(write.repository_id),
+                json!(write.checkout_ref),
+                json!(write.investigated_version),
+                json!(write.status.as_str()),
+                json!(write.requested_by),
+                json!(write.created_ms),
+            ],
+        )];
         if write.status == InvestigationStatusV1::Running {
             statements.push(Statement::new("INSERT INTO sentinel_investigation_members (investigation_id, group_id, evidence, active) VALUES (?, ?, '', 1)",vec![json!(write.id),json!(write.group_id)]));
         }
@@ -417,15 +417,32 @@ impl<D: Db> Store<D> {
         ))
     }
 
-    pub async fn record_joint_diagnosis(&self, investigation_id: &str, group_id: &str, turn_id: Option<&str>, source: DiagnosisSourceV1, diagnosis: &DiagnosisV1) -> Result<DiagnosisOutcome, SentinelError> {
-        let group = self.group_by_id(group_id).await?.ok_or_else(|| SentinelError::NotFound(group_id.into()))?;
+    pub async fn record_joint_diagnosis(
+        &self,
+        investigation_id: &str,
+        group_id: &str,
+        turn_id: Option<&str>,
+        source: DiagnosisSourceV1,
+        diagnosis: &DiagnosisV1,
+    ) -> Result<DiagnosisOutcome, SentinelError> {
+        let group = self
+            .group_by_id(group_id)
+            .await?
+            .ok_or_else(|| SentinelError::NotFound(group_id.into()))?;
         let diagnosis_id = ids::diagnosis_id();
         let version = self.diagnosis_count(investigation_id).await? + 1;
         let results = self.db().transaction(&[
             Statement::new("INSERT INTO sentinel_diagnoses (id, investigation_id, group_id, turn_id, source, recorded_by, diagnosis, valid, created_ms) SELECT ?, ?, ?, ?, ?, 'agent', ?, 1, ? WHERE EXISTS (SELECT 1 FROM sentinel_investigation_members WHERE investigation_id = ? AND group_id = ?)",vec![json!(diagnosis_id),json!(investigation_id),json!(group_id),json!(turn_id),json!(source.as_str()),json!(serde_json::to_string(diagnosis).unwrap()),json!(ids::now_ms()),json!(investigation_id),json!(group_id)]),
         ]).await?;
-        if !results.first().is_some_and(|step| step.affected_rows > 0) { return Err(SentinelError::NotThisGroup(group_id.into())); }
-        Ok(DiagnosisOutcome {diagnosis_id, version, group_status:group.state.status, group_moved:false})
+        if !results.first().is_some_and(|step| step.affected_rows > 0) {
+            return Err(SentinelError::NotThisGroup(group_id.into()));
+        }
+        Ok(DiagnosisOutcome {
+            diagnosis_id,
+            version,
+            group_status: group.state.status,
+            group_moved: false,
+        })
     }
 
     pub async fn investigation_counts(&self) -> Result<InvestigationCountsV1, SentinelError> {

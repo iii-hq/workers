@@ -17,10 +17,10 @@
 //!   the invocation's baggage, which the agent cannot write.
 
 mod joint;
-pub mod source;
 pub mod message;
 pub mod proxies;
 pub mod record;
+pub mod source;
 
 use std::sync::Arc;
 
@@ -85,7 +85,9 @@ pub struct SendOutcome {
 #[async_trait]
 pub trait Harness: Send + Sync {
     async fn profile(&self, _id: &str) -> Result<Value, SentinelError> {
-        Err(SentinelError::dependency("installed profile catalog unavailable"))
+        Err(SentinelError::dependency(
+            "installed profile catalog unavailable",
+        ))
     }
     /// Open the filesystem jail on one checkout. Best effort: a refused grant
     /// costs the agent its source, not the investigation.
@@ -383,7 +385,13 @@ impl<D: Db> Investigations<D> {
 
     /// Close a record that never started, naming why.
     async fn fail(&self, investigation_id: &str, detail: &str) -> Result<(), SentinelError> {
-        self.store.db().execute("UPDATE sentinel_investigation_members SET active = 0 WHERE investigation_id = ?", vec![json!(investigation_id)]).await?;
+        self.store
+            .db()
+            .execute(
+                "UPDATE sentinel_investigation_members SET active = 0 WHERE investigation_id = ?",
+                vec![json!(investigation_id)],
+            )
+            .await?;
         self.store
             .update_investigation(
                 investigation_id,
@@ -535,7 +543,11 @@ impl<D: Db> Investigations<D> {
         &self,
         investigation: &InvestigationSummaryV1,
     ) -> Result<Vec<Announcement>, SentinelError> {
-        if investigation.first_pass_turn_id.is_none() && ids::now_ms() - investigation.created_ms < 30_000 { return Ok(Vec::new()); }
+        if investigation.first_pass_turn_id.is_none()
+            && ids::now_ms() - investigation.created_ms < 30_000
+        {
+            return Ok(Vec::new());
+        }
         let Some(status) = self.harness.status(&investigation.session_id).await? else {
             // The harness has never heard of the session: the send failed in
             // a way that left no turn. Nothing to wait for.
@@ -561,12 +573,25 @@ impl<D: Db> Investigations<D> {
         let recorded = self.store.diagnosis_count(&investigation.id).await? > 0;
         let members = self.member_ids(&investigation.id).await?;
         if status.status == "completed" && members.len() > 1 {
-            let diagnoses = self.store.diagnoses_for_investigation(&investigation.id).await?;
-            let missing: Vec<_> = members.iter().filter(|id| !diagnoses.iter().any(|d| &d.group_id == *id)).cloned().collect();
+            let diagnoses = self
+                .store
+                .diagnoses_for_investigation(&investigation.id)
+                .await?;
+            let missing: Vec<_> = members
+                .iter()
+                .filter(|id| !diagnoses.iter().any(|d| &d.group_id == *id))
+                .cloned()
+                .collect();
             return if missing.is_empty() {
-                self.close(investigation, InvestigationStatusV1::Completed, None).await
+                self.close(investigation, InvestigationStatusV1::Completed, None)
+                    .await
             } else {
-                self.close(investigation, InvestigationStatusV1::Failed, Some(format!("partial_diagnosis: missing {}", missing.join(", ")))).await
+                self.close(
+                    investigation,
+                    InvestigationStatusV1::Failed,
+                    Some(format!("partial_diagnosis: missing {}", missing.join(", "))),
+                )
+                .await
             };
         }
         match status.status.as_str() {
@@ -676,9 +701,27 @@ impl<D: Db> Investigations<D> {
             .await?;
 
         let members = self.member_ids(&investigation.id).await?;
-        self.store.db().execute("UPDATE sentinel_investigation_members SET active = 0 WHERE investigation_id = ?", vec![json!(investigation.id)]).await?;
+        self.store
+            .db()
+            .execute(
+                "UPDATE sentinel_investigation_members SET active = 0 WHERE investigation_id = ?",
+                vec![json!(investigation.id)],
+            )
+            .await?;
         if members.len() > 1 {
-            return Ok(members.into_iter().map(|group_id| Announcement::Investigation(InvestigationChangedEventV1 {op: InvestigationChangedOpV1::Finished, investigation_id: investigation.id.clone(), group_id, session_id: investigation.session_id.clone(), status, error:error.clone()})).collect());
+            return Ok(members
+                .into_iter()
+                .map(|group_id| {
+                    Announcement::Investigation(InvestigationChangedEventV1 {
+                        op: InvestigationChangedOpV1::Finished,
+                        investigation_id: investigation.id.clone(),
+                        group_id,
+                        session_id: investigation.session_id.clone(),
+                        status,
+                        error: error.clone(),
+                    })
+                })
+                .collect());
         }
         let recorded = self.store.diagnosis_count(&investigation.id).await? > 0;
         let mut events = Vec::new();

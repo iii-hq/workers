@@ -865,7 +865,6 @@ pub struct InvestigateManyResponseV1 {
     pub existing: bool,
 }
 
-
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InvestigateRequestV1 {

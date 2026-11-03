@@ -53,16 +53,28 @@ fn live_e2e_enabled(require: Option<&str>, run: Option<&str>) -> bool {
 }
 
 fn live_e2e_opted_in() -> bool {
-    live_e2e_enabled(std::env::var("III_E2E_REQUIRE").ok().as_deref(), std::env::var("SENTINEL_RUN_LIVE_E2E").ok().as_deref())
+    live_e2e_enabled(
+        std::env::var("III_E2E_REQUIRE").ok().as_deref(),
+        std::env::var("SENTINEL_RUN_LIVE_E2E").ok().as_deref(),
+    )
 }
 
 #[test]
 fn live_e2e_requires_explicit_positive_opt_in() {
-    for (require,run) in [(None,None),(Some("0"),None),(None,Some("0")),(Some("true"),Some("false")),(Some(""),Some(""))] {
-        assert!(!live_e2e_enabled(require,run), "an implicit/default run must never connect");
+    for (require, run) in [
+        (None, None),
+        (Some("0"), None),
+        (None, Some("0")),
+        (Some("true"), Some("false")),
+        (Some(""), Some("")),
+    ] {
+        assert!(
+            !live_e2e_enabled(require, run),
+            "an implicit/default run must never connect"
+        );
     }
-    assert!(live_e2e_enabled(Some("1"),None));
-    assert!(live_e2e_enabled(None,Some("1")));
+    assert!(live_e2e_enabled(Some("1"), None));
+    assert!(live_e2e_enabled(None, Some("1")));
 }
 
 async fn connect(name: &str) -> Option<Arc<IIIClient>> {

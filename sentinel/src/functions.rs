@@ -315,13 +315,25 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     );
 
     let current = deps.clone();
-    iii.register_function(SOURCE_READ_ID, RegisterFunction::new_async(move |request: crate::investigation::source::SourceReadRequest| {
-        let deps = current.clone();
-        async move {
-            let caller=Caller {session_id:iii_helpers::observability::get_baggage_entry("iii.session.id"),turn_id:iii_helpers::observability::get_baggage_entry("iii.message.id")};
-            deps.investigations.source_read(caller,request).await.map_err(iii_sdk::errors::Error::from)
-        }
-    }).description(SOURCE_READ_DESC));
+    iii.register_function(
+        SOURCE_READ_ID,
+        RegisterFunction::new_async(
+            move |request: crate::investigation::source::SourceReadRequest| {
+                let deps = current.clone();
+                async move {
+                    let caller = Caller {
+                        session_id: iii_helpers::observability::get_baggage_entry("iii.session.id"),
+                        turn_id: iii_helpers::observability::get_baggage_entry("iii.message.id"),
+                    };
+                    deps.investigations
+                        .source_read(caller, request)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            },
+        )
+        .description(SOURCE_READ_DESC),
+    );
     let current = deps.clone();
     iii.register_function(
         INVESTIGATE_MANY_ID,
@@ -332,7 +344,8 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
                 broadcast(&deps, outcome.events).await;
                 Ok::<crate::InvestigateManyResponseV1, iii_sdk::errors::Error>(outcome.value)
             }
-        }).description(INVESTIGATE_MANY_DESC),
+        })
+        .description(INVESTIGATE_MANY_DESC),
     );
 
     // ── investigation ───────────────────────────────────────────────────
@@ -736,8 +749,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
             DIAGNOSES_LIST_DESC,
         ),
         spec::<InvestigateRequestV1, InvestigateResponseV1>(INVESTIGATE_ID, INVESTIGATE_DESC),
-        spec::<crate::InvestigateManyRequestV1, crate::InvestigateManyResponseV1>(INVESTIGATE_MANY_ID, INVESTIGATE_MANY_DESC),
-        spec::<crate::investigation::source::SourceReadRequest, crate::investigation::source::SourceReadResponse>(SOURCE_READ_ID, SOURCE_READ_DESC),
+        spec::<crate::InvestigateManyRequestV1, crate::InvestigateManyResponseV1>(
+            INVESTIGATE_MANY_ID,
+            INVESTIGATE_MANY_DESC,
+        ),
+        spec::<
+            crate::investigation::source::SourceReadRequest,
+            crate::investigation::source::SourceReadResponse,
+        >(SOURCE_READ_ID, SOURCE_READ_DESC),
         spec::<InvestigationGetRequestV1, InvestigationGetResponseV1>(
             INVESTIGATIONS_GET_ID,
             INVESTIGATIONS_GET_DESC,
