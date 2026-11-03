@@ -8,7 +8,7 @@
 //!   `/`, `/assets/*`, and `/ws`. Defaults to `3113`; after registration the
 //!   central `console.http_port` value is authoritative and hot-reloads.
 //! - `injectable_ui` — kill switch for runtime-injected worker UI
-//!   (the `console::ui::asset` and `console::ui::on-assets-changed`
+//!   (the `ade::ui::asset` and `ade::ui::on-assets-changed`
 //!   functions, the `/ui` + `/vendor` routes, and the SPA loader). Defaults
 //!   to `true`.
 //! - `data_dir` — first-registration seed/fallback for the directory holding

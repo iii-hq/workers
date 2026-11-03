@@ -20,7 +20,7 @@
 //! they were created, so the module arrives before the page again.
 //!
 //! The registration machinery (content function `ide::ui-content`, one
-//! `console::ui::asset` observer per asset with args `{ kind, path }`,
+//! `ade::ui::asset` observer per asset with args `{ kind, path }`,
 //! `III_IDE_UI_WATCH` hot-reload watcher) lives in the shared
 //! `iii-console-ui` crate (path-linked from `workers/crates/console-ui`);
 //! this module only names the assets and embeds their bytes. The page's

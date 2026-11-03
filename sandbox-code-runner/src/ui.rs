@@ -14,7 +14,7 @@
 //!   styles-before-scripts on boot.
 //!
 //! The registration machinery (content function
-//! `sandbox-code-runner::ui-content`, one observer of `console::ui::asset` per asset,
+//! `sandbox-code-runner::ui-content`, one observer of `ade::ui::asset` per asset,
 //! `III_SANDBOX_CODE_RUNNER_UI_WATCH` hot-reload watcher) lives in the shared
 //! `iii-console-ui` crate (path-linked from `workers/crates/console-ui`);
 //! this module only names the assets and embeds their bytes.

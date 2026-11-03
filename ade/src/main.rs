@@ -7,7 +7,7 @@
 //!      `http_port` and `data_dir` (falling back to the local seed if
 //!      unavailable); point the workspace store at `<data_dir>/workspace.json`
 //!      and move a legacy `workspace` section out of the configuration entry.
-//!   4. Register `console::status` and the `console::workspace::*` functions.
+//!   4. Register `ade::status` and the `ade::workspace::*` functions.
 //!   5. Bind the HTTP server on `http_port` and serve `/`, `/assets/*`,
 //!      and `/ws` (WebSocket proxy back to the engine).
 //!   6. Subscribe to configuration changes so port edits rebind live.
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(cfg);
     let port = configuration::new_port_cell(cfg.http_port);
 
-    // The console::ui::* functions register with their observer hooks
+    // The ade::ui::* functions register with their observer hooks
     // before the console's own UI observes them. `None` = injectable UI
     // disabled via config.
     let (ui, ui_control) = if cfg.injectable_ui {
@@ -176,12 +176,12 @@ async fn main() -> Result<()> {
         (Some(registry), Some(control))
     } else {
         tracing::info!(
-            "injectable_ui disabled — skipping the console::ui::* functions and /ui routes"
+            "injectable_ui disabled — skipping the ade::ui::* functions and /ui routes"
         );
         (None, None)
     };
 
-    // console::status is agent-callable: never hand out URL credentials.
+    // ade::status is agent-callable: never hand out URL credentials.
     let engine_url_redacted = redact_url(&engine_url);
     functions::register_all(
         &iii,

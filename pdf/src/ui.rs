@@ -9,7 +9,7 @@
 //!   under `[data-iii-ui="pdf"]`.
 //!
 //! The registration machinery (content function `pdf::ui-content`, one
-//! `console::ui::asset` observer per asset, the `III_PDF_UI_WATCH` hot-reload
+//! `ade::ui::asset` observer per asset, the `III_PDF_UI_WATCH` hot-reload
 //! watcher)
 //! lives in the shared `iii-console-ui` crate; this module only names the
 //! assets and embeds their bytes.

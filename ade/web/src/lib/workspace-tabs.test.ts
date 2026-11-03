@@ -662,7 +662,7 @@ describe('withScreenDetached', () => {
   })
 })
 
-describe('console::workspace fixtures (shared with the Rust worker)', () => {
+describe('ade::workspace fixtures (shared with the Rust worker)', () => {
   for (const f of fixtures.open) {
     it(`open: ${f.name}`, () => {
       const result = withWorkspaceScreenOpened(

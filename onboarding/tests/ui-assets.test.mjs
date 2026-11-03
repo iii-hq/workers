@@ -56,18 +56,18 @@ test('learn-iii::ui-content answers { content, content_type }', async () => {
   await assert.rejects(handler({ path: 'learn-iii/other.js' }), /unknown ui asset/)
 })
 
-test('each asset is observed on console::ui::asset with { kind, path }, targeting the content function', () => {
+test('each asset is observed on ade::ui::asset with { kind, path }, targeting the content function', () => {
   const iii = stubIii()
   for (const path of Object.keys(uiAssets)) observeUiAsset(iii, path, { log: () => {} })
   assert.deepEqual(
     iii.observed.map(({ source, target }) => ({ source, target })),
     [
       {
-        source: { function_id: 'console::ui::asset', args: { kind: 'script', path: 'learn-iii/page.js' } },
+        source: { function_id: 'ade::ui::asset', args: { kind: 'script', path: 'learn-iii/page.js' } },
         target: 'learn-iii::ui-content',
       },
       {
-        source: { function_id: 'console::ui::asset', args: { kind: 'style', path: 'learn-iii/styles.css' } },
+        source: { function_id: 'ade::ui::asset', args: { kind: 'style', path: 'learn-iii/styles.css' } },
         target: 'learn-iii::ui-content',
       },
     ],
@@ -100,5 +100,5 @@ test('an asset observer still pending after the deadline is warned about, once',
   await wait(40)
   assert.equal(logs.length, 1)
   assert.match(logs[0], /learn-iii\/page\.js is still not served after 10 ms/)
-  assert.match(logs[0], /console::ui::asset/)
+  assert.match(logs[0], /ade::ui::asset/)
 })

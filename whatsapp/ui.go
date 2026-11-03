@@ -46,7 +46,7 @@ func registerUI(client *iii.Client) error {
 	// through it with {path}.
 	for _, asset := range []struct{ path, kind string }{{"whatsapp/page.js", "script"}, {"whatsapp/styles.css", "style"}} {
 		if err := observeFunction(client, iii.Source{
-			FunctionID: "console::ui::asset",
+			FunctionID: "ade::ui::asset",
 			Args:       iii.Args{"kind": asset.kind, "path": asset.path},
 		}, "whatsapp::ui-content"); err != nil {
 			return err

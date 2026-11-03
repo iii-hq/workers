@@ -15,7 +15,7 @@
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `database::ui-content`, one
-//! observer of `console::ui::asset` per asset, `III_DATABASE_UI_WATCH`
+//! observer of `ade::ui::asset` per asset, `III_DATABASE_UI_WATCH`
 //! hot-reload watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and
 //! embeds their bytes.

@@ -1,6 +1,6 @@
 //! Agent-proposed working-directory changes for Console Harness sessions.
 //!
-//! The model may discover and call `console::working-directory::propose`
+//! The model may discover and call `ade::working-directory::propose`
 //! after it creates or clones a project elsewhere. The function validates the
 //! directory through Shell and returns a session-stamped proposal. It never
 //! mutates session metadata itself: the injected Console renderer asks the
@@ -14,16 +14,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub const PROPOSE_ID: &str = "console::working-directory::propose";
-pub const STAMP_SESSION_ID: &str = "console::working-directory::stamp-session";
-pub const GUIDANCE_ID: &str = "console::working-directory::inject-guidance";
+pub const PROPOSE_ID: &str = "ade::working-directory::propose";
+pub const STAMP_SESSION_ID: &str = "ade::working-directory::stamp-session";
+pub const GUIDANCE_ID: &str = "ade::working-directory::inject-guidance";
 const ADOPT_ROOT_ID: &str = "shell::turns::adopt-root";
 /// The Harness hook point before each function call an agent makes.
 pub const PRE_CALL_HOOK_FN: &str = "harness::hook::on-pre-call";
 /// The Harness hook point before each generation.
 pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
 
-const WORKING_DIRECTORY_GUIDANCE: &str = "Working-directory handoff (pre-verified Console capability): when the user explicitly asks you to create or clone a project in another directory and continue there, set it as the working directory, or open it as the chat workspace, call `console::working-directory::propose` after the directory exists with `{ \"path\": \"/absolute/path\", \"reason\": \"...\" }`. This exact function and payload are pre-verified while Console is connected, so call it directly without another discovery search. The function validates and canonicalizes the path; it does not silently move the chat. Console asks the user to confirm, then the chat and paired Shell follow together. Do not call it merely because you inspected or edited a file outside the current workspace.";
+const WORKING_DIRECTORY_GUIDANCE: &str = "Working-directory handoff (pre-verified Console capability): when the user explicitly asks you to create or clone a project in another directory and continue there, set it as the working directory, or open it as the chat workspace, call `ade::working-directory::propose` after the directory exists with `{ \"path\": \"/absolute/path\", \"reason\": \"...\" }`. This exact function and payload are pre-verified while Console is connected, so call it directly without another discovery search. The function validates and canonicalizes the path; it does not silently move the chat. Console asks the user to confirm, then the chat and paired Shell follow together. Do not call it merely because you inspected or edited a file outside the current workspace.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProposeWorkingDirectoryRequest {
@@ -255,7 +255,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 }
 
 /// Observe the Harness hooks: stamp the session onto every call of
-/// `console::working-directory::propose`, and add the handoff guidance to
+/// `ade::working-directory::propose`, and add the handoff guidance to
 /// every generation. The observers stay `pending` while the Harness is
 /// absent.
 pub fn observe_hooks(iii: &IIIClient) {
@@ -289,7 +289,7 @@ mod tests {
             .system_prompt
             .expect("a real prompt receives working-directory guidance");
         assert!(prompt.starts_with("BASE\n\n"));
-        assert!(prompt.contains("console::working-directory::propose"));
+        assert!(prompt.contains("ade::working-directory::propose"));
         assert!(prompt.contains("after the directory exists"));
         assert!(prompt.contains("explicitly asks"));
         assert!(prompt.contains("pre-verified"));

@@ -15,7 +15,7 @@ does not restate any of it.
 | How injection works, the `ui/` project layout, `setup(host)` and every slot, the wire contract, the shared build driver and its lint, scoped CSS, hooks/format/icons, debugging, the testing layers, the definition of done | `ade/skills/injectable-ui.md` (`ade/injectable-ui`) |
 | Responsive UX, archetypes, configuration and provider forms, the validation matrix | `ade/skills/design-console-ui.md` (`ade/design-console-ui`) |
 | Tokens, typography, shared components, every number | `ade/skills/design-system.md` (`ade/design-system`) |
-| The console worker: functions, the observable functions it hosts (`console::ui::asset`, `console::ui::on-assets-changed`), `console::ui-manifest` | `ade/skills/SKILL.md` |
+| The console worker: functions, the observable functions it hosts (`ade::ui::asset`, `ade::ui::on-assets-changed`), `ade::ui-manifest` | `ade/skills/SKILL.md` |
 | Observer-activity renderer authoring and its test matrix | `ade/web/docs/custom-observer-components.md` |
 | Per-worker conformance inventory and the deliberate local exceptions | `docs/sops/console-ui-conformance.md` |
 | The crate: defaults, overrides, what `register` does | `crates/console-ui/README.md`, `crates/console-ui/src/lib.rs` |
@@ -92,10 +92,10 @@ pub fn register(iii: &Arc<IIIClient>) {
 
 - `pub mod ui;` in `lib.rs`; `crate::ui::register(&iii)` in the boot path
   right after the functions are registered (`state/src/boot.rs`). Each asset
-  is an observer of `console::ui::asset` with args `{ kind, path }` and the
+  is an observer of `ade::ui::asset` with args `{ kind, path }` and the
   content function as its target, so the content function must exist before
   the observers name it. The console may come up later: each observer stays
-  `pending` until the ADE registers `console::ui::asset`.
+  `pending` until the ADE registers `ade::ui::asset`.
 - The name passed to `ConsoleUi::new` is the worker's registry name. Every
   asset path starts with it: the first segment becomes the `data-iii-ui`
   style scope and the only attribution, and the builder warns when it does
@@ -115,7 +115,7 @@ pub fn register(iii: &Arc<IIIClient>) {
   on every reconnect. `register` observes modules and styles at once, and
   each script once every module observer is active or has failed, so the
   console serves the modules a script imports before the script reaches a
-  tab. A Node or Go worker that observes `console::ui::asset` itself
+  tab. A Node or Go worker that observes `ade::ui::asset` itself
   observes its module assets before its scripts.
 - The builder panics on a path the console would reject: empty, over 512
   characters, a leading `/`, an empty, `.` or `..` segment, characters outside
@@ -132,7 +132,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 With the watch env var set, the crate polls the build output once a second.
 `1` or `true` means the default directory; any other value names a directory
 (a `.js` file path means its parent). On change it swaps the served bytes,
-observes `console::ui::asset` for the same path afresh, then disposes the
+observes `ade::ui::asset` for the same path afresh, then disposes the
 previous observer, so open tabs never see a window without the asset and the
 SDK replays one observer per path across reconnects.
 
@@ -172,4 +172,4 @@ Testing.
 - `src/ui.rs` embeds every asset, `lib.rs` exports the module, boot calls
   `ui::register` after the functions.
 - `cargo test` runs the three UI tests.
-- `console::ui-manifest` lists the paths with an empty `warnings` array.
+- `ade::ui-manifest` lists the paths with an empty `warnings` array.

@@ -701,7 +701,7 @@ export interface Host {
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
   /**
-   * Import a module asset (`console::ui::asset` of kind `module`) on demand, e.g.
+   * Import a module asset (`ade::ui::asset` of kind `module`) on demand, e.g.
    * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
    * console serves modules but never imports them at mount, so code only
    * one view needs stays out of every tab's first load. Resolves to the
@@ -755,7 +755,7 @@ export interface Host {
     /**
      * Place/reuse any workspace screen (a built-in one like `traces`
      * included) from this browser, in the tab on screen: optimistic, with no
-     * bus round trip, unlike `console::workspace::open`. Throws on an unknown
+     * bus round trip, unlike `ade::workspace::open`. Throws on an unknown
      * screen. Optional on consoles that predate it: feature-detect with
      * `host.panels?.openScreen`.
      */

@@ -37,7 +37,7 @@ scripts:
 
 dependencies:
   # The console worker is published as `ade`; `console` is still an alias.
-  # The page needs the 0.26 ADE: it is served through `console::ui::asset`
+  # The page needs the 0.26 ADE: it is served through `ade::ui::asset`
   # observers, and it calls and observes through `host.iii.call` and
   # `host.iii.observe`. An older console never loads it.
   ade: "latest"

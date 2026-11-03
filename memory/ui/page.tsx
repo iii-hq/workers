@@ -1,7 +1,7 @@
 /**
  * Entry for the memory worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served over
- * a `console::ui::asset` script observer (see src/ui.rs). The stylesheet is
+ * a `ade::ui::asset` script observer (see src/ui.rs). The stylesheet is
  * its own asset: ../styles.css ships as a `style` asset, memory/styles.css —
  * the console mounts and link-swaps it, styles-before-scripts on boot.
  *

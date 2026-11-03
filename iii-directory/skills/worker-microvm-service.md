@@ -146,7 +146,7 @@ const { job_id } = await worker.call({ function_id: "shell::exec_bg", payload: {
 
 A worker ships console UI as assets; no console rebuild:
 
-* observe `console::ui::asset` with `args { kind: "script", path: "<worker>/page.js" }`
+* observe `ade::ui::asset` with `args { kind: "script", path: "<worker>/page.js" }`
   and `{ kind: "style", path: "<worker>/styles.css" }`. The observer's target is a
   content function returning `{ content, content_type }` — read from disk per call
   and the dev loop is edit + reload the tab. A later observer of a path supersedes it.
@@ -157,10 +157,10 @@ A worker ships console UI as assets; no console rebuild:
 * `host` = `{ iii: { call(fnId, payload), on, observe, browserId,
   addConnectionStateListener }, components, useTheme, path, pages, functionCalls,
   configForms }`.
-* `host.pages.register({ id, title, render })` → a console page, opened through `host.panels.open` or `console::workspace::open`, or alone at `#/worker/<scope>/<id>`;
+* `host.pages.register({ id, title, render })` → a console page, opened through `host.panels.open` or `ade::workspace::open`, or alone at `#/worker/<scope>/<id>`;
   `host.configForms.register(configId, Component)` overrides a worker's config form;
   `host.functionCalls.register(renderer)` adds UI for calls of your functions.
-* verify with `console::ui-manifest` (paths, hashes, style-lint warnings, per-worker
+* verify with `ade::ui-manifest` (paths, hashes, style-lint warnings, per-worker
   enable state); users can disable a worker's UI via the console config
   (`injectableUi.disabledWorkers`).
 * an `<iframe>` to the pump's loopback port works: the console sets no restrictive

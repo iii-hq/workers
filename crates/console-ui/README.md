@@ -2,7 +2,7 @@
 
 The worker-side half of the injectable console UI, as a crate: one builder
 that registers the *content function* (`<worker>::ui-content`), one observer
-of the console's `console::ui::asset` function per asset, and the dev-loop
+of the console's `ade::ui::asset` function per asset, and the dev-loop
 hot-reload watcher — the whole registration discipline from the authoring SOP
 (`workers/docs/sops/injectable-console-ui.md`), implemented once.
 
@@ -51,7 +51,7 @@ What `register` does:
 - registers the content function (`{path}` → `{content, content_type}`,
   MIME derived from the asset kind), flagged `internal: true` so it stays
   console plumbing rather than discoverable API;
-- observes `console::ui::asset` once per asset, with the content function
+- observes `ade::ui::asset` once per asset, with the content function
   as the target: modules and styles at once, and each script once every
   module observer is active or has failed, so the console commits the
   modules a script imports before the script (whether `register` runs before
@@ -61,7 +61,7 @@ What `register` does:
 
   ```rust
   iii.observe(
-      Source::function("console::ui::asset")
+      Source::function("ade::ui::asset")
           .args(json!({ "kind": "script", "path": "state/page.js" })),
       "state::ui-content",
   );

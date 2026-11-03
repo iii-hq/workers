@@ -37,7 +37,7 @@ as `iii-node` prescribes, before any domain code:
   hot-swaps.
 - `ui/build.mjs` with the five externals, and a skeleton `ui/page.tsx` and
   `ui/styles.css` that only mount the page shell.
-- The asset content function and its two `console::ui::asset` observers in
+- The asset content function and its two `ade::ui::asset` observers in
   `src/`, and `iii.worker.yaml`.
 - The compose declaration, made through `compose::add` as a container
   object with `scripts: { run: "pnpm dev" }` and `start_after` the console
@@ -123,7 +123,7 @@ A green build proves nothing about a runtime contract.
    response.
 5. Re-run the failure path: missing field, unknown id, unauthorized caller.
    If the error is unhelpful, fix the contract.
-6. For the UI delivery, `console::ui-manifest` lists the worker's asset
+6. For the UI delivery, `ade::ui-manifest` lists the worker's asset
    paths with hashes and an empty `warnings` array.
 7. For the dev loop, prove hot reload: with the worker running under
    `pnpm dev`, touch `ui/styles.css`, read the manifest again and see the

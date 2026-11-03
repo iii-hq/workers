@@ -2,10 +2,10 @@
 //! worker's asset observers in, the content each one serves, and the
 //! observer each content fetch reaches.
 //!
-//! A stand-in console hosts `console::ui::asset` with an added hook that
+//! A stand-in console hosts `ade::ui::asset` with an added hook that
 //! records the order its hooks run in (the order the real console commits
 //! assets in). Once an observer is active, the console fetches its asset with
-//! a call of `console::ui::asset` for that observer alone (metadata
+//! a call of `ade::ui::asset` for that observer alone (metadata
 //! `{ for_observer }`). The match hook is the ADE console's
 //! (`ade/src/ui_assets.rs`, `for_observer::own_calls_only`): a call for one
 //! observer reaches it alone, and a call that names no observer reaches none.
@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 /// connection is up in an order of its own, so one run proves little.
 const RUNS: usize = 3;
 
-const ASSET_FN: &str = "console::ui::asset";
+const ASSET_FN: &str = "ade::ui::asset";
 
 /// One asset fetched through its observer.
 struct Fetched {

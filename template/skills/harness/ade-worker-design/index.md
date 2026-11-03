@@ -11,7 +11,7 @@ description: >-
 # ade-worker-design
 
 The ADE console is the host every worker can inject UI into at runtime: a
-worker observes `console::ui::asset` once for its script and once for its
+worker observes `ade::ui::asset` once for its script and once for its
 style, every open tab imports the module, calls its `setup(host)`, and
 hot-reloads it when the asset changes. No console rebuild, no iframe. This
 skill is the designer's half of building such a worker: what the host
@@ -49,9 +49,9 @@ Fetch any of them with `directory::skills::get { "id": "harness/ade-worker-desig
   declared there, it does not exist.
 - Every rule in the worker stylesheet is scoped under
   `[data-iii-ui="<worker>"]`; an unscoped rule restyles the whole console.
-- Assets are `console::ui::asset` observers made over the worker's own
+- Assets are `ade::ui::asset` observers made over the worker's own
   connection, so they leave with the worker; never observe the tab-only
-  `console::ui::on-assets-changed`.
+  `ade::ui::on-assets-changed`.
 - Done means the UI was seen in the running console at phone, narrow-split
   and wide widths, in both themes, with the manifest free of warnings — not
   that the build passed.

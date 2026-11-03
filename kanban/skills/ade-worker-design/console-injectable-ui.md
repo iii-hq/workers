@@ -13,7 +13,7 @@ architecture that best fits the worker.
 
 ## How it works
 
-A worker observes `console::ui::asset` once per asset, with args
+A worker observes `ade::ui::asset` once per asset, with args
 `{ kind: 'script' | 'style' | 'module', path }`, and with a content function
 as the target that serves `{content}` for `{path}`; the console calls it
 through the observer. The console hashes and serves those bytes, then pushes
@@ -584,7 +584,7 @@ per-asset cap (a slot component should be tens of KiB). Three footguns:
 ## 4. Registration (the worker side)
 
 The wire contract is: one content function serving all of the worker's
-assets (dispatch on `path`), one observer of `console::ui::asset` per asset.
+assets (dispatch on `path`), one observer of `ade::ui::asset` per asset.
 
 ### Rust workers — the `iii-console-ui` crate
 
@@ -603,7 +603,7 @@ ConsoleUi::new("mywork")
     .register(&iii);
 ```
 
-This registers `<worker>::ui-content`, one `console::ui::asset` observer per
+This registers `<worker>::ui-content`, one `ade::ui::asset` observer per
 asset, and the `III_<WORKER>_UI_WATCH` watcher. It rejects invalid paths early.
 Export `ui` from the worker library and call `ui::register(&iii)` after its
 normal functions. Adapt `state/build.rs` so missing/stale UI sources build
@@ -615,12 +615,12 @@ each asset through its observer.
 
 Node workers implement the same contract directly: register one function
 that maps `{path}` to `{content, content_type?}`, then observe
-`console::ui::asset` once per asset with args `{ kind, path }` and that
+`ade::ui::asset` once per asset with args `{ kind, path }` and that
 function as the target:
 
 ```ts
 iii.observe(
-  { function_id: 'console::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
+  { function_id: 'ade::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
   'mywork::ui-content',
 )
 ```
@@ -629,7 +629,7 @@ iii.observe(
 
 | | |
 |---|---|
-| Function | `console::ui::asset`, observed once per asset; never observe the tab-only `console::ui::on-assets-changed` |
+| Function | `ade::ui::asset`, observed once per asset; never observe the tab-only `ade::ui::on-assets-changed` |
 | Args | `{ "kind": "script" \| "style" \| "module", "path": string }`, nothing else (`script` is ESM JS, `style` is CSS) |
 | Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the kind (`.js` / `.css`); **convention: first segment = your worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
 | Content function | input `{ "path": string }` → output `{ "content": string, "content_type"?: string }` (`content_type` defaults from the asset kind) |
@@ -641,8 +641,8 @@ automatically on hot reload and worker disconnect. Each `register` also
 returns a remover for manual teardown.
 
 `host.pages.register({id, title, render})` registers a page (opened through
-`host.panels.open` or `console::workspace::open`; `<url>/#/worker/<scope>/<id>`,
-with `url` from `console::status` (an older console answers only `http_port`:
+`host.panels.open` or `ade::workspace::open`; `<url>/#/worker/<scope>/<id>`,
+with `url` from `ade::status` (an older console answers only `http_port`:
 use `http://127.0.0.1:<http_port>`; never `engine_url`), renders it alone) and
 adds it to the nav. Its `render` receives:
 
@@ -760,7 +760,7 @@ presentation only, never routing or authorization.
 ## The dev loop (hot reload)
 
 Rebuild-on-save stays in the build tool; re-observing stays in the worker.
-Serve the new bytes, observe `console::ui::asset` again for the same path,
+Serve the new bytes, observe `ade::ui::asset` again for the same path,
 then dispose of the old handle. Observe-first avoids a flash; disposing keeps
 the SDK replay map bounded. The Rust helper does this with a one-second
 poller. Set `III_<WORKER>_UI_WATCH=1` for `ui/dist`:
@@ -794,7 +794,7 @@ link-swap with no flash. Unchanged content is hash-deduped end to end.
 | A dragged card vanishes and never comes back | the list removed the card while dragging and `dragend` never fired; keep it mounted (dimmed) and clear state from document-level `dragend`/`drop` |
 | Detail opened inside the board instead of a new pane | use `host.panels.open({ pageId })` with a separately registered page rather than local selection state |
 
-Inspect `console::ui-manifest` (or `GET <url>/ui`, with `url` from `console::status`),
+Inspect `ade::ui-manifest` (or `GET <url>/ui`, with `url` from `ade::status`),
 `/ui/<path>`, the worker's observers (`engine::observers::list`), and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
 
@@ -809,7 +809,7 @@ Validate all four layers; a successful esbuild run alone is not enough.
 3. **Delivery:** boot engine + console + worker; require manifest paths,
    hashes, no warnings, fetchable bytes, and a changed hash after hot reload.
 4. **Real rendering:** exercise the actual console, not only an isolated
-   component harness — the `browser` worker can drive it (`browser::sessions::start` on the `url` from `console::status`, never an assumed 3113, `browser::snapshot` for structure, `browser::act`/`browser::evaluate` for interaction, `browser::screenshot` for both themes; toggle `document.documentElement.dataset.theme` to preview dark). Open `<url>/#/worker/<scope>[/<page-id>]` to render the page alone — no tab strip, no chat, the shared workspace layout untouched; `?context=<json>` in the hash replays a `host.panels.open` context, and in that shell `host.panels.open` for another page opens a new browser tab. The page's settings action, the settings shortcut and its keyed commands work there (`#/traces` renders the traces explorer the same way); chat slots and the palette need the full console, opened through `console::workspace::open`. Synthetic pointer drags do not fire HTML5 drag events; dispatch `DragEvent`s to test drag-and-drop. Cover at least a phone-sized pane (~320–430 px), a
+   component harness — the `browser` worker can drive it (`browser::sessions::start` on the `url` from `ade::status`, never an assumed 3113, `browser::snapshot` for structure, `browser::act`/`browser::evaluate` for interaction, `browser::screenshot` for both themes; toggle `document.documentElement.dataset.theme` to preview dark). Open `<url>/#/worker/<scope>[/<page-id>]` to render the page alone — no tab strip, no chat, the shared workspace layout untouched; `?context=<json>` in the hash replays a `host.panels.open` context, and in that shell `host.panels.open` for another page opens a new browser tab. The page's settings action, the settings shortcut and its keyed commands work there (`#/traces` renders the traces explorer the same way); chat slots and the palette need the full console, opened through `ade::workspace::open`. Synthetic pointer drags do not fire HTML5 drag events; dispatch `DragEvent`s to test drag-and-drop. Cover at least a phone-sized pane (~320–430 px), a
    narrow split pane, and a wide pane; left and right split positions; light
    and dark themes; keyboard-only navigation; reduced motion; long names and
    payloads; loading, empty, error, success, and live-update states; dirty

@@ -179,7 +179,7 @@ if (host.panels?.openScreen) {
   })
 } else {
   // Older console: the bus call places it too, a round trip later.
-  await host.iii.call('console::workspace::open', { screen: 'traces' })
+  await host.iii.call('ade::workspace::open', { screen: 'traces' })
 }
 ```
 

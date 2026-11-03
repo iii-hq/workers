@@ -19,7 +19,7 @@ const ENGINE_URL = process.env.III_ENGINE_URL ?? 'ws://127.0.0.1:49134'
  *
  * Only `/ui/<scope>/<file>` requests for a listed scope are answered here;
  * everything else still proxies to the console worker, which keeps the
- * worker's `console::ui::asset` observer (and the hash in `?v=`) its own.
+ * worker's `ade::ui::asset` observer (and the hash in `?v=`) its own.
  */
 function workerUiOverrides(): Plugin {
   const spec = process.env.III_WORKER_UI_OVERRIDES ?? ''

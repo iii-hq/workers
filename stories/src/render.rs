@@ -128,7 +128,7 @@ pub fn story_url(
 }
 
 /// The console origin renders navigate to: the configured `console_url`,
-/// else the ADE's own address from `console::status`. Never a guessed port:
+/// else the ADE's own address from `ade::status`. Never a guessed port:
 /// on a machine running two projects that would drive the other one's ADE.
 async fn console_origin(ctx: &Ctx) -> Result<String, String> {
     if let Some(url) = ctx.config().console_url {
@@ -137,7 +137,7 @@ async fn console_origin(ctx: &Ctx) -> Result<String, String> {
     let status = ctx
         .iii
         .call(CallRequest {
-            function_id: "console::status".to_string(),
+            function_id: "ade::status".to_string(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(10_000),
@@ -152,7 +152,7 @@ async fn console_origin(ctx: &Ctx) -> Result<String, String> {
 fn origin_from_status(status: Result<Value, String>) -> Result<String, String> {
     let status = status.map_err(|e| {
         format!(
-            "console::status unavailable ({e}): is this project's ADE running? \
+            "ade::status unavailable ({e}): is this project's ADE running? \
              Set console_url only for a console this engine does not run"
         )
     })?;
@@ -164,7 +164,7 @@ fn origin_from_status(status: Result<Value, String>) -> Result<String, String> {
         .and_then(Value::as_u64)
         .map(|port| format!("http://127.0.0.1:{port}"))
         .ok_or_else(|| {
-            "console::status returned no url or http_port: is this project's ADE running? \
+            "ade::status returned no url or http_port: is this project's ADE running? \
              Set console_url only for a console this engine does not run"
                 .to_string()
         })

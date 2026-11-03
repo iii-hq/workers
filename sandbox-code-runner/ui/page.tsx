@@ -1,7 +1,7 @@
 /**
  * Entry for the sandbox-code-runner worker's injected console UI — compiled
  * by esbuild (react + @iii-dev/console-ui external) into dist/page.js and
- * served through an observer of `console::ui::asset` with `kind: 'script'`
+ * served through an observer of `ade::ui::asset` with `kind: 'script'`
  * (see src/ui.rs). The stylesheet is its own asset: ./styles.css ships with
  * `kind: 'style'` as sandbox-code-runner/styles.css — the console mounts and
  * link-swaps it,

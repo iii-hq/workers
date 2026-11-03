@@ -2,7 +2,7 @@
 //! `workers/docs/sops/injectable-console-ui.md`).
 //!
 //! Two assets, built from `ui/` by esbuild and embedded at compile time:
-//! `kanban/page.js` (a `script` asset of `console::ui::asset`) registers the
+//! `kanban/page.js` (a `script` asset of `ade::ui::asset`) registers the
 //! board page, the ticket page, the configuration form, the function-call
 //! renderers and the observer renderer; `kanban/styles.css` (a `style` asset)
 //! is the stylesheet, every rule scoped

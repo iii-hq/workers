@@ -4,7 +4,7 @@
 //! transcript), so the console needs a renderer that fetches the preview
 //! from this worker over the tab's bus client. Assets are built from `ui/`
 //! by build.rs and embedded here; `ConsoleUi` registers the content function
-//! and one `console::ui::asset` observer per asset (hot-reloadable, GC'd on disconnect).
+//! and one `ade::ui::asset` observer per asset (hot-reloadable, GC'd on disconnect).
 
 use std::sync::Arc;
 

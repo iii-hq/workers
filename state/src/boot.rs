@@ -66,7 +66,7 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
     functions::restore_persisted_claims(&iii, &ctx).await?;
     functions::register_functions(&iii, ctx.clone());
 
-    // Injectable console UI: content function + one `console::ui::asset`
+    // Injectable console UI: content function + one `ade::ui::asset`
     // observer per asset. The observers stay pending until a console hosts
     // the function; the content function is registered first so it exists
     // whenever the console calls it.

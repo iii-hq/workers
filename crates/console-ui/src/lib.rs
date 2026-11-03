@@ -7,7 +7,7 @@
 //!
 //! - the *content function* (`<worker>::ui-content` by default) the console
 //!   calls through each asset's observer with `{path}` to fetch its source,
-//! - one observer of `console::ui::asset` per asset, with args
+//! - one observer of `ade::ui::asset` per asset, with args
 //!   `{ kind: "script" | "style" | "module", path }` and the content function
 //!   as its target (the SDK replays it by id after a reconnect, and the
 //!   engine disposes it once the worker stays disconnected). Modules and
@@ -81,7 +81,7 @@ pub fn register_configuration_identity(iii: &IIIClient, worker: &str, id: &'stat
 
 /// The console's asset function: one observer per asset, its args naming the
 /// asset and its target the content function.
-const ASSET_FN: &str = "console::ui::asset";
+const ASSET_FN: &str = "ade::ui::asset";
 const WATCH_POLL: Duration = Duration::from_millis(1000);
 /// Console-enforced ceiling on the `path` arg's length.
 const MAX_PATH_LEN: usize = 512;
@@ -111,7 +111,7 @@ enum AssetKind {
 }
 
 impl AssetKind {
-    /// The `kind` arg of the asset's `console::ui::asset` observer.
+    /// The `kind` arg of the asset's `ade::ui::asset` observer.
     fn as_str(self) -> &'static str {
         match self {
             AssetKind::Script => "script",
@@ -250,7 +250,7 @@ impl ConsoleUi {
         self
     }
 
-    /// Register the content function and observe `console::ui::asset` once
+    /// Register the content function and observe `ade::ui::asset` once
     /// per asset; spawn the dev watcher when the watch env var is set. Call
     /// once, after the worker's regular functions are registered, inside a
     /// tokio runtime.
@@ -307,7 +307,7 @@ impl ConsoleUi {
                 })
                 .description(format!(
                     "Serve the {worker} worker's injected console UI assets (the target of \
-                     its console::ui::asset observers; the console calls it through each \
+                     its ade::ui::asset observers; the console calls it through each \
                      asset's observer with {{path}})."
                 ))
                 // Console plumbing, not an API for agents/workers to discover.
@@ -480,7 +480,7 @@ impl Served {
     }
 }
 
-/// Observe `console::ui::asset` for one asset, with the content function as
+/// Observe `ade::ui::asset` for one asset, with the content function as
 /// the target. A rejection is logged when it arrives.
 fn observe_asset(
     iii: &Arc<IIIClient>,
@@ -512,7 +512,7 @@ fn observe_asset(
     handle
 }
 
-/// The args of an asset's `console::ui::asset` observer.
+/// The args of an asset's `ade::ui::asset` observer.
 fn asset_args(kind: AssetKind, path: &str) -> serde_json::Value {
     serde_json::json!({ "kind": kind.as_str(), "path": path })
 }
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn each_asset_observes_the_asset_function_with_kind_and_path_args() {
-        assert_eq!(ASSET_FN, "console::ui::asset");
+        assert_eq!(ASSET_FN, "ade::ui::asset");
         assert_eq!(
             asset_args(AssetKind::Script, "demo/page.js"),
             serde_json::json!({ "kind": "script", "path": "demo/page.js" })

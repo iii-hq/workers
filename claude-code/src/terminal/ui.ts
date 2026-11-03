@@ -1,6 +1,6 @@
 /**
  * The injectable console page (docs/sops/injectable-console-ui.md): one
- * content function serving both assets, and one `console::ui::asset` observer
+ * content function serving both assets, and one `ade::ui::asset` observer
  * per asset (args `{ kind, path }`, target the content function). The console
  * fetches each asset by calling through its observer with `{ path }`. An
  * observer belongs to this worker's connection and the SDK replays it on

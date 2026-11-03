@@ -76,7 +76,7 @@ const FAMILIES: { match: (fnId: string) => boolean; spec: FamilySpec }[] = [
     spec: { family: 'hook', label: 'hook', tone: 'ink' },
   },
   {
-    match: (f) => f.startsWith('console::ui::'),
+    match: (f) => f.startsWith('ade::ui::'),
     spec: { family: 'asset', label: 'ADE asset', tone: 'ink' },
   },
 ]
@@ -233,7 +233,7 @@ export function summarize(observer: ObserverInfo): string {
 export function isPlumbing(observer: ObserverInfo): boolean {
   const target = observer.target.function_id
   if (target.startsWith('iii::')) return true
-  if (observer.function_id.startsWith('console::ui::')) return true
+  if (observer.function_id.startsWith('ade::ui::')) return true
   if (target.endsWith('::ui-content')) return true
   if (
     observer.function_id === CONFIGURATION_FN &&

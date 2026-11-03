@@ -1,7 +1,7 @@
 /**
  * Entry for the code-runner worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external into dist/page.js) and served through an
- * observer of `console::ui::asset` with `kind: 'script'` (see src/ui.rs). The
+ * observer of `ade::ui::asset` with `kind: 'script'` (see src/ui.rs). The
  * stylesheet is its own asset: ./styles.css ships with `kind: 'style'` as
  * code-runner/styles.css — the
  * console mounts and link-swaps it, styles-before-scripts on boot.

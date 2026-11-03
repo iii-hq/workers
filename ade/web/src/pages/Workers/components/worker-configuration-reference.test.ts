@@ -88,7 +88,7 @@ describe('loadWorkerConfigurationReference', () => {
 
   it('loads the advertised instance ID rather than guessing from the worker name', async () => {
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
-      workerInfo(['console::status', 'console::configuration-id']),
+      workerInfo(['ade::status', 'ade::configuration-id']),
     )
     await expect(loadWorkerConfigurationReference('ade')).resolves.toEqual({
       kind: 'schema',
@@ -96,7 +96,7 @@ describe('loadWorkerConfigurationReference', () => {
     })
     expect(fetchEngineWorkerInfo).toHaveBeenCalledWith('ade')
     expect(call).toHaveBeenCalledExactlyOnceWith(
-      'console::configuration-id',
+      'ade::configuration-id',
       {},
       { namespace: 'worker-space' },
     )
@@ -139,7 +139,7 @@ describe('loadWorkerConfigurationReference', () => {
 
   it('rejects an advertised identity that returns an empty ID', async () => {
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
-      workerInfo(['console::configuration-id']),
+      workerInfo(['ade::configuration-id']),
     )
     call.mockResolvedValue({ id: '  ' })
     await expect(loadWorkerConfigurationReference('ade')).rejects.toThrow(
@@ -151,7 +151,7 @@ describe('loadWorkerConfigurationReference', () => {
 
   it('surfaces schema read failures without fetching values or writing configuration', async () => {
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
-      workerInfo(['console::configuration-id']),
+      workerInfo(['ade::configuration-id']),
     )
     vi.mocked(getConfigurationSchema).mockRejectedValue(
       new Error('Schema service unavailable'),
@@ -160,7 +160,7 @@ describe('loadWorkerConfigurationReference', () => {
       'Schema service unavailable',
     )
     expect(call).toHaveBeenCalledExactlyOnceWith(
-      'console::configuration-id',
+      'ade::configuration-id',
       {},
       { namespace: 'worker-space' },
     )
@@ -182,7 +182,7 @@ describe('loadWorkerConfigurationReference', () => {
 
   it('rejects a schema for a different entry instead of mislabeling it as the worker reference', async () => {
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
-      workerInfo(['console::configuration-id']),
+      workerInfo(['ade::configuration-id']),
     )
     vi.mocked(getConfigurationSchema).mockResolvedValue({
       ...schemaEntry,
@@ -202,7 +202,7 @@ describe('loadWorkerConfigurationReference', () => {
       ],
     })
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
-      workerInfo(['console::configuration-id']),
+      workerInfo(['ade::configuration-id']),
     )
     await expect(loadWorkerConfigurationReference('ade')).resolves.toEqual({
       kind: 'catalog',
@@ -225,7 +225,7 @@ describe('loadWorkerConfigurationReference', () => {
       ],
     })
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
-      workerInfo(['console::configuration-id']),
+      workerInfo(['ade::configuration-id']),
     )
     await expect(loadWorkerConfigurationReference('ade')).resolves.toEqual({
       kind: 'schema',
@@ -233,7 +233,7 @@ describe('loadWorkerConfigurationReference', () => {
     })
     expect(fetchEngineWorkersList).toHaveBeenCalledOnce()
     expect(call).toHaveBeenCalledExactlyOnceWith(
-      'console::configuration-id',
+      'ade::configuration-id',
       {},
       { namespace: 'worker-space' },
     )
@@ -244,7 +244,7 @@ describe('loadWorkerConfigurationReference', () => {
       workers: [{ ...workerInfo([]).worker, status: 'disconnected' }],
     })
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
-      workerInfo(['console::configuration-id']),
+      workerInfo(['ade::configuration-id']),
     )
     await expect(loadWorkerConfigurationReference('ade')).resolves.toEqual({
       kind: 'catalog',
@@ -256,7 +256,7 @@ describe('loadWorkerConfigurationReference', () => {
   })
 
   it('requires catalog selection when the advertised namespace is unavailable', async () => {
-    const info = workerInfo(['console::configuration-id'])
+    const info = workerInfo(['ade::configuration-id'])
     delete info.worker.namespace
     delete info.functions[0].namespace
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(info)
@@ -269,7 +269,7 @@ describe('loadWorkerConfigurationReference', () => {
   })
 
   it('does not invoke an advertised identity scoped outside the resolved worker', async () => {
-    const info = workerInfo(['console::configuration-id'])
+    const info = workerInfo(['ade::configuration-id'])
     info.functions[0].namespace = 'different-space'
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(info)
     await expect(loadWorkerConfigurationReference('ade')).resolves.toEqual({
@@ -281,7 +281,7 @@ describe('loadWorkerConfigurationReference', () => {
   })
 
   it('requires the info result to identify the unique live worker before invoking its identity', async () => {
-    const info = workerInfo(['console::configuration-id'])
+    const info = workerInfo(['ade::configuration-id'])
     info.worker.id = 'other-ade-instance'
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(info)
     await expect(loadWorkerConfigurationReference('ade')).resolves.toEqual({

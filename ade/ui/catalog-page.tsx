@@ -1,7 +1,7 @@
 /**
  * Entry for the console worker's engine-catalogue pages — compiled by
  * esbuild (react + @iii-dev/console-ui external) into dist/catalog-page.js
- * and shipped as a `script` asset of `console::ui::asset` (see src/ui.rs).
+ * and shipped as a `script` asset of `ade::ui::asset` (see src/ui.rs).
  * The stylesheet is its own `style` asset: console/styles.css.
  *
  * Two contributions, both reading engine-level data no single worker owns:

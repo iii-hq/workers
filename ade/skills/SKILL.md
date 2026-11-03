@@ -11,12 +11,12 @@ description: >-
 # console
 
 The console is a single Rust binary that serves the React SPA and proxies the
-engine WebSocket on one port (`http_port`, 3113 by default; `console::status`
+engine WebSocket on one port (`http_port`, 3113 by default; `ade::status`
 returns the actual `url`). It renders the
 chat (on the `harness` turn loop), the OpenTelemetry trace explorer, the worker
 catalog, and a tabbed workspace of floating panels the operator arranges. It is
 also the delivery host for **injectable UI**: any worker observes
-`console::ui::asset` with args `{ kind: 'script' | 'style', path }` naming an
+`ade::ui::asset` with args `{ kind: 'script' | 'style', path }` naming an
 asset and its content function as the target that serves the bytes, and every
 open tab imports the module, calls its `setup(host)`, and hot-reloads it when
 the asset changes. No console rebuild, no iframe.
@@ -43,18 +43,18 @@ stack; traces need the engine's OpenTelemetry export.
   record resolved): read `ade/mentions` — two functions and a metadata
   descriptor, no console change.
 - You changed a worker's UI and must prove it is loadable: read
-  `console::ui-manifest` and require an empty `warnings` array.
-- The user should watch something in the console: `console::workspace::open`
+  `ade::ui-manifest` and require an empty `warnings` array.
+- The user should watch something in the console: `ade::workspace::open`
   with `ext:<page>`, `workers`, `traces`, or a pinned `chat`.
 - You created or cloned a project in another directory and the user asked to
-  continue there: `console::working-directory::propose` (never just to inspect
+  continue there: `ade::working-directory::propose` (never just to inspect
   a file).
-- You need to know what the operator currently sees: `console::workspace::list`.
+- You need to know what the operator currently sees: `ade::workspace::list`.
 
 ## Chat-owned Context tracking
 
 Users can ask in chat to pin release progress, a goal, a status summary or a checklist.
-Use `console::context::list`, `console::context::save` and `console::context::remove`.
+Use `ade::context::list`, `ade::context::save` and `ade::context::remove`.
 Discover the contracts before calling; Harness stamps the current `session_id`.
 A save stores a structured snapshot, not executable code, an extension or a monitor.
 Default to `conversation`; use `project` only when the user explicitly asks. Project
@@ -75,11 +75,11 @@ Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
 - The console renders; it does not own domain data. Injected UI acts by
   calling its own worker's functions over `host.iii`, and configuration values
   live in the `configuration` worker.
-- `console::ui::on-assets-changed` is the tab-side live-update feed. Workers
-  never observe it; they observe `console::ui::asset` only.
+- `ade::ui::on-assets-changed` is the tab-side live-update feed. Workers
+  never observe it; they observe `ade::ui::asset` only.
 - Injected styles are scoped under `[data-iii-ui="<worker>"]`; an unscoped
   rule restyles the whole console and is reported as a manifest warning.
-- Observe `console::ui::asset` over the worker's own connection: its
+- Observe `ade::ui::asset` over the worker's own connection: its
   observers leave with the worker, and the console drops the asset.
 - `workspace::open` reuses a tab that already shows the screen; it never
   duplicates panels. Selection of the active tab is per browser tab and only
@@ -90,22 +90,22 @@ Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
 - An injected page placing a screen for the operator in front of it calls
   `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })`
   (built-in screens like `traces` included): local and optimistic, no bus
-  round trip. Feature-detect it and fall back to `console::workspace::open`.
+  round trip. Feature-detect it and fall back to `ade::workspace::open`.
 - Native console UI (`ade/web`) and worker UI change in separate pull
   requests; the shared component surface is `@iii-dev/console-ui`
   (`packages/console-ui`) and its `index.d.ts` is the only API contract.
 
 ## Functions
 
-- `console::status` — runtime knobs: `url`, `http_port`, `engine_url`, `version`; use for liveness and readiness, and open ADE pages on this machine (browser sessions, curl) at `url` (`<url>/#/worker/<scope>/<page-id>`) instead of assuming port 3113. `url` is loopback when the console listens on every interface: to show the operator a page, use `console::workspace::open`, not a pasted link.
-- `console::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
-- `console::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
-- `console::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
-- `console::workspace::close` — remove a screen wherever it is shown; idempotent.
-- `console::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
-- `console::ui-content` — the console's own content function for its injected catalog pages; internal.
-- `console::on-config-change`, `console::working-directory::inject-guidance`, `console::working-directory::stamp-session` — internal wiring; never call directly.
-- `console::mentions::trace::search`, `console::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
+- `ade::status` — runtime knobs: `url`, `http_port`, `engine_url`, `version`; use for liveness and readiness, and open ADE pages on this machine (browser sessions, curl) at `url` (`<url>/#/worker/<scope>/<page-id>`) instead of assuming port 3113. `url` is loopback when the console listens on every interface: to show the operator a page, use `ade::workspace::open`, not a pasted link.
+- `ade::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
+- `ade::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
+- `ade::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
+- `ade::workspace::close` — remove a screen wherever it is shown; idempotent.
+- `ade::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
+- `ade::ui-content` — the console's own content function for its injected catalog pages; internal.
+- `ade::on-config-change`, `ade::working-directory::inject-guidance`, `ade::working-directory::stamp-session` — internal wiring; never call directly.
+- `ade::mentions::trace::search`, `ade::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
 
 ## Observable functions
 
@@ -113,7 +113,7 @@ The console hosts four private functions others observe. One is the
 injectable-UI contract a worker observes to ship UI; one is tab-internal; two
 report changes.
 
-- `console::ui::asset` — one asset per observer. Args
+- `ade::ui::asset` — one asset per observer. Args
   `{ kind: 'script' | 'style' | 'module', path }`; `path` is the identity
   (`<worker>/page.js`, at most 512 bytes) and the observer's target is the
   worker's content function, returning `{ content, content_type? }` for
@@ -122,31 +122,31 @@ report changes.
   content function through the observer. A later observer of the same path
   supersedes the earlier one (`UI_ASSET_SUPERSEDED`); a content fetch that
   fails rejects the observer (`UI_ASSET_FETCH_FAILED`).
-- `console::ui::on-assets-changed` — a tab's live-update feed, no args. Each
+- `ade::ui::on-assets-changed` — a tab's live-update feed, no args. Each
   new observer gets one call of its own once it is accepted,
   `{ op: 'sync', assets }`; every later change is `{ op: 'set', asset }` or
   `{ op: 'delete', path }`. iii delivers each like every call, so a tab
   receives every event in one shape. The console's tabs observe it
   themselves.
-- `console::workspace::on-changed` — called after every workspace layout
+- `ade::workspace::on-changed` — called after every workspace layout
   write (`open`, `close`, a browser's own edit), and once for each new
   observer alone when it is accepted. No args, empty event: a page that
-  watches the layout observes it and re-reads `console::workspace::list`.
-- `console::compose::on-changed` — called when the Compose daemon writes
+  watches the layout observes it and re-reads `ade::workspace::list`.
+- `ade::compose::on-changed` — called when the Compose daemon writes
   `state.json` or the compose file changes. No args; filter on `input.kind`,
   `input.file` or `input.namespace`.
 
-Observe `console::ui::asset` once per asset at worker startup, after the
+Observe `ade::ui::asset` once per asset at worker startup, after the
 content function is registered. To change an asset, observe it again and
 dispose the old observer: different bytes hot-swap the asset in every open
 tab; identical bytes are a no-op. Rust workers use the `iii-console-ui` crate
 (`ConsoleUi::new("<worker>").script(..).style(..).register(&iii)`), which also
 wires the `III_<WORKER>_UI_WATCH` development watcher; Node workers register
-the content function and observe `console::ui::asset` directly:
+the content function and observe `ade::ui::asset` directly:
 
 ```ts
 iii.observe(
-  { function_id: 'console::ui::asset', args: { kind: 'script', path: 'my-worker/page.js' } },
+  { function_id: 'ade::ui::asset', args: { kind: 'script', path: 'my-worker/page.js' } },
   'my-worker::ui-content',
 )
 ```

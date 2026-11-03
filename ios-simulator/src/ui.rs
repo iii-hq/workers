@@ -1,6 +1,6 @@
 //! Injectable console UI (authoring contract: `ade/skills/injectable-ui.md`).
 //!
-//! - `ios-simulator/page.js` (a `script` asset of `console::ui::asset`) — the
+//! - `ios-simulator/page.js` (a `script` asset of `ade::ui::asset`) — the
 //!   Simulators page (device rail, live iPhone with multi-touch, buttons and
 //!   media), the configuration form, and the chat renderer for
 //!   `ios-simulator::*` calls.

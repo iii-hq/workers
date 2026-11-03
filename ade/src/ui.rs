@@ -1,5 +1,5 @@
 //! The console worker's *own* injected UI — shipped through the same
-//! `console::ui::asset` function it hosts (the engine announces each asset
+//! `ade::ui::asset` function it hosts (the engine announces each asset
 //! observer straight back to this worker).
 //!
 //! Two contributions:
@@ -60,7 +60,7 @@ fn console_ui() -> ConsoleUi {
 }
 
 /// Observe the console's own UI assets. Call only when `injectable_ui` is
-/// on (the `console::ui::*` functions must be hosted), after
+/// on (the `ade::ui::*` functions must be hosted), after
 /// `ui_assets::start`.
 pub fn register(iii: &Arc<IIIClient>) {
     console_ui().register(iii);
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn embedded_workspace_proposal_is_nonempty_esm() {
         assert!(
-            WORKSPACE_PROPOSAL_JS.contains("console::working-directory::propose"),
+            WORKSPACE_PROPOSAL_JS.contains("ade::working-directory::propose"),
             "built workspace-proposal.js looks wrong"
         );
     }

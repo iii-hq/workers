@@ -56,8 +56,8 @@ Fixed names, from the spec and the decisions:
 | `state` | `state::on-changed` | spec §11 |
 | `subscribe` | `publish` (the pubsub worker's callable function, which the engine's stream bridge calls and observes) | spec §11 |
 | `compose-operation` | `compose::on-operation-progress` | decision 26 |
-| `console:script`, `console:style`, `console:module` | `console::ui::asset` with args `{ kind: 'script' \| 'style' \| 'module', path }` (an observer of it serves the asset's content; a stored harness binding on one is retired, §5.1) | decision 29 |
-| `console:assets` | `console::ui::on-assets-changed` | decision 29 |
+| `console:script`, `console:style`, `console:module` | `ade::ui::asset` with args `{ kind: 'script' \| 'style' \| 'module', path }` (an observer of it serves the asset's content; a stored harness binding on one is retired, §5.1) | decision 29 |
+| `console:assets` | `ade::ui::on-assets-changed` | decision 29 |
 | `timer` (harness) | `harness::on-timer` | decision 30, `W::on-<event>` |
 | `harness::triggers-changed` | `harness::on-observers-changed` | decision 30 (`harness::triggers::*` becomes `harness::observers::*`) |
 | `harness::hook::pre-trigger`, `harness::hook::post-trigger` | `harness::hook::on-pre-call`, `harness::hook::on-post-call` | the hook points run around a function call; `call` is the verb (decision 10) |
@@ -84,7 +84,7 @@ its row (`publish` is public; the guest rows describe an API).
   `queue::on-message`, `storage::on-object-*`, `harness::hook::on-*`,
   `github::pr::on-event`) or holds the caller for back-pressure
   (`browser::on-crawl-item`) is called without an action and awaited.
-  `database::on-row-changed` and `console::ui::on-assets-changed` are called
+  `database::on-row-changed` and `ade::ui::on-assets-changed` are called
   without an action and awaited too, so their events reach iii's delivery in
   the order the worker calls the function (commit order for a transaction's
   statements and for one native database's changes; the order of the ADE's
@@ -131,8 +131,8 @@ its row (`publish` is public; the guest rows describe an API).
   like every call, with that observer's `deliver`, `capture`, filters, `on`
   and policy, so a target receives every event of the function in one shape.
   The functions that send initial state this way: `tmux::on-changed`,
-  `harness::on-ready`, `router::on-ready`, `console::workspace::on-changed`,
-  `console::ui::on-assets-changed`, and `console::ui::asset`, whose content
+  `harness::on-ready`, `router::on-ready`, `ade::workspace::on-changed`,
+  `ade::ui::on-assets-changed`, and `ade::ui::asset`, whose content
   fetch is such a call (row 118). `shell::on-job-finished` sends an observer
   of a job that has already finished its job's completion the same way
   (row 49).
@@ -212,7 +212,7 @@ filter on `input.session_id`.
 
 The functions with args, all of them: `cron::on-tick`, `http::on-request`,
 `queue::on-message`, `database::on-row-changed`, `harness::hook::on-*` (six),
-`harness::on-timer`, `console::ui::asset`, `shell::on-changed`,
+`harness::on-timer`, `ade::ui::asset`, `shell::on-changed`,
 `shell::on-git-changed`, `shell::on-job-finished`, `github::pr::on-event`,
 `storage::on-object-created`, `storage::on-object-deleted`,
 `kanban::on-change`, `kanban::on-comment`, `stories::on-changed`,
@@ -250,7 +250,7 @@ iii.observe(
   `deliver: 'input'`. The harness's own observers take the `Observed`
   envelope (decision 30). Functions with custom delivery (`http`, `queue`,
   `storage`, `github::pr`, `kanban`, `stories`, `computer::on-frame-changed`,
-  `browser::on-crawl-item`, `harness::hook::*`, `console::ui::asset`) call
+  `browser::on-crawl-item`, `harness::hook::*`, `ade::ui::asset`) call
   targets themselves; `deliver` does not apply and their rows say what the
   target receives.
 - **Metadata.** Binding metadata and `config.metadata` move to the observe
@@ -529,12 +529,12 @@ Decisions 29 and 32. Every function is private.
 
 | # | Worker | Old type | Function | Args | Delivery | Event | Consumers |
 |---|---|---|---|---|---|---|---|
-| 118 | ade | `console:script` | `console::ui::asset` | `{ kind: 'script', path }` | custom (§5.2), with match(`(obs, call) => call.metadata?.for_observer === obs.id`): only a call for one observer reaches it; the deliver hook calls the target through that observer with `{ path }` and returns what the target answers; added: validate `path` and `kind`; after `obs.accepted()`, fetch the content with a call of the function for that observer, `{ path }` (§1.2); a failed fetch calls `obs.reject('UI_ASSET_FETCH_FAILED', …)`; a later observer of the same path supersedes it (`obs.reject('UI_ASSET_SUPERSEDED', …)`); removed: drop the asset | `{ path }` (the ADE calls it only for one observer); the target receives `UiContentInput { path }` and returns `UiContentResult { content, content_type? }`, which the caller gets back | crates/console-ui:src/lib.rs (every worker with a console UI), vscode:src/index.ts, claude-code:src/terminal/ui.ts, pi:src/terminal/ui.ts, onboarding:src/index.mjs, whatsapp:ui.go |
-| 119 | ade | `console:style` | `console::ui::asset` | `{ kind: 'style', path }` | as row 118 | as row 118 | as row 118 |
-| 120 | ade | `console:module` | `console::ui::asset` | `{ kind: 'module', path }` | as row 118 | as row 118 | crates/console-ui:src/lib.rs (ide, kanban, tmux) |
-| 121 | ade | `console:assets` | `console::ui::on-assets-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{ op: 'sync', assets }`; the ADE's one asset queue makes that call and every `set` and `delete` call, each without an action and awaited (§1.2), and tabs observe with `max_in_flight: 1`, so a tab receives them in the order the queue makes them | `UiAssetsEvent { op: 'sync' \| 'set' \| 'delete', assets?, asset?, path? }` | ade:web/src/lib/ui-loader.tsx |
-| 122 | ade | `console::workspace::changed` | `console::workspace::on-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{}`; store writes call the function, throttled by `RING_GAP` | `WorkspaceChangedEvent {}` | ade:web/src/hooks/use-workspace-tabs.ts, onboarding:ui/src/use-tour.ts, onboarding:ui/src/spotlight.ts |
-| 123 | ade | `console::compose::changed` | `console::compose::on-changed` | none; filters `input.kind`, `input.file`, `input.namespace` | default; added: start the state watcher with the first observer; removed: close it with the last | `ComposeChangedEvent { kind, file, namespace, state_dir, path, captured_at }` | ade:web/src/pages/Workers/index.tsx |
+| 118 | ade | `console:script` | `ade::ui::asset` | `{ kind: 'script', path }` | custom (§5.2), with match(`(obs, call) => call.metadata?.for_observer === obs.id`): only a call for one observer reaches it; the deliver hook calls the target through that observer with `{ path }` and returns what the target answers; added: validate `path` and `kind`; after `obs.accepted()`, fetch the content with a call of the function for that observer, `{ path }` (§1.2); a failed fetch calls `obs.reject('UI_ASSET_FETCH_FAILED', …)`; a later observer of the same path supersedes it (`obs.reject('UI_ASSET_SUPERSEDED', …)`); removed: drop the asset | `{ path }` (the ADE calls it only for one observer); the target receives `UiContentInput { path }` and returns `UiContentResult { content, content_type? }`, which the caller gets back | crates/console-ui:src/lib.rs (every worker with a console UI), vscode:src/index.ts, claude-code:src/terminal/ui.ts, pi:src/terminal/ui.ts, onboarding:src/index.mjs, whatsapp:ui.go |
+| 119 | ade | `console:style` | `ade::ui::asset` | `{ kind: 'style', path }` | as row 118 | as row 118 | as row 118 |
+| 120 | ade | `console:module` | `ade::ui::asset` | `{ kind: 'module', path }` | as row 118 | as row 118 | crates/console-ui:src/lib.rs (ide, kanban, tmux) |
+| 121 | ade | `console:assets` | `ade::ui::on-assets-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{ op: 'sync', assets }`; the ADE's one asset queue makes that call and every `set` and `delete` call, each without an action and awaited (§1.2), and tabs observe with `max_in_flight: 1`, so a tab receives them in the order the queue makes them | `UiAssetsEvent { op: 'sync' \| 'set' \| 'delete', assets?, asset?, path? }` | ade:web/src/lib/ui-loader.tsx |
+| 122 | ade | `ade::workspace::changed` | `ade::workspace::on-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{}`; store writes call the function, throttled by `RING_GAP` | `WorkspaceChangedEvent {}` | ade:web/src/hooks/use-workspace-tabs.ts, onboarding:ui/src/use-tour.ts, onboarding:ui/src/spotlight.ts |
+| 123 | ade | `ade::compose::changed` | `ade::compose::on-changed` | none; filters `input.kind`, `input.file`, `input.namespace` | default; added: start the state watcher with the first observer; removed: close it with the last | `ComposeChangedEvent { kind, file, namespace, state_dir, path, captured_at }` | ade:web/src/pages/Workers/index.tsx |
 
 Rows: 105 from the worker map (§2.1, §2.2; rows 124 and 125 follow the
 worker order, their numbers follow the ADE rows), 14 harness (§2.3) and 6 ADE
@@ -632,7 +632,7 @@ asset is one observer:
 
 ```rust
 iii.observe(
-    Source::function("console::ui::asset").args(json!({ "kind": kind.as_str(), "path": path })),
+    Source::function("ade::ui::asset").args(json!({ "kind": kind.as_str(), "path": path })),
     content_function_id,   // `<worker>::ui-content`
 )
 ```
@@ -642,7 +642,7 @@ iii.observe(
   asset, then disposes the old handle.
 - The content function contract is unchanged: input
   `UiContentInput { path }`, output `UiContentResult { content, content_type }`.
-  Once an asset's observer is accepted, the ADE calls `console::ui::asset`
+  Once an asset's observer is accepted, the ADE calls `ade::ui::asset`
   with `{ path }` and metadata `{ for_observer: <observer id> }` (§1.2). The
   function's match hook gives a call that names an observer to that observer
   alone, and no other call reaches an observer. Its deliver hook calls the
@@ -652,7 +652,7 @@ iii.observe(
 - `register_configuration_identity(iii: &IIIClient, worker: &str, id: &'static str)`
   registers `<worker>::configuration-id`; consumers call it with `iii.call`.
 - Boot tests that asserted `registertrigger` frames for `console:*` assert
-  `observe` frames for `console::ui::asset` with `{ kind, path }` args.
+  `observe` frames for `ade::ui::asset` with `{ kind, path }` args.
 
 ### 4.3 crates/judge-provider, crates/provider-integration-testkit
 
@@ -958,9 +958,9 @@ creates the observer itself.
 - Stored bindings with a `trigger_type` are translated at boot through §2
   and §3; one that does not translate is retired with an owner notice. A
   stored `console:script`, `console:style` or `console:module` binding is
-  retired: an observer of `console::ui::asset` serves its asset's content
+  retired: an observer of `ade::ui::asset` serves its asset's content
   (rows 118-120), and a binding's target answers with no content. Its notice
-  points at `console::ui::on-assets-changed`.
+  points at `ade::ui::on-assets-changed`.
 - `harness::triggers::list` and `harness::triggers::unregister` become
   `harness::observers::list { session_id? } → { observers: ObserverRow[] }`
   and `harness::observers::dispose { observer_id, session_id } → { removed }`.
@@ -986,17 +986,17 @@ The harness observes, for its own plumbing: `engine::on-workers-changed`,
 `engine::on-functions-changed`, `directory::skills::on-change`,
 `cron::on-tick` (`{ expression }`, pending sweep), `session::on-deleted`,
 `configuration::on-updated`, `compose::on-operation-progress`
-(`input.terminal` `$eq` true), `console::ui::asset`, and
+(`input.terminal` `$eq` true), `ade::ui::asset`, and
 `harness::hook::on-post-turn` for agent self-validators.
 
 ### 5.2 ADE (decisions 29, 32)
 
-- **`console::ui::asset`** (rows 118-120). The ADE keeps one serialized queue
+- **`ade::ui::asset`** (rows 118-120). The ADE keeps one serialized queue
   for asset and subscriber events. `onObserverAdded` validates `{ kind, path }`
   (`path` at most 512 bytes) and returns; a task awaits `obs.accepted()` and
-  fetches the content with a call of `console::ui::asset` for that observer
+  fetches the content with a call of `ade::ui::asset` for that observer
   (§1.2),
-  `iii.call(CallRequest::new("console::ui::asset", json!({ "path": path })).metadata(json!({ "for_observer": obs.id() })))`,
+  `iii.call(CallRequest::new("ade::ui::asset", json!({ "path": path })).metadata(json!({ "for_observer": obs.id() })))`,
   retried once, and stores it keyed by `path` (last writer wins). The
   function's match hook gives a call only to the observer it is for, and its
   deliver hook calls the target through that observer with `{ path }` and
@@ -1004,8 +1004,8 @@ The harness observes, for its own plumbing: `engine::on-workers-changed`,
   worker reattached (decision 47) is fetched again. A failed fetch
   calls `obs.reject("UI_ASSET_FETCH_FAILED", ..)`; a superseded asset's
   observer gets `obs.reject("UI_ASSET_SUPERSEDED", ..)`. Each change calls
-  `console::ui::on-assets-changed` with `set` or `delete`.
-- **`console::ui::on-assets-changed`** (row 121): browser tabs observe it
+  `ade::ui::on-assets-changed` with `set` or `delete`.
+- **`ade::ui::on-assets-changed`** (row 121): browser tabs observe it
   with `max_in_flight: 1`; each new observer receives `{ op: 'sync', assets }`
   from a call of the function for it alone once it is accepted (§1.2),
   delivered like every call, so a tab receives every event of the function
@@ -1013,11 +1013,11 @@ The harness observes, for its own plumbing: `engine::on-workers-changed`,
   `delete` call without an action and awaits each, so they reach iii's
   delivery in queue order, and a tab receives them in that order (§1.2): an
   asset committed after a tab's sync reaches the tab after the sync, and the
-  sync never removes it. `console::ui-manifest` is unchanged.
-- **`console::workspace::on-changed`** (row 122) and
-  **`console::compose::on-changed`** (row 123).
-- **Consumers in the ADE:** `console::on-config-change` observes
-  `configuration::on-updated` (§3); `console::working-directory::stamp-session`
+  sync never removes it. `ade::ui-manifest` is unchanged.
+- **`ade::workspace::on-changed`** (row 122) and
+  **`ade::compose::on-changed`** (row 123).
+- **Consumers in the ADE:** `ade::on-config-change` observes
+  `configuration::on-updated` (§3); `ade::working-directory::stamp-session`
   and the context-tracking functions observe `harness::hook::on-pre-call` with
   args `{ functions, timeout_ms, on_error }` and
   `harness::hook::on-pre-generate`.
@@ -1043,8 +1043,8 @@ The harness observes, for its own plumbing: `engine::on-workers-changed`,
   call stored before 0.26 reads as `function-call` and no reader meets
   `function-trigger`.
 - **Proxy** (`ade/src/proxy.rs`): drops a browser `registerfunction` whose id
-  is one of the ADE's provider ids (`console::ui::*`,
-  `console::workspace::on-changed`, `console::compose::on-changed`) and strips
+  is one of the ADE's provider ids (`ade::ui::*`,
+  `ade::workspace::on-changed`, `ade::compose::on-changed`) and strips
   `private`, `args_format` and `observable` from browser registrations; it
   keeps the namespace and `metadata.internal` stamping.
 

@@ -2,7 +2,7 @@
  * The browser loader for injectable UI — Vite HMR semantics without Vite
  * (iii/tech-specs/2026-07-17-injectable-ui/hot-reload.md).
  *
- * Boot is one step: observe `console::ui::on-assets-changed` with this tab's
+ * Boot is one step: observe `ade::ui::on-assets-changed` with this tab's
  * own handler as the target. Once the observer is active the console calls
  * the function for it alone with a `sync` event (the observer IS the seed)
  * and follows with incremental `set`/`delete` events; every event arrives in
@@ -72,7 +72,7 @@ import type {
  *  The `iii::` prefix keeps rebuild-loop pushes span-suppressed. */
 export const UI_ASSETS_FN = 'iii::console::ui-assets'
 /** The console worker's feed of asset changes this tab observes. */
-export const ON_ASSETS_CHANGED_FN = 'console::ui::on-assets-changed'
+export const ON_ASSETS_CHANGED_FN = 'ade::ui::on-assets-changed'
 
 interface LoadedScript {
   kind: 'script'
@@ -691,13 +691,13 @@ export function startUiLoader(
   )
 
   // With injectable UI disabled, the console intentionally does not host
-  // `console::ui::on-assets-changed`, so the observer stays pending and no
+  // `ade::ui::on-assets-changed`, so the observer stays pending and no
   // initial sync will arrive. The manifest remains registered specifically
   // to expose that kill switch and lets built-in forms fall back instead of
   // waiting forever.
   void client
     .call<{ disabled?: boolean }>(
-      'console::ui-manifest',
+      'ade::ui-manifest',
       {},
       { timeoutMs: 5_000 },
     )

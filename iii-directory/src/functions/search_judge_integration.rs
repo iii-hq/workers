@@ -947,7 +947,7 @@ async fn judge_ranks_observers_through_the_observers_corpus() {
           "args": { "expression": "0 0 0 * * *" },
           "target": { "function_id": "harness::sweep-pending" },
           "worker": { "worker_id": "w-1", "worker_name": "harness" } },
-        { "id": "o-2", "function_id": "console::ui::asset",
+        { "id": "o-2", "function_id": "ade::ui::asset",
           "args": { "kind": "style", "path": "state/page.css" },
           "target": { "function_id": "state::ui-content" } },
     ] }));

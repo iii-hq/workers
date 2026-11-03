@@ -12,7 +12,7 @@
 
 /** A provider that turns a local CLI sign-in into models, no API key. */
 export interface SubscriptionProvider {
-  /** `console::onboarding::scan` tool id. */
+  /** `ade::onboarding::scan` tool id. */
   toolId: 'claude-code' | 'codex'
   /** Provider id the worker declares to llm-router. */
   providerId: string

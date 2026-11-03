@@ -1,13 +1,13 @@
 /**
  * The console page's surface on the bus: one content function serving both
- * assets, and one `console::ui::asset` observer per asset (args
+ * assets, and one `ade::ui::asset` observer per asset (args
  * `{ kind, path }`, target the content function). The console fetches each
  * asset by calling through its observer with `{ path }`.
  */
 
 import type { IIIClient } from 'iii-sdk';
 
-const ASSET_FN = 'console::ui::asset';
+const ASSET_FN = 'ade::ui::asset';
 
 export type UiAssets = { page_js: string; styles_css: string };
 

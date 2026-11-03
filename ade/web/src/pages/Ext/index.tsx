@@ -7,7 +7,7 @@
  * If the page a user is looking at disappears during a worker reload or
  * disconnect, its pane stays put and renders a lightweight waiting notice.
  * Assets typically return within a second of the tab's
- * `console::ui::on-assets-changed` sync;
+ * `ade::ui::on-assets-changed` sync;
  * keeping the route stable prevents that transient gap from opening Traces.
  */
 

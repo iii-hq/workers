@@ -110,12 +110,12 @@ const SIDE_LANE_DOC_BYTES: usize = 300;
 /// keeps their calls light next to the function lane's.
 const SIDE_LANE_SHORTLIST: usize = JUDGE_SHORTLIST / 2;
 /// Console tabs observe with ephemeral `iii::*` listeners as targets, and
-/// workers observe `console::ui::*` to publish their UI assets; neither is an
+/// workers observe `ade::ui::*` to publish their UI assets; neither is an
 /// observer an agent can reuse.
 /// ponytail: prefix heuristic; switch to an engine-side ephemeral flag if
 /// engine::observers::list ever carries one.
 const EPHEMERAL_OBSERVER_TARGET_PREFIX: &str = "iii::";
-const EPHEMERAL_OBSERVED_FUNCTION_PREFIX: &str = "console::ui::";
+const EPHEMERAL_OBSERVED_FUNCTION_PREFIX: &str = "ade::ui::";
 /// Registry list queries per search: each capability, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
@@ -2449,7 +2449,7 @@ mod tests {
         assert_eq!(candidate.worker_name.as_deref(), Some("harness"));
         assert_eq!(candidate.args["expression"], "0 0 0 * * *");
         for (function_id, target) in [
-            ("console::ui::asset", "state::ui-content"),
+            ("ade::ui::asset", "state::ui-content"),
             (
                 "observability::on-span",
                 "iii::console::trace_activity::console-1",
@@ -2463,7 +2463,7 @@ mod tests {
         assert!(observer_candidate(&json!({ "id": "o" })).is_none());
         let docs = observer_docs(&json!({ "observers": [
             cron,
-            { "id": "o", "function_id": "console::ui::asset",
+            { "id": "o", "function_id": "ade::ui::asset",
               "args": { "kind": "style", "path": "state/page.css" },
               "target": { "function_id": "state::ui-content" } },
             { "id": "o" },

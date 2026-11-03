@@ -12,7 +12,7 @@
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `computer::ui-content`, one
-//! `console::ui::asset` observer per asset, `III_COMPUTER_UI_WATCH` hot-reload watcher)
+//! `ade::ui::asset` observer per asset, `III_COMPUTER_UI_WATCH` hot-reload watcher)
 //! lives in the shared `iii-console-ui` crate; this module only names the
 //! assets and embeds their bytes.
 //!

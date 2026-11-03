@@ -2,7 +2,7 @@
  * Injectable console UI — the contract between the console SPA and
  * worker-shipped UI scripts (iii/tech-specs/2026-07-17-injectable-ui).
  *
- * A `script` asset (an observer of `console::ui::asset` with
+ * A `script` asset (an observer of `ade::ui::asset` with
  * `{ kind: 'script', path }`) is an ESM module whose default export is
  * `setup(host)`. Everything the script registers goes through `host` so the
  * loader can dispose exactly what the script contributed on hot reload,
@@ -721,7 +721,7 @@ export interface Host {
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
   /**
-   * Import a module asset (`console::ui::asset` of kind `module`) on demand, e.g.
+   * Import a module asset (`ade::ui::asset` of kind `module`) on demand, e.g.
    * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
    * console serves modules but never imports them at mount, so code only
    * one view needs stays out of every tab's first load. Resolves to the
@@ -887,7 +887,7 @@ export interface UiAssetRef {
 }
 
 /**
- * The events of `console::ui::on-assets-changed`, delivered to the tab's
+ * The events of `ade::ui::on-assets-changed`, delivered to the tab's
  * `iii::console::ui-assets` handler: `sync` once, in a call for the tab's
  * observer alone when it is accepted, then `set` and `delete` for every
  * change.

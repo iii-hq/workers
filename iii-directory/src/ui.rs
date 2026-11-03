@@ -12,7 +12,7 @@
 //!   rule scoped under `[data-iii-ui="iii-directory"]`.
 //!
 //! The registration machinery (content function `iii-directory::ui-content`,
-//! one `console::ui::asset` observer per asset, `III_III_DIRECTORY_UI_WATCH`
+//! one `ade::ui::asset` observer per asset, `III_III_DIRECTORY_UI_WATCH`
 //! hot-reload watcher) lives in the shared `iii-console-ui` crate
 //! (path-linked from `workers/crates/console-ui`); this module only names
 //! the assets and embeds their bytes.

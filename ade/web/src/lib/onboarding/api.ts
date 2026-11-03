@@ -102,7 +102,7 @@ export async function fetchOnboardingState(): Promise<OnboardingState | null> {
   const client = await getIiiClient()
   try {
     return await client.call<OnboardingState>(
-      'console::onboarding::get',
+      'ade::onboarding::get',
       {},
       { timeoutMs: 5_000 },
     )
@@ -118,7 +118,7 @@ export async function saveOnboardingState(
 ): Promise<void> {
   const client = await getIiiClient()
   await client.call(
-    'console::onboarding::set',
+    'ade::onboarding::set',
     summary === undefined ? { status } : { status, summary },
     { timeoutMs: 5_000 },
   )
@@ -127,7 +127,7 @@ export async function saveOnboardingState(
 export async function scanMachine(): Promise<ToolScan[]> {
   const client = await getIiiClient()
   const result = await client.call<{ tools?: ToolScan[] }>(
-    'console::onboarding::scan',
+    'ade::onboarding::scan',
     {},
     { timeoutMs: 15_000 },
   )

@@ -1,7 +1,7 @@
 /**
  * Entry for the voice worker's injected console UI — compiled by esbuild
  * (react and @iii-dev/console-ui external) into dist/page.js, served as a
- * `script` asset (a `console::ui::asset` observer); styles.css ships as its
+ * `script` asset (a `ade::ui::asset` observer); styles.css ships as its
  * own `style` asset. `setup(host)` creates one shared dictation controller and
  * registers the voice page, its palette commands, the mic (in the composer
  * toolbar when the console has that slot, otherwise as a chat-header chip),

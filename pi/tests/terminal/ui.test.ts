@@ -14,17 +14,17 @@ describe('console ui surface', () => {
     );
   });
 
-  it('observes console::ui::asset once per asset, args { kind, path }, target pi::ui-content', () => {
+  it('observes ade::ui::asset once per asset, args { kind, path }, target pi::ui-content', () => {
     const fake = fakeIii();
     registerUiSurface(fake.iii, 'pi', ASSETS);
     expect(fake.observed).toEqual([
       {
-        source: { function_id: 'console::ui::asset', args: { kind: 'script', path: 'pi/page.js' } },
+        source: { function_id: 'ade::ui::asset', args: { kind: 'script', path: 'pi/page.js' } },
         target: 'pi::ui-content',
       },
       {
         source: {
-          function_id: 'console::ui::asset',
+          function_id: 'ade::ui::asset',
           args: { kind: 'style', path: 'pi/styles.css' },
         },
         target: 'pi::ui-content',

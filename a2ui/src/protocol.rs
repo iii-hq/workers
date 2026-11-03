@@ -15,7 +15,7 @@ use crate::config::WorkerConfig;
 pub const PROTOCOL_VERSION: &str = "v0.9.1";
 pub const CATALOG_ID: &str = "urn:iii:a2ui:console:v0.1";
 /// The console page id the receipt's `page` names; an agent opens it with
-/// `console::workspace::open { screen: "ext:a2ui" }`.
+/// `ade::workspace::open { screen: "ext:a2ui" }`.
 pub const PAGE_ID: &str = "a2ui";
 
 const COMPONENT_TYPES: &[&str] = &[
@@ -835,7 +835,7 @@ const RESERVED_FUNCTIONS: &[&str] = &[
     "publish",
     "stream::on-join",
     "stream::on-leave",
-    "console::ui::asset",
+    "ade::ui::asset",
 ];
 
 /// How a validated binding is delivered.
@@ -1896,7 +1896,7 @@ mod tests {
             "publish",
             "stream::on-join",
             "stream::on-leave",
-            "console::ui::asset",
+            "ade::ui::asset",
             "HTTP::on-request",
             "observability::on-log",
             "observability::on-span",

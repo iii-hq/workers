@@ -119,7 +119,7 @@ def test_a_pending_observer_without_its_target_is_a_warning() -> None:
     )
     no_host = observer(
         "o-2",
-        function_id="console::ui::asset",
+        function_id="ade::ui::asset",
         state="pending",
         reason={"code": "OWNER_UNAVAILABLE", "message": "no worker hosts it"},
     )

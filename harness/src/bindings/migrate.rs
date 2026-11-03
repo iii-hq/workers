@@ -26,7 +26,7 @@ const ARGS_FUNCTIONS: [&str; 20] = [
     "queue::on-message",
     "database::on-row-changed",
     "harness::on-timer",
-    "console::ui::asset",
+    "ade::ui::asset",
     "shell::on-changed",
     "shell::on-git-changed",
     "shell::on-job-finished",
@@ -295,8 +295,8 @@ pub fn translate(trigger_type: &str, config: &Value, created_at: i64) -> Option<
             None,
             Some(worker_events(config)),
         ),
-        "console:assets" => source("console::ui::on-assets-changed", None, None),
-        // An observer of `console::ui::asset` is its asset's content source
+        "console:assets" => source("ade::ui::on-assets-changed", None, None),
+        // An observer of `ade::ui::asset` is its asset's content source
         // (contract rows 118-120): the ADE calls its target with `{ path }`
         // and stores the `content` of the answer. A binding's target is the
         // delivery hop, whose answer carries no content, so the record is
@@ -402,9 +402,9 @@ fn retirement_reason(trigger_type: Option<&str>) -> &'static str {
              harness::observe."
         }
         Some("console:script" | "console:style" | "console:module") => {
-            "an observer of console::ui::asset serves its asset's content to the console, \
+            "an observer of ade::ui::asset serves its asset's content to the console, \
              and a binding's target answers with no content. To be told when console UI \
-             assets change, observe console::ui::on-assets-changed through harness::observe."
+             assets change, observe ade::ui::on-assets-changed through harness::observe."
         }
         Some(other) if other.starts_with("harness::") => {
             "an agent observes no harness function except harness::on-timer. Watch the work \
@@ -707,7 +707,7 @@ mod tests {
         );
         assert_eq!(
             tr("console:assets", &json!({})),
-            Some(spec("console::ui::on-assets-changed", None, None))
+            Some(spec("ade::ui::on-assets-changed", None, None))
         );
         for asset in ["console:script", "console:style", "console:module"] {
             assert_eq!(
@@ -925,9 +925,9 @@ mod tests {
             assert!(watched.contains(path), "{watched}");
             let notice = retirement_notice(&binding, &watched, why);
             assert!(notice.contains("RETIRED"), "{notice}");
-            assert!(notice.contains("console::ui::asset"), "{notice}");
+            assert!(notice.contains("ade::ui::asset"), "{notice}");
             assert!(
-                notice.contains("console::ui::on-assets-changed"),
+                notice.contains("ade::ui::on-assets-changed"),
                 "{notice}"
             );
             assert!(!notice.contains("engine::functions::list"), "{notice}");
@@ -970,7 +970,7 @@ mod tests {
         )) else {
             panic!("a console asset without a path is retired too");
         };
-        assert!(why.contains("console::ui::on-assets-changed"), "{why}");
+        assert!(why.contains("ade::ui::on-assets-changed"), "{why}");
         let keyless = stored(Value::Null);
         assert!(matches!(upgrade(&keyless), Upgrade::Retire { .. }));
         assert!(matches!(

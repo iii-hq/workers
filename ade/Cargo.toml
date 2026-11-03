@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 iii-sdk = "=0.26.0-rc.4"
-# Worker-side injectable console UI (content function + one console::ui::asset
+# Worker-side injectable console UI (content function + one ade::ui::asset
 # observer per asset + hot-reload watcher) — the console dogfoods its own
 # protocol to ship the injectable-UI toggle form. Direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }

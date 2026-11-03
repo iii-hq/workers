@@ -19,7 +19,7 @@
 //! (see `ui/mermaid-entry.ts` / `ui/freeform-entry.ts`).
 //!
 //! The registration machinery (content function `canvas::ui-content`, one
-//! `console::ui::asset` observer per asset, the `III_CANVAS_UI_WATCH`
+//! `ade::ui::asset` observer per asset, the `III_CANVAS_UI_WATCH`
 //! hot-reload watcher) lives in the shared `iii-console-ui` crate; this module only names
 //! the assets and embeds their bytes.
 //!

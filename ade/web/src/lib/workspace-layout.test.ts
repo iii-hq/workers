@@ -19,17 +19,17 @@ beforeEach(() => {
 
 describe('workspace layout transport', () => {
   it('talks to the console worker store, never the configuration entry', () => {
-    expect(WORKSPACE_GET_FUNCTION_ID).toBe('console::workspace::get')
-    expect(WORKSPACE_SET_FUNCTION_ID).toBe('console::workspace::set')
+    expect(WORKSPACE_GET_FUNCTION_ID).toBe('ade::workspace::get')
+    expect(WORKSPACE_SET_FUNCTION_ID).toBe('ade::workspace::set')
   })
 
-  it('reads and replaces the whole document through console::workspace::*', async () => {
+  it('reads and replaces the whole document through ade::workspace::*', async () => {
     const stored = {
       tabs: [{ id: 'tab-home', columns: 2, screens: ['chat', 'traces'] }],
       activeTabId: 'tab-home',
     }
     call.mockImplementation(async (fn) => {
-      if (fn === 'console::workspace::get')
+      if (fn === 'ade::workspace::get')
         return { value: stored, path: '/proj/data/ade/workspace.json' }
       return { ok: true }
     })
@@ -38,9 +38,9 @@ describe('workspace layout transport', () => {
       { ...stored, activeTabId: 'tab-2' },
       { ...stored, revision: 4 },
     )
-    expect(call).toHaveBeenCalledWith('console::workspace::get', {})
+    expect(call).toHaveBeenCalledWith('ade::workspace::get', {})
     // The revision guarded is the one the change was computed from.
-    expect(call).toHaveBeenCalledWith('console::workspace::set', {
+    expect(call).toHaveBeenCalledWith('ade::workspace::set', {
       value: { ...stored, activeTabId: 'tab-2' },
       expected_revision: 4,
     })

@@ -32,7 +32,7 @@ use crate::server::{self, AppState, ServerControlCell};
 use crate::ui_assets::UiControl;
 use crate::workspace_store::{default_data_dir, WorkspaceStore};
 
-/// Live port snapshot used by `console::status` and the rebind path.
+/// Live port snapshot used by `ade::status` and the rebind path.
 pub type PortCell = Arc<RwLock<u16>>;
 
 /// Serializes fetch → validate → bind → swap across overlapping update events.
@@ -184,7 +184,7 @@ fn schema() -> Value {
             },
             "injectableUi": {
                 "type": "object",
-                "description": "Injectable worker UI controls (the assets workers ship as console::ui::asset observers of kind script, style or module).",
+                "description": "Injectable worker UI controls (the assets workers ship as ade::ui::asset observers of kind script, style or module).",
                 "properties": {
                     "disabledWorkers": {
                         "type": "array",
@@ -309,7 +309,7 @@ async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Re
 #[path = "../../crates/config-client/src/initialization.rs"]
 mod initialization;
 
-const CONFIG_CHANGE_FN_ID: &str = "console::on-config-change";
+const CONFIG_CHANGE_FN_ID: &str = "ade::on-config-change";
 /// The configuration worker's change event, observed for this entry.
 const ON_UPDATED_FN: &str = "configuration::on-updated";
 
@@ -694,7 +694,7 @@ mod tests {
         let description = s["properties"]["injectableUi"]["description"]
             .as_str()
             .unwrap();
-        assert!(description.contains("console::ui::asset"), "{description}");
+        assert!(description.contains("ade::ui::asset"), "{description}");
     }
 
     #[test]

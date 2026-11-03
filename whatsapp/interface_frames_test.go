@@ -103,8 +103,8 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		{Source: observedSource{FunctionID: "http::on-request", Args: map[string]any{"method": "GET", "path": "/webhooks/whatsapp-cloud/wa-boot", "public_webhook": true}}},
 		{Source: observedSource{FunctionID: "http::on-request", Args: map[string]any{"method": "POST", "path": "/webhooks/whatsapp-cloud/wa-boot", "public_webhook": true}}},
 		{Source: observedSource{FunctionID: "http::on-request", Args: map[string]any{"method": "POST", "path": "/webhooks/whatsapp-flows/wa-boot", "public_webhook": true}}},
-		{Source: observedSource{FunctionID: "console::ui::asset", Args: map[string]any{"kind": "script", "path": "whatsapp/page.js"}}},
-		{Source: observedSource{FunctionID: "console::ui::asset", Args: map[string]any{"kind": "style", "path": "whatsapp/styles.css"}}},
+		{Source: observedSource{FunctionID: "ade::ui::asset", Args: map[string]any{"kind": "script", "path": "whatsapp/page.js"}}},
+		{Source: observedSource{FunctionID: "ade::ui::asset", Args: map[string]any{"kind": "style", "path": "whatsapp/styles.css"}}},
 		{Source: observedSource{FunctionID: "quick-tunnel::on-changed", Filters: map[string]any{
 			"input.tunnel_id": map[string]any{"$eq": "webhooks"},
 		}, Deliver: "output"}},

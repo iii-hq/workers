@@ -1,6 +1,6 @@
 /**
  * The injected console page: the content function that serves its assets,
- * and one `console::ui::asset` observer per asset.
+ * and one `ade::ui::asset` observer per asset.
  *
  * Kept apart from `index.mjs` (which connects on import) so a test can drive
  * it with a stub `iii`.
@@ -56,14 +56,14 @@ export const registerUiContent = (iii, uiDir) =>
   )
 
 /**
- * One `console::ui::asset` observer per asset; the console fetches its
+ * One `ade::ui::asset` observer per asset; the console fetches its
  * content by calling through the observer with `{ path }`.
  *
  * Nothing else says when the page cannot load, so the handle's states are
  * logged: a refusal (`error`), the engine dropping the observer (`disposed`,
  * other than this worker's own dispose on hot reload), and an observer still
  * unanswered after `warnAfterMs` — no console connected, or one that does not
- * host `console::ui::asset`.
+ * host `ade::ui::asset`.
  */
 export const observeUiAsset = (
   iii,
@@ -71,7 +71,7 @@ export const observeUiAsset = (
   { worker = 'onboarding', warnAfterMs = READY_WARN_MS, log = console.error } = {},
 ) => {
   const handle = iii.observe(
-    { function_id: 'console::ui::asset', args: { kind: uiAssets[path].kind, path } },
+    { function_id: 'ade::ui::asset', args: { kind: uiAssets[path].kind, path } },
     UI_CONTENT,
   )
   handle.onStateChange((state, reason) => {
@@ -88,7 +88,7 @@ export const observeUiAsset = (
     if (!settled) {
       log(
         `[${worker}] ui asset ${path} is still not served after ${warnAfterMs} ms: ` +
-          'no console is connected, or it does not host console::ui::asset (it needs the 0.26 ADE)',
+          'no console is connected, or it does not host ade::ui::asset (it needs the 0.26 ADE)',
       )
     }
   }, warnAfterMs)
