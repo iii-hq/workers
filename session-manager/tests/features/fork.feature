@@ -6,7 +6,7 @@ Feature: session::fork — copy history up to an entry into a new session
   FRESH entry ids (parent chain preserved structurally); the new
   session's active leaf is the copy of entry_id. After the fork the two
   sessions are fully independent — mutating or deleting one never
-  affects the other. Fires session::created with forked_from set.
+  affects the other. Calls session::on-created with forked_from set.
 
   Background:
     Given a session created with:
@@ -65,16 +65,13 @@ Feature: session::fork — copy history up to an entry into a new session
 
   # Prevents: fork announcing itself without forked_from — dashboards
   # need it to draw the session tree.
-  Scenario: fork fires session::created carrying forked_from
-    Given a binding "b1" on "session::created" delivering to "obs::created" with config:
-      """
-      {}
-      """
+  Scenario: fork calls session::on-created carrying forked_from
+    Given an observer "b1" of "session::on-created" delivering to "obs::created"
     When I call "session::fork" with:
       """
       { "session_id": "s_001", "entry_id": "e_002" }
       """
-    Then function "obs::created" received 1 "session::created" delivery
+    Then function "obs::created" received 1 "session::on-created" delivery
     And delivery 0 to "obs::created" has "session_id" = "s_002"
     And delivery 0 to "obs::created" has "forked_from" = "s_001"
     And delivery 0 to "obs::created" has "status" = "idle"

@@ -1,7 +1,7 @@
 pub mod imap;
 pub mod smtp;
 
-use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
+use iii_sdk::{errors::Error, CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,7 +12,7 @@ pub async fn fetch_vault_credential(
     transport: &str,
 ) -> Result<Value, Error> {
     let cred = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "auth::get_token".to_string(),
             payload: json!({ "provider": format!("email::{account}") }),
             action: None,

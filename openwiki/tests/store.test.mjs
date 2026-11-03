@@ -10,7 +10,7 @@ function mockWorker() {
     return db.get(s);
   };
   return {
-    async trigger({ function_id, payload }) {
+    async call({ function_id, payload }) {
       const { scope, key, value } = payload || {};
       if (function_id === 'state::set') {
         scoped(scope).set(key, value);
@@ -104,10 +104,10 @@ test('listPages reads the side-index, never enumerates page bodies', async () =>
   const base = mockWorker();
   let pageListCalls = 0;
   const spy = {
-    async trigger(req) {
+    async call(req) {
       if (req.function_id === 'state::list' && String(req.payload?.scope || '').startsWith('openwiki:pages:'))
         pageListCalls++;
-      return base.trigger(req);
+      return base.call(req);
     },
   };
   store.setWorker(spy);

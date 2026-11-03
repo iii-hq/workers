@@ -82,7 +82,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("agent_trigger")
+                    .system_prompt_regex("agent_call")
                     .messages_exact([
                         Message::user(FIRST_MESSAGE),
                         Message::function_call(CALL_ID, &record, arguments.clone(), &model, 8, 4),
@@ -90,7 +90,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         Message::assistant_text(FIRST_TEXT, &model, 18, 2),
                         Message::user(SECOND_MESSAGE),
                     ])
-                    .tools_subset([Tool::named("agent_trigger")]),
+                    .tools_subset([Tool::named("agent_call")]),
             )
             .respond(Response::streamed_text(
                 SECOND_TEXT,

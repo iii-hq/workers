@@ -69,7 +69,7 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         .and_then(serde_json::Value::as_bool);
 
     // Executing an approved call can synchronously hit another hold, most
-    // notably the filesystem-access post-trigger hook. That follow-up replaces
+    // notably the filesystem-access post-call hook. That follow-up replaces
     // the original record under the same session/call key before harness
     // returns. Delete only when the key still contains the record we resolved;
     // otherwise preserve the replacement. A verification failure is also

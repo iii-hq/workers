@@ -15,6 +15,7 @@ pub struct PostgresPool {
     acquire_timeout: Duration,
     /// Keeps the entry's SSH tunnel (if any) alive as long as the pool.
     connector: Arc<Connector>,
+    id: super::PoolId,
 }
 
 pub type PgClient = deadpool_postgres::Object;
@@ -89,7 +90,12 @@ impl PostgresPool {
             db_name: Arc::from("(unset)"),
             acquire_timeout: Duration::from_millis(pool_cfg.acquire_timeout_ms),
             connector,
+            id: super::PoolId::next(),
         })
+    }
+
+    pub(crate) fn id(&self) -> super::PoolId {
+        self.id
     }
 
     pub fn connector(&self) -> &Arc<Connector> {

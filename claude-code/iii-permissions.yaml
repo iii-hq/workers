@@ -12,7 +12,7 @@ rules:
   # internal config-reload callback — bus-internal, never agent-callable
   - '!claude::on-config-change'
   # The console terminal is opened by a person: describe/activity/ui-content are
-  # plumbing, `activity` writes to the events stream on a session's behalf, and
+  # plumbing, `activity` emits frames on `claude::on-agent-event` for a session, and
   # `auth::status` carries the operator's account, organization, and billing
   # mode. The console reaches all of it as user-initiated calls, not this path.
   - '!claude::terminal::*'

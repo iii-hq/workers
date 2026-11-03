@@ -5,8 +5,7 @@ use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
-use sandbox_code_runner::engine::{Engine as _, IIIEngine};
-use sandbox_code_runner::error::{classify_probe_error, ProbeOutcome};
+use sandbox_code_runner::engine::{probe_sandbox, IIIEngine, SandboxProbe};
 use sandbox_code_runner::manager::RuntimeManager;
 use sandbox_code_runner::{config, configuration, events, functions, manifest};
 
@@ -81,18 +80,18 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(IIIEngine::new(iii.clone()));
     let manager = RuntimeManager::new(cfg.clone(), engine.clone(), &cli.url);
-    // Register the `sandbox-code-runner::event` trigger type first so the
-    // emitter is wired before any function can run.
-    let emitter = events::register_event_trigger(&iii);
-    manager.set_events(emitter.clone());
-    sandbox_code_runner::fleet_watch::spawn(engine.clone(), emitter);
+    // Register `sandbox-code-runner::on-event` first so the emitter is wired
+    // before any function can run. Its observers start and stop the fleet
+    // watcher.
+    let emitter = events::register_event_function(&iii, engine.clone());
+    manager.set_events(emitter);
     functions::register_all(&iii, &manager);
-    // Injected console UI: the function-trigger cards for the ops above.
+    // Injected console UI: the function-call cards for the ops above.
     sandbox_code_runner::ui::register(&iii);
 
     // The builtin `configuration` worker owns this worker's console-facing
     // knobs; `inject_guidance` defaults on and hot-applies on change by
-    // binding/unbinding the pre-generate guidance hook.
+    // observing the pre-generate hook point or disposing that observer.
     //
     // Best-effort on purpose: the entry carries one cosmetic prompt knob, so
     // unlike the full config integrations (docs/sops/configuration.md §4c) a
@@ -111,47 +110,29 @@ async fn main() -> Result<()> {
     };
     let guidance = configuration::GuidanceState::default();
     configuration::apply_guidance(&iii, &guidance, shared_cfg.inject_guidance);
-    match configuration::register_config_trigger(&iii, guidance) {
-        // One serialized re-fetch to close the boot gap: an update landing
-        // between the fetch above and the binding just registered fired into
-        // nothing, and would otherwise stay invisible until the NEXT change.
-        Ok(reload) => reload.run().await,
-        Err(e) => {
-            tracing::warn!(error = %e, "registering configuration change trigger failed; the inject_guidance knob is frozen until restart");
-        }
-    }
+    // One serialized re-fetch to close the boot gap: an update landing
+    // between the fetch above and the observer becoming active reaches no
+    // one, and would otherwise stay invisible until the NEXT change.
+    configuration::observe_config_changes(&iii, guidance)
+        .run()
+        .await;
 
-    // Startup probe: is the iii-sandbox daemon serving? Fail OPEN — the
+    // Startup probe: is a sandbox adapter connected? Fail OPEN — the
     // operator may add it later, and every call meanwhile errors with the
-    // daemon's own message — but say it loudly once, at boot, instead of
+    // router's own message — but say it loudly once, at boot, instead of
     // letting the first caller discover it cryptically.
-    {
-        let probe = engine
-            .call(
-                "engine::functions::info".to_string(),
-                serde_json::json!({ "function_id": "sandbox::create" }),
-                5_000,
-            )
-            .await;
-        match probe {
-            Ok(_) => tracing::info!("iii-sandbox detected: sandbox::create is registered"),
-            Err(raw) => {
-                // Same disambiguation as the register-time probe (see
-                // `classify_probe_error`'s doc): a "not found" naming
-                // `engine::functions::info` itself means THIS engine can't
-                // dispatch the probe, not that `sandbox::create` is absent.
-                // Only mis-words a log line here (this path always fails
-                // open — sandbox-code-runner keeps serving either way), but
-                // should still say the honest thing.
-                if classify_probe_error(&raw, "sandbox::create") == ProbeOutcome::Free {
-                    tracing::warn!(
-                        "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
-                         call will fail until an operator runs `iii trigger compose::add worker=iii-sandbox`"
-                    );
-                } else {
-                    tracing::warn!(error = %raw, "could not verify iii-sandbox presence");
-                }
-            }
+    match probe_sandbox(engine.as_ref()).await {
+        SandboxProbe::Ready => tracing::info!("sandbox adapter detected"),
+        SandboxProbe::Missing => tracing::warn!(
+            "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
+             call will fail until an operator runs `iii call compose::add worker=iii-sandbox`"
+        ),
+        SandboxProbe::Incompatible(reason) => tracing::warn!(
+            "{reason}: every sandbox-code-runner call will fail with S302 until a \
+             compatible sandbox adapter release is installed"
+        ),
+        SandboxProbe::Unverified(raw) => {
+            tracing::warn!(error = %raw, "could not verify iii-sandbox presence");
         }
     }
 

@@ -5,7 +5,6 @@ import { mergeWorkers } from './merge-workers'
 function snapshot(partial: Partial<RawWorkersSnapshot>): RawWorkersSnapshot {
   return {
     engineWorkers: [],
-    supervisorWorkers: [],
     infoByName: new Map(),
     compose: null,
     ...partial,
@@ -13,7 +12,7 @@ function snapshot(partial: Partial<RawWorkersSnapshot>): RawWorkersSnapshot {
 }
 
 describe('mergeWorkers', () => {
-  it('classifies connected workers without a worker::list entry as standalone', () => {
+  it('classifies connected workers outside compose as standalone', () => {
     const rows = mergeWorkers(
       snapshot({
         engineWorkers: [
@@ -46,8 +45,6 @@ describe('mergeWorkers', () => {
 
     expect(rows).toHaveLength(1)
     expect(rows[0]?.managementKind).toBe('standalone')
-    expect(rows[0]?.stopEnabled).toBe(false)
-    expect(rows[0]?.stopDisabledReason).toContain('standalone')
     expect(rows[0]?.pid).toBe(100)
   })
 
@@ -68,88 +65,6 @@ describe('mergeWorkers', () => {
     )
 
     expect(rows[0]?.status).toBe('connected')
-  })
-
-  it('classifies supervisor-managed workers with stop enabled when running', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        engineWorkers: [
-          {
-            id: 'w-2',
-            name: 'iii-directory',
-            runtime: 'rust',
-            status: 'connected',
-            function_count: 5,
-            connected_at_ms: 0,
-            active_invocations: 0,
-            ip_address: '127.0.0.1',
-          },
-        ],
-        supervisorWorkers: [
-          {
-            name: 'iii-directory',
-            running: true,
-            pid: 200,
-            version: '0.1.0',
-          },
-        ],
-        infoByName: new Map([
-          [
-            'iii-directory',
-            {
-              id: 'w-2',
-              name: 'iii-directory',
-              status: 'connected',
-              function_count: 5,
-              connected_at_ms: 0,
-              active_invocations: 0,
-              internal: false,
-              pid: 200,
-            },
-          ],
-        ]),
-      }),
-    )
-
-    expect(rows[0]?.managementKind).toBe('supervisor')
-    expect(rows[0]?.stopEnabled).toBe(true)
-  })
-
-  it('classifies standalone workers without stop', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        engineWorkers: [
-          {
-            id: 'w-3',
-            name: 'todo-app',
-            runtime: 'node',
-            status: 'connected',
-            function_count: 2,
-            connected_at_ms: 0,
-            active_invocations: 0,
-          },
-        ],
-        infoByName: new Map([
-          [
-            'todo-app',
-            {
-              id: 'w-3',
-              name: 'todo-app',
-              status: 'connected',
-              function_count: 2,
-              connected_at_ms: 0,
-              active_invocations: 0,
-              internal: false,
-              pid: 300,
-            },
-          ],
-        ]),
-      }),
-    )
-
-    expect(rows[0]?.managementKind).toBe('standalone')
-    expect(rows[0]?.stopEnabled).toBe(false)
-    expect(rows[0]?.stopDisabledReason).toContain('standalone')
   })
 
   it('classifies internal engine workers', () => {
@@ -185,46 +100,6 @@ describe('mergeWorkers', () => {
     )
 
     expect(rows[0]?.managementKind).toBe('internal')
-    expect(rows[0]?.stopEnabled).toBe(false)
-  })
-
-  it('adds synthetic rows for supervisor-only daemon builtins', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        supervisorWorkers: [
-          {
-            name: 'iii-http',
-            running: true,
-            pid: 400,
-            version: '0.1.0',
-          },
-        ],
-      }),
-    )
-
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.name).toBe('iii-http')
-    expect(rows[0]?.managementKind).toBe('supervisor')
-    expect(rows[0]?.runtime).toBeNull()
-  })
-
-  it('keeps supervisor-only rows supervisor-managed without an engine connection', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        supervisorWorkers: [
-          {
-            name: 'pdfkit',
-            running: false,
-          },
-        ],
-      }),
-    )
-
-    expect(rows[0]?.name).toBe('pdfkit')
-    expect(rows[0]?.managementKind).toBe('supervisor')
-    expect(rows[0]?.status).toBe('stopped')
-    expect(rows[0]?.stopEnabled).toBe(false)
-    expect(rows[0]?.stopDisabledReason).toBe('worker is not running')
   })
 
   it('carries optional tag from engine info or list row', () => {

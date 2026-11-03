@@ -101,7 +101,7 @@ export function TestMessage({ host, transport, sessionId, ready, onDirty, onOpen
       if (polling || document.hidden) return
       polling = true
       try {
-        const page = await host.iii.trigger<MessagePage>(`${prefix}::list`, { ...context, chat_id: run.chat_id, limit: 50 })
+        const page = await host.iii.call<MessagePage>(`${prefix}::list`, { ...context, chat_id: run.chat_id, limit: 50 })
         if (active) setRecord((previous) => {
           const reply = testEvidence(run, previous.messages).incoming
           const proof = previous.messages.filter((message) => message.from_me && message.message_id === run.message_id)
@@ -134,11 +134,11 @@ export function TestMessage({ host, transport, sessionId, ready, onDirty, onOpen
     setSending(true); setRecord((previous) => ({ ...previous, error: null, recipientError: null, messageError: null, recipientTouched: true, messageTouched: true, attempt: 'none', attemptTarget: chatId, run: null, messages: [], pollError: null })); setCheckingResults(false)
     let dispatched = false
     try {
-      const baseline = await host.iii.trigger<MessagePage>(`${prefix}::list`, { ...context, chat_id: chatId, limit: 50 })
+      const baseline = await host.iii.call<MessagePage>(`${prefix}::list`, { ...context, chat_id: chatId, limit: 50 })
       if (!current()) return
       const startedAt = Date.now()
       dispatched = true
-      const result = await host.iii.trigger<SentMessage>(`${prefix}::send_text`, { ...context, chat_id: chatId, text: sentText }, { timeoutMs: cloud ? 120000 : 610000 })
+      const result = await host.iii.call<SentMessage>(`${prefix}::send_text`, { ...context, chat_id: chatId, text: sentText }, { timeoutMs: cloud ? 120000 : 610000 })
       if (!current()) return
       setRecord((previous) => ({ ...previous, run: { ...result, sentText, startedAt, previousIncoming: new Set(baseline.messages.filter((message) => !message.from_me).map((message) => message.message_id)) }, lastRecipient: recipient.trim() }))
       clearDraft()

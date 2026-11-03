@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::TriggerAction;
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::CallAction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -204,10 +204,10 @@ pub(crate) async fn ensure_live(deps: &Deps, session_id: &str) -> Result<(), Har
 
 async fn enqueue(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     deps.iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: RUN_ID.into(),
             payload: json!({"operation_id": id}),
-            action: Some(TriggerAction::Enqueue {
+            action: Some(CallAction::Enqueue {
                 queue: QUEUE.into(),
             }),
             timeout_ms: Some(deps.cfg().await.session_timeout_ms),
@@ -580,7 +580,7 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
                 if record
                     .calls
                     .values()
-                    .any(|c| c.state == CallState::Triggered)
+                    .any(|c| c.state == CallState::Dispatched)
                 {
                     return Err(failure(format!(
                         "{id} has a tool with unknown completion; data retained"
@@ -640,7 +640,7 @@ async fn erase(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
         cleanup(deps, &id).await?;
         let response = deps
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "session::delete".into(),
                 payload: json!({"session_id": id}),
                 action: None,
@@ -673,7 +673,7 @@ async fn erase(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
 }
 
 async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
-    deps.hooks.unregister_session(id);
+    deps.hooks.dispose_session(id).await;
     let timeout = deps.cfg().await.session_timeout_ms;
     let store = deps.bindings().await;
     for binding in
@@ -682,22 +682,13 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
             .into_iter()
             .filter(|binding| binding.owner.session_id == id)
     {
-        if let Some(trigger) = &binding.trigger_id {
-            if trigger.starts_with(super::subscribe::SDK_TRIGGER_ID_PREFIX) {
-                if !super::subscribe::unregister_engine_trigger(deps, trigger).await {
-                    return Err(failure(format!("failed to unregister {trigger}")));
-                }
-            } else {
-                deps.iii
-                    .trigger(TriggerRequest {
-                        function_id: "engine::unregister_trigger".into(),
-                        payload: json!({"id":trigger}),
-                        action: None,
-                        timeout_ms: Some(timeout),
-                    })
-                    .await
-                    .map_err(|e| HarnessError::Dependency(format!("unregister {trigger}: {e}")))?;
-            }
+        if binding.observer_id.is_some()
+            && !crate::bindings::dispose_observer(deps, &binding.id).await
+        {
+            return Err(failure(format!(
+                "failed to dispose observer {}",
+                binding.id
+            )));
         }
         store.delete(&binding.id).await?;
     }
@@ -725,7 +716,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     // read the inbox afterwards so a failed purge cannot be reported completed.
     let purge = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "approval::on-session-deleted".into(),
             payload: json!({"session_id": id}),
             action: None,
@@ -743,7 +734,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
         Ok(_) => {
             let pending = deps
                 .iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "approval::list-pending".into(),
                     payload: json!({"session_id": id, "limit": 1}),
                     action: None,
@@ -760,7 +751,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
             }
             let settings = deps
                 .iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "approval::get-settings".into(),
                     payload: json!({"session_id":id}),
                     action: None,

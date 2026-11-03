@@ -1,9 +1,9 @@
 {
-  "description": "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.",
+  "description": "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.",
   "function_id": "provider::openrouter::on_router_ready",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Event delivered to a provider's `provider::<id>::on_router_ready` (the `router::ready` trigger payload, currently `{}`). Unknown fields are ignored.",
+    "description": "The router's ready event: what `router::on-ready` returns, and what a provider's `provider::<id>::on_router_ready` receives. Currently `{}`; unknown fields are ignored.",
     "title": "RouterReadyEvent",
     "type": "object"
   },

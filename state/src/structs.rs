@@ -110,8 +110,7 @@ pub enum StateEventType {
     Deleted,
 }
 
-/// One committed state change: the payload of a `state` trigger handler and
-/// the input of `state::on-changed`.
+/// One committed state change: the input and output of `state::on-changed`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateEventData {
     /// Always `state`.

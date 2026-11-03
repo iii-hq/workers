@@ -43,7 +43,7 @@ const LIST_PAGE_LIMIT = 200
 
 export async function listSessions(): Promise<SessionMeta[]> {
   const client = await getIiiClient()
-  const resp = await client.trigger<{
+  const resp = await client.call<{
     sessions?: SessionMeta[]
     next_cursor?: string | null
   }>(
@@ -58,7 +58,7 @@ export async function getSession(
   sessionId: string,
 ): Promise<SessionMeta | null> {
   const client = await getIiiClient()
-  const resp = await client.trigger<{ meta: SessionMeta } | null>(
+  const resp = await client.call<{ meta: SessionMeta } | null>(
     'session::get',
     { session_id: sessionId },
     { timeoutMs: 10_000 },
@@ -78,7 +78,7 @@ export async function ensureSession(input: {
   kind?: SessionKind
 }): Promise<{ meta: SessionMeta; created: boolean }> {
   const client = await getIiiClient()
-  return client.trigger('session::ensure', input)
+  return client.call('session::ensure', input)
 }
 
 /**
@@ -92,7 +92,7 @@ export async function setSessionMeta(input: {
   metadata?: Record<string, unknown>
 }): Promise<{ meta: SessionMeta }> {
   const client = await getIiiClient()
-  return client.trigger('session::set-meta', input)
+  return client.call('session::set-meta', input)
 }
 
 /** `session::set-draft`'s answer: what is parked after the write. */
@@ -117,7 +117,7 @@ export async function setSessionDraft(
   attachmentIds?: string[],
 ): Promise<SetDraftResponse> {
   const client = await getIiiClient()
-  return client.trigger<SetDraftResponse>('session::set-draft', {
+  return client.call<SetDraftResponse>('session::set-draft', {
     session_id: sessionId,
     ...(draft ? { draft } : {}),
     ...(attachmentIds !== undefined ? { attachment_ids: attachmentIds } : {}),
@@ -128,7 +128,7 @@ export async function deleteSession(
   sessionId: string,
 ): Promise<{ deleted: boolean }> {
   const client = await getIiiClient()
-  return client.trigger('session::delete', { session_id: sessionId })
+  return client.call('session::delete', { session_id: sessionId })
 }
 
 export async function setSessionStatus(
@@ -137,7 +137,7 @@ export async function setSessionStatus(
   reason?: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger('session::set-status', {
+  await client.call('session::set-status', {
     session_id: sessionId,
     status,
     ...(reason ? { reason } : {}),
@@ -157,7 +157,7 @@ export async function appendCustomEntry(input: {
   entry_id?: string
 }): Promise<{ entry_id: string; parent_id: string | null; timestamp: number }> {
   const client = await getIiiClient()
-  return client.trigger<{
+  return client.call<{
     entry_id: string
     parent_id: string | null
     timestamp: number
@@ -182,7 +182,7 @@ export async function putAttachment(input: {
   data: string
 }): Promise<PutAttachmentResponse> {
   const client = await getIiiClient()
-  return client.trigger('session::put-attachment', input)
+  return client.call('session::put-attachment', input)
 }
 
 /**
@@ -196,7 +196,7 @@ export async function getAttachment(input: {
   include_data?: boolean
 }): Promise<GetAttachmentResponse | null> {
   const client = await getIiiClient()
-  const resp = await client.trigger<GetAttachmentResponse | null>(
+  const resp = await client.call<GetAttachmentResponse | null>(
     'session::get-attachment',
     input,
   )
@@ -214,7 +214,7 @@ export async function deleteAttachment(input: {
   attachment_id: string
 }): Promise<{ deleted: boolean }> {
   const client = await getIiiClient()
-  return client.trigger('session::delete-attachment', input)
+  return client.call('session::delete-attachment', input)
 }
 
 /**
@@ -240,7 +240,7 @@ export async function fetchTranscript(
   const items: TranscriptItem[] = []
   let cursor: string | undefined
   for (;;) {
-    const resp = await client.trigger<{
+    const resp = await client.call<{
       messages?: TranscriptItem[]
       next_cursor?: string | null
     }>(
@@ -305,7 +305,7 @@ export async function fetchTranscriptTail(
   },
 ): Promise<TranscriptTailPage> {
   const client = await getIiiClient()
-  const resp = await client.trigger<{
+  const resp = await client.call<{
     messages?: TranscriptItem[]
     has_more?: boolean
     oldest_entry_id?: string | null
@@ -359,7 +359,7 @@ export async function fetchTranscriptRange(
       : { from_entry_id: selector.fromEntryId, to_entry_id: selector.toEntryId }
   let cursor: string | undefined
   for (;;) {
-    const resp = await client.trigger<{
+    const resp = await client.call<{
       messages?: TranscriptItem[]
       next_cursor?: string | null
     }>(

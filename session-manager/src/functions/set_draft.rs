@@ -4,7 +4,7 @@
 //!
 //! Deliberately event-silent and `updated_at`-neutral: drafts are written at
 //! keystroke cadence, and a save must neither re-order `session::list` nor
-//! spam `session::meta-updated` subscribers. The draft reads back on the
+//! spam `session::on-meta-updated` observers. The draft reads back on the
 //! `SessionMeta` returned by `session::get` / `session::list` (`draft`,
 //! `draft_attachments`); it is never touched by `session::set-meta`.
 

@@ -51,7 +51,7 @@ name = "convert"
 path = "examples/convert.rs"
 
 [dependencies.calamine]
-version = "0.37.0"
+version = "0.38.0"
 features = ["dates"]
 
 [dependencies.cfb]

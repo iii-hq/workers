@@ -4,16 +4,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::boot::ConfigCell;
 use crate::config::QueueConfig;
 use crate::runtime::FunctionQueueRuntime;
-use crate::trigger::QueueTriggerHandler;
+use crate::subscribers::Subscribers;
 #[cfg(test)]
-use crate::{adapter::SwappableAdapter, boot, trigger::Invoker};
+use crate::{adapter::SwappableAdapter, boot, subscribers::Invoker};
 
 pub const DEFAULT_CONFIG_ID: &str = "queue";
 
@@ -35,6 +34,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 pub const CONFIG_FN_ID: &str = "queue::on-config-change";
+/// The configuration worker's change event source.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 const CONFIG_BUS_TIMEOUT_MS: u64 = 10_000;
@@ -62,7 +63,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&QueueConfig>) -> Res
         .normalized();
     payload["initial_value"] = seed.to_json();
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+        call_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
     })
     .await
 }
@@ -86,7 +87,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<QueueConfig, String> {
 pub async fn persist_config(iii: &IIIClient, config: &QueueConfig) -> Result<(), String> {
     config.validate()?;
     let payload = json!({ "id": config_id(), "value": config.to_json() });
-    let result = trigger_configuration_with_retry(
+    let result = call_configuration_with_retry(
         iii,
         "configuration::set",
         payload.clone(),
@@ -111,7 +112,7 @@ pub async fn persist_config(iii: &IIIClient, config: &QueueConfig) -> Result<(),
                 .map_err(|register_error| {
                     format!("{error}; configuration schema recovery failed: {register_error}")
                 })?;
-            trigger_configuration_with_retry(
+            call_configuration_with_retry(
                 iii,
                 "configuration::set",
                 payload,
@@ -128,18 +129,23 @@ fn schema_unavailable(error: &str) -> bool {
     error.contains("SCHEMA_UNAVAILABLE")
 }
 
-pub fn register_config_trigger(
+/// Register `queue::on-config-change` and observe `configuration::on-updated`
+/// with it, filtered to the `configuration:updated` events of this worker's
+/// entry. The handler ignores the event and re-fetches the authoritative
+/// value. The observer stays `pending` until the configuration worker hosts
+/// the function; it lives as long as the worker's connection.
+pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     runtime: FunctionQueueRuntime,
-    trigger_handler: QueueTriggerHandler,
-) -> Result<(), Error> {
+    subscribers: Subscribers,
+) -> ObserverHandle {
     iii.register_function(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
             let runtime = runtime.clone();
-            let trigger_handler = trigger_handler.clone();
+            let subscribers = subscribers.clone();
             async move {
-                on_config_change(runtime, trigger_handler).await;
+                on_config_change(runtime, subscribers).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -147,22 +153,24 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    // Deprecated in iii 0.25 (`configuration::on-updated`), still served by
-    // 0.24 and 0.25 engines; kept until this worker drops 0.24 support.
-    #[allow(deprecated)]
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(config_update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
 }
 
-async fn on_config_change(runtime: FunctionQueueRuntime, trigger_handler: QueueTriggerHandler) {
-    if let Err(err) = runtime.refresh_config(&trigger_handler).await {
+/// Selects the `configuration:updated` events of one entry.
+fn config_update_filters(config_id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": config_id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
+}
+
+async fn on_config_change(runtime: FunctionQueueRuntime, subscribers: Subscribers) {
+    if let Err(err) = runtime.refresh_config(&subscribers).await {
         tracing::error!(error = %err, "queue config-change: apply failed; keeping previous live configuration");
     }
 }
@@ -185,7 +193,7 @@ fn effective_adapter(config: &QueueConfig) -> (String, Value) {
 #[cfg(test)]
 async fn swap_adapter(
     adapter: &Arc<SwappableAdapter>,
-    trigger_handler: &QueueTriggerHandler,
+    subscribers: &Subscribers,
     invoker: Arc<dyn Invoker>,
     next: &QueueConfig,
 ) -> anyhow::Result<()> {
@@ -195,7 +203,7 @@ async fn swap_adapter(
         .replace(new_adapter, boot::adapter_identity_name(next))
         .await;
     old_adapter.shutdown().await;
-    trigger_handler.resubscribe_all().await;
+    subscribers.resubscribe_all().await;
     Ok(())
 }
 
@@ -229,7 +237,7 @@ fn is_not_found(error: &str) -> bool {
 
 /// Read the assigned entry without treating unrelated failures as permission to seed.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(
+    match call_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id() }),
@@ -243,7 +251,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     }
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -252,8 +260,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -335,7 +343,7 @@ mod tests {
     use crate::adapter::{QueueAdapter, TopicInfo};
     use crate::config::AdapterEntry;
     use crate::store::TopicStats;
-    use crate::trigger::{RegisteredSubscriber, SubscriberSpec, SubscriberTarget};
+    use crate::subscribers::{RegisteredSubscriber, SubscriberSpec};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -358,18 +366,17 @@ mod tests {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn subscribe_target(
+        async fn subscribe(
             &self,
             _topic: &str,
             _id: &str,
-            _target: crate::trigger::SubscriberTarget,
-            _condition_function_id: Option<String>,
+            _subscriber: crate::subscribers::Subscriber,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
         ) {
             self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+        async fn unsubscribe(&self, _topic: &str, _id: &str, _retain: Duration) {}
 
         async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
             Ok(0)
@@ -426,16 +433,14 @@ mod tests {
         let mock = Arc::new(MockAdapter::default());
         let dyn_adapter: Arc<dyn QueueAdapter> = mock.clone();
         let adapter = Arc::new(SwappableAdapter::new(dyn_adapter, "mock"));
-        let trigger_handler = QueueTriggerHandler::new(adapter.clone());
-        trigger_handler
-            .register_subscriber(RegisteredSubscriber {
-                trigger_id: "t1".to_string(),
-                target: SubscriberTarget::function("backend", None, None),
+        let subscribers = Subscribers::new(adapter.clone());
+        subscribers
+            .register(RegisteredSubscriber {
+                id: "obs-1".to_string(),
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
                     backoff_ms: None,
-                    condition_function_id: None,
                     queue_config: None,
                     group: None,
                 },
@@ -452,7 +457,7 @@ mod tests {
             ..QueueConfig::default()
         };
 
-        let err = swap_adapter(&adapter, &trigger_handler, noop_invoker(), &bad_config)
+        let err = swap_adapter(&adapter, &subscribers, noop_invoker(), &bad_config)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not implemented"));
@@ -470,16 +475,14 @@ mod tests {
         let old_mock = Arc::new(MockAdapter::default());
         let old_dyn: Arc<dyn QueueAdapter> = old_mock.clone();
         let adapter = Arc::new(SwappableAdapter::new(old_dyn, "mock"));
-        let trigger_handler = QueueTriggerHandler::new(adapter.clone());
-        trigger_handler
-            .register_subscriber(RegisteredSubscriber {
-                trigger_id: "t1".to_string(),
-                target: SubscriberTarget::function("backend", None, None),
+        let subscribers = Subscribers::new(adapter.clone());
+        subscribers
+            .register(RegisteredSubscriber {
+                id: "obs-1".to_string(),
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
                     backoff_ms: None,
-                    condition_function_id: None,
                     queue_config: None,
                     group: None,
                 },
@@ -498,7 +501,7 @@ mod tests {
             ..QueueConfig::default()
         };
 
-        swap_adapter(&adapter, &trigger_handler, noop_invoker(), &next)
+        swap_adapter(&adapter, &subscribers, noop_invoker(), &next)
             .await
             .unwrap();
 
@@ -511,9 +514,20 @@ mod tests {
         // The registration is still tracked and was re-subscribed onto the
         // new adapter (a builtin adapter has no externally observable
         // subscribe counter, so this is asserted end-to-end in
-        // `trigger::tests::resubscribe_all_attaches_every_registration_to_the_new_adapter`
+        // `subscribers::tests::resubscribe_all_attaches_every_registration_to_the_new_adapter`
         // -- here we only assert the registration survived the swap).
-        assert_eq!(trigger_handler.registrations().await.len(), 1);
+        assert_eq!(subscribers.registrations().await.len(), 1);
+    }
+
+    #[test]
+    fn config_observer_selects_the_entrys_updates() {
+        assert_eq!(
+            config_update_filters("queue"),
+            json!({
+                "input.id": { "$eq": "queue" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
     }
 
     #[test]

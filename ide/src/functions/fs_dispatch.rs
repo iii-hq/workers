@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::fs::sandbox::{IiiTriggerFwd, SandboxFsBackend};
+use crate::fs::sandbox::{IiiCallFwd, SandboxFsBackend};
 use crate::fs::{FsBackend, Target};
 
 pub fn pick_backend(
@@ -21,7 +21,7 @@ pub fn pick_backend(
 
 fn sandbox_for(id: Uuid, iii: iii_sdk::IIIClient, enabled: bool) -> Arc<dyn FsBackend> {
     Arc::new(SandboxFsBackend::new(
-        Arc::new(IiiTriggerFwd::new(iii)),
+        Arc::new(IiiCallFwd::new(iii)),
         enabled,
         id,
     ))

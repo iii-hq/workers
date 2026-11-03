@@ -1,0 +1,129 @@
+{
+  "function_id": "session::on-created",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "What an event function is called with and returns, so what its observers observe: the event's fields plus the session's metadata.",
+    "properties": {
+      "created_at": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "description": {
+        "type": "string"
+      },
+      "forked_from": {
+        "description": "Source session id when created by fork.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation (for `session::on-deleted`, as of just before deletion); omitted when the session has none. Observers filter on `input.session_metadata.<key>`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "status": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SessionStatus"
+          }
+        ],
+        "description": "`\"idle\"` on create."
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "created_at",
+      "description",
+      "session_id",
+      "status",
+      "title"
+    ],
+    "title": "WithSessionMetadata_for_SessionCreatedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "What an event function is called with and returns, so what its observers observe: the event's fields plus the session's metadata.",
+    "properties": {
+      "created_at": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "description": {
+        "type": "string"
+      },
+      "forked_from": {
+        "description": "Source session id when created by fork.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation (for `session::on-deleted`, as of just before deletion); omitted when the session has none. Observers filter on `input.session_metadata.<key>`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "status": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SessionStatus"
+          }
+        ],
+        "description": "`\"idle\"` on create."
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "created_at",
+      "description",
+      "session_id",
+      "status",
+      "title"
+    ],
+    "title": "WithSessionMetadata_for_SessionCreatedEvent",
+    "type": "object"
+  }
+}

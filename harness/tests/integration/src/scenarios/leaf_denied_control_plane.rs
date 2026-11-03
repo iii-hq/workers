@@ -2,18 +2,18 @@
 //! is drawn by SHAPE, not by function id: the child may arm a wake for its own
 //! session, and may neither bind a mechanical call nor spawn.
 //!
-//! The parent's own policy ALLOWS `engine::register_trigger` and
-//! `harness::spawn` (it spawns the child with the first), and the child
+//! The parent's own policy ALLOWS `harness::observe` and
+//! `harness::spawn` (it spawns the child with the second), and the child
 //! inherits that allow. `harness::spawn` is taken back by the CONTROL_PLANE
 //! deny globs the spawn appends because `options.orchestrator` was not passed,
 //! and is missing from the child's native toolset for the same reason.
 //!
-//! Registration is NOT taken back. Walling it off left a leaf with no way to
+//! Observing is NOT taken back. Walling it off left a leaf with no way to
 //! wait for anything — not its own background job, not its own compose
 //! operation — so it polled or ran `shell::exec sleep` instead (MOT-4766). The
-//! control-plane half of it is refused where it actually lives: a binding that
+//! control-plane half of it is refused where it actually lives: an observer that
 //! mechanically calls another function installs durable machinery the leaf does
-//! not own and cannot unregister.
+//! not own and cannot remove.
 //!
 //! So this scenario pins three outcomes in a row from one child: a self-wake
 //! SUCCEEDS, a mechanical-call binding is refused, a spawn is refused — and the
@@ -31,7 +31,7 @@ use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 use crate::types::script::RouterDispatchV1;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 const SPAWN: &str = "harness::spawn";
 
 pub(super) fn scenario() -> ScenarioFixture {
@@ -51,7 +51,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     // No `orchestrator`, no `options.functions` — the child inherits the
     // parent's FULL allow set and the leaf wall's deny globs on top.
     let spawn_args = json!({
-        "task": "Probe your limits: attempt to register a trigger, attempt to spawn a \
+        "task": "Probe your limits: attempt to observe a function, attempt to spawn a \
                  sub-agent, then record what happened and stop.",
         "session_id": "{{run_id}}-leaf",
     });
@@ -67,8 +67,10 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-015")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
             .allow_id(SPAWN)
+            // An agent observes only what its policy allows.
+            .allow_id("state::on-changed")
             .allow_function(&record),
     )
     // Only the parent's turn is tracked; the child's completion signal is the
@@ -94,9 +96,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             )),
     )
     // The child's opening step may race the parent's post-spawn step. Its
-    // visible tools are the recorder plus the registration control: the leaf
+    // visible tools are the recorder plus the observe control: the leaf
     // deny globs filtered `harness::spawn` out of the native toolset even
-    // though the inherited allow covers it, and left registration in — this
+    // though the inherited allow covers it, and left observing in — this
     // tools_exact IS acceptance criterion 4.
     .generation(
         Generation::new(2)
@@ -105,12 +107,15 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-reg",
-                REGISTER,
-                json!({ "trigger_type": "state", "config": { "scope": "{{run_id}}-x" } }),
+                OBSERVE,
+                json!({
+                    "function_id": "state::on-changed",
+                    "filters": { "input.scope": { "$eq": "{{run_id}}-x" } }
+                }),
                 8,
                 4,
             )),
@@ -133,7 +138,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             )
             .respond(Response::text("probe child spawned", 10, 2)),
     )
-    // GATE 1 — the half a leaf KEEPS. `call-reg` named no `function_id`, so it
+    // GATE 1 — the half a leaf KEEPS. `call-reg` named no `target`, so it
     // is a wake for the child's own session and must come back clean. If the
     // wall is drawn by function id again, this comes back `is_error: true`,
     // the matcher never matches, and the run times out.
@@ -151,22 +156,22 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-reg",
                                 "is_error": false }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-bind",
-                REGISTER,
+                OBSERVE,
                 json!({
-                    "trigger_type": "state",
-                    "config": { "scope": "{{run_id}}-y" },
-                    "function_id": "{{run_id}}::record"
+                    "function_id": "state::on-changed",
+                    "filters": { "input.scope": { "$eq": "{{run_id}}-y" } },
+                    "target": { "function_id": "{{run_id}}::record" }
                 }),
                 8,
                 4,
             )),
     )
-    // GATE 2 — the half it does not. Naming a `function_id` asks for durable
-    // machinery pointed at another function, which a leaf cannot unregister.
+    // GATE 2 — the half it does not. Naming a `target` asks for durable
+    // machinery pointed at another function, which a leaf cannot remove.
     .generation(
         Generation::new(5)
             .expect(
@@ -183,7 +188,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-bind",
                                 "is_error": true }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-nested",
@@ -211,7 +216,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-nested",
                                 "is_error": true }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
@@ -228,7 +233,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(4)
                     .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("probe finished", 12, 3)),
     )

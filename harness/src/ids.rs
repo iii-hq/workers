@@ -54,7 +54,7 @@ pub fn assistant_entry_id(turn_id: &str, step: u64) -> String {
 }
 
 /// A function_result entry: `e_<turn_id>_<function_call_id>`. Used by both a
-/// direct trigger and a later `harness::function::resolve` so duplicates hit
+/// direct call and a later `harness::function::resolve` so duplicates hit
 /// the same id.
 pub fn function_result_entry_id(turn_id: &str, function_call_id: &str) -> String {
     format!("e_{turn_id}_{}", sanitize(function_call_id))

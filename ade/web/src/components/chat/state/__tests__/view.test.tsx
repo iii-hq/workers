@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { StateToolView } from '../index'
 import { StateView } from '../StateView'
 
@@ -12,10 +12,10 @@ function wrap<T>(details: T) {
   }
 }
 
-function msg(output: unknown): FunctionTriggerMessage {
+function msg(output: unknown): FunctionCallMessage {
   return {
     id: 'state-view-test',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'state::get',
     input: { scope: 'ops', key: 'gate' },
     output,

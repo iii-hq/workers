@@ -1,22 +1,21 @@
 /**
- * Pure translator from the harness/approval trigger payloads the console binds
+ * Pure translator from the harness/approval events the console observes
  * around a turn to ade/web's `StreamEvent` contract.
  *
- * Transcript CONTENT (assistant text, thinking, function-trigger blocks, function
- * results) renders from `session::message-added` / `session::message-updated`
- * reconciled by the conversations layer — NOT from this translator. These
- * trigger events carry only the ephemeral turn surface:
+ * Transcript CONTENT (assistant text, thinking, function-call blocks, function
+ * results) renders from `session::on-message-added` /
+ * `session::on-message-updated` reconciled by the conversations layer — NOT
+ * from this translator. These events carry only the ephemeral turn surface:
  *
- *   - `approval::pending-created`  → `fcall-start { pendingApproval: true }`
- *   - `approval::pending-resolved` → `fcall-approval-cleared`
- *   - `harness::turn-completed`    → `assistant-end` (+ `stop-reason` when the
- *                                    turn failed / was cancelled)
- *   - `harness::send` response     → `turn-status` (accepted/merged/queued)
- *   - `harness::turn-started`      → `turn-status { phase: 'started' }`
+ *   - `approval::on-pending-created`  → `fcall-start { pendingApproval: true }`
+ *   - `approval::on-pending-resolved` → `fcall-approval-cleared`
+ *   - `harness::on-turn-completed`    → `assistant-end` (+ `stop-reason` when
+ *                                       the turn failed / was cancelled)
+ *   - `harness::send` response        → `turn-status` (accepted/merged/queued)
+ *   - `harness::on-turn-started`      → `turn-status { phase: 'started' }`
  *
- * The translator is stateless: the new gate triggers are already discrete
- * create/resolve events, so no list-diffing (the old `turn_state_changed`
- * mirror) is needed.
+ * The translator is stateless: the gate's events are discrete create/resolve
+ * events, so no list-diffing is needed.
  */
 
 import type {
@@ -28,7 +27,7 @@ import type {
 import type { HarnessSendResponse } from './harness-send'
 import type { StreamEvent } from './types'
 
-/** The discriminated union of trigger events `realStream` feeds the translator. */
+/** The discriminated union of observed events `realStream` feeds the translator. */
 export type TurnSourceEvent =
   | { kind: 'approval-created'; record: PendingApprovalRecord }
   | { kind: 'approval-resolved'; event: PendingResolvedEvent }
@@ -60,7 +59,7 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
           functionId: record.function_id,
           input: record.arguments_excerpt ?? {},
           pendingApproval: true,
-          functionTriggerId: record.function_call_id,
+          functionCallId: record.function_call_id,
           sessionId: record.session_id,
           ...(accessRequest
             ? {
@@ -82,7 +81,7 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
       return [
         {
           kind: 'fcall-approval-cleared',
-          functionTriggerId: event.event.function_call_id,
+          functionCallId: event.event.function_call_id,
           running: event.event.outcome === 'allow',
         },
       ]

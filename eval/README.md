@@ -14,7 +14,7 @@ behavior is specified in
 
 ## How an analysis works
 
-1. **Admission.** A terminal `harness::turn-completed` of a root session (or
+1. **Admission.** A terminal `harness::on-turn-completed` event of a root session (or
    a manual `eval::analyze-session`) admits one analysis per session turn.
    Automatic observation admits only the user's chats. From `session::get` the
    session must have kind `user` (a record without a kind counts as `user`), a
@@ -50,8 +50,9 @@ behavior is specified in
      with structurally equal payloads, where the first failure was visible
      before the retry and both failed with the same explicit code. Corrected
      arguments, a successful retry, parallel calls in one response, other
-     turns and the default-namespace `engine::triggers::info` `NOT_FOUND`
-     probe are not flagged.
+     turns and, in transcripts recorded against a 0.25 engine, its
+     default-namespace `engine::triggers::info` `NOT_FOUND` probe are not
+     flagged.
 
    Each occurrence has a fingerprint (rule, session, turn, call ids).
 4. **Triage (Jev).** `judge::evaluate` with `provider: typesafe` asks one
@@ -118,28 +119,30 @@ LLM key. Jev credentials stay in `judge-typesafe`; the LLM's in its provider.
 ```bash
 # 1. Choose the investigating model (validated against router::models::list)
 #    and keep it paused.
-iii trigger eval::configure --json '{
+iii call eval::configure --json '{
   "enabled": false,
   "model": {"model": "<model-id>", "provider": "<provider-id>"}
 }'
 
 # 2. Analyze one finished root session by hand (works while paused).
-iii trigger eval::analyze-session --json '{"session_id": "<session>"}'
+iii call eval::analyze-session --json '{"session_id": "<session>"}'
 
 # 3. Follow it, then read evidence, triage and suggestions.
-iii trigger eval::status --json '{"evaluation_id": "<id>"}'
-iii trigger eval::result --json '{"evaluation_id": "<id>"}'
+iii call eval::status --json '{"evaluation_id": "<id>"}'
+iii call eval::result --json '{"evaluation_id": "<id>"}'
 
 # 4. Enable automatic observation once the manual results look right.
-iii trigger eval::configure --json '{
+iii call eval::configure --json '{
   "enabled": true,
   "model": {"model": "<model-id>", "provider": "<provider-id>"}
 }'
 ```
 
 `eval::config` shows the configuration and whether the
-`harness::turn-completed` binding is active (`observer_bound`); when it is
-false, automatic observation is unavailable even if enabled.
+`harness::on-turn-completed` observer is active (`observer_bound`); when it is
+false (no harness has registered the function, or the engine refused the
+observer, with the reason in `observer_error`), automatic observation is
+unavailable even if enabled.
 
 `thinking_level`, `provider_options` (namespaced by the selected provider),
 `code_repository` and `daily_cost_cap_usd` are optional. A configuration
@@ -212,7 +215,7 @@ repository, e.g. `/home/layon/workspaces/workers`) and the investigation
 becomes a chat with that directory selected:
 
 ```bash
-iii trigger eval::configure --json '{
+iii call eval::configure --json '{
   "enabled": false,
   "model": {"model": "<model-id>", "provider": "<provider-id>"},
   "code_repository": "/home/layon/workspaces/workers"
@@ -311,10 +314,37 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | `eval::reviews` | The stored review rows and, per analysis, its suggestions counted by lifecycle status. |
 | `eval::recurrence` | For a suggestion shipped in a version, how often its patterns appeared per analysis before and from that version. |
 | `eval::reproduce` | Replays a suggestion's decision point: rebuilds the request the model received at that step (optionally edited), samples the next reply N times without running any function and reads the signal in each. `dry_run` only rebuilds and checks fidelity. See [VALIDATION.md](VALIDATION.md). |
-| `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
 
 Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8),
-`eval::on-turn-completed` and `eval::sweep` (cron, every 15 s).
+`eval::on-turn-completed` (the target of the worker's observer of
+`harness::on-turn-completed`, delivered the event) and `eval::sweep` (the
+target of its observer of `cron::on-tick` with args
+`{ expression: "*/15 * * * * *" }`).
+
+### Events
+
+`eval::on-completed` is a private function: `eval` calls it when an analysis
+reaches a terminal status and something observes it; anyone may observe it.
+It takes no args; select one analysis with a filter on `input.evaluation_id`.
+Its handler returns the event:
+
+```ts
+interface CompletedEventV1 {
+  evaluation_id: string
+  status: 'completed' | 'failed' | 'cancelled'
+  timestamp: number // Unix ms
+}
+```
+
+Delivery is iii's default: every call reaches each observer whose filters
+match. `completed` describes the monitor, not a validated improvement.
+
+```ts
+iii.observe(
+  { function_id: 'eval::on-completed', filters: { 'input.evaluation_id': { $eq: id } }, deliver: 'output' },
+  'my-worker::on-analysis-done',
+)
+```
 
 ## Evidence handling
 
@@ -358,7 +388,7 @@ Records, indexes and assets live in `state` scopes `eval_monitor`,
 `eval_observation`, `eval_analysis` and `eval_analysis_assets`; the review rows
 in `eval_suggestion` (below). A record is
 saved before its index; startup reconciles missing indexes before the
-observation trigger is bound, and the sweep re-enqueues pending work and
+turn observer is created, and the sweep re-enqueues pending work and
 fails analyses past their deadline.
 
 - Assets are written before a stage advances, so a restart repeats
@@ -392,7 +422,7 @@ Older suggestions have none; `eval::reproduce` then takes `check` in the request
 window from the durable log (`harness::window::build`, notices included), the
 frozen runtime context, the turn's system prompt and skills baseline (copied
 into the analysis as `assets.capture`, because the Harness keeps only a
-session's latest turn record), the `agent_trigger` tool and `context::assemble`.
+session's latest turn record), the `agent_call` tool and `context::assemble`.
 `assets.capture.record` also keeps the Harness's whole turn record as read (a
 later fork of the session needs it, and the next turn replaces it); when it
 would take the assets over their limit it is left out and
@@ -418,7 +448,7 @@ scenario version and criteria, run baseline and candidate with
 `harness-e2e`, then link both executions:
 
 ```bash
-iii trigger eval::attach-validation --json '{
+iii call eval::attach-validation --json '{
   "evaluation_id": "<id>", "suggestion_index": 0,
   "baseline_execution_id": "<baseline>", "candidate_execution_id": "<candidate>"
 }'

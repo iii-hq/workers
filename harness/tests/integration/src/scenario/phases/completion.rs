@@ -124,7 +124,7 @@ impl ScenarioRunner<'_> {
             Err(error) => {
                 return Err(RunError::runner(
                     phase,
-                    "wait for harness::turn-completed signal(s)",
+                    "wait for harness::on-turn-completed signal(s)",
                     error,
                 ));
             }
@@ -244,6 +244,9 @@ impl ScenarioRunner<'_> {
             .map_err(|error| {
                 RunError::runner(RunPhase::Await, "expand probe-action payload", error)
             })?;
+        if action.function_id == crate::fixtures::OBSERVE_ACTION {
+            return observe_probe_action(services, &payload, deadline).await;
+        }
         services
             .client()
             .call_until_deadline(&action.function_id, payload, deadline)
@@ -278,4 +281,46 @@ impl ScenarioRunner<'_> {
             })?;
         Ok(())
     }
+}
+
+/// Create the observer an [`crate::fixtures::OBSERVE_ACTION`] describes and
+/// wait until it is active. The probe keeps no handle: the observer lives
+/// with the probe connection for the rest of the run.
+async fn observe_probe_action(
+    services: &RunServices,
+    payload: &Value,
+    deadline: Deadline,
+) -> Result<(), RunError> {
+    let invalid = |what: &str| {
+        RunError::runner(
+            RunPhase::Await,
+            "observe probe action",
+            anyhow::anyhow!("probe observe action needs {what}: {payload}"),
+        )
+    };
+    let function_id = payload["function_id"]
+        .as_str()
+        .ok_or_else(|| invalid("a function_id"))?;
+    let target = payload["target"]
+        .as_str()
+        .ok_or_else(|| invalid("a target"))?;
+    let mut source = iii_sdk::Source::function(function_id);
+    if !payload["args"].is_null() {
+        source = source.args(payload["args"].clone());
+    }
+    if !payload["filters"].is_null() {
+        source = source.filters(payload["filters"].clone());
+    }
+    let handle = services.client().inner().observe(source, target);
+    deadline
+        .timeout("probe observer activation", handle.ready())
+        .await
+        .map_err(|error| RunError::runner(RunPhase::Await, "observe probe action", error))?
+        .map_err(|error| {
+            RunError::runner(
+                RunPhase::Await,
+                "observe probe action",
+                anyhow::anyhow!("observer {} failed: {error}", handle.id()),
+            )
+        })
 }

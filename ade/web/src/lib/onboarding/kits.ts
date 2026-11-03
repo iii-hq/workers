@@ -47,7 +47,7 @@ export function parseOnboardingKits(value: unknown): string[] {
 async function fetchOnboardingKits(): Promise<string[]> {
   const client = await getIiiClient()
   try {
-    const result = await client.trigger<unknown>(
+    const result = await client.call<unknown>(
       PROMPTS_FUNCTION,
       {},
       { timeoutMs: 5_000 },
@@ -67,7 +67,7 @@ export async function installKit(kit: string): Promise<KitInstall | null> {
   const client = await getIiiClient()
   let result: unknown
   try {
-    result = await client.trigger<unknown>(
+    result = await client.call<unknown>(
       DOWNLOAD_KIT,
       { kit, apply: true },
       { timeoutMs: KIT_INSTALL_TIMEOUT_MS },

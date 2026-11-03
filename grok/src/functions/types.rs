@@ -1,5 +1,5 @@
 //! Request payloads. `RunRequest` derives `JsonSchema` so the engine publishes
-//! the parameter table for `iii trigger grok::run --help`, and `Deserialize`
+//! the parameter table for `iii call grok::run --help`, and `Deserialize`
 //! so the handler parses at the unknown boundary.
 
 use schemars::JsonSchema;

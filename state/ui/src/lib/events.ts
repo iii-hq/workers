@@ -1,20 +1,23 @@
 /**
- * Live state events over the worker's own `state` trigger type.
+ * Live state events: the page observes `state::on-changed`.
  *
- * `useStateEventHub` registers ONE tab-scoped binding (empty config = every
- * scope/key) whose function_id is a per-tab handler, and fans the events out
- * to whichever consumers attach via the returned `Subscribe`. The `iii::`
+ * `useStateEventHub` registers ONE tab-scoped observer (no filters = every
+ * scope/key) whose target is a per-tab handler, and fans the events out to
+ * whichever consumers attach via the returned `Subscribe`. The `iii::`
  * handler prefix keeps the per-event invocations span-suppressed, and the
- * binding is GC'd with the tab like any Message-path trigger.
+ * observer is disposed with the page.
  */
 
 import { useCallback, useEffect, useRef } from 'react'
 import type { Host } from '@iii-dev/console-ui'
 
+/** The observed function: one call per committed state change. */
+export const ON_CHANGED_FN = 'state::on-changed'
+
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 export const EVENTS_FN = 'iii::state-ui::events'
 
-/** The message a `state` function trigger delivers per write. */
+/** The event `state::on-changed` returns per write. */
 export interface StateEvent {
   type: 'state'
   event_type: 'state:created' | 'state:updated' | 'state:deleted'
@@ -27,9 +30,9 @@ export interface StateEvent {
 export type Subscribe = (listener: (e: StateEvent) => void) => () => void
 
 /**
- * Register the binding for this component's lifetime and return a
- * `Subscribe` for descendants. Registered on mount, unregistered on
- * unmount — hot reload disposes it with the page.
+ * Observe `state::on-changed` for this component's lifetime and return a
+ * `Subscribe` for descendants. Observed on mount, disposed on unmount — hot
+ * reload disposes it with the page.
  */
 export function useStateEventHub(host: Host): Subscribe {
   const listenersRef = useRef<Set<(e: StateEvent) => void>>(new Set())
@@ -38,13 +41,12 @@ export function useStateEventHub(host: Host): Subscribe {
       if (!event || event.type !== 'state') return
       for (const listener of [...listenersRef.current]) listener(event)
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: 'state',
-      function_id: `${EVENTS_FN}::${host.iii.browserId}`,
-      config: {},
-    })
+    const dispose = host.iii.observe(
+      { function_id: ON_CHANGED_FN, deliver: 'output' },
+      `${EVENTS_FN}::${host.iii.browserId}`,
+    )
     return () => {
-      offTrigger()
+      dispose()
       offHandler()
     }
   }, [host])

@@ -187,7 +187,6 @@ async fn indexes_the_imports_of_a_workspace_reached_through_a_symlink() {
 
     use iii_stories::builder::{Ctx, build_line};
     use iii_stories::config::{StoriesConfig, WorkspaceConfig};
-    use iii_stories::events::Subscribers;
     use iii_stories::lines::LineSpec;
 
     let (Some(fixture), Some(compiler_dir)) = (
@@ -218,7 +217,6 @@ async fn indexes_the_imports_of_a_workspace_reached_through_a_symlink() {
         config: Arc::new(RwLock::new(config)),
         store: Store::new(tmp.path().join("data")),
         compiler: Compiler::ensure(compiler_dir).await.expect("compiler"),
-        subscribers: Subscribers::default(),
         build_lock: tokio::sync::Mutex::new(()),
         builds: RwLock::new(HashMap::new()),
         rebuild_tx,

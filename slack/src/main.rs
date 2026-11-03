@@ -6,7 +6,6 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
-use slack::approval_gate::{self, ApprovalGateStatus};
 use slack::clients::slack as slack_client;
 use slack::configuration::{self, ConfigCell};
 use slack::deps::Deps;
@@ -84,24 +83,16 @@ async fn main() -> Result<()> {
         .context("slack requires a non-empty bot_token in configuration")?;
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
-    let gate = Arc::new(ApprovalGateStatus::new());
-    let deps = Arc::new(Deps::new(iii.clone(), cell.clone(), gate.clone()));
+    let deps = Arc::new(Deps::new(iii.clone(), cell.clone()));
 
     functions::register_all(&iii, &deps);
 
-    // Probe the optional approval-gate worker; bind approval triggers if present.
-    gate.set_present(approval_gate::probe_presence(&iii).await);
-    bindings::bind_session_triggers(&iii);
-    if gate.is_available() {
-        bindings::bind_approval_triggers(&iii);
-        tracing::info!("approval-gate present — inline approvals enabled");
-    } else {
-        tracing::info!("approval-gate absent — approvals disabled");
-    }
+    // Session, harness and approval observers, created at once. Each stays
+    // `pending` until its worker registers the function, so an approval-gate
+    // that connects later is observed with no extra step.
+    bindings::observe_events(&iii);
 
-    configuration::register_config_trigger(&iii, cell, deps.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    configuration::observe_config_changes(&iii, cell, deps.clone());
 
     // Best-effort identity discovery (does not block boot if Slack is unreachable).
     match slack_client::auth_test(&deps).await {
@@ -112,7 +103,7 @@ async fn main() -> Result<()> {
         Err(e) => tracing::warn!(error = %e, "auth.test failed at boot (check bot_token)"),
     }
 
-    // Register the bridge HTTP routes if the bridge is configured.
+    // Serve the bridge HTTP routes if the bridge is configured.
     ingress::apply(&deps).await;
 
     tracing::info!("slack worker ready, waiting for invocations");

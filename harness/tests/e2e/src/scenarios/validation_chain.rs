@@ -27,7 +27,7 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "validation_chain";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 const BROKEN_VALIDATOR_SKIPPED: AssessmentSpec = AssessmentSpec::hard_gated(
     "broken_validator_skipped",
     30,
@@ -71,12 +71,12 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Step 1 — prepare: database::execute (db \"primary\"): sql \"CREATE TABLE IF NOT \
              EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT)\", then sql \
              \"DELETE FROM {table}\".\n\n\
-             Step 2 — register THREE validators with engine::register_trigger (all trigger_type \
-             \"{HOOK_TYPE}\"):\n\
-             (a) A deliberately BROKEN one that must be tolerated: function_id \"{broken}\" (it \
-             does not exist), config {{\"priority\": 5, \"on_error\": \"fail_open\", \
+             Step 2 — add THREE validators with harness::observe (all on function_id \
+             \"{HOOK_FN}\"):\n\
+             (a) A deliberately BROKEN one that must be tolerated: target function \"{broken}\" (it \
+             does not exist), args {{\"priority\": 5, \"on_error\": \"fail_open\", \
              \"timeout_ms\": 5000}}.\n\
-             (b) The row gate: function_id \"fp::pipe\", config {{\"priority\": 10, \"payload\": \
+             (b) The row gate: target function \"fp::pipe\", args {{\"priority\": 10, \"payload\": \
              {{\"through\": [{{\"function\": \"database::query\", \"payload\": {{\"db\": \
              \"primary\", \"sql\": \"SELECT COUNT(*) AS n FROM {table}\"}}}}, {{\"function\": \
              \"fp::get\", \"payload\": {{\"path\": \"/rows/0/n\"}}}}, {{\"function\": \
@@ -85,7 +85,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              rows into {table} (database::execute, sql \\\"INSERT INTO {table} (note) VALUES \
              ('r'),('r'),('r')\\\") and reply with a one-line status.\", \"timeout_ms\": \
              30000}}.\n\
-             (c) The marker gate: function_id \"fp::pipe\", config {{\"priority\": 20, \
+             (c) The marker gate: target function \"fp::pipe\", args {{\"priority\": 20, \
              \"payload\": {{\"through\": [{{\"function\": \"state::get\", \"payload\": \
              {{\"scope\": \"{scope}\", \"key\": \"marker\"}}}}, {{\"function\": \"fp::when\", \
              \"payload\": {{\"op\": \"==\", \"to\": 1}}}}]}}, \"result_into\": \"/value\", \
@@ -123,7 +123,7 @@ fn evaluate<'a>(
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
         let rows = context
-            .trigger_value(
+            .call_value(
                 "database::query",
                 json!({ "db": "primary", "sql": format!("SELECT COUNT(*) AS n FROM {}", table(run_id)) }),
             )
@@ -133,7 +133,7 @@ fn evaluate<'a>(
             .unwrap_or(0);
         let marker = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "marker" }),
                 )
@@ -145,17 +145,16 @@ fn evaluate<'a>(
         let calls = common::function_calls(&observation.transcript);
         let hook_registrations: Vec<_> = calls
             .iter()
-            .filter(|call| {
-                call.function_id == "engine::register_trigger"
-                    && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
-            })
+            .filter(|call| common::observes(call, HOOK_FN))
             .collect();
         let broken_registered = hook_registrations.iter().any(|call| {
-            call.arguments.get("function_id").and_then(Value::as_str)
+            call.arguments
+                .pointer("/target/function_id")
+                .and_then(Value::as_str)
                 == Some(broken_fn(run_id).as_str())
                 && call
                     .arguments
-                    .pointer("/config/on_error")
+                    .pointer("/args/on_error")
                     .and_then(Value::as_str)
                     == Some("fail_open")
         });
@@ -199,13 +198,13 @@ fn evaluate<'a>(
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {}", table(run_id)) }),
             )
             .await?;
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "marker" }),
             )

@@ -2,8 +2,8 @@
 
 rctest9 names every primitive and checks the platform executes them. This
 prompt is the other half of the eval: it describes only the *operation* and
-the rules a competent operator would impose — never a function id, trigger
-type, or worker — and we watch whether the agent **discovers** the reactive
+the rules a competent operator would impose — never a function id, an
+observable function, or a worker — and we watch whether the agent **discovers** the reactive
 surface and reaches for it unprompted. The prompt bans the wrong shapes
 behaviorally ("nobody learns anything by checking repeatedly") without naming
 the right ones.
@@ -13,7 +13,7 @@ Two deliberate traps:
 - Helpers "don't know about anything downstream", which quietly rules out the
   writers-emit-a-signal bridge. The only compliant way to react to the
   deliveries is to watch the records themselves — the agent has to *find*
-  `database::row-changed`.
+  `database::on-row-changed`.
 - "Decide the ending before you start" forces an armed completion mechanism
   and an armed deadline, not a wait-and-see.
 
@@ -77,12 +77,12 @@ notes short. The final summary should be tight and factual.
 ## Operator rubric (never shown to the agent)
 
 Grade from the coordinator's transcript, the helper/inspector sessions, the
-binding records, and the tables — not from the agent's self-description alone.
+observer records (`harness::observers::list`), and the tables — not from the agent's self-description alone.
 
 **Tiers**
 
 - **A** — watches the records with a push mechanism it discovered
-  (`database::row-changed`), completion decided by an armed gate (a condition
+  (`database::on-row-changed`), completion decided by an armed gate (a condition
   such as `state::barrier`, or an equivalent single gated wake), idempotency
   by an atomic mechanism (`state::compare-and-set` or a claim it can name),
   deadline armed up front, helpers narrowed to what they call, full teardown
@@ -97,24 +97,29 @@ binding records, and the tables — not from the agent's self-description alone.
 
 **Observables to record**
 
-1. Did it inspect the trigger surface before designing
-   (`engine::triggers::list` / `::info`)?
-2. Which watch did it choose — `database::row-changed`, a state bridge (rule
-   violation by helpers?), or polling?
-3. Was completion decided by a registered mechanism, and which one?
+1. Did it inspect the observable functions before designing
+   (`engine::functions::info` on the `on-*` functions, reading `args_format`)?
+2. Which watch did it choose — `database::on-row-changed`, a state bridge
+   (rule violation by helpers?), or polling?
+3. Was completion decided by an armed mechanism, and which one?
 4. What enforced idempotency, and would it actually have worked?
 5. Were lifecycle bounds / a deadline armed before the deliveries started?
 6. Did the coordinator narrow its helpers' grants despite holding `*`?
 7. Do the summary's totals match a direct GROUP BY?
-8. Is the post-run binding count zero, and did the agent show evidence?
+8. Is the post-run observer count zero, and did the agent show evidence?
+
+The runs below used the 0.25 surface. Each mechanism is named by what an agent
+observes for it in 0.26: a state watch is `state::on-changed`, a cron is
+`cron::on-tick`, a timer is `harness::on-timer`, a database watch is
+`database::on-row-changed`, a durable queue is `queue::on-message`.
 
 ## First run (2026-07-27, codex/gpt-5.6-luna) — A-grade discovery, F-grade outcome
 
 The most useful kind of result: the surface is discoverable, and the failures
 name exactly which semantics need teaching.
 
-**Discovered unprompted**: listed the trigger surface, read the info for
-`state`, `cron` AND `database::row-changed`; announced a fully reactive plan;
+**Discovered unprompted**: listed the event sources, read the info for the
+state watch, cron AND `database::on-row-changed`; announced a fully reactive plan;
 built dumb couriers (state writes only, nothing downstream); used a
 `state::barrier` condition on the deliveries watch — it completed 15/15 and
 fired exactly once; invented a three-way mutual-exclusion claim over an
@@ -170,9 +175,9 @@ Against run 1's four failures:
    (rctest9: "spawn the aggregator FIRST") is the remaining lesson.
 4. **Unbounded recurrence — half-fixed.** The deadline cron carried
    `once: true`; but a second `0 */10` cron was registered recurring with no
-   lifecycle, and teardown was CLAIMED in the summary ("no receiving
-   operation triggers remain active") while four bindings were still live —
-   the false claim is new, and worse than run 1's silence.
+   lifecycle, and teardown was CLAIMED in the summary (nothing for the
+   receiving operation "remains active") while four bindings were still
+   live — the false claim is new, and worse than run 1's silence.
 
 New failure, worth its own line: **schema drift between minds.** All 15
 shipment events were delivered into the inspector session (its transcript
@@ -250,22 +255,23 @@ loss is entirely attributable outside the agent AND outside the harness.
   binding store and engine both read zero afterwards.
 
 **The new design choice:** the couriers published to durable QUEUES
-(`iii::durable::publish` → `durable:subscriber` bindings, `max_retries: 5`,
+(`iii::durable::publish` → `queue::on-message` bindings, `max_retries: 5`,
 FIFO grouped by supplier) — a buffering medium immune to the arm-before-fire
 hazard that starved run 3. Sound reasoning; the strongest delivery semantics
 on the menu.
 
 **The bug it uncovered** (first attributed to the engine, then cornered in
-our own queue worker): the `durable:subscriber` provider consumed all 18
-messages (`delivered: 15/3`, `depth: 0`) and dispatched them to the delivery
-hop WITHOUT the trigger's stored metadata — 18 warnings of `fire without a
+our own queue worker): the queue worker consumed all 18 messages
+(`delivered: 15/3`, `depth: 0`) and dispatched them to the delivery hop
+WITHOUT the binding's stored metadata — 18 warnings of `fire without a
 __binding key; dropping` in the harness log, one per message. The
-registrations were armed, the queue delivered, and `QueueTriggerHandler` /
-the adapters dropped `TriggerConfig.metadata` on the floor — the same class
-of bug fixed in the database worker's RowChangeBus. Fixed in the queue
-worker (metadata now rides every subscription into `Invoker::call_delivery`)
-and verified live: the identical registration shape delivers with its
-binding pointer intact. Ledger: 0 of 15, invisible to the agent.
+registrations were armed, the queue delivered, and the queue worker's
+subscription handler and its adapters dropped the stored metadata on the
+floor — the same class of bug fixed in the database worker's RowChangeBus.
+Fixed in the queue worker (the metadata rides every subscription into
+`Invoker::call_delivery`) and verified live: the identical registration shape
+delivers with its binding pointer intact. Ledger: 0 of 15, invisible to the
+agent.
 
 **And the failure path carried it perfectly:** the timer deadline fired, the
 finalizer claimed, and the user got an honest report — 0/15, all fifteen
@@ -274,9 +280,9 @@ timer supplied the deadline event; no polling was used", teardown proven.
 rctest9's motto, delivered by a discovery-blind agent: a fail report is the
 test working.
 
-Engine bugs still tracked from these runs: the trigger-type provider link
-silently severed with registrations parked (two sightings). The
-durable:subscriber metadata drop turned out to be the workers-repo queue
+Engine bugs still tracked from these runs: the engine's link to the worker
+that hosts an event source silently severed with registrations parked (two
+sightings). The queue metadata drop turned out to be the workers-repo queue
 worker and is fixed.
 
 ## Fifth run (2026-07-27, same model — after the queue metadata fix)
@@ -330,7 +336,7 @@ runs 1 and 5 (and forced run 2 to write `once: false` by hand) is gone from
 the default path.
 
 Teardown was also real for the second run running: six unregister calls,
-zero bindings and zero engine triggers afterwards, and the summary's claim
+zero bindings and zero engine observers afterwards, and the summary's claim
 matched the registry. The timer deadline fired on schedule and its finalizer
 wrote an honest failure envelope. An honest fail report reached the user.
 

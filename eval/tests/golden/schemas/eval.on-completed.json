@@ -1,0 +1,79 @@
+{
+  "function_id": "eval::on-completed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "collecting",
+          "judging",
+          "investigating",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "The `eval::on-completed` event.",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      },
+      "timestamp": {
+        "description": "Unix milliseconds when the analysis ended.",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "status",
+      "timestamp"
+    ],
+    "title": "CompletedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "collecting",
+          "judging",
+          "investigating",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "The `eval::on-completed` event.",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      },
+      "timestamp": {
+        "description": "Unix milliseconds when the analysis ended.",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "status",
+      "timestamp"
+    ],
+    "title": "CompletedEventV1",
+    "type": "object"
+  }
+}

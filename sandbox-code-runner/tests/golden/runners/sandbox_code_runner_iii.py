@@ -43,7 +43,7 @@ class _LazyIii:
         if self._client is None:
             return (
                 "<iii: lazy iii-sdk client (connects on first use); e.g. "
-                "iii.trigger({'function_id': 'worker::fn', 'payload': {}}); "
+                "iii.call({'function_id': 'worker::fn', 'payload': {}}); "
                 "docs: https://iii.dev/docs/reference/sdk-python>"
             )
         return repr(self._client)

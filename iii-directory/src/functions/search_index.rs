@@ -15,18 +15,17 @@ pub(crate) const MAX_INPUT_BYTES: usize = 2_048;
 /// Byte budget for a slimmed contract description (first sentence).
 const INDEX_DESCRIPTION_BYTES: usize = 160;
 /// Function-id prefixes that never participate in search: the engine's own
-/// control plane (function, worker, trigger and channel registries, console
+/// control plane (function, worker, observer and channel registries, console
 /// plumbing, baggage). Not the whole `engine::` namespace: workers bundled
 /// with the engine publish real capabilities under it (`engine::traces::*`
 /// and `engine::logs::list` from iii-observability, `engine::queue::*` from
 /// queue), and excluding the prefix hid them from every search ("list recent
 /// traces" could never find `engine::traces::list`). Workers hide their own
 /// plumbing with `metadata.internal: true`.
-pub(crate) const EXCLUDED_NAMESPACE_PREFIXES: [&str; 7] = [
+pub(crate) const EXCLUDED_NAMESPACE_PREFIXES: [&str; 6] = [
     "engine::functions::",
     "engine::workers::",
-    "engine::triggers::",
-    "engine::registered-triggers::",
+    "engine::observers::",
     "engine::channels::",
     "engine::console::",
     "engine::baggage::",

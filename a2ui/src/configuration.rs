@@ -4,8 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -30,6 +29,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 pub const CONFIG_FN_ID: &str = "a2ui::on-config-change";
+/// The engine's configuration change events, hosted in `default`.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
@@ -74,8 +75,10 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Subscribe to updates of the resolved entry and reload authoritative values.
-pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
+/// Observe `configuration::on-updated` for the resolved entry and reload
+/// authoritative values. The observer lives as long as the worker's
+/// connection; dropping the returned handle does not dispose it.
+pub fn register_config_observer(iii: &IIIClient, cell: ConfigCell) -> ObserverHandle {
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
@@ -98,21 +101,26 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         )
         .metadata(json!({ "internal": true })),
     );
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration",
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(config_updated_filters(config_id()))
+            .deliver(Deliver::Output),
         CONFIG_FN_ID,
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"]
-        }),
-    ))?;
-    Ok(())
+    )
+}
+
+/// Selects the `configuration:updated` events of the entry `id`.
+fn config_updated_filters(id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_with_retry(iii, function, payload)
+        call_with_retry(iii, function, payload)
     })
     .await
 }
@@ -129,7 +137,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 
 /// Map only the configuration service's missing-entry code to absence.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({"id": config_id()})).await {
+    match call_with_retry(iii, "configuration::get", json!({"id": config_id()})).await {
         Ok(response) => Ok(response.get("value").cloned()),
         Err(error) if is_not_found(&error) => Ok(None),
         Err(error) => Err(error),
@@ -155,7 +163,7 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn trigger_with_retry(
+async fn call_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -163,8 +171,8 @@ async fn trigger_with_retry(
     let mut last_error = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.into(),
                     payload: payload.clone(),
                     action: None,
@@ -234,6 +242,17 @@ mod tests {
         assert!(!is_not_found("RESOURCE_NOT_FOUND"));
         assert!(!is_not_found("STATEMENT_NOT_FOUND"));
         assert!(!is_not_found("NOT_FOUND_EXTRA"));
+    }
+
+    #[test]
+    fn config_observer_selects_this_entrys_updates() {
+        assert_eq!(
+            config_updated_filters("a2ui"),
+            json!({
+                "input.id": { "$eq": "a2ui" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
     }
 
     #[tokio::test]

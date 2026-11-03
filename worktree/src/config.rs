@@ -2,7 +2,7 @@
 //! authoritative store; no committed config.yaml). Defaults live in
 //! `WorkerConfig::default()` and every field hot-reloads: tuning knobs are
 //! read from the live snapshot per call, and the structural half
-//! (`boot_signature`) re-binds the prune cron trigger.
+//! (`boot_signature`) observes `cron::on-tick` for the new prune schedule.
 
 use anyhow::Result;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -274,7 +274,7 @@ impl Default for WorkerConfig {
 }
 
 /// Comparison key for the structural half of the config. A changed
-/// signature re-binds the prune cron trigger; everything else is a
+/// signature replaces the prune observer of `cron::on-tick`; everything else is a
 /// tuning-only snapshot swap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootSignature {

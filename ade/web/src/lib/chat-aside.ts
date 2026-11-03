@@ -6,7 +6,7 @@ import { belongsToEntry } from '@/lib/sessions/entry-mapper'
 import type {
   Attachment,
   Conversation,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   Message,
 } from '@/types/chat'
 
@@ -580,7 +580,7 @@ function messageText(message: Message): string {
   }
   // A PR the agent opened is in the call's result, not in its prose.
   if (
-    message.role === 'function-trigger' &&
+    message.role === 'function-call' &&
     message.functionId === 'github::pr::create'
   ) {
     try {
@@ -679,15 +679,15 @@ interface ExecResult {
   stdout: string
 }
 
-type Trigger = IiiClient['trigger']
+type Call = IiiClient['call']
 
 /** One read of the folder's git state; `null` when it is not a repository. */
 export async function readGitSummary(
-  trigger: Trigger,
+  call: Call,
   cwd: string,
 ): Promise<GitSummary | null> {
   const git = (args: string[]) =>
-    trigger<ExecResult>('shell::exec', {
+    call<ExecResult>('shell::exec', {
       command: 'git',
       // fsmonitor off: a repository's own config must not run a hook here.
       args: ['--no-optional-locks', '-c', 'core.fsmonitor=false', ...args],
@@ -796,12 +796,12 @@ interface GhOutcome {
 }
 
 /** `gh` through the optional `github` worker (`github::exec`). */
-export function githubWorkerGh(trigger: Trigger): GhRunner {
+export function githubWorkerGh(call: Call): GhRunner {
   return async (args) => {
-    const out = await trigger<GhOutcome & { value?: GhOutcome }>(
-      'github::exec',
-      { args, timeout_ms: 20_000 },
-    ).catch(() => null)
+    const out = await call<GhOutcome & { value?: GhOutcome }>('github::exec', {
+      args,
+      timeout_ms: 20_000,
+    }).catch(() => null)
     const outcome = out?.value ?? out
     return outcome
       ? {
@@ -817,9 +817,9 @@ export function githubWorkerGh(trigger: Trigger): GhRunner {
  * `gh` in the folder over `shell::exec`, for a stack without the `github`
  * worker; `gh` keeps its own login.
  */
-export function folderGh(trigger: Trigger, cwd: string): GhRunner {
+export function folderGh(call: Call, cwd: string): GhRunner {
   return async (args) => {
-    const out = await trigger<GhOutcome>('shell::exec', {
+    const out = await call<GhOutcome>('shell::exec', {
       command: 'gh',
       args,
       cwd,
@@ -1046,7 +1046,7 @@ const IMAGE_SCAN_NODES = 400
  * `mimeType`/`media_type` spelling) and `data:image/…` strings, as
  * attachments the viewer can show. A bounded walk: outputs can be large.
  */
-function outputImages(message: FunctionTriggerMessage): Attachment[] {
+function outputImages(message: FunctionCallMessage): Attachment[] {
   const found: Attachment[] = []
   let budget = IMAGE_SCAN_NODES
   const push = (dataUrl: string, type: string) =>
@@ -1101,7 +1101,7 @@ export function collectChatImages(messages: readonly Message[]): Attachment[] {
           ? (message.attachments ?? []).filter((a) =>
               a.type.startsWith('image/'),
             )
-          : message.role === 'function-trigger'
+          : message.role === 'function-call'
             ? outputImages(message)
             : []
       imagesByMessage.set(message, found)
@@ -1128,7 +1128,7 @@ export interface ChatFile {
 /** Host writes only: a sandbox's paths do not open in the IDE. */
 const WRITE_CALL = /^(shell::)?fs::write$/
 
-function writes(message: FunctionTriggerMessage): ChatFile[] {
+function writes(message: FunctionCallMessage): ChatFile[] {
   const output = message.output
   if (
     !WRITE_CALL.test(message.functionId) ||
@@ -1184,7 +1184,7 @@ export function collectChatFiles(
               at: message.createdAt,
               attachment: a,
             }))
-        : message.role === 'function-trigger'
+        : message.role === 'function-call'
           ? writes(message).filter((f) => !inside || !f.path.startsWith(inside))
           : []
     for (const file of found) {
@@ -1279,7 +1279,7 @@ function messageTickets(message: Message): TicketTouch[] {
   if (cached) return cached
   const at = message.createdAt
   const found: TicketTouch[] = []
-  if (message.role === 'function-trigger') {
+  if (message.role === 'function-call') {
     const call = KANBAN_CALLS[message.functionId]
     const ref = call?.ref(message.input, message.output)
     if (call && typeof ref === 'string' && ref) {
@@ -1351,14 +1351,14 @@ export interface KanbanBoard {
 
 /** Two calls, whatever the chat touched: the columns and every ticket. */
 export async function readKanbanBoard(
-  trigger: IiiClient['trigger'],
+  call: IiiClient['call'],
 ): Promise<KanbanBoard> {
   const [info, list] = await Promise.all([
-    trigger<{ columns?: { id: string; label: string }[] }>(
+    call<{ columns?: { id: string; label: string }[] }>(
       'kanban::config::info',
       {},
     ),
-    trigger<{ tickets?: Record<string, unknown>[] }>('kanban::ticket::list', {
+    call<{ tickets?: Record<string, unknown>[] }>('kanban::ticket::list', {
       include_deleted: true,
     }),
   ])

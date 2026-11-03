@@ -10,7 +10,7 @@ and removed on demand).
 Source: [`src/config.rs`](../src/config.rs) (schema + types),
 [`src/configuration.rs`](../src/configuration.rs) (worker integration + reload),
 [`src/ingress.rs`](../src/ingress.rs) (adapter lifecycle),
-[`src/functions/mod.rs`](../src/functions/mod.rs) (trigger registration),
+[`src/functions/mod.rs`](../src/functions/mod.rs) (observers),
 [`src/main.rs`](../src/main.rs) (boot).
 
 ## 1. Mental model
@@ -98,11 +98,11 @@ stored configs keep parsing: deprecated timeout aliases
 | `register_config` | Registers the schema + id/name/description via `configuration::register` (with retry). Seeds `initial_value` from the `--config` seed if given, else from defaults **only when the store has no value yet**. |
 | `fetch_config` | `configuration::get` for this id; a `null` value → built-in defaults, missing → error. |
 | `apply_config` | Validates a candidate snapshot, logs token rotation, atomically swaps the `ConfigCell`. Returns `false` (keep previous) on validation failure. |
-| `register_config_trigger` | Registers the `on-config-change` function and binds it to a `configuration` trigger filtered to `configuration:updated` for this id. |
+| `observe_config_changes` | Registers the `on-config-change` function and observes `configuration::on-updated` with it, filtered on `input.id` (this id) and `input.event_type` (`configuration:updated`), delivered as output. |
 | `on_config_change` | The reload handler (see [§5](#5-hot-reload)). |
 
-All `configuration::*` RPCs go through `trigger_with_retry` (3 attempts, linear
-250 ms × attempt backoff).
+All `configuration::*` RPCs go through `call_configuration_with_retry` (3
+attempts, linear 250 ms × attempt backoff).
 
 ## 4. The `updates` adapter lifecycle
 
@@ -121,7 +121,7 @@ worker therefore cannot self-derive the endpoint Telegram should POST to, so the
 operator supplies the **iii engine root** (`base_url`) and the worker appends its
 own route path. The path is a single constant,
 `config::WEBHOOK_API_PATH = "telegram-bot/webhook"`, reused for **both** the
-engine route registration and the Telegram URL — so the two can never drift:
+`http::on-request` route and the Telegram URL — so the two can never drift:
 
 ```
 endpoint_url = {base_url trimmed of trailing '/'} + "/telegram-bot/webhook"
@@ -138,12 +138,16 @@ config is not double-suffixed).
 1. `stop_poller` — cancel any running poller and await its handle.
 2. Compute `endpoint_url()`. If `None` (no `base_url`), warn and return —
    ingress is left inactive (no route, no `setWebhook`).
-3. **`ensure_webhook_trigger`** — if no webhook route handle is held yet,
-   `register_trigger` the `telegram-bot/webhook` HTTP POST route and **retain the
-   returned `Trigger` handle** in `RuntimeState.webhook_trigger`. The engine route
-   must exist *before* Telegram is told to POST, or early updates would hit an
-   unregistered path. If registration fails, the handle is left unset (so the next
-   reload retries) and `setWebhook` is skipped.
+3. **`ensure_webhook_route`** — if no webhook route handle is held yet,
+   observe `http::on-request` with args `{ method: "POST", path:
+   "/telegram-bot/webhook" }` and **retain the returned `ObserverHandle`** in
+   `RuntimeState.webhook_route`. The route must exist *before* Telegram is told
+   to POST, or early updates would hit an unserved path, so the worker waits up
+   to 10 s for the observer to become active. If the http worker refuses it
+   (`HTTP_ROUTE_CONFLICT`), the observer is disposed, the handle is left unset
+   (so the next reload retries) and `setWebhook` is skipped. An observer still
+   `pending` after 10 s (the http worker is not running) is kept and serves once
+   the http worker registers.
 4. `setWebhook` with the derived URL and the optional `secret`.
 
 ### Switching to **polling**
@@ -152,34 +156,34 @@ config is not double-suffixed).
 
 1. `stop_poller`.
 2. `deleteWebhook` — tell Telegram to **stop POSTing first**.
-3. **`unregister_webhook_trigger`** — `take()` the retained handle and call
-   `.unregister()`. (Order matters: removing the route before `deleteWebhook`
+3. **`dispose_webhook_route`** — `take()` the retained handle and call
+   `.dispose()`. (Order matters: removing the route before `deleteWebhook`
    would leave a window where Telegram POSTs to a dead path.)
 4. `start_poller` — spawn the background `getUpdates` loop.
 
 ### Idempotency and no route leaks
 
-- `ensure_webhook_trigger` guards on "handle already held", so re-entering the
+- `ensure_webhook_route` guards on "handle already held", so re-entering the
   webhook branch (e.g. a webhook→webhook change of `secret`) does **not**
-  re-register the route — it only re-issues `setWebhook` with the new value. This
-  matters because `register_trigger` mints a fresh UUID per call, so blind
-  re-registration would accumulate duplicate engine routes.
+  observe the route again — it only re-issues `setWebhook` with the new value.
+  Each `observe` creates a new observer, and the http worker refuses a second
+  observer of the same method and path with `HTTP_ROUTE_CONFLICT`.
 - `ingress_changed` short-circuits no-op reloads: `polling → polling` is treated
   as unchanged (the poller picks up a new `timeout_seconds` live), and
   `webhook → webhook` only re-applies when the config actually differs.
-- The `Trigger` handle has **no `Drop`**: dropping it does *not* unregister. The
-  code always `take()`s and explicitly `.unregister()`s — never overwrites the
-  `Option` — so the route can never silently linger.
+- Dropping an `ObserverHandle` does *not* dispose the observer. The code always
+  `take()`s and explicitly `.dispose()`s — never overwrites the `Option` — so
+  the route can never silently linger.
 
 ### Boot and shutdown
 
 - At **boot**, only the always-on control route `telegram-bot/set-webhook` is
-  registered statically (`bind_http_triggers`). The webhook ingress route is
-  registered by `ingress::start` → `apply_updates_adapter` **only if** the
+  observed unconditionally (`observe_control_routes`). The webhook ingress route
+  is observed by `ingress::start` → `apply_updates_adapter` **only if** the
   configured adapter is webhook. So a polling deployment never creates the route.
-- At **shutdown**, `ingress::shutdown` stops the poller and unregisters the
+- At **shutdown**, `ingress::shutdown` stops the poller and disposes the
   webhook route, leaving a clean slate for the next start rather than relying on
-  the engine to garbage-collect a disconnected worker's triggers.
+  the engine to clean up a disconnected worker's observers.
 
 ### The `set-webhook` control endpoint
 
@@ -187,16 +191,16 @@ config is not double-suffixed).
 manual re-arm: it re-issues `setWebhook` with the derived `endpoint_url()` from
 current config. It is redundant in steady state (switching adapters already does
 this) but useful to re-register if Telegram drops the webhook. Its route is
-always registered; it errors if the active adapter is not webhook or `base_url`
+always observed; it errors if the active adapter is not webhook or `base_url`
 is unset.
 
 ## 5. Hot-reload
 
 ```
-configuration worker emits configuration:updated (id = telegram-bot)
+configuration::on-updated runs (configuration:updated, id = telegram-bot)
         │
         ▼
-on-config-change fn fires ─► on_config_change:
+its observer calls on-config-change ─► on_config_change:
         1. read prev snapshot (for its timeout_ms)
         2. fetch_config_with_timeout (re-read authoritative value)
               └─ fetch failure → keep previous, return
@@ -207,7 +211,7 @@ on-config-change fn fires ─► on_config_change:
         5. set_my_commands (refresh the command menu)
 ```
 
-Functions and sibling/HTTP triggers are **not** re-registered on reload — only
+Functions and observers are **not** re-created on reload — only
 the config cell is swapped, ingress conditionally re-applied, and the command
 menu refreshed. `bot_token` rotation is picked up by the next API call (the token
 is read from the snapshot per call).
@@ -223,14 +227,20 @@ Exact order, all once at boot:
 5. `cfg.validate()` — **empty `bot_token` here is fatal** and aborts boot.
 6. build `ConfigCell` + `Deps`.
 7. `functions::register_all` — register all handler functions.
-8. `functions::bind_triggers` — best-effort bind the six sibling-event handlers
-   (missing siblings only warn).
-9. `functions::bind_http_triggers` — register the always-on `set-webhook` route.
-10. `configuration::register_config_trigger` — bind the reload handler.
-11. `ingress::start` — apply the adapter (registers the webhook route iff
+8. `approval_gate::probe_presence` — record whether approval-gate is connected.
+9. `functions::observe_events` — observe the six sibling event functions
+   (session, harness, approval). An observer of an absent sibling stays
+   `pending` and becomes active when the sibling registers.
+10. `approval_gate::start_watch` — observe `engine::on-workers-changed` to
+    track approval-gate presence.
+11. `functions::observe_control_routes` — observe the always-on `set-webhook`
+    route.
+12. `configuration::observe_config_changes` — observe configuration updates
+    with the reload handler.
+13. `ingress::start` — apply the adapter (observes the webhook route iff
     webhook; otherwise starts the poller).
-12. `set_my_commands` — publish the command menu.
-13. await Ctrl-C, then `ingress::shutdown` + `iii.shutdown_async`.
+14. `set_my_commands` — publish the command menu.
+15. await Ctrl-C, then `ingress::shutdown` + `iii.shutdown_async`.
 
 ## 7. Environment expansion
 

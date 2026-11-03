@@ -66,7 +66,7 @@
 
 /* The disclosure exists from the first call. Its track opens when a second
    call makes history available, so "show all" does not pop into the layout. */
-.chat-trigger-disclosure {
+.chat-call-disclosure {
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
@@ -75,27 +75,27 @@
     opacity var(--chat-state-swap) var(--chat-motion-ease);
 }
 
-.chat-trigger-disclosure[data-visible="true"] {
+.chat-call-disclosure[data-visible="true"] {
   grid-template-rows: 1fr;
   opacity: 1;
 }
 
-.chat-trigger-disclosure-inner {
+.chat-call-disclosure-inner {
   min-height: 0;
   overflow: hidden;
   padding-bottom: 0.375rem;
 }
 
-.chat-trigger-disclosure-chevron {
+.chat-call-disclosure-chevron {
   transition: transform var(--acc-chevron, 250ms) var(--chat-motion-ease);
 }
 
-.chat-trigger-disclosure-label {
+.chat-call-disclosure-label {
   display: inline-grid;
   min-height: 1lh;
 }
 
-.chat-trigger-disclosure-label > span {
+.chat-call-disclosure-label > span {
   grid-area: 1 / 1;
   opacity: 0;
   filter: blur(var(--blur-small, 2px));
@@ -106,7 +106,7 @@
     transform var(--chat-state-swap) var(--ease-in-out, ease-in-out);
 }
 
-.chat-trigger-disclosure-label > span[data-active="true"] {
+.chat-call-disclosure-label > span[data-active="true"] {
   opacity: 1;
   filter: blur(0);
   transform: translateY(0);
@@ -221,9 +221,9 @@
 
   .chat-live-row,
   .chat-thought-row,
-  .chat-trigger-disclosure,
-  .chat-trigger-disclosure-chevron,
-  .chat-trigger-disclosure-label > span,
+  .chat-call-disclosure,
+  .chat-call-disclosure-chevron,
+  .chat-call-disclosure-label > span,
   .chat-activity-item,
   .chat-waiting-slot,
   .chat-waiting-slot[data-active="true"],

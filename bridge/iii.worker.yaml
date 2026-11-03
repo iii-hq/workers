@@ -2,6 +2,7 @@ iii: v1
 name: bridge
 language: rust
 deploy: binary
+iii_engine_version: ">=0.26.0"
 manifest: Cargo.toml
 license: Apache-2.0
 bin: bridge

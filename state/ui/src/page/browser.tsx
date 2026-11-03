@@ -8,7 +8,7 @@
  * drill-in flow: scopes → keys → value, one pane at a time with ← back
  * buttons.
  *
- * Live updates ride the page-wide `state` trigger binding
+ * Live updates ride the page-wide `state::on-changed` observer
  * (src/lib/events.ts): a write into an unseen scope/key appends to its
  * column with a flash; deletes prune the keys column and refetch the
  * scope list (only the worker knows when a scope emptied — debounced
@@ -167,7 +167,7 @@ export function StateBrowser({
 
   const loadScopes = useCallback(() => {
     host.iii
-      .trigger<{ groups: string[] }>('state::list_groups', {})
+      .call<{ groups: string[] }>('state::list_groups', {})
       .then((r) => {
         setScopesError(null)
         setScopes(r.groups)
@@ -198,7 +198,7 @@ export function StateBrowser({
     const current = scopeRef.current
     if (current === null) return
     host.iii
-      .trigger<{ keys: string[] }>('state::list_keys', { scope: current })
+      .call<{ keys: string[] }>('state::list_keys', { scope: current })
       .then((r) => {
         // Stale async result: the user switched scopes while this list
         // was in flight — applying it would show A's keys under B.

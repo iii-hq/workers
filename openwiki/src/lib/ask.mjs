@@ -83,7 +83,7 @@ async function relevantSlugs(id, q, n = 5) {
 
 async function askFastLLM(worker, { q, blocks, model }) {
   const context = blocks.map((b) => `## ${b.title || b.slug}\n${b.excerpt}`).join('\n\n');
-  const res = await worker.trigger({
+  const res = await worker.call({
     function_id: 'router::complete',
     payload: {
       model,
@@ -123,7 +123,7 @@ function deepAskMessage(id, q, blocks) {
 }
 
 async function askDeep(worker, { id, q, model, blocks }) {
-  const { session_id } = await worker.trigger({
+  const { session_id } = await worker.call({
     function_id: 'harness::send',
     payload: {
       message: deepAskMessage(id, q, blocks),

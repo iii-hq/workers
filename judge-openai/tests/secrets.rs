@@ -160,7 +160,7 @@ async fn a_malformed_reference_is_rejected_without_a_lookup_or_an_echo() {
 }
 
 #[tokio::test]
-async fn a_secrets_changed_event_rotates_the_cached_key() {
+async fn a_secrets_on_changed_event_rotates_the_cached_key() {
     let provider = MockServer::start().await;
     for key in ["sk-first", "sk-rotated"] {
         Mock::given(method("GET"))
@@ -210,11 +210,7 @@ async fn a_secrets_changed_event_rotates_the_cached_key() {
         config,
         DecisionsClient::with_endpoint(None, format!("{}/v1/decisions", provider.uri())),
     );
-    judge_provider::secrets::register_secret_trigger(
-        &iii,
-        secrets,
-        judge_openai::SECRET_CHANGED_ID,
-    );
+    judge_provider::secrets::observe_secret_changes(&iii, secrets, judge_openai::SECRET_CHANGED_ID);
     let results = timeout(Duration::from_secs(5), async {
         let mut results = Vec::new();
         while results.len() < 3 {

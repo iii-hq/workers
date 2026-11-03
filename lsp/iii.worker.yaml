@@ -2,12 +2,13 @@ iii: v1
 name: lsp
 language: rust
 deploy: binary
+iii_engine_version: ">=0.26.0"
 manifest: Cargo.toml
 license: Apache-2.0
 bin: lsp
-description: III Language Server — autocompletion and hover for III engine functions and triggers
+description: III Language Server — autocompletion, hover and diagnostics for III engine function calls and observers
 # Opt out of Registry interface publication. lsp is a stdio language server:
 # it exits on stdin EOF (so it cannot stay alive while backgrounded) and it
-# only consumes engine discovery — it registers no functions or trigger
-# types, so there is no interface to collect.
+# only consumes engine discovery — it registers no functions, so there is no
+# interface to collect.
 registry_interface: false

@@ -398,7 +398,7 @@ pub struct SupersedeRequest {
     /// the new record replaces the old, nothing to absorb).
     #[serde(default)]
     pub reinforce: bool,
-    /// Why — carried on the `memory::item-changed` events this call emits
+    /// Why — carried on the `memory::on-item-changed` events this call emits
     /// (not persisted on the record). Trimmed, capped at 500 chars.
     #[serde(default)]
     pub reason: Option<String>,

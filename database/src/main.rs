@@ -31,16 +31,17 @@ use database::handlers::{
     transaction_query::{self, TxQueryReq},
     AppState,
 };
+use database::row_changes::NativeCapture;
 use database::transaction::TxRegistry;
-use database::triggers::NativeCapture;
 use iii_helpers::observability::{Logger, OtelConfig};
 use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// A row-changed subscriber must not be able to stall the write that already
-/// committed; the dispatch is void and bounded by this.
-const ROW_CHANGE_DISPATCH_TIMEOUT_MS: u64 = 10_000;
+/// Bounds a `database::on-row-changed` call that goes through the engine
+/// (before it confirms in-process calls): the write already committed, and
+/// announcing it must not stall the writer.
+const ROW_CHANGE_CALL_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -143,21 +144,21 @@ async fn main() -> Result<()> {
     // (unresolvable secret, SSH failure) is reported, not fatal.
     let pools = Arc::new(RwLock::new(std::collections::HashMap::new()));
     let live_config = Arc::new(RwLock::new(cfg.clone()));
-    // Native capture and the routing index of `database::on-row-changed`,
-    // driven by its observers and by the old trigger type's bindings.
+    // Native capture for the observers of `database::on-row-changed`, and
+    // the function's call.
     let capture = Arc::new(NativeCapture::new(
         iii.clone(),
         live_config.clone(),
         pools.clone(),
-        ROW_CHANGE_DISPATCH_TIMEOUT_MS,
+        ROW_CHANGE_CALL_TIMEOUT_MS,
     ));
-    let row_changes = Arc::new(database::triggers::RowChangeBus::with_capture(
+    let row_changes = Arc::new(database::row_changes::RowChangeBus::with_capture(
         iii.clone(),
         capture.clone(),
     ));
     // One LISTEN task per `capture: native` postgres database, live from
     // startup — external writes must be heard before any observer registers.
-    let native_listeners = Arc::new(database::triggers::NativeListeners::new(
+    let native_listeners = Arc::new(database::row_changes::NativeListeners::new(
         row_changes.clone(),
     ));
     runtime.set_listeners(native_listeners.clone());
@@ -377,9 +378,9 @@ async fn main() -> Result<()> {
                  untouched; reports ok/driver/latency/server version, the failing stage and \
                  the SSH host key; failures are data, not errors.",
             )
-            // Candidate credentials ride these payloads: no observer may
-            // subscribe to them.
-            .observe(iii_sdk::Observe::auto().allow(false)),
+            // Candidate credentials ride these payloads: nobody may observe
+            // them.
+            .observable(false),
         );
     }
     {
@@ -398,9 +399,9 @@ async fn main() -> Result<()> {
                 "Read one stored connection entry for editing: references and templates \
                  intact, literal passwords, passphrases and keys as \"__redacted__\".",
             )
-            // Candidate credentials ride these payloads: no observer may
-            // subscribe to them.
-            .observe(iii_sdk::Observe::auto().allow(false)),
+            // Candidate credentials ride these payloads: nobody may observe
+            // them.
+            .observable(false),
         );
     }
     {
@@ -420,9 +421,9 @@ async fn main() -> Result<()> {
                  connection in the database configuration; \"__redacted__\" keeps a stored \
                  value. Returns after the pools reloaded, with the connection's error if any.",
             )
-            // Candidate credentials ride these payloads: no observer may
-            // subscribe to them.
-            .observe(iii_sdk::Observe::auto().allow(false)),
+            // Candidate credentials ride these payloads: nobody may observe
+            // them.
+            .observable(false),
         );
     }
     {
@@ -876,37 +877,26 @@ async fn main() -> Result<()> {
         );
     }
 
-    // The worker announces its own writes through an owner-delivered function
-    // its observers name. Registered AFTER the other functions so the console
+    // The worker announces its own writes by calling a private function its
+    // observers observe. Registered AFTER the other functions so the console
     // can attribute it.
-    database::triggers::capture::register(&iii, &capture);
+    database::row_changes::capture::register(&iii, &capture);
 
-    // The old trigger type, on every engine: consumers that still bind
-    // `database::row-changed` (`registerTrigger`, `engine::register_trigger`,
-    // harness subscriptions) are served by the worker as before.
-    let _row_changed_type =
-        database::triggers::legacy::register_trigger_type(&iii, capture.clone());
-
-    // The configuration binding follows the engine's observe support, as the
-    // SDK learns it on each connection: an observer with observe, the old
-    // `configuration` trigger without. An engine upgraded or rolled back
-    // under the worker switches without a restart.
-    let config_binding =
-        configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()));
-    let _engine_follower = iii
-        .on_engine_supports_observe(move |engine_observes| config_binding.follow(engine_observes));
-    configuration::register_secret_trigger(&iii, state.clone(), Some(native_listeners.clone()));
+    // Configuration and secret changes reach the worker through observers of
+    // `configuration::on-updated` and `secrets::on-changed`. Each stays
+    // pending while its source is absent and activates once it registers.
+    let _config_observer =
+        configuration::observe_config_changes(&iii, state.clone(), Some(native_listeners.clone()));
+    let _secret_observer =
+        configuration::observe_secret_changes(&iii, state.clone(), Some(native_listeners.clone()));
     let _maintenance =
         configuration::spawn_maintenance(state.clone(), Some(native_listeners.clone()));
 
-    // Injectable console UI (function-trigger renderer) — after the
+    // Injectable console UI (function-call renderer) — after the
     // database::* functions so the console can attribute the assets.
     database::ui::register(&iii);
 
-    tracing::info!(
-        engine_observes = ?iii.engine_supports_observe(),
-        "database worker registered 39 functions, waiting for invocations"
-    );
+    tracing::info!("database worker registered 39 functions, waiting for invocations");
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");
     iii.shutdown_async().await;

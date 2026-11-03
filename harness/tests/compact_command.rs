@@ -1,6 +1,6 @@
 //! `/compact` through `harness::send` and `harness::compact`, end to end over
 //! an isolated engine with stub session-manager / state / context-manager
-//! workers and a `harness::compaction` subscriber standing in for a second
+//! workers and a `harness::on-compaction` subscriber standing in for a second
 //! device. No model runs. Skips when no `iii` engine binary is available.
 
 use std::collections::BTreeMap;
@@ -18,9 +18,11 @@ use harness::functions::send::{self, EditQueuedRequest, MessageInput, SendReques
 use harness::functions::status::{self, StatusRequest};
 use harness::hooks::HookRegistry;
 use harness::skills;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, Deliver, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::{Notify, RwLock};
 
@@ -88,7 +90,7 @@ async fn isolated_engine() -> Option<Engine> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if probe
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".into(),
                 payload: json!({}),
                 action: None,
@@ -132,7 +134,7 @@ struct World {
     state: BTreeMap<String, Value>,
     compact_requests: Vec<Value>,
     compact_reply: Value,
-    /// `harness::compaction` events the subscriber received.
+    /// `harness::on-compaction` events the subscriber received.
     events: Vec<Value>,
 }
 
@@ -373,19 +375,21 @@ impl Stack {
             TurnEvents::register(&iii),
             HookRegistry::register(&iii),
         );
-        // Another device watching the session.
+        // Another device watching the session. One activation at a time: the
+        // engine then runs the observer's deliveries in arrival order, so the
+        // device hears `started` before `completed`.
         let listener = register_worker(&engine.url, worker_options("listener"));
-        listener
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: "harness::compaction".into(),
-                function_id: "test::compaction-events".into(),
-                config: json!({ "session_id": SESSION }),
-                metadata: None,
-                namespace: None,
-                trigger_namespace: None,
-            })
-            .expect("subscription registered");
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let observer = listener.observe_with(
+            Source::function(harness::events::ON_COMPACTION_FN)
+                .filters(json!({ "input.session_id": { "$eq": SESSION } }))
+                .deliver(Deliver::Output),
+            "test::compaction-events",
+            ObserverOptions::default().max_in_flight(1),
+        );
+        tokio::time::timeout(Duration::from_secs(5), observer.ready())
+            .await
+            .expect("the compaction observer activates in time")
+            .expect("the compaction observer is accepted");
         Some(Self {
             deps,
             world,

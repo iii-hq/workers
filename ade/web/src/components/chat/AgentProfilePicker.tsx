@@ -121,14 +121,16 @@ function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
             }),
           )
           offs.push(
-            client.registerTrigger({
-              type: KITS_ON_CHANGE,
-              function_id: `${fnId}::${client.browserId}`,
-              config: {},
-            }),
+            client.observe(
+              {
+                function_id: KITS_ON_CHANGE,
+                filters: { 'input.op': { $in: ['apply', 'updates'] } },
+              },
+              `${fnId}::${client.browserId}`,
+            ),
           )
         } catch {
-          // No kit events from this Directory: the first read stands.
+          // The client refused the observer: the first read stands.
         }
         read()
       })

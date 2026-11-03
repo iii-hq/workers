@@ -95,7 +95,7 @@ export { RunPayloadSchema };
 
 /**
  * A delegated task. Same shape as a run, except the work is named `task` and
- * required: an orchestrator firing a trigger has one thing to say, and a
+ * required: an orchestrator handing off work has one thing to say, and a
  * sub-agent with no task is a bug rather than an empty turn.
  */
 const TaskPayloadSchema = RunPayloadSchema.omit({ prompt: true, messages: true }).extend({
@@ -199,7 +199,7 @@ export function extractPrompt(payload: RunPayload): string {
 function gatedCanUseTool(iii: IIIClient, session_id: string) {
   return async (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
     try {
-      const res = await iii.trigger<unknown, { decision?: string; behavior?: string }>({
+      const res = await iii.call<unknown, { decision?: string; behavior?: string }>({
         function_id: 'policy::check_permissions',
         payload: { session_id, function_id: `claude-code::${toolName}`, args: input },
         timeoutMs: 5_000,
@@ -467,7 +467,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; publishes raw Claude Code messages on the claude::raw-event trigger type and AgentEvent frames on claude::agent-event (bind with { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; publishes raw Claude Code messages on claude::on-raw-event and AgentEvent frames on claude::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: RUN_RESPONSE_FORMAT,
     },
@@ -490,16 +490,17 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Start a Claude Code turn and return immediately; bind claude::agent-event with { session_id } for progress and turn_end.',
+        'Start a Claude Code turn and return immediately; observe claude::on-agent-event with args { session_id } for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
   );
 
-  // The sub-agent entrypoint an orchestrator FIRES rather than calls: a trigger
-  // bound to this id delivers a task, the ids come back at once, and the
-  // outcome arrives the way a harness sub-agent's does — on `claude::agent-event`,
-  // in the child session, never as a return value the caller waits for.
+  // The sub-agent entrypoint an orchestrator hands work to without waiting: a
+  // call (or an observer targeting this id) delivers a task, the ids come back
+  // at once, and the outcome arrives the way a harness sub-agent's does — on
+  // `claude::on-agent-event`, in the child session, never as a return value
+  // the caller waits for.
   iii.registerFunction(
     'claude::task',
     async (payload: unknown) => {
@@ -521,9 +522,9 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // Fire-and-forget, and REACTIVE: the caller is not held open for the
       // length of an agent run. When the task settles, its outcome is written
       // to state under `agent_tasks/<session id>`, which is what an
-      // orchestrator binds a `state` trigger to and gets woken by — the same
+      // orchestrator observes (`state::on-changed`) and gets woken by — the same
       // shape a harness sub-agent uses, with no polling and no blocking call.
-      // The turn is persisted as well as published. `claude::agent-event` is a
+      // The turn is persisted as well as published. `claude::on-agent-event` is a
       // live tape — a console window opened after the run has nothing to replay
       // from it, which is why a finished sub-agent rendered blank with
       // `message_count: 0`. The session manager is the durable side, so the
@@ -566,7 +567,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Delegate one task to Claude Code and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so bind a `state` trigger on that BEFORE calling and be woken by it; progress arrives on claude::agent-event (bind with { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
+        'Delegate one task to Claude Code and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so observe state::on-changed with filters on input.scope and input.key BEFORE calling and be woken by it; progress arrives on claude::on-agent-event (observe with args { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
       request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },

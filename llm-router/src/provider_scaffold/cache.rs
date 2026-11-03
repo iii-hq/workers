@@ -7,7 +7,7 @@
 //! boot. The resolve response (credential, api_url, max_tokens) changes when
 //! an operator edits the ROUTER's configuration entry, which providers
 //! cannot observe; a short TTL bounds that staleness, and callers invalidate
-//! eagerly on `router::ready` (router restart) and on upstream auth errors
+//! eagerly on `router::on-ready` (router restart) and on upstream auth errors
 //! (credential rotated out from under us). Invalidation only drops the
 //! cache — retry/failover stays the router's job.
 
@@ -106,7 +106,7 @@ impl ScaffoldCache {
         (stored_at.elapsed() <= RESOLVE_TTL).then(|| resolved.clone())
     }
 
-    /// Drop the cached resolve response AND token. Call on `router::ready`
+    /// Drop the cached resolve response AND token. Call on `router::on-ready`
     /// (a restarted router may carry new config; the token survives but the
     /// re-declare path refreshes it anyway) and on upstream auth errors
     /// (the operator rotated the credential; the next attempt re-resolves).

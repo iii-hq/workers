@@ -75,8 +75,8 @@ mod tests {
             BUNDLE.len() <= iii_native_ui::MAX_BUNDLE_BYTES,
             "native.js is above the app's 1 MiB limit"
         );
-        // The app's own calls and its trigger are compiled in.
-        for needle in ["kanban:change", "board::get", "ticket::move"] {
+        // The app's own calls and the function it observes are compiled in.
+        for needle in ["kanban::on-change", "board::get", "ticket::move"] {
             assert!(BUNDLE.contains(needle), "native.js must mention {needle}");
         }
     }

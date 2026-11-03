@@ -50,18 +50,18 @@ export interface AttachmentReadSummary {
  * Invoke a worker function. Injectable so a test drives an expansion without a
  * live engine, which every expander needs and none should re-declare.
  */
-export type TriggerFn = (
+export type CallFn = (
   functionId: string,
   payload: Record<string, unknown>,
 ) => Promise<unknown>
 
-/** The live trigger, or the caller's stand-in. */
-export function triggerOr(trigger: TriggerFn | undefined): TriggerFn {
+/** The live call, or the caller's stand-in. */
+export function callOr(invoke: CallFn | undefined): CallFn {
   return (
-    trigger ??
+    invoke ??
     (async (functionId, payload) => {
       const client = await getIiiClient()
-      return client.trigger(functionId, payload)
+      return client.call(functionId, payload)
     })
   )
 }
@@ -128,7 +128,7 @@ export function failureBlock(name: string, reason: string): string {
 export function describeWorkerFailure(err: unknown, worker: string): string {
   const message = messageOf(err)
   if (/not registered|NOT_FOUND|function .* not found/i.test(message)) {
-    return `the ${worker} worker is not running — install it with \`iii trigger compose::add worker=${worker}\``
+    return `the ${worker} worker is not running — install it with \`iii call compose::add worker=${worker}\``
   }
   return message.length > 160 ? `${message.slice(0, 157)}…` : message
 }

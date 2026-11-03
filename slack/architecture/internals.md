@@ -12,7 +12,7 @@ method without a typed wrapper. A non-`ok` Slack response becomes a handler erro
 
 ### Ingress (HTTP only)
 
-The bridge registers two engine HTTP routes when `public_base_url` +
+The bridge serves two HTTP routes when `public_base_url` +
 `signing_secret` are set:
 
 - `slack/events` → `slack::events`
@@ -24,12 +24,12 @@ signature over those exact bytes (`signing::verify`, 5-minute replay window,
 constant-time compare), then write the response on the paired write channel. The
 raw body is required because the signature is computed over it; a re-serialized
 parsed body would not match. Socket Mode is intentionally not used — the engine's
-HTTP triggers are the public surface.
+`http::on-request` routes are the public surface.
 
 `slack::events` answers the `url_verification` challenge, acks `event_callback`
 within Slack's 3-second window, and processes the event asynchronously.
 
-### Triggering and context
+### When a turn runs
 
 `dispatch.rs` gates turns:
 
@@ -53,15 +53,15 @@ vendor names are baked in. The Slack channel-context prompt
 
 ### Streaming back
 
-`session::message-*` events for the bound session reach `stream.rs`, which opens
+`session::on-message-*` events for the bound session reach `stream.rs`, which opens
 `chat.startStream` once, sends each text delta via `chat.appendStream`, and closes
-with `chat.stopStream` on `harness::turn-completed` (with a `chat.update` fallback
+with `chat.stopStream` on `harness::on-turn-completed` (with a `chat.update` fallback
 for workspaces without AI-app streaming). The assistant-thread "thinking" status
 is set best-effort via `assistant.threads.setStatus`.
 
 ### Approvals
 
-When the optional `approval-gate` worker is present, `approval::pending-created`
+When the optional `approval-gate` worker is present, `approval::on-pending-created`
 posts a Block Kit message with Approve / Reject / Approve-always buttons; the
 `block_actions` interaction resolves the held call via `approval::*` and clears
 the buttons.

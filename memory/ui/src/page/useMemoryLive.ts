@@ -14,18 +14,18 @@ import {
 
 /**
  * Live state for the memory page: banks + the selected bank's memories and
- * rules, re-read on both of the memory worker's trigger types
- * (`memory::item-changed`, `memory::bank-changed`) through the shared
- * `useWorkerLive` (tab-scoped bindings, visible-tab poll while they are
+ * rules, re-read on every call of the memory worker's two change functions
+ * (`memory::on-item-changed`, `memory::on-bank-changed`) through the shared
+ * `useWorkerLive` (tab-scoped observers, re-read on tab focus while they are
  * unavailable). The selection/page/filter live here so a change re-runs the
- * fetch; the function ids and trigger types are verbatim from the console.
+ * fetch; the function ids are verbatim from the console.
  */
 
 /** Per-tab handler id (the host namespaces it `::<browserId>`). */
 const EVENTS_FN = 'iii::memory-ui::events'
-const MEMORY_EVENT_TRIGGERS = [
-  'memory::item-changed',
-  'memory::bank-changed',
+const MEMORY_CHANGE_FUNCTIONS = [
+  'memory::on-item-changed',
+  'memory::on-bank-changed',
 ] as const
 
 interface MemorySnapshot {
@@ -57,7 +57,7 @@ export interface MemoryLive extends MemorySnapshot {
   setTag: (next: string | null) => void
   loading: boolean
   error: string | null
-  /** True while updates arrive through the live trigger bindings. */
+  /** True while updates arrive through the live observers. */
   live: boolean
   refresh: () => void
 }
@@ -70,7 +70,7 @@ export function useMemoryLive(host: Host): MemoryLive {
 
   const { data, loading, error, live, refresh } = useWorkerLive<MemorySnapshot>({
     iii: host.iii,
-    triggers: MEMORY_EVENT_TRIGGERS,
+    sources: MEMORY_CHANGE_FUNCTIONS,
     handlerId: EVENTS_FN,
     fetch: async () => {
       const banks = await listBanks(host)

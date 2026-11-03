@@ -13,11 +13,13 @@ use std::time::Duration;
 use iii_queue::boot::BootHandle;
 use iii_queue::config::{AdapterEntry, QueueConfig, RunJobsIn};
 use iii_queue::functions::PUBLISH_FN_ID;
-use iii_queue::TRIGGER_TYPE;
+use iii_queue::on_message::ON_MESSAGE_FN;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{IIIClient, InitOptions, RegisterFunction, TriggerAction, WorkerIdentityMode};
+use iii_sdk::{
+    CallAction, CallRequest, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
+    WorkerIdentityMode,
+};
 use lapin::options::QueueDeclareOptions;
 use lapin::types::FieldTable;
 use lapin::{Connection, ConnectionProperties};
@@ -114,25 +116,22 @@ async fn start_instance(
     })
 }
 
-fn subscribe(instance: &Instance, function_id: &str, topic: &str) {
-    // The old consumer path: `durable:subscriber` stays served on 0.24 and
-    // 0.25 engines.
-    #[allow(deprecated)]
-    instance
-        .iii
-        .register_trigger(RegisterTriggerInput::new(
-            TRIGGER_TYPE.to_string(),
-            function_id.to_string(),
-            json!({ "queue": topic, "group": function_id, "max_retries": 1, "backoff_ms": 5 }),
-        ))
-        .expect("register durable subscriber trigger");
+/// Subscribe `function_id` to `topic` in the instance's consumer group named for the function:
+/// observe the instance's `queue::on-message` with the topic and the group as args.
+fn subscribe(instance: &Instance, function_id: &str, topic: &str) -> ObserverHandle {
+    instance.iii.observe(
+        Source::function(ON_MESSAGE_FN).args(
+            json!({ "topic": topic, "group": function_id, "max_retries": 1, "backoff_ms": 5 }),
+        ),
+        function_id,
+    )
 }
 
 async fn publish(instance: &Instance, topic: &str, value: &str) {
     instance
         .iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: PUBLISH_FN_ID.to_string(),
                 payload: json!({ "topic": topic, "data": { "value": value } }),
                 action: None,
@@ -213,8 +212,8 @@ async fn an_event_is_handled_once_by_a_consumer_group_across_namespaces() {
     else {
         return;
     };
-    subscribe(&a, &function_id, &topic);
-    subscribe(&b, &function_id, &topic);
+    let _ = subscribe(&a, &function_id, &topic);
+    let _ = subscribe(&b, &function_id, &topic);
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     publish(&a, &topic, "one").await;
@@ -243,7 +242,7 @@ async fn a_replaced_instance_leaves_no_queue_collecting_events() {
     let Some(old) = instance(&old_ns, config(&url, None), Some(&function_id)).await else {
         return;
     };
-    subscribe(&old, &function_id, &topic);
+    let old_observer = subscribe(&old, &function_id, &topic);
     tokio::time::sleep(Duration::from_millis(500)).await;
     old.stop().await;
 
@@ -257,12 +256,17 @@ async fn a_replaced_instance_leaves_no_queue_collecting_events() {
     else {
         return;
     };
-    subscribe(&new, &function_id, &topic);
+    let _ = subscribe(&new, &function_id, &topic);
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     publish(&new, &topic, "after-deploy").await;
     let handled = settled_total(&[&new], 1, Duration::from_secs(1)).await;
-    let orphan = queue_counts(&url, &format!("iii.{topic}.{function_id}@{old_ns}.queue")).await;
+    // The group is the subscription: the old observer never had a queue of its own.
+    let orphan = queue_counts(
+        &url,
+        &format!("iii.{topic}.observer:{}.queue", old_observer.id()),
+    )
+    .await;
     new.stop().await;
     assert_eq!(handled, 1, "the new instance handles the event");
     assert!(
@@ -310,9 +314,9 @@ async fn a_job_enqueued_by_one_instance_runs_in_an_instance_that_hosts_the_funct
 }
 
 /// An RBAC listener (`III_ENGINE_RBAC_WS_URL`, auth function `test::auth`) whose grant keeps each
-/// instance to its own namespace, a few functions of `default` and the trigger types it needs,
-/// including what the queue worker uses to hold a job for its target: `engine::functions::info`
-/// and the engine's change triggers.
+/// instance to its own namespace and a few functions of `default`, including what the queue
+/// worker uses to hold a job for its target: `engine::functions::info` and the engine's change
+/// events, which it observes.
 async fn rbac_trusted() -> Option<Arc<IIIClient>> {
     let trusted = engine::connect_fresh().await?;
     trusted.register_function(
@@ -329,13 +333,10 @@ async fn rbac_trusted() -> Option<Arc<IIIClient>> {
                     "configuration::get",
                     "engine::workers::list",
                     "engine::functions::list",
-                    "engine::functions::info"
+                    "engine::functions::info",
+                    "engine::on-functions-changed",
+                    "engine::on-workers-changed"
                 ],
-                "allowed_trigger_types": [
-                    "http", "cron", "state", "durable:subscriber", "subscribe", "database::row-changed",
-                    "engine::functions-available", "engine::workers-available"
-                ],
-                "allow_trigger_type_registration": true,
                 "context": { "namespace": namespace },
             }))
         }),
@@ -361,11 +362,11 @@ async fn rbac_instance(
 async fn enqueue(from: &Instance, function_id: &str, queue: &str) {
     let receipt = from
         .iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: function_id.to_string(),
                 payload: json!({ "to": "a@example.com" }),
-                action: Some(TriggerAction::Enqueue {
+                action: Some(CallAction::Enqueue {
                     queue: queue.to_string(),
                 }),
                 timeout_ms: Some(5_000),
@@ -457,13 +458,13 @@ async fn retry_until_handled(
     app: &Instance,
     handled: &AtomicUsize,
     deadline: Duration,
-    request: impl Fn() -> TriggerRequest,
+    request: impl Fn() -> CallRequest,
 ) -> bool {
     let before = handled.load(Ordering::SeqCst);
     let end = Instant::now() + deadline;
     while Instant::now() < end {
         // Fails or is dropped while the adapter is being rebuilt.
-        let _ = app.iii.trigger(request().namespace(&app.namespace)).await;
+        let _ = app.iii.call(request().namespace(&app.namespace)).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
         if handled.load(Ordering::SeqCst) > before {
             return true;
@@ -512,7 +513,7 @@ async fn delivery_resumes_after_the_broker_drops_every_connection() {
             }),
         );
     }
-    subscribe(&app, &on_order, &topic);
+    let _ = subscribe(&app, &on_order, &topic);
     tokio::time::sleep(Duration::from_millis(500)).await;
     publish(&app, &topic, "before").await;
     enqueue(&app, &send_mail, &queue).await;
@@ -537,7 +538,7 @@ async fn delivery_resumes_after_the_broker_drops_every_connection() {
 
     let fires = app.fires.clone();
     let topic_resumed =
-        retry_until_handled(&app, &fires, Duration::from_secs(60), || TriggerRequest {
+        retry_until_handled(&app, &fires, Duration::from_secs(60), || CallRequest {
             function_id: PUBLISH_FN_ID.to_string(),
             payload: json!({ "topic": topic, "data": { "value": "after" } }),
             action: None,
@@ -545,10 +546,10 @@ async fn delivery_resumes_after_the_broker_drops_every_connection() {
         })
         .await;
     let queue_resumed =
-        retry_until_handled(&app, &mails, Duration::from_secs(60), || TriggerRequest {
+        retry_until_handled(&app, &mails, Duration::from_secs(60), || CallRequest {
             function_id: send_mail.clone(),
             payload: json!({ "to": "a@example.com" }),
-            action: Some(TriggerAction::Enqueue {
+            action: Some(CallAction::Enqueue {
                 queue: queue.clone(),
             }),
             timeout_ms: Some(5_000),

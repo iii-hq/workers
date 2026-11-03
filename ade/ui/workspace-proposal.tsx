@@ -8,5 +8,5 @@ import type { Host } from '@iii-dev/console-ui'
 import { createWorkingDirectoryProposalRenderer } from './src/working-directory'
 
 export default function setup(host: Host) {
-  host.functionTriggers.register(createWorkingDirectoryProposalRenderer(host))
+  host.functionCalls.register(createWorkingDirectoryProposalRenderer(host))
 }

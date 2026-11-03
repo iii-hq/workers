@@ -26,7 +26,7 @@ const toneClasses: Record<
   },
   neutral: {
     badge: 'default',
-    icon: 'stroke-trigger-running',
+    icon: 'stroke-call-running',
   },
   accent: {
     badge: 'accent',

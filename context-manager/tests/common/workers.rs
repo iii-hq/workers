@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use tokio::sync::{OnceCell, RwLock};
 
@@ -42,7 +42,7 @@ pub async fn register_all(iii: &Arc<IIIClient>) {
                 resolver: Arc::new(RouterModelResolver::new(iii.clone())),
                 // The summariser reads its timeout from the live snapshot per
                 // call; router::chat is absent on the test engine, so only the
-                // trigger error path runs anyway.
+                // call error path runs anyway.
                 summarizer: Arc::new(RouterSummarizer::new(iii.clone(), cell.clone())),
                 leases,
                 clock: Arc::new(SystemClock),
@@ -64,7 +64,7 @@ async fn wait_until_routable(iii: &Arc<IIIClient>, function_id: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let res = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload: serde_json::json!({ "model": { "id": "bdd-readiness-probe" } }),
                 action: None,

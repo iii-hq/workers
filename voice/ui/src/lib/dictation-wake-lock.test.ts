@@ -72,12 +72,25 @@ describe('dictation screen lease', () => {
   })
 
   it.each(['closed', 'error'] as const)('releases on a terminal %s event', async (kind) => {
-    const { controller, release, emit } = setup()
+    const { controller, keepAwake, release, emit } = setup()
     await controller.start()
     emit(kind)
     expect(release).toHaveBeenCalledTimes(1)
     await controller.cancel()
+    expect(keepAwake).toHaveBeenCalledTimes(1)
     expect(release).toHaveBeenCalledTimes(1)
+    expect(mocks.stop).not.toHaveBeenCalled()
+  })
+
+  it('stop after a terminal closed event returns the text without taking the lease again', async () => {
+    const { controller, keepAwake, release, emit } = setup()
+    await controller.start()
+    emit('closed')
+    await expect(controller.stop()).resolves.toBe('')
+    expect(controller.getState().status).toBe('idle')
+    expect(keepAwake).toHaveBeenCalledTimes(1)
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(mocks.stop).not.toHaveBeenCalled()
   })
 
   it('still works on older consoles without the optional screen API', async () => {

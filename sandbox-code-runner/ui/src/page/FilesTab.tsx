@@ -142,7 +142,7 @@ export function FilesTab({
   const loadDir = useCallback(
     (path: string) => {
       host.iii
-        .trigger('sandbox::fs::ls', { sandbox_id: sandboxId, path })
+        .call('sandbox::fs::ls', { sandbox_id: sandboxId, path })
         .then((value) => {
           setDirs((prev) => ({ ...prev, [path]: parseEntries(value) }))
           setTreeError(null)
@@ -176,7 +176,7 @@ export function FilesTab({
       setEditing(false)
       setFile(null)
       host.iii
-        .trigger('sandbox::fs::read', { sandbox_id: sandboxId, path })
+        .call('sandbox::fs::read', { sandbox_id: sandboxId, path })
         .then((value) => {
           const rec = asRecord(value)
           const size = typeof rec?.size === 'number' ? rec.size : 0
@@ -221,7 +221,7 @@ export function FilesTab({
     setOpBusy(true)
     setOpError(null)
     host.iii
-      .trigger(`sandbox::fs::${op}`, payloads[op])
+      .call(`sandbox::fs::${op}`, payloads[op])
       .then(() => {
         setOp(null)
         setOpA('')
@@ -240,7 +240,7 @@ export function FilesTab({
     setSearching(true)
     setMatches(null)
     host.iii
-      .trigger('sandbox::fs::grep', {
+      .call('sandbox::fs::grep', {
         sandbox_id: sandboxId,
         path: '/',
         pattern,
@@ -264,7 +264,7 @@ export function FilesTab({
     if (!file || file.kind !== 'text') return
     setSaving(true)
     host.iii
-      .trigger('sandbox::fs::write', {
+      .call('sandbox::fs::write', {
         sandbox_id: sandboxId,
         path: file.path,
         content: draft,
@@ -286,7 +286,7 @@ export function FilesTab({
   const download = (path: string) => {
     setDownloading(true)
     host.iii
-      .trigger(
+      .call(
         'sandbox::exec',
         {
           sandbox_id: sandboxId,

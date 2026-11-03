@@ -2,10 +2,12 @@
 
 Workers for the [iii engine](https://github.com/iii-hq/iii). Each top-level
 directory is a self-contained worker module: a process that connects to the
-engine over WebSocket, registers functions + triggers, and does something
-useful.
+engine over WebSocket, registers functions, observes the functions it reacts
+to, and does something useful. A worker's events are functions too: private
+functions it calls when the event happens, which other workers observe with
+`iii.observe`.
 
-Workers are installed via `iii trigger compose::add worker=<name>`, which
+Workers are installed via `iii call compose::add worker=<name>`, which
 resolves the matching asset for the host from the workers registry API.
 
 ## Develop the Harness locally
@@ -65,8 +67,8 @@ kanban board.
 |---|---|---|
 | [`whatsapp`](whatsapp/) | Go | Linked-phone sessions through whatsmeow and official Meta Cloud API messaging, attachments, groups, and filtered events; includes ADE setup and integration tests. |
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
-| [`approval-gate`](approval-gate/) | Rust | Human-in-the-loop approval gate — evaluates each function call (continue / deny / hold), holds pending calls for a human, and emits `approval::pending-*` events. Binds the harness `pre_trigger` hook. See [`approval-gate/architecture/`](approval-gate/architecture/). |
-| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Approval is delegated to the standalone `approval-gate` worker via the `pre_trigger` hook. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
+| [`approval-gate`](approval-gate/) | Rust | Human-in-the-loop approval gate — evaluates each function call (continue / deny / hold), holds pending calls for a human, and emits the `approval::on-pending-*` events. Observes the harness `harness::hook::on-pre-call` hook point. See [`approval-gate/architecture/`](approval-gate/architecture/). |
+| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Approval is delegated to the standalone `approval-gate` worker through the `harness::hook::on-pre-call` hook point. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
 | [`eval`](eval/) | Rust | Durable same-model A/B evaluation for prompts and system prompts — runs paired harness sessions, delegates correctness to iii evaluator functions, and reports pass rates with token, cost, latency, function-call, trace, and span metrics. |
 | [`security-scan`](security-scan/) | Rust | Report-only security reviews of operator-configured repositories at immutable Git commits, using a read-only Harness policy and durable deduplication. |
 | [`sentinel`](sentinel/) | Rust | Error monitor for the engine: groups failures from trace and log telemetry by deterministic fingerprint, freezes the evidence before the in-memory span ring discards it, and opens assisted harness investigations beside the console page. |
@@ -78,13 +80,13 @@ kanban board.
 | [`pi`](pi/) | Node | pi coding agent as an iii worker — `pi::run` drives headless turns, and `pi::terminal::*` runs the same agent as a TERMINAL on the console (installed on the terminal host, in a workspace equipped with the iii skills and the iii activity extension). Both mirror raw events onto `pi::events` and stream AgentEvent frames onto `agent::events`. |
 | [`hermes`](hermes/) | Python | Hermes agent as an iii worker — `hermes::run` runs headless turns with the iii runtime context, `hermes::send` delivers to 27+ messaging platforms, and inbound platform/webhook events republish via `hermes::inbound`. |
 | [`opencode`](opencode/) | Node | OpenCode as an iii worker — `opencode::*` run headless OpenCode turns via `opencode run --format json`, mirror raw JSON events onto `opencode::events`, and stream AgentEvent frames (with usage + cost) onto `agent::events`. |
-| [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `ade`. See [`session-manager/architecture/`](session-manager/architecture/). |
+| [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six `session::on-*` event functions; the transcript backend for `harness` and `ade`. See [`session-manager/architecture/`](session-manager/architecture/). |
 | [`telegram-bot`](telegram-bot/) | Rust | Telegram webhook bridge to the harness stack — live message edits, inline approval keyboards, and configurable verbosity. |
-| [`slack`](slack/) | Rust | Slack Web API as `slack::*` functions plus a harness bridge — @mention-triggered turns, native `chat.*Stream` replies, Block Kit approvals. See [`slack/architecture/`](slack/architecture/). |
+| [`slack`](slack/) | Rust | Slack Web API as `slack::*` functions plus a harness bridge — turns started by an @mention, native `chat.*Stream` replies, Block Kit approvals. See [`slack/architecture/`](slack/architecture/). |
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`vscode`](vscode/) | Node | VS Code as an iii worker — `vscode::*` runs the VS Code Server through the `code` CLI per workspace, and a Console page embeds the Workbench for the working directory. |
-| [`kanban`](kanban/) | Rust | File-backed kanban board — `kanban::*` tickets, threaded comments and agent assignment, the `kanban:change` / `kanban:comment` trigger types agents wake on, an injectable console board and ticket screen, and bundled Product Manager / Tech Lead / Backend / Frontend agent profiles with their skills. |
+| [`kanban`](kanban/) | Rust | File-backed kanban board — `kanban::*` tickets, threaded comments and agent assignment, the `kanban::on-change` / `kanban::on-comment` functions agents observe to wake, an injectable console board and ticket screen, and bundled Product Manager / Tech Lead / Backend / Frontend agent profiles with their skills. |
 | [`stories`](stories/) | Rust | Component stories for any React project — builds CSF story files with the project's own Vite (monorepo-aware), indexes components and their states per git line, compares the working tree with a branch, a commit or a chat turn, renders deterministic screenshots and DOM/React trees through `browser`, and injects an explorer and compare page into the console. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection, workers-registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus one-shot lexical function search — `directory::search_functions` returns compact candidates for the relevant functions (BM25 + coverage pruning, installed + installable-from-registry) and directs callers to batch selected ids through `engine::functions::info`; its search hint is injected at most once per turn. |
 | [`judge`](judge/) | Rust | Provider-neutral Noul, Choice and Score evaluations through `judge::evaluate` and caller-scoped cancellation (plus the internal `judge::models::list` for tools that size requests), forwarded to the selected `judge-<provider>` worker. |
@@ -93,15 +95,15 @@ kanban board.
 | [`judge-clef`](judge-clef/) | Rust | clef provider for `judge`: Cloudflare's Clef-Flash decision model downloaded from the Hugging Face Hub and run in-process (backbone and joint schema head in one llama.cpp graph), no API key or external service, behind `judge-clef::*`. |
 | [`judge-openai`](judge-openai/) | Rust | OpenAI provider for `judge`: Noul, Choice and Score questions answered by OpenAI's Decisions API (`gpt-6-luna`, beta), with worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-openai::*`. |
 | [`judge-typesafe`](judge-typesafe/) | Rust | TypeSafe JEV provider for `judge`: worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-typesafe::*`. |
-| [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
+| [`lsp`](lsp/) | Rust | Language Server for iii function ids, observers, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O — JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
 | [`fp`](fp/) | Rust | Lodash-style value transforms (`fp::get`/`pick`/`take`/…) and `fp::pipe` — worker-side pipelines that move big values function→function without routing them through the model. Injects its usage guidance via the harness `pre-generate` hook. |
 | [`llm-router`](llm-router/) | Rust | One front door + provider protocol in front of every LLM provider — `router::chat`/`router::complete`/`router::embed`, provider registry + credentials, model catalog, and routing. See [`llm-router/README.md`](llm-router/README.md). |
 | [`mcp`](mcp/) | Rust | MCP 2025-06-18 Streamable HTTP bridge — exposes iii functions tagged `mcp.expose` as MCP tools. |
-| [`memory`](memory/) | Rust | Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity + semantic recall, pinning, supersede-never-delete history, and two live trigger types. Plain files on disk; binds the harness `pre-generate` hook for injection and `turn-completed` for background capture. |
+| [`memory`](memory/) | Rust | Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity + semantic recall, pinning, supersede-never-delete history, and two live event functions (`memory::on-item-changed`, `memory::on-bank-changed`). Plain files on disk; observes the harness `harness::hook::on-pre-generate` hook point for injection and `harness::on-turn-completed` for background capture. |
 | [`memory-consolidate`](memory-consolidate/) | Rust | Scheduled hygiene sibling of `memory` — deterministic dedup of near-duplicate memories, supersede-only through the public memory functions, pinned untouchable, catch-up-on-boot scheduling. Removable without touching stored memory. |
-| [`rbac-proxy`](rbac-proxy/) | Rust | RBAC boundary proxy for the iii worker protocol — opens its own port and reverse-proxies functions + channels to a trusted engine listener, authenticating each connection, gating every invocation and trigger binding, namespacing registrations, running middleware + registration hooks, and filtering the `engine::*` discovery results to the caller's boundaries. The [`ade`](ade/) reverse-proxy with the engine's RBAC vendored in front, out of process. |
+| [`rbac-proxy`](rbac-proxy/) | Rust | RBAC boundary proxy for the iii worker protocol — opens its own port and reverse-proxies functions + channels to a trusted engine listener, authenticating each connection, gating every invocation and observer, namespacing registrations, running middleware + registration hooks, and filtering the `engine::*` discovery results to the caller's boundaries. The [`ade`](ade/) reverse-proxy with the engine's RBAC vendored in front, out of process. |
 | [`provider-anthropic`](provider-anthropic/) | Rust | Anthropic Messages API provider behind `llm-router` — `provider::anthropic::stream` with prompt caching, thinking, and live model discovery. |
 | [`provider-claude-code`](provider-claude-code/) | Rust | Claude Code (Pro/Max subscription) Messages API provider behind `llm-router` — `provider::claude-code::stream` using OAuth credentials from the auth-credentials vault or `~/.claude/.credentials.json`, namespaced `claude-code/*` catalog. Local/personal dev only (ToS caveat). |
 | [`provider-command-code`](provider-command-code/) | Rust | Command Code multi-vendor provider behind `llm-router`; Claude ids use Anthropic Messages, other ids use OpenAI Chat Completions, and the live catalog is namespaced `command-code/*`. |
@@ -114,7 +116,7 @@ kanban board.
 | [`provider-xai`](provider-xai/) | Rust | xAI (Grok) Chat Completions provider behind `llm-router` — `provider::xai::stream` with grok reasoning support and live model discovery against `api.x.ai`. |
 | [`provider-zai`](provider-zai/) | Rust | Z.AI (GLM) Chat Completions provider behind `llm-router` — `provider::zai::stream` with GLM thinking/effort support and a curated catalog against `api.z.ai` (no upstream model listing). |
 | [`ide`](ide/) | Rust | Unix shell + filesystem worker — `shell::exec` with denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
-| [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
+| [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change events (`storage::on-object-created`, `storage::on-object-deleted`). |
 | [`tailscale`](tailscale/) | Rust | Tailscale as an iii worker — the `tailscale` CLI as 38 typed `tailscale::*` functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, updates) with a Console page: links as QR codes, devices, network diagnostics, settings. |
 | [`tmux`](tmux/) | Rust | tmux sessions and windows as `tmux::*` functions — list, create, rename, select and kill; per pane, the agent CLI running there (Claude Code, Codex, …) as working / waiting / idle, the `iii compose` stack with its engine and worker ports, and every listening port traced to its pane; plus a Console page whose terminal is a live tmux client. |
 | [`browser`](browser/) | Rust | Interactive Chromium sessions over CDP with console/network capture, a11y-tree snapshots with actionable refs, viewable screenshots, and DevTools element picking for the console UI. |
@@ -122,7 +124,7 @@ kanban board.
 | [`canvas`](canvas/) | Rust | Diagrams as editable source — `canvas::*` store mermaid text and freeform whiteboard scenes under stable 8-character ids, draw element by element via `canvas::element::*`, serve the per-family mermaid syntax primer, and validate source before it lands; the console streams each canvas live in chat and on a canvas page. |
 | [`computer`](computer/) | Rust | Full-desktop computer use — start a session on this machine, a sandboxed desktop, or a remote one, screenshot it, click and type by coordinate, and stream the live screen into the console. |
 | [`ios-simulator`](ios-simulator/) | Rust | iOS Simulators on a Mac — create, boot and watch simulators live in the console as an iPhone you drive with multi-touch (tap, swipe, pinch), hardware buttons and the keyboard; screenshots and recordings; one Mac serves many tenants, each with its own isolated device set and media. |
-| [`worktree`](worktree/) | Rust | Git worktree lifecycle for parallel agents — `worktree::*` mint, claim, and track isolated worktrees per repo, emit six lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). |
+| [`worktree`](worktree/) | Rust | Git worktree lifecycle for parallel agents — `worktree::*` mint, claim, and track isolated worktrees per repo, emit six lifecycle events (`worktree::on-*`), and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). |
 | [`github`](github/) | Rust | GitHub CLI (`gh`) as an iii worker — typed `github::pr/issue/repo/run/workflow/release/search::*` functions plus `github::exec` argv passthrough and `github::api` for any GitHub REST endpoint. |
 | [`sandbox-code-runner`](sandbox-code-runner/) | Rust | Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source, and tear down runtimes on demand. |
 | [`code-runner`](code-runner/) | Rust | Run untrusted Node.js and Python in-process — V8 isolates and CPython-on-WebAssembly behind one run/register_function/teardown API, with no microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory. |
@@ -141,6 +143,64 @@ Workers target the `iii-sdk` package on each ecosystem:
 
 Each module pins its exact version in its own manifest (`Cargo.toml`,
 `package.json`, or `pyproject.toml`).
+
+### Moving to an iii release
+
+[`scripts/pin-iii-sdk.sh`](scripts/pin-iii-sdk.sh) writes one iii release into
+every SDK pin in this repository and re-locks each project that resolves an
+SDK package:
+
+- Rust: `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` in every
+  `Cargo.toml` and `Cargo.lock`.
+- Node: `iii-sdk`, `iii-browser-sdk`, `@iii-dev/helpers`,
+  `@iii-dev/observability` in every `package.json`, the pnpm and npm
+  lockfiles, and the pnpm `minimumReleaseAgeExclude` entries.
+- Python: the same packages in `pyproject.toml` and `uv.lock`, in their PEP 440
+  spelling (`0.26.0rc1`).
+- Go: `github.com/iii-hq/iii/sdk/packages/go/iii` in `go.mod` and `go.sum`.
+- Engine: the release CI installs (`III_RELEASE_TAG`), and the iii archive and
+  its sha256 in `hermes/Dockerfile`.
+
+It writes nothing until crates.io, npm, PyPI, the Go proxy and the GitHub
+release all serve that version. `--dry-run` prints the edits and the re-lock
+commands.
+
+The last mile of an iii release, in order:
+
+1. iii publishes the release. `Create Tag` in `iii-hq/iii` pushes
+   `iii/v<version>`, and its release workflow publishes the SDK packages, the Go
+   module tag and the engine archives. A release candidate from an unmerged
+   branch uses `prerelease: rc` with `version_override: 0.26.0-rc.1`.
+2. Run the script with that version on the workers branch:
+
+   ```bash
+   scripts/pin-iii-sdk.sh 0.26.0-rc.1 --dry-run
+   scripts/pin-iii-sdk.sh 0.26.0-rc.1
+   ```
+
+3. Review `git diff`, commit and push the branch. CI builds and tests every
+   worker on the published SDKs and engine.
+4. Merge the pull request into `main` once CI passes. Release Control builds
+   commits on `main`: it reads the descriptor index that
+   [`deploy-descriptor-index.yml`](.github/workflows/deploy-descriptor-index.yml)
+   compiles on each push to `main`.
+5. Publish the worker releases through Release Control.
+
+The stable release takes the same steps with `0.26.0`. Once the workers built
+on it are published:
+
+```bash
+scripts/pin-iii-sdk.sh kit                            # deepwork kit ranges
+scripts/pin-iii-sdk.sh template export <templates>    # synced template files into a checkout of iii-hq/templates
+# commit and push that checkout of iii-hq/templates
+scripts/pin-iii-sdk.sh template record <commit>       # that templates commit, in template/upstream/sync.json
+```
+
+`kit` sets each worker range in `kits/deepwork/iii.kit.yaml` to the first
+release of that worker whose `Cargo.toml` pins the SDK version this repository
+pins. `template record` writes the commit only when it carries every synced file
+byte for byte. Commit `kits/deepwork/iii.kit.yaml` and
+`template/upstream/sync.json` on a branch, push it and merge it into `main`.
 
 ## Build
 
@@ -226,7 +286,7 @@ Workers are discovered through the workers registry API at
 `https://api.workers.iii.dev`. Each release publishes a manifest entry
 declaring the worker kind (`binary` / container image), supported targets,
 download URLs, and immutable package metadata.
-`iii trigger compose::add worker=<name>` queries this API to locate the right
+`iii call compose::add worker=<name>` queries this API to locate the right
 asset for the host.
 
 ## Add a new worker
@@ -236,13 +296,13 @@ cross-cutting checklist (naming, required files, CI gates, release wiring).
 For the inside of a Rust `artifact.kind: rust-binary` worker, continue with
 [`docs/sops/binary-worker.md`](docs/sops/binary-worker.md). Each worker ships
 a consumer `README.md` per the [`worker-readme.md`](worker-readme.md)
-contract (install via `iii trigger compose::add worker=<name>`, quickstart,
+contract (install via `iii call compose::add worker=<name>`, quickstart,
 configuration).
 [`docs/README.md`](docs/README.md) indexes all shared docs.
 
 ## CI
 
-Pull requests trigger per-worker lint + tests for the changed worker(s).
+Pull requests run per-worker lint + tests for the changed worker(s).
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes from
 the private [`.deploy/workers.yaml`](.deploy/workers.yaml) build catalog,
 then routes:

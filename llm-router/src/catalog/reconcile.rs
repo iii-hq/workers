@@ -4,19 +4,18 @@ use std::sync::Arc;
 use crate::catalog::store::CatalogStore;
 use crate::config::entry::EntryWriteLock;
 use crate::config::state::{snapshot, ConfigCell};
+use crate::events::RouterEvents;
 use crate::registry::resolve::{
     discovery_fingerprint, ensure_provider_secret, resolve_provider_config,
 };
 use crate::registry::store::RegistryStore;
 use crate::secrets::SecretCache;
-use crate::triggers::{self, RouterEvents};
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{
     DiscoveryOutcome, DiscoveryStatus, ModelsReconcileRequest, ModelsReconcileResponse,
 };
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
-use serde_json::json;
 
 pub fn make_models_reconcile(
     registry: Arc<RegistryStore>,
@@ -122,29 +121,14 @@ pub fn make_models_reconcile(
                     prepared.commit();
                 }
                 // Emitted even when the catalog/count is unchanged, including empty recovery.
-                events
-                    .emit(
-                        triggers::PROVIDER_CHANGED,
-                        json!({"provider": provider, "op": "discovery"}),
-                    )
-                    .await;
-                events
-                    .emit(
-                        triggers::MODELS_CHANGED,
-                        json!({"provider": provider, "count": count}),
-                    )
-                    .await;
+                events.provider_changed(&provider, "discovery").await;
+                events.models_changed(&provider, count).await;
                 return Ok(ModelsReconcileResponse { provider, count });
             }
             // Legacy providers keep their exact replacement semantics.
             let count = req.models.len();
             catalog.set_slice(&provider, req.models).await?;
-            events
-                .emit(
-                    triggers::MODELS_CHANGED,
-                    json!({ "provider": provider, "count": count }),
-                )
-                .await;
+            events.models_changed(&provider, count).await;
             Ok(ModelsReconcileResponse { provider, count })
         })
     }

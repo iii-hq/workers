@@ -11,7 +11,7 @@
   flex: 1;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger {
+[data-iii-ui='canvas'] .canvas-call {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -359,7 +359,7 @@
 /* ── freeform (excalidraw) ──────────────────────────────────────────────
    Owned by the freeform surface (ui/src/freeform). Only the WRAPPER is
    styled here: excalidraw's own stylesheet is unscoped vendor CSS that
-   cannot ride this (scoped) console:style asset, so it ships as a text
+   cannot ride this (scoped) `style` asset, so it ships as a text
    export of the freeform vendor bundle and loadFreeform() injects it into
    a <style data-iii-ui="canvas"> head tag (see ui/src/lib/loaders.ts).
 
@@ -420,11 +420,11 @@
   max-width: 32rem;
 }
 
-/* --- chat function-trigger cards -------------------------------------- */
-/* Rendered inside the FunctionTriggerCard host; the console wraps every
+/* --- chat function-call cards ----------------------------------------- */
+/* Rendered inside the console's function-call card; the console wraps every
    injected render in <div data-iii-ui="canvas">, so scoping holds here. */
 
-[data-iii-ui='canvas'] .canvas-trigger__head {
+[data-iii-ui='canvas'] .canvas-call__head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -432,43 +432,43 @@
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__pill {
+[data-iii-ui='canvas'] .canvas-call__pill {
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
   padding: 1px 8px;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__pill--quiet {
+[data-iii-ui='canvas'] .canvas-call__pill--quiet {
   border-color: var(--color-edge);
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__name {
+[data-iii-ui='canvas'] .canvas-call__name {
   font-size: 12.5px;
   color: var(--color-ink);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__chip {
+[data-iii-ui='canvas'] .canvas-call__chip {
   border: 1px solid var(--color-edge);
   color: var(--color-ink);
   font-size: 11.5px;
   padding: 1px 8px;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__chips {
+[data-iii-ui='canvas'] .canvas-call__chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__id {
+[data-iii-ui='canvas'] .canvas-call__id {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11.5px;
   color: var(--color-ink-ghost);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__open,
-[data-iii-ui='canvas'] .canvas-trigger__id-link {
+[data-iii-ui='canvas'] .canvas-call__open,
+[data-iii-ui='canvas'] .canvas-call__id-link {
   padding: 0;
   border: 0;
   background: none;
@@ -477,26 +477,26 @@
   cursor: pointer;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__open {
+[data-iii-ui='canvas'] .canvas-call__open {
   font-size: 11.5px;
   border-bottom: 1px solid var(--color-accent-border);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__open:hover {
+[data-iii-ui='canvas'] .canvas-call__open:hover {
   color: var(--color-accent-hover);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__tag {
+[data-iii-ui='canvas'] .canvas-call__tag {
   margin-left: auto;
   color: var(--color-ink-ghost);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__note {
+[data-iii-ui='canvas'] .canvas-call__note {
   font-size: 12px;
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__diagram {
+[data-iii-ui='canvas'] .canvas-call__diagram {
   display: block;
   width: 100%;
   max-height: 380px;
@@ -511,30 +511,30 @@
   cursor: pointer;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__diagram svg {
+[data-iii-ui='canvas'] .canvas-call__diagram svg {
   max-width: 100%;
   height: auto;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__diagram--loading {
+[data-iii-ui='canvas'] .canvas-call__diagram--loading {
   font-size: 12px;
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__fail {
+[data-iii-ui='canvas'] .canvas-call__fail {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__error {
+[data-iii-ui='canvas'] .canvas-call__error {
   font-size: 12px;
   color: var(--color-alert);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__source {
+[data-iii-ui='canvas'] .canvas-call__source {
   margin: 0;
   max-height: 240px;
   overflow: auto;
@@ -549,17 +549,17 @@
   white-space: pre;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__table-wrap {
+[data-iii-ui='canvas'] .canvas-call__table-wrap {
   overflow-x: auto;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__table {
+[data-iii-ui='canvas'] .canvas-call__table {
   border-collapse: collapse;
   font-size: 12px;
   width: 100%;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__table th {
+[data-iii-ui='canvas'] .canvas-call__table th {
   text-align: left;
   font-weight: 500;
   color: var(--color-ink-faint);
@@ -568,7 +568,7 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__table td {
+[data-iii-ui='canvas'] .canvas-call__table td {
   color: var(--color-ink);
   border-bottom: 1px solid var(--color-edge);
   padding: 3px 10px 3px 0;
@@ -579,12 +579,12 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__ok {
+[data-iii-ui='canvas'] .canvas-call__ok {
   font-size: 12px;
   color: var(--color-ok);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__issues {
+[data-iii-ui='canvas'] .canvas-call__issues {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -592,13 +592,13 @@
   color: var(--color-ink);
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__issue {
+[data-iii-ui='canvas'] .canvas-call__issue {
   display: flex;
   gap: 8px;
   align-items: baseline;
 }
 
-[data-iii-ui='canvas'] .canvas-trigger__issue-line {
+[data-iii-ui='canvas'] .canvas-call__issue-line {
   flex: none;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;

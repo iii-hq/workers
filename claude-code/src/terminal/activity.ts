@@ -57,7 +57,7 @@ type SessionState = {
    */
   turnId: string;
   prompt: string;
-  /** What this session is called on the claude::agent-event feed and in a trace. */
+  /** What this session is called on the claude::on-agent-event feed and in a trace. */
   group: string;
 };
 
@@ -271,7 +271,7 @@ export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
     (input: HookEvent) => tracker.handle(input ?? {}),
     {
       description:
-        'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the claude::agent-event feed.',
+        'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the claude::on-agent-event feed.',
       request_format: {
         type: 'object',
         properties: {

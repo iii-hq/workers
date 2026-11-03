@@ -10,7 +10,7 @@ import {
 } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import {
-  BROWSER_CONSOLE_EVENT_TRIGGER,
+  BROWSER_ON_CONSOLE_EVENT_FUNCTION_ID,
   type BrowserConsoleEntry,
   errorMessage,
   formatTime,
@@ -22,11 +22,11 @@ import { useBrowserSessionEvent } from '../lib/events'
 
 /**
  * Live console feed for the selected session: seeded from
- * `browser::console::read`, then appended through the session-filtered
- * `browser::console-event` binding. The search input maps to the read's
- * `pattern` (regex, re-seeding on change); live entries are matched
- * client-side with the same expression so the feed stays consistent
- * between seeds.
+ * `browser::console::read`, then appended through an observer of
+ * `browser::on-console-event` for the session. The search input maps to the
+ * read's `pattern` (regex, re-seeding on change); live entries are matched
+ * client-side with the same expression so the feed stays consistent between
+ * seeds.
  */
 
 const SEED_LIMIT = 200
@@ -119,7 +119,7 @@ export function ConsolePanel({ host, sessionId, enabled }: ConsolePanelProps) {
   useBrowserSessionEvent({
     host,
     enabled,
-    triggerType: BROWSER_CONSOLE_EVENT_TRIGGER,
+    functionId: BROWSER_ON_CONSOLE_EVENT_FUNCTION_ID,
     sessionId,
     fnId: CONSOLE_FEED_FN,
     onEvent: (payload) => {

@@ -12,6 +12,7 @@ pub struct SqlitePool {
     inner: Arc<R2Pool<SqliteConnectionManager>>,
     db_name: Arc<str>,
     acquire_timeout: Duration,
+    id: super::PoolId,
 }
 
 /// Pragmas no call may set on a pooled connection: they corrupt the schema
@@ -126,7 +127,12 @@ impl SqlitePool {
             inner: Arc::new(inner),
             db_name: Arc::from("(unset)"),
             acquire_timeout: Duration::from_millis(pool_cfg.acquire_timeout_ms),
+            id: super::PoolId::next(),
         })
+    }
+
+    pub(crate) fn id(&self) -> super::PoolId {
+        self.id
     }
 
     /// Tag the pool with a config name for error messages. Called by `pool::build`.

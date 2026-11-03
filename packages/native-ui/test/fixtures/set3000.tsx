@@ -4,7 +4,7 @@
  * fresh copy of the worker's data (`fresh`). Each run shows its time in the
  * VM (Date.now, real time in the harness too).
  */
-import { createList, createSignal, defineApp, List, ListRow, Page, Text, useTrigger } from '@iii-dev/native-ui'
+import { createList, createSignal, defineApp, List, ListRow, Page, Text, useObserve } from '@iii-dev/native-ui'
 
 interface Ticket {
   key: string
@@ -41,8 +41,8 @@ function Root() {
     setMs(String(Date.now() - t0))
   }
   let round = 0
-  useTrigger(
-    'demo::one',
+  useObserve(
+    'demo::on-one',
     () => ({}),
     () =>
       time(() => {
@@ -50,8 +50,8 @@ function Root() {
         tickets.set(tickets.items().map((t, i) => (i === 1500 ? { ...t, title: `changed ${round}` } : t)))
       }),
   )
-  useTrigger(
-    'demo::fresh',
+  useObserve(
+    'demo::on-fresh',
     () => ({}),
     () => {
       round++
@@ -61,8 +61,8 @@ function Root() {
     },
   )
   // The old way, for a baseline in the same VM: each pair of items by its JSON.
-  useTrigger(
-    'demo::json',
+  useObserve(
+    'demo::on-json',
     () => ({}),
     () => {
       const now = tickets.items()

@@ -1,7 +1,7 @@
 /**
  * Wire shapes of `harness::metrics` (SessionMetricsResponseV1) and the
  * per-generation context snapshot (ContextSnapshotV1) it carries, plus the
- * tolerant parsers the chip and the function-trigger renderer share. A
+ * tolerant parsers the chip and the function-call renderer share. A
  * snapshot from a newer harness must degrade to "no data", never a crash.
  */
 

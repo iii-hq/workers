@@ -1,4 +1,4 @@
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use qrcode::render::svg;
 use qrcode::QrCode;
@@ -244,7 +244,7 @@ async fn console_url(iii: &IIIClient, config: &WorkerConfig) -> Result<String, S
         return validate_console_url(&config.console_url);
     }
     let status = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: CONSOLE_STATUS_ID.to_string(),
             payload: serde_json::json!({}),
             action: None,

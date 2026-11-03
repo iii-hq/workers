@@ -126,7 +126,7 @@ async function runPageTurn(
       ...(parentSessionId ? { metadata: { parent_session_id: parentSessionId, depth: 1 } } : {}),
     };
   }
-  const r = await worker.trigger({ function_id: 'harness::send', payload, timeoutMs: 30_000 });
+  const r = await worker.call({ function_id: 'harness::send', payload, timeoutMs: 30_000 });
   const sessionId = r?.session_id;
   if (!sessionId) throw new Error('harness::send returned no session_id');
   const result = await awaitTurn(worker, sessionId, { timeoutMs });
@@ -153,7 +153,7 @@ export async function awaitTurn(worker, session_id, { timeoutMs = 240_000, inter
   for (;;) {
     let s;
     try {
-      s = await worker.trigger({
+      s = await worker.call({
         function_id: 'harness::status',
         payload: { session_id, verbose: true },
       });
@@ -167,7 +167,7 @@ export async function awaitTurn(worker, session_id, { timeoutMs = 240_000, inter
     }
     if (Date.now() > deadline) {
       try {
-        await worker.trigger({ function_id: 'harness::stop', payload: { session_id } });
+        await worker.call({ function_id: 'harness::stop', payload: { session_id } });
       } catch {
         /* best effort */
       }
@@ -328,7 +328,7 @@ export async function runOrchestrator(
     `Wiki id (pass as "id" to every openwiki::src::* and openwiki::write-page call, and use "${root}/<slug>" as each writer's session_id): ${wikiId}` +
     (docsHint || '') +
     '\nResearch the repo, plan the pages, spawn one writer sub-agent per page (each writer stores its page with openwiki::write-page), then submit the summary and navigation.';
-  const { session_id } = await worker.trigger({
+  const { session_id } = await worker.call({
     function_id: 'harness::send',
     payload: {
       session_id: root,
@@ -415,7 +415,7 @@ export async function planViaHarness(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const parent = attempt === 1 ? base : `${base}:r${attempt}`;
     try {
-      const { session_id } = await worker.trigger({
+      const { session_id } = await worker.call({
         function_id: 'harness::send',
         payload: {
           session_id: parent,

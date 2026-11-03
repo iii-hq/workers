@@ -2,8 +2,9 @@
 name: email
 description: >-
   Send and read email from the iii engine — SMTP send, IMAP read, and
-  real-time `IDLE` push as a subscribable trigger type. Credentials live in
-  `harness/auth-credentials`; this worker fetches them on every connect.
+  real-time `IDLE` push as the observable `email::on-new-mail` function.
+  Credentials live in `harness/auth-credentials`; this worker fetches them
+  on every connect.
 ---
 
 # email
@@ -16,9 +17,9 @@ need to read and react to inbound mail.
 
 The worker refuses to fall back to polling. If an IMAP server does not
 advertise the `IDLE` capability, the supervisor fails at startup with
-`E610`. Inbound messages flow through the `email::new-mail` trigger type,
-fanned out by an `IDLE`-driven dispatcher the moment a server-side
-`EXISTS` notification lands. Credentials never live in this worker —
+`E610`. Each inbound message is a call of `email::on-new-mail`, made by an
+`IDLE`-driven dispatcher the moment a server-side `EXISTS` notification
+lands; observers of that function receive it. Credentials never live in this worker —
 every IMAP login and every `email::send` calls `auth::get_token` against
 `harness/auth-credentials` under provider key `email::<account>`.
 
@@ -41,7 +42,7 @@ every IMAP login and every `email::send` calls `auth::get_token` against
 - You need to stream an attachment's raw bytes onto a response channel
   with no in-memory buffering (`email::attachment::get`).
 - You need to react to inbound mail the instant it lands in a configured
-  `(account, folder)` (`email::new-mail` trigger type).
+  `(account, folder)` (observe `email::on-new-mail`).
 
 ## Boundaries
 
@@ -58,7 +59,7 @@ every IMAP login and every `email::send` calls `auth::get_token` against
   `email::move` to a Trash folder for visible deletion.
 - `email::search` and `email::attachment::get` use a streaming response
   channel; they're invoked by sibling workers passing a
-  `StreamChannelRef`, not directly from `iii trigger`.
+  `StreamChannelRef`, not directly from `iii call`.
 
 ## Functions
 
@@ -79,6 +80,9 @@ every IMAP login and every `email::send` calls `auth::get_token` against
   lacks `MOVE`.
 - `email::attachment::get` — stream attachment bytes by `part_id` onto a
   `StreamChannelRef` chunk-by-chunk; no in-memory buffering.
+- `email::on-new-mail` — private, observable: called once per message an
+  IMAP `IDLE` push delivers; observers filter on `input.account` and
+  `input.folder` (see "Reacting to new mail").
 
 SMTP send timeout is `limits.send_timeout_ms` (default 30 s). IMAP
 connect timeout is `limits.imap_connect_timeout_ms` (default 15 s).
@@ -90,11 +94,11 @@ Stream-source attachments (`source.kind = "stream"`) return `E699` in
 0.1.0; use `source.kind = "base64"` until the symmetric attachment-send
 path lands.
 
-## Reactive triggers
+## Reacting to new mail
 
-Register an `email::new-mail` trigger when a function should fire
-automatically the moment a new message arrives in a configured
-`(account, folder)` — without polling with `email::list`.
+Observe `email::on-new-mail` when a function should run automatically the
+moment a new message arrives in a configured `(account, folder)`, without
+polling with `email::list`.
 
 Reach for it when:
 
@@ -102,34 +106,37 @@ Reach for it when:
 - A harness session should ingest new mail as an additional turn.
 - An archival worker should mirror inbound mail into a database.
 
-Do not bind when:
+Do not observe it when:
 
 - The account is `provider: smtp` (send-only); only `provider: imap`
   accounts open an IDLE listener.
 - You only need to act on outbound mail — `email::send` already gives
   you the SMTP response synchronously.
 
-### How to bind
+### How to observe
 
 1. Register a handler: `registerFunction('my-worker::on-mail', handler)`.
-2. Register the trigger:
+2. Observe the function, selecting the account and folder with filters:
 
 ```typescript
-iii.registerTrigger({
-  type: 'email::new-mail',
-  function_id: 'my-worker::on-mail',
-  config: {
-    account: 'support',
-    folder: 'INBOX',
-    handler_timeout_ms: 30000,
+iii.observe(
+  {
+    function_id: 'email::on-new-mail',
+    filters: {
+      'input.account': { $eq: 'support' },
+      'input.folder': { $eq: 'INBOX' },
+    },
+    deliver: 'output',
   },
-})
+  'my-worker::on-mail',
+)
 ```
 
-Config: `account` (required, must be a configured account with an
-`imap:` block), `folder` (default `"INBOX"`, must appear in
-`config.accounts.<name>.imap.folders`), `handler_timeout_ms` (default
-30 000).
+`email::on-new-mail` takes no args. Filters select calls by the event's
+fields: `input.account` (a configured account with an `imap:` block) and
+`input.folder` (one of `config.accounts.<name>.imap.folders`). Without
+filters the observer receives every new message of every watched folder.
+With `deliver: 'output'` the target receives the event itself.
 
 Event payload per inbound message:
 
@@ -146,32 +153,31 @@ Event payload per inbound message:
 }
 ```
 
-The dispatch is event-driven off the IMAP server's `EXISTS` push —
+The call is event-driven off the IMAP server's `EXISTS` push —
 within milliseconds of a new message landing in the watched folder.
 
 ### Delivery semantics
 
-Best-effort, at-most-once. The dispatcher fires `iii.trigger` per
-subscriber and waits up to `handler_timeout_ms`. There is no upstream
-durable queue: IMAP `IDLE` is a wakeup mechanism, not a delivery
-guarantee.
+Best-effort, at-most-once. The dispatcher calls `email::on-new-mail` once
+per message and iii delivers the call to every matching observer without
+waiting for their targets. There is no upstream durable queue: IMAP `IDLE`
+is a wakeup mechanism, not a delivery guarantee.
 
-- A subscriber handler that panics, times out, or returns an error is
-  logged and skipped — the event is NOT redelivered.
-- If the worker is down when a message lands, no `email::new-mail` event
-  fires for it. On reconnect the supervisor sets the high-water mark to
+- A target that panics, times out, or returns an error is logged by the
+  engine — the event is NOT redelivered.
+- If the worker is down when a message lands, no `email::on-new-mail` call
+  is made for it. On reconnect the supervisor sets the high-water mark to
   the current `UIDNEXT - 1`; UIDs that arrived during downtime are
   reachable via `email::list` but do NOT replay as events.
-- For at-least-once / replay, write each `email::new-mail` event to a
-  durable store from your handler (`database::execute`,
-  `storage::putObject`, …) before doing meaningful work, and use
-  `email::list` with a persisted `since_uid` cursor to catch up on
-  downtime gaps.
+- For at-least-once / replay, write each new-mail event to a durable store
+  from your target (`database::execute`, `storage::putObject`, …) before
+  doing meaningful work, and use `email::list` with a persisted
+  `since_uid` cursor to catch up on downtime gaps.
 
 ## Errors
 
-Stable across the trigger boundary. Match on the `code` field of the
-returned envelope.
+Stable across every call. Match on the `code` field of the returned
+envelope.
 
 | Code | When |
 |------|------|

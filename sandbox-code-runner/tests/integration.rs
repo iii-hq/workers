@@ -1,9 +1,12 @@
-//! End-to-end: engine → sandbox-code-runner → iii-sandbox → microVM → runner.
+//! End-to-end: engine → sandbox-code-runner → sandbox router → sandbox-libkrun
+//! adapter → microVM → runner.
 //!
 //! GATED: set SANDBOX_CODE_RUNNER_E2E=1 to run (needs /dev/kvm, network for the
-//! first image pull, and an engine binary — same convention as
-//! node-engine's integration test). Skips silently otherwise so
-//! `cargo test` is green on machines without virtualization.
+//! first image pull, an engine binary — same convention as
+//! node-engine's integration test — and the adapter binary in ADAPTER_BIN, a
+//! sandbox-libkrun built with `--features embed-init`, as in its isolation e2e).
+//! Skips silently otherwise so `cargo test` is green on machines without
+//! virtualization.
 
 use std::time::Duration;
 
@@ -11,7 +14,9 @@ fn gated() -> bool {
     if std::env::var("SANDBOX_CODE_RUNNER_E2E").as_deref() == Ok("1") {
         return false;
     }
-    eprintln!("SKIPPED: set SANDBOX_CODE_RUNNER_E2E=1 (and III_BIN) to run the e2e test");
+    eprintln!(
+        "SKIPPED: set SANDBOX_CODE_RUNNER_E2E=1 (and III_BIN, ADAPTER_BIN) to run the e2e test"
+    );
     true
 }
 
@@ -35,42 +40,38 @@ fn wait_for_listen(port: u16, deadline: Duration) {
     panic!("nothing listening on port {port} after {deadline:?}");
 }
 
-/// Spawn a local `iii` engine the way `node-engine/tests/integration.rs`
-/// does (Task 9 Step 1): resolve the binary, write a `workers:` config with
-/// an `iii-worker-manager` block bound to `port`, and start it with
-/// `-c <path> --no-update-check`.
-///
-/// Two differences from that recipe, both required by this task:
-///
-/// - Binary resolution also honors `III_BIN` (checked first, falling back
-///   to `which::which("iii")` — node-engine's actual lookup). node-engine's
-///   committed test has no `III_BIN` support at all; it is PATH-only. This
-///   test adds the env override because Step 3's verification command
-///   (`III_BIN=<engine binary> cargo test ...`) requires it.
-/// - The config additionally carries an `iii-sandbox` block. Confirmed
-///   against `iii-worker/src/sandbox_daemon/README.md`'s "Sample
-///   Configuration", `docs/creating-workers/sandboxes.mdx`, and — decisively
-///   — the commented-out block already living under `workers:` in the real
-///   engine's own `engine/config.yaml` and the `workers:` list in
-///   `sdk/fixtures/config-test.yaml`: the block is a `- name: iii-sandbox`
-///   entry under the same top-level `workers:` key as `iii-worker-manager`,
-///   not a separate top-level key.
-fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
-    let iii_bin = std::env::var_os("III_BIN")
+/// Resolve the `iii` binary: `III_BIN` first, falling back to
+/// `which::which("iii")` — node-engine's actual lookup. node-engine's
+/// committed test has no `III_BIN` support at all; it is PATH-only. This test
+/// adds the env override because the verification command
+/// (`III_BIN=<engine binary> cargo test ...`) requires it.
+fn iii_bin() -> std::path::PathBuf {
+    std::env::var_os("III_BIN")
         .map(std::path::PathBuf::from)
         .or_else(|| which::which("iii").ok())
         .expect(
             "III_BIN must point at an iii engine binary, or `iii` must be on PATH \
              (same convention as node-engine/tests/integration.rs)",
-        );
+        )
+}
 
+/// Spawn a local `iii` engine the way `node-engine/tests/integration.rs`
+/// does (Task 9 Step 1): write a `workers:` config with an
+/// `iii-worker-manager` block bound to `port`, and start it with
+/// `-c <path> --no-update-check`.
+///
+/// The config also carries the top-level `sandbox:` key that binds the
+/// engine's `sandbox::*` router to the `sandbox-libkrun` adapter. The VM
+/// daemon is no longer an `iii-sandbox` entry under `workers:` (the engine
+/// refuses one); `spawn_adapter` starts it as its own process instead.
+fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
     let cfg_path = home.join("config.yaml");
     let cfg_body = format!(
-        "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n\n  - name: iii-sandbox\n    config:\n      auto_install: true\n      image_allowlist:\n        - python\n        - node\n"
+        "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n\nsandbox:\n  adapter: sandbox-libkrun\n"
     );
     std::fs::write(&cfg_path, &cfg_body).expect("write engine config.yaml");
 
-    std::process::Command::new(&iii_bin)
+    std::process::Command::new(iii_bin())
         .arg("-c")
         .arg(&cfg_path)
         .arg("--no-update-check")
@@ -80,26 +81,71 @@ fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
         .expect("spawn iii engine binary")
 }
 
+/// Seed the adapter's config, then spawn the `$ADAPTER_BIN` sandbox-libkrun.
+///
+/// The adapter reads config id `sandbox-libkrun` once at startup and falls
+/// back to serde defaults that deny every image, so the allowlist must be in
+/// the engine's configuration worker first. `flush: false` keeps it in memory
+/// (`configuration::set` may precede registration). The port can open before
+/// the configuration worker serves, so the call is retried until it exits 0.
+fn spawn_adapter(iii_bin: &std::path::Path, port: u16) -> std::process::Child {
+    let set = serde_json::json!({
+        "id": "sandbox-libkrun",
+        "value": { "auto_install": true, "image_allowlist": ["python", "node"] },
+        "flush": false,
+    });
+    let start = std::time::Instant::now();
+    loop {
+        let out = std::process::Command::new(iii_bin)
+            .args(["call", "--port", &port.to_string(), "configuration::set"])
+            .args(["--json", &set.to_string()])
+            .output()
+            .expect("run iii call configuration::set");
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "configuration::set sandbox-libkrun never exited 0: {} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let adapter_bin = std::env::var_os("ADAPTER_BIN").expect(
+        "ADAPTER_BIN must point at a sandbox-libkrun binary built with --features embed-init",
+    );
+    std::process::Command::new(adapter_bin)
+        .env("III_URL", format!("ws://127.0.0.1:{port}"))
+        .spawn()
+        .expect("sandbox-libkrun adapter starts")
+}
+
 /// Kills whatever processes have been handed to it and removes the scratch
 /// home on drop — including when a panic unwinds through this scope, not
 /// just on a normal return.
 ///
-/// `wait_for_listen` and the `sandbox-code-runner` spawn below both run BEFORE the
-/// `catch_unwind` block, so a panic there (e.g. the engine hanging mid-boot)
-/// would otherwise skip straight past the manual cleanup at the bottom of
-/// this function. `std::process::Child` does not kill its process on drop,
-/// so that window would leak the already-spawned engine (and the scratch
-/// home) on exactly the failure path a developer most needs clean state on.
-/// Mirrors `KillOnDrop` in `node-engine/tests/integration.rs`.
+/// `wait_for_listen` and the adapter and `sandbox-code-runner` spawns below all
+/// run BEFORE the `catch_unwind` block, so a panic there (e.g. the engine
+/// hanging mid-boot) would otherwise skip straight past the manual cleanup at
+/// the bottom of this function. `std::process::Child` does not kill its
+/// process on drop, so that window would leak the already-spawned engine (and
+/// the scratch home) on exactly the failure path a developer most needs clean
+/// state on. Mirrors `KillOnDrop` in `node-engine/tests/integration.rs`.
 struct Cleanup {
     engine: Option<std::process::Child>,
+    adapter: Option<std::process::Child>,
     worker: Option<std::process::Child>,
     home: Option<std::path::PathBuf>,
 }
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        for c in [&mut self.engine, &mut self.worker].into_iter().flatten() {
+        for c in [&mut self.engine, &mut self.adapter, &mut self.worker]
+            .into_iter()
+            .flatten()
+        {
             let _ = c.kill();
             let _ = c.wait();
         }
@@ -118,7 +164,7 @@ impl Drop for Cleanup {
 /// holding a daemon slot", which is the thing a leak means.
 async fn live_sandbox_ids(iii: &iii_sdk::IIIClient) -> std::collections::HashSet<String> {
     let resp = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "sandbox::list".into(),
             payload: serde_json::json!({}),
             action: None,
@@ -146,7 +192,7 @@ async fn live_sandbox_ids(iii: &iii_sdk::IIIClient) -> std::collections::HashSet
 ///   publishes answers real calls on the real bus;
 /// - `teardown` by `namespace` unregisters it and stops its runtime.
 async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClient) {
-    let eval = |payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
+    let eval = |payload: serde_json::Value| iii_sdk::CallRequest {
         function_id: "sandbox-code-runner::run".into(),
         payload,
         action: None,
@@ -157,7 +203,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 
     // One-shot (default): a result, no runtime_id, and no live sandbox left.
     let ephemeral = iii
-        .trigger(eval(
+        .call(eval(
             serde_json::json!({ "lang": "python", "code": "print(1+1)" }),
         ))
         .await
@@ -177,7 +223,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     // `keep: true`: DOES leave exactly one live sandbox, addressable by the
     // minted runtime_id.
     let kept = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "python",
             "code": "open('/tmp/kept-probe','w').write('kept')",
             "keep": true,
@@ -199,7 +245,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     // The minted runtime_id really does address that same VM: its
     // filesystem is still there.
     let reused = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "runtime_id": runtime_id,
             "code": "print(open('/tmp/kept-probe').read())",
         })))
@@ -214,7 +260,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     // register_function with NO runtime_id: sandbox-code-runner resolves its own
     // namespace runtime, and the function answers real calls on the bus.
     let reg = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "sandbox-code-runner::register_function".into(),
             payload: serde_json::json!({
                 "function_id": "ce-e2e-ns::double",
@@ -230,7 +276,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     assert_eq!(reg["registered"], true, "{reg}");
 
     let call = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "ce-e2e-ns::double".into(),
             payload: serde_json::json!({ "n": 21 }),
             action: None,
@@ -242,7 +288,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 
     // teardown by namespace unregisters it and stops its runtime.
     let td = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "sandbox-code-runner::teardown".into(),
             payload: serde_json::json!({ "namespace": "ce-e2e-ns" }),
             action: None,
@@ -255,7 +301,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     assert_eq!(td["unregistered"][0], "ce-e2e-ns::double");
 
     let dead = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "ce-e2e-ns::double".into(),
             payload: serde_json::json!({ "n": 1 }),
             action: None,
@@ -269,7 +315,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 
     // Clean up the kept runtime, and confirm the live-sandbox count returns
     // exactly to baseline — no leaks anywhere across this whole sequence.
-    iii.trigger(iii_sdk::protocol::TriggerRequest {
+    iii.call(iii_sdk::CallRequest {
         function_id: "sandbox-code-runner::teardown".into(),
         payload: serde_json::json!({ "runtime_id": runtime_id }),
         action: None,
@@ -291,35 +337,34 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 /// runner-side install, none of which a `FakeEngine` test can execute for
 /// real:
 ///
-/// - evaluated NODE code triggers a bus function mid-run through the
+/// - evaluated NODE code calls a bus function mid-run through the
 ///   embedded SDK and gets the answer;
 /// - evaluated PYTHON code does the same through the pip-installed SDK;
 /// - `iii.registerFunction` from an eval is live WHILE the process runs
-///   (provable by self-trigger through the engine) and gone after it
+///   (provable by a self-call through the engine) and gone after it
 ///   exits — the documented ephemeral semantics;
 /// - persistence goes through `sandbox-code-runner::register_function`, callable
-///   via `iii.trigger` from inside an eval;
+///   via `iii.call` from inside an eval;
 /// - a registered handler itself uses `iii` (cross-runtime call).
 async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
-    let eval = |payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
+    let eval = |payload: serde_json::Value| iii_sdk::CallRequest {
         function_id: "sandbox-code-runner::run".into(),
         payload,
         action: None,
         timeout_ms: Some(60_000),
     };
-    let trigger =
-        |function_id: &str, payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
-            function_id: function_id.into(),
-            payload,
-            action: None,
-            timeout_ms: Some(35_000),
-        };
+    let request = |function_id: &str, payload: serde_json::Value| iii_sdk::CallRequest {
+        function_id: function_id.into(),
+        payload,
+        action: None,
+        timeout_ms: Some(35_000),
+    };
 
     let before = live_sandbox_ids(iii).await;
 
     // A plain registered function to be the CALLEE of guest code — its
     // runtime (ce-e2e-iii, python) is distinct from any eval's VM.
-    iii.trigger(trigger(
+    iii.call(request(
         "sandbox-code-runner::register_function",
         serde_json::json!({
             "function_id": "ce-e2e-iii::double",
@@ -331,45 +376,45 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     .await
     .expect("register the callee");
 
-    // The embedded Node SDK: an eval triggers the callee mid-run.
+    // The embedded Node SDK: an eval calls the callee mid-run.
     let called = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
-            "code": "const r = await iii.trigger({ function_id: 'ce-e2e-iii::double', payload: { n: 21 } });\nconsole.log('got', r.doubled);",
+            "code": "const r = await iii.call({ function_id: 'ce-e2e-iii::double', payload: { n: 21 } });\nconsole.log('got', r.doubled);",
             "timeout_ms": 30_000,
         })))
         .await
-        .expect("node eval that uses iii.trigger");
+        .expect("node eval that uses iii.call");
     assert_eq!(called["stdout"], "got 42\n", "{called}");
     assert_eq!(called["exit_code"], 0, "{called}");
 
     // The pip-installed Python SDK: same round trip (this is the only
     // place the create-time `pip install iii-sdk` path is proven live).
     let called_py = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "python",
-            "code": "r = iii.trigger({'function_id': 'ce-e2e-iii::double', 'payload': {'n': 21}})\nprint('got', r['doubled'])",
+            "code": "r = iii.call({'function_id': 'ce-e2e-iii::double', 'payload': {'n': 21}})\nprint('got', r['doubled'])",
             "timeout_ms": 30_000,
         })))
         .await
-        .expect("python eval that uses iii.trigger");
+        .expect("python eval that uses iii.call");
     assert_eq!(called_py["stdout"], "got 42\n", "{called_py}");
 
     // iii.registerFunction is the SDK's own, so it is LIVE only while the
-    // eval process runs: the eval proves liveness by triggering its own
+    // eval process runs: the eval proves liveness by calling its own
     // registration THROUGH THE ENGINE, and the bus proves the ephemerality
     // right after the process exits.
     let ephemeral = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
-            "code": "iii.registerFunction('ce-e2e-ephemeral-echo', async (data) => ({ pong: data.ping }), { description: 'dies with the eval process' });\nconst r = await iii.trigger({ function_id: 'ce-e2e-ephemeral-echo', payload: { ping: 7 } });\nconsole.log('pong', r.pong);",
+            "code": "iii.registerFunction('ce-e2e-ephemeral-echo', async (data) => ({ pong: data.ping }), { description: 'dies with the eval process' });\nconst r = await iii.call({ function_id: 'ce-e2e-ephemeral-echo', payload: { ping: 7 } });\nconsole.log('pong', r.pong);",
             "timeout_ms": 30_000,
         })))
         .await
-        .expect("eval that self-registers and self-triggers");
+        .expect("eval that self-registers and self-calls");
     assert_eq!(ephemeral["stdout"], "pong 7\n", "{ephemeral}");
     let dead = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "ce-e2e-ephemeral-echo".into(),
             payload: serde_json::json!({ "ping": 1 }),
             action: None,
@@ -388,7 +433,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     // actual message. Assert the property (short + names the call site),
     // not the SDK's exact message, so SDK upgrades don't break this.
     let bad_call = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
             "code": "iii.registerFunction({ function_id: 'demo::hello', handler: async () => ({}) });",
             "timeout_ms": 30_000,
@@ -409,11 +454,11 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     );
 
     // Persistence goes through sandbox-code-runner::register_function — callable
-    // from inside an eval via iii.trigger, surviving the eval's exit.
+    // from inside an eval via iii.call, surviving the eval's exit.
     let registered = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
-            "code": "const r = await iii.trigger({ function_id: 'sandbox-code-runner::register_function', payload: { function_id: 'ce-e2e-iii::treble', lang: 'node', source: 'export function handler(p) { return { trebled: p.n * 3 }; }', description: 'e2e persistent registration from inside an eval' }, timeout_ms: 60000 });\nconsole.log('registered', r.function_id);",
+            "code": "const r = await iii.call({ function_id: 'sandbox-code-runner::register_function', payload: { function_id: 'ce-e2e-iii::treble', lang: 'node', source: 'export function handler(p) { return { trebled: p.n * 3 }; }', description: 'e2e persistent registration from inside an eval' }, timeout_ms: 60000 });\nconsole.log('registered', r.function_id);",
             "timeout_ms": 90_000,
         })))
         .await
@@ -423,7 +468,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
         "{registered}"
     );
     let trebled = iii
-        .trigger(trigger(
+        .call(request(
             "ce-e2e-iii::treble",
             serde_json::json!({ "n": 14 }),
         ))
@@ -433,19 +478,19 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
 
     // A handler using iii itself: cross-runtime call from the python
     // namespace runtime to the node one.
-    iii.trigger(trigger(
+    iii.call(request(
         "sandbox-code-runner::register_function",
         serde_json::json!({
             "function_id": "ce-e2e-iii::describe",
             "lang": "python",
-            "source": "def handler(p):\n    r = iii.trigger({'function_id': 'ce-e2e-iii::treble', 'payload': {'n': p['n']}})\n    return {'trebled': r['trebled']}\n",
+            "source": "def handler(p):\n    r = iii.call({'function_id': 'ce-e2e-iii::treble', 'payload': {'n': p['n']}})\n    return {'trebled': r['trebled']}\n",
             "description": "e2e handler-side iii probe",
         }),
     ))
     .await
     .expect("register the iii-using handler");
     let described = iii
-        .trigger(trigger(
+        .call(request(
             "ce-e2e-iii::describe",
             serde_json::json!({ "n": 4 }),
         ))
@@ -456,7 +501,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     // One namespace teardown covers both language runtimes and all three
     // functions, and the live-sandbox count returns exactly to baseline.
     let td = iii
-        .trigger(trigger(
+        .call(request(
             "sandbox-code-runner::teardown",
             serde_json::json!({ "namespace": "ce-e2e-iii" }),
         ))
@@ -489,7 +534,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
 }
 
 #[test]
-fn full_loop_eval_register_trigger_teardown() {
+fn full_loop_eval_register_call_teardown() {
     if gated() {
         return;
     }
@@ -498,12 +543,17 @@ fn full_loop_eval_register_trigger_teardown() {
     std::fs::create_dir_all(&home).unwrap();
     let mut cleanup = Cleanup {
         engine: None,
+        adapter: None,
         worker: None,
         home: Some(home.clone()),
     };
 
     cleanup.engine = Some(spawn_engine(port, &home));
     wait_for_listen(port, Duration::from_secs(30));
+
+    // The adapter connects asynchronously; until it has, router calls answer
+    // S301 and the retry loop below keeps polling.
+    cleanup.adapter = Some(spawn_adapter(&iii_bin(), port));
 
     cleanup.worker = Some(
         std::process::Command::new(env!("CARGO_BIN_EXE_sandbox-code-runner"))
@@ -538,7 +588,7 @@ fn full_loop_eval_register_trigger_teardown() {
                 // to exercise the reuse + explicit-teardown paths below.
                 // First call pulls the image — give it the full window.
                 let out = iii
-                    .trigger(iii_sdk::protocol::TriggerRequest {
+                    .call(iii_sdk::CallRequest {
                         function_id: "sandbox-code-runner::run".into(),
                         payload: serde_json::json!({
                             "lang": "python", "code": "print(6*7)", "keep": true,
@@ -558,7 +608,7 @@ fn full_loop_eval_register_trigger_teardown() {
 
                         // Filesystem persists between evals in one runtime.
                         let w = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::run".into(),
                                 payload: serde_json::json!({
                                     "runtime_id": runtime_id,
@@ -571,7 +621,7 @@ fn full_loop_eval_register_trigger_teardown() {
                             .expect("second eval");
                         assert_eq!(w["exit_code"], 0);
                         let r = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::run".into(),
                                 payload: serde_json::json!({
                                     "runtime_id": runtime_id,
@@ -586,7 +636,7 @@ fn full_loop_eval_register_trigger_teardown() {
                         assert_eq!(r["runtime_id"], runtime_id);
 
                         let td = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::teardown".into(),
                                 payload: serde_json::json!({ "runtime_id": runtime_id }),
                                 action: None,
@@ -605,7 +655,7 @@ fn full_loop_eval_register_trigger_teardown() {
                         // (which would mean teardown didn't really finish)
                         // fails fast instead of stalling the suite.
                         let dead_eval = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::run".into(),
                                 payload: serde_json::json!({
                                     "runtime_id": runtime_id,

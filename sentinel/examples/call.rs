@@ -1,10 +1,8 @@
-//! A one-shot client for calling this worker on a running stack.
-//!
-//! There is no `iii` call CLI, and the console cannot reach a worker that has
-//! no page yet — so proving a change against a real engine needs *something*
-//! that speaks the protocol. This is that something, and it is how the
-//! investigation path was proven end to end: open one, watch the agent read
-//! the mapped checkout, and see the diagnosis land.
+//! A one-shot client for calling this worker on a running stack from Rust,
+//! with the long timeout an investigation needs. `iii call <function_id>`
+//! does the same from the shell. This is how the investigation path was
+//! proven end to end: open one, watch the agent read the mapped checkout, and
+//! see the diagnosis land.
 //!
 //! ```text
 //! III_NAMESPACE=my-project cargo run --example call -- \
@@ -18,9 +16,8 @@ use std::env;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 
 /// Long enough for an investigation to open, which is the slowest call here.
 const TIMEOUT_MS: u64 = 120_000;
@@ -51,7 +48,7 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let response = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id,
             payload,
             action: None,

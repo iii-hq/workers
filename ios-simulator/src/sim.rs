@@ -12,8 +12,8 @@
 //!
 //! State is observed, not remembered: a watcher lists every tenant's set
 //! every two seconds (and right after each lifecycle call) and turns the
-//! differences into `device-changed` events, so simulators booted from Xcode
-//! or a terminal show up live too.
+//! differences into calls of `ios-simulator::on-device-changed`, so simulators
+//! booted from Xcode or a terminal show up live too.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -199,7 +199,7 @@ impl Sim {
         Ok(())
     }
 
-    /// `preview: false` marks the boot's `device-changed` event so live
+    /// `preview: false` marks the boot's `on-device-changed` event so live
     /// previews skip it (the caller is already showing the simulator).
     pub async fn boot(&self, tenant: &Tenant, udid: &str, preview: bool) -> Result<Device, String> {
         let device = self.device(tenant, udid).await?;

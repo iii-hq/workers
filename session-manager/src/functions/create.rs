@@ -16,8 +16,8 @@ pub struct CreateRequest {
     /// Session kind. Default `user`.
     pub kind: Option<SessionKind>,
     /// App-defined metadata persisted onto `SessionMeta` — the tenancy
-    /// hook (e.g. `{ "owner": "u_1" }`) that `session::list` and every
-    /// trigger config can filter on.
+    /// hook (e.g. `{ "owner": "u_1" }`) that `session::list` filters on and
+    /// every session event carries as `session_metadata`.
     pub metadata: Option<JsonMap>,
 }
 

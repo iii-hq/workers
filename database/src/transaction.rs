@@ -168,7 +168,7 @@ impl TxRegistry {
     pub fn spawn_timeout_watcher(
         &self,
         log: Logger,
-        row_changes: Option<std::sync::Arc<crate::triggers::RowChangeBus>>,
+        row_changes: Option<std::sync::Arc<crate::row_changes::RowChangeBus>>,
     ) -> tokio::task::JoinHandle<()> {
         let me = self.clone();
         tokio::spawn(async move {
@@ -187,7 +187,7 @@ impl TxRegistry {
     async fn run_one_sweep(
         &self,
         log: &Logger,
-        row_changes: Option<&crate::triggers::RowChangeBus>,
+        row_changes: Option<&crate::row_changes::RowChangeBus>,
     ) {
         let now = Utc::now();
         // Take all expired entries in a single write-lock to keep the
@@ -421,7 +421,7 @@ mod tests {
             .await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         let lock = reg.lock(&h.id).await.unwrap();
-        let bus = Arc::new(crate::triggers::RowChangeBus::new(
+        let bus = Arc::new(crate::row_changes::RowChangeBus::new(
             Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
             100,
         ));

@@ -31,6 +31,15 @@ async fn main() {
                 world.engine = common::engine::for_scenario(engine_scenario).await;
             })
         })
+        // Dispose the scenario's engine observers and bridge relays, so
+        // later scenarios' events stop reaching them.
+        .after(|_feature, _rule, _scenario, _finished, world| {
+            Box::pin(async move {
+                if let Some(world) = world {
+                    world.retire_engine_observers().await;
+                }
+            })
+        })
         .run_and_exit("tests/features")
         .await;
 }

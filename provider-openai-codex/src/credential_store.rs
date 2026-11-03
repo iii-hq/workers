@@ -2,7 +2,7 @@
 use crate::oauth::Credential;
 use crate::session::SessionError;
 use futures::future::BoxFuture;
-use iii_sdk::{protocol::TriggerRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -104,7 +104,7 @@ impl PrivateStateStore {
 
     async fn call(&self, id: &str, payload: Value) -> Result<Value, SessionError> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: id.into(),
                 payload,
                 action: None,

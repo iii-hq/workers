@@ -1,13 +1,13 @@
-//! Live check of A2UI bindings to a worker-owned trigger type against a real
-//! engine (run WITHOUT iii-stream) and the `owned_trigger_provider` example.
+//! Live check of A2UI bindings to a worker's event function against a real
+//! engine (run WITHOUT iii-stream) and the `counter_provider` example.
 //!
 //! ```bash
-//! cargo run --example owned_trigger_provider -- ws://127.0.0.1:49671 &
+//! cargo run --example counter_provider -- ws://127.0.0.1:49671 &
 //! A2UI_LIVE_URL=ws://127.0.0.1:49671 cargo test --test live_owned_binding -- --ignored --nocapture
 //! ```
 //!
 //! The test plays the Console's role in-process: it validates bindings with
-//! the real engine registry, registers the binding's trigger the way the page
+//! the real engine registry, observes the binding's function the way the page
 //! does, and runs `a2ui::binding::refresh` logic on every notification.
 
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use std::time::Duration;
 use a2ui::composer::Composer;
 use a2ui::config::WorkerConfig;
 use a2ui::functions::{
-    delete_binding, refresh_binding, set_binding, BindingDeleteRequest, BindingRefreshRequest,
+    delete_binding, get, refresh_binding, set_binding, BindingDeleteRequest, BindingRefreshRequest,
     BindingSetRequest, Deps,
 };
 use a2ui::protocol::{
@@ -24,9 +24,10 @@ use a2ui::protocol::{
     STREAM_BINDING_DEPRECATION,
 };
 use a2ui::store::Store;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Error, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -36,8 +37,8 @@ const SURFACE: &str = "clicks";
 fn owned_binding() -> Value {
     json!({
         "id": "clicks-count",
-        "trigger_type": "demo::counter-changed",
-        "config": {"counter": "clicks"},
+        "function_id": "demo::on-counter-changed",
+        "args": {"counter": "clicks"},
         "target_path": "/count",
         "query": {
             "function_id": "demo::counter::get",
@@ -62,7 +63,7 @@ fn refresh_request() -> BindingRefreshRequest {
 }
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -71,25 +72,27 @@ async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Valu
     .await
 }
 
-async fn binding_count(iii: &IIIClient) -> u64 {
-    call(iii, "demo::bindings::count", json!({})).await.unwrap()["count"]
+async fn observer_count(iii: &IIIClient) -> u64 {
+    call(iii, "demo::observers::count", json!({}))
+        .await
+        .unwrap()["count"]
         .as_u64()
         .unwrap()
 }
 
 async fn wait_for_count(iii: &IIIClient, expected: u64) {
     for _ in 0..50 {
-        if binding_count(iii).await == expected {
+        if observer_count(iii).await == expected {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("provider binding count never reached {expected}");
+    panic!("provider observer count never reached {expected}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a live engine and the owned_trigger_provider example; set A2UI_LIVE_URL"]
-async fn owned_trigger_type_binding_end_to_end() {
+#[ignore = "needs a live engine and the counter_provider example; set A2UI_LIVE_URL"]
+async fn owned_function_binding_end_to_end() {
     let url = std::env::var("A2UI_LIVE_URL").expect("A2UI_LIVE_URL");
     let iii = Arc::new(register_worker(
         &url,
@@ -109,33 +112,33 @@ async fn owned_trigger_type_binding_end_to_end() {
         composer: Arc::new(Composer::new(iii.clone())),
     };
 
-    // Provider must be up (its trigger type registered) before binding.
+    // Provider must be up (its event function registered) before binding.
+    let function_info = |function_id: &'static str| {
+        let iii = iii.clone();
+        async move {
+            call(
+                &iii,
+                "engine::functions::info",
+                json!({"function_id": function_id}),
+            )
+            .await
+        }
+    };
     let mut registered = false;
     for _ in 0..50 {
-        if call(
-            &iii,
-            "engine::triggers::info",
-            json!({"id": "demo::counter-changed"}),
-        )
-        .await
-        .is_ok()
-        {
+        if function_info("demo::on-counter-changed").await.is_ok() {
             registered = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(registered, "start the owned_trigger_provider example first");
-    let info = call(
-        &iii,
-        "engine::triggers::info",
-        json!({"id": "demo::counter-changed"}),
-    )
-    .await
-    .unwrap();
-    println!("engine::triggers::info demo::counter-changed -> {info}");
-    let stream_info = call(&iii, "engine::triggers::info", json!({"id": "stream"})).await;
-    println!("engine::triggers::info stream -> {stream_info:?}");
+    assert!(registered, "start the counter_provider example first");
+    let info = function_info("demo::on-counter-changed").await.unwrap();
+    println!("engine::functions::info demo::on-counter-changed -> {info}");
+    assert!(info.get("args_format").is_some(), "{info}");
+    assert_eq!(info["private"], json!(true), "{info}");
+    let stream_info = function_info("stream::on-changed").await;
+    println!("engine::functions::info stream::on-changed -> {stream_info:?}");
     assert!(
         stream_info.is_err(),
         "this live run must use an engine without iii-stream"
@@ -163,27 +166,25 @@ async fn owned_trigger_type_binding_end_to_end() {
     apply_messages(&mut state, &messages, None, &WorkerConfig::default()).unwrap();
     deps.store.save(&state).await.unwrap();
 
-    // 1. Config and query validation errors from the real registry.
+    // 1. Args and query validation errors from the real registry.
     let mut unregistered = owned_binding();
-    unregistered["trigger_type"] = json!("demo::nope-changed");
+    unregistered["function_id"] = json!("demo::on-nope-changed");
     let error = set_binding(&deps, set_request(unregistered))
         .await
         .unwrap_err();
-    println!("unregistered type -> {error}");
+    println!("unregistered function -> {error}");
     assert!(error.contains("is not registered with the engine"));
 
-    let mut bad_config = owned_binding();
-    bad_config["config"] = json!({"counter": "clicks", "group": "x"});
-    let error = set_binding(&deps, set_request(bad_config))
-        .await
-        .unwrap_err();
-    println!("bad config -> {error}");
+    let mut bad_args = owned_binding();
+    bad_args["args"] = json!({"counter": "clicks", "group": "x"});
+    let error = set_binding(&deps, set_request(bad_args)).await.unwrap_err();
+    println!("bad args -> {error}");
     assert!(error.contains("unsupported field `group`"));
 
     let mut missing = owned_binding();
-    missing["config"] = json!({});
+    missing["args"] = json!({});
     let error = set_binding(&deps, set_request(missing)).await.unwrap_err();
-    println!("missing config field -> {error}");
+    println!("missing args field -> {error}");
     assert!(error.contains("missing required field `counter`"));
 
     let mut mutating = owned_binding();
@@ -199,10 +200,21 @@ async fn owned_trigger_type_binding_end_to_end() {
     assert!(error.contains("must be registered by `a2ui-demo-provider`"));
 
     let mut reserved = owned_binding();
-    reserved["trigger_type"] = json!("harness::hook::pre-trigger");
+    reserved["function_id"] = json!("harness::hook::on-pre-call");
     let error = set_binding(&deps, set_request(reserved)).await.unwrap_err();
-    println!("reserved type -> {error}");
+    println!("reserved function -> {error}");
     assert!(error.contains("reserved"));
+
+    // A registered function that is not private is a call, not an event
+    // source: observing it would deliver every caller's calls.
+    let public = json!({
+        "id": "bumps",
+        "function_id": "demo::counter::bump",
+        "target_path": "/bumps"
+    });
+    let error = set_binding(&deps, set_request(public)).await.unwrap_err();
+    println!("public function -> {error}");
+    assert!(error.contains("is not an event source"), "{error}");
 
     // 2. Legacy stream binding is still accepted, flagged deprecated, on an
     //    engine without iii-stream.
@@ -210,8 +222,11 @@ async fn owned_trigger_type_binding_end_to_end() {
         &deps,
         set_request(json!({
             "id": "legacy-events",
-            "trigger_type": "stream",
-            "config": {"stream_name": "agent::events", "group_id": SESSION},
+            "function_id": "stream::on-changed",
+            "filters": {
+                "input.stream_name": {"$eq": "agent::events"},
+                "input.group_id": {"$eq": SESSION}
+            },
             "target_path": "/events"
         })),
     )
@@ -236,7 +251,7 @@ async fn owned_trigger_type_binding_end_to_end() {
     );
     assert!(receipt.deprecation.is_none());
 
-    // 4. Console role: register the binding's trigger, then initial read.
+    // 4. Console role: observe the binding's function, then initial read.
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     let console_deps = deps.clone();
     iii.register_function(
@@ -256,12 +271,15 @@ async fn owned_trigger_type_binding_end_to_end() {
         })
         .description("Live check: emulates the A2UI page's binding handler."),
     );
-    let trigger = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "demo::counter-changed",
-            "a2ui-live::on-counter",
-            json!({"counter": "clicks"}),
-        ))
+    let observer = iii.observe(
+        Source::function("demo::on-counter-changed")
+            .args(json!({"counter": "clicks"}))
+            .deliver(Deliver::Output),
+        "a2ui-live::on-counter",
+    );
+    tokio::time::timeout(Duration::from_secs(5), observer.ready())
+        .await
+        .expect("observer accepted in time")
         .unwrap();
     wait_for_count(&iii, 1).await;
     let initial = refresh_binding(&deps, refresh_request()).await.unwrap();
@@ -281,7 +299,7 @@ async fn owned_trigger_type_binding_end_to_end() {
         let bump = call(&iii, "demo::counter::bump", json!({"counter": "clicks"}))
             .await
             .unwrap();
-        assert_eq!(bump["delivered"], 1, "{bump}");
+        assert_eq!(bump["observers"], 1, "{bump}");
         let update = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("notification delivered")
@@ -296,19 +314,22 @@ async fn owned_trigger_type_binding_end_to_end() {
         json!(base + 2)
     );
 
-    // Filter: another counter does not reach this binding.
+    // Match: another counter does not reach this binding.
     let other = call(&iii, "demo::counter::bump", json!({"counter": "other"}))
         .await
         .unwrap();
-    assert_eq!(other["delivered"], 0);
+    assert_eq!(other["observers"], 0);
+    assert!(tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .is_err());
 
-    // 6. Unbind cleanup: provider drops the binding, no further delivery.
-    trigger.unregister();
+    // 6. Unbind cleanup: the observer is disposed, no further delivery.
+    observer.dispose().await.unwrap();
     wait_for_count(&iii, 0).await;
     let after = call(&iii, "demo::counter::bump", json!({"counter": "clicks"}))
         .await
         .unwrap();
-    assert_eq!(after["delivered"], 0);
+    assert_eq!(after["observers"], 0);
     assert!(tokio::time::timeout(Duration::from_millis(500), rx.recv())
         .await
         .is_err());
@@ -321,7 +342,100 @@ async fn owned_trigger_type_binding_end_to_end() {
         refresh_binding(&deps, refresh_request()).await.unwrap_err(),
         "binding was not found"
     );
-    println!("unbind cleanup -> provider bindings 0, no delivery, binding removed");
+    println!("unbind cleanup -> provider observers 0, no delivery, binding removed");
+
+    // 7. Bindings stored under iii 0.25 translate through the registry when
+    //    the session loads: args for a function with an args_format, `$eq`
+    //    filters for one without, retired when the function is missing.
+    iii.register_function(
+        "a2ui-live::on-note-saved",
+        RegisterFunction::new(|event: Value| Ok::<Value, Error>(event))
+            .description("Live check: a private event function that takes no args.")
+            .private(),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stored_session = "live-stored";
+    let mut stored = SessionState::empty(stored_session);
+    apply_messages(&mut stored, &messages, None, &WorkerConfig::default()).unwrap();
+    let mut value = serde_json::to_value(&stored).unwrap();
+    value["surfaces"][0]["bindings"] = json!([
+        {
+            "id": "clicks-count",
+            "trigger_type": "demo::counter-changed",
+            "config": {"counter": "clicks"},
+            "target_path": "/count",
+            "query": {"function_id": "demo::counter::get", "payload": {"counter": "clicks"}, "result_path": "/value"}
+        },
+        {
+            "id": "note",
+            "trigger_type": "a2ui-live::note-saved",
+            "config": {"note": "n1", "metadata": {"from": "0.25"}},
+            "target_path": "/note"
+        },
+        {
+            "id": "gone",
+            "trigger_type": "demo::counter-reset",
+            "config": {"counter": "clicks"},
+            "target_path": "/reset"
+        }
+    ]);
+    deps.store.save_value(stored_session, value).await.unwrap();
+    let surface = get(
+        &deps,
+        serde_json::from_value(json!({"session_id": stored_session, "surface_id": SURFACE}))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    println!(
+        "stored 0.25 bindings -> bindings={} retired={}",
+        serde_json::to_string(&surface.bindings).unwrap(),
+        serde_json::to_string(&surface.retired_bindings).unwrap()
+    );
+    assert_eq!(surface.bindings.len(), 2);
+    assert_eq!(surface.bindings[0].function_id, "demo::on-counter-changed");
+    assert_eq!(surface.bindings[0].args, Some(json!({"counter": "clicks"})));
+    assert_eq!(surface.bindings[1].function_id, "a2ui-live::on-note-saved");
+    assert_eq!(surface.bindings[1].args, None);
+    assert_eq!(
+        surface.bindings[1].filters,
+        Some(json!({"input.note": {"$eq": "n1"}}))
+    );
+    assert_eq!(surface.retired_bindings.len(), 1);
+    assert_eq!(surface.retired_bindings[0].id, "gone");
+    assert_eq!(
+        surface.retired_bindings[0].function_id,
+        "demo::on-counter-reset"
+    );
+    assert!(surface.retired_bindings[0]
+        .reason
+        .contains("is not registered with the engine"));
+
+    // The engine accepts the translated observer, and refuses the args the
+    // stored config would otherwise have become.
+    let translated = iii.observe(
+        Source::function("a2ui-live::on-note-saved")
+            .filters(json!({"input.note": {"$eq": "n1"}}))
+            .deliver(Deliver::Output),
+        "a2ui-live::on-counter",
+    );
+    tokio::time::timeout(Duration::from_secs(5), translated.ready())
+        .await
+        .expect("translated observer settles")
+        .unwrap();
+    translated.dispose().await.unwrap();
+    let as_args = iii.observe(
+        Source::function("a2ui-live::on-note-saved")
+            .args(json!({"note": "n1"}))
+            .deliver(Deliver::Output),
+        "a2ui-live::on-counter",
+    );
+    let error = tokio::time::timeout(Duration::from_secs(5), as_args.ready())
+        .await
+        .expect("args observer settles")
+        .unwrap_err();
+    println!("args on a function without args_format -> {error}");
+    assert!(error.to_string().contains("INVALID_ARGS"), "{error}");
     iii.shutdown_async().await;
 }
 
@@ -389,8 +503,11 @@ async fn binding_functions_through_the_engine() {
         "a2ui::binding::set",
         set(json!({
             "id": "legacy-events",
-            "trigger_type": "stream",
-            "config": {"stream_name": "agent::events", "group_id": session},
+            "function_id": "stream::on-changed",
+            "filters": {
+                "input.stream_name": {"$eq": "agent::events"},
+                "input.group_id": {"$eq": session}
+            },
             "target_path": "/events"
         })),
     )
@@ -400,12 +517,12 @@ async fn binding_functions_through_the_engine() {
     assert_eq!(legacy["deprecation"], json!(STREAM_BINDING_DEPRECATION));
 
     let mut bad = owned_binding();
-    bad["config"] = json!({"counter": "clicks", "group": "x"});
+    bad["args"] = json!({"counter": "clicks", "group": "x"});
     let error = call(&iii, "a2ui::binding::set", set(bad))
         .await
         .unwrap_err()
         .to_string();
-    println!("binding::set bad config -> {error}");
+    println!("binding::set bad args -> {error}");
     assert!(error.contains("unsupported field `group`"));
 
     let owned = call(&iii, "a2ui::binding::set", set(owned_binding()))

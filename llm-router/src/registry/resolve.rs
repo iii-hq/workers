@@ -344,8 +344,8 @@ pub fn make_update_credential(
             slice["credential"] = credential;
             write_entry_value(&iii, entry.clone()).await?;
             // Make this worker-originated write visible immediately; the
-            // asynchronous configuration trigger will subsequently re-fetch
-            // the same authoritative value and drive model discovery.
+            // asynchronous `configuration::on-updated` delivery re-fetches
+            // the same authoritative value and drives model discovery.
             apply_config(&config, entry);
             Ok(UpdateCredentialResponse { ok: true })
         })

@@ -1,7 +1,7 @@
 /**
  * TypeScript types for the `voice` worker's wire contract: every
- * `voice::*` function's request/response shape and the trigger payloads a
- * page or chip may bind. Mirrors the Rust side exactly; kept
+ * `voice::*` function's request/response shape and the events a page or
+ * chip may observe. Mirrors the Rust side exactly; kept
  * dependency-free so client.ts and every consumer can import it directly.
  */
 import type { ExtensionIii } from '@iii-dev/console-ui'
@@ -17,7 +17,7 @@ export interface Segment {
 }
 
 /** A `type` alias (not `interface`) so it structurally satisfies the
-    `Record<string, unknown>` payload parameter of `host.iii.trigger`
+    `Record<string, unknown>` payload parameter of `host.iii.call`
     without a cast — TS gives object-literal-shaped `type`s an implicit
     index signature, but not declared `interface`s. */
 export type DictationStartRequest = {
@@ -211,13 +211,6 @@ export interface SessionStartedEvent {
 export interface SessionStoppedEvent {
   session_id: string
   reason: string
-  timestamp_ms: number
-}
-
-/** Legacy event retained for compatibility; browser playback uses local audio events. */
-export interface SpeechEndedEvent {
-  speech_id: string
-  reason: 'ended' | 'stopped' | 'failed' | string
   timestamp_ms: number
 }
 

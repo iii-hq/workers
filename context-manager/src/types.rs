@@ -299,10 +299,10 @@ pub struct Model {
 
 /// An invocation-surface schema entry (README.md § AgentFunction) —
 /// accepted by `context::count-tokens` so callers can include the
-/// `agent_trigger` schema in their estimate.
+/// `agent_call` schema in their estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentFunction {
-    /// Invocation surface name (`agent_trigger`, `submit_result`, or a
+    /// Invocation surface name (`agent_call`, `submit_result`, or a
     /// function id in native exposure mode).
     pub name: String,
     pub description: String,

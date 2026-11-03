@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::json;
 
 use crate::contract::{
@@ -10,7 +10,7 @@ use crate::contract::{
     ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
     WakeEventV1,
 };
-use crate::runtime::Deps;
+use crate::runtime::{Deps, TURN_COMPLETED_FN};
 
 pub const CONFIGURE_ID: &str = "eval::configure";
 pub const CONFIG_ID: &str = "eval::config";
@@ -29,6 +29,10 @@ pub const REPRODUCE_ID: &str = "eval::reproduce";
 pub const STEP_ID: &str = "eval::step";
 pub const WAKE_ID: &str = "eval::on-turn-completed";
 pub const SWEEP_ID: &str = "eval::sweep";
+
+/// The cron function that runs the sweep, and the sweep's schedule.
+pub const ON_TICK_FN: &str = "cron::on-tick";
+pub const SWEEP_EXPRESSION: &str = "*/15 * * * * *";
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let current = deps.clone();
@@ -70,7 +74,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(
             "Read the monitor configuration (null until configured), whether the \
-             harness::turn-completed observation trigger was requested, the latest rejection \
+             harness::on-turn-completed observer is active, the latest rejection \
              (capacity or daily cost cap), the day's known investigation cost against the cap with \
              what one analysis has cost, and, with check_providers, whether the Jev triage \
              provider answers.",
@@ -326,7 +330,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Internal harness turn-completed admission and wake-up.")
+        .description("Internal: admission and wake-up for harness::on-turn-completed.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
@@ -340,4 +344,24 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         .description("Internal recovery, deadline and retention sweep.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
+}
+
+/// Observe the harness's finished turns (admission and wake-up) and a
+/// fifteen-second cron tick (recovery, deadlines and retention), each target
+/// taking the event. An observer stays `pending` until its function
+/// registers; `eval::config` reports the turn observer's state. The
+/// observers live as long as the worker's connection.
+pub fn observe(iii: &IIIClient, deps: &Deps) -> [ObserverHandle; 2] {
+    let turns = iii.observe(
+        Source::function(TURN_COMPLETED_FN).deliver(Deliver::Output),
+        WAKE_ID,
+    );
+    deps.observer.set(turns.clone());
+    let sweep = iii.observe(
+        Source::function(ON_TICK_FN)
+            .args(json!({ "expression": SWEEP_EXPRESSION }))
+            .deliver(Deliver::Output),
+        SWEEP_ID,
+    );
+    [turns, sweep]
 }

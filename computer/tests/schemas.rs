@@ -93,40 +93,63 @@ fn every_function_has_typed_request_and_response_schemas() {
     }
 }
 
-/// The worker-owned `computer::frame-changed` trigger type: binding config and
-/// notification payload are wire surface too (the console viewport binds it).
+/// The four observable functions this worker provides (the console
+/// observes them): each one's args (`null`: it takes none) and the event its handler
+/// returns, which observers observe, are wire surface too.
 #[test]
-fn frame_changed_trigger_contract_matches_golden() {
-    use computer::frames::{FrameBindingConfig, FrameChange, FRAME_CHANGED, FRAME_CHANGED_DESC};
-    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
-    let value = serde_json::json!({
-        "trigger_type": FRAME_CHANGED,
-        "description": FRAME_CHANGED_DESC,
-        "config_schema": generator().into_root_schema_for::<FrameBindingConfig>(),
-        "payload_schema": generator().into_root_schema_for::<FrameChange>(),
-    });
-    let mut pretty = serde_json::to_string_pretty(&value).expect("contract serializes");
-    pretty.push('\n');
-    if let Err(msg) = support::check_golden("triggers/computer.frame-changed.json", &pretty) {
-        panic!("{msg}");
-    }
-}
+fn event_functions_match_golden() {
+    use computer::events::{
+        ActivityEvent, SessionStartedEvent, SessionStoppedEvent, ACTIVITY_DESC, ON_ACTIVITY_FN,
+        ON_SESSION_STARTED_FN, ON_SESSION_STOPPED_FN, SESSION_STARTED_DESC, SESSION_STOPPED_DESC,
+    };
+    use computer::frames::{FrameArgs, FrameChange, ON_FRAME_CHANGED_DESC, ON_FRAME_CHANGED_FN};
 
-/// `computer::activity` (the console's live preview binds it): binding config
-/// and payload are wire surface.
-#[test]
-fn activity_trigger_contract_matches_golden() {
-    use computer::events::{ActivityEvent, BindingConfig, ACTIVITY, ACTIVITY_DESC};
-    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
-    let value = serde_json::json!({
-        "trigger_type": ACTIVITY,
-        "description": ACTIVITY_DESC,
-        "config_schema": generator().into_root_schema_for::<BindingConfig>(),
-        "payload_schema": generator().into_root_schema_for::<ActivityEvent>(),
-    });
-    let mut pretty = serde_json::to_string_pretty(&value).expect("contract serializes");
-    pretty.push('\n');
-    if let Err(msg) = support::check_golden("triggers/computer.activity.json", &pretty) {
-        panic!("{msg}");
+    fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
+        let generator = schemars::r#gen::SchemaSettings::draft07().into_generator();
+        serde_json::to_value(generator.into_root_schema_for::<T>()).expect("schema serializes")
     }
+
+    let functions = [
+        (
+            ON_SESSION_STARTED_FN,
+            SESSION_STARTED_DESC,
+            serde_json::Value::Null,
+            schema::<SessionStartedEvent>(),
+        ),
+        (
+            ON_SESSION_STOPPED_FN,
+            SESSION_STOPPED_DESC,
+            serde_json::Value::Null,
+            schema::<SessionStoppedEvent>(),
+        ),
+        (
+            ON_ACTIVITY_FN,
+            ACTIVITY_DESC,
+            serde_json::Value::Null,
+            schema::<ActivityEvent>(),
+        ),
+        (
+            ON_FRAME_CHANGED_FN,
+            ON_FRAME_CHANGED_DESC,
+            schema::<FrameArgs>(),
+            schema::<FrameChange>(),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (function_id, description, args_format, event) in functions {
+        let value = serde_json::json!({
+            "function_id": function_id,
+            "description": description,
+            "private": true,
+            "args_format": args_format,
+            "event_schema": event,
+        });
+        let mut pretty = serde_json::to_string_pretty(&value).expect("contract serializes");
+        pretty.push('\n');
+        let file = format!("sources/{}.json", function_id.replace("::", "."));
+        if let Err(msg) = support::check_golden(&file, &pretty) {
+            failures.push(msg);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }

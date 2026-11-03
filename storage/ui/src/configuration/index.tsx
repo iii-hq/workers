@@ -103,7 +103,7 @@ function useLiveBuckets(host: Host) {
   useEffect(() => {
     let alive = true
     host.iii
-      .trigger<{
+      .call<{
         buckets?: Array<{ name?: unknown; error?: unknown; error_stage?: unknown; notifications_error?: unknown }>
       }>('storage::listBuckets', {}, { timeoutMs: 10_000 })
       .then((response) => {
@@ -459,13 +459,13 @@ function NotificationFields({
   return (
     <Section
       title="Object events"
-      description="Connect provider notifications to object-created and object-deleted triggers."
+      description="Connect provider notifications to the storage::on-object-created and storage::on-object-deleted events."
     >
       <CheckField
         id={`storage-cfg-${name}-notifications`}
         path={`buckets/${name}/notifications`}
         label="Enable object event notifications"
-        hint="Saving starts or stops the provider poller immediately. Existing trigger registrations remain intact."
+        hint="Saving starts or stops the provider poller immediately. Turning notifications off rejects the observers of this bucket (CONFIG_ERROR)."
         checked={notificationsEnabled}
         onChange={(checked) => {
           const next = { ...bucket }

@@ -2,13 +2,9 @@ iii: v1
 name: cron
 language: rust
 deploy: binary
+iii_engine_version: ">=0.26.0"
 manifest: Cargo.toml
 license: Apache-2.0
 bin: cron
 tags: [cron, schedule, timer, job]
-description: Schedule functions with cron expressions - registers the `cron` trigger type and the observable function `cron::on-tick` (iii 0.25).
-config:
-  adapter:
-    name: local
-dependencies:
-  configuration: "latest"
+description: Run functions on cron schedules — hosts `cron::on-tick`; each observer of it passes `{ expression }` as args and receives that expression's ticks.

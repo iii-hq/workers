@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::helpers::create_channel;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -326,7 +326,7 @@ impl RouterClient {
             payload["provider_options"] = options.clone();
         }
 
-        // Run the held-open trigger concurrently with frame consumption.
+        // Run the held-open call concurrently with frame consumption.
         //
         // Carry the caller's OTel context into the spawned task so the SDK
         // injects the turn's traceparent and `router::chat` nests under
@@ -337,9 +337,9 @@ impl RouterClient {
         let iii = self.iii.clone();
         let timeout_ms = self.timeout_ms;
         let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
-        let mut trigger = tokio::spawn(
+        let mut chat_call = tokio::spawn(
             async move {
-                iii.trigger(TriggerRequest {
+                iii.call(CallRequest {
                     function_id: "router::chat".into(),
                     payload,
                     action: None,
@@ -367,11 +367,11 @@ impl RouterClient {
         let mut tracker = PartialTracker::default();
 
         // Consume frames until reader EOF — but ALSO watch the held-open
-        // trigger: when it resolves, the router is done (ack) or the dispatch
+        // call: when it resolves, the router is done (ack) or the dispatch
         // failed before a writer ever attached (e.g. provider unavailable).
         // In the failure case the channel never EOFs, so waiting on frames
         // alone would hang this turn forever with the session stuck "working".
-        // After the trigger resolves, drain already-buffered frames briefly,
+        // After the call resolves, drain already-buffered frames briefly,
         // then fall through to the outcome handling below.
         let mut response: Option<Result<Value, iii_sdk::errors::Error>> = None;
         let mut drain_deadline = Instant::now();
@@ -419,7 +419,7 @@ impl RouterClient {
                         let _ = pump.await;
                         // Kill the held-open router::chat task; the router's
                         // own teardown was already requested via router::abort.
-                        trigger.abort();
+                        chat_call.abort();
                         // Re-request the router abort: stop.rs's router::abort
                         // can race ahead of the router's stream registration
                         // and no-op — by now the stream is certainly
@@ -452,7 +452,7 @@ impl RouterClient {
                             error: None,
                         });
                     }
-                    r = &mut trigger => {
+                    r = &mut chat_call => {
                         response = Some(r.map_err(|e| {
                             HarnessError::Internal(format!("router::chat task: {e}"))
                         })?);
@@ -524,13 +524,13 @@ impl RouterClient {
             }
         }
 
-        // Stream drained; stop the pump and collect the trigger ack.
+        // Stream drained; stop the pump and collect the call ack.
         // notify_one: latched — safe even if the pump task hasn't polled yet.
         cancel.notify_one();
         let _ = pump.await;
         let response = match response {
             Some(r) => r,
-            None => trigger
+            None => chat_call
                 .await
                 .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?,
         };
@@ -613,7 +613,7 @@ impl RouterClient {
     pub async fn abort(&self, request_id: &str) -> bool {
         let res = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::abort".into(),
                 payload: json!({ "request_id": request_id }),
                 action: None,
@@ -654,7 +654,7 @@ impl RouterClient {
         }
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::count_tokens".into(),
                 payload,
                 action: None,
@@ -680,7 +680,7 @@ impl RouterClient {
         }
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::models::get".into(),
                 payload,
                 action: None,
@@ -723,7 +723,7 @@ impl RouterClient {
 
     async fn catalog_call(&self, function_id: &str, payload: Value) -> Option<Value> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.into(),
                 payload,
                 action: None,
@@ -739,7 +739,7 @@ impl RouterClient {
     pub async fn provider_defaults(&self, provider: &str) -> Option<ProviderDefaults> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::provider::list".into(),
                 payload: json!({}),
                 action: None,
@@ -760,7 +760,7 @@ impl RouterClient {
     pub async fn models_supports(&self, provider: &str, id: &str, capability: &str) -> bool {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::models::supports".into(),
                 payload: json!({ "provider": provider, "id": id, "capability": capability }),
                 action: None,
@@ -1278,7 +1278,7 @@ mod streaming_args_tests {
         let mut m = empty_assistant("p", "m");
         m.content = vec![ContentBlock::FunctionCall {
             id: "c1".into(),
-            function_id: "agent_trigger".into(),
+            function_id: "agent_call".into(),
             arguments: json!({ "function": "state::set" }),
         }];
 
@@ -1317,11 +1317,11 @@ mod streaming_args_tests {
     }
 
     #[test]
-    fn enrich_exposes_open_agent_trigger_identity_across_deltas() {
+    fn enrich_exposes_open_agent_call_identity_across_deltas() {
         let mut m = empty_assistant("p", "m");
         m.content = vec![ContentBlock::FunctionCall {
             id: "c1".into(),
-            function_id: "agent_trigger".into(),
+            function_id: "agent_call".into(),
             arguments: json!({}),
         }];
         let mut acc = HashMap::new();
@@ -1497,7 +1497,7 @@ mod streaming_args_tests {
             },
             ContentBlock::FunctionCall {
                 id: "c1".into(),
-                function_id: "agent_trigger".into(),
+                function_id: "agent_call".into(),
                 arguments: json!({}),
             },
         ];

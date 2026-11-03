@@ -83,7 +83,7 @@ fn result(id: &str, function_id: &str, chars: usize) -> Value {
 }
 
 /// A sub-agent completion as the harness injects it into the parent:
-/// a plain user message (`trigger_deliver::wake_target`).
+/// a plain user message (the wake `harness::observer::deliver` sends).
 fn notification(child: &str) -> Value {
     user(&format!(
         "[notification] {child}: {{\"event_type\":\"state:updated\",\"key\":\"{child}\",\"scope\":\"results\"}}"

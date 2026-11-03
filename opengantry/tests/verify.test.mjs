@@ -7,12 +7,15 @@ import { test } from 'node:test';
 import { isPromoteClassFunctionId } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from '../src/denied.js';
+import {
+  FunctionRegistrationRequestSchema,
+  FunctionRegistrationResponseSchema,
+} from '../src/formats.js';
 import { LEASE_STATES } from '../src/lease-store.js';
 import {
   isReservedGovernanceFunctionId,
   onFunctionRegistration,
-  onTriggerRegistration,
-  onTriggerTypeRegistration,
+  onObserverRegistration,
 } from '../src/registration-hooks.js';
 import { resolveLeaseStorePath } from '../src/repo-path.js';
 import { createGantryRuntime } from '../src/runtime.js';
@@ -78,26 +81,64 @@ test('onFunctionRegistration denies reserved ids', () => {
   );
 });
 
-test('onTriggerRegistration denies gantry namespace bindings', () => {
+test('onFunctionRegistration answers with the function id alone, so private, observable and args_format stay as declared', () => {
+  // What the engine sends (engine/src/engine/mod.rs, RegisterFunction).
+  const input = {
+    function_id: 'orders::on-created',
+    description: 'Called once per created order.',
+    metadata: { team: 'orders' },
+    namespace: 'default',
+    private: true,
+    observable: false,
+    args_format: {
+      type: 'object',
+      properties: { region: { type: 'string' } },
+      required: ['region'],
+    },
+    context: { tenant: 't-1' },
+  };
+  assert.deepEqual(FunctionRegistrationRequestSchema.parse(input), input);
+  const answer = onFunctionRegistration(input);
+  assert.deepEqual(answer, { function_id: 'orders::on-created' });
+  assert.deepEqual(FunctionRegistrationResponseSchema.parse(answer), answer);
+
+  // The engine replaces only the keys the answer carries.
+  const registered = { ...input, ...answer };
+  assert.equal(registered.private, true);
+  assert.equal(registered.observable, false);
+  assert.deepEqual(registered.args_format, input.args_format);
+  assert.equal(registered.description, input.description);
+  assert.deepEqual(registered.metadata, input.metadata);
+});
+
+test('onObserverRegistration denies observers that target the gantry namespace', () => {
   assert.throws(
-    () => onTriggerRegistration({ function_id: 'gantry::deploy' }),
+    () =>
+      onObserverRegistration({
+        observer_id: 'o-1',
+        function_id: 'orders::create',
+        target_function_id: 'gantry::deploy',
+      }),
     (err) => err instanceof GantryDenied && err.code === 'REGISTRATION_DENIED',
-    'gantry namespace trigger bindings should be denied',
+    'observers targeting the gantry namespace should be denied',
   );
 });
 
-test('onTriggerTypeRegistration always denies', () => {
-  assert.throws(
-    () => onTriggerTypeRegistration(),
-    (err) => err instanceof GantryDenied && err.code === 'TRIGGER_TYPE_REGISTRATION_DENIED',
-    'trigger type registration should always be denied',
+test('onObserverRegistration accepts other observers, gantry::on-verdict included, unchanged', () => {
+  assert.deepEqual(
+    onObserverRegistration({
+      observer_id: 'o-2',
+      function_id: 'gantry::on-verdict',
+      target_function_id: 'audit::on-verdict',
+    }),
+    {},
   );
 });
 
 test('tombstone on disconnect while promoting', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-v-tomb-'));
   const runtime = createGantryRuntime({
-    forwardTrigger: async () => ({ ok: true }),
+    forwardCall: async () => ({ ok: true }),
   });
   const leases = runtime.leaseStoreFor(repoRoot);
   await leases.upsert({

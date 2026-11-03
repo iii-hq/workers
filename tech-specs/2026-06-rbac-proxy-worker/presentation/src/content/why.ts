@@ -29,11 +29,11 @@ export const PAIN_CARDS: PainCard[] = [
   {
     n: '04',
     title: 'discovery leaks what you cannot call',
-    body: 'only 2 of the 8 engine:: discovery functions are session-aware, and only in-process. a gated worker can still enumerate functions, workers, and triggers it can never invoke.',
+    body: 'only 4 of the 6 engine:: discovery functions are session-aware, and only in-process. a gated worker can still enumerate functions, workers, and observers it can never invoke.',
   },
 ]
 
-/** the eight discovery functions and whether the engine filters them per-session. */
+/** the six discovery functions and whether the engine filters them per-session. */
 export interface DiscoveryRow {
   fn: string
   sessionAware: boolean
@@ -44,9 +44,7 @@ export const DISCOVERY_LEAK: DiscoveryRow[] = [
   { fn: 'engine::functions::list', sessionAware: true, leaks: 'in-process only; a remote proxy gets no session' },
   { fn: 'engine::functions::info', sessionAware: true, leaks: 'in-process only; schemas, metadata' },
   { fn: 'engine::workers::list', sessionAware: false, leaks: 'every worker, pid, ip, function_count' },
-  { fn: 'engine::workers::info', sessionAware: false, leaks: 'per-worker functions, triggers, metrics' },
-  { fn: 'engine::triggers::list', sessionAware: false, leaks: 'every trigger type' },
-  { fn: 'engine::triggers::info', sessionAware: false, leaks: 'instance_count over hidden functions' },
-  { fn: 'engine::registered-triggers::list', sessionAware: false, leaks: 'bindings to functions you cannot call' },
-  { fn: 'engine::registered-triggers::info', sessionAware: false, leaks: 'nested function + trigger envelopes' },
+  { fn: 'engine::workers::info', sessionAware: false, leaks: 'per-worker functions, observers, metrics' },
+  { fn: 'engine::observers::list', sessionAware: true, leaks: 'in-process only; observers of functions you cannot call' },
+  { fn: 'engine::observers::get', sessionAware: true, leaks: 'in-process only; args, filters, targets' },
 ]

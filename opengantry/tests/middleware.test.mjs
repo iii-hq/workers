@@ -16,7 +16,7 @@ import { withKeyring } from './helpers/with-keyring.mjs';
 test('middleware throws on promote without mission binding', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-'));
   const runtime = createGantryRuntime({
-    forwardTrigger: async (fid, payload) => ({ ok: true, fid, payload }),
+    forwardCall: async (fid, payload) => ({ ok: true, fid, payload }),
   });
   await assert.rejects(
     () =>
@@ -33,7 +33,7 @@ test('middleware throws on promote without mission binding', async () => {
 test('middleware throws MSN_ID_MISSING for promote-class calls without msn_id', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-mw-msn-'));
   const runtime = createGantryRuntime({
-    forwardTrigger: async () => ({ ok: true }),
+    forwardCall: async () => ({ ok: true }),
   });
   await assert.rejects(
     () =>
@@ -56,7 +56,7 @@ test('middleware throws when token does not match current mission revision', asy
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     fs.appendFileSync(path.join(repoRoot, missionRel), '\n# edited\n');
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     const leases = runtime.leaseStoreFor(repoRoot);
@@ -82,7 +82,7 @@ test('middleware allows promote with valid token and mission_rel', async () => {
   await withKeyring(krDir, async (keyring) => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
-      forwardTrigger: async (fid, payload) => ({ ok: true, fid, payload }),
+      forwardCall: async (fid, payload) => ({ ok: true, fid, payload }),
       verdictKeyringPath: keyring,
     });
     const leases = runtime.leaseStoreFor(repoRoot);
@@ -102,7 +102,7 @@ test('middleware throws on corrupted lease store', async () => {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(storePath, '{"leases": null}');
   const runtime = createGantryRuntime({
-    forwardTrigger: async () => ({ ok: true }),
+    forwardCall: async () => ({ ok: true }),
   });
   await assert.rejects(
     () =>
@@ -124,7 +124,7 @@ test('middleware denies promote when lease is tombstoned', async () => {
   await withKeyring(krDir, async (keyring) => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     const leases = runtime.leaseStoreFor(repoRoot);
@@ -156,7 +156,7 @@ test('middleware denies promote when lineage is dirty', async () => {
   await withKeyring(krDir, async (keyring) => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     const leases = runtime.leaseStoreFor(repoRoot);
@@ -188,7 +188,7 @@ test('verify pass recovers dirty lineage so promote succeeds', async () => {
   await withKeyring(krDir, async (keyring) => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     const leases = runtime.leaseStoreFor(repoRoot);
@@ -226,7 +226,7 @@ test('middleware denies scope violation outside TMVC roots', async () => {
   await withKeyring(krDir, async (keyring) => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({
@@ -255,7 +255,7 @@ test('middleware denies when mission scope load fails', async () => {
   await withKeyring(krDir, async (keyring) => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({
@@ -286,7 +286,7 @@ test('middleware restores lease after forward failure and allows retry', async (
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     let calls = 0;
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => {
+      forwardCall: async () => {
         calls += 1;
         if (calls === 1) throw new Error('deploy failed');
         return { ok: true };

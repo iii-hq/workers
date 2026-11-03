@@ -13,7 +13,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use zeroize::Zeroizing;
 
@@ -227,18 +227,41 @@ fn verify(key: &MasterKey, key_check: Option<&str>, origin: &str) -> Result<(), 
     }
 }
 
-/// Whether `path` lies under `dir`, comparing canonical forms where the
-/// filesystem allows (the key file itself may not exist yet).
+/// Whether `path` lies under `dir`. Both are compared in canonical form: the
+/// nearest ancestor that exists is resolved (symlinks such as macOS's
+/// `/var` -> `/private/var` included) and the components that do not exist
+/// yet, like a key file and its directories, are appended to it.
 pub fn is_within(path: &Path, dir: &Path) -> bool {
-    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let path = match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => parent
-            .canonicalize()
-            .map(|parent| parent.join(name))
-            .unwrap_or_else(|_| path.to_path_buf()),
-        _ => path.to_path_buf(),
-    };
-    path.starts_with(&dir)
+    canonical_prefix(path).starts_with(canonical_prefix(dir))
+}
+
+/// `path` with its nearest existing ancestor canonicalized and the missing
+/// rest appended, `.` and `..` resolved by name (a missing directory cannot
+/// be a symlink).
+fn canonical_prefix(path: &Path) -> PathBuf {
+    let components: Vec<Component> = path.components().collect();
+    for split in (0..=components.len()).rev() {
+        let head: PathBuf = components[..split].iter().collect();
+        // A relative path whose every component is missing starts at `.`.
+        let probe = if head.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            head.as_path()
+        };
+        if let Ok(mut resolved) = probe.canonicalize() {
+            for component in &components[split..] {
+                match component {
+                    Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    Component::CurDir => {}
+                    other => resolved.push(other),
+                }
+            }
+            return resolved;
+        }
+    }
+    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -353,6 +376,47 @@ mod tests {
             codes::KEY_UNAVAILABLE
         );
         assert!(!file.exists());
+    }
+
+    // The project and the key file are compared through their nearest
+    // existing ancestors, so missing directories and symlinked prefixes
+    // (macOS's /var -> /private/var) cannot move a key file out of the project.
+    #[test]
+    fn containment_resolves_the_nearest_existing_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        assert!(is_within(
+            &project.join("config/deep/secrets.key"),
+            &project
+        ));
+        assert!(is_within(
+            &project.join("config/secrets.key"),
+            &project.canonicalize().unwrap()
+        ));
+        assert!(!is_within(
+            &root.path().join("elsewhere/secrets.key"),
+            &project
+        ));
+        assert!(!is_within(
+            &root.path().join("project-two/secrets.key"),
+            &project
+        ));
+        assert!(!is_within(
+            &project.join("missing/../../elsewhere/secrets.key"),
+            &project
+        ));
+        assert!(is_within(
+            &root.path().join("missing/../project/config/secrets.key"),
+            &project
+        ));
+        #[cfg(unix)]
+        {
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(&project, &link).unwrap();
+            assert!(is_within(&link.join("config/secrets.key"), &project));
+            assert!(is_within(&project.join("config/secrets.key"), &link));
+        }
     }
 
     #[test]

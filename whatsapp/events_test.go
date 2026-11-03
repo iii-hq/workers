@@ -372,14 +372,48 @@ func TestEventsBoundedSequenceAndRestartReservation(t *testing.T) {
 	}
 }
 
-func TestEventRouterRejectsTrailingOrUnknownFilterData(t *testing.T) {
-	router := &EventRouter{}
-	for _, raw := range []string{`{"session_id":"test"} {}`, `{"secret":"ignored"}`, `{"kinds":["bad kind"]}`, `{"session_id":"../outside"}`} {
-		if err := router.RegisterTrigger(context.Background(), iii.TriggerConfig{ID: "test", Config: json.RawMessage(raw)}); err == nil {
-			t.Errorf("invalid filter accepted: %s", raw)
-		}
+func TestEmitEventCallsOnlyWhileObservedAndCurrent(t *testing.T) {
+	ctx := context.Background()
+	event := Event{SessionID: "test", Sequence: 7, Kind: "message.received", TimestampMS: 1790870400000, Data: map[string]any{"kind": "text"}, epoch: 3}
+	var requests []iii.CallRequest
+	call := func(_ context.Context, request iii.CallRequest) (json.RawMessage, error) {
+		requests = append(requests, request)
+		return nil, nil
 	}
-	if err := router.RegisterTrigger(context.Background(), iii.TriggerConfig{ID: "test", Config: json.RawMessage(`{"session_id":"test","kinds":["message.received"]}`)}); err != nil {
+	yes := func() bool { return true }
+	no := func() bool { return false }
+	current := func(Event) bool { return true }
+	stale := func(Event) bool { return false }
+	emitEvent(ctx, event, no, current, call)
+	emitEvent(ctx, event, yes, stale, call)
+	if len(requests) != 0 {
+		t.Fatalf("an unobserved or stale event was emitted: %+v", requests)
+	}
+	emitEvent(ctx, event, yes, current, call)
+	if len(requests) != 1 {
+		t.Fatalf("got %d calls, want one", len(requests))
+	}
+	request := requests[0]
+	if request.FunctionID != "whatsapp::on-events" || request.Namespace != "" || request.Metadata != nil {
+		t.Fatalf("event called the wrong function: %+v", request)
+	}
+	if request.Action == nil || request.Action.Type != "void" {
+		t.Fatal("event emission must not wait for observers")
+	}
+	var received map[string]any
+	if err := json.Unmarshal(request.Payload, &received); err != nil {
 		t.Fatal(err)
+	}
+	if received["session_id"] != "test" || received["kind"] != "message.received" || received["sequence"] != float64(7) {
+		t.Fatalf("event fields lost: %s", request.Payload)
+	}
+	if _, leaked := received["epoch"]; leaked {
+		t.Fatal("private event epoch leaked")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	emitEvent(cancelled, event, yes, current, call)
+	if len(requests) != 1 {
+		t.Fatal("event emitted after shutdown")
 	}
 }

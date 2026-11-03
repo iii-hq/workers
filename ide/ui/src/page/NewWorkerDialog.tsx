@@ -24,6 +24,7 @@ import { type ReactNode, useCallback, useEffect, useId, useReducer, useRef, useS
 import { joinPath } from './coder'
 import {
   addToStack,
+  type CallFunction,
   composeOperations,
   defaultDirectory,
   entryFile,
@@ -39,7 +40,6 @@ import {
   type ScaffoldResult,
   sourceLabel,
   stackSteps,
-  type Trigger,
   templateChoices,
   validateWorkerName,
   workerFunctions,
@@ -85,7 +85,7 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
     (refresh: boolean) => {
       dispatch({ type: 'load' })
       host.iii
-        .trigger<ListTemplatesResult>('coder::list-templates', { refresh })
+        .call<ListTemplatesResult>('coder::list-templates', { refresh })
         .then((list) => dispatch({ type: 'listed', list }))
         .catch((error: unknown) => dispatch({ type: 'list-failed', error: errorMessage(error) }))
     },
@@ -105,18 +105,18 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   const ready = state.step === 'form' && picked !== undefined && name !== '' && nameError === null
 
   const addedAt = useRef(0)
-  // Closing stops following the add: its compose-operation binding goes.
+  // Closing stops following the add: its compose::on-operation-progress observer goes.
   const following = useRef<AbortController | null>(null)
   useEffect(() => () => following.current?.abort(), [])
   const add = (result: ScaffoldResult, owned: boolean) => {
     addedAt.current = Date.now()
     dispatch({ type: 'add' })
-    const trigger: Trigger = <T,>(functionId: string, payload: Record<string, unknown>) =>
-      mounted.current ? host.iii.trigger<T>(functionId, payload) : Promise.reject<T>(new Error('the dialog closed'))
+    const call: CallFunction = <T,>(functionId: string, payload: Record<string, unknown>) =>
+      mounted.current ? host.iii.call<T>(functionId, payload) : Promise.reject<T>(new Error('the dialog closed'))
     following.current?.abort()
     const controller = new AbortController()
     following.current = controller
-    void addToStack(trigger, composeOperations(host.iii), result, (phase) => dispatch({ type: 'progress', phase }), {
+    void addToStack(call, composeOperations(host.iii), result, (phase) => dispatch({ type: 'progress', phase }), {
       owned,
       signal: controller.signal,
     }).then((outcome) =>
@@ -132,7 +132,7 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
     if (!ready) return
     dispatch({ type: 'create' })
     host.iii
-      .trigger<ScaffoldResult>('coder::scaffold-worker', {
+      .call<ScaffoldResult>('coder::scaffold-worker', {
         template: picked,
         name,
         directory: directory.startsWith('/') ? directory : joinPath(root, directory),
@@ -163,7 +163,7 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
   const runningName = state.step === 'running' ? result?.name : undefined
   useEffect(() => {
     if (!runningName) return
-    host.iii.trigger<{ functions: FunctionEntry[] }>('engine::functions::list', {}).then(
+    host.iii.call<{ functions: FunctionEntry[] }>('engine::functions::list', {}).then(
       ({ functions: all }) => setFunctions(workerFunctions(all, runningName)),
       () => setFunctions([]),
     )

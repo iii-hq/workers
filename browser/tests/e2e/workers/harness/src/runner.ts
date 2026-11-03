@@ -28,7 +28,7 @@ export class Runner {
   constructor(private opts: RunnerOptions) {}
 
   private async call(functionId: string, payload: unknown): Promise<any> {
-    return await this.opts.iii.trigger<unknown, any>({ function_id: functionId, payload })
+    return await this.opts.iii.call<unknown, any>({ function_id: functionId, payload })
   }
 
   private async callWithRetry(functionId: string, payload: unknown, attempts = 10): Promise<any> {
@@ -57,19 +57,33 @@ export class Runner {
 
   async runAll(): Promise<{ pass: number; total: number; results: CaseResult[] }> {
     // Probe with a no-op call until it succeeds; tolerates the worker-startup
-    // race (run-tests.sh already retries `iii trigger` before launching the
+    // race (run-tests.sh already retries `iii call` before launching the
     // harness at all, but the harness is also runnable standalone).
     await this.callWithRetry('browser::css', { html: '<p>x</p>', query: 'p' })
 
-    // Claim the pre-generate hook trigger type, as a real agent-harness stack
-    // would. Without an owner the browser worker's guidance binding stays
-    // parked in the engine's pending map, which registered-triggers::list
-    // does not expose — with one, the binding goes live and the
-    // inject_guidance hot-apply case can observe it bind and unbind. The
-    // handler never fires: nothing in this suite emits pre-generate events.
-    this.opts.iii.registerTriggerType(
-      { id: 'harness::hook::pre-generate', description: 'E2E stand-in for the agent harness pre-generate hook.' },
-      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+    // Host the pre-generate hook point, as a real agent-harness stack would.
+    // Without a host the browser worker's guidance observer stays `pending`
+    // — with one, it goes `active` and the inject_guidance hot-apply case can
+    // see it observed and disposed. The function is never called: nothing in
+    // this suite runs a generate step.
+    this.opts.iii.registerFunction(
+      'harness::hook::on-pre-generate',
+      (input: unknown) => input,
+      {
+        description: 'E2E stand-in for the agent harness pre-generate hook point.',
+        private: true,
+        args_format: {
+          type: 'object',
+          properties: {
+            sessions: { type: 'array', items: { type: 'string' } },
+            priority: { type: 'number' },
+            timeout_ms: { type: 'number' },
+            on_error: { type: 'string', enum: ['fail_open', 'fail_closed'] },
+            inject_prompt: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
     )
 
     const servers = await this.startOrigin()

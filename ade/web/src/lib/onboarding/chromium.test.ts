@@ -7,11 +7,11 @@ vi.mock('@/lib/function-presence', () => ({
 }))
 
 const shared = vi.hoisted(() => ({
-  trigger: vi.fn<(id: string, payload?: unknown) => Promise<unknown>>(),
+  call: vi.fn<(id: string, payload?: unknown) => Promise<unknown>>(),
 }))
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger: shared.trigger }),
+  getIiiClient: async () => ({ call: shared.call }),
 }))
 
 import {
@@ -149,9 +149,9 @@ describe('stateFromDoctor', () => {
 
 describe('readChromiumState', () => {
   it('asks browser::chromium::status', async () => {
-    const trigger = vi.fn(async () => MISSING)
-    const state = await readChromiumState({ trigger } as never)
-    expect(trigger).toHaveBeenCalledWith(
+    const call = vi.fn(async () => MISSING)
+    const state = await readChromiumState({ call } as never)
+    expect(call).toHaveBeenCalledWith(
       'browser::chromium::status',
       {},
       expect.anything(),
@@ -160,12 +160,12 @@ describe('readChromiumState', () => {
   })
 
   it('falls back to browser::doctor on a worker without it', async () => {
-    const trigger = vi.fn(async (id: string) => {
+    const call = vi.fn(async (id: string) => {
       if (id === 'browser::chromium::status') throw notFound()
       return { engine: 'chromium' }
     })
-    const state = await readChromiumState({ trigger } as never)
-    expect(trigger).toHaveBeenLastCalledWith(
+    const state = await readChromiumState({ call } as never)
+    expect(call).toHaveBeenLastCalledWith(
       'browser::doctor',
       {},
       expect.anything(),
@@ -174,17 +174,17 @@ describe('readChromiumState', () => {
   })
 
   it('is null when no browser worker answers', async () => {
-    const trigger = vi.fn(async () => {
+    const call = vi.fn(async () => {
       throw notFound()
     })
-    await expect(readChromiumState({ trigger } as never)).resolves.toBeNull()
+    await expect(readChromiumState({ call } as never)).resolves.toBeNull()
   })
 
   it('rejects on any other failure', async () => {
-    const trigger = vi.fn(async () => {
+    const call = vi.fn(async () => {
       throw new Error('timeout')
     })
-    await expect(readChromiumState({ trigger } as never)).rejects.toThrow(
+    await expect(readChromiumState({ call } as never)).rejects.toThrow(
       'timeout',
     )
   })
@@ -199,7 +199,7 @@ function bus({
   const calls: string[] = []
   let handler: ((payload: unknown) => void) | null = null
   const unsubscribe = vi.fn()
-  const trigger = vi.fn(async (id: string) => {
+  const call = vi.fn(async (id: string) => {
     calls.push(id)
     if (id === 'browser::chromium::install') {
       if (installError) throw installError
@@ -210,18 +210,18 @@ function bus({
   })
   const subscribe = vi.fn(
     async (
-      type: string,
-      _config: Record<string, unknown>,
+      functionId: string,
+      _selection: Record<string, unknown>,
       onEvent: (payload: unknown) => void,
     ) => {
-      calls.push(`subscribe ${type}`)
+      calls.push(`observe ${functionId}`)
       handler = onEvent
       return unsubscribe
     },
   )
   return {
     calls,
-    trigger,
+    call,
     subscribe,
     unsubscribe,
     emit: (payload: unknown) => handler?.(payload),
@@ -236,7 +236,7 @@ const flush = async () => {
 }
 
 describe('followChromiumInstall', () => {
-  it('subscribes to progress before it starts the download', async () => {
+  it('observes the progress before it starts the download', async () => {
     const fake = bus()
     const seen: string[] = []
     const done = followChromiumInstall({
@@ -246,7 +246,7 @@ describe('followChromiumInstall', () => {
     })
     await flush()
     expect(fake.calls).toEqual([
-      'subscribe browser::chromium-install-progress',
+      'observe browser::on-chromium-install-progress',
       'browser::chromium::install',
     ])
     fake.emit(event('downloading', { bytes_done: 5, bytes_total: 10 }))
@@ -264,7 +264,7 @@ describe('followChromiumInstall', () => {
     const fake = bus()
     const seen: string[] = []
     let releaseInstall: (value: unknown) => void = () => undefined
-    fake.trigger.mockImplementationOnce(
+    fake.call.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           releaseInstall = resolve
@@ -356,7 +356,7 @@ describe('followChromiumInstall', () => {
         job: event('done', { version: '131.0', path: '/c/chrome' }),
       })
       await vi.advanceTimersByTimeAsync(29_999)
-      expect(fake.trigger).not.toHaveBeenCalledWith(
+      expect(fake.call).not.toHaveBeenCalledWith(
         'browser::chromium::status',
         expect.anything(),
         expect.anything(),
@@ -511,23 +511,23 @@ describe('checkChromiumMissing', () => {
   beforeEach(() => {
     __resetChromiumMissingForTests()
     presence.registered = new Set()
-    shared.trigger.mockReset()
+    shared.call.mockReset()
   })
 
   it('asks nothing when no browser worker is registered', async () => {
     await expect(checkChromiumMissing(100_000)).resolves.toBe(false)
-    expect(shared.trigger).not.toHaveBeenCalled()
+    expect(shared.call).not.toHaveBeenCalled()
   })
 
   it('reads once, then reuses the answer for 30 s', async () => {
     presence.registered = new Set(['browser::chromium::status'])
-    shared.trigger.mockResolvedValue(MISSING)
+    shared.call.mockResolvedValue(MISSING)
     await expect(checkChromiumMissing(100_000)).resolves.toBe(true)
     await expect(checkChromiumMissing(110_000)).resolves.toBe(true)
-    expect(shared.trigger).toHaveBeenCalledTimes(1)
-    shared.trigger.mockResolvedValue({ ...MISSING, found: true })
+    expect(shared.call).toHaveBeenCalledTimes(1)
+    shared.call.mockResolvedValue({ ...MISSING, found: true })
     await expect(checkChromiumMissing(140_000)).resolves.toBe(false)
-    expect(shared.trigger).toHaveBeenCalledTimes(2)
+    expect(shared.call).toHaveBeenCalledTimes(2)
   })
 })
 

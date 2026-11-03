@@ -1,0 +1,61 @@
+{
+  "args_format": null,
+  "description": "A desktop session connected and is ready to drive. No args; filter on input.session_id.",
+  "event_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Screen": {
+        "description": "Desktop pixel dimensions. Coordinates handed to pointer actions are in this space: integer pixels, top-left origin, 1:1 with the screenshot.",
+        "properties": {
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "What `computer::on-session-started` returns: a desktop session is connected and ready.",
+    "properties": {
+      "endpoint": {
+        "description": "The endpoint the session is driving (`native` for the local machine).",
+        "type": "string"
+      },
+      "os": {
+        "description": "Informational guest OS label (`linux`, `macos`, ...).",
+        "type": "string"
+      },
+      "screen": {
+        "$ref": "#/definitions/Screen"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "endpoint",
+      "os",
+      "screen",
+      "session_id",
+      "timestamp"
+    ],
+    "title": "SessionStartedEvent",
+    "type": "object"
+  },
+  "function_id": "computer::on-session-started",
+  "private": true
+}

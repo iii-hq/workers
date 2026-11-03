@@ -1,16 +1,16 @@
 //! Boot.
 //!
 //! Order matters and is asserted by a test: the **interface** — functions,
-//! trigger types, the configuration doorbell — registers before the durable
-//! dependencies are claimed. Release interface capture boots this binary
-//! against an isolated engine that has no `database` and no `queue` and
-//! expects a non-empty surface within seconds, so claiming the store first
-//! would hang the capture and hide the worker from the registry.
+//! the event functions, the configuration doorbell — registers before the
+//! durable dependencies are claimed. Release interface capture boots this
+//! binary against an isolated engine that has no `database` and no `queue`
+//! and expects a non-empty surface within seconds, so claiming the store
+//! first would hang the capture and hide the worker from the registry.
 //!
 //! The dependencies are then claimed in the background, and ingest stays
 //! closed until they answer (`sentinel::status.enabled`). A recovery loop
-//! reconciles the trigger bindings every thirty seconds, because a monitor
-//! that quietly stopped watching is worse than one that never started.
+//! reconciles the observers with the live configuration every thirty
+//! seconds and sweeps investigations whose doorbell never rang.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +20,7 @@ use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
-use sentinel::events::{Emitter, Subscribers};
+use sentinel::events::Emitter;
 use sentinel::iii_runtime::harness::{IiiEngineWindow, IiiHarness};
 use sentinel::iii_runtime::{
     Checkouts, IiiDb, IiiJudge, IiiRegistry, IiiTelemetry, IngestQueue, Runtime,
@@ -28,15 +28,15 @@ use sentinel::iii_runtime::{
 use sentinel::ingest::{ring::PhantomRing, Ingest};
 use sentinel::investigation::proxies::Proxies;
 use sentinel::investigation::Investigations;
+use sentinel::observers::Observers;
 use sentinel::registry::Registry;
 use sentinel::service::Service;
 use sentinel::store::Store;
 use sentinel::triage::Triage;
-use sentinel::triggers::Bindings;
 use sentinel::{configuration, dependencies, events, functions, manifest, Counters, IngestJob};
 use tokio::sync::RwLock;
 
-/// How often the bindings are reconciled and stale work is swept.
+/// How often the observers are reconciled and stale work is swept.
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 /// How often parked logs are checked for an expired wait.
 const JOIN_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
@@ -125,8 +125,7 @@ async fn main() -> Result<()> {
         Duration::from_millis(cell.read().await.workers_ttl_ms),
     ));
     let queue = Arc::new(IngestQueue::new(runtime.clone(), INGEST_CONCURRENCY));
-    let subscribers = Subscribers::default();
-    let emitter = Emitter::new(iii.clone(), subscribers.clone());
+    let emitter = Emitter::new(iii.clone());
     let checkouts = Arc::new(Checkouts::new(cell.clone()));
     let investigations = Arc::new(Investigations::new(
         store.clone(),
@@ -165,22 +164,18 @@ async fn main() -> Result<()> {
         emitter,
     });
 
-    events::register_trigger_types(&iii, &subscribers);
+    events::register_functions(&iii);
     functions::register_all(&iii, &deps);
     // The page registers with the interface, before the durable claim: a
     // console that can see the worker must be able to see its page.
     sentinel::ui::register(&iii);
 
-    let bindings = Bindings::default();
-    match configuration::bind_reload(&iii, cell.clone(), error_cell.clone()) {
-        // One extra pass closes the boot gap: an update that landed between
-        // the fetch above and this binding fired into nothing.
-        Ok(reload) => reload.run().await,
-        Err(error) => tracing::warn!(
-            %error,
-            "configuration updates are not bound; settings changes need a restart until it recovers"
-        ),
-    }
+    let observers = Observers::default();
+    // One extra pass closes the boot gap: an update that landed between the
+    // fetch above and this observer becoming active reached no one.
+    configuration::observe_reload(&iii, cell.clone(), error_cell.clone())
+        .run()
+        .await;
 
     let readiness = tokio::spawn(claim_dependencies(
         iii.clone(),
@@ -188,7 +183,7 @@ async fn main() -> Result<()> {
         queue.clone(),
         counters.clone(),
         cell.clone(),
-        bindings.clone(),
+        observers.clone(),
         deps.clone(),
     ));
     let sweeper = tokio::spawn(sweep_parked_logs(
@@ -210,8 +205,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Claim the durable dependencies, then keep the bindings alive and the
-/// investigations honest.
+/// Claim the durable dependencies, then keep the observers in step with the
+/// configuration and the investigations honest.
 #[allow(clippy::too_many_arguments)]
 async fn claim_dependencies(
     iii: Arc<IIIClient>,
@@ -219,7 +214,7 @@ async fn claim_dependencies(
     queue: Arc<IngestQueue>,
     counters: Arc<Counters>,
     config: sentinel::ConfigCell,
-    bindings: Bindings,
+    observers: Observers,
     deps: Arc<functions::Deps<IiiRegistry>>,
 ) {
     dependencies::claim(store, queue, counters).await;
@@ -228,22 +223,12 @@ async fn claim_dependencies(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let snapshot = config.read().await.clone();
-        bindings.reconcile(&iii, &snapshot).await;
-        // A doorbell that never rang — the harness restarted, the trigger was
-        // not bound yet — would otherwise leave a first pass running forever.
+        observers.reconcile(&iii, &snapshot);
+        // A doorbell that never rang — the harness restarted, its observer
+        // was still pending — would otherwise leave a first pass running
+        // forever.
         let events = deps.investigations.reconcile().await;
         functions::broadcast(&deps, events).await;
-        let (trace, log) = bindings.bound();
-        if snapshot.enabled
-            && ((snapshot.sources.trace.enabled && !trace)
-                || (snapshot.sources.log.enabled && !log))
-        {
-            tracing::warn!(
-                trace_bound = trace,
-                log_bound = log,
-                "a source is enabled but not bound; retrying on the next pass"
-            );
-        }
         interval.tick().await;
     }
 }

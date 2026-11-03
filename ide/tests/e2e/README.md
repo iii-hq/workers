@@ -17,14 +17,13 @@ Modeled on `database/tests/e2e/`.
   ```
   The script drops the binary at `$HOME/.local/bin/iii` (override with
   `BIN_DIR=...` or `PREFIX=...`).
-- **For the sandbox-target cases**: hardware virtualization on the host
-  (Apple Silicon on macOS or `/dev/kvm` on Linux). The harness boots a
-  real iii-sandbox microVM via `sandbox::create` and drives
-  `shell::exec { target: { kind: "sandbox", ... } }` against it. On
-  unsupported hosts, every case in `EXEC_SANDBOX_CASES` short-circuits
-  with a `SKIP` log line — the rest of the suite still runs. First
-  invocation cold-pulls the `python` image; bump `HARNESS_TIMEOUT=300`
-  if the default 90s budget is too tight on a fresh machine.
+- **Sandbox-target cases**: `config.yaml` binds the `sandbox-mock`
+  adapter (`sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`), which
+  the harness registers. The fs cases go through the engine's sandbox
+  router; `sandbox::create` gets `S304`, so every case in
+  `EXEC_SANDBOX_CASES` short-circuits with a `SKIP` log line and the rest
+  of the suite still runs, on KVM hosts too. Real-VM ide coverage is the
+  template-stack check (spec 11).
 
 ## Run
 
@@ -78,8 +77,10 @@ The harness includes ~52 `shell::fs::*` cases across four files:
   paths (`/etc/passwd`, `/etc/shadow`) → `S215`, unknown `target.kind`
   → `S210`.
 - **`cases-fs-sandbox.ts` (13)** — sandbox-target forwarding tests.
-  The harness registers fake `sandbox::fs::*` handlers on its own SDK
-  instance. The 8 simple ops use script-and-respond mocks; **`write`
+  The harness is the `sandbox-mock` adapter: it registers
+  `sandbox-mock::fs::*` and `sandbox-mock::adapter::info` in `ide-e2e`,
+  and the engine's router forwards ide's `sandbox::fs::*` calls to them.
+  The 8 simple ops use script-and-respond mocks; **`write`
   drains the caller's channel** and **`read` allocates its own channel
   and pumps known bytes**, exercising the full streaming round-trip
   end-to-end without a real sandbox VM.

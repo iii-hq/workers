@@ -116,7 +116,7 @@ describe('malformed worker data', () => {
       { event: 'ticket.moved', ticket: { id: 't1' } },
       { event: 'ticket.moved', ticket: 'KAN-1' },
     ]) {
-      await host.emitTrigger('kanban:change', payload as never)
+      await host.emitObserved('kanban::on-change', payload as never)
     }
     await host.settle()
     expect(host.failed).toBeNull()
@@ -166,7 +166,7 @@ describe('malformed worker data', () => {
     if (!t) throw new Error('no KAN-5')
     t.status = 'ghost'
     t.updated_at = fake.stamp()
-    await host.emitTrigger('kanban:change', { event: 'ticket.updated', ticket: fake.summary(t), at: t.updated_at })
+    await host.emitObserved('kanban::on-change', { event: 'ticket.updated', ticket: fake.summary(t), at: t.updated_at })
     await host.settle()
     expect(keysOf(host, 'backlog')).toEqual([])
     expect(host.lanes('lanes').counts[0]).toBe('0')

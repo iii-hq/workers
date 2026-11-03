@@ -21,10 +21,10 @@ pub struct AdapterEntry {
 #[serde(deny_unknown_fields)]
 pub struct PubSubConfig {
     /// Pub/sub backend selection and its adapter-specific config. `local`
-    /// (default, in-process broadcast) or `redis` (cross-instance Redis
-    /// Pub/Sub, config: `{redis_url}`). Hot-swap tier: a runtime edit rebuilds
-    /// the backend, re-subscribes the live subscriptions onto it, and tears
-    /// down the previous one.
+    /// (default: iii delivers each event to the observers on this engine) or
+    /// `redis` (Redis Pub/Sub also carries each event to the pubsub workers of
+    /// other engines, config: `{redis_url}`). Hot-swap tier: a runtime edit
+    /// rebuilds the backend and tears down the previous one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<AdapterEntry>,
 }

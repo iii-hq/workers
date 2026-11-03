@@ -70,7 +70,7 @@ export function isMissingFunction(error: unknown): boolean {
 export async function getSecret(host: Host, name: string, store?: 'env'): Promise<SecretMeta | null | undefined> {
   let raw: unknown
   try {
-    raw = await host.iii.trigger<unknown>('secrets::get', store ? { name, store } : { name }, { timeoutMs: 10_000 })
+    raw = await host.iii.call<unknown>('secrets::get', store ? { name, store } : { name }, { timeoutMs: 10_000 })
   } catch (error) {
     if (isMissingFunction(error)) return undefined
     throw error
@@ -84,7 +84,7 @@ export const SECRETS_DOWN_MESSAGE = 'The secrets worker is not running. Start it
 export async function storeSecret(host: Host, input: { name: string; value: string; description: string }): Promise<string> {
   const existing = await getSecret(host, input.name).catch(() => null)
   if (existing === undefined) throw new Error(SECRETS_DOWN_MESSAGE)
-  await host.iii.trigger<unknown>('secrets::set', {
+  await host.iii.call<unknown>('secrets::set', {
     name: input.name,
     value: input.value,
     consumers: [...new Set([...(existing?.consumers ?? []), SECRET_CONSUMER])],

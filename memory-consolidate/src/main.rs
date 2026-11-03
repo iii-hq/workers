@@ -1,26 +1,25 @@
 //! memory-consolidate worker: boot, configuration, scheduling.
 //!
-//! Scheduling REUSES the engine's cron trigger infrastructure (the `cron`
-//! worker or the built-in `iii-cron` — whichever owns the `cron` type):
-//! an hourly heartbeat binds `memory-consolidate::on-tick`, and the tick
+//! Scheduling REUSES the cron worker: `memory-consolidate::on-tick`
+//! observes `cron::on-tick` with an hourly expression, and the tick
 //! decides from the persisted last run (state worker, scope
 //! `memory_consolidate`) whether `interval_hours` have elapsed. A slim
 //! backstop loop provides CATCH-UP-ON-BOOT — a pass missed while this
 //! worker was down runs shortly after boot — and keeps the schedule alive
-//! on rigs with no cron trigger owner at all.
+//! on rigs without the cron worker.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use serde_json::json;
 use tokio::sync::RwLock;
 
 use memory_consolidate::functions::{self, ConfigCell, Deps};
-use memory_consolidate::{config, configuration, manifest};
+use memory_consolidate::{config, configuration, manifest, rest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -55,52 +54,59 @@ fn worker_metadata() -> WorkerMetadata {
     }
 }
 
-/// Backstop cadence: catch-up-on-boot plus a safety net on rigs where no
-/// worker owns the `cron` trigger type. The tick's due-check makes each
-/// pass idempotent, so heartbeat and backstop can coexist.
+/// Backstop cadence: catch-up-on-boot plus a safety net on rigs without
+/// the cron worker. The tick's due-check makes each pass idempotent, so
+/// heartbeat and backstop can coexist.
 const BACKSTOP_CHECK: Duration = Duration::from_secs(1_800);
 /// First check after boot: give the memory worker and siblings a moment to
 /// finish their own boot wave.
 const BOOT_GRACE: Duration = Duration::from_secs(45);
-/// Hourly heartbeat on the engine's cron infrastructure; the tick decides
-/// whether a pass is actually due.
+/// The cron worker's tick function.
+const CRON_ON_TICK_FN: &str = "cron::on-tick";
+/// Hourly heartbeat on the cron worker; the tick decides whether a pass is
+/// actually due.
 const CRON_EXPRESSION: &str = "0 0 * * * *";
+/// How long the heartbeat observer may stay inactive before the worker logs
+/// that the backstop loop carries the schedule.
+const HEARTBEAT_READY_WAIT: Duration = Duration::from_secs(300);
 
-/// Register the internal tick handler and bind it to the `cron` trigger
-/// type (retried: the cron owner may boot after this worker — mirrors the
-/// memory worker's binding retry).
-fn bind_schedule(iii: Arc<IIIClient>, deps: Arc<Deps>) {
+/// What the heartbeat observes: the hourly `cron::on-tick` calls, the tick
+/// event delivered as the target's input.
+fn heartbeat_source() -> Source {
+    Source::function(CRON_ON_TICK_FN)
+        .args(json!({ "expression": CRON_EXPRESSION }))
+        .deliver(Deliver::Output)
+}
+
+/// Register the internal tick handler and observe `cron::on-tick` with it.
+/// The observer stays `pending` until the cron worker registers the
+/// function (it may boot after this worker), and lives as long as the
+/// worker's connection.
+fn observe_schedule(iii: &IIIClient, deps: Arc<Deps>) {
     let deps_for_fn = deps.clone();
     iii.register_function(
         functions::TICK_ID,
-        RegisterFunction::new_async(move |_payload: functions::TickInput| {
+        RegisterFunction::new_async(move |_tick: functions::TickInput| {
             let deps = deps_for_fn.clone();
             async move { functions::tick(&deps).await }
         })
         .description(functions::TICK_DESC)
-        .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
+    let heartbeat = iii.observe(heartbeat_source(), functions::TICK_ID);
     tokio::spawn(async move {
-        for attempt in 1..=20u32 {
-            match iii.register_trigger(RegisterTriggerInput::new(
-                "cron".to_string(),
-                functions::TICK_ID.to_string(),
-                serde_json::json!({ "expression": CRON_EXPRESSION }),
-            )) {
-                Ok(_) => {
-                    tracing::info!(expression = CRON_EXPRESSION, "cron heartbeat bound");
-                    return;
-                }
-                Err(e) => {
-                    tracing::debug!(attempt, error = %e, "cron binding not accepted yet; retrying");
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(15)).await;
+        match tokio::time::timeout(HEARTBEAT_READY_WAIT, heartbeat.ready()).await {
+            Ok(Ok(())) => tracing::info!(expression = CRON_EXPRESSION, "cron heartbeat active"),
+            Ok(Err(e)) => tracing::warn!(
+                error = %e,
+                "cron heartbeat observer refused; the backstop loop keeps the schedule"
+            ),
+            Err(_) => tracing::warn!(
+                state = %heartbeat.state(),
+                "cron heartbeat observer not active yet; the backstop loop keeps the schedule"
+            ),
         }
-        tracing::warn!(
-            "no cron trigger owner accepted the heartbeat binding; the backstop loop keeps the schedule"
-        );
     });
 }
 
@@ -116,6 +122,15 @@ fn spawn_backstop(deps: Arc<Deps>) {
             tokio::time::sleep(BACKSTOP_CHECK).await;
         }
     });
+}
+
+/// The REST route of a public function: `POST /memory-consolidate/...`, the
+/// function id with `::` as `/`. Its target is `memory-consolidate::rest`.
+fn rest_route(function_id: &str) -> Source {
+    Source::function("http::on-request").args(json!({
+        "method": "POST",
+        "path": rest::route_path(function_id),
+    }))
 }
 
 #[tokio::main]
@@ -186,24 +201,23 @@ async fn main() -> Result<()> {
     });
 
     functions::register_all(&iii, &deps);
-    if let Err(e) = configuration::register_config_trigger(&iii, cell) {
-        tracing::warn!(error = %e, "configuration change trigger binding failed; hot reload disabled");
-    }
+    rest::register(&iii, &deps);
+    configuration::observe_config_changes(&iii, cell);
 
-    // Reuse the http worker: the public functions double as REST routes
-    // (`POST /memory-consolidate/...`). Best-effort, like memory.
+    // Reuse the http worker: the public functions are also REST routes
+    // (`POST /memory-consolidate/...`) served by `memory-consolidate::rest`,
+    // which takes the HttpRequest and answers { status_code, body }. They
+    // stay pending until the http worker registers `http::on-request`.
     for spec in functions::catalog() {
-        let api_path = spec.function_id.replace("::", "/");
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-            "http".to_string(),
-            spec.function_id.to_string(),
-            serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
-        )) {
-            tracing::debug!(error = %e, function_id = spec.function_id, "http trigger registration failed");
-        }
+        let route = iii.observe(rest_route(spec.function_id), rest::REST_ID);
+        tracing::debug!(
+            function_id = spec.function_id,
+            observer_id = route.id(),
+            "REST route observed"
+        );
     }
 
-    bind_schedule(iii.clone(), deps.clone());
+    observe_schedule(&iii, deps.clone());
     spawn_backstop(deps);
 
     tracing::info!(
@@ -211,4 +225,28 @@ async fn main() -> Result<()> {
     );
     tokio::signal::ctrl_c().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_heartbeat_observes_the_hourly_tick() {
+        assert_eq!(
+            heartbeat_source(),
+            Source::function("cron::on-tick")
+                .args(json!({ "expression": "0 0 * * * *" }))
+                .deliver(Deliver::Output)
+        );
+    }
+
+    #[test]
+    fn rest_routes_take_the_leading_slash() {
+        assert_eq!(
+            rest_route("memory-consolidate::run"),
+            Source::function("http::on-request")
+                .args(json!({ "method": "POST", "path": "/memory-consolidate/run" }))
+        );
+    }
 }

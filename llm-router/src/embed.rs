@@ -21,8 +21,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -68,7 +67,7 @@ async fn try_provider(
     input: &[String],
 ) -> Result<Option<RouterEmbedResponse>, Error> {
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: format!("provider::{provider}::embed"),
             payload: json!({ "model": model, "input": input }),
             action: None,
@@ -188,7 +187,7 @@ async fn embed_only_ids(
     not_found: &[String],
 ) -> Result<Vec<String>, Error> {
     let listed = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::list".into(),
             // Embed surfaces are tagged internal (never agent-discovered),
             // and the default list hides exactly those.
@@ -200,7 +199,7 @@ async fn embed_only_ids(
     match listed {
         Ok(value) => {
             // The engine lists every namespace; `provider::<id>::embed` is
-            // triggered in this worker's own.
+            // called in this worker's own.
             let namespace = iii.namespace().unwrap_or_else(|| "default".into());
             fallback_ids(&value, &namespace, registered, awaited, not_found).map_err(Error::Handler)
         }

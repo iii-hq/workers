@@ -174,12 +174,12 @@ pub struct FanoutSpec {
     pub over: String,
 }
 
-/// Completion callback: `function_id` is triggered once on terminal state with
+/// Completion callback: `function_id` is called once on terminal state with
 /// `{run_id, status, result, result_error}`; at-least-once, dedup on `run_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NotifySpec {
-    /// Function id to trigger on terminal state, e.g. `"myworker::wf-done"`.
+    /// Function id to call on terminal state, e.g. `"myworker::wf-done"`.
     pub function_id: String,
     /// Queue for durable delivery; defaults to `"default"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,7 +188,7 @@ pub struct NotifySpec {
 
 /// Push the outcome into the caller's session as a message; agents send `{}`
 /// (optionally `template`) — the rest is auto-stamped from the caller's turn.
-// Delivered via `harness::send`. The `workflow::stamp-reply` pre_trigger hook OVERWRITES
+// Delivered via `harness::send`. The `workflow::stamp-reply` pre_call hook OVERWRITES
 // any supplied session_id/model/provider, so an agent cannot direct a result into another
 // session; a trusted worker caller (outside the agent turn loop) may set them explicitly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

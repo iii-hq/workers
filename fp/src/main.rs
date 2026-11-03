@@ -1,6 +1,7 @@
 //! `fp` binary entry: connect, register the transforms + `fp::pipe`,
-//! register the `fp` configuration (whose `inject_guidance` knob binds or
-//! unbinds the pre-generate guidance hook, hot), then sleep until Ctrl+C.
+//! register the `fp` configuration (whose `inject_guidance` knob observes
+//! the pre-generate hook with the guidance or disposes that observer, hot),
+//! then sleep until Ctrl+C.
 
 use std::sync::Arc;
 
@@ -56,7 +57,8 @@ async fn main() -> Result<()> {
 
     // The `configuration` worker (an engine builtin, like for web/cron) owns
     // the authoritative `fp` config; `inject_guidance` defaults ON and
-    // hot-applies on change by binding/unbinding the guidance hook.
+    // hot-applies on change by observing the pre-generate hook or disposing
+    // that observer.
     //
     // Best-effort on purpose: the entry carries one cosmetic prompt knob, so
     // unlike the full config integrations (docs/sops/configuration.md §4c) a
@@ -75,15 +77,11 @@ async fn main() -> Result<()> {
     };
     let state = guidance::GuidanceState::default();
     guidance::apply(&iii, &state, cfg.inject_guidance);
-    match configuration::register_config_trigger(&iii, state) {
-        // One serialized re-fetch to close the boot gap: an update landing
-        // between the fetch above and the binding just registered fired into
-        // nothing, and would otherwise stay invisible until the NEXT change.
-        Ok(reload) => reload.run().await,
-        Err(e) => {
-            tracing::warn!(error = %e, "registering configuration change trigger failed; the inject_guidance knob is frozen until restart");
-        }
-    }
+    let reload = configuration::observe_config_changes(&iii, state);
+    // One serialized re-fetch to close the boot gap: an update landing
+    // between the fetch above and the observer becoming active reached no
+    // one, and would otherwise stay invisible until the NEXT change.
+    reload.run().await;
 
     tracing::info!(
         inject_guidance = cfg.inject_guidance,
@@ -245,10 +243,10 @@ fn register_functions(iii: &Arc<IIIClient>) {
         |r: util::GroupByRequest| util::count_by(r.value, &r.path),
     );
 
-    // condition is `when` shaped for a trigger binding: it reads the event out
-    // of the condition envelope and answers the decision contract, so one
-    // function serves every binding that wants a comparison instead of each
-    // predicate needing its own worker.
+    // condition is `when` shaped for a harness observer's `conditions`: it
+    // reads the event out of the condition envelope and answers the decision
+    // contract, so one function serves every observer that wants a
+    // comparison instead of each predicate needing its own worker.
     iii.register_function(
         condition::CONDITION_ID,
         RegisterFunction::new_async(|input: condition::ConditionInput| async move {

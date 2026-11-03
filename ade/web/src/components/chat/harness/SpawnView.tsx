@@ -74,7 +74,7 @@ interface SpawnViewProps {
  * task plus its policy (model, mode, turn budget, output contract, function
  * globs). The call is fire-and-forget: it seeds the child session and
  * answers at once with `{ child_session_id, child_turn_id }`. Historical
- * transcripts (spawn as a pending trigger) instead carry the child's final
+ * transcripts (spawn as a pending call) instead carry the child's final
  * result — a markdown string for a text contract, a structured value for a
  * json contract — and keep rendering through the same result pane.
  */
@@ -113,7 +113,7 @@ interface SpawnActivityDisplayProps {
   input: unknown
   output?: unknown
   parentSessionId?: string
-  functionTriggerId?: string
+  functionCallId?: string
   createdAt?: number
 }
 
@@ -124,7 +124,7 @@ export function SpawnActivityDisplay({
   input,
   output,
   parentSessionId,
-  functionTriggerId,
+  functionCallId,
   createdAt,
 }: SpawnActivityDisplayProps) {
   const req = safeParseRequest(spawnRequestSchema, input)
@@ -136,7 +136,7 @@ export function SpawnActivityDisplay({
       : undefined,
     requestSessionId: req?.session_id,
     parentSessionId,
-    functionTriggerId,
+    functionCallId,
     conversations: ctx?.conversations ?? [],
   })
   const child = ctx?.conversations.find(

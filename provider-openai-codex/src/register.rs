@@ -1,4 +1,4 @@
-//! Boot wiring: function surface, the router::ready rebind, and the
+//! Boot wiring: function surface, the router::on-ready observer, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{
@@ -10,11 +10,11 @@ use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{router_client, state, PROVIDER_ID};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
@@ -170,7 +170,7 @@ pub async fn register_provider_with_auth(
 ) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
-    // router::ready — a restarted router may carry new config and reissues
+    // router::on-ready — a restarted router may carry new config and reissues
     // declare/refresh anyway — and on upstream auth errors (stream_fn).
     let cache = ScaffoldCache::new();
     // Reads are silence-bounded: a stalled upstream otherwise pings the router
@@ -280,11 +280,9 @@ pub async fn register_provider_with_auth(
             .metadata(json!({ "internal": true })),
         );
     }
-    let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
-        surface::ON_ROUTER_READY_ID,
-        json!({}),
-    ));
+    // The observer outlives router restarts: it waits `pending` while
+    // llm-router is down, and every router start's ready event reaches it.
+    observe_router_ready(&iii, surface::ON_ROUTER_READY_ID);
 
     crate::login::register(&iii, auth.clone());
     {

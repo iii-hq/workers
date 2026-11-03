@@ -1,9 +1,9 @@
 //! `iii-state` binary entry.
 //!
 //! Boot: parse CLI, connect to the engine, register the `state` configuration
-//! schema, fetch the authoritative value, start the trigger type + functions
-//! via `boot::start`, wire the `configuration:updated` reload trigger, then
-//! sleep until Ctrl+C. The optional `--config` YAML file is a **seed only**:
+//! schema, fetch the authoritative value, start `state::on-changed` and the
+//! functions via `boot::start`, observe `configuration::on-updated` for live
+//! reloads, then sleep until Ctrl+C. The optional `--config` YAML file is a **seed only**:
 //! it is used to populate the configuration entry the first time, after which
 //! the configuration worker is the source of truth.
 
@@ -61,11 +61,15 @@ async fn main() -> Result<()> {
     // Parse the optional --config seed (best-effort). It only seeds the
     // configuration entry on first boot; the authoritative value comes from the
     // configuration worker below.
+    // A seed written for an earlier release is migrated like a stored entry.
     let seed: Option<StateConfig> = match cli.config.as_deref() {
         Some(path) => match std::fs::read_to_string(path)
             .map_err(|e| e.to_string())
-            .and_then(|s| serde_yaml::from_str::<StateConfig>(&s).map_err(|e| e.to_string()))
-        {
+            .and_then(|s| serde_yaml::from_str::<serde_json::Value>(&s).map_err(|e| e.to_string()))
+            .and_then(|mut seed| {
+                StateConfig::migrate_stored(&mut seed);
+                StateConfig::from_json(&seed)
+            }) {
             Ok(c) => {
                 tracing::info!(path = %path, "loaded seed config");
                 Some(c.normalized())
@@ -100,12 +104,10 @@ async fn main() -> Result<()> {
     let boot = iii_state::boot::start(iii.clone(), config.clone()).await?;
     tracing::info!(adapter = %config.effective_adapter_name(), "iii-state ready");
 
-    // Subscribe to configuration:updated so triggers_enabled/max_value_bytes
-    // reload live and a save_interval_ms change respawns the adapter's save
-    // loop (see configuration).
-    configuration::register_config_trigger(&iii, boot.ctx.clone(), boot.apply_lock.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    // Observe configuration:updated so events_enabled/max_value_bytes reload
+    // live and a save_interval_ms change respawns the adapter's save loop (see
+    // configuration).
+    configuration::observe_config_changes(&iii, boot.ctx.clone(), boot.apply_lock.clone());
 
     wait_for_shutdown_signal().await?;
     tracing::info!("iii-state shutting down");

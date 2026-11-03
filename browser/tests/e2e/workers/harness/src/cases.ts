@@ -563,7 +563,7 @@ export const CASES: TestCase[] = [
           crawl: {
             id: 'e2e-crawl',
             items_function: 'browser::crawl::items',
-            trigger_type: 'browser::crawl-item',
+            function_id: 'browser::on-crawl-item',
             retained: 2,
             dropped_events: 0,
           },

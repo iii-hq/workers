@@ -2,12 +2,13 @@
 //!
 //! The worker registers its config schema under the id `state` (validated
 //! when its explicit global Settings form saves), reads the authoritative
-//! value before binding, and hot-applies `configuration:updated` events onto the shared
+//! value before observing it, and hot-applies `configuration:updated` events
+//! (observed on `configuration::on-updated`) onto the shared
 //! [`crate::functions::ConfigCell`].
 //!
 //! ## Three apply tiers (builtin parity, `state.rs:337-402`)
 //!
-//! - **LIVE** — swapping the config cell alone applies `triggers_enabled` and
+//! - **LIVE** — swapping the config cell alone applies `events_enabled` and
 //!   `max_value_bytes`: the `state::*` function handlers read a fresh
 //!   snapshot per call (see `StateCtx::snapshot`).
 //! - **TASK-REBUILD** — a `save_interval_ms` change respawns the adapter's
@@ -25,8 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{Value, json};
 
 use crate::boot::ApplyLock;
@@ -53,6 +53,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "state::on-config-change";
+/// The configuration worker's change event source.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// Upper bound on every `configuration::*` bus call (mirrors the engine's
@@ -62,12 +64,22 @@ const CONFIG_BUS_TIMEOUT_MS: u64 = 10_000;
 /// Register the `state` configuration entry: schema + metadata refresh on
 /// every boot; `initial_value` (the `--config` seed, or built-in defaults) is
 /// included only when nothing is stored yet, so runtime edits survive
-/// restarts.
+/// restarts. A value stored by an earlier release is then migrated to the
+/// schema (see [`migrate_stored_entry`]).
 pub async fn register_config(iii: &IIIClient, seed: Option<&StateConfig>) -> Result<(), String> {
+    register_config_as(iii, config_id(), seed).await
+}
+
+/// [`register_config`] for the configuration entry `id`.
+pub async fn register_config_as(
+    iii: &IIIClient,
+    id: &str,
+    seed: Option<&StateConfig>,
+) -> Result<(), String> {
     let mut payload = json!({
-        "id": config_id(),
+        "id": id,
         "name": "State",
-        "description": "State store settings — storage adapter (kv/redis), trigger fan-out gate, max value size, and file-store flush cadence.",
+        "description": "State store settings — storage adapter (kv/redis), the state::on-changed event gate, max value size, and file-store flush cadence.",
         "schema": StateConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
@@ -79,21 +91,69 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&StateConfig>) -> Res
     let seed = seed.cloned().unwrap_or_default().normalized();
     payload["initial_value"] = seed.to_json();
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+        call_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
     })
+    .await?;
+    migrate_stored_entry(iii, id).await
+}
+
+/// Rewrite the value of the entry `id` when an earlier release stored it.
+///
+/// `configuration::ensure` installs this worker's schema and keeps a stored
+/// value verbatim, and `configuration::get` validates the value against that
+/// schema, so an entry that names the events knob
+/// [`crate::config::EARLIER_EVENTS_KEY`] would fail every read with
+/// `SCHEMA_INVALID`. This reads the raw value (placeholders unexpanded),
+/// applies [`StateConfig::migrate_stored`] and writes the result back with
+/// `configuration::set`, which validates it and emits `configuration:updated`.
+/// An absent or current entry is left untouched.
+async fn migrate_stored_entry(iii: &IIIClient, id: &str) -> Result<(), String> {
+    let mut value = match call_configuration_with_retry(
+        iii,
+        "configuration::get",
+        json!({ "id": id, "raw": true }),
+        CONFIG_BUS_TIMEOUT_MS,
+    )
     .await
+    {
+        Ok(response) => response.get("value").cloned().unwrap_or(Value::Null),
+        Err(e) if is_not_found(&e) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if !StateConfig::migrate_stored(&mut value) {
+        return Ok(());
+    }
+    call_configuration_with_retry(
+        iii,
+        "configuration::set",
+        json!({ "id": id, "value": value }),
+        CONFIG_BUS_TIMEOUT_MS,
+    )
+    .await
+    .map_err(|e| format!("migrating the stored `{id}` configuration entry: {e}"))?;
+    tracing::info!(
+        config_entry = id,
+        "stored configuration entry migrated: `{}` is `events_enabled`",
+        crate::config::EARLIER_EVENTS_KEY
+    );
+    Ok(())
 }
 
 /// Read the live configuration value. A missing/null value falls back to the
 /// built-in default; a malformed stored value is an error so callers keep
 /// their previous config.
 pub async fn fetch_config(iii: &IIIClient) -> Result<StateConfig, String> {
-    match try_get_config_value(iii).await? {
+    fetch_config_from(iii, config_id()).await
+}
+
+/// [`fetch_config`] for the configuration entry `id`.
+pub async fn fetch_config_from(iii: &IIIClient, id: &str) -> Result<StateConfig, String> {
+    match try_get_config_value(iii, id).await? {
         Some(value) if !value.is_null() => StateConfig::from_json(&value),
         _ => {
             tracing::info!(
                 "no `{config_entry}` configuration value stored; using built-in default",
-                config_entry = config_id()
+                config_entry = id
             );
             Ok(StateConfig::default().normalized())
         }
@@ -129,11 +189,11 @@ fn is_not_found(error: &str) -> bool {
 }
 
 /// Resolve the authoritative entry without conflating lookup failure with first boot.
-async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(
+async fn try_get_config_value(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
+    match call_configuration_with_retry(
         iii,
         "configuration::get",
-        json!({ "id": config_id() }),
+        json!({ "id": id }),
         CONFIG_BUS_TIMEOUT_MS,
     )
     .await
@@ -157,16 +217,18 @@ fn adapter_changed(current: &StateConfig, next: &StateConfig) -> bool {
     current.adapter != next.adapter
 }
 
-/// Register `state::on-config-change` and subscribe it to
-/// `configuration:updated` events for the `state` entry. The handler ignores
-/// the trigger payload and re-fetches the authoritative value (the bus
-/// function is discoverable, so a caller-supplied payload must not be trusted
-/// to repoint config).
-pub fn register_config_trigger(
+/// Register `state::on-config-change` and observe `configuration::on-updated`
+/// with it, filtered to the `configuration:updated` events of the `state`
+/// entry. The handler ignores the event and re-fetches the authoritative
+/// value (the function is discoverable, so a caller-supplied payload must not
+/// be trusted to repoint config). The observer stays `pending` until the
+/// configuration worker hosts the function; it lives as long as the worker's
+/// connection.
+pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     ctx: Arc<StateCtx>,
     apply_lock: ApplyLock,
-) -> Result<(), Error> {
+) -> ObserverHandle {
     let ctx_for_fn = ctx.clone();
     let apply_lock_for_fn = apply_lock.clone();
     let engine = iii.clone();
@@ -185,19 +247,20 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    // Deprecated in iii-sdk 0.25. The `configuration` trigger type is still
-    // served by 0.25 engines (next to `configuration::on-updated`), so one
-    // binding keeps working on 0.24 and 0.25.
-    #[allow(deprecated)]
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(config_update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn config_update_filters(config_id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": config_id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 async fn on_config_change(iii: &IIIClient, ctx: &Arc<StateCtx>, apply_lock: &ApplyLock) {
@@ -208,7 +271,7 @@ async fn on_config_change(iii: &IIIClient, ctx: &Arc<StateCtx>, apply_lock: &App
     // acquirer, so this never nests.
     let _guard = apply_lock.lock().await;
 
-    // Never trust the trigger payload — re-fetch the authoritative value. A
+    // Never trust the event payload — re-fetch the authoritative value. A
     // fetch failure keeps the previous config in place.
     let new = match fetch_config(iii).await {
         Ok(cfg) => cfg,
@@ -220,7 +283,7 @@ async fn on_config_change(iii: &IIIClient, ctx: &Arc<StateCtx>, apply_lock: &App
 
     let old = ctx.config.read().await.clone();
 
-    // LIVE: swap the cell. `triggers_enabled` / `max_value_bytes` are read
+    // LIVE: swap the cell. `events_enabled` / `max_value_bytes` are read
     // per call by the function handlers, so this alone applies them.
     *ctx.config.write().await = Arc::new(new.clone());
 
@@ -246,7 +309,7 @@ async fn on_config_change(iii: &IIIClient, ctx: &Arc<StateCtx>, apply_lock: &App
     tracing::info!("state configuration reloaded");
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -255,8 +318,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -336,6 +399,17 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn config_observer_selects_the_entrys_updates() {
+        assert_eq!(
+            config_update_filters("state"),
+            json!({
+                "input.id": { "$eq": "state" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
+    }
 
     fn cfg(v: serde_json::Value) -> StateConfig {
         serde_json::from_value(v).unwrap()

@@ -30,7 +30,7 @@ const CHAT_REQUEST = {
         {
           type: 'tool_use',
           id: 't1',
-          name: 'agent_trigger',
+          name: 'agent_call',
           input: { function: 'state::get' },
         },
       ],
@@ -42,8 +42,8 @@ const CHAT_REQUEST = {
   ],
   tools: [
     {
-      name: 'agent_trigger',
-      description: 'Trigger any function',
+      name: 'agent_call',
+      description: 'Call any function',
       parameters: { type: 'object' },
     },
   ],
@@ -106,7 +106,7 @@ describe('repairTruncatedJson', () => {
     expect(
       repairTruncatedJson(
         cutAt(
-          '"content":[{"type":"text","text":"hey"}],"timestamp":1},{"role":"assistant","content":[{"type":"text","text":"Hey! What can I help with?"}],"model":"claude-sonnet-5-5","stop_reason":"end","usage":{"input":1289,"output":14,"cache_read":0,"cache_write":24533}},{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"agent_trigger","input":{"function":"state::get"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"tools":[{"name":"agent_trigger","description":"Trigger any function","parameters":{"type":"object"}}]}',
+          '"content":[{"type":"text","text":"hey"}],"timestamp":1},{"role":"assistant","content":[{"type":"text","text":"Hey! What can I help with?"}],"model":"claude-sonnet-5-5","stop_reason":"end","usage":{"input":1289,"output":14,"cache_read":0,"cache_write":24533}},{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"agent_call","input":{"function":"state::get"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"tools":[{"name":"agent_call","description":"Call any function","parameters":{"type":"object"}}]}',
         ),
       ),
     ).toEqual(CHAT_REQUEST)
@@ -158,7 +158,7 @@ describe('llmCallFromSpan', () => {
     expect(call.messages[1].usage?.input).toBe(1289)
     expect(call.messages[2].blocks[0]).toMatchObject({
       type: 'tool_use',
-      name: 'agent_trigger',
+      name: 'agent_call',
     })
     expect(call.messages[3].blocks[0]).toMatchObject({
       type: 'tool_result',
@@ -166,8 +166,8 @@ describe('llmCallFromSpan', () => {
     })
     expect(call.tools).toEqual([
       {
-        name: 'agent_trigger',
-        description: 'Trigger any function',
+        name: 'agent_call',
+        description: 'Call any function',
         parameters: { type: 'object' },
       },
     ])

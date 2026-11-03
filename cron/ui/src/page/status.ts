@@ -1,6 +1,6 @@
-import type { SessionCronTask, SystemCronBinding } from '../lib/api'
+import type { SessionCronTask, SystemCronObserver } from '../lib/api'
 
-/** What a schedule is doing, from the only facts a subscription carries:
+/** What a schedule is doing, from the only facts its observer row carries:
     its fire count, its cap, and its expiry. There is no paused state in the
     harness surface and no per-fire outcome, so neither is invented here. */
 export type TaskStatus = 'active' | 'ending' | 'finished'
@@ -55,16 +55,16 @@ export function matchesFilter(task: SessionCronTask, filter: Filter, now: number
 export function matchesQuery(task: SessionCronTask, cadence: string, query: string): boolean {
   const needle = query.trim().toLowerCase()
   if (!needle) return true
-  return [task.label, task.target, task.expression, cadence, task.subscriptionId].some((value) =>
+  return [task.label, task.target, task.expression, cadence, task.observerId].some((value) =>
     (value ?? '').toLowerCase().includes(needle),
   )
 }
 
-/** The same contract for the bindings tab: every field the row shows. */
-export function matchesBindingQuery(binding: SystemCronBinding, query: string): boolean {
+/** The same contract for the system observers tab: every field the row shows. */
+export function matchesObserverQuery(observer: SystemCronObserver, query: string): boolean {
   const needle = query.trim().toLowerCase()
   if (!needle) return true
-  return [binding.functionId, binding.workerName, binding.expression, binding.id].some((value) =>
+  return [observer.functionId, observer.workerName, observer.expression, observer.state, observer.id].some((value) =>
     value.toLowerCase().includes(needle),
   )
 }

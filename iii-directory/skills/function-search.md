@@ -83,13 +83,13 @@ An unversioned package resolves the latest matching version; use an explicit ver
 to keep it pinned. Settings changes can restart a running worker.
 
 Before installation, choose a fresh operation ID that starts with your session id (ids are
-global to Compose and never reusable) and register a one-shot wake with
-`engine::register_trigger { trigger_type: "compose-operation", config: {
-operation_id: "<operation-id>", terminal_only: true }, once: true }`.
-Keep the subscription ID and pass the same `operation_id` to `compose::add`.
+global to Compose and never reusable) and arm a one-shot wake with
+`harness::observe { function_id: "compose::on-operation-progress", filters: {
+"input.operation_id": { "$eq": "<operation-id>" }, "input.terminal": { "$eq": true } }, once: true }`.
+Keep the returned `observer_id` and pass the same `operation_id` to `compose::add`.
 Read `compose::operation { operation_id: "<operation-id>" }` once for race recovery.
-If terminal, unregister the wake and inspect the result; otherwise end the turn with
-the wake armed. Do not poll. Acceptance is not readiness, and a terminal event can
+If terminal, dispose the wake with `harness::unobserve { id: "<observer_id>" }` and inspect
+the result; otherwise end the turn with the wake armed. Do not poll. Acceptance is not readiness, and a terminal event can
 report failure. Search again and fetch function contracts only after terminal success.
 Under the harness, omit `namespace` and `file`; it supplies the Compose scope.
 

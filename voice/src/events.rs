@@ -1,29 +1,30 @@
-//! The custom trigger types this worker emits, and the fan-out behind them.
+//! The event functions this worker provides, and the emitter that calls them.
 //!
-//! Consumers bind handlers with the standard two-step pattern; the engine
-//! routes each registration to our [`TriggerHandler`]. Delivery is
-//! fire-and-forget (`TriggerAction::Void`) and at-least-once; the optional
-//! per-binding `session_id` filter is evaluated here by the emitting worker,
-//! and malformed configs are rejected at registration time.
+//! Each event is a private function whose handler returns the event it is
+//! called with. The worker calls the function when the event happens,
+//! fire-and-forget (`CallAction::Void`), and only while something observes it
+//! (one atomic load); every observer whose filters match receives the call.
+//! The functions take no args: consumers select events with filters on the
+//! event's fields, `input.session_id` for dictation events.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const TRANSCRIPT: &str = "voice::transcript";
-pub const SESSION_STARTED: &str = "voice::session-started";
-pub const SESSION_STOPPED: &str = "voice::session-stopped";
-pub const MODEL_PROGRESS: &str = "voice::model-progress";
-pub const SPEECH_ENDED: &str = "voice::speech-ended";
-pub const HOTKEY: &str = "voice::hotkey";
+use crate::hotkey::HotkeyEvent;
+use crate::models::Progress;
+
+pub const ON_TRANSCRIPT_FN: &str = "voice::on-transcript";
+pub const ON_SESSION_STARTED_FN: &str = "voice::on-session-started";
+pub const ON_SESSION_STOPPED_FN: &str = "voice::on-session-stopped";
+pub const ON_MODEL_PROGRESS_FN: &str = "voice::on-model-progress";
+pub const ON_HOTKEY_FN: &str = "voice::on-hotkey";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -31,66 +32,29 @@ pub enum EventKind {
     SessionStarted,
     SessionStopped,
     ModelProgress,
-    SpeechEnded,
     Hotkey,
 }
 
 impl EventKind {
-    pub fn trigger_type(&self) -> &'static str {
+    /// The function observers observe for this event.
+    pub fn function_id(&self) -> &'static str {
         match self {
-            EventKind::Transcript => TRANSCRIPT,
-            EventKind::SessionStarted => SESSION_STARTED,
-            EventKind::SessionStopped => SESSION_STOPPED,
-            EventKind::ModelProgress => MODEL_PROGRESS,
-            EventKind::SpeechEnded => SPEECH_ENDED,
-            EventKind::Hotkey => HOTKEY,
+            EventKind::Transcript => ON_TRANSCRIPT_FN,
+            EventKind::SessionStarted => ON_SESSION_STARTED_FN,
+            EventKind::SessionStopped => ON_SESSION_STOPPED_FN,
+            EventKind::ModelProgress => ON_MODEL_PROGRESS_FN,
+            EventKind::Hotkey => ON_HOTKEY_FN,
         }
     }
 
-    pub fn all() -> [EventKind; 6] {
+    pub fn all() -> [EventKind; 5] {
         [
             EventKind::Transcript,
             EventKind::SessionStarted,
             EventKind::SessionStopped,
             EventKind::ModelProgress,
-            EventKind::SpeechEnded,
             EventKind::Hotkey,
         ]
-    }
-}
-
-/// Config accepted by every `voice::*` trigger binding. The only filter is an
-/// optional id equality match: `session_id` for dictation events,
-/// `speech_id` for `voice::speech-ended`. Unknown fields fail at
-/// registration so a misspelled filter key fails loudly instead of silently
-/// receiving nothing.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BindingConfig {
-    /// Only deliver events for this dictation session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    /// Only deliver the end of this playback (`voice::speech-ended`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub speech_id: Option<String>,
-}
-
-/// `id` is the session id for dictation events and the speech id for
-/// `voice::speech-ended`; each kind consults its own filter field. A
-/// filter on the other kind's field can never match, so a binding that
-/// sets it receives nothing rather than everything.
-pub fn binding_matches(filter: &BindingConfig, kind: EventKind, id: Option<&str>) -> bool {
-    let (want, stray) = match kind {
-        EventKind::SpeechEnded => (&filter.speech_id, &filter.session_id),
-        _ => (&filter.session_id, &filter.speech_id),
-    };
-    if stray.is_some() {
-        return false;
-    }
-    match (want, id) {
-        (Some(want), Some(have)) => want == have,
-        (Some(_), None) => false,
-        (None, _) => true,
     }
 }
 
@@ -108,7 +72,7 @@ pub enum TranscriptKind {
     Error,
 }
 
-/// `voice::transcript` — one step of a dictation session's text.
+/// `voice::on-transcript` — one step of a dictation session's text.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TranscriptEvent {
     pub session_id: String,
@@ -124,7 +88,7 @@ pub struct TranscriptEvent {
     pub reason: Option<String>,
 }
 
-/// `voice::session-started` — a dictation session is ready for audio.
+/// `voice::on-session-started` — a dictation session is ready for audio.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStartedEvent {
     pub session_id: String,
@@ -132,7 +96,7 @@ pub struct SessionStartedEvent {
     pub timestamp_ms: i64,
 }
 
-/// `voice::session-stopped` — a session ended; see `reason`.
+/// `voice::on-session-stopped` — a session ended; see `reason`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStoppedEvent {
     pub session_id: String,
@@ -141,206 +105,68 @@ pub struct SessionStoppedEvent {
     pub timestamp_ms: i64,
 }
 
-/// Legacy `voice::speech-ended` payload retained for trigger compatibility.
-/// No longer emitted: all engines return audio; each caller owns playback.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SpeechEndedEvent {
-    pub speech_id: String,
-    /// `ended` (played to the end), `stopped` (voice::speak::stop), or
-    /// `failed` (the speech command exited with an error).
-    pub reason: String,
-    pub timestamp_ms: i64,
+/// Register the event functions. Each is private (only this worker calls it;
+/// anyone may observe it) and its handler returns the event, so observers
+/// observe the event itself.
+pub fn register(iii: &IIIClient) {
+    register_source::<TranscriptEvent>(
+        iii,
+        ON_TRANSCRIPT_FN,
+        "A dictation session produced text: a partial replaces the in-progress text, a \
+         final commits a segment, closed ends the session. Observe it with a filter on \
+         input.session_id to follow one session.",
+    );
+    register_source::<SessionStartedEvent>(
+        iii,
+        ON_SESSION_STARTED_FN,
+        "A dictation session is ready for audio. Filter on input.session_id.",
+    );
+    register_source::<SessionStoppedEvent>(
+        iii,
+        ON_SESSION_STOPPED_FN,
+        "A dictation session ended (stopped, discarded, idle, or worker shutdown). Filter \
+         on input.session_id.",
+    );
+    register_source::<Progress>(
+        iii,
+        ON_MODEL_PROGRESS_FN,
+        "Bytes received while a speech model downloads, one event per megabyte and a \
+         final done event (with error when the download failed). Filter on input.id.",
+    );
+    register_source::<HotkeyEvent>(
+        iii,
+        ON_HOTKEY_FN,
+        "The fn (globe) key on macOS, which browsers never see: action down, up, or chord \
+         when another key was pressed while it was held. The console dictates while it \
+         is held. Needs Input Monitoring for the app running iii; see voice::doctor.",
+    );
 }
 
-#[derive(Debug, Clone)]
-pub struct Binding {
-    pub id: String,
-    pub function_id: String,
-    pub filter: BindingConfig,
+fn register_source<E>(iii: &IIIClient, id: &str, description: &str)
+where
+    E: Serialize + DeserializeOwned + JsonSchema + Send + 'static,
+{
+    iii.register_function(
+        id,
+        RegisterFunction::new(|event: E| Ok::<_, Error>(event))
+            .description(description)
+            .private(),
+    );
+    tracing::info!(function_id = id, "registered event function");
 }
 
-/// Thread-safe subscriber registry for one trigger type.
-#[derive(Clone)]
-pub struct SubscriberSet {
-    kind: EventKind,
-    inner: Arc<Mutex<HashMap<String, Binding>>>,
-}
-
-impl SubscriberSet {
-    pub fn new(kind: EventKind) -> Self {
-        Self {
-            kind,
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn kind(&self) -> EventKind {
-        self.kind
-    }
-
-    /// Parse + insert a binding. Rejects malformed configs at registration.
-    pub fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        self.add_binding(&config.id, &config.function_id, config.config)
-    }
-
-    pub fn add_binding(&self, id: &str, function_id: &str, config: Value) -> Result<(), String> {
-        let raw = if config.is_null() {
-            Value::Object(serde_json::Map::new())
-        } else {
-            config
-        };
-        let filter: BindingConfig = serde_json::from_value(raw)
-            .map_err(|e| format!("invalid {} binding config: {e}", self.kind.trigger_type()))?;
-        let binding = Binding {
-            id: id.to_string(),
-            function_id: function_id.to_string(),
-            filter,
-        };
-        self.inner
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id.to_string(), binding);
-        Ok(())
-    }
-
-    pub fn remove(&self, id: &str) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(id);
-    }
-
-    pub fn len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Bindings whose filter accepts `session_id`.
-    pub fn matching(&self, session_id: Option<&str>) -> Vec<Binding> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .filter(|b| binding_matches(&b.filter, self.kind, session_id))
-            .cloned()
-            .collect()
-    }
-}
-
-/// One subscriber set per trigger type.
-#[derive(Clone)]
-pub struct TriggerSets {
-    sets: HashMap<EventKind, SubscriberSet>,
-}
-
-impl Default for TriggerSets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TriggerSets {
-    pub fn new() -> Self {
-        Self {
-            sets: EventKind::all()
-                .into_iter()
-                .map(|k| (k, SubscriberSet::new(k)))
-                .collect(),
-        }
-    }
-
-    pub fn for_kind(&self, kind: EventKind) -> &SubscriberSet {
-        self.sets.get(&kind).expect("every kind is registered")
-    }
-}
-
-struct VoiceTriggerHandler {
-    set: SubscriberSet,
-}
-
-#[async_trait]
-impl TriggerHandler for VoiceTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        let function_id = config.function_id.clone();
-        self.set.add(config).map_err(Error::Handler)?;
-        tracing::info!(id = %id, function_id = %function_id, trigger_type = self.set.kind().trigger_type(), "trigger subscription registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::info!(id = %config.id, trigger_type = self.set.kind().trigger_type(), "trigger subscription unregistered");
-        self.set.remove(&config.id);
-        Ok(())
-    }
-}
-
-/// Register the custom trigger types with the engine. Must run before
-/// `functions::register_all` so handlers can capture the subscriber sets.
-pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
-    let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 6] = [
-        (
-            EventKind::Transcript,
-            "A dictation session produced text: a partial replaces the in-progress text, a \
-             final commits a segment, closed ends the session. Filter with session_id.",
-        ),
-        (
-            EventKind::SessionStarted,
-            "A dictation session is ready for audio.",
-        ),
-        (
-            EventKind::SessionStopped,
-            "A dictation session ended (stopped, discarded, idle, or worker shutdown).",
-        ),
-        (
-            EventKind::ModelProgress,
-            "Bytes received while a speech model downloads, one event per megabyte and a \
-             final done event (with error when the download failed).",
-        ),
-        (
-            EventKind::SpeechEnded,
-            "A host read-aloud started by voice::speak finished: reason ended, stopped or \
-             failed. Filter with speech_id.",
-        ),
-        (
-            EventKind::Hotkey,
-            "The fn (globe) key on macOS, which browsers never see: action down, up, or chord \
-             when another key was pressed while it was held. The console dictates while it \
-             is held. Needs Input Monitoring for the app running iii; see voice::doctor.",
-        ),
-    ];
-    for (kind, description) in descriptions {
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                kind.trigger_type(),
-                description,
-                VoiceTriggerHandler {
-                    set: sets.for_kind(kind).clone(),
-                },
-            )
-            .trigger_request_format::<BindingConfig>(),
-        );
-        tracing::info!(
-            trigger_type = kind.trigger_type(),
-            "registered trigger type"
-        );
-    }
-    sets
-}
-
-/// How a matched event reaches a subscriber. Production delivers over the bus;
-/// tests record.
+/// How an event reaches iii. Production calls over the bus; tests record.
 #[async_trait]
 pub trait EventDeliverer: Send + Sync {
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value);
+    /// Whether anything observes `function_id`.
+    fn is_observed(&self, function_id: &str) -> bool;
+
+    /// Call `function_id` with `payload`, fire-and-forget.
+    async fn call(&self, function_id: &str, payload: Value);
 }
 
 /// Fire-and-forget bus delivery so the caller that produced the event is never
-/// blocked on subscriber latency. Failures are logged and swallowed.
+/// blocked on observer latency. Failures are logged and swallowed.
 pub struct IiiDeliverer {
     iii: Arc<IIIClient>,
 }
@@ -353,38 +179,45 @@ impl IiiDeliverer {
 
 #[async_trait]
 impl EventDeliverer for IiiDeliverer {
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
+    fn is_observed(&self, function_id: &str) -> bool {
+        self.iii.is_observed(function_id)
+    }
+
+    async fn call(&self, function_id: &str, payload: Value) {
         let iii = self.iii.clone();
-        let trigger_type = trigger_type.to_string();
         let function_id = function_id.to_string();
         tokio::spawn(async move {
             let res = iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: function_id.clone(),
                     payload,
-                    action: Some(TriggerAction::Void),
+                    action: Some(CallAction::Void),
                     timeout_ms: None,
                 })
                 .await;
             if let Err(e) = res {
-                tracing::debug!(trigger_type, function_id, error = %e, "event delivery failed");
+                tracing::debug!(function_id, error = %e, "event delivery failed");
             }
         });
     }
 }
 
-/// Fan an event out to every matching binding of its kind.
+/// Calls the event functions, and a dictation session's own output function.
 pub struct Emitter {
-    sets: TriggerSets,
     deliverer: Arc<dyn EventDeliverer>,
 }
 
 impl Emitter {
-    pub fn new(sets: TriggerSets, deliverer: Arc<dyn EventDeliverer>) -> Self {
-        Self { sets, deliverer }
+    pub fn new(deliverer: Arc<dyn EventDeliverer>) -> Self {
+        Self { deliverer }
     }
 
-    pub async fn emit<T: Serialize>(&self, kind: EventKind, session_id: Option<&str>, event: &T) {
+    /// Call the event's function when anything observes it.
+    pub async fn emit<T: Serialize>(&self, kind: EventKind, event: &T) {
+        let function_id = kind.function_id();
+        if !self.deliverer.is_observed(function_id) {
+            return;
+        }
         let payload = match serde_json::to_value(event) {
             Ok(v) => v,
             Err(e) => {
@@ -392,15 +225,11 @@ impl Emitter {
                 return;
             }
         };
-        for binding in self.sets.for_kind(kind).matching(session_id) {
-            self.deliverer
-                .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
-                .await;
-        }
+        self.deliverer.call(function_id, payload).await;
     }
 
-    /// Deliver a payload straight to one function, bypassing subscriptions
-    /// (the dictation session's `output_function_id`).
+    /// Call one function with the event, observed or not (the dictation
+    /// session's `output_function_id`).
     pub async fn deliver_direct<T: Serialize>(&self, function_id: &str, event: &T) {
         let payload = match serde_json::to_value(event) {
             Ok(v) => v,
@@ -409,30 +238,42 @@ impl Emitter {
                 return;
             }
         };
-        self.deliverer
-            .deliver(TRANSCRIPT, function_id, payload)
-            .await;
+        self.deliverer.call(function_id, payload).await;
     }
 }
 
 #[cfg(test)]
 pub mod test_support {
     use super::*;
+    use std::sync::Mutex;
 
-    /// Records every delivery, for tests.
-    #[derive(Default)]
+    /// Records every call, for tests. Reports every function as observed
+    /// unless `observed` is false.
     pub struct RecordingDeliverer {
-        pub deliveries: Mutex<Vec<(String, String, Value)>>,
+        pub observed: bool,
+        pub calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl Default for RecordingDeliverer {
+        fn default() -> Self {
+            Self {
+                observed: true,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     #[async_trait]
     impl EventDeliverer for RecordingDeliverer {
-        async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
-            self.deliveries.lock().unwrap().push((
-                trigger_type.to_string(),
-                function_id.to_string(),
-                payload,
-            ));
+        fn is_observed(&self, _function_id: &str) -> bool {
+            self.observed
+        }
+
+        async fn call(&self, function_id: &str, payload: Value) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((function_id.to_string(), payload));
         }
     }
 }
@@ -442,94 +283,101 @@ mod tests {
     use super::test_support::RecordingDeliverer;
     use super::*;
 
-    #[test]
-    fn a_filter_on_the_other_kind_never_matches() {
-        let dictation = BindingConfig {
-            session_id: Some("d_1".into()),
-            speech_id: None,
-        };
-        assert!(!binding_matches(
-            &dictation,
-            EventKind::SpeechEnded,
-            Some("s_1")
-        ));
-        assert!(binding_matches(
-            &dictation,
-            EventKind::Transcript,
-            Some("d_1")
-        ));
-        let speech = BindingConfig {
-            session_id: None,
-            speech_id: Some("s_1".into()),
-        };
-        assert!(!binding_matches(
-            &speech,
-            EventKind::Transcript,
-            Some("d_1")
-        ));
-        assert!(binding_matches(
-            &speech,
-            EventKind::SpeechEnded,
-            Some("s_1")
-        ));
+    fn stopped(session_id: &str) -> SessionStoppedEvent {
+        SessionStoppedEvent {
+            session_id: session_id.into(),
+            reason: "stopped".into(),
+            timestamp_ms: 1,
+        }
     }
 
     #[test]
-    fn a_misspelled_filter_key_is_rejected() {
-        let set = SubscriberSet::new(EventKind::Transcript);
-        let err = set
-            .add_binding("a", "fn-a", serde_json::json!({ "sesion_id": "x" }))
-            .unwrap_err();
-        assert!(err.contains("unknown field"), "{err}");
-        assert!(set.is_empty());
-    }
-
-    #[test]
-    fn filters_match_by_session() {
-        let set = SubscriberSet::new(EventKind::Transcript);
-        set.add_binding("all", "fn-all", Value::Null).unwrap();
-        set.add_binding("one", "fn-one", serde_json::json!({ "session_id": "s1" }))
-            .unwrap();
-        assert_eq!(set.matching(Some("s1")).len(), 2);
-        assert_eq!(set.matching(Some("s2")).len(), 1);
-        assert_eq!(set.matching(None).len(), 1);
+    fn event_functions_follow_the_on_naming() {
+        let ids: Vec<_> = EventKind::all()
+            .iter()
+            .map(EventKind::function_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "voice::on-transcript",
+                "voice::on-session-started",
+                "voice::on-session-stopped",
+                "voice::on-model-progress",
+                "voice::on-hotkey",
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn emit_reaches_every_matching_binding() {
-        let sets = TriggerSets::new();
-        sets.for_kind(EventKind::SessionStopped)
-            .add_binding("x", "fn-x", serde_json::json!({ "session_id": "s1" }))
-            .unwrap();
-        sets.for_kind(EventKind::SessionStopped)
-            .add_binding("y", "fn-y", Value::Null)
-            .unwrap();
+    async fn emit_calls_the_event_function_with_the_event() {
         let recorder = Arc::new(RecordingDeliverer::default());
-        let emitter = Emitter::new(sets, recorder.clone());
+        let emitter = Emitter::new(recorder.clone());
         emitter
-            .emit(
-                EventKind::SessionStopped,
-                Some("s2"),
-                &SessionStoppedEvent {
-                    session_id: "s2".into(),
-                    reason: "stopped".into(),
-                    timestamp_ms: 1,
-                },
-            )
+            .emit(EventKind::SessionStopped, &stopped("s2"))
             .await;
-        let deliveries = recorder.deliveries.lock().unwrap();
-        assert_eq!(deliveries.len(), 1);
-        assert_eq!(deliveries[0].1, "fn-y");
-        assert_eq!(deliveries[0].0, SESSION_STOPPED);
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, ON_SESSION_STOPPED_FN);
+        assert_eq!(calls[0].1["session_id"], "s2");
+    }
+
+    #[tokio::test]
+    async fn emit_skips_an_unobserved_function() {
+        let recorder = Arc::new(RecordingDeliverer {
+            observed: false,
+            ..RecordingDeliverer::default()
+        });
+        let emitter = Emitter::new(recorder.clone());
+        emitter
+            .emit(EventKind::SessionStopped, &stopped("s2"))
+            .await;
+        assert!(recorder.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deliver_direct_calls_the_target_unobserved() {
+        let recorder = Arc::new(RecordingDeliverer {
+            observed: false,
+            ..RecordingDeliverer::default()
+        });
+        let emitter = Emitter::new(recorder.clone());
+        emitter
+            .deliver_direct("my::transcript", &stopped("s1"))
+            .await;
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "my::transcript");
+    }
+
+    #[test]
+    fn event_handlers_round_trip_the_event() {
+        let event = TranscriptEvent {
+            session_id: "d_1".into(),
+            seq: 3,
+            kind: TranscriptKind::Final,
+            text: "hello".into(),
+            segment: 0,
+            timestamp_ms: 7,
+            reason: None,
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        let back: TranscriptEvent = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), value);
     }
 }
 
-/// A deliverer that drops every event; for speakers built in tests.
+/// A deliverer that observes nothing and drops every call; for speakers
+/// built in tests.
 pub struct NoopDeliverer;
 
 #[async_trait]
 impl EventDeliverer for NoopDeliverer {
-    async fn deliver(&self, _trigger_type: &str, _function_id: &str, _payload: Value) {}
+    fn is_observed(&self, _function_id: &str) -> bool {
+        false
+    }
+
+    async fn call(&self, _function_id: &str, _payload: Value) {}
 }
 
 pub fn now_ms() -> i64 {

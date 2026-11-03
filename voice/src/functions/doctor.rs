@@ -267,7 +267,7 @@ async fn cleanup_report(state: &AppState, cfg: &crate::config::WorkerConfig) -> 
     }
     let reply = state
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "router::provider::list".into(),
             payload: serde_json::json!({}),
             action: None,

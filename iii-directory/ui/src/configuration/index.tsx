@@ -249,8 +249,8 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
           />
           <CheckField
             field="auto_download"
-            label="Download skills when workers are added"
-            hint="Subscribe to worker additions and reconcile missing skill bundles at startup."
+            label="Download skills when workers connect"
+            hint="Download a connecting worker's missing skill bundle, and reconcile missing bundles at startup."
             checked={booleanWithDefault(value.auto_download, true)}
             onChange={setBool}
             errors={props.errors}
@@ -295,9 +295,9 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
           />
           <NumberField
             field="function_search_judge_side_lane_min_relevance"
-            label="Judge minimum relevance for skills and triggers"
+            label="Judge minimum relevance for skills and observers"
             placeholder="0.3"
-            hint="Finite value from 0 to 1, inclusive, for the installed-skills and registered-triggers sections. Those documents score lower than functions for the same capability, so the default 0.3 sits under the function floor."
+            hint="Finite value from 0 to 1, inclusive, for the installed-skills and observers sections. Those documents score lower than functions for the same capability, so the default 0.3 sits under the function floor."
             max={1}
             step="any"
             inputMode="decimal"

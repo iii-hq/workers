@@ -28,8 +28,8 @@ pub async fn main() -> anyhow::Result<()> {
 
 const BASH = `#!/usr/bin/env bash
 set -euo pipefail
-iii trigger browser::open --url "https://example.com/a/very/long/path/that/keeps/going"
-iii trigger compose::restart | tee -a logs/restart.out
+iii call browser::open --url "https://example.com/a/very/long/path/that/keeps/going"
+iii call compose::restart | tee -a logs/restart.out
 `
 
 const payload = {

@@ -17,7 +17,7 @@ it.each(configurationCases)('$title', async (scenario) => {
     makeError: (body) => new InvocationError(body),
     register: (iii) => config.registerClaudeConfig(iii, seed),
     fetch: config.fetchRuntime,
-    bind: config.bindConfigTrigger,
+    bind: config.observeConfigChanges,
     expectedId: scenario.env?.trim() || 'claude-code',
     formId: 'claude-code',
     value: toRuntime(seed),

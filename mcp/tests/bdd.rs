@@ -31,7 +31,7 @@ async fn main() {
 
     McpWorld::cucumber()
         // Scenarios share a single engine connection + a single
-        // registration of `mcp::handler` and the HTTP trigger; running
+        // registration of `mcp::handler` and its http::on-request route; running
         // them concurrently means two scenarios trampling each other's
         // SSE streams.
         .max_concurrent_scenarios(1)

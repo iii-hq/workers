@@ -10,7 +10,7 @@
 //!
 //! The unit of pagination is the *block*: one entry, or one *activity run*
 //! (a maximal stretch of assistant messages that call functions, the
-//! results answering them, and the trigger-wake entries that woke the agent
+//! results answering them, and the observer-wake entries that woke the agent
 //! into doing so). A page never cuts inside a block, so a reader can never
 //! receive a call without room for its result, or the tail half of a run
 //! whose head it would have collapsed together with. Runs mirror what the
@@ -80,7 +80,7 @@ pub fn block_index_of(blocks: &[Block], idx: usize) -> Option<usize> {
     blocks.iter().position(|b| b.contains(idx))
 }
 
-/// The harness's trigger-wake bookkeeping. Newer writers mark it in
+/// The harness's observer-wake bookkeeping. Newer writers mark it in
 /// `origin`; the id prefixes cover transcripts written before they did.
 /// Both halves of a wake (the user-role notification and the custom record)
 /// belong with the calls they caused, never on the far side of a page cut.
@@ -95,7 +95,13 @@ const WAKE_ID_PREFIXES: &[&str] = &[
     "e_trigexpired_",
     "e_trigstale_",
 ];
-const WAKE_CUSTOM_TYPE: &str = "trigger_fired";
+/// The custom type (and `origin` flag) of a wake record: `observer_fired`,
+/// and `trigger_fired` in transcripts the 0.25 harness wrote.
+const WAKE_CUSTOM_TYPES: &[&str] = &["observer_fired", "trigger_fired"];
+
+fn is_wake_custom_type(custom_type: &str) -> bool {
+    WAKE_CUSTOM_TYPES.contains(&custom_type)
+}
 
 fn origin_flag(origin: Option<&JsonMap>, key: &str) -> bool {
     origin
@@ -106,7 +112,9 @@ fn origin_flag(origin: Option<&JsonMap>, key: &str) -> bool {
 
 fn is_wake_entry(id: &str, origin: Option<&JsonMap>) -> bool {
     origin_flag(origin, "notification")
-        || origin_flag(origin, "trigger_fired")
+        || WAKE_CUSTOM_TYPES
+            .iter()
+            .any(|flag| origin_flag(origin, flag))
         || WAKE_ID_PREFIXES.iter().any(|p| id.starts_with(p))
 }
 
@@ -128,7 +136,7 @@ fn is_run_member(entry: &SessionEntry) -> bool {
             AgentMessage::FunctionResult { .. } => true,
             AgentMessage::User { .. } => is_wake_entry(id, origin.as_ref()),
             AgentMessage::Custom { custom_type, .. } => {
-                custom_type == WAKE_CUSTOM_TYPE || is_wake_entry(id, origin.as_ref())
+                is_wake_custom_type(custom_type) || is_wake_entry(id, origin.as_ref())
             }
         },
         SessionEntry::Custom {
@@ -136,7 +144,7 @@ fn is_run_member(entry: &SessionEntry) -> bool {
             origin,
             custom_type,
             ..
-        } => custom_type == WAKE_CUSTOM_TYPE || is_wake_entry(id, origin.as_ref()),
+        } => is_wake_custom_type(custom_type) || is_wake_entry(id, origin.as_ref()),
     }
 }
 
@@ -185,11 +193,12 @@ pub fn kept_in_collapsed_run(run: &[&SessionEntry]) -> Vec<bool> {
         .collect()
 }
 
-/// The harness's single-tool wrapper. Its row label is not the function id
+/// The harness's single-tool wrapper: `agent_call`, and `agent_trigger` in
+/// transcripts the 0.25 harness wrote. Its row label is not the function id
 /// but `arguments.function` (the target) and `arguments.description` (the
 /// user-facing action label), so elision keeps those two.
-const AGENT_TRIGGER: &str = "agent_trigger";
-/// Bound on a kept `agent_trigger` label field. The harness schema caps
+const AGENT_CALL_WRAPPERS: &[&str] = &["agent_call", "agent_trigger"];
+/// Bound on a kept wrapper label field. The harness schema caps
 /// `description` at 120 chars; a model that ignored it must not make a
 /// collapsed run heavy again.
 const MAX_KEPT_LABEL_CHARS: usize = 120;
@@ -201,8 +210,8 @@ const MAX_KEPT_TARGET_CHARS: usize = 256;
 /// keeping everything it needs to draw the placeholder and to swap the full
 /// entry in later: text (the visible phase summaries), every `function_call`
 /// id and function id (the row's identity and label), every result's
-/// `function_call_id` and `is_error` (pairing and status). An
-/// `agent_trigger` call also keeps its string `function` and `description`
+/// `function_call_id` and `is_error` (pairing and status). A wrapper
+/// (`agent_call`) call also keeps its string `function` and `description`
 /// arguments — its label lives there — and drops `payload`; every other
 /// call's arguments become `{}`. Arguments, result bodies, details and
 /// thinking are what a 300-call run is heavy with, and exactly what
@@ -218,8 +227,8 @@ pub fn elide_message(message: &mut AgentMessage) {
                     ..
                 } = block
                 {
-                    *arguments = if function_id == AGENT_TRIGGER {
-                        agent_trigger_label(arguments)
+                    *arguments = if AGENT_CALL_WRAPPERS.contains(&function_id.as_str()) {
+                        agent_call_label(arguments)
                     } else {
                         Value::Object(JsonMap::new())
                     };
@@ -236,10 +245,10 @@ pub fn elide_message(message: &mut AgentMessage) {
     }
 }
 
-/// The label half of an `agent_trigger` wrapper's arguments: `function`
+/// The label half of an `agent_call` wrapper's arguments: `function`
 /// (when a plausible id) and `description` (bounded), both only when they
 /// are strings. Everything else — `payload` above all — is dropped.
-fn agent_trigger_label(arguments: &Value) -> Value {
+fn agent_call_label(arguments: &Value) -> Value {
     let mut kept = JsonMap::new();
     if let Some(target) = arguments
         .get("function")
@@ -338,9 +347,15 @@ mod tests {
             user("u2"),
             // A wake pair right before the calls it caused stays with them.
             user("e_fire_sub_1_1"),
-            custom("e_trigfired_sub_1_1", "trigger_fired"),
+            custom("e_obsfired_sub_1_1", "observer_fired"),
             call("a4", "c4", None),
             result("r4", "c4"),
+            prose("a5"),
+            // A transcript the 0.25 harness wrote names the record `trigger_fired`.
+            user("e_fire_sub_2_1"),
+            custom("e_trigfired_sub_2_1", "trigger_fired"),
+            call("a6", "c6", None),
+            result("r6", "c6"),
         ];
         assert_eq!(
             kinds(&path),
@@ -350,6 +365,8 @@ mod tests {
                 (5, 6, BlockKind::Single),
                 (6, 7, BlockKind::Single),
                 (7, 11, BlockKind::ActivityRun),
+                (11, 12, BlockKind::Single),
+                (12, 16, BlockKind::ActivityRun),
             ]
         );
     }
@@ -438,10 +455,14 @@ mod tests {
     }
 
     fn wrapper_call(arguments: Value) -> AgentMessage {
+        wrapper_call_named("agent_call", arguments)
+    }
+
+    fn wrapper_call_named(wrapper: &str, arguments: Value) -> AgentMessage {
         let SessionEntry::Message { message, .. } = entry(
             "a1",
             json!({ "role": "assistant", "content": [
-                        { "type": "function_call", "id": "c1", "function_id": "agent_trigger",
+                        { "type": "function_call", "id": "c1", "function_id": wrapper,
                           "arguments": arguments }
                     ],
                     "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 1 }),
@@ -456,25 +477,31 @@ mod tests {
         serde_json::to_value(&message).unwrap()["content"][0]["arguments"].clone()
     }
 
-    /// Prevents: a reloaded transcript labeling every collapsed `agent_trigger`
+    /// Prevents: a reloaded transcript labeling every collapsed `agent_call`
     /// call with its bare function id while a few whole calls keep their
     /// description — the label lives inside the arguments.
     #[test]
-    fn elision_keeps_the_agent_trigger_label_and_drops_its_payload() {
-        let message = wrapper_call(json!({
-            "function": "compose::status",
-            "description": "Check existing containers",
-            "payload": { "big": "x".repeat(10_000) },
-            "_partial": true
-        }));
-        assert_eq!(
-            elided_arguments(message),
-            json!({ "function": "compose::status", "description": "Check existing containers" })
-        );
+    fn elision_keeps_the_agent_call_label_and_drops_its_payload() {
+        for wrapper in AGENT_CALL_WRAPPERS {
+            let message = wrapper_call_named(
+                wrapper,
+                json!({
+                    "function": "compose::status",
+                    "description": "Check existing containers",
+                    "payload": { "big": "x".repeat(10_000) },
+                    "_partial": true
+                }),
+            );
+            assert_eq!(
+                elided_arguments(message),
+                json!({ "function": "compose::status", "description": "Check existing containers" }),
+                "{wrapper}"
+            );
+        }
     }
 
     #[test]
-    fn elision_bounds_or_drops_malformed_agent_trigger_labels() {
+    fn elision_bounds_or_drops_malformed_agent_call_labels() {
         let long = "d".repeat(500);
         let message = wrapper_call(json!({ "function": "fs::read", "description": long }));
         let kept = elided_arguments(message);

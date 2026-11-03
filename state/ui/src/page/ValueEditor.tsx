@@ -4,10 +4,10 @@
  * editor into a worker asset), under a stable document header (identity
  * crumb, dirty dot, revert/save) and over a status bar.
  *
- * Live semantics (the page-wide `state` binding, filtered to this entry):
- * a clean editor applies server changes in place; an editor with unsaved
- * edits is never clobbered — a banner offers the new value instead. A
- * delete keeps the draft and warns that saving recreates the key.
+ * Live semantics (the page-wide `state::on-changed` observer, filtered to
+ * this entry): a clean editor applies server changes in place; an editor
+ * with unsaved edits is never clobbered — a banner offers the new value
+ * instead. A delete keeps the draft and warns that saving recreates the key.
  *
  * The browser remounts this component per scope/key (React key), so all
  * state here is entry-local. Unsaved edits are reported up through
@@ -71,7 +71,7 @@ export function ValueEditor({
   const load = useCallback(() => {
     setLoadError(null)
     host.iii
-      .trigger<unknown>('state::get', { scope, key: itemKey })
+      .call<unknown>('state::get', { scope, key: itemKey })
       .then((value) => {
         setLoadError(null)
         setStored({ loaded: true, value })
@@ -147,7 +147,7 @@ export function ValueEditor({
     }
     setSaving(true)
     try {
-      await host.iii.trigger('state::set', {
+      await host.iii.call('state::set', {
         scope,
         key: itemKey,
         value: parsed,

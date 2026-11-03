@@ -19,7 +19,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 /// Periodic catalog refresh cadence. Anthropic's catalog moves slowly, so a
-/// coarse interval is plenty; boot and router::ready refreshes cover the rest.
+/// coarse interval is plenty; boot and router::on-ready refreshes cover the rest.
 const MODELS_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 /// Derive the models endpoint from the configured messages endpoint

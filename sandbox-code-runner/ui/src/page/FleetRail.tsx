@@ -1,7 +1,7 @@
 /**
  * The navigation rail: the FLEET list (one row per sandbox — status dot,
  * id, image, age, free exec slots), the RUNTIMES strip (code-runner
- * runtimes with their guest-registered functions: expand, trigger, tear
+ * runtimes with their guest-registered functions: expand, call, tear
  * down), and the CATALOG (daemon images with their preset/custom badge).
  *
  * Status reads: running (accent), busy (warn, pulsing — execs in flight),
@@ -201,9 +201,9 @@ function RuntimeRow({
                 type="button"
                 className="cr-page-linkish"
                 onClick={() => onInvoke(fn)}
-                title={`trigger ${fn} over the bus with a JSON payload`}
+                title={`call ${fn} over the bus with a JSON payload`}
               >
-                trigger
+                call
               </button>
             </li>
           ))}
@@ -247,7 +247,7 @@ export function FleetRail({
     setTeardownBusy(true)
     setTeardownError(null)
     host.iii
-      .trigger('sandbox-code-runner::teardown', { runtime_id: runtimeId })
+      .call('sandbox-code-runner::teardown', { runtime_id: runtimeId })
       .then(() => onRefresh())
       .catch((err: unknown) => setTeardownError(errorMessage(err)))
       .finally(() => setTeardownBusy(false))
@@ -260,7 +260,7 @@ export function FleetRail({
           <EmptyState
             icon={Box}
             title="no sandbox daemon"
-            description="sandbox::list is not on this engine — add it with `iii trigger compose::add worker=iii-sandbox`, then sandboxes appear here."
+            description="sandbox::list is not on this engine — add it with `iii call compose::add worker=iii-sandbox`, then sandboxes appear here."
           />
         </div>
       ) : sandboxes.length === 0 && tombstones.length === 0 ? (

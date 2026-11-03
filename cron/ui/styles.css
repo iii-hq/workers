@@ -337,47 +337,17 @@
   max-width: 560px;
 }
 
-/* Configuration form: shared Settings components own surfaces, spacing and
-   responsive row composition. Local CSS only sizes Cron's value controls. */
-[data-iii-ui='cron'] .cron-ui-form {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 24px;
-  container-type: inline-size;
-  color: var(--color-ink);
-  font-family: var(--font-sans, system-ui, sans-serif);
-}
-
-[data-iii-ui='cron'] .cron-ui-config-control,
-[data-iii-ui='cron'] .cron-ui-config-select {
-  width: min(100%, 360px);
-}
-
-[data-iii-ui='cron'] .cron-ui-config-control {
-  font-family: var(--font-mono, ui-monospace, monospace);
-}
-
-[data-iii-ui='cron'] .cron-ui-config-opaque {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 [data-iii-ui='cron'] .cron-ui-editor-field .cron-ui-code-editor {
   min-height: 132px;
   border: 1px solid var(--color-rule);
   border-radius: 6px;
 }
 
-/* Trigger activity is a compact source section inside host-owned chrome. */
+/* Observer activity is a compact source section inside host-owned chrome. */
 
 /* Every selector is scoped because injected CSS is global and unlayered. */
 
-[data-iii-ui='cron'] .cron-trigger-activity {
+[data-iii-ui='cron'] .cron-observer-activity {
   display: grid;
   min-width: 0;
   gap: 7px;
@@ -388,7 +358,7 @@
   font-family: var(--font-sans);
 }
 
-[data-iii-ui='cron'] .cron-trigger-activity__heading {
+[data-iii-ui='cron'] .cron-observer-activity__heading {
   display: flex;
   min-width: 0;
   align-items: baseline;
@@ -396,7 +366,7 @@
   gap: 10px;
 }
 
-[data-iii-ui='cron'] .cron-trigger-activity__schedule {
+[data-iii-ui='cron'] .cron-observer-activity__schedule {
   min-width: 0;
   font-size: 12.5px;
   font-weight: 600;
@@ -404,7 +374,7 @@
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='cron'] .cron-trigger-activity__timezone {
+[data-iii-ui='cron'] .cron-observer-activity__timezone {
   flex: none;
   color: var(--color-ink-faint);
   font-size: 11px;
@@ -412,14 +382,10 @@
   letter-spacing: 0.02em;
 }
 
-[data-iii-ui='cron'] .cron-trigger-activity__expression,
-[data-iii-ui='cron'] .cron-trigger-activity__condition-value {
+[data-iii-ui='cron'] .cron-observer-activity__expression {
+  display: block;
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
-}
-
-[data-iii-ui='cron'] .cron-trigger-activity__expression {
-  display: block;
   width: fit-content;
   max-width: 100%;
   padding: 3px 6px;
@@ -429,23 +395,4 @@
   font-size: 11.5px;
   line-height: 1.5;
   white-space: pre-wrap;
-}
-
-[data-iii-ui='cron'] .cron-trigger-activity__condition {
-  display: flex;
-  min-width: 0;
-  gap: 6px;
-  align-items: baseline;
-  color: var(--color-ink-faint);
-  font-size: 11.5px;
-  line-height: 1.4;
-}
-
-[data-iii-ui='cron'] .cron-trigger-activity__condition-label {
-  flex: none;
-}
-
-[data-iii-ui='cron'] .cron-trigger-activity__condition-value {
-  min-width: 0;
-  color: var(--color-ink);
 }

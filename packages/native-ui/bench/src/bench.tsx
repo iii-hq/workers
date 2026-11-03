@@ -254,7 +254,7 @@ function RttPage(props: Params) {
 
 /** The browser app's wire (workers browser/native-ui/src/api.ts `WIRE`), so the view behaves as the app's. */
 const WIRE: JsonObject = {
-  frames: { trigger: 'browser::frame-event', config: { session_id: '$session' } },
+  frames: { fn: 'browser::on-frame-event', args: { session_id: '$session' } },
   seed: { fn: 'browser::frame', args: { session_id: '$session', since_frame: '$seq' } },
   start: {
     fn: 'browser::screencast::start',

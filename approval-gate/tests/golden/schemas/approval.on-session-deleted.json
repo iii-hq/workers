@@ -1,9 +1,9 @@
 {
-  "description": "Internal: session::deleted handler (purge the session's settings and pending records).",
+  "description": "Internal: observer of session::on-deleted (purge the session's settings and pending records).",
   "function_id": "approval::on-session-deleted",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "`session::deleted` payload (only the field we read).",
+    "description": "`session::on-deleted` event (only the field we read).",
     "properties": {
       "session_id": {
         "type": "string"
@@ -17,7 +17,7 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Acknowledgement returned by the internal trigger-bound handlers (`on-config-change`, `on-session-deleted`, `on-turn-completed`) whose result is not consumed by callers — kept typed so the response schema is concrete rather than the permissive `AnyValue` (\"unknown\") schema a `Value` return would emit.",
+    "description": "Acknowledgement returned by the internal observer targets (`on-config-change`, `on-session-deleted`, `on-turn-completed`) whose result is not consumed by callers — kept typed so the response schema is concrete rather than the permissive `AnyValue` (\"unknown\") schema a `Value` return would emit.",
     "properties": {
       "ok": {
         "type": "boolean"

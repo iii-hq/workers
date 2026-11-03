@@ -19,8 +19,7 @@
 use super::query::err_to_str;
 use crate::config::WorkerConfig;
 use crate::error::DbError;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -48,7 +47,7 @@ pub(super) async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
@@ -59,7 +58,7 @@ pub(super) async fn call(
         err_to_str(DbError::ConfigError {
             message: format!(
                 "{function_id} failed: {e}. Saved queries and history need the `state` \
-                 worker — run `iii trigger compose::add worker=state`."
+                 worker — run `iii call compose::add worker=state`."
             ),
         })
     })

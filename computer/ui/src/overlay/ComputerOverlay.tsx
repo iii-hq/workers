@@ -11,7 +11,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import { ACTIVITY_TRIGGER, RUN_FUNCTION_ID, SESSION_STOPPED_TRIGGER } from '../lib/computer'
+import { ON_ACTIVITY_FUNCTION_ID, ON_SESSION_STOPPED_FUNCTION_ID, RUN_FUNCTION_ID } from '../lib/computer'
 import { useLiveFrames } from '../page/useLiveFrames'
 import {
   type Bounds,
@@ -104,37 +104,36 @@ interface Drag {
 function useSessionEvents(host: Host) {
   const instance = useId().replace(/[^a-zA-Z0-9]/g, '')
   useEffect(() => {
-    const bind = (type: string, name: string, onEvent: (e: Record<string, unknown>) => void) => {
+    const observe = (functionId: string, name: string, onEvent: (e: Record<string, unknown>) => void) => {
       const handler = `iii::computer-ui::overlay-${name}::${instance}`
       const off = host.iii.on(handler, (payload: unknown) => {
         if (payload && typeof payload === 'object') onEvent(payload as Record<string, unknown>)
       })
-      const unbind = host.iii.registerTrigger({
-        type,
-        function_id: `${handler}::${host.iii.browserId}`,
-        config: {},
-      })
+      const dispose = host.iii.observe(
+        { function_id: functionId, deliver: 'output' },
+        `${handler}::${host.iii.browserId}`,
+      )
       return () => {
-        unbind()
+        dispose()
         off()
       }
     }
     const offs: Array<() => void> = []
     try {
       offs.push(
-        bind(ACTIVITY_TRIGGER, 'activity', (e) => {
+        observe(ON_ACTIVITY_FUNCTION_ID, 'activity', (e) => {
           // A new run is a new task worth seeing; plain acts respect a hide.
           if (typeof e.session_id === 'string') showCard(e.session_id, e.function === RUN_FUNCTION_ID)
         }),
       )
       offs.push(
-        bind(SESSION_STOPPED_TRIGGER, 'stopped', (e) => {
+        observe(ON_SESSION_STOPPED_FUNCTION_ID, 'stopped', (e) => {
           if (typeof e.session_id === 'string') forgetSession(e.session_id)
         }),
       )
     } catch (err) {
-      // A worker that predates computer::activity: no preview, the page still works.
-      console.warn('[computer-ui] preview binding failed', err)
+      // The observers could not be made: no preview, the page still works.
+      console.warn('[computer-ui] preview observers failed', err)
     }
     return () => {
       for (const off of offs) off()

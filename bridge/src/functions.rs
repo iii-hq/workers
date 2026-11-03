@@ -1,6 +1,6 @@
 //! The bridging core. Port of the builtin's handler bodies
 //! (engine/src/workers/bridge_client/mod.rs:104-237 and :250-266):
-//! `Caller` abstracts "trigger a function on some IIIClient" so the four
+//! `Caller` abstracts "call a function on some IIIClient" so the four
 //! handlers are unit-testable; `RemoteCaller` re-reads the swappable
 //! [`RemoteCell`] per call so a `url` hot-reload takes effect without
 //! touching registered handlers.
@@ -9,8 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{Error, IIIClient, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, Error, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -164,7 +163,7 @@ impl Caller for RemoteCaller {
         timeout_ms: Option<u64>,
     ) -> Result<Value, BridgeError> {
         let client = self.cell.read().await.clone();
-        trigger(
+        call(
             &client,
             function_id,
             payload,
@@ -177,11 +176,11 @@ impl Caller for RemoteCaller {
 
     async fn call_void(&self, function_id: &str, payload: Value) -> Result<(), BridgeError> {
         let client = self.cell.read().await.clone();
-        trigger(
+        call(
             &client,
             function_id,
             payload,
-            Some(TriggerAction::Void),
+            Some(CallAction::Void),
             None,
             map_remote_error,
         )
@@ -204,7 +203,7 @@ impl Caller for LocalCaller {
         payload: Value,
         timeout_ms: Option<u64>,
     ) -> Result<Value, BridgeError> {
-        trigger(
+        call(
             &self.iii,
             function_id,
             payload,
@@ -216,11 +215,11 @@ impl Caller for LocalCaller {
     }
 
     async fn call_void(&self, function_id: &str, payload: Value) -> Result<(), BridgeError> {
-        trigger(
+        call(
             &self.iii,
             function_id,
             payload,
-            Some(TriggerAction::Void),
+            Some(CallAction::Void),
             None,
             map_local_error,
         )
@@ -229,16 +228,16 @@ impl Caller for LocalCaller {
     }
 }
 
-async fn trigger(
+async fn call(
     client: &IIIClient,
     function_id: &str,
     payload: Value,
-    action: Option<TriggerAction>,
+    action: Option<CallAction>,
     timeout_ms: Option<u64>,
     map_err: fn(Error) -> BridgeError,
 ) -> Result<Value, BridgeError> {
     client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action,
@@ -507,7 +506,7 @@ mod tests {
             .unwrap();
         assert!(out.is_null(), "builtin NoResult maps to null");
         let (_, _, timeout, void) = c.last.lock().await.clone().unwrap();
-        assert!(void, "must use TriggerAction::Void");
+        assert!(void, "must use CallAction::Void");
         assert_eq!(timeout, None);
     }
 

@@ -1,5 +1,5 @@
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ pub async fn resolve(
     timeout_ms: u64,
 ) -> Result<ResolveResponse, Error> {
     let value = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "approval::resolve".into(),
             payload: serde_json::to_value(&req).unwrap_or(json!({})),
             action: None,
@@ -60,7 +60,7 @@ pub async fn approve_always(
     function_id: &str,
     timeout_ms: u64,
 ) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "approval::approve-always".into(),
         payload: json!({
             "session_id": session_id,
@@ -79,7 +79,7 @@ pub async fn list_pending(
     timeout_ms: u64,
 ) -> Result<Vec<PendingApprovalRecord>, Error> {
     let value = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "approval::list-pending".into(),
             payload: json!({ "session_id": session_id }),
             action: None,

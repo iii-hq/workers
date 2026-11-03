@@ -1,13 +1,13 @@
 //! Bridge to the `configuration` worker through the shared
 //! `iii-config-client` crate: register the `stories` entry (seeding only when
 //! nothing is stored yet), fetch the authoritative value, and hot-apply
-//! `configuration:updated` into the live [`ConfigCell`].
+//! every `configuration::on-updated` update of the entry into the live
+//! [`ConfigCell`].
 
 use std::sync::Arc;
 
 use iii_config_client::{EntrySpec, Reload};
 use iii_sdk::IIIClient;
-use iii_sdk::errors::Error;
 use serde_json::Value;
 
 use crate::config::ConfigCell;
@@ -42,9 +42,10 @@ pub async fn fetch(iii: &IIIClient) -> Result<StoriesConfig, String> {
         .unwrap_or_default())
 }
 
-/// Bind `configuration:updated` → refetch → swap the cell. Call `.run()` on
-/// the returned handle once right after binding to close the boot gap.
-pub fn bind_reload(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result<Reload, Error> {
+/// Observe `configuration::on-updated` for the entry → refetch → swap the
+/// cell. Call `.run()` on the returned handle once right after to close the
+/// boot gap.
+pub fn bind_reload(iii: &Arc<IIIClient>, cell: ConfigCell) -> Reload {
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,

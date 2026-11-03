@@ -6,7 +6,7 @@ use crate::functions::bindings::message_added::BindingAck;
 use crate::functions::set_webhook::{SetWebhookRequest, SetWebhookResponse};
 use crate::functions::webhook::WebhookResponse;
 use crate::types::{
-    HttpTriggerRequest, MessageAddedEvent, MessageUpdatedEvent, PendingApprovalRecord,
+    HttpRequest, MessageAddedEvent, MessageUpdatedEvent, PendingApprovalRecord,
     PendingResolvedEvent, StatusChangedEvent, TurnCompletedEvent,
 };
 
@@ -37,7 +37,7 @@ fn spec<Req: JsonSchema, Resp: JsonSchema>(
 
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
-        spec::<HttpTriggerRequest, WebhookResponse>(
+        spec::<HttpRequest, WebhookResponse>(
             "telegram-bot::webhook",
             "Receive Telegram updates; route commands, messages, and callbacks.",
         ),

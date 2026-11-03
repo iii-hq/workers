@@ -16,6 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::calls::CallFwd;
 use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError};
@@ -24,7 +25,6 @@ use crate::code::path::PathResolver;
 use crate::code::templates::{
     compose_entry, load_worker_templates, replace_token, resolve_source, validate_worker_name,
 };
-use crate::triggers::TriggerFwd;
 
 // examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -49,14 +49,15 @@ pub struct ScaffoldWorkerInput {
     /// files only.
     #[serde(default = "start_by_default")]
     pub start: bool,
-    /// With start: the compose::add operation id. Pick one and register a
-    /// trigger on it before this call to be woken when it ends; compose
-    /// picks one when omitted.
+    /// With start: the compose::add operation id. Pick one and observe
+    /// compose::on-operation-progress with a filter on input.operation_id
+    /// before this call to be woken when it ends; compose picks one when
+    /// omitted.
     #[serde(default)]
     pub operation_id: Option<String>,
     /// With start: containers the worker cannot run without (its compose
     /// entry's start_after); compose stops it whenever one of them exits.
-    /// Never the console's: a worker's UI triggers wait for the console.
+    /// Never the console's: a worker's UI observers wait for the console.
     #[serde(default)]
     pub start_after: Vec<String>,
     /// Internal harness filesystem scope; omitted from published schema.
@@ -99,7 +100,8 @@ pub struct ScaffoldWorkerOutput {
     pub requires: Vec<String>,
     pub next_steps: Vec<String>,
     /// With start: compose::add's operation (follow it with
-    /// compose::operation, or a trigger registered on its id).
+    /// compose::operation, or observe compose::on-operation-progress with a
+    /// filter on its id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
     /// With start: the containers compose::add was asked to add, the worker
@@ -125,7 +127,7 @@ pub async fn handle(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
     journal: ChangeJournal,
-    trigger: Arc<dyn TriggerFwd>,
+    fwd: Arc<dyn CallFwd>,
     req: ScaffoldWorkerInput,
 ) -> Result<ScaffoldWorkerOutput, String> {
     // Before the template source: a bad name never costs a clone.
@@ -134,7 +136,7 @@ pub async fn handle(
     let source = resolve_source(&cfg.templates.clone().with_env(), false)
         .await
         .map_err(err_to_string)?;
-    scaffold_and_start(resolver, cfg, journal, &*trigger, source.root, req).await
+    scaffold_and_start(resolver, cfg, journal, &*fwd, source.root, req).await
 }
 
 /// The http worker the -ade templates require, as their own
@@ -150,7 +152,7 @@ async fn scaffold_and_start(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
     journal: ChangeJournal,
-    trigger: &dyn TriggerFwd,
+    fwd: &dyn CallFwd,
     root: PathBuf,
     mut req: ScaffoldWorkerInput,
 ) -> Result<ScaffoldWorkerOutput, String> {
@@ -159,7 +161,7 @@ async fn scaffold_and_start(
     }
     let operation_id = req.operation_id.take();
     let start_after = std::mem::take(&mut req.start_after);
-    let status = match trigger.trigger("compose::status", json!({})).await {
+    let status = match fwd.call("compose::status", json!({})).await {
         Ok(status) => status,
         // No stack to read (no compose daemon): the files still go, unstarted.
         Err(e) => {
@@ -207,10 +209,7 @@ async fn scaffold_and_start(
     if let Some(id) = operation_id {
         payload.insert("operation_id".into(), id.into());
     }
-    match trigger
-        .trigger("compose::add", Value::Object(payload))
-        .await
-    {
+    match fwd.call("compose::add", Value::Object(payload)).await {
         Ok(added) => {
             out.operation_id = added["operation_id"].as_str().map(String::from);
             out.started = started;
@@ -594,7 +593,7 @@ mod tests {
             serde_json::json!({ "workers": [out.compose] })
         );
         assert_eq!(out.requires, ["http"]);
-        assert_eq!(out.next_steps, ["Call: iii trigger orders::hello"]);
+        assert_eq!(out.next_steps, ["Call: iii call orders::hello"]);
     }
 
     /// Answers compose::status with `declared` and compose::add with
@@ -606,8 +605,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl TriggerFwd for StubCompose {
-        async fn trigger(
+    impl CallFwd for StubCompose {
+        async fn call(
             &self,
             function_id: &str,
             payload: Value,

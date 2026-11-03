@@ -174,7 +174,7 @@ export function useModellessProviders(
     void (async () => {
       try {
         const client = await getIiiClient()
-        const result = await client.trigger<{ models?: unknown }>(
+        const result = await client.call<{ models?: unknown }>(
           'router::models::list',
           { modality: 'any' },
         )

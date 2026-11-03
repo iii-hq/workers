@@ -1,46 +1,61 @@
-//! The `sandbox-code-runner::event` trigger type this worker emits, and the
-//! subscriber registry behind it.
+//! `sandbox-code-runner::on-event`, the function that carries this worker's
+//! lifecycle events, and the emitter that calls it.
 //!
 //! After a runtime lifecycle change — a persistent runtime comes up, a run
-//! settles, a bus function is registered, a teardown lands —
-//! `RuntimeManager` fires one fire-and-forget event (`TriggerAction::Void`)
-//! to every subscriber. Subscribers (the console page) bind a trigger
-//! instance of the type with the standard two-step pattern; the engine
-//! routes each registration through [`EventTriggerHandler`], which stashes
-//! the subscriber in [`SubscriberSet`]. Emission is best-effort: a slow or
-//! absent subscriber never blocks or fails the real call — the mirror of
-//! the `worktree` / `memory` worker fan-out.
+//! settles, a bus function is registered, a teardown lands — and on every
+//! change of the daemon fleet, `RuntimeManager` and the fleet watcher call
+//! `sandbox-code-runner::on-event` fire-and-forget (`CallAction::Void`) with
+//! the [`Event`]. The function is private (only this worker calls it), takes
+//! no args, and returns the event it is called with: iii delivers each call
+//! to every observer whose filters match, so observers (the console page)
+//! select kinds with a filter on `input.kind`. Emission is best-effort and
+//! skipped while nothing observes the function: an absent or slow observer
+//! never blocks or fails the real call.
+//!
+//! The function's observers also drive the fleet watcher: the first starts
+//! it and the last stops it (fleet_watch.rs), so `sandbox::list` is polled
+//! only while something observes.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
-use serde::Serialize;
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::engine::Engine;
 use crate::runner::Lang;
 
-/// The trigger type the console page subscribes to.
-pub const EVENT: &str = "sandbox-code-runner::event";
-pub const EVENT_DESC: &str = "Fires on runtime lifecycle changes: a persistent runtime came up \
+/// The function the console page observes.
+pub const ON_EVENT_FN: &str = "sandbox-code-runner::on-event";
+pub const ON_EVENT_DESC: &str =
+    "Called on runtime lifecycle changes: a persistent runtime came up \
      (runtime_created), a run finished (run_settled), a bus function was \
      registered (function_registered), a teardown landed (teardown), or \
      the daemon fleet changed (fleet — carries the full sandbox::list \
-     snapshot, pushed so subscribers never poll). \
-     Payload: { kind, runtime_id?, lang?, sandbox_id?, function_id?, \
+     snapshot, pushed so observers never poll). No args; filter on input.kind. \
+     Event: { kind, runtime_id?, lang?, sandbox_id?, function_id?, \
      daemon_absent?, sandboxes? }.";
+
+/// What happened.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    RuntimeCreated,
+    RunSettled,
+    FunctionRegistered,
+    Teardown,
+    Fleet,
+}
 
 /// One lifecycle event. Kind-discriminated; every other field is present
 /// only when that kind carries it — never code, source, or output. No
 /// `Debug` impl on purpose: `runtime_id` and `sandbox_id` must never reach
-/// logs (they travel only to subscribers, who are the operator surface).
-#[derive(Clone, Serialize)]
+/// logs (they travel only to observers, who are the operator surface).
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Event {
-    kind: &'static str,
+    kind: EventKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,7 +75,7 @@ impl Event {
     /// or a namespace's first registration. One-shot run VMs never emit.
     pub fn runtime_created(runtime_id: &str, lang: Lang, sandbox_id: &str) -> Self {
         Self {
-            kind: "runtime_created",
+            kind: EventKind::RuntimeCreated,
             runtime_id: Some(runtime_id.to_string()),
             lang: Some(lang),
             sandbox_id: Some(sandbox_id.to_string()),
@@ -74,7 +89,7 @@ impl Event {
     /// persists past the call — a one-shot run's VM is already gone.
     pub fn run_settled(runtime_id: Option<&str>, lang: Lang) -> Self {
         Self {
-            kind: "run_settled",
+            kind: EventKind::RunSettled,
             runtime_id: runtime_id.map(str::to_string),
             lang: Some(lang),
             sandbox_id: None,
@@ -87,7 +102,7 @@ impl Event {
     /// `register_function` published `function_id` onto `runtime_id`.
     pub fn function_registered(function_id: &str, runtime_id: &str, lang: Lang) -> Self {
         Self {
-            kind: "function_registered",
+            kind: EventKind::FunctionRegistered,
             runtime_id: Some(runtime_id.to_string()),
             lang: Some(lang),
             sandbox_id: None,
@@ -102,7 +117,7 @@ impl Event {
     /// daemon reaped or lost the VM behind our back.
     pub fn teardown(runtime_id: &str) -> Self {
         Self {
-            kind: "teardown",
+            kind: EventKind::Teardown,
             runtime_id: Some(runtime_id.to_string()),
             lang: None,
             sandbox_id: None,
@@ -116,10 +131,10 @@ impl Event {
     /// `sandbox::list` snapshot (small by construction — the daemon caps
     /// concurrent sandboxes), `daemon_absent` flags an engine with no
     /// sandbox daemon. Emitted by the fleet watcher (fleet_watch.rs) so
-    /// console tabs subscribe instead of each polling `sandbox::list`.
+    /// console tabs observe instead of each polling `sandbox::list`.
     pub fn fleet(daemon_absent: bool, sandboxes: serde_json::Value) -> Self {
         Self {
-            kind: "fleet",
+            kind: EventKind::Fleet,
             runtime_id: None,
             lang: None,
             sandbox_id: None,
@@ -130,92 +145,19 @@ impl Event {
     }
 }
 
-/// Thread-safe subscriber registry keyed by trigger-instance id. Cloned into
-/// the [`EventTriggerHandler`] (mutates on register/unregister) and the
-/// [`Emitter`] fan-out (iterates read-only).
-#[derive(Clone, Default)]
-pub struct SubscriberSet {
-    inner: Arc<Mutex<HashMap<String, String>>>,
-}
-
-impl SubscriberSet {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn insert(&self, id: String, function_id: String) {
-        self.lock().insert(id, function_id);
-    }
-
-    fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    /// Snapshot of the current subscriber `function_id`s so the mutex is
-    /// never held across delivery.
-    fn function_ids(&self) -> Vec<String> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-struct EventTriggerHandler {
-    subscribers: SubscriberSet,
-}
-
-// Hand-expanded `#[async_trait]` impl: this worker deliberately carries no
-// async-trait dependency, and both methods' real work is synchronous —
-// `BoxFuture` is the exact type the macro would generate.
-impl TriggerHandler for EventTriggerHandler {
-    fn register_trigger<'life0, 'async_trait>(
-        &'life0 self,
-        config: TriggerConfig,
-    ) -> BoxFuture<'async_trait, Result<(), Error>>
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        tracing::info!(
-            trigger_type = EVENT,
-            id = %config.id,
-            function_id = %config.function_id,
-            "trigger subscription registered"
-        );
-        self.subscribers.insert(config.id, config.function_id);
-        Box::pin(async { Ok(()) })
-    }
-
-    fn unregister_trigger<'life0, 'async_trait>(
-        &'life0 self,
-        config: TriggerConfig,
-    ) -> BoxFuture<'async_trait, Result<(), Error>>
-    where
-        'life0: 'async_trait,
-        Self: 'async_trait,
-    {
-        tracing::info!(trigger_type = EVENT, id = %config.id, "trigger subscription unregistered");
-        self.subscribers.remove(&config.id);
-        Box::pin(async { Ok(()) })
-    }
-}
-
-/// How a matched event reaches a subscriber. Production delivers over the
-/// bus; tests record.
+/// How an event reaches `sandbox-code-runner::on-event`. Production calls it
+/// over the bus; tests record.
 pub trait EventDeliverer: Send + Sync {
+    /// Whether anything observes `function_id`: the emitter builds no event
+    /// nobody wants.
+    fn is_observed(&self, function_id: &str) -> bool;
+
     fn deliver(&self, function_id: &str, payload: Value);
 }
 
-/// Ceiling on one subscriber delivery: an unresponsive subscriber fails the
-/// trigger here instead of parking its detached task forever.
-const DELIVERY_TIMEOUT_MS: u64 = 10_000;
-
-/// Fire-and-forget bus delivery, detached onto its own task so the handler
-/// that produced the event never waits on a subscriber round trip and a
-/// slow subscriber cannot delay its siblings. Failures are logged and
-/// swallowed — the real call already returned.
+/// Fire-and-forget call of the event function, detached onto its own task
+/// so the handler that produced the event never waits on it. Failures are
+/// logged and swallowed — the real call already returned.
 pub struct IiiDeliverer {
     iii: Arc<IIIClient>,
 }
@@ -227,87 +169,98 @@ impl IiiDeliverer {
 }
 
 impl EventDeliverer for IiiDeliverer {
+    fn is_observed(&self, function_id: &str) -> bool {
+        self.iii.is_observed(function_id)
+    }
+
     fn deliver(&self, function_id: &str, payload: Value) {
         let iii = self.iii.clone();
         let function_id = function_id.to_string();
         tokio::spawn(async move {
             let res = iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: function_id.clone(),
                     payload,
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: Some(DELIVERY_TIMEOUT_MS),
+                    action: Some(CallAction::Void),
+                    timeout_ms: None,
                 })
                 .await;
             if let Err(e) = res {
-                tracing::warn!(function_id = %function_id, error = %e, "sandbox-code-runner::event fan-out failed");
+                tracing::warn!(function_id = %function_id, error = %e, "sandbox-code-runner::on-event call failed");
             }
         });
     }
 }
 
-/// Fans each event out to every current subscriber. No subscribers ⇒ no
-/// work at all.
+/// Calls `sandbox-code-runner::on-event` with each event while it is
+/// observed. Nothing observing ⇒ no work at all.
 #[derive(Clone)]
 pub struct Emitter {
-    subscribers: SubscriberSet,
     deliverer: Arc<dyn EventDeliverer>,
 }
 
 impl Emitter {
-    pub fn new(subscribers: SubscriberSet, deliverer: Arc<dyn EventDeliverer>) -> Self {
-        Self {
-            subscribers,
-            deliverer,
-        }
+    pub fn new(deliverer: Arc<dyn EventDeliverer>) -> Self {
+        Self { deliverer }
     }
 
     pub fn emit(&self, event: Event) {
-        let targets = self.subscribers.function_ids();
-        if targets.is_empty() {
+        if !self.deliverer.is_observed(ON_EVENT_FN) {
             return;
         }
         let payload = match serde_json::to_value(&event) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, "sandbox-code-runner::event payload failed to serialize");
+                tracing::warn!(error = %e, "sandbox-code-runner::on-event payload failed to serialize");
                 return;
             }
         };
-        for function_id in targets {
-            self.deliverer.deliver(&function_id, payload.clone());
-        }
+        self.deliverer.deliver(ON_EVENT_FN, payload);
     }
 }
 
-/// Register the `sandbox-code-runner::event` trigger type with the engine
-/// and return the emitter wired to its subscriber set. An emission, not a
-/// callable function: deliberately NOT in `functions::STATIC_IDS` or
-/// `catalog()` — nothing invokes it, so there is no wire schema to pin.
-pub fn register_event_trigger(iii: &Arc<IIIClient>) -> Emitter {
-    let subscribers = SubscriberSet::new();
-    let _ = iii.register_trigger_type(RegisterTriggerType::new(
-        EVENT,
-        EVENT_DESC,
-        EventTriggerHandler {
-            subscribers: subscribers.clone(),
-        },
-    ));
-    tracing::info!(trigger_type = EVENT, "registered trigger type");
-    Emitter::new(subscribers, Arc::new(IiiDeliverer::new(iii.clone())))
+/// Register `sandbox-code-runner::on-event` and return the emitter that calls
+/// it. The fleet watcher's observer hooks are set by id first, so they see
+/// every observer. Not in `functions::STATIC_IDS` or `catalog()`: those list
+/// the callable surface, and only this worker may call a private function.
+pub fn register_event_function(iii: &Arc<IIIClient>, engine: Arc<dyn Engine>) -> Emitter {
+    let emitter = Emitter::new(Arc::new(IiiDeliverer::new(iii.clone())));
+    crate::fleet_watch::run_while_observed(iii, engine, emitter.clone());
+    iii.register_function(
+        ON_EVENT_FN,
+        RegisterFunction::new(|event: Event| Ok::<_, Error>(event))
+            .description(ON_EVENT_DESC)
+            .private(),
+    );
+    tracing::info!(function_id = ON_EVENT_FN, "registered event function");
+    emitter
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Mutex;
 
-    #[derive(Default)]
     struct RecordingDeliverer {
+        observed: bool,
         seen: Mutex<Vec<(String, Value)>>,
     }
 
+    impl RecordingDeliverer {
+        fn new(observed: bool) -> Arc<Self> {
+            Arc::new(Self {
+                observed,
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
     impl EventDeliverer for RecordingDeliverer {
+        fn is_observed(&self, _function_id: &str) -> bool {
+            self.observed
+        }
+
         fn deliver(&self, function_id: &str, payload: Value) {
             self.seen
                 .lock()
@@ -317,26 +270,21 @@ mod tests {
     }
 
     #[test]
-    fn emit_with_no_subscribers_delivers_nothing() {
-        let deliverer = Arc::new(RecordingDeliverer::default());
-        let emitter = Emitter::new(SubscriberSet::new(), deliverer.clone());
+    fn emit_while_unobserved_delivers_nothing() {
+        let deliverer = RecordingDeliverer::new(false);
+        let emitter = Emitter::new(deliverer.clone());
         emitter.emit(Event::teardown("rt-1"));
         assert!(deliverer.seen.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn emit_fans_out_to_every_subscriber() {
-        let subscribers = SubscriberSet::new();
-        subscribers.insert("t1".into(), "recv::a".into());
-        subscribers.insert("t2".into(), "recv::b".into());
-        let deliverer = Arc::new(RecordingDeliverer::default());
-        let emitter = Emitter::new(subscribers, deliverer.clone());
+    fn emit_calls_the_event_function_once() {
+        let deliverer = RecordingDeliverer::new(true);
+        let emitter = Emitter::new(deliverer.clone());
         emitter.emit(Event::runtime_created("rt-1", Lang::Node, "sb-1"));
-        let mut seen = deliverer.seen.lock().unwrap().clone();
-        seen.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].0, "recv::a");
-        assert_eq!(seen[1].0, "recv::b");
+        let seen = deliverer.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "sandbox-code-runner::on-event");
         assert_eq!(seen[0].1["kind"], "runtime_created");
         assert_eq!(seen[0].1["runtime_id"], "rt-1");
         assert_eq!(seen[0].1["lang"], "node");
@@ -364,14 +312,13 @@ mod tests {
         );
     }
 
+    /// The handler returns the event it is called with, so an event read
+    /// back from the wire serializes unchanged.
     #[test]
-    fn unregistered_subscribers_stop_receiving() {
-        let subscribers = SubscriberSet::new();
-        subscribers.insert("t1".into(), "recv::a".into());
-        let deliverer = Arc::new(RecordingDeliverer::default());
-        let emitter = Emitter::new(subscribers.clone(), deliverer.clone());
-        subscribers.remove("t1");
-        emitter.emit(Event::teardown("rt-1"));
-        assert!(deliverer.seen.lock().unwrap().is_empty());
+    fn an_event_round_trips_through_the_identity_handler() {
+        let wire =
+            serde_json::to_value(Event::fleet(false, json!([{ "sandbox_id": "a" }]))).unwrap();
+        let back: Event = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(back).unwrap(), wire);
     }
 }

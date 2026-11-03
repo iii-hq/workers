@@ -53,7 +53,7 @@ function mountPane(storageKey: string, options: { closing?: boolean } = {}) {
       browserId: 'console-test',
       on: () => () => undefined,
       addConnectionStateListener: () => () => undefined,
-      trigger: async (id: string) => {
+      call: async (id: string) => {
         calls.push(id)
         if (id !== 'shell::pty::attach') throw new Error(`unexpected ${id}`)
         attaches += 1

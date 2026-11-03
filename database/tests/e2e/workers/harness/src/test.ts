@@ -2,7 +2,7 @@ import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
 
-await iii.trigger({
+await iii.call({
   function_id: 'database::execute',
   payload: {
     db: 'primary',
@@ -10,7 +10,7 @@ await iii.trigger({
   },
 })
 
-await iii.trigger({
+await iii.call({
   function_id: 'database::execute',
   payload: {
     db: 'primary',
@@ -19,7 +19,7 @@ await iii.trigger({
   },
 })
 
-const { rows } = await iii.trigger({
+const { rows } = await iii.call({
   function_id: 'database::query',
   payload: {
     db: 'primary',

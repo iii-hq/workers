@@ -2,8 +2,8 @@
 Feature: session::delete — delete a session and its entries
 
   Contract (session-manager.md § session::delete): removes the meta,
-  every entry, and the active-leaf pointer; fires session::deleted.
-  Deleting an unknown session returns { deleted: false } and fires
+  every entry, and the active-leaf pointer; calls session::on-deleted.
+  Deleting an unknown session returns { deleted: false } and calls
   nothing. Forks are copies, so deleting a source never affects
   sessions forked from it (covered in fork.feature).
 
@@ -12,17 +12,14 @@ Feature: session::delete — delete a session and its entries
   Scenario: delete removes everything and fires deleted
     Given a bare session
     And a user message "one" appended to "s_001"
-    And a binding "b1" on "session::deleted" delivering to "ui::deleted" with config:
-      """
-      {}
-      """
+    And an observer "b1" of "session::on-deleted" delivering to "ui::deleted"
     When I call "session::delete" with:
       """
       { "session_id": "s_001" }
       """
     Then the call succeeds
     And the response field "deleted" is true
-    And function "ui::deleted" received 1 "session::deleted" delivery
+    And function "ui::deleted" received 1 "session::on-deleted" delivery
     And delivery 0 to "ui::deleted" has "session_id" = "s_001"
     When I call "session::get" with:
       """
@@ -42,10 +39,7 @@ Feature: session::delete — delete a session and its entries
 
   # Prevents: phantom deleted events for sessions that never existed.
   Scenario: deleting an unknown session is a silent false
-    Given a binding "b1" on "session::deleted" delivering to "ui::deleted" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-deleted" delivering to "ui::deleted"
     When I call "session::delete" with:
       """
       { "session_id": "s_404" }
@@ -57,10 +51,7 @@ Feature: session::delete — delete a session and its entries
   # Prevents: double-deletes double-firing.
   Scenario: a second delete is a false no-op
     Given a bare session
-    And a binding "b1" on "session::deleted" delivering to "ui::deleted" with config:
-      """
-      {}
-      """
+    And an observer "b1" of "session::on-deleted" delivering to "ui::deleted"
     Given I call "session::delete" with:
       """
       { "session_id": "s_001" }
@@ -70,7 +61,7 @@ Feature: session::delete — delete a session and its entries
       { "session_id": "s_001" }
       """
     Then the response field "deleted" is false
-    And function "ui::deleted" received 1 "session::deleted" delivery
+    And function "ui::deleted" received 1 "session::on-deleted" delivery
 
   # Prevents: zombie history — re-ensuring a deleted id must yield a
   # truly fresh session, not resurrect old entries via the stale leaf.
@@ -103,13 +94,13 @@ Feature: session::delete — delete a session and its entries
       """
       { "metadata": { "owner": "u_1" } }
       """
-    And a binding "b1" on "session::deleted" delivering to "obs::u1" with config:
+    And an observer "b1" of "session::on-deleted" delivering to "obs::u1" with filters:
       """
-      { "metadata": { "owner": "u_1" } }
+      { "input.session_metadata.owner": { "$eq": "u_1" } }
       """
-    And a binding "b2" on "session::deleted" delivering to "obs::u2" with config:
+    And an observer "b2" of "session::on-deleted" delivering to "obs::u2" with filters:
       """
-      { "metadata": { "owner": "u_2" } }
+      { "input.session_metadata.owner": { "$eq": "u_2" } }
       """
     When I call "session::delete" with:
       """

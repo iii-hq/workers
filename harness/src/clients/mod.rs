@@ -1,5 +1,5 @@
 //! Typed clients for the workers the loop wires together. Each is a thin
-//! wrapper over `iii.trigger(TriggerRequest { .. })`; `session-manager` and
+//! wrapper over `iii.call(CallRequest { .. })`; `session-manager` and
 //! `llm-router` and `context-manager` are required on the generation path;
 //! context budgeting fails closed rather than degrading to raw history.
 

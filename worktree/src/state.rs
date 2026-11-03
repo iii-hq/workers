@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -47,7 +47,7 @@ impl StateStore for IiiStateStore {
     async fn get(&self, scope: &str, key: &str) -> Result<Option<Value>, WError> {
         let v = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "state::get".into(),
                 payload: json!({ "scope": scope, "key": key }),
                 action: None,
@@ -69,7 +69,7 @@ impl StateStore for IiiStateStore {
 
     async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), WError> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "state::set".into(),
                 payload: json!({ "scope": scope, "key": key, "value": value }),
                 action: None,
@@ -87,7 +87,7 @@ impl StateStore for IiiStateStore {
 
     async fn delete(&self, scope: &str, key: &str) -> Result<(), WError> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "state::delete".into(),
                 payload: json!({ "scope": scope, "key": key }),
                 action: None,
@@ -106,7 +106,7 @@ impl StateStore for IiiStateStore {
     async fn list(&self, scope: &str) -> Result<Vec<Value>, WError> {
         let v = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "state::list".into(),
                 payload: json!({ "scope": scope }),
                 action: None,

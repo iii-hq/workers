@@ -1,5 +1,8 @@
 static LAST_SUBSCRIBER_RECONCILE: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
+/// Subscribers without an observer at the last reconciliation.
+static ABSENT_SUBSCRIBERS: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 use super::*;
 use sha2::Digest;
 
@@ -139,8 +142,8 @@ impl Service {
         if w.lease_id.is_none() {
             self.acquire_lease(id).await?;
         }
-        // Registration was submitted before acquire; the SDK does not expose
-        // binding acknowledgement. One status read closes the ready-event race.
+        // The quick-tunnel observer was submitted before acquire and becomes
+        // active asynchronously. One status read closes the ready-event race.
         let status = self
             .invoke(
                 "quick-tunnel::status",
@@ -468,7 +471,7 @@ impl Service {
         if !w.live() {
             return Ok(());
         }
-        // Bindings were submitted, not acknowledged. A starting tunnel can
+        // Observers were submitted, not yet active. A starting tunnel can
         // resolve an already-merged PR, but an open watch must stay Preparing.
         let pr = self
             .api(
@@ -622,7 +625,7 @@ impl Service {
         }
         first_error.map_or(Ok(()), Err)
     }
-    /// Remove bindings, then stop every watch that lost its last listener.
+    /// Remove subscribers, then stop every watch that lost its last listener.
     /// Cleanup releases those leases and deletes the repository hook once no
     /// live watch remains; quick-tunnel stops with its last lease.
     pub(super) async fn drop_subscribers(&self, ids: &[String]) -> Result<Vec<String>> {
@@ -636,13 +639,13 @@ impl Service {
             for id in ids {
                 d.subscribers.remove(id);
             }
-            // Explicit cancellation means no further callback to these bindings.
+            // Explicit cancellation means no further callback to these subscribers.
             d.jobs.retain(|_, j| {
                 !matches!(j, Job::Notify { target, .. } | Job::ReviewNotify { target, .. } if ids.contains(&target.id))
             });
-            // A one-shot wake is unregistered right after it fires and re-armed
-            // at the end of its turn; only a grace period tells that apart from
-            // an owner that is gone for good.
+            // A one-shot wake is disposed right after it fires and observes
+            // again at the end of its turn; only a grace period tells that
+            // apart from an owner that is gone for good.
             let orphans = super::listeners::mark_orphans(d, &removed, Utc::now());
             if grace == 0 {
                 for id in &orphans {
@@ -665,9 +668,13 @@ impl Service {
         }
         Ok(stopped)
     }
-    /// Bindings removed while this worker was offline never reach
-    /// unregister_trigger. At most every five minutes, drop local copies the
-    /// engine no longer has (which also stops watches left without listeners).
+    /// Observers disposed while this worker was offline never reach its
+    /// removed hook: after a restart the engine announces only the current
+    /// ones. At most every five minutes, compare the local subscribers with
+    /// the observers this worker holds (`iii.observers`), and drop those
+    /// missing at two reconciliations in a row, so an observer the engine
+    /// has not announced yet is never dropped (which also stops watches left
+    /// without listeners).
     pub(super) async fn reconcile_subscribers(&self) -> Result<Vec<String>> {
         use std::sync::atomic::Ordering::Relaxed;
         let now = Utc::now().timestamp();
@@ -675,30 +682,25 @@ impl Service {
             return Ok(vec![]);
         }
         LAST_SUBSCRIBER_RECONCILE.store(now, Relaxed);
-        // Read before listing: a binding registered meanwhile is never dropped.
+        // Read before the observers: an observer added meanwhile is never dropped.
         let known: std::collections::BTreeSet<String> =
             self.store()?.read()?.subscribers.keys().cloned().collect();
-        if known.is_empty() {
-            return Ok(vec![]);
-        }
-        let listed = self
-            .invoke(
-                "engine::registered-triggers::list",
-                json!({"trigger_type": "github::pr::event", "include_pending": true, "include_internal": true}),
-            )
-            .await?;
-        let Some(rows) = listed["registered_triggers"].as_array() else {
-            return Ok(vec![]);
-        };
-        let engine = rows
+        let observed: std::collections::BTreeSet<String> = self
+            .iii
+            .observers(super::ON_EVENT_FN)
             .iter()
-            .filter_map(|r| r["id"].as_str().map(str::to_owned))
+            .map(|obs| obs.id().to_owned())
             .collect();
-        let stale = super::listeners::stale(&known, &engine);
+        let stale = {
+            let mut absent = ABSENT_SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());
+            let (stale, still_absent) = super::listeners::stale(&known, &observed, &absent);
+            *absent = still_absent;
+            stale
+        };
         if stale.is_empty() {
             return Ok(vec![]);
         }
-        tracing::info!(subscribers = ?stale, "dropping bindings the engine no longer has");
+        tracing::info!(subscribers = ?stale, "dropping subscribers without an observer");
         self.drop_subscribers(&stale).await
     }
     /// Maintenance only expires deadlines and drains/retries pending local work.

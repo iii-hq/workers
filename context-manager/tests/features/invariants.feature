@@ -48,7 +48,7 @@ Feature: structural invariants — the returned context is always provider-legal
     And call/result pairing is intact in the response messages
 
   # Prevents: custom messages leaking to providers (they have no wire
-  # mapping) or their tokens triggering phantom overflows — a huge
+  # mapping) or their tokens causing phantom overflows — a huge
   # custom entry must neither appear nor count.
   Scenario: custom messages neither reach the model nor count tokens
     Given inline model "small" with context window 5000 and max output 500

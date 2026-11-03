@@ -390,7 +390,7 @@ impl RunEvidence {
     }
 
     /// Durable `function_result` messages for one function id, in transcript
-    /// order. For harness-intercepted builtins (e.g. `engine::register_trigger`)
+    /// order. For harness-intercepted controls (e.g. `harness::observe`)
     /// the transcript is the only evidence surface — they never produce
     /// `execute` spans like controlled functions do.
     pub fn function_results(&self, function_id: &str) -> Vec<&Value> {

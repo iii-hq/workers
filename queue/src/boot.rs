@@ -3,8 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{CallRequest, IIIClient};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -17,10 +16,7 @@ use crate::adapters::redis::RedisAdapter;
 use crate::config::{adapter_config_value, QueueConfig, RunJobsIn};
 use crate::runtime::FunctionQueueRuntime;
 use crate::store::{FileStore, InMemoryStore, QueueStore};
-use crate::trigger::{
-    bind_engine_events, IiiInvoker, Invoker, QueueTriggerHandler, SubscriberSpec,
-};
-use crate::TRIGGER_TYPE;
+use crate::subscribers::{observe_engine_events, IiiInvoker, Invoker, Subscribers};
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 pub const BUILTIN_III_QUEUE_WORKER_ID: &str = "iii-queue";
@@ -30,7 +26,7 @@ pub type ApplyLock = Arc<RwLock<()>>;
 
 pub struct BootHandle {
     pub adapter: Arc<SwappableAdapter>,
-    pub trigger_handler: QueueTriggerHandler,
+    pub subscribers: Subscribers,
     pub config: ConfigCell,
     pub apply_lock: ApplyLock,
     pub runtime: FunctionQueueRuntime,
@@ -46,7 +42,7 @@ impl BootHandle {
             let _ = self.connection_supervisor.await;
         }
         self.runtime.shutdown().await;
-        self.trigger_handler.shutdown().await;
+        self.subscribers.shutdown().await;
     }
 }
 
@@ -55,7 +51,7 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
 
     // Deliveries held for an unregistered target or across an engine restart
     // re-check on engine registry changes, never on a timer.
-    let engine_events = bind_engine_events(&project_iii);
+    let engine_events = observe_engine_events(&project_iii);
     let mut iii_invoker = IiiInvoker::new(project_iii.clone()).with_engine_events(engine_events);
     if config.run_jobs_in == RunJobsIn::Worker {
         // A worker without a namespace runs in the engine's `default`.
@@ -80,7 +76,7 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
         config.clone(),
         apply_lock.clone(),
     );
-    let trigger_handler = QueueTriggerHandler::new(adapter.clone());
+    let subscribers = Subscribers::new(adapter.clone()).with_config(config.clone());
 
     // Restore every authoritative queue before exposing queue::define. This
     // closes the startup race where a concurrent definition could otherwise
@@ -89,31 +85,18 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
     runtime.start().await?;
 
     crate::functions::register_all(&project_iii, adapter.clone(), runtime.clone());
-    // Kept until the trigger type is retired; old consumers bind it on 0.24
-    // and 0.25 engines.
-    #[allow(deprecated)]
-    let _ = project_iii.register_trigger_type(
-        RegisterTriggerType::new(
-            TRIGGER_TYPE,
-            "Durable queue subscriber",
-            trigger_handler.clone(),
-        )
-        .trigger_request_format::<SubscriberSpec>(),
-    );
-    // The same subscribers through observe (iii 0.25): one more kind of
-    // subscriber in `trigger_handler`. On an engine without observe its hooks
-    // never run and the trigger type above carries everything.
-    crate::on_message::register(&project_iii, trigger_handler.clone());
+    // Every subscriber is a `queue::on-message` observer.
+    crate::on_message::register(&project_iii, subscribers.clone());
 
     let connection_supervisor = tokio::spawn(supervise_connection(
         adapter.clone(),
         runtime.clone(),
-        trigger_handler.clone(),
+        subscribers.clone(),
     ));
 
     Ok(BootHandle {
         adapter,
-        trigger_handler,
+        subscribers,
         config,
         apply_lock,
         runtime,
@@ -134,7 +117,7 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 async fn supervise_connection(
     adapter: Arc<SwappableAdapter>,
     runtime: FunctionQueueRuntime,
-    trigger_handler: QueueTriggerHandler,
+    subscribers: Subscribers,
 ) {
     loop {
         let lost = adapter.current().await;
@@ -152,7 +135,7 @@ async fn supervise_connection(
         tracing::warn!("queue adapter connection lost; reconnecting");
         let mut backoff = RECONNECT_INITIAL;
         loop {
-            match runtime.reconnect_adapter(&lost, &trigger_handler).await {
+            match runtime.reconnect_adapter(&lost, &subscribers).await {
                 Ok(()) => {
                     tracing::info!("queue adapter reconnected");
                     break;
@@ -278,7 +261,7 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
 
 async fn guard_against_builtin_iii_queue(iii: &Arc<IIIClient>) -> anyhow::Result<()> {
     let workers_list = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
             payload: serde_json::json!({}),
             action: None,
@@ -289,9 +272,8 @@ async fn guard_against_builtin_iii_queue(iii: &Arc<IIIClient>) -> anyhow::Result
 
     if builtin_iii_queue_active(&workers_list) {
         anyhow::bail!(
-            "cannot start the queue worker: the built-in iii-queue worker is active and owns the \
-             'durable:subscriber' trigger type. Remove iii-queue from the engine config, then \
-             start this worker."
+            "cannot start the queue worker: the built-in iii-queue worker is active and serves the \
+             same queues. Remove iii-queue from the engine config, then start this worker."
         );
     }
 

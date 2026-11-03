@@ -88,7 +88,7 @@ interface ConversationsContextValue extends ConversationsApi {
    * Whether the optional standalone `approval-gate` worker is connected. Gates
    * all approval UI + `approval::*` RPC: false → the gate isn't installed, so
    * the console hides the permission-mode picker and runs calls ungated rather
-   * than triggering "function not found". Only meaningful on the real backend.
+   * than calling a function nobody hosts. Only meaningful on the real backend.
    */
   approvalGateAvailable: boolean
   /**

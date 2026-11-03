@@ -1,8 +1,8 @@
 import type { ExtensionIii } from '@iii-dev/console-ui'
 import { BUILT_IN_PROVIDER, listProviders } from '../configuration'
 
-/** The console's bus client: calls, plus the bindings that push changes. */
-export type Engine = Pick<ExtensionIii, 'trigger' | 'on' | 'registerTrigger' | 'browserId'>
+/** The console's bus client: calls, plus the observers that push changes. */
+export type Engine = Pick<ExtensionIii, 'call' | 'on' | 'observe' | 'browserId'>
 
 /** An added judge that has not registered by then is reported as stuck. */
 export const ADD_GIVE_UP_MS = 10 * 60_000
@@ -37,7 +37,7 @@ export interface JudgeSettings {
 }
 
 async function configurationIdOf(iii: Engine, functionId: string): Promise<string | null> {
-  const identity = await iii.trigger<{ id?: unknown }>(functionId, {}, { timeoutMs: 5_000 })
+  const identity = await iii.call<{ id?: unknown }>(functionId, {}, { timeoutMs: 5_000 })
   return typeof identity?.id === 'string' && identity.id ? identity.id : null
 }
 
@@ -47,7 +47,7 @@ async function configurationIdOf(iii: Engine, functionId: string): Promise<strin
  * into the browser.
  */
 async function configuredModel(iii: Engine, configurationId: string): Promise<string | null> {
-  const entry = await iii.trigger<{ value?: { model?: unknown } | null }>(
+  const entry = await iii.call<{ value?: { model?: unknown } | null }>(
     'configuration::get',
     { id: configurationId, raw: true },
     { timeoutMs: 5_000 },
@@ -61,7 +61,7 @@ async function configuredModel(iii: Engine, configurationId: string): Promise<st
  * the key the way an evaluation would, with no network call and no model load.
  */
 async function statusProblem(iii: Engine, provider: string): Promise<string | null> {
-  const status = await iii.trigger<{ configured?: unknown; reason?: unknown }>(
+  const status = await iii.call<{ configured?: unknown; reason?: unknown }>(
     `judge-${provider}::status`,
     {},
     { timeoutMs: 5_000 },
@@ -92,7 +92,7 @@ export async function listJudges(iii: Engine): Promise<JudgeProvider[]> {
 export async function readJudgeSettings(iii: Engine): Promise<JudgeSettings | null> {
   const configurationId = await configurationIdOf(iii, 'judge::configuration-id')
   if (!configurationId) return null
-  const entry = await iii.trigger<{ value?: { provider?: unknown } }>(
+  const entry = await iii.call<{ value?: { provider?: unknown } }>(
     'configuration::get',
     { id: configurationId },
     { timeoutMs: 5_000 },
@@ -107,7 +107,7 @@ interface OperationSnapshot {
   last_event?: { terminal?: boolean; detail?: string } | null
 }
 
-/** A `compose-operation` delivery; bound terminal-only, so the last one. */
+/** A `compose::on-operation-progress` event; observed terminal-only, so the last one. */
 interface ProgressEvent {
   operation_id?: string
   terminal?: boolean
@@ -130,9 +130,10 @@ let followSeq = 0
  *
  * `compose::add` only accepts the work: the operation resolves, installs and
  * starts the worker afterwards. Its end is pushed, never polled for: a
- * terminal-only `compose-operation` binding goes in BEFORE the add, under an
- * operation id chosen here, and `compose::operation` is read once after the
- * accept (an operation that ended before the binding landed) and once when
+ * terminal-only observer of `compose::on-operation-progress` goes in BEFORE
+ * the add, under an operation id chosen here, and `compose::operation` is
+ * read once after the accept (an operation that ended before the observer
+ * was active) and once when
  * the terminal event arrives, for the status the event does not carry. A
  * failure (no build for this platform, a registry error) shows instead of a
  * registration that never comes. Success is settled by the judge registering;
@@ -140,24 +141,24 @@ let followSeq = 0
  */
 export function addWorker(iii: Engine, worker: string, fail: (error: string) => void) {
   let operationId = `compose:${crypto.randomUUID()}`
-  const handlerId = `iii::judge-ui::compose-operation::${++followSeq}`
+  const handlerId = `iii::judge-ui::operation-progress::${++followSeq}`
   let settled = false
   let reading = false
-  let offTrigger: (() => void) | null = null
-  const unbind = () => {
+  let offObserver: (() => void) | null = null
+  const unobserve = () => {
     try {
-      offTrigger?.()
+      offObserver?.()
     } catch {
       // already gone
     }
-    offTrigger = null
+    offObserver = null
     offHandler()
   }
   const settle = (snapshot: OperationSnapshot | null, error?: string) => {
     if (settled) return
     settled = true
     clearTimeout(giveUp)
-    unbind()
+    unobserve()
     if (error !== undefined) return fail(error)
     if (snapshot?.status === 'failed') return fail(failureReason(snapshot.last_event?.detail))
     if (snapshot?.status === 'cancelled') return fail('The add was cancelled.')
@@ -169,34 +170,36 @@ export function addWorker(iii: Engine, worker: string, fail: (error: string) => 
   }
   const read = () =>
     iii
-      .trigger<OperationSnapshot>('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
+      .call<OperationSnapshot>('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
       .catch(() => null)
   // The one fallback: an operation that never ends (a daemon gone) is stuck.
   const giveUp = setTimeout(
     () => settle(null, 'Not registered after 10 minutes; check Settings → Workers.'),
     ADD_GIVE_UP_MS,
   )
-  const bind = () => {
+  const observe = () => {
     try {
-      offTrigger?.()
+      offObserver?.()
     } catch {
       // already gone
     }
-    offTrigger = iii.registerTrigger({
-      type: 'compose-operation',
-      function_id: `${handlerId}::${iii.browserId}`,
-      config: { operation_id: operationId, terminal_only: true },
-    })
+    offObserver = iii.observe(
+      {
+        function_id: 'compose::on-operation-progress',
+        filters: { 'input.operation_id': { $eq: operationId }, 'input.terminal': { $eq: true } },
+      },
+      `${handlerId}::${iii.browserId}`,
+    )
   }
   const offHandler = iii.on<ProgressEvent>(handlerId, (event) => {
     if (settled || reading || event?.operation_id !== operationId || event.terminal !== true) return
     reading = true
     void read().then((snapshot) => settle(snapshot))
   })
-  bind()
+  observe()
 
   iii
-    .trigger<{ status?: string; operation_id?: string; error?: { message?: string } | null }>(
+    .call<{ status?: string; operation_id?: string; error?: { message?: string } | null }>(
       'compose::add',
       { workers: [worker], operation_id: operationId },
       { timeoutMs: 600_000 },
@@ -207,7 +210,7 @@ export function addWorker(iii: Engine, worker: string, fail: (error: string) => 
       // A daemon that ignores the caller's id ran it under its own.
       if (reply?.operation_id && reply.operation_id !== operationId) {
         operationId = reply.operation_id
-        bind()
+        observe()
       }
       // The catch-up read: an operation that already ended sends nothing more.
       return read().then((snapshot) => {

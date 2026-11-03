@@ -76,7 +76,7 @@ export type {
 export { CATALOG_VERSION, FEATURES, LIMITS } from './generated/catalog'
 export type { EventName } from './generated/events'
 export type * from './generated/props'
-export { useCall, useEnv, useNav, usePage, useTrigger } from './hooks'
+export { useCall, useEnv, useNav, useObserve, usePage } from './hooks'
 export {
   type CallOptions,
   type Env,
@@ -87,6 +87,7 @@ export {
   type KvStorage,
   type MenuAction,
   type Nav,
+  type ObserveSource,
   type ShareFile,
   type ShareText,
   type Ui,

@@ -6,12 +6,12 @@
 //!
 //! * its `lifecycle.expires_at` passes — the binding's own deadline timer
 //!   ([`arm`]) fires at that instant;
-//! * a lineage session unregisters it out from under the parked owner
-//!   (`engine::unregister_trigger` from a child cleaning up the run).
+//! * a lineage session removes it out from under the parked owner
+//!   (`harness::unobserve` from a child cleaning up the run).
 //!
 //! Both end in [`notify_wake_lost`]: a `[notification]` message into the
 //! session the wake would have delivered to, plus the same durable
-//! `trigger_fired` record every other delivery outcome writes — so the
+//! `observer_fired` record every other delivery outcome writes — so the
 //! timeline can answer "why did this session un-park with no event?".
 //!
 //! Deadlines are timers, not a scan. A binding with an `expires_at` gets one
@@ -59,8 +59,8 @@ pub async fn run(deps: Arc<Deps>) {
     }
 }
 
-/// One reconciliation pass over the durable store: drop delivery triggers
-/// whose record is gone, retry Compose wake recovery, retire every binding
+/// One reconciliation pass over the durable store: dispose delivery
+/// observers whose record is gone, retry Compose wake recovery, retire every binding
 /// whose lifecycle is already spent (an unfired once-wake also wakes its
 /// owner), and arm the deadline timer of every other binding that has one.
 /// Returns how many were retired.
@@ -73,7 +73,7 @@ pub async fn sweep(deps: &Deps) -> usize {
             return 0;
         }
     };
-    super::gc::reconcile_orphan_delivery_triggers(deps, &bindings).await;
+    super::gc::reconcile_orphan_observers(deps, &bindings).await;
     // Recovery runs independently with bounded concurrency and probe
     // timeouts; an unavailable Compose diagnostic must not hold up expiry.
     // Re-running it from the durable watch on every worker change closes a
@@ -189,7 +189,7 @@ fn retry_later(deps: &Deps, binding_id: &str, due: i64, attempt: u32, error: &st
 
 /// Retire one spent binding: compare-and-delete FIRST (only while the record
 /// still equals this snapshot — a racing fire's CAS makes this claim lose),
-/// then unregister its engine trigger, then report an EXPIRY. A binding its
+/// then dispose its observer, then report an EXPIRY. A binding its
 /// delivered fires used up is only cleaned up: the delivery that claimed
 /// the last slot already wrote the binding's outcome (or is writing it right
 /// now — a pass can land between its claim and its own retirement), so a
@@ -199,8 +199,8 @@ async fn retire_spent(deps: &Deps, store: &BindingStore, binding: &Binding) -> b
     if !matches!(store.delete_if_unchanged(binding).await, Ok(true)) {
         return false;
     }
-    if let Some(trigger_id) = binding.trigger_id.as_deref() {
-        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    if binding.observer_id.is_some() {
+        super::dispose_observer(deps, &binding.id).await;
     }
     if binding.is_spent() {
         tracing::debug!(
@@ -249,14 +249,14 @@ pub enum WakeLost<'a> {
 
 /// Deliver the news: a `[notification]` into the wake's destination session
 /// (so the owner un-parks and gets to run its own fallback — report, tear
-/// down, re-arm) and a `trigger_fired` record in the owner's timeline. Both
+/// down, re-arm) and an `observer_fired` record in the owner's timeline. Both
 /// best-effort; the binding is already retired either way.
 pub async fn notify_wake_lost(deps: &Deps, binding: &Binding, cause: WakeLost<'_>) {
     let session_id = wake_session(binding);
     let message = AgentMessage::user_text(wake_lost_text(binding, &cause));
     // One expiry per binding ever (the delete claimed it), so the entry ids
     // need no ordinal — and they must never collide with each other or with a
-    // real fire's `e_fire_*`/`e_trigfired_*` pair (session-manager dedups on
+    // real fire's `e_fire_*`/`e_obsfired_*` pair (session-manager dedups on
     // entry ids).
     let wake_entry_id = format!("e_expire_{}", binding.id);
     if let Err(e) = crate::functions::send::inject(
@@ -303,7 +303,7 @@ pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
             emit_retirement_record(
                 deps,
                 binding,
-                fired::TriggerOutcome::Expired,
+                fired::FireOutcome::Expired,
                 fired::RetirementReason::Expired,
                 Some(&note),
             )
@@ -315,29 +315,27 @@ pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
 async fn emit_retirement_record(
     deps: &Deps,
     binding: &Binding,
-    outcome: fired::TriggerOutcome,
+    outcome: fired::FireOutcome,
     reason: fired::RetirementReason,
     note: Option<&str>,
 ) {
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
-        &format!("e_trigexpired_{}", binding.id),
+        &format!("e_obsexpired_{}", binding.id),
         fired::retirement_record(binding, outcome, reason, note, AgentMessage::now_ms()),
     )
     .await;
 }
 
-fn wake_lost_classification(
-    cause: &WakeLost<'_>,
-) -> (fired::TriggerOutcome, fired::RetirementReason) {
+fn wake_lost_classification(cause: &WakeLost<'_>) -> (fired::FireOutcome, fired::RetirementReason) {
     match cause {
         WakeLost::Expired => (
-            fired::TriggerOutcome::Expired,
+            fired::FireOutcome::Expired,
             fired::RetirementReason::Expired,
         ),
         WakeLost::Unregistered { .. } => (
-            fired::TriggerOutcome::Unregistered,
+            fired::FireOutcome::Unregistered,
             fired::RetirementReason::Unregistered,
         ),
     }
@@ -358,13 +356,9 @@ fn wake_session(binding: &Binding) -> &str {
 /// without any lookup: what was watched, that zero fires happened, and that
 /// NOTHING else will wake the session for it.
 fn wake_lost_text(binding: &Binding, cause: &WakeLost<'_>) -> String {
-    let watch = match binding.trigger_watch() {
-        Some((ttype, config)) => format!(
-            "{ttype} {}",
-            serde_json::to_string(config).unwrap_or_else(|_| "{}".into())
-        ),
-        None => "unknown watch".to_string(),
-    };
+    let watch = binding
+        .source_text()
+        .unwrap_or_else(|| "unknown watch".to_string());
     match cause {
         WakeLost::Expired => format!(
             "[notification] wake expired unfired: {watch} (binding {}) passed its lifecycle \
@@ -375,7 +369,7 @@ fn wake_lost_text(binding: &Binding, cause: &WakeLost<'_>) -> String {
             binding.lifecycle.expires_at.unwrap_or_default()
         ),
         WakeLost::Unregistered { by } => format!(
-            "[notification] wake removed: {watch} (binding {}) was unregistered by session {by} \
+            "[notification] wake removed: {watch} (binding {}) was unobserved by session {by} \
              before it ever fired. Nothing else will wake this session for it.",
             binding.id
         ),
@@ -385,12 +379,21 @@ fn wake_lost_text(binding: &Binding, cause: &WakeLost<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bindings::{BindingTarget, Causation, Lifecycle, OwnerScope};
+    use crate::bindings::{BindingTarget, Lifecycle, OwnerScope, SourceSpec};
 
     fn wake(expires_at: Option<i64>) -> Binding {
         Binding {
             id: "sub_1".into(),
-            trigger_id: None,
+            observer_id: None,
+            source: Some(SourceSpec {
+                function_id: "state::on-changed".into(),
+                namespace: None,
+                args: None,
+                filters: Some(json!({
+                    "input.scope": { "$eq": "run" },
+                    "input.key": { "$eq": "report_ready" },
+                })),
+            }),
             owner: OwnerScope {
                 session_id: "s_owner".into(),
                 root_session_id: None,
@@ -403,11 +406,7 @@ mod tests {
                 expires_at,
             },
             capability: None,
-            causation: Causation::default(),
-            dedup_key: Some(json!({
-                "trigger_type": "state",
-                "config": { "scope": "run", "key": "report_ready" },
-            })),
+            dedup_key: None,
             fires: 0,
             created_at: 0,
         }
@@ -522,15 +521,16 @@ mod tests {
         call.fires = 4;
         let record = serde_json::to_value(fired::retirement_record(
             &call,
-            fired::TriggerOutcome::Expired,
+            fired::FireOutcome::Expired,
             fired::RetirementReason::Expired,
             Some("expired at 1700000000000"),
             42,
         ))
         .unwrap();
         assert_eq!(record["target"], "state::set");
-        assert_eq!(record["trigger_type"], "state");
-        assert_eq!(record["config"]["key"], "report_ready");
+        assert_eq!(record["function_id"], "state::on-changed");
+        assert_eq!(record["filters"]["input.key"]["$eq"], "report_ready");
+        assert_eq!(record["key"], "report_ready");
         assert_eq!(record["fires"], 4);
         assert_eq!(record["outcome"], "expired");
         assert_eq!(record["retirement_reason"], "expired");
@@ -541,7 +541,7 @@ mod tests {
     fn the_notice_names_the_watch_the_deadline_and_the_finality() {
         let text = wake_lost_text(&wake(Some(1_700_000_000_000)), &WakeLost::Expired);
         assert!(text.starts_with("[notification] "), "got: {text}");
-        assert!(text.contains("state"), "got: {text}");
+        assert!(text.contains("state::on-changed"), "got: {text}");
         assert!(text.contains("report_ready"), "got: {text}");
         assert!(text.contains("1700000000000"), "got: {text}");
         assert!(text.contains("0 fires"), "got: {text}");
@@ -552,7 +552,7 @@ mod tests {
 
         let removed = wake_lost_text(&wake(None), &WakeLost::Unregistered { by: "s_child" });
         assert!(
-            removed.contains("unregistered by session s_child"),
+            removed.contains("unobserved by session s_child"),
             "got: {removed}"
         );
         assert!(removed.contains("Nothing else will wake this session"));
@@ -563,14 +563,14 @@ mod tests {
         assert_eq!(
             wake_lost_classification(&WakeLost::Expired),
             (
-                fired::TriggerOutcome::Expired,
+                fired::FireOutcome::Expired,
                 fired::RetirementReason::Expired,
             )
         );
         assert_eq!(
             wake_lost_classification(&WakeLost::Unregistered { by: "console" }),
             (
-                fired::TriggerOutcome::Unregistered,
+                fired::FireOutcome::Unregistered,
                 fired::RetirementReason::Unregistered,
             )
         );
@@ -578,13 +578,13 @@ mod tests {
 
     #[test]
     fn the_expiry_entry_ids_never_collide_with_a_real_fire() {
-        // A first real fire appends `e_fire_sub_1_1` + `e_trigfired_sub_1_1`.
+        // A first real fire appends `e_fire_sub_1_1` + `e_obsfired_sub_1_1`.
         // The expiry pair must be distinct from both AND from each other, or
         // session-manager's entry-id idempotence swallows one append.
         let wake_id = format!("e_expire_{}", "sub_1");
-        let record_id = format!("e_trigexpired_{}", "sub_1");
+        let record_id = format!("e_obsexpired_{}", "sub_1");
         assert_ne!(wake_id, record_id);
         assert_ne!(wake_id, "e_fire_sub_1_1");
-        assert_ne!(record_id, "e_trigfired_sub_1_1");
+        assert_ne!(record_id, "e_obsfired_sub_1_1");
     }
 }

@@ -30,7 +30,7 @@ func databaseCall(client *iii.Client, namespace string, timeout time.Duration) d
 		if err != nil {
 			return nil, errors.New("invalid database request")
 		}
-		return client.Trigger(ctx, iii.TriggerRequest{FunctionID: id, Namespace: namespace, Data: payload, Timeout: timeout})
+		return client.Call(ctx, iii.CallRequest{FunctionID: id, Namespace: namespace, Payload: payload, Timeout: timeout})
 	}
 }
 func newDatabaseStorage(ctx context.Context, client *iii.Client, config Config) (*databaseStorage, error) {

@@ -2,24 +2,30 @@
 //!
 //! - **Socket Mode** (`app_token` set): the worker dials out to Slack over a
 //!   WebSocket. No public URL needed. Takes precedence.
-//! - **HTTP / Events API** (`signing_secret` + `public_base_url`): register the
-//!   `slack/events` and `slack/interactions` routes on the engine.
+//! - **HTTP / Events API** (`signing_secret` + `public_base_url`): observe
+//!   `http::on-request` with the `POST /slack/events` and
+//!   `POST /slack/interactions` routes. The http worker calls the target with
+//!   each request, and the target streams the response.
 //!
 //! Driven at boot and on every config reload.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::trigger::Trigger;
-use iii_sdk::IIIClient;
-use serde_json::json;
+use iii_sdk::{IIIClient, ObserverHandle, Source};
+use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::clients::socket;
 use crate::config::{EVENTS_API_PATH, INTERACTIONS_API_PATH};
 use crate::deps::Deps;
 use crate::functions::{events::EVENTS_ID, interactions::INTERACTIONS_ID};
+
+/// The http worker's request function; each observer serves one route.
+pub const ON_REQUEST_FN: &str = "http::on-request";
+
+/// How long a new route observer may stay `pending` before it is reported.
+const ROUTE_READY_WAIT: Duration = Duration::from_secs(10);
 
 /// Reconcile both inbound transports to the current config, and refresh the
 /// cached Slack identity (the bot user id the bridge needs for mention handling).
@@ -60,37 +66,21 @@ async fn reconcile_socket(deps: &Arc<Deps>, enabled: bool) {
 }
 
 async fn reconcile_http(deps: &Arc<Deps>, enabled: bool) {
-    let mut guard = deps.bridge_triggers.lock().await;
+    let mut guard = deps.bridge_routes.lock().await;
     if enabled && guard.is_empty() {
-        // Stage both routes; if either fails, roll back so a later reload retries
-        // cleanly rather than leaving the bridge half-registered.
-        let mut staged = Vec::new();
         for (id, path) in [
             (EVENTS_ID, EVENTS_API_PATH),
             (INTERACTIONS_ID, INTERACTIONS_API_PATH),
         ] {
-            match register_route(&deps.iii, id, path) {
-                Ok(t) => {
-                    staged.push(t);
-                    tracing::info!(function_id = id, api_path = path, "bridge route registered");
-                }
-                Err(e) => {
-                    for t in staged.drain(..) {
-                        t.unregister();
-                    }
-                    tracing::error!(error = %e, function_id = id, "failed to register bridge route; rolled back");
-                    return;
-                }
-            }
+            let route = observe_route(&deps.iii, id, path);
+            report_route(route.clone(), id, path);
+            guard.push(route);
         }
-        guard.extend(staged);
         if let Some(url) = deps.cfg().await.events_url() {
             tracing::info!(events_url = %url, "http bridge enabled — point Slack Event Subscriptions here");
         }
     } else if !enabled && !guard.is_empty() {
-        for t in guard.drain(..) {
-            t.unregister();
-        }
+        dispose_routes(guard.drain(..)).await;
         tracing::info!("http bridge disabled — routes removed");
     }
 }
@@ -100,16 +90,64 @@ pub async fn shutdown(deps: &Arc<Deps>) {
     if let Some(cancel) = deps.socket_cancel.lock().await.take() {
         cancel.cancel();
     }
-    let mut guard = deps.bridge_triggers.lock().await;
-    for t in guard.drain(..) {
-        t.unregister();
+    let mut guard = deps.bridge_routes.lock().await;
+    dispose_routes(guard.drain(..)).await;
+}
+
+/// The args of the `http::on-request` observer that serves `POST /<api_path>`.
+pub fn route_args(api_path: &str) -> Value {
+    json!({ "method": "POST", "path": format!("/{api_path}") })
+}
+
+fn observe_route(iii: &IIIClient, function_id: &str, api_path: &str) -> ObserverHandle {
+    iii.observe(
+        Source::function(ON_REQUEST_FN).args(route_args(api_path)),
+        function_id,
+    )
+}
+
+/// Logs once whether the route became active. The observer stays `pending`
+/// while the http worker is absent and serves the route once it registers;
+/// it ends in `error` when the http worker refuses it (`HTTP_ROUTE_CONFLICT`).
+fn report_route(route: ObserverHandle, function_id: &'static str, api_path: &'static str) {
+    tokio::spawn(async move {
+        match tokio::time::timeout(ROUTE_READY_WAIT, route.ready()).await {
+            Ok(Ok(())) => {
+                tracing::info!(function_id, api_path, "bridge route registered")
+            }
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, function_id, api_path, "bridge route refused")
+            }
+            Err(_) => tracing::warn!(
+                function_id,
+                api_path,
+                "bridge route pending (is the http worker running?)"
+            ),
+        }
+    });
+}
+
+async fn dispose_routes(routes: impl Iterator<Item = ObserverHandle>) {
+    for route in routes {
+        if let Err(e) = route.dispose().await {
+            tracing::warn!(error = %e, observer_id = route.id(), "bridge route dispose failed");
+        }
     }
 }
 
-fn register_route(iii: &IIIClient, function_id: &str, api_path: &str) -> Result<Trigger, Error> {
-    iii.register_trigger(RegisterTriggerInput::new(
-        "http".to_string(),
-        function_id.to_string(),
-        json!({ "api_path": api_path, "http_method": "POST" }),
-    ))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_are_posts_under_the_slack_prefix() {
+        assert_eq!(
+            route_args(EVENTS_API_PATH),
+            json!({ "method": "POST", "path": "/slack/events" })
+        );
+        assert_eq!(
+            route_args(INTERACTIONS_API_PATH),
+            json!({ "method": "POST", "path": "/slack/interactions" })
+        );
+    }
 }

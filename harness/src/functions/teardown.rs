@@ -1,5 +1,5 @@
-//! `harness::teardown` — remove trigger bindings owned by a complete harness
-//! session tree. This is trusted control-plane cleanup for evals and other
+//! `harness::teardown` — remove the observers a complete harness session
+//! tree created. This is trusted control-plane cleanup for evals and other
 //! lifecycle owners; it is not exposed to models.
 
 use schemars::JsonSchema;
@@ -39,7 +39,7 @@ pub(crate) async fn cleanup_session(deps: &Deps, session_id: &str) -> u64 {
         tracing::info!(
             session_id,
             removed,
-            "harness session trigger bindings removed"
+            "harness session observer bindings removed"
         );
     }
     removed

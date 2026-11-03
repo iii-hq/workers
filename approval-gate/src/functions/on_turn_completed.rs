@@ -1,5 +1,5 @@
-//! `approval::on-turn-completed` — bound to the harness's
-//! `harness::turn-completed` trigger type. Purges the turn's pending
+//! `approval::on-turn-completed` — the target of this worker's observer of
+//! `harness::on-turn-completed`. Purges the turn's pending
 //! records AND its filesystem-access-watch attempt counters when it goes terminal
 //! (covers `harness::stop` cancellation cascades and failed turns). A
 //! `completed` turn has no live holds by construction — the purge is then
@@ -12,7 +12,7 @@ use super::{purge, Deps};
 use crate::filesystem_access_state;
 use crate::types::EventAck;
 
-/// `harness::turn-completed` payload (only the field we read).
+/// `harness::on-turn-completed` event (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TurnCompletedEvent {
     pub turn_id: String,
@@ -43,7 +43,9 @@ mod tests {
 
     use super::*;
     use crate::pending::PENDING_SCOPE;
-    use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
+    use crate::testkit::{
+        log_snapshot, settle, state_get, state_set, wait_for, with_stack, BootOpts,
+    };
 
     #[tokio::test(flavor = "multi_thread")]
     async fn purges_by_turn_id_and_emits_aborted() {
@@ -80,6 +82,12 @@ mod tests {
             assert!(!state_get(&stack.iii, PENDING_SCOPE, "s_1/c_2")
                 .await
                 .is_null());
+            // Delivery to observers does not wait for them.
+            assert!(
+                wait_for(3_000, || !log_snapshot(&stack.resolved).is_empty()).await,
+                "pending_resolved should reach the recorder"
+            );
+            settle().await;
             let events = log_snapshot(&stack.resolved);
             assert_eq!(events.len(), 1);
             assert_eq!(events[0]["outcome"], json!("aborted"));

@@ -2,8 +2,8 @@
 //! worker (mirrors `http/tests/e2e_reload.rs`).
 //!
 //! Skips (early-return) when no engine is reachable. Boots one bridge worker
-//! with a forwards-free config, wires the `configuration:updated` reload
-//! trigger, then drives the config through the real bus (`configuration::set`)
+//! with a forwards-free config, observes `configuration::on-updated` for
+//! reloads, then drives the config through the real bus (`configuration::set`)
 //! and asserts the running worker picks each step up WITHOUT a restart:
 //!
 //! 1. ADD a forward -> it becomes callable;
@@ -20,8 +20,7 @@ use std::time::Duration;
 
 use common::engine;
 use iii_bridge::configuration;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -35,10 +34,10 @@ fn echo_fn() -> RegisterFunction {
 }
 
 /// Store a new `bridge` config value through the real configuration bus —
-/// this is what fires the `configuration:updated` event the reload trigger
-/// listens for.
+/// this is what fires the `configuration:updated` event the reload observer
+/// receives.
 async fn set_bridge_config(iii: &Arc<IIIClient>, value: Value) {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "configuration::set".to_string(),
         payload: json!({ "id": configuration::config_id(), "value": value }),
         action: None,
@@ -92,8 +91,8 @@ async fn forward_add_remove_readd_via_config_set() {
 
     // Boot forwards-free, register the schema (required before
     // `configuration::set`), pin the stored value to a known baseline (a
-    // previous run may have left a forward stored), then wire the reload
-    // trigger to this worker's live state.
+    // previous run may have left a forward stored), then observe
+    // configuration changes with this worker's live state.
     let config = iii_bridge::config::BridgeConfig {
         url: Some(url.clone()),
         ..Default::default()
@@ -105,14 +104,16 @@ async fn forward_add_remove_readd_via_config_set() {
         .await
         .expect("register bridge configuration schema");
     set_bridge_config(&worker_local, base_value.clone()).await;
-    configuration::register_config_trigger(&worker_local, &boot)
+    let observer = configuration::observe_config_changes(&worker_local, &boot).await;
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
         .await
-        .expect("bind configuration trigger");
+        .expect("the configuration observer becomes active within 10s")
+        .expect("the configuration observer becomes active");
 
     // 1. ADD the forward via configuration::set -> it becomes callable.
     set_bridge_config(&worker_local, with_forward.clone()).await;
     wait_for_forward(&boot.config, true).await;
-    let res = common::trigger_until_ready(&caller, FORWARD_ID, json!({ "n": 1 }))
+    let res = common::call_until_ready(&caller, FORWARD_ID, json!({ "n": 1 }))
         .await
         .expect("forward should be callable after being added via config");
     assert_eq!(res["echo"]["n"], 1);
@@ -122,7 +123,7 @@ async fn forward_add_remove_readd_via_config_set() {
     set_bridge_config(&worker_local, base_value.clone()).await;
     wait_for_forward(&boot.config, false).await;
     let err = caller
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: FORWARD_ID.to_string(),
             payload: json!({ "n": 2 }),
             action: None,
@@ -140,7 +141,7 @@ async fn forward_add_remove_readd_via_config_set() {
     // out because the cell never swaps).
     set_bridge_config(&worker_local, with_forward).await;
     wait_for_forward(&boot.config, true).await;
-    let res = common::trigger_until_ready(&caller, FORWARD_ID, json!({ "n": 3 }))
+    let res = common::call_until_ready(&caller, FORWARD_ID, json!({ "n": 3 }))
         .await
         .expect("re-added forward should be callable again");
     assert_eq!(res["echo"]["n"], 3);

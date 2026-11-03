@@ -19,7 +19,7 @@ pub struct Runtime {
     /// Serializes `saveConnection` / `deleteConnection` read-modify-writes.
     pub(crate) saves: tokio::sync::Mutex<()>,
     /// Native-capture listeners, reconciled on every reload.
-    listeners: std::sync::OnceLock<Arc<crate::triggers::NativeListeners>>,
+    listeners: std::sync::OnceLock<Arc<crate::row_changes::NativeListeners>>,
 }
 
 #[derive(Default)]
@@ -48,11 +48,11 @@ impl Runtime {
     }
 
     /// Hand the worker's native-capture listeners to every reload path.
-    pub fn set_listeners(&self, listeners: Arc<crate::triggers::NativeListeners>) {
+    pub fn set_listeners(&self, listeners: Arc<crate::row_changes::NativeListeners>) {
         let _ = self.listeners.set(listeners);
     }
 
-    pub fn listeners(&self) -> Option<Arc<crate::triggers::NativeListeners>> {
+    pub fn listeners(&self) -> Option<Arc<crate::row_changes::NativeListeners>> {
         self.listeners.get().cloned()
     }
 

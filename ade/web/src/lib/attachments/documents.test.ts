@@ -74,27 +74,27 @@ describe('isDocumentAttachment', () => {
 
 describe('expandDocumentAttachments', () => {
   it('does nothing when there is no document', async () => {
-    const trigger = vi.fn()
-    const result = await expandDocumentAttachments([doc('shot.png')], trigger)
+    const call = vi.fn()
+    const result = await expandDocumentAttachments([doc('shot.png')], call)
     expect(result.blocks).toEqual([])
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   /* A CSV has no signature of its own. Without the name the worker cannot
      recognise it and refuses a file it reads perfectly well. */
   it('sends the file name alongside the bytes', async () => {
-    const trigger = vi.fn().mockResolvedValue(converted({ format: 'csv' }))
-    await expandDocumentAttachments([doc('rows.csv', 'a,b\n')], trigger)
+    const call = vi.fn().mockResolvedValue(converted({ format: 'csv' }))
+    await expandDocumentAttachments([doc('rows.csv', 'a,b\n')], call)
 
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       TO_MARKDOWN_FUNCTION_ID,
       expect.objectContaining({ file_name: 'rows.csv' }),
     )
   })
 
   it('wraps the markdown in an attached-file block', async () => {
-    const trigger = vi.fn().mockResolvedValue(converted())
-    const result = await expandDocumentAttachments([doc()], trigger)
+    const call = vi.fn().mockResolvedValue(converted())
+    const result = await expandDocumentAttachments([doc()], call)
 
     expect(result.blocks).toHaveLength(1)
     expect(result.blocks[0]).toContain('path="report.docx"')
@@ -108,14 +108,14 @@ describe('expandDocumentAttachments', () => {
      converts to almost nothing. The block has to say the pictures exist, or the
      model reports an empty document. */
   it('names the images the markdown could not carry', async () => {
-    const trigger = vi.fn().mockResolvedValue(
+    const call = vi.fn().mockResolvedValue(
       converted({
         format: 'pptx',
         asset_count: 12,
         body: { text: 'Roadmap', chars: 7, total_chars: 7, truncated: false },
       }),
     )
-    const result = await expandDocumentAttachments([doc('deck.pptx')], trigger)
+    const result = await expandDocumentAttachments([doc('deck.pptx')], call)
 
     expect(result.blocks[0]).toContain('embedded-images="12"')
     expect(result.blocks[0]).toContain('document::extract-assets')
@@ -149,7 +149,7 @@ describe('expandDocumentAttachments', () => {
   })
 
   it('reports truncation with the way to get the rest', async () => {
-    const trigger = vi.fn().mockResolvedValue(
+    const call = vi.fn().mockResolvedValue(
       converted({
         body: {
           text: 'start',
@@ -159,7 +159,7 @@ describe('expandDocumentAttachments', () => {
         },
       }),
     )
-    const result = await expandDocumentAttachments([doc()], trigger)
+    const result = await expandDocumentAttachments([doc()], call)
 
     expect(result.blocks[0]).toContain('truncated="true"')
     expect(result.blocks[0]).toContain('total-chars="90000"')
@@ -170,35 +170,33 @@ describe('expandDocumentAttachments', () => {
   /* A failure has to reach the model as a block. Staying silent is the bug this
      path exists to prevent: the agent answers as though nothing was attached. */
   it('turns a worker failure into a block and a named failure', async () => {
-    const trigger = vi
+    const call = vi
       .fn()
       .mockRejectedValue(new Error('function document::to-markdown not found'))
-    const result = await expandDocumentAttachments([doc()], trigger)
+    const result = await expandDocumentAttachments([doc()], call)
 
     expect(result.blocks[0]).toContain('error=')
-    expect(result.blocks[0]).toContain(
-      'iii trigger compose::add worker=document',
-    )
+    expect(result.blocks[0]).toContain('iii call compose::add worker=document')
     expect(result.failures).toHaveLength(1)
   })
 
   it('refuses a document over the composer ceiling without calling the worker', async () => {
-    const trigger = vi.fn()
+    const call = vi.fn()
     const huge: Attachment = { ...doc(), size: MAX_DOCUMENT_BYTES + 1 }
-    const result = await expandDocumentAttachments([huge], trigger)
+    const result = await expandDocumentAttachments([huge], call)
 
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     expect(result.failures[0].reason).toContain('limit')
   })
 
   it('reports the documents past the per-send ceiling instead of dropping them', async () => {
-    const trigger = vi.fn().mockResolvedValue(converted())
+    const call = vi.fn().mockResolvedValue(converted())
     const many = Array.from({ length: MAX_DOCUMENTS_PER_SEND + 2 }, (_, i) =>
       doc(`report-${i}.docx`),
     )
-    const result = await expandDocumentAttachments(many, trigger)
+    const result = await expandDocumentAttachments(many, call)
 
-    expect(trigger).toHaveBeenCalledTimes(MAX_DOCUMENTS_PER_SEND)
+    expect(call).toHaveBeenCalledTimes(MAX_DOCUMENTS_PER_SEND)
     expect(result.blocks).toHaveLength(MAX_DOCUMENTS_PER_SEND + 2)
     expect(result.failures).toHaveLength(2)
     expect(result.failures[0].reason).toContain('per message')
@@ -206,12 +204,12 @@ describe('expandDocumentAttachments', () => {
 
   /* A conversation reloaded from history keeps the chip, not the bytes. */
   it('skips an attachment with no file', async () => {
-    const trigger = vi.fn()
+    const call = vi.fn()
     const { file, ...withoutBytes } = doc()
     void file
-    const result = await expandDocumentAttachments([withoutBytes], trigger)
+    const result = await expandDocumentAttachments([withoutBytes], call)
 
     expect(result.blocks).toEqual([])
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 })

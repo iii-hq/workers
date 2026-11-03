@@ -36,7 +36,7 @@ llama.cpp's CPU threads. The chosen device is logged when the model loads, as
 ## Install
 
 ```bash
-iii trigger compose::add worker=judge-clef
+iii call compose::add worker=judge-clef
 ```
 
 The functions register at start; the model loads on demand. While clef is the
@@ -73,7 +73,7 @@ changes the tokens of Hindi, Thai and decomposed text.
 Make it the hub's default, then call the hub:
 
 ```bash
-iii trigger judge::evaluate --timeout-ms 65000 --json '{
+iii call judge::evaluate --timeout-ms 65000 --json '{
   "timeout_ms": 60000, "provider": "clef",
   "evaluations": [{
     "id": "ticket-4411",

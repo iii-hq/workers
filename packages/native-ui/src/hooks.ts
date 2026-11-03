@@ -2,7 +2,7 @@
 
 import { createEffect, createResource, onCleanup, type Resource, useContext } from 'solid-js'
 import { PageContext, type PageRef } from './app'
-import { type CallOptions, type Env, iii, type Nav } from './iii'
+import { type CallOptions, type Env, iii, type Nav, type ObserveSource } from './iii'
 import type { JsonObject, JsonValue } from './types'
 
 /**
@@ -39,21 +39,21 @@ export function useCall<T>(
 }
 
 /**
- * Binds a trigger of the app's namespace while the calling scope lives;
- * `config` returning null (or `enabled` false) unbinds it, and a new config
- * binds again.
+ * Observes a function of the app's namespace while the calling scope lives;
+ * `source` returning null (or `enabled` false) disposes the observer, and a
+ * new source observes again.
  */
-export function useTrigger<P = JsonValue>(
-  type: string,
-  config: () => JsonObject | null,
+export function useObserve<P = JsonValue>(
+  functionId: string,
+  source: () => ObserveSource | null,
   handler: (payload: P) => void,
   opts?: { enabled?: () => boolean },
 ): void {
   createEffect(() => {
     if (opts?.enabled && !opts.enabled()) return
-    const c = config()
-    if (c === null) return
-    onCleanup(iii.on<P>(type, c, (payload) => handler(payload)))
+    const s = source()
+    if (s === null) return
+    onCleanup(iii.on<P>(functionId, s, (payload) => handler(payload)))
   })
 }
 

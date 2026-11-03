@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::SentinelError;
 
-/// Sources of error events. Both are engine triggers; turning one off
-/// unbinds it rather than filtering downstream.
+/// Sources of error events: the engine's `observability::on-span` and
+/// `observability::on-log`. Turning one off disposes its observer rather than
+/// filtering downstream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct SourcesConfigV1 {

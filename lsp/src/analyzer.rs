@@ -34,11 +34,27 @@ pub enum Language {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompletionContext {
+    /// The function a `call` invokes.
     FunctionId,
-    TriggerType,
-    PayloadProperty { function_id: String },
-    TriggerConfigProperty { trigger_type: String },
-    KnownValue { field_name: String },
+    /// The function an `observe` source names.
+    ObservableFunctionId,
+    /// The function an observer delivers to: `observe`'s target.
+    TargetFunctionId,
+    PayloadProperty {
+        function_id: String,
+    },
+    /// A key of an `observe` source's `args`, from the function's `args_format`.
+    ArgsProperty {
+        function_id: String,
+    },
+    /// The value of one of an `observe` source's `args`.
+    ArgValue {
+        function_id: String,
+        arg: String,
+    },
+    KnownValue {
+        field_name: String,
+    },
     None,
 }
 
@@ -50,15 +66,15 @@ pub struct AnalysisResult {
 
 // --- Node kind helpers (language-aware) ---
 
-fn is_call(kind: &str) -> bool {
+pub(crate) fn is_call(kind: &str) -> bool {
     kind == "call_expression" || kind == "call"
 }
 
-fn is_object(kind: &str) -> bool {
+pub(crate) fn is_object(kind: &str) -> bool {
     kind == "object" || kind == "dictionary"
 }
 
-fn is_arguments(kind: &str) -> bool {
+pub(crate) fn is_arguments(kind: &str) -> bool {
     kind == "arguments" || kind == "argument_list"
 }
 
@@ -70,14 +86,50 @@ fn is_method_access(kind: &str) -> bool {
     kind == "member_expression" || kind == "attribute" || kind == "field_expression"
 }
 
-/// Method names that map to `trigger()`
-fn is_trigger_method(name: &str) -> bool {
-    name == "trigger" || name == "trigger_async"
+/// Method names that invoke a function: `call()`, Python's `call_async()`,
+/// and `trigger` / `trigger_async`, the SDKs' deprecated aliases of the two.
+pub(crate) fn is_call_method(name: &str) -> bool {
+    matches!(name, "call" | "call_async") || is_call_alias(name)
 }
 
-/// Method names that map to `registerTrigger()` / `register_trigger()`
-fn is_register_trigger_method(name: &str) -> bool {
-    name == "registerTrigger" || name == "register_trigger"
+/// The deprecated alias names of `call` / `call_async`.
+pub(crate) fn is_call_alias(name: &str) -> bool {
+    matches!(name, "trigger" | "trigger_async")
+}
+
+/// Method names that create an observer: `observe()`, and Rust's
+/// `observe_with()`.
+pub(crate) fn is_observe_method(name: &str) -> bool {
+    name == "observe" || name == "observe_with"
+}
+
+/// Rust request types whose `function_id` names the called function:
+/// `CallRequest` and its deprecated alias.
+pub(crate) fn is_call_request_type(name: &str) -> bool {
+    name == "CallRequest" || name == "TriggerRequest"
+}
+
+/// What the first argument of a Rust constructor names, by the constructor's
+/// path: `CallRequest::new(id, payload)`, `Source::function(id)`,
+/// `Target::function(id)`.
+pub(crate) fn rust_constructor_context(path: &str) -> Option<CompletionContext> {
+    let (ty, constructor) = path.rsplit_once("::")?;
+    let ty = ty.rsplit("::").next().unwrap_or(ty);
+    match (ty, constructor) {
+        (ty, "new") if is_call_request_type(ty) => Some(CompletionContext::FunctionId),
+        ("Source", "function") => Some(CompletionContext::ObservableFunctionId),
+        ("Target", "function") => Some(CompletionContext::TargetFunctionId),
+        _ => None,
+    }
+}
+
+/// What an `observe` argument at `index` names: the source, then the target.
+fn observe_argument_context(index: usize) -> CompletionContext {
+    match index {
+        0 => CompletionContext::ObservableFunctionId,
+        1 => CompletionContext::TargetFunctionId,
+        _ => CompletionContext::None,
+    }
 }
 
 // --- Public API ---
@@ -269,6 +321,8 @@ fn position_to_byte_offset(source: &str, position: Position) -> Option<usize> {
 
 // --- Core analysis ---
 
+type StringDetector = fn(Node, &str) -> CompletionContext;
+
 fn analyze_source(source: &str, position: Position, language: Language) -> AnalysisResult {
     let none = AnalysisResult {
         context: CompletionContext::None,
@@ -306,42 +360,28 @@ fn analyze_source(source: &str, position: Position, language: Language) -> Analy
         Option::None => return none,
     };
 
-    // Try string context (function_id, type, known values)
+    // Try string context (function ids, arg values, known values)
     if let Some((string_node, current_text)) = find_string_at_cursor(node, source) {
-        // Try dict-style context: string → pair → object → arguments → call
-        let context = determine_context_pair(string_node, source);
-        if context != CompletionContext::None {
-            return AnalysisResult {
-                context,
-                current_text,
-            };
-        }
-
-        // Try keyword argument context (Python): string → keyword_argument → argument_list → call
-        let context = determine_context_kwarg(string_node, source);
-        if context != CompletionContext::None {
-            return AnalysisResult {
-                context,
-                current_text,
-            };
-        }
-
-        // Try Rust struct field context: string → ... → field_initializer → struct_expression
-        let context = determine_context_rust_field(string_node, source);
-        if context != CompletionContext::None {
-            return AnalysisResult {
-                context,
-                current_text,
-            };
-        }
-
-        // Try Rust constructor context: RegisterTriggerInput::new(type, function_id, config)
-        let context = determine_context_rust_constructor(string_node, source);
-        if context != CompletionContext::None {
-            return AnalysisResult {
-                context,
-                current_text,
-            };
+        let detectors: [StringDetector; 5] = [
+            // dict-style: string → pair → object → arguments → call
+            determine_context_pair,
+            // keyword argument (Python): string → keyword_argument → argument_list → call
+            determine_context_kwarg,
+            // Rust struct field: string → ... → field_initializer → struct_expression
+            determine_context_rust_field,
+            // an argument of its own: observe('source', 'target'), Source::function("x")
+            determine_context_positional,
+            // an observe source's arg: string → pair → args object → pair → source object
+            determine_context_arg_value,
+        ];
+        for detect in detectors {
+            let context = detect(string_node, source);
+            if context != CompletionContext::None {
+                return AnalysisResult {
+                    context,
+                    current_text,
+                };
+            }
         }
 
         // Check known value fields (works for pair, kwarg, and field_initializer)
@@ -353,7 +393,7 @@ fn analyze_source(source: &str, position: Position, language: Language) -> Analy
         }
     }
 
-    // Try object/dict context (payload properties, trigger config properties)
+    // Try object/dict context (payload properties, observe args)
     let context = determine_object_context(node, source);
 
     AnalysisResult {
@@ -406,6 +446,18 @@ fn extract_string_content(string_node: Node, source: &str) -> String {
     String::new()
 }
 
+/// The position of the argument that holds `node` among `arguments`.
+pub(crate) fn argument_index(arguments: Node, node: Node) -> Option<usize> {
+    let mut cursor = arguments.walk();
+    let index = arguments
+        .named_children(&mut cursor)
+        .filter(|argument| !argument.kind().contains("comment"))
+        .position(|argument| {
+            argument.start_byte() <= node.start_byte() && argument.end_byte() >= node.end_byte()
+        });
+    index
+}
+
 // --- Context detection: dict/object style (TS + Python dict) ---
 // Chain: string → pair → object/dictionary → arguments/argument_list → call_expression/call
 
@@ -442,7 +494,7 @@ fn determine_context_pair(string_node: Node, source: &str) -> CompletionContext 
         None => return CompletionContext::None,
     };
 
-    match_method_and_key(&method_name, &key_text)
+    match_method_and_key(&method_name, &key_text, argument_index(arguments, object))
 }
 
 // --- Context detection: keyword argument style (Python only) ---
@@ -475,15 +527,23 @@ fn determine_context_kwarg(string_node: Node, source: &str) -> CompletionContext
         None => return CompletionContext::None,
     };
 
-    match_method_and_key(&method_name, arg_name)
+    if is_call_method(&method_name) && arg_name == "function_id" {
+        CompletionContext::FunctionId
+    } else {
+        CompletionContext::None
+    }
 }
 
-/// Shared logic for matching method name + key/arg name to a context.
-fn match_method_and_key(method: &str, key: &str) -> CompletionContext {
-    if (is_trigger_method(method) || is_register_trigger_method(method)) && key == "function_id" {
+/// The `function_id` of an object argument: the called function of `call`,
+/// the source (first argument) or the target (second) of `observe`.
+fn match_method_and_key(method: &str, key: &str, index: Option<usize>) -> CompletionContext {
+    if key != "function_id" {
+        return CompletionContext::None;
+    }
+    if is_call_method(method) {
         CompletionContext::FunctionId
-    } else if is_register_trigger_method(method) && key == "type" {
-        CompletionContext::TriggerType
+    } else if is_observe_method(method) {
+        index.map_or(CompletionContext::None, observe_argument_context)
     } else {
         CompletionContext::None
     }
@@ -491,7 +551,7 @@ fn match_method_and_key(method: &str, key: &str) -> CompletionContext {
 
 // --- Method name extraction ---
 
-fn extract_method_name(call: Node, source: &str) -> Option<String> {
+pub(crate) fn extract_method_name(call: Node, source: &str) -> Option<String> {
     let func = call.child_by_field_name("function")?;
 
     if is_method_access(func.kind()) {
@@ -511,9 +571,14 @@ fn extract_method_name(call: Node, source: &str) -> Option<String> {
     None
 }
 
+/// The last segment of a Rust type path: `iii_sdk::CallRequest` → `CallRequest`.
+pub(crate) fn type_name(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
 // --- Rust struct field context ---
 // Chain: string_literal → ... → field_initializer → field_initializer_list → struct_expression
-// Rust SDK uses struct literals: TriggerRequest { function_id: "x".to_string() }
+// Rust SDK uses struct literals: CallRequest { function_id: "x".to_string(), .. }
 
 fn determine_context_rust_field(string_node: Node, source: &str) -> CompletionContext {
     // Walk up from string to find the field_initializer (may pass through .to_string() call)
@@ -551,54 +616,100 @@ fn determine_context_rust_field(string_node: Node, source: &str) -> CompletionCo
         Some(n) => n,
         None => return CompletionContext::None,
     };
-    let struct_name = struct_name_node.utf8_text(source.as_bytes()).unwrap_or("");
+    let struct_name = type_name(struct_name_node.utf8_text(source.as_bytes()).unwrap_or(""));
 
-    // Match struct type + field name to context
-    match (struct_name, field_text) {
-        ("TriggerRequest", "function_id") => CompletionContext::FunctionId,
-        ("RegisterTriggerInput", "function_id") => CompletionContext::FunctionId,
-        ("RegisterTriggerInput", "trigger_type") => CompletionContext::TriggerType,
+    if is_call_request_type(struct_name) && field_text == "function_id" {
+        CompletionContext::FunctionId
+    } else {
+        CompletionContext::None
+    }
+}
+
+// --- Positional argument context ---
+// Chain: string → (Rust: .to_string() / .into()) → arguments → call
+// observe('source', 'target'), observe_with(source, target, options),
+// CallRequest::new("x", payload), Source::function("x"), Target::function("x")
+
+fn determine_context_positional(string_node: Node, source: &str) -> CompletionContext {
+    let mut current = string_node;
+    let arguments = loop {
+        let Some(parent) = current.parent() else {
+            return CompletionContext::None;
+        };
+        if is_arguments(parent.kind()) {
+            break parent;
+        }
+        // A string that is a key's value, or inside a collection, is not an
+        // argument of its own.
+        if parent.kind() != "field_expression" && !is_call(parent.kind()) {
+            return CompletionContext::None;
+        }
+        current = parent;
+    };
+
+    let Some(call) = arguments.parent().filter(|node| is_call(node.kind())) else {
+        return CompletionContext::None;
+    };
+    let Some(index) = argument_index(arguments, current) else {
+        return CompletionContext::None;
+    };
+
+    if let Some(method) = extract_method_name(call, source) {
+        return if is_observe_method(&method) {
+            observe_argument_context(index)
+        } else {
+            CompletionContext::None
+        };
+    }
+
+    let Some(function) = call.child_by_field_name("function") else {
+        return CompletionContext::None;
+    };
+    let path = function.utf8_text(source.as_bytes()).unwrap_or("");
+    match rust_constructor_context(path) {
+        Some(context) if index == 0 => context,
         _ => CompletionContext::None,
     }
 }
 
-// --- Rust constructor argument context ---
-// Chain: string_literal → ... → arguments → call_expression
+// --- Observe arg value context ---
+// Chain: string → pair → object (args) → pair (args) → object (source) → arguments → call
 
-fn determine_context_rust_constructor(string_node: Node, source: &str) -> CompletionContext {
-    let mut current = string_node;
-    while let Some(parent) = current.parent() {
-        if is_arguments(parent.kind()) {
-            let Some(call) = parent.parent().filter(|node| is_call(node.kind())) else {
-                return CompletionContext::None;
-            };
-            let Some(function) = call.child_by_field_name("function") else {
-                return CompletionContext::None;
-            };
-            let function_name = function.utf8_text(source.as_bytes()).unwrap_or("");
-            if !function_name.ends_with("RegisterTriggerInput::new") {
-                return CompletionContext::None;
-            }
+fn determine_context_arg_value(string_node: Node, source: &str) -> CompletionContext {
+    observe_arg_value(string_node, source).unwrap_or(CompletionContext::None)
+}
 
-            let mut cursor = parent.walk();
-            let argument_index = parent.named_children(&mut cursor).position(|argument| {
-                argument.start_byte() <= string_node.start_byte()
-                    && argument.end_byte() >= string_node.end_byte()
-            });
-            return match argument_index {
-                Some(0) => CompletionContext::TriggerType,
-                Some(1) => CompletionContext::FunctionId,
-                _ => CompletionContext::None,
-            };
-        }
-        current = parent;
+fn observe_arg_value(string_node: Node, source: &str) -> Option<CompletionContext> {
+    let pair = string_node.parent().filter(|p| p.kind() == "pair")?;
+    let arg = strip_quotes(
+        pair.child_by_field_name("key")?
+            .utf8_text(source.as_bytes())
+            .ok()?,
+    );
+    let args_object = pair.parent().filter(|o| is_object(o.kind()))?;
+    let source_object = observe_args_source(args_object, source)?;
+    let function_id = find_string_value_in_object(source_object, "function_id", source)?;
+    Some(CompletionContext::ArgValue { function_id, arg })
+}
+
+/// The source object of an `observe` call whose `args` is `args_object`.
+fn observe_args_source<'a>(args_object: Node<'a>, source: &str) -> Option<Node<'a>> {
+    let args_pair = args_object.parent().filter(|p| p.kind() == "pair")?;
+    let key = args_pair.child_by_field_name("key")?;
+    if strip_quotes(key.utf8_text(source.as_bytes()).ok()?) != "args" {
+        return None;
     }
-    CompletionContext::None
+    let source_object = args_pair.parent().filter(|o| is_object(o.kind()))?;
+    let arguments = source_object.parent().filter(|a| is_arguments(a.kind()))?;
+    let call = arguments.parent().filter(|c| is_call(c.kind()))?;
+    let method = extract_method_name(call, source)?;
+    (is_observe_method(&method) && argument_index(arguments, source_object) == Some(0))
+        .then_some(source_object)
 }
 
 // --- Known value fields ---
 
-const KNOWN_VALUE_FIELDS: &[&str] = &["stream_name", "topic", "api_path", "scope", "queue"];
+const KNOWN_VALUE_FIELDS: &[&str] = &["stream_name", "topic", "scope", "queue"];
 
 fn check_known_value_field(string_node: Node, source: &str) -> Option<CompletionContext> {
     // Walk up to find the container (may pass through .to_string() in Rust)
@@ -654,7 +765,7 @@ fn check_known_value_field(string_node: Node, source: &str) -> Option<Completion
     }
 }
 
-// --- Object/dict context (payload properties, trigger config properties) ---
+// --- Object/dict context (payload properties, observe args) ---
 
 fn determine_object_context(node: Node, source: &str) -> CompletionContext {
     let mut current = node;
@@ -706,13 +817,15 @@ fn check_nested_object_pair(object: Node, source: &str) -> Option<CompletionCont
     let method_name = extract_method_name(call, source)?;
 
     match (method_name.as_str(), key_text.as_str()) {
-        (m, "payload" | "data") if is_trigger_method(m) => {
+        (m, "payload" | "data") if is_call_method(m) => {
             let fid = find_string_value_in_object(outer_object, "function_id", source)?;
             Some(CompletionContext::PayloadProperty { function_id: fid })
         }
-        (m, "config") if is_register_trigger_method(m) => {
-            let tt = find_string_value_in_object(outer_object, "type", source)?;
-            Some(CompletionContext::TriggerConfigProperty { trigger_type: tt })
+        (m, "args")
+            if is_observe_method(m) && argument_index(arguments, outer_object) == Some(0) =>
+        {
+            let fid = find_string_value_in_object(outer_object, "function_id", source)?;
+            Some(CompletionContext::ArgsProperty { function_id: fid })
         }
         _ => None,
     }
@@ -741,13 +854,9 @@ fn check_nested_object_kwarg(object: Node, source: &str) -> Option<CompletionCon
     let method_name = extract_method_name(call, source)?;
 
     match (method_name.as_str(), key_text) {
-        (m, "payload" | "data") if is_trigger_method(m) => {
+        (m, "payload" | "data") if is_call_method(m) => {
             let fid = find_kwarg_string_value(arg_list, "function_id", source)?;
             Some(CompletionContext::PayloadProperty { function_id: fid })
-        }
-        (m, "config") if is_register_trigger_method(m) => {
-            let tt = find_kwarg_string_value(arg_list, "type", source)?;
-            Some(CompletionContext::TriggerConfigProperty { trigger_type: tt })
         }
         _ => None,
     }
@@ -795,7 +904,7 @@ fn find_kwarg_string_value(arg_list: Node, target_name: &str, source: &str) -> O
 }
 
 /// Strip surrounding quotes from a string (Python dict keys are quoted).
-fn strip_quotes(s: &str) -> String {
+pub(crate) fn strip_quotes(s: &str) -> String {
     s.trim_matches('\'').trim_matches('"').to_string()
 }
 
@@ -811,35 +920,38 @@ mod tests {
         Position { line, character }
     }
 
-    // --- TypeScript tests ---
+    /// The position of the first character after the first `needle` in an
+    /// ASCII `source`.
+    fn after(source: &str, needle: &str) -> Position {
+        let offset = source.find(needle).expect("needle in source") + needle.len();
+        let line = source[..offset].matches('\n').count() as u32;
+        let column = offset - source[..offset].rfind('\n').map_or(0, |n| n + 1);
+        pos(line, column as u32)
+    }
+
+    // --- TypeScript: call ---
 
     #[test]
-    fn ts_trigger_function_id() {
-        let source = r#"iii.trigger({ function_id: 'todos::create' })"#;
-        let result = analyze(source, pos(0, 28), Language::TypeScript);
+    fn ts_call_function_id() {
+        let source = r#"iii.call({ function_id: 'todos::create' })"#;
+        let result = analyze(source, pos(0, 25), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
-    fn ts_trigger_function_id_empty() {
-        let source = r#"iii.trigger({ function_id: '' })"#;
-        let result = analyze(source, pos(0, 27), Language::TypeScript);
+    fn ts_call_function_id_empty() {
+        let source = r#"iii.call({ function_id: '' })"#;
+        let result = analyze(source, pos(0, 24), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
-    fn ts_register_trigger_type() {
-        let source = r#"iii.registerTrigger({ type: 'http', function_id: 'greet' })"#;
-        let result = analyze(source, pos(0, 29), Language::TypeScript);
-        assert_eq!(result.context, CompletionContext::TriggerType);
-    }
-
-    #[test]
-    fn ts_register_trigger_function_id() {
-        let source = r#"iii.registerTrigger({ type: 'http', function_id: 'greet' })"#;
-        let result = analyze(source, pos(0, 50), Language::TypeScript);
+    fn ts_trigger_alias_function_id() {
+        let source = r#"iii.trigger({ function_id: 'todos::create' })"#;
+        let result = analyze(source, pos(0, 28), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
@@ -851,58 +963,58 @@ mod tests {
 
     #[test]
     fn ts_cursor_in_comment() {
-        let source = r#"// iii.trigger({ function_id: 'test' })"#;
-        let result = analyze(source, pos(0, 31), Language::TypeScript);
+        let source = r#"// iii.call({ function_id: 'test' })"#;
+        let result = analyze(source, pos(0, 28), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::None);
     }
 
     #[test]
-    fn ts_await_trigger() {
-        let source = r#"await iii.trigger({ function_id: 'test' })"#;
-        let result = analyze(source, pos(0, 34), Language::TypeScript);
+    fn ts_await_call() {
+        let source = r#"await iii.call({ function_id: 'test' })"#;
+        let result = analyze(source, pos(0, 31), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
-    fn ts_multiline_trigger() {
-        let source = "iii.trigger({\n  function_id: 'todos::create',\n  payload: {}\n})";
+    fn ts_multiline_call() {
+        let source = "iii.call({\n  function_id: 'todos::create',\n  payload: {}\n})";
         let result = analyze(source, pos(1, 17), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn ts_nested_object_not_completable() {
-        let source = r#"iii.trigger({ options: { function_id: 'test' } })"#;
-        let result = analyze(source, pos(0, 39), Language::TypeScript);
+        let source = r#"iii.call({ options: { function_id: 'test' } })"#;
+        let result = analyze(source, pos(0, 36), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::None);
     }
 
     #[test]
     fn ts_double_quoted_string() {
-        let source = r#"iii.trigger({ function_id: "todos::create" })"#;
-        let result = analyze(source, pos(0, 28), Language::TypeScript);
+        let source = r#"iii.call({ function_id: "todos::create" })"#;
+        let result = analyze(source, pos(0, 25), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn ts_unclosed_string() {
-        let source = "iii.trigger({function_id: '";
-        let result = analyze(source, pos(0, 27), Language::TypeScript);
+        let source = "iii.call({function_id: '";
+        let result = analyze(source, pos(0, 24), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn ts_unclosed_string_partial() {
-        let source = "iii.trigger({function_id: 'to";
-        let result = analyze(source, pos(0, 29), Language::TypeScript);
+        let source = "iii.call({function_id: 'to";
+        let result = analyze(source, pos(0, 26), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "to");
     }
 
     #[test]
     fn ts_payload_property() {
-        let source = "iii.trigger({ function_id: 'todos::create', payload: {} })";
-        let result = analyze(source, pos(0, 54), Language::TypeScript);
+        let source = "iii.call({ function_id: 'todos::create', payload: {} })";
+        let result = analyze(source, pos(0, 51), Language::TypeScript);
         assert_eq!(
             result.context,
             CompletionContext::PayloadProperty {
@@ -912,21 +1024,13 @@ mod tests {
     }
 
     #[test]
-    fn ts_trigger_config() {
-        let source = "iii.registerTrigger({ type: 'http', function_id: 'x', config: {} })";
-        let result = analyze(source, pos(0, 63), Language::TypeScript);
-        assert_eq!(
-            result.context,
-            CompletionContext::TriggerConfigProperty {
-                trigger_type: "http".to_string()
-            }
-        );
-    }
-
-    #[test]
     fn ts_known_value_stream_name() {
-        let source = "iii.registerTrigger({ type: 'stream', function_id: 'x', config: { stream_name: '' } })";
-        let result = analyze(source, pos(0, 80), Language::TypeScript);
+        let source = "iii.call({ function_id: 'stream::set', payload: { stream_name: '' } })";
+        let result = analyze(
+            source,
+            after(source, "stream_name: '"),
+            Language::TypeScript,
+        );
         assert_eq!(
             result.context,
             CompletionContext::KnownValue {
@@ -935,42 +1039,126 @@ mod tests {
         );
     }
 
+    // --- TypeScript: observe ---
+
+    #[test]
+    fn ts_observe_shorthand_source_and_target() {
+        let source = "iii.observe('orders::create', 'alerts::big-order')";
+        let result = analyze(source, after(source, "observe('"), Language::TypeScript);
+        assert_eq!(result.context, CompletionContext::ObservableFunctionId);
+        assert_eq!(result.current_text, "orders::create");
+
+        let result = analyze(source, after(source, ", '"), Language::TypeScript);
+        assert_eq!(result.context, CompletionContext::TargetFunctionId);
+        assert_eq!(result.current_text, "alerts::big-order");
+    }
+
+    #[test]
+    fn ts_observe_source_function_id() {
+        let source = "iii.observe({ function_id: 'cron::on-tick', args: {} }, 'reports::daily')";
+        let result = analyze(
+            source,
+            after(source, "function_id: '"),
+            Language::TypeScript,
+        );
+        assert_eq!(result.context, CompletionContext::ObservableFunctionId);
+        assert_eq!(result.current_text, "cron::on-tick");
+    }
+
+    #[test]
+    fn ts_observe_object_target_function_id() {
+        let source =
+            "iii.observe('cron::on-tick', { function_id: 'reports::daily', namespace: 'ops' })";
+        let result = analyze(
+            source,
+            after(source, "function_id: '"),
+            Language::TypeScript,
+        );
+        assert_eq!(result.context, CompletionContext::TargetFunctionId);
+    }
+
+    #[test]
+    fn ts_observe_args_property() {
+        let source = "iii.observe({ function_id: 'cron::on-tick', args: {} }, 'reports::daily')";
+        let result = analyze(source, after(source, "args: {"), Language::TypeScript);
+        assert_eq!(
+            result.context,
+            CompletionContext::ArgsProperty {
+                function_id: "cron::on-tick".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn ts_observe_arg_value() {
+        let source = "iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '' } }, 'api::users')";
+        let result = analyze(source, after(source, "path: '"), Language::TypeScript);
+        assert_eq!(
+            result.context,
+            CompletionContext::ArgValue {
+                function_id: "http::on-request".to_string(),
+                arg: "path".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn ts_observe_arg_value_takes_precedence_over_known_fields() {
+        let source =
+            "iii.observe({ function_id: 'queue::on-message', args: { topic: 'orders' } }, 'x::y')";
+        let result = analyze(source, after(source, "topic: '"), Language::TypeScript);
+        assert_eq!(
+            result.context,
+            CompletionContext::ArgValue {
+                function_id: "queue::on-message".to_string(),
+                arg: "topic".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn ts_observe_options_are_not_completable() {
+        let source = "iii.observe('a::on-b', 'c::d', { id: 'x' })";
+        let result = analyze(source, after(source, "id: '"), Language::TypeScript);
+        assert_eq!(result.context, CompletionContext::None);
+    }
+
+    #[test]
+    fn ts_unclosed_observe_target() {
+        let source = "iii.observe('orders::create', '";
+        let result = analyze(source, after(source, ", '"), Language::TypeScript);
+        assert_eq!(result.context, CompletionContext::TargetFunctionId);
+    }
+
     // --- Python dict-style tests ---
 
     #[test]
-    fn py_trigger_function_id_dict() {
-        let source = "iii.trigger({'function_id': 'todos::create'})";
-        let result = analyze(source, pos(0, 29), Language::Python);
+    fn py_call_function_id_dict() {
+        let source = "iii.call({'function_id': 'todos::create'})";
+        let result = analyze(source, pos(0, 26), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
-    fn py_trigger_async_function_id_dict() {
+    fn py_call_async_function_id_dict() {
+        let source = "await iii.call_async({'function_id': 'todos::create'})";
+        let result = analyze(source, pos(0, 38), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
+    }
+
+    #[test]
+    fn py_trigger_async_alias_function_id_dict() {
         let source = "await iii.trigger_async({'function_id': 'todos::create'})";
         let result = analyze(source, pos(0, 41), Language::Python);
-        assert_eq!(result.context, CompletionContext::FunctionId);
-        assert_eq!(result.current_text, "todos::create");
-    }
-
-    #[test]
-    fn py_register_trigger_type_dict() {
-        let source = "iii.register_trigger({'type': 'http', 'function_id': 'x'})";
-        let result = analyze(source, pos(0, 31), Language::Python);
-        assert_eq!(result.context, CompletionContext::TriggerType);
-    }
-
-    #[test]
-    fn py_register_trigger_function_id_dict() {
-        let source = "iii.register_trigger({'type': 'http', 'function_id': 'greet'})";
-        let result = analyze(source, pos(0, 55), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn py_payload_dict() {
-        let source = "iii.trigger({'function_id': 'x', 'payload': {}})";
-        let result = analyze(source, pos(0, 45), Language::Python);
+        let source = "iii.call({'function_id': 'x', 'payload': {}})";
+        let result = analyze(source, pos(0, 42), Language::Python);
         assert_eq!(
             result.context,
             CompletionContext::PayloadProperty {
@@ -981,8 +1169,8 @@ mod tests {
 
     #[test]
     fn py_payload_async_dict() {
-        let source = "await iii.trigger_async({'function_id': 'x', 'payload': {}})";
-        let result = analyze(source, pos(0, 57), Language::Python);
+        let source = "await iii.call_async({'function_id': 'x', 'payload': {}})";
+        let result = analyze(source, pos(0, 54), Language::Python);
         assert_eq!(
             result.context,
             CompletionContext::PayloadProperty {
@@ -992,13 +1180,36 @@ mod tests {
     }
 
     #[test]
-    fn py_trigger_config_dict() {
-        let source = "iii.register_trigger({'type': 'http', 'function_id': 'x', 'config': {}})";
-        let result = analyze(source, pos(0, 69), Language::Python);
+    fn py_observe_source_dict() {
+        let source =
+            "iii.observe({'function_id': 'state::on-changed', 'filters': {}}, 'orders::project')";
+        let result = analyze(source, after(source, "'function_id': '"), Language::Python);
+        assert_eq!(result.context, CompletionContext::ObservableFunctionId);
+        let result = analyze(source, after(source, "}, '"), Language::Python);
+        assert_eq!(result.context, CompletionContext::TargetFunctionId);
+    }
+
+    #[test]
+    fn py_observe_args_dict() {
+        let source = "iii.observe({'function_id': 'cron::on-tick', 'args': {}}, 'reports::daily')";
+        let result = analyze(source, after(source, "'args': {"), Language::Python);
         assert_eq!(
             result.context,
-            CompletionContext::TriggerConfigProperty {
-                trigger_type: "http".to_string()
+            CompletionContext::ArgsProperty {
+                function_id: "cron::on-tick".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn py_observe_arg_value_dict() {
+        let source = "iii.observe({'function_id': 'cron::on-tick', 'args': {'expression': '0 * * * * *'}}, 'r::d')";
+        let result = analyze(source, after(source, "'expression': '"), Language::Python);
+        assert_eq!(
+            result.context,
+            CompletionContext::ArgValue {
+                function_id: "cron::on-tick".to_string(),
+                arg: "expression".to_string(),
             }
         );
     }
@@ -1006,32 +1217,25 @@ mod tests {
     // --- Python keyword argument tests ---
 
     #[test]
-    fn py_trigger_function_id_kwarg() {
-        let source = "iii.trigger(function_id='todos::create')";
-        let result = analyze(source, pos(0, 25), Language::Python);
+    fn py_call_function_id_kwarg() {
+        let source = "iii.call(function_id='todos::create')";
+        let result = analyze(source, pos(0, 22), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
-    fn py_trigger_async_function_id_kwarg() {
-        let source = "await iii.trigger_async(function_id='todos::create')";
-        let result = analyze(source, pos(0, 37), Language::Python);
+    fn py_call_async_function_id_kwarg() {
+        let source = "await iii.call_async(function_id='todos::create')";
+        let result = analyze(source, pos(0, 34), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "todos::create");
-    }
-
-    #[test]
-    fn py_register_trigger_type_kwarg() {
-        let source = "iii.register_trigger(type='http', function_id='x')";
-        let result = analyze(source, pos(0, 27), Language::Python);
-        assert_eq!(result.context, CompletionContext::TriggerType);
     }
 
     #[test]
     fn py_payload_kwarg() {
-        let source = "iii.trigger(function_id='x', payload={})";
-        let result = analyze(source, pos(0, 38), Language::Python);
+        let source = "iii.call(function_id='x', payload={})";
+        let result = analyze(source, pos(0, 35), Language::Python);
         assert_eq!(
             result.context,
             CompletionContext::PayloadProperty {
@@ -1041,27 +1245,14 @@ mod tests {
     }
 
     #[test]
-    fn py_trigger_config_kwarg() {
-        let source = "iii.register_trigger(type='http', function_id='x', config={})";
-        let result = analyze(source, pos(0, 59), Language::Python);
-        assert_eq!(
-            result.context,
-            CompletionContext::TriggerConfigProperty {
-                trigger_type: "http".to_string()
-            }
-        );
-    }
-
-    #[test]
     fn py_known_value_dict() {
-        // Known value inside a dict-style config with non-empty string
-        let source = "iii.register_trigger({'type': 'stream', 'function_id': 'x', 'config': {'stream_name': 'users'}})";
-        // Cursor inside 'users'
-        let result = analyze(source, pos(0, 88), Language::Python);
+        // Known value inside a call payload with a non-empty string
+        let source = "iii.call({'function_id': 'state::get', 'payload': {'scope': 'users'}})";
+        let result = analyze(source, after(source, "'scope': 'u"), Language::Python);
         assert_eq!(
             result.context,
             CompletionContext::KnownValue {
-                field_name: "stream_name".to_string()
+                field_name: "scope".to_string()
             }
         );
     }
@@ -1075,44 +1266,52 @@ mod tests {
 
     #[test]
     fn py_comment_not_completable() {
-        let source = "# iii.trigger(function_id='test')";
-        let result = analyze(source, pos(0, 27), Language::Python);
+        let source = "# iii.call(function_id='test')";
+        let result = analyze(source, pos(0, 24), Language::Python);
         assert_eq!(result.context, CompletionContext::None);
     }
 
     // --- Rust tests ---
 
     #[test]
-    fn rs_trigger_function_id() {
-        let source = r#"iii.trigger(TriggerRequest { function_id: "todos::create".to_string(), payload: json!({}), action: None, timeout_ms: None })"#;
-        // Cursor inside "todos::create"
-        let result = analyze(source, pos(0, 43), Language::Rust);
+    fn rs_call_request_struct_function_id() {
+        let source = r#"iii.call(CallRequest { function_id: "todos::create".to_string(), payload: json!({}), action: None, timeout_ms: None })"#;
+        let result = analyze(source, after(source, "function_id: \""), Language::Rust);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
-    fn rs_register_trigger_type() {
-        let source = r#"iii.register_trigger(RegisterTriggerInput::new(
-            "http".to_string(),
-            "x".to_string(),
-            json!({}),
-        ))"#;
-        let result = analyze(source, pos(1, 14), Language::Rust);
-        assert_eq!(result.context, CompletionContext::TriggerType);
-        assert_eq!(result.current_text, "http");
+    fn rs_call_request_new_function_id() {
+        let source = r#"iii.call(CallRequest::new("todos::create", json!({}))).await"#;
+        let result = analyze(source, after(source, "new(\""), Language::Rust);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
-    fn rs_register_trigger_function_id() {
-        let source = r#"iii.register_trigger(RegisterTriggerInput::new(
-            "http".to_string(),
-            "greet".to_string(),
-            json!({}),
-        ))"#;
-        let result = analyze(source, pos(2, 14), Language::Rust);
-        assert_eq!(result.context, CompletionContext::FunctionId);
-        assert_eq!(result.current_text, "greet");
+    fn rs_observe_source_and_target() {
+        let source = r#"iii.observe(
+            Source::function("cron::on-tick").args(json!({ "expression": "0 0 9 * * *" })),
+            "reports::daily",
+        );"#;
+        let result = analyze(source, after(source, "function(\""), Language::Rust);
+        assert_eq!(result.context, CompletionContext::ObservableFunctionId);
+        assert_eq!(result.current_text, "cron::on-tick");
+
+        let result = analyze(source, after(source, "            \"r"), Language::Rust);
+        assert_eq!(result.context, CompletionContext::TargetFunctionId);
+    }
+
+    #[test]
+    fn rs_observe_with_target_function() {
+        let source = r#"iii.observe_with(Source::function("a::on-b"), Target::function("c::d").namespace("ops"), ObserverOptions::default())"#;
+        let result = analyze(source, after(source, "Target::function(\""), Language::Rust);
+        assert_eq!(result.context, CompletionContext::TargetFunctionId);
+        assert_eq!(result.current_text, "c::d");
+
+        let result = analyze(source, after(source, ".namespace(\""), Language::Rust);
+        assert_eq!(result.context, CompletionContext::None);
     }
 
     #[test]
@@ -1124,8 +1323,8 @@ mod tests {
 
     #[test]
     fn rs_comment_not_completable() {
-        let source = r#"// iii.trigger(TriggerRequest { function_id: "test" })"#;
-        let result = analyze(source, pos(0, 46), Language::Rust);
+        let source = r#"// iii.call(CallRequest { function_id: "test" })"#;
+        let result = analyze(source, pos(0, 40), Language::Rust);
         assert_eq!(result.context, CompletionContext::None);
     }
 
@@ -1134,43 +1333,61 @@ mod tests {
     #[test]
     fn ts_real_file_unclosed_string() {
         // Simulates a real TS file where the user is typing on one line
-        let source = "import { iii } from './iii'\n\nconst result = await iii.trigger({ function_id: '\n\nconst x = 1;\n";
+        let source = "import { iii } from './iii'\n\nconst result = await iii.call({ function_id: '\n\nconst x = 1;\n";
         // Cursor after the quote on line 2
-        let result = analyze(source, pos(2, 50), Language::TypeScript);
+        let result = analyze(source, pos(2, 47), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn py_real_file_unclosed_string_dict() {
-        // Line 2: "result = iii.trigger({'function_id': '" = 38 chars
-        let source = "from iii import iii\n\nresult = iii.trigger({'function_id': '\n\nx = 1\n";
-        let result = analyze(source, pos(2, 38), Language::Python);
+        // Line 2: "result = iii.call({'function_id': '" = 35 chars
+        let source = "from iii import iii\n\nresult = iii.call({'function_id': '\n\nx = 1\n";
+        let result = analyze(source, pos(2, 35), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn py_real_file_unclosed_string_kwarg() {
-        // Line 2: "result = iii.trigger(function_id='" = 34 chars
-        let source = "from iii import iii\n\nresult = iii.trigger(function_id='\n\nx = 1\n";
-        let result = analyze(source, pos(2, 34), Language::Python);
+        // Line 2: "result = iii.call(function_id='" = 31 chars
+        let source = "from iii import iii\n\nresult = iii.call(function_id='\n\nx = 1\n";
+        let result = analyze(source, pos(2, 31), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn py_real_file_unclosed_string_async_dict() {
-        // Line 2: "result = await iii.trigger_async({'function_id': '" = 50 chars
+        // Line 2: "result = await iii.call_async({'function_id': '" = 47 chars
         let source =
-            "from iii import iii\n\nresult = await iii.trigger_async({'function_id': '\n\nx = 1\n";
-        let result = analyze(source, pos(2, 50), Language::Python);
+            "from iii import iii\n\nresult = await iii.call_async({'function_id': '\n\nx = 1\n";
+        let result = analyze(source, pos(2, 47), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
     fn py_real_file_unclosed_string_async_kwarg() {
-        // Line 2: "result = await iii.trigger_async(function_id='" = 46 chars
+        // Line 2: "result = await iii.call_async(function_id='" = 43 chars
         let source =
-            "from iii import iii\n\nresult = await iii.trigger_async(function_id='\n\nx = 1\n";
-        let result = analyze(source, pos(2, 46), Language::Python);
+            "from iii import iii\n\nresult = await iii.call_async(function_id='\n\nx = 1\n";
+        let result = analyze(source, pos(2, 43), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
+    }
+
+    #[test]
+    fn rust_constructor_paths() {
+        assert_eq!(
+            rust_constructor_context("iii_sdk::CallRequest::new"),
+            Some(CompletionContext::FunctionId)
+        );
+        assert_eq!(
+            rust_constructor_context("Source::function"),
+            Some(CompletionContext::ObservableFunctionId)
+        );
+        assert_eq!(
+            rust_constructor_context("Target::function"),
+            Some(CompletionContext::TargetFunctionId)
+        );
+        assert_eq!(rust_constructor_context("Vec::new"), None);
+        assert_eq!(rust_constructor_context("new"), None);
     }
 }

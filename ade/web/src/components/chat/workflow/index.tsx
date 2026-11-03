@@ -1,6 +1,6 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { NodeResultView } from './NodeResultView'
 import { isWorkflowFunction, unwrapEnvelope } from './parsers'
 import { StartView } from './StartView'
@@ -29,7 +29,7 @@ export function WorkflowFunctionIdLabel({
   )
 }
 
-function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
+function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   if (!isWorkflowFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -64,7 +64,7 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
  * definition before approval, and approvals are rare on workflow calls.
  */
 function tryRenderPreview(
-  _message: FunctionTriggerMessage,
+  _message: FunctionCallMessage,
 ): React.ReactNode | null {
   return null
 }

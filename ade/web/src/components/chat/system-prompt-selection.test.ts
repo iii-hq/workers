@@ -147,11 +147,11 @@ describe('turnEstablishedFrom', () => {
   // A first turn that ended on harness::ask: the call is its only row.
   const askCall: Message = {
     id: 'e_a1:0',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'harness::ask',
     input: { questions: [] },
     output: { content: [], details: { status: 'awaiting_answer' } },
-    functionTriggerId: 'call_ask_1',
+    functionCallId: 'call_ask_1',
     createdAt: 2,
   }
   // What ChatView appends when a send fails before any turn ran.
@@ -172,7 +172,7 @@ describe('turnEstablishedFrom', () => {
     expect(turnEstablishedFrom([user, assistant])).toBe(true)
   })
 
-  it('a function-trigger row is: a first turn that ended on harness::ask', () => {
+  it('a function-call row is: a first turn that ended on harness::ask', () => {
     expect(turnEstablishedFrom([user, askCall])).toBe(true)
   })
 

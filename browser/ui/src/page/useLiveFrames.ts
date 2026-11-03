@@ -1,9 +1,9 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import {
-  BROWSER_FRAME_EVENT_TRIGGER,
-  BROWSER_NAVIGATED_TRIGGER,
-  BROWSER_SESSION_UPDATED_TRIGGER,
+  BROWSER_ON_FRAME_EVENT_FUNCTION_ID,
+  BROWSER_ON_NAVIGATED_FUNCTION_ID,
+  BROWSER_ON_SESSION_UPDATED_FUNCTION_ID,
   parseFrameEvent,
   readBrowserFrame,
   startBrowserScreencast,
@@ -14,16 +14,16 @@ import { useBrowserSessionEvent } from '../lib/events'
 
 /**
  * Live view for the selected tab, fed by the worker's screencast:
- * `screencast::start` on mount, then every frame arrives on the
- * `browser::frame-event` trigger (bound with this tab's `session_id`, the
- * same path the console and network feeds use) and this hook paints it. No
- * polling. One `browser::frame` seed read paints the current frame
- * immediately (the trigger only delivers frames produced after the binding).
- * An engine without a screencast (Lightpanda, which paints nothing) shows a
+ * `screencast::start` on mount, then every frame arrives as a call of
+ * `browser::on-frame-event` (observed with this tab's `session_id` as args,
+ * `max_in_flight: 1`) and this hook paints it. No polling. One
+ * `browser::frame` seed read paints the current frame immediately (the
+ * observer only receives frames produced after it is active). An engine
+ * without a screencast (Lightpanda, which paints nothing) shows a
  * `browser::screenshot` instead, re-taken when the tab navigates or updates
- * (`browser::navigated` / `browser::session-updated` for this tab), on a
- * reseed, and on wake — never on a timer. `screencast::stop` runs on unmount
- * and tab switch (idempotent).
+ * (`browser::on-navigated` / `browser::on-session-updated` for this tab), on
+ * a reseed, and on wake — never on a timer. `screencast::stop` runs on
+ * unmount and tab switch (idempotent).
  */
 
 /** How long the worker keeps a pane's viewer without a renewal, and how
@@ -127,8 +127,8 @@ export function useLiveFrames(
         return
       }
       if (cancelled) return
-      // Immediate first paint: the stream only delivers frames produced after
-      // the subscription, so read the current one once.
+      // Immediate first paint: the observer only receives frames produced
+      // after it is active, so read the current one once.
       const seed = await readBrowserFrame(host.iii, sessionId).catch(() => null)
       if (cancelled || !seed?.frame) return
       if (seed.frame_seq > lastSeqRef.current) {
@@ -177,7 +177,7 @@ export function useLiveFrames(
   useBrowserSessionEvent({
     host,
     enabled: enabled && stillsOnly && !!sessionId,
-    triggerType: BROWSER_NAVIGATED_TRIGGER,
+    functionId: BROWSER_ON_NAVIGATED_FUNCTION_ID,
     sessionId,
     fnId: 'iii::browser-ui::still-navigated',
     onEvent: retakeStill,
@@ -185,7 +185,7 @@ export function useLiveFrames(
   useBrowserSessionEvent({
     host,
     enabled: enabled && stillsOnly && !!sessionId,
-    triggerType: BROWSER_SESSION_UPDATED_TRIGGER,
+    functionId: BROWSER_ON_SESSION_UPDATED_FUNCTION_ID,
     sessionId,
     fnId: 'iii::browser-ui::still-updated',
     // A tab going to sleep has nothing to show, and a screenshot would wake it.
@@ -197,7 +197,7 @@ export function useLiveFrames(
   useBrowserSessionEvent({
     host,
     enabled: enabled && !!sessionId,
-    triggerType: BROWSER_FRAME_EVENT_TRIGGER,
+    functionId: BROWSER_ON_FRAME_EVENT_FUNCTION_ID,
     sessionId,
     fnId: 'iii::browser-ui::frames',
     onEvent: (payload) => {

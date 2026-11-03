@@ -25,7 +25,7 @@ interface HarnessFilesystemInfoResult {
 }
 
 /**
- * iii triggers reject with a plain object `{ code, message }`, not an Error,
+ * iii calls reject with a plain object `{ code, message }`, not an Error,
  * and the message is often a nested `handler error: {"code":"C211","message":"…"}`.
  * Pull out the human-readable inner message.
  */
@@ -117,7 +117,7 @@ export async function validateWorkspaceDir(
   }
   try {
     const client = await getIiiClient()
-    const res = await client.trigger<WorkspaceValidateResult>(
+    const res = await client.call<WorkspaceValidateResult>(
       WORKSPACE_VALIDATE_FUNCTION_ID,
       { path: dir },
     )
@@ -182,7 +182,7 @@ type DefaultWorkingDirResolution =
 async function resolveLiveDefaultWorkingDir(): Promise<DefaultWorkingDirResolution> {
   try {
     const client = await getIiiClient()
-    const info = await client.trigger<HarnessFilesystemInfoResult>(
+    const info = await client.call<HarnessFilesystemInfoResult>(
       HARNESS_FILESYSTEM_INFO_FUNCTION_ID,
       {},
     )

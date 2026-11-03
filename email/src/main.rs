@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions, RegisterTriggerType};
+use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
 use std::sync::Arc;
 
 use email::configuration::{self, AppState};
@@ -90,36 +90,23 @@ async fn main() -> Result<()> {
     );
 
     email::provider::imap::connection::install_iii_handle(iii.clone());
-    let trig_registry = Arc::new(email::triggers::registry::TriggerRegistry::new());
-    let dispatcher: Arc<dyn email::triggers::dispatcher::EventDispatcher> = Arc::new(
-        email::triggers::dispatcher::EngineDispatcher::new(iii.clone(), trig_registry.clone()),
+    let dispatcher: Arc<dyn email::events::dispatcher::EventDispatcher> = Arc::new(
+        email::events::dispatcher::EngineDispatcher::new(iii.clone()),
     );
     let state = AppState::new(cfg, dispatcher);
 
     email::handlers::register_all(&iii, &state);
-
-    let _new_mail_ref = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            "email::new-mail",
-            "Fires when IMAP IDLE pushes a new message to a configured (account, folder). \
-         Payload: { account, folder, uid, message_id, from, subject, snippet, ts }. \
-         If the IMAP server lacks the IDLE capability, the account fails at startup (E610).",
-            email::triggers::new_mail::Handler {
-                registry: trig_registry.clone(),
-            },
-        )
-        .trigger_request_format::<email::triggers::new_mail::NewMailBindingConfig>(),
-    );
+    email::events::new_mail::register(&iii);
 
     let supervised = state.start_idle().await;
 
-    configuration::register_config_trigger(&iii, state.clone())
-        .map_err(|e| anyhow::anyhow!("configuration trigger binding failed: {e}"))?;
+    configuration::observe_config_changes(&iii, state.clone());
     configuration::register_config_status(&iii, state.clone());
 
     tracing::info!(
-        "email registered {} functions and 1 trigger type; {} IMAP connections supervised",
+        "email registered {} functions and {}; {} IMAP connections supervised",
         email::handlers::REGISTERED_FN_COUNT,
+        email::events::new_mail::ON_NEW_MAIL_FN,
         supervised,
     );
 

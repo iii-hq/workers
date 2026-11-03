@@ -17,7 +17,7 @@
       },
       {
         "path": "src",
-        "query": "registerTrigger|registerFunction",
+        "query": "observe|registerFunction",
         "regex": true,
         "search_paths": false
       }

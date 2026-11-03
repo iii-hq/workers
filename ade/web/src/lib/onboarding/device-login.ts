@@ -152,7 +152,7 @@ export async function startDeviceLogin(
   }
   report({ note: `asking ${provider.site} for a code` })
   const client = await getIiiClient()
-  const code = await client.trigger<
+  const code = await client.call<
     Partial<Omit<DeviceCode, 'device_code'>> & {
       device_code?: string
       login_id?: string
@@ -182,7 +182,7 @@ export async function pollDeviceLogin(
   deviceCode: string,
 ): Promise<DevicePollStatus> {
   const client = await getIiiClient()
-  const reply = await client.trigger<{ status?: string }>(provider.loginPoll, {
+  const reply = await client.call<{ status?: string }>(provider.loginPoll, {
     [provider.handle]: deviceCode,
   })
   switch (reply?.status) {

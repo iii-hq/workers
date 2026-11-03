@@ -3,7 +3,7 @@
  * from a generated trace, with no WebSocket and no engine. Where the lab
  * harness (`pages/TracesV2/stories/harness.tsx`) serves hand-authored
  * fixtures, this one serves a trace of any size and can STREAM it: the
- * snapshot advances on demand and the page's trace-activity trigger fires,
+ * snapshot advances on demand and the page's trace-activity handler runs,
  * exactly the notify-then-query loop a live engine runs.
  */
 
@@ -15,7 +15,7 @@ import {
   summarizeStressTrace,
 } from '@/pages/TracesV2/fixtures/stress-traces'
 
-type TriggerArgs = { function_id: string; payload?: Record<string, unknown> }
+type CallArgs = { function_id: string; payload?: Record<string, unknown> }
 type Handler = (data: unknown) => Promise<unknown>
 
 export interface StressSdk {
@@ -78,10 +78,7 @@ export function createStressSdk(options: StressSdkOptions): StressSdk {
     }
   }
 
-  async function trigger({
-    function_id,
-    payload,
-  }: TriggerArgs): Promise<unknown> {
+  async function call({ function_id, payload }: CallArgs): Promise<unknown> {
     calls[function_id] = (calls[function_id] ?? 0) + 1
     const p = payload ?? {}
     switch (function_id) {
@@ -118,12 +115,12 @@ export function createStressSdk(options: StressSdkOptions): StressSdk {
   }
 
   const sdk = {
-    trigger: (args: TriggerArgs) => trigger(args),
+    call: (args: CallArgs) => call(args),
     registerFunction: (id: string, handler: Handler) => {
       handlers.set(id, handler)
       return { unregister: () => handlers.delete(id) }
     },
-    registerTrigger: () => ({ unregister() {} }),
+    observe: () => ({ dispose: async () => {} }),
     addConnectionStateListener: () => () => {},
     shutdown: async () => {},
   } as unknown as ISdk

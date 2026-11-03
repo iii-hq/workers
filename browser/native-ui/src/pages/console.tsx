@@ -26,7 +26,7 @@ import {
   type Tone,
 } from '@iii-dev/native-ui'
 import { tabTitle } from '../address'
-import { browser, type ConsoleEntry, TRIGGER } from '../api'
+import { browser, type ConsoleEntry, EVENT } from '../api'
 import { createFeed, SEED_LIMIT, textFilter, workerPattern } from '../feed'
 import { clock, readable } from '../format'
 import { sessionOf } from '../state'
@@ -115,7 +115,7 @@ export function ConsolePage(props: { params: JsonObject }) {
   const want = () => LEVELS[level()]?.[1] ?? ''
   const feed = createFeed<ConsoleEntry, ConsoleRow>({
     session,
-    trigger: TRIGGER.consoleEvent,
+    event: EVENT.consoleEvent,
     filters: () => `${want()}|${pattern.filter()}`,
     read: (sinceSeq) =>
       browser.consoleRead(session, {

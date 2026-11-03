@@ -100,7 +100,7 @@ pub enum AssistantMessageEvent {
         /// Call id receiving this delta; empty from pre-id producers.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         id: String,
-        /// Incremental agent_trigger identity extracted by llm-router.
+        /// Incremental agent_call identity extracted by llm-router.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arguments_preview: Option<FunctionCallArgumentsPreview>,
     },

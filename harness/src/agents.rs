@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
@@ -131,7 +131,7 @@ pub async fn resolve(
 ) -> Result<ResolvedAgent, HarnessError> {
     let value = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: AGENTS_GET_ID.into(),
             payload: json!({ "id": id }),
             action: None,
@@ -187,7 +187,7 @@ async fn attach_preloaded_skills(
         }
         let response = deps
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: SKILLS_GET_ID.into(),
                 payload: json!({ "id": id }),
                 action: None,
@@ -300,7 +300,7 @@ pub(crate) fn render_preloaded_skills(
 
 /// One preloaded function as rendered into the prompt: the current description
 /// and request schema (compacted the way `engine::functions::info` results
-/// are compacted for the model — see `trigger::compact_schema`).
+/// are compacted for the model — see `call::compact_schema`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreloadedContract {
     pub function_id: String,
@@ -312,7 +312,7 @@ impl PreloadedContract {
     fn new(function_id: &str, description: Option<&str>, request_schema: Option<Value>) -> Self {
         let mut request_schema = request_schema.filter(|schema| !schema.is_null());
         if let Some(schema) = request_schema.as_mut() {
-            crate::trigger::compact_schema(schema);
+            crate::call::compact_schema(schema);
         }
         Self {
             function_id: function_id.to_string(),
@@ -369,7 +369,7 @@ pub(crate) fn effective_contract(
     if !policy.allows(id) {
         return None;
     }
-    if let Some((description, schema)) = crate::functions::subscribe::control_contract(id) {
+    if let Some((description, schema)) = crate::functions::observe::control_contract(id) {
         return Some(PreloadedContract::new(id, Some(description), Some(schema)));
     }
     if let Some(descriptor) = snapshot.functions.iter().find(|d| d.function_id == id) {
@@ -479,7 +479,7 @@ pub(crate) async fn lookup_contracts(
     for chunk in pending.chunks(INFO_BATCH_MAX) {
         let response = deps
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: FUNCTIONS_INFO_ID.into(),
                 payload: json!({ "function_ids": chunk }),
                 action: None,
@@ -579,7 +579,7 @@ pub(crate) fn render_preloaded_functions(
          `engine::functions::info` for these ids (fetch a contract again only after an \
          `invalid_arguments` error or a registry-change notice). Every other function still goes \
          through normal discovery.",
-        tool = crate::policy::AGENT_TRIGGER_NAME,
+        tool = crate::policy::AGENT_CALL_NAME,
     );
     for contract in contracts {
         body.push_str("\n\n### `");
@@ -1098,7 +1098,7 @@ mod tests {
         ));
         assert!(block.ends_with("\n</preloaded_functions>"));
         assert!(block.contains("pre-verified"));
-        assert!(block.contains("through `agent_trigger`"));
+        assert!(block.contains("through `agent_call`"));
         let tree = block.find("### `coder::tree`").expect("first contract");
         let bare = block.find("### `bare`").expect("second contract");
         assert!(tree < bare, "declaration order is kept");
@@ -1146,12 +1146,12 @@ mod tests {
             policy::CompiledPolicy,
             types::turn::{ExposeMode, FunctionPolicy},
         };
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
-        let ids: Vec<String> = ["engine::register_trigger", "engine::unregister_trigger"]
+        let deps = crate::functions::observe::tests::disconnected_deps();
+        let ids: Vec<String> = ["harness::observe", "harness::unobserve"]
             .into_iter()
             .map(str::to_string)
             .collect();
-        for expose in [ExposeMode::Native, ExposeMode::AgentTrigger] {
+        for expose in [ExposeMode::Native, ExposeMode::AgentCall] {
             for policy in [
                 None,
                 Some(FunctionPolicy {
@@ -1161,7 +1161,7 @@ mod tests {
                 }),
                 Some(FunctionPolicy {
                     allow: vec!["*".into()],
-                    deny: vec!["engine::register_trigger".into()],
+                    deny: vec!["harness::observe".into()],
                     expose,
                 }),
                 Some(FunctionPolicy {
@@ -1202,7 +1202,7 @@ mod tests {
                         assert_eq!(digests[id].is_some(), policy.allows(id));
                         if let Some(actual) = actual {
                             let (description, schema) =
-                                crate::functions::subscribe::control_contract(id).unwrap();
+                                crate::functions::observe::control_contract(id).unwrap();
                             assert_eq!(
                                 *actual,
                                 PreloadedContract::new(id, Some(description), Some(schema))
@@ -1225,29 +1225,29 @@ mod tests {
 
     #[tokio::test]
     async fn profile_freezes_only_effectively_authorized_controls() {
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let deps = crate::functions::observe::tests::disconnected_deps();
         let mut agent = normalize(
             "fixture",
             wire(json!({
                 "name":"Fixture", "system_prompt":"Identity.",
-                "functions":["engine::register_trigger", "engine::unregister_trigger"]
+                "functions":["harness::observe", "harness::unobserve"]
             })),
         );
         let policy =
             crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
                 allow: vec!["*".into()],
-                deny: vec!["engine::unregister_trigger".into()],
+                deny: vec!["harness::unobserve".into()],
                 ..Default::default()
             }));
         attach_preloaded_functions(&deps, &mut agent, &policy).await;
         assert!(agent
             .prompt
             .starts_with("Identity.\n\n<preloaded_functions>"));
-        assert!(agent.prompt.contains("### `engine::register_trigger`"));
-        assert!(!agent.prompt.contains("### `engine::unregister_trigger`"));
+        assert!(agent.prompt.contains("### `harness::observe`"));
+        assert!(!agent.prompt.contains("### `harness::unobserve`"));
         assert!(agent
             .prompt
-            .contains("NOT available in this session — do not call: `engine::unregister_trigger`"));
-        assert_eq!(agent.contract_digests["engine::unregister_trigger"], None);
+            .contains("NOT available in this session — do not call: `harness::unobserve`"));
+        assert_eq!(agent.contract_digests["harness::unobserve"], None);
     }
 }

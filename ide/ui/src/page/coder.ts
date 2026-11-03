@@ -1,6 +1,6 @@
 /* Thin typed wrappers over the worker's own `coder::*` functions — the
    explorer page acts by invoking them through the tab's bus client
-   (`host.iii.trigger`). Shapes mirror workers/ide/src/code/functions
+   (`host.iii.call`). Shapes mirror workers/ide/src/code/functions
    (the goldens under ide/tests/golden/schemas pin them); only the
    fields the page reads are declared. */
 
@@ -88,7 +88,7 @@ export interface SearchResponse {
 }
 
 export function coderInfo(host: Host): Promise<CoderInfo> {
-  return host.iii.trigger<CoderInfo>('coder::info', {})
+  return host.iii.call<CoderInfo>('coder::info', {})
 }
 
 /** Resolve a user/chat-selected directory to the worker's canonical path.
@@ -97,7 +97,7 @@ export function workspaceValidate(
   host: Host,
   path: string,
 ): Promise<WorkspaceValidateResponse> {
-  return host.iii.trigger<WorkspaceValidateResponse>(
+  return host.iii.call<WorkspaceValidateResponse>(
     'shell::workspace::validate',
     { path },
   )
@@ -118,7 +118,7 @@ export function coderTree(
   includeHidden: boolean,
   maxDepth: number = TREE_INITIAL_DEPTH,
 ): Promise<TreeResponse> {
-  return host.iii.trigger<TreeResponse>('coder::tree', {
+  return host.iii.call<TreeResponse>('coder::tree', {
     path,
     max_depth: maxDepth,
     // The worker default (50) fills with dot entries in home-shaped
@@ -141,7 +141,7 @@ export function coderReadFile(
   path: string,
   options: ReadFileOptions = {},
 ): Promise<ReadFileResponse> {
-  return host.iii.trigger<ReadFileResponse>('coder::read-file', {
+  return host.iii.call<ReadFileResponse>('coder::read-file', {
     path,
     ...(options.maxOutputBytes !== undefined
       ? { max_output_bytes: options.maxOutputBytes }
@@ -157,7 +157,7 @@ export function coderReadWindow(
   lineFrom: number,
   lineTo: number,
 ): Promise<ReadFileResponse> {
-  return host.iii.trigger<ReadFileResponse>('coder::read-file', {
+  return host.iii.call<ReadFileResponse>('coder::read-file', {
     path,
     line_from: lineFrom,
     line_to: lineTo,
@@ -166,7 +166,7 @@ export function coderReadWindow(
 
 /** Metadata only: size, mode, mtime, total_lines, is_utf8. */
 export function coderStat(host: Host, path: string): Promise<ReadFileResponse> {
-  return host.iii.trigger<ReadFileResponse>('coder::read-file', { path, stat: true })
+  return host.iii.call<ReadFileResponse>('coder::read-file', { path, stat: true })
 }
 
 /** Best-effort batch snapshot used to capture pre-change baselines for a
@@ -177,7 +177,7 @@ export async function coderReadFiles(
   paths: readonly string[],
 ): Promise<BatchReadFileResult[]> {
   if (paths.length === 0) return []
-  const out = await host.iii.trigger<{ results?: BatchReadFileResult[] }>(
+  const out = await host.iii.call<{ results?: BatchReadFileResult[] }>(
     'coder::read-file',
     { paths },
   )
@@ -191,7 +191,7 @@ export async function coderStatFiles(
   paths: readonly string[],
 ): Promise<BatchReadFileResult[]> {
   if (paths.length === 0) return []
-  const out = await host.iii.trigger<{ results?: BatchReadFileResult[] }>(
+  const out = await host.iii.call<{ results?: BatchReadFileResult[] }>(
     'coder::read-file',
     { paths: paths.map((path) => ({ path, stat: true })) },
   )
@@ -208,7 +208,7 @@ export function coderReadFileBase64(
   host: Host,
   path: string,
 ): Promise<ReadFileResponse> {
-  return host.iii.trigger<ReadFileResponse>('coder::read-file', {
+  return host.iii.call<ReadFileResponse>('coder::read-file', {
     path,
     encoding: 'base64',
     max_output_bytes: 16_000_000,
@@ -221,7 +221,7 @@ export async function coderCreateNewFile(
   host: Host,
   path: string,
 ): Promise<CreateFileResult> {
-  const out = await host.iii.trigger<{ results: CreateFileResult[] }>(
+  const out = await host.iii.call<{ results: CreateFileResult[] }>(
     'coder::create-file',
     { files: [{ path, content: '', parents: true }] },
   )
@@ -238,7 +238,7 @@ export async function shellCreateFolder(
   host: Host,
   path: string,
 ): Promise<void> {
-  await host.iii.trigger('shell::fs::mkdir', { path, parents: true })
+  await host.iii.call('shell::fs::mkdir', { path, parents: true })
 }
 
 /** Whole-file save. `mode` (from a prior read) keeps permission bits —
@@ -250,7 +250,7 @@ export async function coderWriteFile(
   mode?: number | null,
   expectedRevision?: string | null,
 ): Promise<CreateFileResult> {
-  const out = await host.iii.trigger<{ results: CreateFileResult[] }>(
+  const out = await host.iii.call<{ results: CreateFileResult[] }>(
     'coder::create-file',
     {
       files: [
@@ -310,7 +310,7 @@ export function coderSearch(
     contextLinesAfter,
   }: SearchParams,
 ): Promise<SearchResponse> {
-  return host.iii.trigger<SearchResponse>('coder::search', {
+  return host.iii.call<SearchResponse>('coder::search', {
     query,
     regex,
     ignore_case: ignoreCase,
@@ -343,7 +343,7 @@ export async function coderDelete(
   recursive: boolean,
   includeProtected = false,
 ): Promise<DeleteResult[]> {
-  const out = await host.iii.trigger<{ results?: DeleteResult[] }>('coder::delete-file', {
+  const out = await host.iii.call<{ results?: DeleteResult[] }>('coder::delete-file', {
     paths,
     recursive,
     ...(includeProtected ? { include_protected: true } : {}),
@@ -360,7 +360,7 @@ export interface MoveResult {
 
 /** Rename or move one entry; refuses to overwrite an existing target. */
 export async function coderMove(host: Host, from: string, to: string): Promise<MoveResult> {
-  const out = await host.iii.trigger<{ results?: MoveResult[] }>('coder::move', {
+  const out = await host.iii.call<{ results?: MoveResult[] }>('coder::move', {
     files: [{ from, to, overwrite: false, parents: true }],
   })
   const result = out.results?.[0]

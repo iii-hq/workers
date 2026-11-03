@@ -7,6 +7,7 @@ pub mod chat;
 pub mod config;
 pub mod count_tokens;
 pub mod embed;
+pub mod events;
 mod json_stream;
 pub mod manifest;
 pub mod provider_scaffold;
@@ -19,7 +20,6 @@ pub mod speech;
 pub mod state;
 pub mod surface;
 pub mod testkit;
-pub mod triggers;
 pub mod types;
 #[cfg(feature = "console-ui")]
 pub mod ui;

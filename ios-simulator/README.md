@@ -14,7 +14,7 @@ a small helper the worker compiles with the host's Xcode on first use.
 ## Install
 
 ```bash
-iii trigger compose::add worker=ios-simulator
+iii call compose::add worker=ios-simulator
 ```
 
 Requires macOS with Xcode and at least one iOS runtime installed
@@ -24,26 +24,26 @@ Requires macOS with Xcode and at least one iOS runtime installed
 
 ```bash
 # What can I create?
-iii trigger ios-simulator::runtimes
+iii call ios-simulator::runtimes
 
 # Create and boot an iPhone (tenant is optional; omitted means "default")
-iii trigger ios-simulator::devices::create --json \
+iii call ios-simulator::devices::create --json \
   '{"name":"Checkout","device_type":"com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}'
 # -> { "tenant": "default", "device": { "udid": "5FEF…", "state": "Shutdown", … } }
-iii trigger ios-simulator::devices::boot udid=5FEF…
-iii trigger ios-simulator::open udid=5FEF…      # or boot and show it live over the console in one call
+iii call ios-simulator::devices::boot udid=5FEF…
+iii call ios-simulator::open udid=5FEF…      # or boot and show it live over the console in one call
 
 # Look, then act in the screenshot's pixel space
-iii trigger ios-simulator::screenshot udid=5FEF…
-iii trigger ios-simulator::gesture --json '{"udid":"5FEF…","kind":"tap","x":600,"y":1400}'
-iii trigger ios-simulator::gesture --json \
+iii call ios-simulator::screenshot udid=5FEF…
+iii call ios-simulator::gesture --json '{"udid":"5FEF…","kind":"tap","x":600,"y":1400}'
+iii call ios-simulator::gesture --json \
   '{"udid":"5FEF…","kind":"swipe","x":603,"y":2615,"to_x":603,"to_y":1300}'   # swipe up from the bottom edge: home
-iii trigger ios-simulator::type --json '{"udid":"5FEF…","text":"hello"}'
-iii trigger ios-simulator::button udid=5FEF… button=lock
+iii call ios-simulator::type --json '{"udid":"5FEF…","text":"hello"}'
+iii call ios-simulator::button udid=5FEF… button=lock
 
 # Record
-iii trigger ios-simulator::recording::start udid=5FEF…
-iii trigger ios-simulator::recording::stop udid=5FEF…
+iii call ios-simulator::recording::start udid=5FEF…
+iii call ios-simulator::recording::stop udid=5FEF…
 # -> { "ok": true, "media": { "name": "5FEF…/recording-1790535293088.mov", "bytes": 58084, … }, "duration_ms": 6492 }
 ```
 
@@ -112,22 +112,38 @@ disturbing each other:
   cannot choose someone else's. Set
   `require_tenant: true` and `share_system_devices: false` so nothing falls
   through to the Mac's own simulators. Keep `ios-simulator::tenants::list`
-  operator-only and have the trigger-registration hook stamp `tenant` into
-  `ios-simulator::*` trigger configs (frames included).
+  operator-only and have the observer-registration hook
+  (`on_observer_registration_function_id`) stamp the tenant on observers of
+  the `ios-simulator::on-*` functions: `args.tenant` on
+  `ios-simulator::on-frame-event`, an `input.tenant` `$eq` filter on the
+  other three.
 
-## Custom trigger types
+## Observable functions
 
-- `ios-simulator::device-changed` — `{ tenant, udid, name, state, previous_state, change, preview }`
-  whenever a simulator is added, removed, booted or shut down, whoever did it
-  (this worker, Xcode, a terminal). `preview: false` marks a boot started from
-  a surface that already shows the simulator.
-- `ios-simulator::media-changed` — `{ tenant, udid, name, kind, change }` when a
-  screenshot or recording is saved or deleted.
-- `ios-simulator::frame-event` — `{ tenant, udid, data, width, height, device_width, device_height, seq }`,
-  one JPEG frame of the live view, sent while someone renews
-  `ios-simulator::watch` (every few seconds; the lease lasts 15s).
-- `ios-simulator::activity` — `{ tenant, udid, function, timestamp }` after a
-  caller drove a simulator (gesture, button, type, key, apps, open-url,
-  screenshot, recording::start, open); live previews surface it.
+Each event is a call of a private function whose handler returns the event:
+only this worker calls them, anyone may observe them. Calls are
+fire-and-forget, and nothing is built for a function nobody observes.
 
-All four accept `{ tenant?, udid? }` to narrow the binding.
+| Function | Args | Delivery | Event |
+|---|---|---|---|
+| `ios-simulator::on-device-changed` | none; filter on `input.tenant`, `input.udid` | iii's default | `{ tenant, udid, name, state, previous_state, change, preview, timestamp }` whenever a simulator is added, removed, booted or shut down, whoever did it (this worker, Xcode, a terminal). `preview: false` marks a boot started from a surface that already shows the simulator. |
+| `ios-simulator::on-media-changed` | none; filter on `input.tenant`, `input.udid` | iii's default | `{ tenant, udid, name, kind, change, timestamp }` when a screenshot or recording is saved or deleted. |
+| `ios-simulator::on-frame-event` | `{ tenant?, udid? }` | by key: an observer gets the frames of the tenant and simulator it names (every tenant or simulator for one it omits); a frame is built only when some observer wants it | `{ tenant, udid, data, width, height, device_width, device_height, seq }`, one JPEG frame of the live view, sent while someone renews `ios-simulator::watch` (every few seconds; the lease lasts 15s). |
+| `ios-simulator::on-activity` | none; filter on `input.tenant`, `input.udid` | iii's default | `{ tenant, udid, function, timestamp }` after a caller drove a simulator (gesture, button, type, key, apps, open-url, screenshot, recording::start, open); live previews surface it. |
+
+```ts
+// every device change of one tenant
+iii.observe(
+  { function_id: 'ios-simulator::on-device-changed', filters: { 'input.tenant': { $eq: 'acme' } }, deliver: 'output' },
+  'my-worker::on-simulator',
+)
+
+// the live view of one simulator; one frame in flight, so a slow viewer drops frames
+iii.observe(
+  { function_id: 'ios-simulator::on-frame-event', args: { tenant: 'acme', udid: '5FEF…' }, deliver: 'output' },
+  'my-worker::on-frame',
+  { max_in_flight: 1 },
+)
+```
+
+`ios-simulator::on-frame-event` rejects unknown args (`INVALID_ARGS`).

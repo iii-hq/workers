@@ -44,7 +44,7 @@ export function candidateOrigins(_repoUrl, readme) {
 
 async function webFetch(worker, url, timeoutMs = 15_000) {
   try {
-    const res = await worker.trigger({
+    const res = await worker.call({
       function_id: 'web::fetch',
       payload: { url, format: 'markdown' },
       timeoutMs,

@@ -183,7 +183,7 @@ describe('useConversations.remove', () => {
     expect(ids()).toContain('parent')
   })
 
-  it('keeps authoritative session::deleted reconciliation and still retries an absent target', async () => {
+  it('keeps authoritative session::on-deleted reconciliation and still retries an absent target', async () => {
     await act(async () => {
       handlers.onDeleted?.({ session_id: 'child2', timestamp: 3 })
     })

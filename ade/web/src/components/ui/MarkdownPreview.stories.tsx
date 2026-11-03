@@ -11,7 +11,7 @@ screencasts.
 ## Usage
 
 \`\`\`bash
-iii trigger browser::open --url https://example.com
+iii call browser::open --url https://example.com
 \`\`\`
 
 - Tabs are cheap; sessions own cookies and storage.

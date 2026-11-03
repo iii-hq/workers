@@ -1,9 +1,9 @@
 /**
- * Send a real request to an http binding's endpoint.
+ * Send a real request to the route an `http::on-request` observer holds.
  *
- * This is the one fire path that does not go over the bus: an http trigger
- * fires when the http worker receives a request, so the honest test is an
- * actual request to the port that worker listens on. The base URL comes from
+ * This is the one fire path that does not go over the bus: the http worker
+ * calls `http::on-request` when it receives a request, so the honest test is
+ * an actual request to the port that worker listens on. The base URL comes from
  * the worker's own configuration entry, resolved via `http::configuration-id`,
  * never a guess, and the panel says plainly when it cannot be read.
  */
@@ -23,7 +23,7 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useState } from 'react'
 import { useResource } from './engine'
 import { pretty } from './schema'
-import type { HttpBinding } from './trigger-kinds'
+import type { HttpBinding } from './observer-kinds'
 import { Chip, CopyButton, ErrorNote, Note } from './widgets'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const
@@ -45,7 +45,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 async function readEndpoint(host: Host): Promise<HttpEndpoint> {
   const id = await resolveConfigurationId(host.iii, 'http')
-  const entry = await host.iii.trigger('configuration::get', { id })
+  const entry = await host.iii.call('configuration::get', { id })
   const value = isRecord(entry) && isRecord(entry.value) ? entry.value : null
   if (!value) throw new Error('no http worker configuration with a port found')
   const port = value.port

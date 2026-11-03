@@ -189,8 +189,8 @@ const SCAFFOLD_WORKER_DESC: &str =
      worker, its start_after and the requires the stack lacks) and return \
      operation_id and started, or start_error with the files kept. A \
      container already named <name> fails C235 before any write. To be woken \
-     when it is up, register a trigger on an operation_id you pick and pass \
-     it here. start: false writes the files only; send the returned \
+     when it is up, observe compose::on-operation-progress with a filter on \
+     input.operation_id you pick and pass it here. start: false writes the files only; send the returned \
      compose_add whole to compose::add, adding start_after to its workers \
      entry and one entry per missing requires (never move its fields to the \
      top level, where scripts are ignored, or use the bare worker string \
@@ -521,13 +521,13 @@ fn register_list_templates(iii: &IIIClient, cells: CodeCells) {
 
 fn register_scaffold_worker(iii: &IIIClient, cells: CodeCells) {
     // `start: true` calls compose::status and compose::add.
-    let trigger: std::sync::Arc<dyn crate::triggers::TriggerFwd> =
-        std::sync::Arc::new(crate::triggers::IiiTriggerFwd::new(iii.clone()));
+    let fwd: std::sync::Arc<dyn crate::calls::CallFwd> =
+        std::sync::Arc::new(crate::calls::IiiCallFwd::new(iii.clone()));
     iii.register_function(
         SCAFFOLD_WORKER_ID,
         RegisterFunction::new_async(move |req: scaffold_worker::ScaffoldWorkerInput| {
             let cells = cells.clone();
-            let trigger = trigger.clone();
+            let fwd = fwd.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
                 let resolver = resolver.session_scoped(
@@ -535,7 +535,7 @@ fn register_scaffold_worker(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
                 let cfg = cells.config.read().await.clone();
-                scaffold_worker::handle(resolver, cfg, cells.changes.clone(), trigger.clone(), req)
+                scaffold_worker::handle(resolver, cfg, cells.changes.clone(), fwd.clone(), req)
                     .await
                     .map_err(Error::from)
             }

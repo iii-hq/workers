@@ -24,7 +24,7 @@ output directory. To build without the Console form or its Node/pnpm dependency:
 cargo build --manifest-path judge-typesafe/Cargo.toml --locked --release --no-default-features
 ```
 
-For a standalone development process, use engine **`iii/v0.24.0-rc.2`** with
+For a standalone development process, use engine **`iii/v0.26.0`** with
 `configuration::ensure` available. This is the verified release pinned by CI.
 If making provider calls, supply a key securely through configuration or the
 JEV process environment:
@@ -109,7 +109,7 @@ cargo test --manifest-path judge-typesafe/Cargo.toml --locked --test boot
 ## Real-engine integration with local mocked HTTP
 
 The dedicated [Judge E2E workflow](https://github.com/iii-hq/workers/blob/main/.github/workflows/judge-e2e.yml)
-runs on pull requests only. It pins **`iii/v0.24.0-rc.2`**, runs UI Vitest and both
+runs on pull requests only. It pins **`iii/v0.26.0`**, runs UI Vitest and both
 Rust feature variants, and selects two standalone bus cases from
 [tests/engine.rs](tests/engine.rs):
 

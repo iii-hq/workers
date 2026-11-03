@@ -121,7 +121,7 @@ export function toSelection(
  * one exists the session's identity (prompt, skills, agent) is frozen: later
  * sends must omit it, and the harness refuses a repeated `options.agent`.
  *
- * An assistant text row counts, and so does a function-trigger row: a turn
+ * An assistant text row counts, and so does a function-call row: a turn
  * can produce only calls (a first turn that ends on `harness::ask` shows the
  * card and nothing else). A turn-failure row the harness logged counts too:
  * a first turn that died assembling context (`harness.context_overflow`)
@@ -134,7 +134,7 @@ export function turnEstablishedFrom(messages: readonly Message[]): boolean {
   return messages.some(
     (m) =>
       m.role === 'assistant' ||
-      m.role === 'function-trigger' ||
+      m.role === 'function-call' ||
       (m.role === 'system' &&
         m.kind === 'turn-failure' &&
         m.technicalDetails?.code !== SEND_FAILED_CODE),

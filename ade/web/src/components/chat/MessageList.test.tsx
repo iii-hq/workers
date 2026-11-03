@@ -2,17 +2,17 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type {
   AssistantMessage,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   Message,
   ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
 import { liveAppendedKeys, MessageList, unloadedEntryIds } from './MessageList'
 
-function call(id: string): FunctionTriggerMessage {
+function call(id: string): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'shell::run',
     description: `call ${id}`,
     input: { command: id },
@@ -21,16 +21,19 @@ function call(id: string): FunctionTriggerMessage {
   }
 }
 
-function triggerRegistration(id: string): FunctionTriggerMessage {
+function observeCall(id: string): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
-    functionId: 'engine::register_trigger',
+    role: 'function-call',
+    functionId: 'harness::observe',
     input: {
-      trigger_type: 'state',
-      config: { key: 'build', scope: 'ops' },
+      function_id: 'state::on-changed',
+      filters: {
+        'input.scope': { $eq: 'ops' },
+        'input.key': { $eq: 'build' },
+      },
     },
-    output: { subscription_id: `subscription-${id}` },
+    output: { observer_id: `observer-${id}` },
     createdAt: 0,
   }
 }
@@ -65,16 +68,16 @@ function transcript(): Message[] {
   ]
 }
 
-describe('MessageList function-trigger groups', () => {
-  it('keeps trigger registration visible with its antenna marker when collapsed', () => {
+describe('MessageList function-call groups', () => {
+  it('keeps an observe call visible with its antenna marker when collapsed', () => {
     const html = renderToStaticMarkup(
-      <MessageList
-        messages={[triggerRegistration('registration'), call('c1')]}
-      />,
+      <MessageList messages={[observeCall('registration'), call('c1')]} />,
     )
 
     expect(html).toContain('data-message-row="registration"')
-    expect(html).toContain('data-timeline-activity-kind="trigger-registration"')
+    expect(html).toContain(
+      'data-timeline-activity-kind="observer-registration"',
+    )
     expect(html).toContain('lucide-radio-tower')
     expect(html).toContain('stroke-ok')
     expect(html).toContain('data-timeline-activity-kind="function"')
@@ -91,7 +94,7 @@ describe('MessageList function-trigger groups', () => {
     expect(
       html.match(/class="chat-activity-item" data-visible="false"/g),
     ).toHaveLength(2)
-    expect(html).toContain('Agent triggered 3 functions')
+    expect(html).toContain('Agent called 3 functions')
     expect(html).toContain('show all')
     expect(html).toContain('data-active="false" aria-hidden="true"')
     expect(html).toContain(
@@ -139,7 +142,7 @@ describe('MessageList function-trigger groups', () => {
     expect(html).toContain('show all')
   })
 
-  it('groups triggers separated only by completed, hidden thoughts', () => {
+  it('groups calls separated only by completed, hidden thoughts', () => {
     const completedThought = (id: string): ThoughtMessage => ({
       id,
       role: 'thought',
@@ -162,27 +165,27 @@ describe('MessageList function-trigger groups', () => {
       />,
     )
 
-    expect(html.match(/data-function-trigger-group=""/g)).toHaveLength(1)
-    expect(html).toContain('data-function-trigger-count="4"')
-    expect(html).toContain('Agent triggered 4 functions')
-    expect(html).not.toContain('Agent triggered 2 functions')
+    expect(html.match(/data-function-call-group=""/g)).toHaveLength(1)
+    expect(html).toContain('data-function-call-count="4"')
+    expect(html).toContain('Agent called 4 functions')
+    expect(html).not.toContain('Agent called 2 functions')
   })
 
   it('reveals a hidden wake pair when the landing targets its notification', () => {
     const notification: UserMessage = {
-      id: 'e_fire_sub_1_1',
+      id: 'e_fire_obs_1_1',
       role: 'user',
       content: '[notification] build: {"ok":true}',
       createdAt: 0,
       notification: true,
     }
     const fired: Message = {
-      id: 'e_trigfired_sub_1_1',
+      id: 'e_obsfired_obs_1_1',
       role: 'system',
-      kind: 'trigger-fired',
+      kind: 'observer-fired',
       content: 'build · notified this chat',
-      trigger: {
-        subscription_id: 'sub_1',
+      observer: {
+        observer_id: 'obs_1',
         target: 'harness::send',
         once: false,
         retired: false,
@@ -193,23 +196,23 @@ describe('MessageList function-trigger groups', () => {
     const html = renderToStaticMarkup(
       <MessageList
         messages={[notification, fired, call('c1'), call('c2')]}
-        focusMessageId="e_fire_sub_1_1"
+        focusMessageId="e_fire_obs_1_1"
       />,
     )
 
     // The pair collapses to one row carrying both entry ids; the absorbed
     // notification id must reveal it and be findable on the row.
     expect(html).toContain(
-      'data-message-row="e_trigfired_sub_1_1 e_fire_sub_1_1"',
+      'data-message-row="e_obsfired_obs_1_1 e_fire_obs_1_1"',
     )
   })
 
   it('exposes a pending approval as a focusable, named action target', () => {
-    const pending: FunctionTriggerMessage = {
+    const pending: FunctionCallMessage = {
       ...call('approval'),
       pendingApproval: true,
       sessionId: 'session-1',
-      functionTriggerId: 'function-call-1',
+      functionCallId: 'function-call-1',
     }
     const html = renderToStaticMarkup(
       <MessageList messages={[pending]} onResolveApproval={async () => {}} />,
@@ -288,7 +291,7 @@ describe('MessageList paged history', () => {
       output: undefined,
       unloaded: true,
       ...(resultEntryId ? { resultEntryId } : {}),
-    } satisfies FunctionTriggerMessage
+    } satisfies FunctionCallMessage
   }
 
   it('says when earlier messages are loading', () => {
@@ -396,7 +399,7 @@ describe('MessageList paged history', () => {
       <MessageList messages={[unloadedCall('p1', 'e_r1')]} defaultOpenCalls />,
     )
     expect(html).toContain('data-unloaded=""')
-    expect(html).toContain('data-function-trigger-skeleton=""')
+    expect(html).toContain('data-function-call-skeleton=""')
     expect(html).toContain('call p1')
     // No request pane: there are no arguments to show yet.
     expect(html).not.toContain('>request<')
@@ -413,7 +416,7 @@ describe('MessageList paged history', () => {
         ]}
       />,
     )
-    expect(html).toContain('Agent triggered 3 functions')
+    expect(html).toContain('Agent called 3 functions')
     expect(html).toContain('show all')
     // Collapsed: only the latest call is mounted; the placeholders wait for
     // "show all" and are never fetched just to be hidden.

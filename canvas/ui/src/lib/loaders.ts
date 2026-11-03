@@ -114,7 +114,7 @@ const FREEFORM_CSS_MARKER = 'data-canvas-freeform-css'
 /**
  * Put the excalidraw stylesheet in the document, exactly once.
  *
- * WHY it rides JS injection instead of the `console:style` channel: injected
+ * WHY it rides JS injection instead of a `style` asset: injected
  * style assets must scope every rule under `[data-iii-ui="canvas"]`, and
  * excalidraw's vendor sheet cannot be rewritten that way — so it ships as a
  * text export of the vendor bundle and lands here, tagged

@@ -1,5 +1,5 @@
-//! `router::on_secret_changed` — the iii function bound to the `secrets`
-//! worker's `secrets::changed` trigger type. The payload is advisory and
+//! `router::on_secret_changed` — the target of the router's observer of the
+//! `secrets` worker's `secrets::on-changed`. The event is advisory and
 //! never carries a value: the handler re-reads the named reference through
 //! `secrets::resolve`, and when its outcome changed (rotated, deleted,
 //! access granted or revoked) the cache's change listener queues a

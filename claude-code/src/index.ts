@@ -8,16 +8,16 @@
  * Two halves, one worker and one login: `claude::run` drives Claude Code
  * headless from here, and `claude::terminal::*` drives the same CLI in a
  * `shell::pty` session a person types into. Both report onto the same
- * `claude::agent-event` feed (raw Claude Code messages: `claude::raw-event`).
+ * `claude::on-agent-event` feed (raw Claude Code messages: `claude::on-raw-event`).
  */
 
 import { parseArgs } from 'node:util';
 import { registerWorker } from 'iii-sdk';
 import { type Config, loadConfig } from './config.js';
 import {
-  bindConfigTrigger,
   type ConfigHolder,
   fetchRuntime,
+  observeConfigChanges,
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
@@ -111,11 +111,11 @@ const refresh = async () => {
   reconcileTerminal();
 };
 
-await bindConfigTrigger(iii, refresh);
+await observeConfigChanges(iii, refresh);
 
-// The two owned event feeds: claude::agent-event (AgentEvent frames) and
-// claude::raw-event (verbatim Claude Code messages), each with its own
-// binding table and sequence counter.
+// The two event feeds: claude::on-agent-event (AgentEvent frames) and
+// claude::on-raw-event (verbatim Claude Code messages), each with its own
+// observers and sequence counter.
 const feeds = registerAgentFeeds(iii);
 const emit = feeds.agent.emit;
 const emitRaw = feeds.raw.emit;

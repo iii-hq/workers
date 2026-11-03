@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cucumber::World;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -166,7 +166,7 @@ impl ContextWorld {
         };
         let result = tokio::time::timeout(
             Duration::from_secs(15),
-            engine.trigger(TriggerRequest {
+            engine.call(CallRequest {
                 function_id: function.to_string(),
                 payload,
                 action: None,
@@ -177,7 +177,7 @@ impl ContextWorld {
         let outcome = match result {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("engine trigger timed out".to_string()),
+            Err(_) => Err("engine call timed out".to_string()),
         };
         self.record_outcome(outcome);
     }

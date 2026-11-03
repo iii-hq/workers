@@ -7,7 +7,7 @@
 
 use base64::Engine as _;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -81,7 +81,7 @@ async fn call(
     payload: Value,
     timeout_ms: u64,
 ) -> Result<Value, String> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,

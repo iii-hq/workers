@@ -21,7 +21,7 @@ import { closeTour, minimizeTour, showTour, useTourView } from './visibility'
  */
 export function TourOverlay({ host }: { host: Host } & OverlayRenderProps) {
   const view = useTourView()
-  // The tour itself — progress, and the triggers its steps wait on — runs for
+  // The tour itself — progress, and the observers its steps wait on — runs for
   // as long as the worker's script is loaded, whatever the card is doing: a
   // step the agent finishes while the card is closed still closes. Closed
   // only means nothing is drawn.

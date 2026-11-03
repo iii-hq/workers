@@ -181,7 +181,7 @@ export function useJudgeProviders(host: Host, owner: string): JudgeProviders {
     const current = ++seq.current
     void (async () => {
       try {
-        const listed = await host.iii.trigger(
+        const listed = await host.iii.call(
           'engine::functions::list',
           { include_internal: true },
           { timeoutMs: LIST_TIMEOUT_MS },
@@ -193,7 +193,7 @@ export function useJudgeProviders(host: Host, owner: string): JudgeProviders {
             hosted,
             problem: hosted
               ? await host.iii
-                  .trigger(`judge-${key}::status`, {}, { timeoutMs: STATUS_TIMEOUT_MS })
+                  .call(`judge-${key}::status`, {}, { timeoutMs: STATUS_TIMEOUT_MS })
                   .then(statusProblem, (error: unknown) => `Status unavailable: ${errorMessage(error)}`)
               : null,
           })),
@@ -201,7 +201,7 @@ export function useJudgeProviders(host: Host, owner: string): JudgeProviders {
         const compose =
           catalog.hub && catalog.providers.length > 0
             ? null
-            : await host.iii.trigger('compose::list', {}, { timeoutMs: STATUS_TIMEOUT_MS }).catch(() => null)
+            : await host.iii.call('compose::list', {}, { timeoutMs: STATUS_TIMEOUT_MS }).catch(() => null)
         if (current !== seq.current) return
         setState({ catalog, providers, setup: judgeSetup(catalog, compose), error: null })
       } catch (error) {
@@ -214,7 +214,7 @@ export function useJudgeProviders(host: Host, owner: string): JudgeProviders {
   useEffect(() => {
     reload()
   }, [reload])
-  useLiveSignals(host, ['engine::functions-available', 'engine::workers-available'], reload)
+  useLiveSignals(host, ['engine::on-functions-changed', 'engine::on-workers-changed'], reload)
 
   return { ...state, reload }
 }
@@ -270,11 +270,11 @@ export function useJudgeSetup(host: Host, pending: boolean) {
       report({ phase: 'running', note: null })
       try {
         for (const container of setup.start) {
-          await host.iii.trigger('compose::restart', { container }, { timeoutMs: 600_000 })
+          await host.iii.call('compose::restart', { container }, { timeoutMs: 600_000 })
         }
         if (setup.add.length > 0) {
           const requested = operationId()
-          const accepted = await host.iii.trigger<{
+          const accepted = await host.iii.call<{
             operation_id?: unknown
             status?: unknown
             error?: { message?: unknown }
@@ -284,11 +284,11 @@ export function useJudgeSetup(host: Host, pending: boolean) {
               typeof accepted.error?.message === 'string' ? accepted.error.message : 'compose::add failed',
             )
           }
-          // ponytail: polls compose::operation; the `compose-operation` trigger
-          // (judge/ui addWorker) pushes the end instead, worth it only if many
-          // tabs install at once.
+          // ponytail: polls compose::operation; observing
+          // compose::on-operation-progress (judge/ui addWorker) pushes the end
+          // instead, worth it only if many tabs install at once.
           for (;;) {
-            const snapshot = await host.iii.trigger<{ status?: unknown; last_event?: { detail?: unknown } | null }>(
+            const snapshot = await host.iii.call<{ status?: unknown; last_event?: { detail?: unknown } | null }>(
               'compose::operation',
               // A daemon that ignores the caller's id ran it under its own.
               { operation_id: typeof accepted?.operation_id === 'string' ? accepted.operation_id : requested },

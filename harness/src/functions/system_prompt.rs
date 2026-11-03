@@ -107,16 +107,24 @@ pub async fn handle(
         .as_ref()
         .and_then(|record| record.options.skill_context.as_ref())
         .and_then(|context| context.baseline.clone());
+    // The injections the session's next step selects, as the turn loop
+    // selects them.
+    let selection = match record.as_ref() {
+        Some(record) => deps.hooks.static_injection_input(record, record.step),
+        None => serde_json::json!({
+            "point": crate::hooks::HookPoint::PreGenerate.input_name(),
+            "session_id": req.session_id,
+        }),
+    };
     let injections = deps
         .hooks
-        .pre_generate
-        .ordered()
+        .static_injections(&selection)
         .into_iter()
         .filter_map(|binding| {
             let body = binding.inject_prompt?;
             Some(SystemPromptPart {
                 kind: SystemPromptPartKind::Injected,
-                name: Some(worker_name(&binding.function_id)),
+                name: Some(worker_name(&binding.target)),
                 body,
             })
         })

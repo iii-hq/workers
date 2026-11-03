@@ -79,14 +79,14 @@ def parse_cli_error(output: str) -> dict[str, Any]:
     return {"code": "CLI_ERROR", "message": value}
 
 
-def trigger(
+def call(
     daemon_namespace: str,
     function_id: str,
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     command = [
         "iii",
-        "trigger",
+        "call",
         "-n",
         daemon_namespace,
         function_id,
@@ -168,7 +168,7 @@ def test_worker(daemon_namespace: str, worker_spec: str) -> dict[str, Any]:
         payload = {"file": str(compose_file)}
 
         try:
-            initial, error = trigger(daemon_namespace, "compose::up", payload)
+            initial, error = call(daemon_namespace, "compose::up", payload)
             if error:
                 return {
                     "worker": worker_spec,
@@ -179,7 +179,7 @@ def test_worker(daemon_namespace: str, worker_spec: str) -> dict[str, Any]:
                 initial = initial or {}
                 result = {"status": initial.get("status"), "up": initial}
             else:
-                result, error = trigger(
+                result, error = call(
                     daemon_namespace,
                     "compose::add",
                     {**payload, "worker": worker_spec},
@@ -208,7 +208,7 @@ def test_worker(daemon_namespace: str, worker_spec: str) -> dict[str, Any]:
                 ],
             }
         finally:
-            trigger(daemon_namespace, "compose::down", payload)
+            call(daemon_namespace, "compose::down", payload)
 
 
 def main() -> int:

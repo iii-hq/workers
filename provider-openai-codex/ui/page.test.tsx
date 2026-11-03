@@ -36,8 +36,8 @@ let container: HTMLDivElement
 async function mount(modelCount = 0) {
   let Form: ComponentType<ProviderConfigFormProps> | undefined
   const host = {
-    iii: { trigger: rpc },
-    functionTriggers: { register: vi.fn() },
+    iii: { call: rpc },
+    functionCalls: { register: vi.fn() },
     providerConfigForms: {
       register: vi.fn((id, form) => {
         expect(id).toBe('openai-codex')

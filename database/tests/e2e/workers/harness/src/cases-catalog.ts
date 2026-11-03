@@ -402,7 +402,7 @@ export const CATALOG_CASES: TestCase[] = [
     name: 'catalog guard keeps every registered database function covered',
     applies: ['sqlite_db'],
     async run({ iii }) {
-      const listed = await iii.trigger<Record<string, never>, { functions?: Array<{ function_id?: string }> }>({
+      const listed = await iii.call<Record<string, never>, { functions?: Array<{ function_id?: string }> }>({
         function_id: 'engine::functions::list',
         payload: {},
       })

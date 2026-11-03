@@ -17,7 +17,7 @@ function fakeHost(respond: (fn: string, payload: Record<string, unknown>) => unk
   const calls: Array<{ fn: string; payload: Record<string, unknown> }> = []
   const host = {
     iii: {
-      trigger: async (fn: string, payload: Record<string, unknown>) => {
+      call: async (fn: string, payload: Record<string, unknown>) => {
         calls.push({ fn, payload })
         return respond(fn, payload)
       },

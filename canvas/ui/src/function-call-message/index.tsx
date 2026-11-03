@@ -1,0 +1,673 @@
+/**
+ * How `canvas::*` calls render in chat and traces.
+ *
+ * The flagship card (create/update) renders the mermaid diagram inline —
+ * the agent drew something, so show the drawing, not the JSON around it.
+ * Everything else compresses to the one fact that matters: what exists
+ * (get/list), what's gone (delete), what the reference says (syntax), and
+ * whether the source parses (validate).
+ *
+ * Match narrowly and return `null` freely: `null` falls through to the
+ * console's own cards, which already handle raw JSON, errors, and pending
+ * approvals better than a worker renderer should try to. Empty or
+ * unrecognizable payloads always fall through — never an empty card.
+ *
+ * `@iii-dev/console-ui` is imported type-only on purpose: its runtime entry
+ * throws by design (the real module arrives via the console's import map),
+ * and keeping this module value-free of it lets vitest import the renderer
+ * directly (the `/format` and `/ui-classes` subpaths are pure and bundle).
+ * Chips, pills, and tables are plain elements styled by the chat-card
+ * section of ../../styles.css.
+ */
+
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+
+import type {
+  FunctionCallMessage,
+  FunctionCallRenderer,
+  Host,
+} from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+
+import { animateSvgDrawIn } from '../lib/draw'
+import { loadMermaid, mermaidInitConfig } from '../lib/loaders'
+import { CANVAS_FUNCTION_IDS } from '../lib/types'
+import {
+  CANVAS_PREFIX,
+  type CanvasRecordView,
+  capList,
+  errorDisplay,
+  formatDay,
+  hasContent,
+  looksFreeform,
+  mergeViews,
+  parseDeleteResponse,
+  parseListResponse,
+  parseRecordView,
+  parseSyntaxFamilies,
+  parseValidateResponse,
+  sceneElementCount,
+} from './parsers'
+
+/** The canvas page (`host.pages.register({id: 'canvas'})`); a `canvasId`
+    in the context selects that canvas once the page is up. */
+function openCanvasPage(host: Host, canvasId?: string | null) {
+  host.panels?.open({
+    pageId: 'canvas',
+    context: canvasId ? { canvasId } : undefined,
+  })
+}
+
+export const HANDLED: ReadonlySet<string> = new Set(CANVAS_FUNCTION_IDS)
+
+export function createCanvasCallRenderer(
+  host: Host,
+): FunctionCallRenderer {
+  const render = (
+    message: FunctionCallMessage,
+    running: boolean,
+  ): ReactNode | null => {
+    if (!HANDLED.has(message.functionId)) return null
+    // The host card owns the approve/deny bar; the preview slot is ours.
+    if (message.pendingApproval) return null
+    if (!running) {
+      const error = errorDisplay(message.output)
+      if (error != null) return <ErrorCard message={message} error={error} />
+    }
+    if (running) return renderRunning(host, message)
+    return renderDone(host, message)
+  }
+  return {
+    id: 'canvas/page.js#renderer',
+    isMatch: (functionId) => HANDLED.has(functionId),
+    tryRender: (message) => render(message, Boolean(message.running)),
+    tryRenderRunning: (message) => render(message, true),
+    tryRenderPreview: (message) => renderPreview(message),
+    FunctionIdLabel,
+    // redactRaw stays undefined: canvas payloads carry diagram source,
+    // names, and slugs only — nothing secret for the raw tab to contain.
+  }
+}
+
+function op(message: FunctionCallMessage): string {
+  return message.functionId.slice(CANVAS_PREFIX.length)
+}
+
+function renderDone(
+  host: Host,
+  message: FunctionCallMessage,
+): ReactNode | null {
+  const output = unwrapEnvelope(message.output)
+  switch (message.functionId) {
+    case 'canvas::create':
+    case 'canvas::update': {
+      const view = mergeViews(
+        parseRecordView(output),
+        parseRecordView(message.input),
+      )
+      if (!hasContent(view)) return null
+      return looksFreeform(view) ? (
+        <FreeformCard host={host} op={op(message)} view={view} />
+      ) : (
+        <MermaidCard host={host} op={op(message)} view={view} />
+      )
+    }
+    case 'canvas::get': {
+      const view = parseRecordView(output)
+      if (!hasContent(view)) return null
+      return <GetCard host={host} view={view} />
+    }
+    case 'canvas::list': {
+      const items = parseListResponse(output)
+      if (items == null) return null
+      return <ListCard host={host} items={items} />
+    }
+    case 'canvas::delete': {
+      const result = parseDeleteResponse(output)
+      if (result == null) return null
+      return (
+        <CardShell op="delete">
+          <div className="canvas-call__note">
+            {result.deleted
+              ? `deleted ${result.id}`
+              : `${result.id} not found — nothing deleted`}
+          </div>
+        </CardShell>
+      )
+    }
+    case 'canvas::syntax': {
+      const families = parseSyntaxFamilies(output)
+      if (families == null) return null
+      return <SyntaxCard families={families} />
+    }
+    case 'canvas::validate': {
+      const result = parseValidateResponse(output)
+      if (result == null) return null
+      return <ValidateCard result={result} />
+    }
+    case 'canvas::element::add':
+    case 'canvas::element::update':
+    case 'canvas::element::delete':
+    case 'canvas::element::list': {
+      const card = elementCardData(message.functionId, output)
+      if (card == null) return null
+      return <ElementCard host={host} {...card} />
+    }
+    default:
+      return null
+  }
+}
+
+/** Parse one element-op response into a one-line card, or null to fall
+    through (empty/unrecognizable payloads never make an empty card). */
+function elementCardData(
+  functionId: string,
+  output: unknown,
+): { op: string; note: string; canvasId: string } | null {
+  if (output == null || typeof output !== 'object') return null
+  const data = output as Record<string, unknown>
+  const canvasId = typeof data.id === 'string' ? data.id : null
+  if (!canvasId) return null
+  let note: string
+  switch (functionId) {
+    case 'canvas::element::add': {
+      const ids = Array.isArray(data.element_ids) ? data.element_ids.length : 0
+      if (ids === 0) return null
+      const count =
+        typeof data.element_count === 'number' ? data.element_count : null
+      note = `drew ${ids} element${ids === 1 ? '' : 's'}${
+        count != null ? ` · ${count} on the board` : ''
+      }`
+      break
+    }
+    case 'canvas::element::update':
+      if (typeof data.element_id !== 'string') return null
+      note = `updated ${data.element_id}`
+      break
+    case 'canvas::element::delete': {
+      if (typeof data.removed !== 'number') return null
+      const left =
+        typeof data.element_count === 'number' ? data.element_count : null
+      note = `erased ${data.removed}${left != null ? ` · ${left} left` : ''}`
+      break
+    }
+    default: {
+      if (!Array.isArray(data.elements)) return null
+      const n = data.elements.length
+      note = `${n} element${n === 1 ? '' : 's'} on the board`
+    }
+  }
+  return { op: functionId.slice(CANVAS_PREFIX.length), note, canvasId }
+}
+
+/** Element-level drawing steps stay one-line: the diagram itself is live
+    on the canvas page (the call streams onto the open whiteboard). */
+function ElementCard({
+  host,
+  op: opLabel,
+  note,
+  canvasId,
+}: {
+  host: Host
+  op: string
+  note: string
+  canvasId: string
+}) {
+  return (
+    <CardShell op={opLabel}>
+      <div className="canvas-call__note">
+        {note} ·{' '}
+        <button
+          type="button"
+          className="canvas-call__id-link"
+          title="open in canvas"
+          onClick={() => openCanvasPage(host, canvasId)}
+        >
+          <span className="canvas-call__id">{canvasId}</span>
+        </button>
+      </div>
+    </CardShell>
+  )
+}
+
+function renderRunning(
+  host: Host,
+  message: FunctionCallMessage,
+): ReactNode | null {
+  const view = parseRecordView(message.input)
+  switch (message.functionId) {
+    case 'canvas::create':
+    case 'canvas::update':
+      if (!hasContent(view)) return null
+      if (view.source && !looksFreeform(view)) {
+        return (
+          <MermaidCard host={host} op={op(message)} view={view} running />
+        )
+      }
+      if (looksFreeform(view)) {
+        return <FreeformCard host={host} op={op(message)} view={view} running />
+      }
+      return (
+        <CardShell op={op(message)} running head={<HeadMeta view={view} />}>
+          <RunningNote />
+        </CardShell>
+      )
+    case 'canvas::get':
+    case 'canvas::delete':
+      if (!view.id) return null
+      return (
+        <CardShell op={op(message)} running>
+          <div className="canvas-call__note">
+            <span className="canvas-call__id">{view.id}</span>
+          </div>
+          <RunningNote />
+        </CardShell>
+      )
+    default:
+      // list/syntax/validate run in milliseconds and carry thin inputs;
+      // the host's request pane says everything a shimmer would.
+      return null
+  }
+}
+
+/** Pending-approval preview: the diagram a call is about to write. */
+function renderPreview(message: FunctionCallMessage): ReactNode | null {
+  if (!HANDLED.has(message.functionId)) return null
+  const view = parseRecordView(message.input)
+  switch (message.functionId) {
+    case 'canvas::create':
+    case 'canvas::update': {
+      if (!hasContent(view)) return null
+      const lines = view.source ? view.source.split('\n').length : null
+      return (
+        <CardShell op={op(message)} head={<HeadMeta view={view} />}>
+          {lines != null ? (
+            <div className="canvas-call__note">
+              {lines} line{lines === 1 ? '' : 's'} of{' '}
+              {looksFreeform(view) ? 'freeform scene' : 'mermaid'} source
+            </div>
+          ) : null}
+        </CardShell>
+      )
+    }
+    case 'canvas::delete':
+      if (!view.id) return null
+      return (
+        <CardShell op="delete">
+          <div className="canvas-call__note">
+            about to delete{' '}
+            <span className="canvas-call__id">{view.id}</span>
+          </div>
+        </CardShell>
+      )
+    default:
+      return null
+  }
+}
+
+/* ── cards ──────────────────────────────────────────────────────────── */
+
+function CardShell({
+  op: opLabel,
+  running,
+  head,
+  children,
+}: {
+  op: string
+  running?: boolean
+  head?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <div className="canvas-call">
+      <div className="canvas-call__head">
+        <span
+          className={`${uiClasses.eyebrow} canvas-call__pill${running ? ' canvas-call__pill--quiet' : ''}`}
+        >
+          {opLabel}
+        </span>
+        {head}
+        <span className={`${uiClasses.eyebrow} canvas-call__tag`}>canvas ui</span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function HeadMeta({ view }: { view: CanvasRecordView }) {
+  const chip = view.family ?? view.format
+  return (
+    <>
+      {view.name ? (
+        <span className="canvas-call__name">{view.name}</span>
+      ) : null}
+      {chip ? <span className="canvas-call__chip">{chip}</span> : null}
+      {view.id ? <span className="canvas-call__id">{view.id}</span> : null}
+    </>
+  )
+}
+
+function OpenLink({ host, canvasId }: { host: Host; canvasId?: string | null }) {
+  return (
+    <button
+      type="button"
+      className="canvas-call__open"
+      onClick={() => openCanvasPage(host, canvasId)}
+    >
+      open in canvas
+    </button>
+  )
+}
+
+function RunningNote() {
+  return (
+    <div className={`canvas-call__note ${uiClasses.pulse}`}>running…</div>
+  )
+}
+
+/** The flagship card: the diagram itself, rendered inline. */
+function MermaidCard({
+  host,
+  op: opLabel,
+  view,
+  running,
+}: {
+  host: Host
+  op: string
+  view: CanvasRecordView
+  running?: boolean
+}) {
+  return (
+    <CardShell
+      op={opLabel}
+      running={running}
+      head={
+        <>
+          <HeadMeta view={view} />
+          <OpenLink host={host} canvasId={view.id} />
+        </>
+      }
+    >
+      {view.source ? (
+        <MermaidDiagram host={host} source={view.source} canvasId={view.id} />
+      ) : (
+        <div className="canvas-call__note">no source in this payload</div>
+      )}
+      {running ? <RunningNote /> : null}
+    </CardShell>
+  )
+}
+
+let renderSeq = 0
+
+/**
+ * Lazy inline mermaid render: the vendor bundle loads on the first card,
+ * strict + suppressErrorRendering so invalid source becomes a caught error
+ * (shown over the source in a <pre>) instead of mermaid's bomb SVG. The
+ * whole diagram is a button to the canvas page.
+ */
+function MermaidDiagram({
+  host,
+  source,
+  canvasId,
+}: {
+  host: Host
+  source: string
+  canvasId?: string | null
+}) {
+  const theme = host.useTheme()
+  const [state, setState] = useState<
+    | { status: 'loading' }
+    | { status: 'done'; svg: string }
+    | { status: 'error'; message: string }
+  >({ status: 'loading' })
+
+  useEffect(() => {
+    let alive = true
+    setState({ status: 'loading' })
+    loadMermaid(host)
+      .then(async ({ mermaid }) => {
+        mermaid.initialize(mermaidInitConfig(theme))
+        const { svg } = await mermaid.render(
+          `canvas-call-${++renderSeq}`,
+          source,
+        )
+        if (alive) setState({ status: 'done', svg })
+      })
+      .catch((error: unknown) => {
+        if (alive) {
+          setState({
+            status: 'error',
+            message: error instanceof Error ? error.message : String(error),
+          })
+        }
+      })
+    return () => {
+      alive = false
+    }
+  }, [host, source, theme])
+
+  // Draw-on: every fresh render sketches itself in, so a diagram landing
+  // in the transcript looks drawn, not pasted.
+  const diagramRef = useRef<HTMLButtonElement | null>(null)
+  const lastAnimatedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (state.status !== 'done') return
+    if (lastAnimatedRef.current === state.svg) return
+    lastAnimatedRef.current = state.svg
+    if (diagramRef.current) animateSvgDrawIn(diagramRef.current)
+  }, [state])
+
+  if (state.status === 'loading') {
+    return (
+      <div className={`canvas-call__diagram canvas-call__diagram--loading ${uiClasses.pulse}`}>
+        rendering…
+      </div>
+    )
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="canvas-call__fail">
+        <div className="canvas-call__error">{state.message}</div>
+        <pre className="canvas-call__source">{source}</pre>
+      </div>
+    )
+  }
+  return (
+    <button
+      ref={diagramRef}
+      type="button"
+      className="canvas-call__diagram"
+      title="open in canvas"
+      onClick={() => openCanvasPage(host, canvasId)}
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid output under securityLevel 'strict'
+      dangerouslySetInnerHTML={{ __html: state.svg }}
+    />
+  )
+}
+
+/** Freeform canvases stay compact in chat — excalidraw never loads here. */
+function FreeformCard({
+  host,
+  op: opLabel,
+  view,
+  running,
+}: {
+  host: Host
+  op: string
+  view: CanvasRecordView
+  running?: boolean
+}) {
+  const count = useMemo(() => sceneElementCount(view.source), [view.source])
+  return (
+    <CardShell
+      op={opLabel}
+      running={running}
+      head={
+        <>
+          <HeadMeta view={view} />
+          <OpenLink host={host} canvasId={view.id} />
+        </>
+      }
+    >
+      <div className="canvas-call__note">
+        freeform canvas
+        {count != null ? ` · ${count} element${count === 1 ? '' : 's'}` : ''}
+      </div>
+      {running ? <RunningNote /> : null}
+    </CardShell>
+  )
+}
+
+function GetCard({ host, view }: { host: Host; view: CanvasRecordView }) {
+  const day = formatDay(view.updated_at)
+  return (
+    <CardShell
+      op="get"
+      head={
+        <>
+          <HeadMeta view={view} />
+          <OpenLink host={host} canvasId={view.id} />
+        </>
+      }
+    >
+      <div className="canvas-call__note">
+        {view.format ?? 'canvas'}
+        {view.family ? ` · ${view.family}` : ''}
+        {day ? ` · updated ${day}` : ''}
+      </div>
+    </CardShell>
+  )
+}
+
+function ListCard({ host, items }: { host: Host; items: CanvasRecordView[] }) {
+  if (items.length === 0) {
+    return (
+      <CardShell op="list" head={<OpenLink host={host} />}>
+        <div className="canvas-call__note">no canvases yet</div>
+      </CardShell>
+    )
+  }
+  const { shown, hidden } = capList(items)
+  return (
+    <CardShell op="list" head={<OpenLink host={host} />}>
+      <div className="canvas-call__table-wrap">
+        <table className="canvas-call__table">
+          <thead>
+            <tr>
+              <th>name</th>
+              <th>family</th>
+              <th>id</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((item, index) => (
+              <tr key={item.id ?? index}>
+                <td>{item.name ?? '—'}</td>
+                <td>{item.family ?? item.format ?? '—'}</td>
+                <td className="canvas-call__id">{item.id ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {hidden > 0 ? (
+          <div className="canvas-call__note">+{hidden} more</div>
+        ) : null}
+      </div>
+    </CardShell>
+  )
+}
+
+function SyntaxCard({ families }: { families: string[] }) {
+  return (
+    <CardShell op="syntax">
+      {families.length === 0 ? (
+        <div className="canvas-call__note">no families returned</div>
+      ) : (
+        <div className="canvas-call__chips">
+          {families.map((family) => (
+            <span key={family} className="canvas-call__chip">
+              {family}
+            </span>
+          ))}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+function ValidateCard({
+  result,
+}: {
+  result: {
+    valid: boolean
+    family: string | null
+    issues: { line: number | null; message: string }[]
+  }
+}) {
+  return (
+    <CardShell
+      op="validate"
+      head={
+        result.family ? (
+          <span className="canvas-call__chip">{result.family}</span>
+        ) : undefined
+      }
+    >
+      {result.valid ? (
+        <div className="canvas-call__ok">✓ valid</div>
+      ) : (
+        <div className="canvas-call__issues">
+          {result.issues.length === 0 ? (
+            <div className="canvas-call__issue">
+              <span className="canvas-call__issue-line">—</span>
+              <span>invalid source</span>
+            </div>
+          ) : (
+            result.issues.map((issue, index) => (
+              <div key={index} className="canvas-call__issue">
+                <span className="canvas-call__issue-line">
+                  {issue.line != null ? `line ${issue.line}` : '—'}
+                </span>
+                <span>{issue.message}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+function ErrorCard({
+  message,
+  error,
+}: {
+  message: FunctionCallMessage
+  error: string
+}) {
+  const source = parseRecordView(message.input).source
+  return (
+    <CardShell op={op(message)}>
+      <div className="canvas-call__error">{error}</div>
+      {source ? (
+        <pre className="canvas-call__source">{source}</pre>
+      ) : null}
+    </CardShell>
+  )
+}
+
+function FunctionIdLabel({ functionId }: { functionId: string }) {
+  if (!functionId.startsWith(CANVAS_PREFIX)) {
+    return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>
+  }
+  return (
+    <>
+      <span style={{ color: 'var(--color-ink-faint)' }}>{CANVAS_PREFIX}</span>
+      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>
+        {functionId.slice(CANVAS_PREFIX.length)}
+      </span>
+    </>
+  )
+}

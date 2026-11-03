@@ -1,5 +1,10 @@
 # Go release pipeline validation — 2026-10-07
 
+> **Status:** a record of the 2026-10-07 validation, run against iii 0.25. In
+> iii 0.26 interface capture collects functions only, and the two trigger types
+> counted below are the private observable functions `whatsapp::on-events` and
+> `whatsapp::cloud::on-events`.
+
 Validated the current WhatsApp worktree without installing dependencies,
 publishing artifacts, contacting Meta, or starting an engine. Go 1.27.1 and the
 Python test dependencies were reused from local caches.

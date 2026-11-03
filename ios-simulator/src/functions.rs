@@ -422,7 +422,7 @@ functions! {
         "Internal: one raw touch phase (down/move/up, optional second finger) for the live view. Agents use ios-simulator::gesture.",
         TouchInput => Ack;
     WATCH = "ios-simulator::watch",
-        "Internal: start or renew the live view of a simulator for 15s; frames arrive as ios-simulator::frame-event triggers bound to its udid. Console plumbing; agents use ios-simulator::screenshot.",
+        "Internal: start or renew the live view of a simulator for 15s; frames arrive as calls of ios-simulator::on-frame-event, observed with its udid. Console plumbing; agents use ios-simulator::screenshot.",
         DeviceInput => WatchOutput;
     FRAME = "ios-simulator::frame",
         "Internal: newest live-view frame of a watched simulator, or nothing when since_seq is current. Not an agent function.",

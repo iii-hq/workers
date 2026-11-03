@@ -200,7 +200,7 @@
     },
     "properties": {
       "action": {
-        "description": "`deliver` (default) supplies the result; `execute` releases a hook-held call through the remaining trigger pipeline.",
+        "description": "`deliver` (default) supplies the result; `execute` releases a hook-held call through the remaining call pipeline.",
         "type": [
           "string",
           "null"

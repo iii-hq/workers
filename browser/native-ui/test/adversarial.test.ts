@@ -36,9 +36,9 @@ const navigates = (host: TestHost) => callsOf(host, 'browser::navigate').map((p)
 
 const keysOf = (host: TestHost, list: string) => (host.find(list).items ?? []).map((r) => (r as { key: string }).key)
 
-/** Delivers `count` events of `trigger` (to every subscription bound to it), in chunks. */
-async function flood(host: TestHost, trigger: string, make: (i: number) => unknown, count: number, chunk = 500) {
-  const subs = [...host.subscriptions].filter(([, s]) => s.trigger === trigger).map(([id]) => id)
+/** Delivers `count` calls of `fn` (to every observer of it), in chunks. */
+async function flood(host: TestHost, fn: string, make: (i: number) => unknown, count: number, chunk = 500) {
+  const subs = [...host.subscriptions].filter(([, s]) => s.fn === fn).map(([id]) => id)
   for (let i = 0; i < count; i += chunk) {
     const entries: unknown[][] = []
     for (let j = i; j < Math.min(count, i + chunk); j++)
@@ -192,12 +192,12 @@ describe('adversarial: data from the worker', () => {
   // finding 9: a handoff is shown in the top slot whatever the tab's state; it stays after the tab stopped.
   it('a handoff banner is cleared when the open tab stops', async () => {
     const { host } = await opened('t1')
-    await host.emitTrigger('browser::handoff-requested', {
+    await host.emitObserved('browser::on-handoff-requested', {
       session_id: 't1',
       handoff_id: 'h1',
       instructions: 'Sign in',
     })
-    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
+    await host.emitObserved('browser::on-session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
     expect(exists(host, 'handoff')).toBe(false)
   })
 
@@ -208,7 +208,7 @@ describe('adversarial: data from the worker', () => {
     const { host } = await opened('t1', { fake })
     await go(host, 'nope.invalid')
     expect(exists(host, 'load-error')).toBe(true)
-    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 2 })
+    await host.emitObserved('browser::on-session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 2 })
     expect(exists(host, 'load-error')).toBe(false)
   })
 
@@ -221,7 +221,7 @@ describe('adversarial: data from the worker', () => {
     fake.overrides['browser::sessions::list'] = () => ({ sessions: TABS })
     fake.release('browser::sessions::list')
     await host.settle()
-    await host.emitTrigger('browser::session-stopped', { session_id: 'n1', reason: 'expired', timestamp: 1 })
+    await host.emitObserved('browser::on-session-stopped', { session_id: 'n1', reason: 'expired', timestamp: 1 })
     await host.tick(200)
     expect(rows(host).map((r) => r.key)).not.toContain('n1')
   })
@@ -234,7 +234,10 @@ describe('adversarial: data from the worker', () => {
     await host.type('console-filter', '(a+)+$')
     await host.tick(300)
     const t0 = Date.now()
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: consoleEntry(1, `${'a'.repeat(26)}!`) })
+    await host.emitObserved('browser::on-console-event', {
+      session_id: 't1',
+      entry: consoleEntry(1, `${'a'.repeat(26)}!`),
+    })
     expect(Date.now() - t0).toBeLessThan(1000)
     expect(host.failed).toBeNull()
   })
@@ -299,7 +302,7 @@ describe('adversarial: data from the worker', () => {
     })
     void host.press('tab-menu')
     await host.settle()
-    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
+    await host.emitObserved('browser::on-session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
     answer(1)
     await host.settle()
     expect(callsOf(host, 'browser::zoom').filter((p) => p.action !== 'read')).toEqual([])
@@ -310,14 +313,17 @@ describe('adversarial: data from the worker', () => {
     const { host } = await opened('t1', { ui: answers(6) })
     await host.press('tab-menu')
     await host.settle()
-    await host.emitTrigger('browser::network-event', { session_id: 't1', entry: networkEntry(1, { mime_type: 42 }) })
+    await host.emitObserved('browser::on-network-event', {
+      session_id: 't1',
+      entry: networkEntry(1, { mime_type: 42 }),
+    })
     expect(keysOf(host, 'network-list')).toEqual(['1'])
   })
 
   // finding 23: a stop reason naming an Object property (constructor, toString) is looked up in the CLOSED map.
   it('a stop reason that names an Object property shows the generic closed title', async () => {
     const { host } = await opened('t1')
-    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'constructor', timestamp: 1 })
+    await host.emitObserved('browser::on-session-stopped', { session_id: 't1', reason: 'constructor', timestamp: 1 })
     expect(host.find('tab-closed').props?.title).toBe('This tab was closed')
   })
 
@@ -336,11 +342,11 @@ describe('adversarial: data from the worker', () => {
     const { host } = await opened('t1', { ui: answers(5) })
     await host.press('tab-menu')
     await host.settle()
-    await host.emitTrigger('browser::console-event', { session_id: 't2', entry: consoleEntry(1) })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: consoleEntry(1) })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: consoleEntry(1) })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: consoleEntry(3) })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: consoleEntry(2) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't2', entry: consoleEntry(1) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: consoleEntry(1) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: consoleEntry(1) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: consoleEntry(3) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: consoleEntry(2) })
     expect(keysOf(host, 'console-list')).toEqual(['1', '3'])
   })
 
@@ -349,7 +355,11 @@ describe('adversarial: data from the worker', () => {
     const { host } = await opened('t1')
     const before = callsOf(host, 'browser::sessions::list').length
     for (let i = 0; i < 200; i++) {
-      await host.emitTrigger('browser::navigated', { session_id: 't1', url: `https://example.com/${i}`, timestamp: i })
+      await host.emitObserved('browser::on-navigated', {
+        session_id: 't1',
+        url: `https://example.com/${i}`,
+        timestamp: i,
+      })
     }
     await host.tick(200)
     expect(callsOf(host, 'browser::sessions::list').length - before).toBeLessThanOrEqual(1)
@@ -364,7 +374,12 @@ describe('adversarial: memory', () => {
     fake.hold('browser::console::read')
     await host.press('tab-menu')
     const text = 'x'.repeat(2000)
-    await flood(host, 'browser::console-event', (i) => ({ session_id: 't1', entry: consoleEntry(i + 1, text) }), 40_000)
+    await flood(
+      host,
+      'browser::on-console-event',
+      (i) => ({ session_id: 't1', entry: consoleEntry(i + 1, text) }),
+      40_000,
+    )
     expect(host.failed).toBeNull()
     expect(host.memory().memory_used_size).toBeLessThan(HEAP_BUDGET)
     fake.release('browser::console::read')
@@ -378,7 +393,7 @@ describe('adversarial: memory', () => {
     const { host } = await opened('t1', { ui: answers(5) })
     await host.press('tab-menu')
     await host.settle()
-    await flood(host, 'browser::console-event', (i) => ({ session_id: 't1', entry: consoleEntry(i + 1) }), 3000)
+    await flood(host, 'browser::on-console-event', (i) => ({ session_id: 't1', entry: consoleEntry(i + 1) }), 3000)
     const keys = keysOf(host, 'console-list')
     expect(keys).toHaveLength(500)
     expect(keys.at(-1)).toBe('3000')
@@ -431,8 +446,8 @@ describe('adversarial: races and leaks', () => {
     expect(exists(host, 'load-error')).toBe(false)
   })
 
-  // held: after the root unmounts, a pending answer is harmless and no subscription remains.
-  it('after the root unmounts, a pending navigate answers quietly and no subscription remains', async () => {
+  // held: after the root unmounts, a pending answer is harmless and no observer remains.
+  it('after the root unmounts, a pending navigate answers quietly and no observer remains', async () => {
     const { host, fake } = await opened('t1')
     fake.hold('browser::navigate')
     await go(host, 'iii.dev')
@@ -444,32 +459,32 @@ describe('adversarial: races and leaks', () => {
     expect(host.subscriptions.size).toBe(0)
   })
 
-  // held: toggling visibility never doubles a subscription; leaving a tab drops its own.
-  it('visibility toggles keep one subscription per trigger, and leaving a tab drops its own', async () => {
+  // held: toggling visibility never doubles an observer; leaving a tab drops its own.
+  it('visibility toggles keep one observer per function, and leaving a tab drops its own', async () => {
     const { host } = await opened('t1')
     for (let i = 0; i < 3; i++) {
       await host.env({ visible: false })
       await host.env({ visible: true })
     }
-    expect(subsOf(host, 'browser::navigated')).toHaveLength(1)
-    expect(subsOf(host, 'browser::handoff-requested')).toHaveLength(1)
-    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
+    expect(subsOf(host, 'browser::on-navigated')).toHaveLength(1)
+    expect(subsOf(host, 'browser::on-handoff-requested')).toHaveLength(1)
+    await host.emitObserved('browser::on-session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
     await host.press('back-to-tabs')
-    expect(subsOf(host, 'browser::handoff-requested')).toEqual([])
-    expect(subsOf(host, 'browser::console-event')).toEqual([])
+    expect(subsOf(host, 'browser::on-handoff-requested')).toEqual([])
+    expect(subsOf(host, 'browser::on-console-event')).toEqual([])
   })
 
-  // held: leaving the console card drops its event binding.
-  it('leaving the console card drops its event binding', async () => {
+  // held: leaving the console card drops its event observer.
+  it('leaving the console card drops its event observer', async () => {
     const { host } = await opened('t1', { ui: answers(5) })
     await host.press('tab-menu')
-    expect(subsOf(host, 'browser::console-event')).toHaveLength(1)
+    expect(subsOf(host, 'browser::on-console-event')).toHaveLength(1)
     await host.back()
-    expect(subsOf(host, 'browser::console-event')).toEqual([])
+    expect(subsOf(host, 'browser::on-console-event')).toEqual([])
   })
 
-  // held: every call and every subscription the app makes is in its own browser:: namespace.
-  it('every call and trigger the app makes is in browser::', async () => {
+  // held: every call and every observer the app makes is in its own browser:: namespace.
+  it('every call and observer the app makes is in browser::', async () => {
     const fake = new FakeBrowser(TABS)
     const { host } = await start({ fake, ui: { ...answers(5, 6, 7), confirm: () => true } })
     await host.itemPress('tabs', 't1')
@@ -489,6 +504,6 @@ describe('adversarial: races and leaks', () => {
     const calls = host.requests.filter((r) => r.method === 'call').map((r) => String(r.args.fn))
     expect(calls.length).toBeGreaterThan(5)
     expect(calls.filter((fn) => !fn.startsWith('browser::'))).toEqual([])
-    expect([...host.subscriptions.values()].filter((s) => !s.trigger.startsWith('browser::'))).toEqual([])
+    expect([...host.subscriptions.values()].filter((s) => !s.fn.startsWith('browser::'))).toEqual([])
   })
 })

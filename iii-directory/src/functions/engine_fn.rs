@@ -4,15 +4,15 @@
 //! This module restores the `directory::engine::functions::info`
 //! function that was removed during the namespace consolidation. It
 //! proxies the core lookup to `engine::functions::info` via
-//! `iii.trigger` and returns a flat response with schemas, owning
-//! worker, and registered triggers — WITHOUT the `how_guide` field
-//! (removed: how-to enrichment is no longer shipped).
+//! `iii.call` and returns a flat response with schemas, owning
+//! worker, its observers' args format and observer count, and whether it
+//! is private or observable — WITHOUT the `how_guide` field (how-to
+//! enrichment is not shipped).
 
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -23,14 +23,6 @@ use serde_json::{json, Value};
 pub struct FunctionInfoInput {
     /// Fully-qualified function id on the bus (e.g. `sandbox::create`).
     pub function_id: String,
-}
-
-/// Trigger instance summary for the response envelope.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct RegisteredTriggerSummary {
-    pub id: String,
-    pub trigger_type: String,
-    pub config: Value,
 }
 
 /// Response shape for `directory::engine::functions::info`.
@@ -45,7 +37,14 @@ pub struct FunctionInfoOutput {
     pub request_schema: Option<Value>,
     pub response_schema: Option<Value>,
     pub metadata: Option<Value>,
-    pub registered_triggers: Vec<RegisteredTriggerSummary>,
+    /// JSON Schema of the args its observers pass; `None` when it takes none.
+    pub args_format: Option<Value>,
+    /// How many observers the function has.
+    pub observer_count: u64,
+    /// Only its own worker may call it; others may observe it.
+    pub private: bool,
+    /// `false` when nobody may observe it.
+    pub observable: bool,
 }
 
 // ────────────────── registration ──────────────────────────────────────
@@ -59,8 +58,9 @@ pub fn register(iii: &Arc<IIIClient>) {
             async move { function_info(&iii, req).await.map_err(Error::Handler) }
         })
         .description(
-            "Read full detail for one engine function: schemas, owning worker, and \
-             registered triggers that target it. Proxies to the engine's native \
+            "Read full detail for one engine function: schemas, owning worker, the args \
+             its observers pass (args_format), its observer count, and whether it is \
+             private or observable. Proxies to the engine's native \
              engine::functions::info.",
         ),
     );
@@ -79,7 +79,7 @@ async fn function_info(
 
     // Proxy to the engine's native function info.
     let val = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::info".to_string(),
             payload: json!({ "function_id": function_id }),
             action: None,
@@ -114,25 +114,18 @@ async fn function_info(
 
     let metadata = val.get("metadata").cloned().filter(|v| !v.is_null());
 
-    // Parse registered triggers from the response if present.
-    let registered_triggers = val
-        .get("registered_triggers")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| {
-                    let id = t.get("id")?.as_str()?.to_string();
-                    let trigger_type = t.get("trigger_type")?.as_str()?.to_string();
-                    let config = t.get("config").cloned().unwrap_or(json!({}));
-                    Some(RegisteredTriggerSummary {
-                        id,
-                        trigger_type,
-                        config,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let args_format = val.get("args_format").cloned().filter(|v| !v.is_null());
+    let observer_count = val
+        .get("observer_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    // The engine sends `private` only when true and `observable` only when
+    // false.
+    let private = val.get("private").and_then(Value::as_bool).unwrap_or(false);
+    let observable = val
+        .get("observable")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
     Ok(FunctionInfoOutput {
         function_id,
@@ -141,7 +134,10 @@ async fn function_info(
         request_schema,
         response_schema,
         metadata,
-        registered_triggers,
+        args_format,
+        observer_count,
+        private,
+        observable,
     })
 }
 
@@ -166,7 +162,10 @@ mod tests {
             request_schema: None,
             response_schema: None,
             metadata: None,
-            registered_triggers: Vec::new(),
+            args_format: None,
+            observer_count: 0,
+            private: false,
+            observable: true,
         };
         let v = serde_json::to_value(&output).unwrap();
         assert!(

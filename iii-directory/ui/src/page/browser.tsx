@@ -6,8 +6,8 @@
  * `MarkdownPreview` pair, saving through the worker's `*::update`
  * functions.
  *
- * Live updates: the page registers a tab-scoped binding on the worker's
- * `directory::*::on-change` trigger type (see `useOnChange`) — a download
+ * Live updates: the page observes the worker's `directory::*::on-change`
+ * function from a tab-scoped handler (see `useOnChange`) — a download
  * or update landing anywhere refreshes the list, and reloads the open
  * entry when the editor isn't dirty (an unsaved draft is never clobbered;
  * a banner offers the reload instead).
@@ -180,8 +180,8 @@ export interface BrowserAdapter {
   create?(host: Host, name: string, content: string): Promise<string>
   /** Permanently remove an existing entry. Omit when deletion is unsupported. */
   remove?(host: Host, key: string): Promise<void>
-  /** Worker trigger type to subscribe for external-change refreshes. */
-  onChangeType: string
+  /** The worker's change function to observe for external-change refreshes. */
+  onChangeFunction: string
 }
 
 /** Starter frontmatter for a new entry: scaffold the keys the editor's own
@@ -212,33 +212,29 @@ interface Loaded {
 
 const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
 
-/** Tab-scoped subscription to one of the worker's on-change trigger
- * types. The handler id carries the `iii::` prefix so per-event
- * invocations stay span-suppressed and out of the trace feed; the
- * binding is GC'd with the tab and unregistered on unmount. (Not
- * `useWorkerLive`: the handler needs the event itself to apply the
- * dirty-draft guard and the optimistic list edits, not a refetched cache.) */
-function useOnChange(host: Host, triggerType: string, onEvent: () => void) {
+/** Tab-scoped observer of one of the worker's on-change functions. The
+ * handler id carries the `iii::` prefix so per-event invocations stay
+ * span-suppressed and out of the trace feed; the observer is GC'd with the
+ * tab and disposed on unmount. (Not `useWorkerLive`: the handler needs the
+ * event itself to apply the dirty-draft guard and the optimistic list
+ * edits, not a refetched cache.) */
+function useOnChange(host: Host, functionId: string, onEvent: () => void) {
   const onEventRef = useRef(onEvent)
   onEventRef.current = onEvent
   useEffect(() => {
-    const slug = triggerType.replace(/[^a-z0-9]+/g, '-')
+    const slug = functionId.replace(/[^a-z0-9]+/g, '-')
     // `on` registers the handler tab-scoped as `<id>::<browserId>`; the
-    // trigger must name that full id (as the session chip does).
+    // observer's target must name that full id (as the session chip does).
     const handlerId = `iii::iii-directory-ui::${slug}`
     const offHandler = host.iii.on(handlerId, () => {
       onEventRef.current()
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: triggerType,
-      function_id: `${handlerId}::${host.iii.browserId}`,
-      config: {},
-    })
+    const unobserve = host.iii.observe(functionId, `${handlerId}::${host.iii.browserId}`)
     return () => {
-      offTrigger()
+      unobserve()
       offHandler()
     }
-  }, [host, triggerType])
+  }, [host, functionId])
 }
 
 function SkeletonLines({ widths, className }: { widths: string[]; className?: string }) {
@@ -481,7 +477,7 @@ export function CollectionBrowser({
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
-  useOnChange(host, adapter.onChangeType, () => {
+  useOnChange(host, adapter.onChangeFunction, () => {
     refreshList()
     const key = selectedRef.current
     if (!key) return

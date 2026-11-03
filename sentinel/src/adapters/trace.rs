@@ -236,7 +236,7 @@ impl TraceContext<'_> {
 
 /// Whether a function is this worker's own: one of its `<worker>::*`
 /// functions, or a handler its console page registers from the browser
-/// (`iii::<worker>-ui::*`, the live-update subscription of every open tab).
+/// (`iii::<worker>-ui::*`, the target of every open tab's live-update observers).
 ///
 /// An error in one of them never becomes a group. The monitor watching
 /// itself turns one failure into a loop: a closed tab leaves its handler

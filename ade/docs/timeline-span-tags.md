@@ -22,7 +22,7 @@ domain. Kinds in use today:
 
 | `iii.tag.kind` | Producer | Display-name convention |
 |---|---|---|
-| `queue.process` | a queue worker's dispatch wrapper — THE "function trigger" span of one queue delivery | `<function> (<queue>)`, e.g. `harness::turn (default)` |
+| `queue.process` | a queue worker's dispatch wrapper — THE "function call" span of one queue delivery | `<function> (<queue>)`, e.g. `harness::turn (default)` |
 | `harness.turn` | an agent harness's top-level turn step | none (the default label is already right) |
 | `harness.subagent` | a turn step belonging to a spawned sub-agent | `Sub-agent · <task preview>` |
 | `harness.spawn` | the act of spawning a sub-agent | `Spawn · <task preview>` |
@@ -192,7 +192,7 @@ have no such dependency.
 
 ---
 
-## 4. Cookbook: tagging a queue-triggered worker
+## 4. Cookbook: tagging a queue-driven worker
 
 The shape to copy for any worker whose functions run as enqueued jobs and
 should read as first-class segments:

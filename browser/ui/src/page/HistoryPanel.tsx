@@ -15,7 +15,7 @@ import {
 import { Globe } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  BROWSER_NAVIGATED_TRIGGER,
+  BROWSER_ON_NAVIGATED_FUNCTION_ID,
   type BrowserHistoryVisit,
   errorMessage,
   formatAgo,
@@ -59,7 +59,7 @@ export function HistoryPanel({ host, sessionId, enabled }: HistoryPanelProps) {
   useBrowserSessionEvent({
     host,
     enabled,
-    triggerType: BROWSER_NAVIGATED_TRIGGER,
+    functionId: BROWSER_ON_NAVIGATED_FUNCTION_ID,
     sessionId,
     fnId: HISTORY_FEED_FN,
     onEvent: () => refresh(query),

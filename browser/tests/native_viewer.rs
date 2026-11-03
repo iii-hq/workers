@@ -14,7 +14,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
@@ -159,7 +159,7 @@ async fn connect(h: &Harness) -> IIIClient {
 async fn try_call(client: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
     timeout(
         Duration::from_secs(60),
-        client.trigger(TriggerRequest {
+        client.call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
@@ -1228,7 +1228,7 @@ const LONG_PAGE: &str = "<!doctype html><html><head><meta name=viewport content=
     {clearTimeout(t);t=setTimeout(()=>{document.title='long y='+scrollY},250)})</script></body></html>";
 
 /// Not a check: how long a scroll takes to show, from the `act` call to the
-/// next frame pushed on `browser::frame-event`, on a phone view at
+/// next frame pushed on `browser::on-frame-event`, on a phone view at
 /// `frame_density` 2 (the iii app's drag on a folded Fold). Prints P50/P90
 /// of 20 scrolls. Run it by name, in a release build, with `--ignored
 /// --nocapture` (2026-10-23: P50 9 ms, P90 10 ms, before and after the P33
@@ -1254,14 +1254,17 @@ async fn measure_scroll_to_frame() {
     );
     let url = serve_html(LONG_PAGE);
     let id = open(&client, &url).await;
-    client
-        .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
-            "browser::frame-event".to_string(),
-            "iii::browser-test::measure-frames".to_string(),
-            json!({ "session_id": id }),
-        ))
-        .expect("frame trigger");
-    sleep(Duration::from_millis(500)).await;
+    let frames = client.observe_with(
+        iii_sdk::Source::function("browser::on-frame-event")
+            .args(json!({ "session_id": id }))
+            .deliver(iii_sdk::Deliver::Output),
+        "iii::browser-test::measure-frames",
+        iii_sdk::ObserverOptions::default().max_in_flight(1),
+    );
+    timeout(Duration::from_secs(10), frames.ready())
+        .await
+        .expect("frame observer active in time")
+        .expect("frame observer accepted");
     let (_, resized) = tokio::join!(
         call(
             &client,
@@ -1321,7 +1324,7 @@ async fn measure_scroll_to_frame() {
         v[((v.len() as f64 - 1.0) * p).round() as usize]
     };
     eprintln!(
-        "scroll -> frame-event ms: P50 {} P90 {} min {} max {} | act returns P50 {} P90 {} | all {:?}",
+        "scroll -> on-frame-event ms: P50 {} P90 {} min {} max {} | act returns P50 {} P90 {} | all {:?}",
         pct(&mut shown.clone(), 0.5), pct(&mut shown.clone(), 0.9), shown.iter().min().unwrap(),
         shown.iter().max().unwrap(), pct(&mut acted.clone(), 0.5), pct(&mut acted.clone(), 0.9), shown
     );

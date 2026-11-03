@@ -33,6 +33,8 @@ pub const FALLBACK_CODE: &str = "S216";
 /// - shared lifecycle/config codes: `S001`–`S004`, `S200`, `S210`, `S216`
 /// - fs-specific codes: `S211`–`S215`, `S217`–`S220`
 /// - exec-specific codes: `S100`–`S102`, `S300`, `S400`
+/// - sandbox router codes: `S301`–`S304` (S301 is retryable, so it must
+///   not collapse into the non-retryable `S216`)
 ///
 /// Mapping every code on BOTH paths is intentional: the worker should
 /// never silently downgrade an engine code to `S216` just because it
@@ -53,6 +55,11 @@ pub fn map_static_code(code: &str) -> &'static str {
         "S102" => "S102",
         "S300" => "S300",
         "S400" => "S400",
+        // sandbox router: adapter not connected / wrong major / unbound / unsupported.
+        "S301" => "S301",
+        "S302" => "S302",
+        "S303" => "S303",
+        "S304" => "S304",
         // fs-specific: path / permission / payload codes.
         "S211" => "S211",
         "S212" => "S212",
@@ -173,6 +180,11 @@ mod tests {
             ("S102", "S102"),
             ("S300", "S300"),
             ("S400", "S400"),
+            // Sandbox router codes pass through on both paths.
+            ("S301", "S301"),
+            ("S302", "S302"),
+            ("S303", "S303"),
+            ("S304", "S304"),
             // Previously fs-only — now recognized on the exec path too.
             ("S211", "S211"),
             ("S212", "S212"),

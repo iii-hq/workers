@@ -1,7 +1,7 @@
 /**
  * Smoke test for the injected UI's pure wire surface: the harness envelope
  * unwrap. The chat renderer's claim set and fallthrough behavior live with
- * the renderer in function-trigger-message/index.test.tsx.
+ * the renderer in function-call-message/index.test.tsx.
  */
 
 import { describe, expect, it } from 'vitest'

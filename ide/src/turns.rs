@@ -1,7 +1,7 @@
 //! Durable per-session change history.
 //!
 //! The console's review pane learned about an agent's edits from two live-only
-//! channels: the `shell::changed` watcher, which carries no session, and the
+//! channels: the `shell::on-changed` watcher, which carries no session, and the
 //! harness turn events, which only reach a page that is open at the time. A
 //! chat reopened later had nothing to show. This module records every write
 //! that crosses the bus through a shell or coder function, tagged with the
@@ -9,8 +9,8 @@
 //! `state` worker before anything else happens, so a surface that opens after
 //! the work can still ask what a session did.
 //!
-//! Two harness hooks do the work. `pre-trigger` reads the file the call is
-//! about to change and keeps that pre-image aside; `post-trigger` records the
+//! Two harness hooks do the work. `on-pre-call` reads the file the call is
+//! about to change and keeps that pre-image aside; `on-post-call` records the
 //! change together with it. Both are advisory and fail open: a viewer must
 //! never be able to block a write. Writes that bypass these functions (a
 //! `sed -i` through `shell::exec`, a formatter) are not seen here.
@@ -27,8 +27,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -39,8 +38,8 @@ use crate::code::functions::create_file::content_revision;
 use crate::config::TurnsConfig;
 use crate::turn_snapshot::{ref_name, rel_under, Body, Side, SnapshotRepo};
 
-const PRE_HOOK_FN_ID: &str = "shell::turns::on-pre-trigger";
-const POST_HOOK_FN_ID: &str = "shell::turns::on-post-trigger";
+const PRE_HOOK_FN_ID: &str = "shell::turns::on-pre-call";
+const POST_HOOK_FN_ID: &str = "shell::turns::on-post-call";
 const STARTED_FN_ID: &str = "shell::turns::on-turn-started";
 const COMPLETED_FN_ID: &str = "shell::turns::on-turn-completed";
 const ADOPT_ROOT_FN_ID: &str = "shell::turns::adopt-root";
@@ -209,14 +208,14 @@ pub struct HookCall {
 pub struct HookResult {
     #[serde(default)]
     pub is_error: bool,
-    /// The call's return value (`post_trigger` only). `touches` reads the
+    /// The call's return value (`on-post-call` only). `touches` reads the
     /// files `coder::scaffold-worker` wrote from it.
     #[serde(default)]
     pub details: Value,
 }
 
 /// The part of the harness hook envelope this module reads. One shape
-/// serves every hook point: `call` and `result` are the trigger hooks'
+/// serves every hook point: `call` and `result` are the call hooks'
 /// (`result` as `{ is_error, details }`), while the `post_turn` envelope puts the
 /// turn's own result under `result`, whatever JSON that is, so that field
 /// is read leniently rather than typed.
@@ -307,8 +306,8 @@ pub struct Touch {
 /// array of path strings (or a single `path`). A one-file assumption would
 /// silently drop every file but the first.
 ///
-/// `details` is the call's return value, which only the post-trigger hook
-/// has (the pre-trigger hook passes `None`). `coder::scaffold-worker` names
+/// `details` is the call's return value, which only the post-call hook
+/// has (the pre-call hook passes `None`). `coder::scaffold-worker` names
 /// its files only there, as `files: [{path}]`; before the call its target
 /// folder is missing or empty, so there is no pre-image to take.
 pub fn touches(call: &HookCall, details: Option<&Value>) -> Vec<Touch> {
@@ -927,7 +926,7 @@ pub struct TurnLog {
     /// one ended; what a contested workspace watch consults before it
     /// records a write under the session.
     activity: std::sync::Mutex<HashMap<String, Activity>>,
-    /// The `shell::turns::changed` feed, told of every stored record; unset
+    /// The `shell::turns::on-changed` feed, told of every stored record; unset
     /// in unit tests.
     changes: std::sync::OnceLock<Arc<crate::turn_events::TurnsChanged>>,
 }
@@ -969,7 +968,7 @@ impl TurnLog {
         }
     }
 
-    /// Wake `shell::turns::changed` bindings whenever a record is stored.
+    /// Call `shell::turns::on-changed` whenever a record is stored.
     pub fn notify_changes(&self, feed: Arc<crate::turn_events::TurnsChanged>) {
         let _ = self.changes.set(feed);
     }
@@ -1588,7 +1587,7 @@ impl TurnLog {
         Ok(count)
     }
 
-    pub async fn on_pre_trigger(&self, input: HookInput) {
+    pub async fn on_pre_call(&self, input: HookInput) {
         let (Some(session_id), Some(turn_id), Some(call)) =
             (input.session_id, input.turn_id, input.call)
         else {
@@ -1622,7 +1621,7 @@ impl TurnLog {
         }
     }
 
-    pub async fn on_post_trigger(&self, input: HookInput) {
+    pub async fn on_post_call(&self, input: HookInput) {
         let (Some(session_id), Some(turn_id), Some(call)) =
             (input.session_id, input.turn_id, input.call)
         else {
@@ -1785,7 +1784,7 @@ pub fn register(
     )));
     // Surfaces that list a session's turns hear each stored record instead
     // of asking again on a timer.
-    log.notify_changes(crate::turn_events::register_turns_changed_trigger(iii));
+    log.notify_changes(crate::turn_events::register_turns_changed(iii));
     let observers = crate::turn_observe::TurnObservers::new(log.clone(), data_dir);
 
     {
@@ -1803,7 +1802,7 @@ pub fn register(
                         let root = session_root(input.metadata.as_ref());
                         observers.ensure(session_id, turn_id, root.as_deref()).await;
                     }
-                    log.on_pre_trigger(input).await;
+                    log.on_pre_call(input).await;
                     Ok::<HookOutput, Error>(HookOutput::default())
                 }
             })
@@ -1821,7 +1820,7 @@ pub fn register(
             RegisterFunction::new_async(move |input: HookInput| {
                 let log = log.clone();
                 async move {
-                    log.on_post_trigger(input).await;
+                    log.on_post_call(input).await;
                     Ok::<HookOutput, Error>(HookOutput::default())
                 }
             })
@@ -1888,33 +1887,30 @@ pub fn register(
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
     }
+    // The harness hook observers stay pending until the harness registers
+    // its hook functions; each lives as long as this worker's connection.
     for (point, function_id) in [
-        ("harness::hook::pre-turn", PRE_TURN_FN_ID),
-        ("harness::hook::post-turn", POST_TURN_FN_ID),
+        ("harness::hook::on-pre-turn", PRE_TURN_FN_ID),
+        ("harness::hook::on-post-turn", POST_TURN_FN_ID),
     ] {
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-            point.to_string(),
-            function_id.to_string(),
-            json!({ "timeout_ms": SNAPSHOT_TIMEOUT_MS, "on_error": "fail_open" }),
-        )) {
-            tracing::warn!(error = %e, point, "turn log: snapshot binding failed; turn diffs fall back to hook pre-images");
-        }
+        iii.observe(
+            Source::function(point)
+                .args(json!({ "timeout_ms": SNAPSHOT_TIMEOUT_MS, "on_error": "fail_open" })),
+            function_id,
+        );
     }
     for (point, function_id) in [
-        ("harness::hook::pre-trigger", PRE_HOOK_FN_ID),
-        ("harness::hook::post-trigger", POST_HOOK_FN_ID),
+        ("harness::hook::on-pre-call", PRE_HOOK_FN_ID),
+        ("harness::hook::on-post-call", POST_HOOK_FN_ID),
     ] {
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-            point.to_string(),
-            function_id.to_string(),
-            json!({
+        iii.observe(
+            Source::function(point).args(json!({
                 "functions": HOOK_FUNCTIONS,
                 "timeout_ms": HOOK_TIMEOUT_MS,
                 "on_error": "fail_open",
-            }),
-        )) {
-            tracing::warn!(error = %e, point, "turn log: hook binding failed; session history will miss writes");
-        }
+            })),
+            function_id,
+        );
     }
 
     {
@@ -1971,16 +1967,13 @@ pub fn register(
         );
     }
     for (event, function_id) in [
-        ("harness::turn-started", STARTED_FN_ID),
-        ("harness::turn-completed", COMPLETED_FN_ID),
+        ("harness::on-turn-started", STARTED_FN_ID),
+        ("harness::on-turn-completed", COMPLETED_FN_ID),
     ] {
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-            event.to_string(),
-            function_id.to_string(),
-            json!({}),
-        )) {
-            tracing::warn!(error = %e, event, "turn log: turn event binding failed");
-        }
+        iii.observe(
+            Source::function(event).deliver(Deliver::Output),
+            function_id,
+        );
     }
 
     {
@@ -2382,20 +2375,22 @@ mod tests {
         Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)))
     }
 
-    /// The Timeline no longer re-lists turns on a timer: a stored record
-    /// must wake `shell::turns::changed` bindings on its session.
+    /// The Timeline lists turns again only when told: a stored record must
+    /// call `shell::turns::on-changed` for its session, once per window.
     #[tokio::test]
-    async fn a_stored_record_wakes_the_session_turns_feed() {
+    async fn a_stored_record_calls_the_session_turns_feed() {
         let dir = tempfile::tempdir().unwrap();
         let log = log_in(dir.path());
         let feed = crate::turn_events::TurnsChanged::new(None);
-        feed.bind_for_test("timeline", Some("s1"));
+        feed.observe_for_test();
         log.notify_changes(feed.clone());
         log.on_turn_started("s1", "t1").await.unwrap();
         log.on_turn_started("s2", "t1").await.unwrap();
         log.on_turn_completed("s1", "t1").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        assert_eq!(feed.fired_sessions(), ["s1"]);
+        let mut fired = feed.fired_sessions();
+        fired.sort();
+        assert_eq!(fired, ["s1", "s2"]);
     }
 
     fn call(function_id: &str, arguments: Value) -> HookCall {
@@ -2666,7 +2661,7 @@ mod tests {
             assert!(!input.result.unwrap_or_default().is_error);
         }
         let failed: HookInput = serde_json::from_value(json!({
-            "point": "post_trigger",
+            "point": "post_call",
             "session_id": "s1",
             "turn_id": "t1",
             "result": { "function_call_id": "c1", "is_error": true },
@@ -2801,7 +2796,7 @@ mod tests {
         let log = log_in(dir.path());
 
         log.on_turn_started("s1", "t1").await.unwrap();
-        log.on_pre_trigger(hook(
+        log.on_pre_call(hook(
             "s1",
             "t1",
             call("shell::fs::write", json!({ "path": "note.md" })),
@@ -2810,7 +2805,7 @@ mod tests {
         ))
         .await;
         std::fs::write(&file, "after\n").unwrap();
-        log.on_post_trigger(hook(
+        log.on_post_call(hook(
             "s1",
             "t1",
             call("shell::fs::write", json!({ "path": "note.md" })),
@@ -2868,16 +2863,16 @@ mod tests {
                 json!({ "files": [{ "path": "new.txt" }] }),
             )
         };
-        log.on_pre_trigger(hook("s", "t", create(), &root_s, false))
+        log.on_pre_call(hook("s", "t", create(), &root_s, false))
             .await;
-        log.on_post_trigger(hook("s", "t", create(), &root_s, true))
+        log.on_post_call(hook("s", "t", create(), &root_s, true))
             .await;
         assert!(log.load("s").await.unwrap().turns.is_empty());
 
-        log.on_pre_trigger(hook("s", "t", create(), &root_s, false))
+        log.on_pre_call(hook("s", "t", create(), &root_s, false))
             .await;
         std::fs::write(root.join("new.txt"), "x").unwrap();
-        log.on_post_trigger(hook("s", "t", create(), &root_s, false))
+        log.on_post_call(hook("s", "t", create(), &root_s, false))
             .await;
         let record = log.load("s").await.unwrap();
         let f = &record.turns[0].files[0];
@@ -2905,7 +2900,7 @@ mod tests {
         // The request names no file: only the result does.
         assert!(touches(&scaffold(), None).is_empty());
 
-        log.on_pre_trigger(hook("s", "t", scaffold(), &root_s, false))
+        log.on_pre_call(hook("s", "t", scaffold(), &root_s, false))
             .await;
         std::fs::write(&file, "export {}\n").unwrap();
         let mut post = hook("s", "t", scaffold(), &root_s, false);
@@ -2916,7 +2911,7 @@ mod tests {
                 "files": [{ "path": path, "bytes": 10, "revision": "sha256:00" }]
             }),
         });
-        log.on_post_trigger(post).await;
+        log.on_post_call(post).await;
 
         let record = log.load("s").await.unwrap();
         let f = &record.turns[0].files[0];
@@ -2952,7 +2947,7 @@ mod tests {
     async fn hooks_without_a_turn_are_ignored() {
         let dir = tempfile::tempdir().unwrap();
         let log = log_in(dir.path());
-        log.on_post_trigger(HookInput {
+        log.on_post_call(HookInput {
             call: Some(call("shell::fs::write", json!({ "path": "/tmp/x" }))),
             ..HookInput::default()
         })
@@ -3245,13 +3240,13 @@ mod tests {
             "parent_turn_id": "pt1",
             "subagent_display": { "name": "Form writer" }
         }));
-        log.on_pre_trigger(HookInput {
+        log.on_pre_call(HookInput {
             result: None,
             ..hook_clone(&input)
         })
         .await;
         std::fs::write(&file, "<form/>\n").unwrap();
-        log.on_post_trigger(input).await;
+        log.on_post_call(input).await;
 
         let parent = log.load("parent").await.unwrap();
         assert_eq!(parent.turns.len(), 1);
@@ -3485,13 +3480,13 @@ mod tests {
             &root_s,
             false,
         );
-        log.on_pre_trigger(hook_clone(&exec)).await;
+        log.on_pre_call(hook_clone(&exec)).await;
         assert!(log.is_working("parent"));
         assert!(
             !log.is_working("child"),
             "activity is kept per top-level session"
         );
-        log.on_post_trigger(exec).await;
+        log.on_post_call(exec).await;
         assert_eq!(log.activity().get("parent").map(|a| a.in_flight), Some(0));
 
         let write = hook(
@@ -3504,11 +3499,11 @@ mod tests {
             &root_s,
             false,
         );
-        log.on_pre_trigger(hook_clone(&write)).await;
+        log.on_pre_call(hook_clone(&write)).await;
         assert!(log.claimed_by_other(&file_s, "other"));
         assert!(!log.claimed_by_other(&file_s, "parent"));
         std::fs::write(&file, "fn main() {}\n").unwrap();
-        log.on_post_trigger(write).await;
+        log.on_post_call(write).await;
         assert!(log.claimed_by_other(&file_s, "other"));
         assert_eq!(log.load("parent").await.unwrap().turns[0].files.len(), 1);
     }

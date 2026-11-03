@@ -624,7 +624,7 @@ mod loop_tests {
         let mut with_call = partial("");
         with_call.content.push(ContentBlock::FunctionCall {
             id: "c1".into(),
-            function_id: "agent_trigger".into(),
+            function_id: "agent_call".into(),
             arguments: serde_json::json!({}),
         });
         send(

@@ -2,7 +2,7 @@ import { cn } from '@/lib/utils'
 
 /**
  * The composer's visual vocabulary, shared with the strips that stack above
- * it (SessionTriggers) so the whole footer reads as one instrument: the same
+ * it (SessionObservers) so the whole footer reads as one instrument: the same
  * card material, the same quiet round icon buttons, the same phone/desktop
  * sizing. Anything that sits in the footer should draw from here rather than
  * restate the classes.

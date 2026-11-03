@@ -110,7 +110,7 @@ class InitTests(unittest.TestCase):
         # Quickstart declares no listener: the summary names the reserved ports instead of URLs.
         self.assertRegex(result.stdout, r"http +port \d+, used if http is added later")
         self.assertFalse((destination / "worker-compose.yaml.bak").exists())
-        self.assertIn("Run `iii trigger ...` from", result.stdout)
+        self.assertIn("Run `iii call ...` from", result.stdout)
         self.assertNotIn("left unchanged", result.stderr)
         # Without TEMPLATES_REPO, init.sh clones III_TEMPLATE_URL into the stage and hands the CLI that copy.
         self.assertIn(f"Fetching templates from {self.templates.as_uri()} (main)...", result.stderr)
@@ -190,7 +190,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"with {build}/iii-dev...", result.stdout)
         # The printed command must survive a copy-paste into a shell.
-        self.assertIn(f"Run `{shlex.quote(f'{build}/iii-dev')} trigger ...` from", result.stdout)
+        self.assertIn(f"Run `{shlex.quote(f'{build}/iii-dev')} call ...` from", result.stdout)
         calls = self.log.read_text().splitlines()
         self.assertEqual(calls[0::2], ["iii-dev", "iii-dev"])
         self.assertIn("|project init -t quickstart", calls[1])

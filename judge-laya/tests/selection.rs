@@ -35,9 +35,13 @@ async fn a_request_loads_the_checkpoints_while_another_provider_is_the_default()
         let mut socket = accept_async(stream).await.unwrap();
         socket
             .send(Message::Text(
-                json!({"type":"workerregistered","worker_id":"selection-test"})
-                    .to_string()
-                    .into(),
+                json!({
+                    "type": "workerregistered",
+                    "worker_id": "selection-test",
+                    "features": ["observe.v1", "observe.v2"]
+                })
+                .to_string()
+                .into(),
             ))
             .await
             .unwrap();
@@ -107,10 +111,11 @@ async fn a_request_loads_the_checkpoints_while_another_provider_is_the_default()
     }
     let registered =
         |id: &'static str| move |f: &Value| f["type"] == "registerfunction" && f["id"] == id;
-    let bound = |f: &Value| {
-        f["type"] == "registertrigger"
-            && f["function_id"] == CHANGED
-            && f["config"]["configuration_id"] == HUB_ID
+    let observed = |f: &Value| {
+        f["type"] == "observe"
+            && f["source"]["function_id"] == "configuration::on-updated"
+            && f["source"]["filters"]["input.id"]["$eq"] == HUB_ID
+            && f["target"]["function_id"] == CHANGED
     };
     // 1. The hub names typesafe: the functions register anyway, and the worker
     //    follows the hub.
@@ -119,7 +124,7 @@ async fn a_request_loads_the_checkpoints_while_another_provider_is_the_default()
         while !(evaluate && following) {
             let frame = frames.recv().await.expect("worker stays connected");
             evaluate |= registered("judge-laya::evaluate")(&frame);
-            following |= bound(&frame);
+            following |= observed(&frame);
         }
     })
     .await

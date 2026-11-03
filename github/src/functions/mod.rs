@@ -93,7 +93,7 @@ fn parse_stdout(id: &str, out: &GhOutcome) -> Result<Value, Error> {
 
 /// Register a curated wrapper whose stdout is `--json` output: typed request
 /// → pure argv builder → bounded gh run → parsed `ValueResponse`. Every call
-/// emits a fire-and-forget `github::called` event via [`events::run_and_emit`];
+/// calls `github::on-called` fire-and-forget via [`events::run_and_emit`];
 /// the wrapped behavior and response are unchanged.
 fn register_json<Req>(
     iii: &IIIClient,
@@ -207,8 +207,8 @@ fn register_diff(iii: &IIIClient, cell: &ConfigCell, emitter: &CalledEmitter) {
 }
 
 /// Register every `github::*` function. Keep in lockstep with [`catalog`].
-/// `emitter` is threaded into each register helper so every call fans out a
-/// `github::called` event without hand-editing the individual handlers.
+/// `emitter` is threaded into each register helper so every call is followed
+/// by a `github::on-called` call without hand-editing the individual handlers.
 pub fn register_all(iii: &IIIClient, cell: &ConfigCell, emitter: &CalledEmitter) {
     register_json(
         iii,

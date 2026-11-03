@@ -14,23 +14,24 @@ lives in the `configuration` worker and hot-reloads without a restart.
 |---|---|
 | [README.md](README.md) (this file) | The system in one paragraph and one diagram; the worker's place in the stack; vocabulary. |
 | [telegram-api.md](telegram-api.md) | All communication with the **Telegram Bot API**: ingress (polling loop / webhook), the outbound method surface, draft vs edit streaming, secret validation, throttling, file handling, the HTTP client. |
-| [configuration.md](configuration.md) | The **configuration** model: schema, the `configuration`-worker integration, boot sequence, hot-reload, and the `updates` adapter lifecycle (polling ↔ webhook and the dynamic HTTP-trigger registration). |
-| [internals.md](internals.md) | Everything else: the reactive bindings to siblings, the render/streaming pipeline, the durable KV schema, the per-chat FSM, preference resolution, telemetry/trace correlation, and the concurrency model. |
+| [configuration.md](configuration.md) | The **configuration** model: schema, the `configuration`-worker integration, boot sequence, hot-reload, and the `updates` adapter lifecycle (polling ↔ webhook and the dynamic `http::on-request` route). |
+| [internals.md](internals.md) | Everything else: the observers of sibling events, the render/streaming pipeline, the durable KV schema, the per-chat FSM, preference resolution, telemetry/trace correlation, and the concurrency model. |
 
 ## The system in one paragraph
 
 A Telegram update arrives — by long-poll (`getUpdates`) in **polling** mode or
-by HTTP POST to the engine route in **webhook** mode — and both paths funnel
+by HTTP POST to the worker's `http::on-request` route in **webhook** mode — and both paths funnel
 into one sink (`webhook::process_update`). Commands (`/start`, `/model`, …) and
 inline-keyboard callbacks are handled locally; plain user text is forwarded to
 `harness::send`, which assigns a session id and runs the agent turn. As the turn
-runs, `session-manager` and `harness` emit events (`message-added`,
-`message-updated`, `status-changed`, `turn-completed`) that the engine routes
-back to this worker's **bindings**. The render pipeline turns each session entry
+runs, `session-manager` and `harness` call their event functions
+(`session::on-message-added`, `session::on-message-updated`,
+`session::on-status-changed`, `harness::on-turn-completed`), and this worker's
+**observers** deliver each event to its handler. The render pipeline turns each session entry
 into Telegram output — streaming live via ephemeral **drafts**
 (`sendMessageDraft`) or in-place **edits** (`editMessageText`), then finalizing
 to persistent messages at end of turn. When a tool call needs human approval,
-`approval-gate` emits `pending-created`, the bot posts an Approve/Reject/Approve-
+`approval-gate` calls `approval::on-pending-created`, the bot posts an Approve/Reject/Approve-
 always keyboard, and the button press resolves it. Per-chat mappings (chat ↔
 session, selected model, preferences) and per-entry render bookkeeping are
 persisted in the `state` worker so the bridge survives restarts and out-of-order
@@ -50,7 +51,7 @@ event delivery.
                                    │      │  POLLING:    │  long-poll getUpdates
                                    │      │  background  │  in a bg task
                                    │      │  loop        │
-                                   │      │  WEBHOOK:    │  engine HTTP route
+                                   │      │  WEBHOOK:    │  http::on-request route
                                    │      │  HTTP POST   │  /telegram-bot/webhook
                                    │      └──────┬───────┘
    ┌───────────────────────────────┴─────────────┴───────────────────────────┐
@@ -58,21 +59,21 @@ event delivery.
    │                                                                           │
    │  ingress ──► webhook::process_update ──► commands / callbacks / user text │
    │                                              │                            │
-   │   render pipeline ◄── bindings ◄── engine ◄──┤ harness::send (drive turn) │
+   │   render pipeline ◄── observers ◄── engine ◄─┤ harness::send (drive turn) │
    │   (draft / edit, chunk,                       │ harness::stop / status     │
    │    verbosity, ordering)                       │ router::models::list       │
    │        │                                      │ approval::resolve / …      │
    └────────┼──────────────────────────────────────┼───────────────────────────┘
             │                                       │
-            │ durable bookkeeping                   │ events (triggers)
+            │ durable bookkeeping                   │ events (observers)
             ▼                                       ▼
      ┌─────────────┐     ┌──────────┐  ┌─────────────────┐  ┌──────────────┐  ┌─────────────┐
      │ state (KV)  │     │ harness  │  │ session-manager │  │ approval-gate│  │ llm-router  │
-     │ scope=      │     │ send/stop│  │ message-added/  │  │ pending-*    │  │ models::list│
-     │ telegram-bot│     │ turn-*   │  │ updated/status  │  │ resolve      │  │             │
+     │ scope=      │     │ send/stop│  │ on-message-*/   │  │ on-pending-* │  │ models::list│
+     │ telegram-bot│     │ on-turn-*│  │ on-status-*     │  │ resolve      │  │             │
      └─────────────┘     └──────────┘  └─────────────────┘  └──────────────┘  └─────────────┘
 
-   configuration worker ──(configuration:updated)──► hot-reload (bot_token, adapter, …)
+   configuration::on-updated ──(configuration:updated)──► hot-reload (bot_token, adapter, …)
 ```
 
 ## Vocabulary
@@ -83,14 +84,14 @@ event delivery.
   harness-assigned `session_id` (string). One active session per chat; `/start`
   clears it. Mapped both ways in KV (`chat:{id}:session` ⇄ `session:{sid}:chat`).
 - **Turn** — one agent run inside a session, identified by `turn_id`. Started by
-  `harness::send`, ended by `harness::turn-completed`.
+  `harness::send`, ended by `harness::on-turn-completed`.
 - **Entry** — one item in a session transcript (assistant message, function call,
-  function result), keyed by `entry_id`. Streams in via `message-added` /
-  `message-updated`.
+  function result), keyed by `entry_id`. Streams in via `session::on-message-added` /
+  `session::on-message-updated`.
 - **Revision** — a monotonically increasing version of an entry. The render
   pipeline drops stale (lower) revisions and reconciles higher ones.
 - **Adapter** (`updates`) — how Telegram updates reach the worker: **polling**
-  (default, no public URL) or **webhook** (engine HTTP route + `setWebhook`).
+  (default, no public URL) or **webhook** (`http::on-request` route + `setWebhook`).
 - **Draft transport** — streaming via ephemeral `sendMessageDraft` /
   `sendRichMessageDraft` previews (Bot API 9.3+), finalized to real messages.
 - **Edit transport** — streaming via a persistent `sendMessage` + repeated
@@ -103,8 +104,10 @@ event delivery.
   `high` / `debug`.
 - **Steering mode** — `steering` folds mid-turn messages into the running turn
   (harness merge); `fifo` queues them locally and drains one per turn.
-- **Binding** — a registered handler bound to a sibling's trigger
-  (`session::message-added`, `harness::turn-completed`, `approval::pending-created`, …).
-- **HTTP trigger** — an engine route (`api_path` + method) that invokes a worker
-  function. The webhook ingress route is one; it is registered/removed as the
-  `updates` adapter is switched (see [configuration.md](configuration.md)).
+- **Observer** — `iii.observe(source, target)`: each call of a sibling's
+  event function (`session::on-message-added`, `harness::on-turn-completed`,
+  `approval::on-pending-created`, …) runs this worker's handler with the event.
+- **HTTP route** — an observer of `http::on-request` with args `{ method, path }`;
+  the http worker calls its target with each matching request. The webhook
+  ingress route is one; it is observed/disposed as the `updates` adapter is
+  switched (see [configuration.md](configuration.md)).

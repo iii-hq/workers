@@ -1,4 +1,4 @@
-//! `approval::filesystem-access-watch` — the `post_trigger` hook handler
+//! `approval::filesystem-access-watch` — the `post_call` hook handler
 //! (spec-pr3-approval-gate.md § New function `approval::filesystem-access-watch`).
 //! Watches `shell::*` / `coder::*` dispatch failures for a jail-scope
 //! `filesystem_access_request` tail and, when one is found and nothing already excuses it,
@@ -6,12 +6,12 @@
 //! console can ask for filesystem access instead of surfacing a raw
 //! rejection to the model.
 //!
-//! Bound with `on_error: "fail_open"` (unlike the pre_trigger gate's
+//! Observed with `on_error: "fail_open"` (where the pre_call gate is
 //! `fail_closed`): a crashed or absent filesystem-access-watch must never turn an
 //! already-decided function_result into a stuck call — the ladder's
 //! default at every rung, on every failure mode, is `Continue` (deliver
 //! the original error to the model unchanged, exactly as if filesystem-access-watch
-//! were not bound at all).
+//! were not observing at all).
 //!
 //! Ladder steps 1-4 (is_error / code / hint parse / workspace guard) are
 //! pure and live in `crate::filesystem_access::extract_hint`; steps 5-8 need state +
@@ -95,7 +95,7 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
         return HookOutput::Continue;
     }
 
-    // Idempotency: a redelivered post_trigger step re-holds the same call
+    // Idempotency: a redelivered post_call step re-holds the same call
     // without re-counting an attempt or re-emitting — mirrors gate.rs's
     // hold(). This only applies when the existing record is a redelivery of
     // THIS SAME failure (its access_request matches `hint`); a record left
@@ -207,7 +207,7 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: AccessReque
             HookOutput::Continue
         }
         Ok(Some(prior)) => {
-            // A generic pre-trigger approval can transition into this
+            // A generic pre-call approval can transition into this
             // filesystem approval while approval::resolve is still running.
             // put() has already replaced it atomically; emit the new request
             // so the UI explains why the call remains paused. Same-kind
@@ -246,7 +246,7 @@ mod tests {
         )
     }
 
-    fn post_trigger_input(
+    fn post_call_input(
         session_id: &str,
         call_id: &str,
         function_id: &str,
@@ -256,7 +256,7 @@ mod tests {
         metadata: Option<serde_json::Value>,
     ) -> HookInput {
         let mut base = json!({
-            "point": "post_trigger",
+            "point": "post_call",
             "session_id": session_id,
             "turn_id": "t_1",
             "step": 3,
@@ -277,7 +277,7 @@ mod tests {
     }
 
     fn jail_input(session_id: &str, call_id: &str, requested_root: &str) -> HookInput {
-        post_trigger_input(
+        post_call_input(
             session_id,
             call_id,
             "shell::fs::read",
@@ -324,7 +324,7 @@ mod tests {
     async fn non_error_result_continues() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
-            let input = post_trigger_input(
+            let input = post_call_input(
                 "s_1",
                 "c_1",
                 "shell::fs::read",
@@ -345,7 +345,7 @@ mod tests {
     async fn non_jail_scope_code_continues() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
-            let input = post_trigger_input(
+            let input = post_call_input(
                 "s_1",
                 "c_1",
                 "shell::exec",
@@ -366,7 +366,7 @@ mod tests {
     async fn no_hint_in_message_continues() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
-            let input = post_trigger_input(
+            let input = post_call_input(
                 "s_1",
                 "c_1",
                 "shell::exec",
@@ -387,7 +387,7 @@ mod tests {
     async fn workspace_itself_continues() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
-            let input = post_trigger_input(
+            let input = post_call_input(
                 "s_1",
                 "c_1",
                 "shell::fs::read",
@@ -427,7 +427,7 @@ mod tests {
     async fn no_harness_workspace_support_stands_down() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             // No `harness::filesystem::grants` fake registered at all — the
-            // trigger simply doesn't exist.
+            // function simply doesn't exist.
             let input = jail_input("s_1", "c_1", "/a/b");
             assert_eq!(
                 handle(&stack.deps, input).await.unwrap(),
@@ -564,7 +564,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn duplicate_post_trigger_delivery_is_a_noop_on_the_existing_record() {
+    async fn duplicate_post_call_delivery_is_a_noop_on_the_existing_record() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
             let out1 = handle(&stack.deps, jail_input("s_1", "c_1", "/a/b"))
@@ -634,7 +634,7 @@ mod tests {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
             let input: HookInput = serde_json::from_value(json!({
-                "point": "post_trigger",
+                "point": "post_call",
                 "session_id": "s/1",
                 "turn_id": "t_1",
                 "call": { "id": "c_1", "function_id": "shell::fs::read", "arguments": {} },

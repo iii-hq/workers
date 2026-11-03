@@ -1,13 +1,13 @@
-/** Errors: a throwing handler and trigger are reported, not fatal; a page that cannot render is fatal. */
-import { Button, Column, createSignal, defineApp, Page, Text, useTrigger } from '@iii-dev/native-ui'
+/** Errors: a throwing handler and observer are reported, not fatal; a page that cannot render is fatal. */
+import { Button, Column, createSignal, defineApp, Page, Text, useObserve } from '@iii-dev/native-ui'
 
 function Root() {
   const [n, setN] = createSignal(0)
-  useTrigger(
-    'demo::boom',
+  useObserve(
+    'demo::on-boom',
     () => ({}),
     () => {
-      throw new Error('trigger exploded')
+      throw new Error('observer exploded')
     },
   )
   return (

@@ -1,18 +1,18 @@
-//! Recover one-shot Compose wakes whose terminal event preceded provider
-//! activation. The canonical watch and fire count already live in the binding.
+//! Recover one-shot Compose wakes whose terminal event preceded their
+//! observer's activation. The canonical watch and fire count already live in
+//! the binding.
 //!
-//! SDK registration only queues a request, and engine discovery can show the
-//! trigger before its provider installs it. An immediate read is therefore not
-//! a readiness barrier. Still-armed watches are retried on events, never on a
-//! clock:
+//! `observe` only queues a request, and an observer is active only once
+//! Compose has accepted it. An immediate read is therefore not a readiness
+//! barrier. Still-armed watches are retried on events, never on a clock:
 //!
-//! * the harness's own standing `compose-operation` subscription
-//!   ([`register_terminal_watch`], every operation, terminal events only) —
-//!   an operation finishing inside a binding's activation window still
+//! * the harness's own standing observer of `compose::on-operation-progress`
+//!   ([`observe_terminal_operations`], every operation, terminal events only)
+//!   — an operation finishing inside a binding's activation window still
 //!   reaches the harness, which recovers every armed wake on that operation;
 //! * every binding pass ([`super::expiry::sweep`]): boot and each engine
-//!   worker connect/disconnect/announce, which covers the Compose provider
-//!   itself (re)activating.
+//!   worker connect/disconnect/announce, which covers Compose itself
+//!   (re)activating.
 //!
 //! Every replay enters the ordinary delivery hop and its atomic once claim.
 
@@ -21,6 +21,7 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
+use iii_sdk::{Deliver, Source};
 use serde_json::{json, Value};
 
 use super::Binding;
@@ -128,9 +129,8 @@ impl Drop for RecoverySlot {
 
 /// Internal handler for the harness's standing terminal Compose watch.
 pub const TERMINAL_WATCH_FN_ID: &str = "harness::on-compose-operation";
-const COMPOSE_OPERATION_TRIGGER: &str = "compose-operation";
 
-/// The fields of a `compose-operation` event the watch reads.
+/// The fields of a `compose::on-operation-progress` event the watch reads.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ComposeOperationEvent {
     #[serde(default)]
@@ -144,13 +144,12 @@ pub struct ComposeOperationAck {
     pub ok: bool,
 }
 
-/// Subscribe the harness to every Compose operation's terminal event. A
-/// per-binding watch registered just before its operation finished may have
-/// been installed by the provider too late to see that event; this standing
-/// subscription was installed long before, so the completion still arrives
-/// and recovers the wake through the snapshot path. Parks harmlessly when no
-/// Compose provider is connected.
-pub fn register_terminal_watch(deps: &Arc<Deps>) {
+/// Observe every Compose operation's terminal event. A per-binding observer
+/// created just before its operation finished may have become active too late
+/// to see that event; this standing observer was active long before, so the
+/// completion still arrives and recovers the wake through the snapshot path.
+/// Stays `pending` harmlessly while Compose is not connected.
+pub fn observe_terminal_operations(deps: &Arc<Deps>) {
     let worker = deps.clone();
     deps.iii.register_function(
         TERMINAL_WATCH_FN_ID,
@@ -165,21 +164,24 @@ pub fn register_terminal_watch(deps: &Arc<Deps>) {
         })
         .description(
             "Internal: recover armed Compose wakes when any Compose operation reaches a \
-             terminal state (driven by the harness's own compose-operation subscription).",
+             terminal state (an observer of compose::on-operation-progress).",
         )
         .metadata(json!({ "internal": true })),
     );
-    let input = iii_sdk::protocol::RegisterTriggerInput::new(
-        COMPOSE_OPERATION_TRIGGER,
-        TERMINAL_WATCH_FN_ID,
-        json!({ "terminal_only": true }),
-    );
-    let input = match crate::functions::subscribe::compose_operation_trigger_namespace() {
-        Some(namespace) => input.in_trigger_namespace(&namespace),
-        None => input,
-    };
-    if let Err(error) = deps.iii.register_trigger(input) {
-        tracing::warn!(%error, "binding the terminal Compose watch failed; wakes recover on worker changes only");
+    let _observer = deps
+        .iii
+        .observe(terminal_watch_source(), TERMINAL_WATCH_FN_ID);
+}
+
+/// Every terminal progress event of every Compose operation, as the event
+/// itself, in Compose's namespace when the supervisor set one.
+fn terminal_watch_source() -> Source {
+    let source = Source::function(crate::functions::observe::COMPOSE_PROGRESS_FN)
+        .filters(json!({ "input.terminal": { "$eq": true } }))
+        .deliver(Deliver::Output);
+    match crate::functions::observe::compose_namespace() {
+        Some(namespace) => source.namespace(namespace),
+        None => source,
     }
 }
 
@@ -241,7 +243,7 @@ async fn recover(deps: &Deps, binding_id: &str, operation_id: &str) {
     };
     // The live event and this persisted copy share conditions, lifecycle
     // CAS, and retirement. Never inject directly or increment fires here.
-    if let Err(error) = crate::functions::trigger_deliver::handle(
+    if let Err(error) = crate::functions::observer_deliver::handle(
         deps,
         event.clone(),
         Some(json!({ "__binding": binding_id })),
@@ -255,16 +257,16 @@ async fn recover(deps: &Deps, binding_id: &str, operation_id: &str) {
 fn operation_id(binding: &Binding, now_ms: i64) -> Option<&str> {
     if !super::is_armed_wake(binding, now_ms)
         || binding.is_exhausted(now_ms)
-        || binding.trigger_id.is_none()
+        || binding.observer_id.is_none()
     {
         return None;
     }
-    let (trigger_type, config) = binding.trigger_watch()?;
-    if trigger_type != "compose-operation" {
+    let source = binding.source.as_ref()?;
+    if source.function_id != crate::functions::observe::COMPOSE_PROGRESS_FN {
         return None;
     }
-    config
-        .get("operation_id")?
+    source
+        .filter_eq("input.operation_id")?
         .as_str()
         .filter(|id| !id.is_empty())
 }
@@ -292,13 +294,22 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::bindings::{BindingTarget, Lifecycle, OwnerScope};
+    use crate::bindings::{BindingTarget, Lifecycle, OwnerScope, SourceSpec};
     use serde_json::json;
 
     fn wake() -> Binding {
         Binding {
             id: "sub_compose".into(),
-            trigger_id: Some("sdk:sub_compose".into()),
+            observer_id: Some("sub_compose".into()),
+            source: Some(SourceSpec {
+                function_id: crate::functions::observe::COMPOSE_PROGRESS_FN.into(),
+                namespace: Some("compose-host".into()),
+                args: None,
+                filters: Some(json!({
+                    "input.operation_id": { "$eq": "compose:watched" },
+                    "input.terminal": { "$eq": true },
+                })),
+            }),
             owner: OwnerScope {
                 session_id: "s1".into(),
                 root_session_id: None,
@@ -311,11 +322,7 @@ mod tests {
                 expires_at: None,
             },
             capability: None,
-            causation: Default::default(),
-            dedup_key: Some(json!({
-                "trigger_type": "compose-operation",
-                "config": { "operation_id": "compose:watched", "terminal_only": true },
-            })),
+            dedup_key: None,
             fires: 0,
             created_at: 0,
         }
@@ -351,8 +358,8 @@ mod tests {
         });
         assert!(terminal_event(id, &running).is_none());
 
-        // The operation finishes before the provider installs its binding.
-        // A later recovery must deliver the provider's exact persisted event.
+        // The operation finishes before its observer is active. A later
+        // recovery must deliver Compose's exact persisted event.
         let settled = settled_snapshot();
         let recovered = terminal_event(id, &settled).expect("the missed event must be recoverable");
         assert_eq!(recovered, &settled["last_event"]);
@@ -377,21 +384,22 @@ mod tests {
         let mut expired = original.clone();
         expired.lifecycle.expires_at = Some(1);
         variants.push(expired);
-        let mut registering = original.clone();
-        registering.trigger_id = None;
-        variants.push(registering);
-        for config in [
+        let mut observing = original.clone();
+        observing.observer_id = None;
+        variants.push(observing);
+        for filters in [
             json!({}),
-            json!({ "operation_id": null }),
-            json!({ "operation_id": "" }),
+            json!({ "input.operation_id": { "$eq": null } }),
+            json!({ "input.operation_id": { "$eq": "" } }),
+            json!({ "input.terminal": { "$eq": true } }),
         ] {
             let mut wildcard = original.clone();
-            wildcard.dedup_key.as_mut().unwrap()["config"] = config;
+            wildcard.source.as_mut().unwrap().filters = Some(filters);
             variants.push(wildcard);
         }
-        let mut other_type = original;
-        other_type.dedup_key.as_mut().unwrap()["trigger_type"] = json!("state");
-        variants.push(other_type);
+        let mut other_function = original;
+        other_function.source.as_mut().unwrap().function_id = "state::on-changed".into();
+        variants.push(other_function);
         for binding in variants {
             assert!(operation_id(&binding, 1).is_none(), "{binding:?}");
         }
@@ -526,5 +534,24 @@ mod tests {
                 .is_empty(),
             "the id is released once no re-run is owed"
         );
+    }
+
+    /// The standing watch observes terminal progress only, and its target
+    /// reads the event itself.
+    #[test]
+    fn the_terminal_watch_observes_terminal_progress_as_the_event() {
+        let source = terminal_watch_source();
+        assert_eq!(
+            source.function_id(),
+            crate::functions::observe::COMPOSE_PROGRESS_FN
+        );
+        let expected = Source::function(crate::functions::observe::COMPOSE_PROGRESS_FN)
+            .filters(json!({ "input.terminal": { "$eq": true } }))
+            .deliver(Deliver::Output);
+        let expected = match crate::functions::observe::compose_namespace() {
+            Some(namespace) => expected.namespace(namespace),
+            None => expected,
+        };
+        assert_eq!(source, expected);
     }
 }

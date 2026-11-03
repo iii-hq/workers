@@ -39,7 +39,7 @@ pub struct StartRequest {
     /// a duplicate run.
     #[serde(default)]
     pub idempotency_key: Option<String>,
-    /// Completion callback triggered once when the run reaches a terminal state,
+    /// Completion callback called once when the run reaches a terminal state,
     /// instead of polling `workflow::status`.
     #[serde(default)]
     pub notify: Option<crate::types::NotifySpec>,
@@ -754,7 +754,7 @@ async fn fetch_registered_models(deps: &Deps) -> Option<BTreeSet<(String, String
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
     let resp = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "router::models::list".into(),
             payload: json!({}),
             action: None,
@@ -814,16 +814,16 @@ pub async fn enqueue_tick(
     run_id: &str,
     step: u64,
 ) -> Result<(), WorkflowError> {
-    iii.trigger(iii_sdk::protocol::TriggerRequest {
+    iii.call(iii_sdk::CallRequest {
         function_id: "workflow::tick".into(),
         payload: json!({"run_id": run_id, "step": step}),
-        action: Some(iii_sdk::TriggerAction::Enqueue {
+        action: Some(iii_sdk::CallAction::Enqueue {
             queue: "default".into(),
         }),
         timeout_ms: None,
     })
     .await
-    .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
+    .map_err(|e| WorkflowError::Call(e.to_string()))?;
     Ok(())
 }
 
@@ -1264,7 +1264,7 @@ mod tests {
     #[test]
     fn start_request_parses_reply_to() {
         // A caller opts into message-delivery with `reply_to`; session/model are
-        // auto-stamped later by the pre_trigger hook, not supplied here.
+        // auto-stamped later by the pre_call hook, not supplied here.
         let req: StartRequest = serde_json::from_value(json!({
             "definition": well_formed_def(),
             "reply_to": { "template": "Pick the winner:" }
@@ -1287,7 +1287,7 @@ mod tests {
 
     #[test]
     fn start_request_parses_caller_session_id() {
-        // The pre_trigger hook stamps `caller_session_id` into the args (from the
+        // The pre_call hook stamps `caller_session_id` into the args (from the
         // caller's turn) so node sessions can nest under the orchestrator.
         let req: StartRequest = serde_json::from_value(json!({
             "definition": well_formed_def(),

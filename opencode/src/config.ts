@@ -15,19 +15,19 @@ const ConfigSchema = z.object({
     })
     .prefault({})
     .describe('Per-turn defaults applied when an opencode::run payload omits a field'),
-  // Deprecated and ignored: the feeds are the fixed trigger types
-  // opencode::agent-event / opencode::raw-event. Kept optional so stored
+  // Deprecated and ignored: the feeds are the fixed functions
+  // opencode::on-agent-event / opencode::on-raw-event. Kept optional so stored
   // configs that still carry them pass the published schema
   // (additionalProperties: false) instead of being rejected.
   events_stream: z.string().optional().meta({
     deprecated: true,
     description:
-      'Deprecated, ignored. AgentEvent frames are delivered on the opencode::agent-event trigger type.',
+      'Deprecated, ignored. AgentEvent frames are delivered on the opencode::on-agent-event function.',
   }),
   raw_events_stream: z.string().optional().meta({
     deprecated: true,
     description:
-      'Deprecated, ignored. Raw OpenCode events are delivered on the opencode::raw-event trigger type.',
+      'Deprecated, ignored. Raw OpenCode events are delivered on the opencode::on-raw-event function.',
   }),
   iii_context: z
     .boolean()

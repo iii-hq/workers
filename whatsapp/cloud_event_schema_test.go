@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	validate "github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -29,71 +32,6 @@ func compileCloudEventSchema(t *testing.T, raw []byte) *validate.Schema {
 		}
 	}
 	return schema
-}
-
-func TestCloudEventConfigSchemaMatchesFilter(t *testing.T) {
-	schema := compileCloudEventSchema(t, cloudEventConfigSchema)
-	cases := []struct {
-		name, raw string
-		valid     bool
-	}{
-		{"defaults", `{}`, true},
-		{"empty lists", `{"kinds":[],"chat_ids":[],"sender_ids":[],"message_types":[],"statuses":[]}`, true},
-		{"null filters", `{"kinds":null,"chat_ids":null,"sender_ids":null,"message_types":null,"statuses":null,"business_account_id":null,"phone_number_id":null}`, true},
-		{"empty identifiers", `{"business_account_id":"","phone_number_id":""}`, true},
-		{"formatted identities", `{"chat_ids":["+1 (555) 123-4567","15551234567","\tBR.ENT.customer42\n","\u2000+15551234567\u3000"],"sender_ids":["BR.customer42"]}`, true},
-		{"future types", `{"message_types":["interactive","contacts","future_type_2"]}`, true},
-		{"status kinds", `{"kinds":["message.received","message.status"],"statuses":["sent","delivered","read","failed"],"business_account_id":"123","phone_number_id":"456"}`, true},
-		{"status with default kind", `{"statuses":["read"]}`, true},
-		{"unknown filter", `{"sender_id":"15551234567"}`, false},
-		{"nonobject", `[]`, false},
-		{"null config", `null`, false},
-		{"wrong list type", `{"chat_ids":"15551234567"}`, false},
-		{"null list item", `{"chat_ids":[null]}`, false},
-		{"unknown kind", `{"kinds":["message"]}`, false},
-		{"unknown status", `{"statuses":["submitted"]}`, false},
-		{"invalid message type", `{"message_types":["Text"]}`, false},
-		{"empty message type", `{"message_types":[""]}`, false},
-		{"invalid account", `{"business_account_id":"+123"}`, false},
-		{"numeric phone ID", `{"phone_number_id":123}`, false},
-		{"long phone ID", `{"phone_number_id":"123456789012345678901234567890123"}`, false},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			var value any
-			if err := json.Unmarshal([]byte(test.raw), &value); err != nil {
-				t.Fatal(err)
-			}
-			_, parseErr := parseCloudEventFilter(json.RawMessage(test.raw))
-			schemaErr := schema.Validate(value)
-			if (parseErr == nil) != test.valid || (schemaErr == nil) != test.valid {
-				t.Fatalf("valid = %t; parser: %v; schema: %v", test.valid, parseErr, schemaErr)
-			}
-		})
-	}
-	for key, item := range map[string]string{"kinds": "message.received", "chat_ids": "+15551234567", "sender_ids": "+15551234567", "message_types": "text", "statuses": "read"} {
-		t.Run(key+" list bound", func(t *testing.T) {
-			for _, count := range []int{128, 129} {
-				values := make([]string, count)
-				for i := range values {
-					values[i] = item
-				}
-				raw, err := json.Marshal(map[string]any{key: values})
-				if err != nil {
-					t.Fatal(err)
-				}
-				var value any
-				if err := json.Unmarshal(raw, &value); err != nil {
-					t.Fatal(err)
-				}
-				_, parseErr := parseCloudEventFilter(raw)
-				schemaErr := schema.Validate(value)
-				if (parseErr == nil) != (count == 128) || (schemaErr == nil) != (count == 128) {
-					t.Fatalf("count = %d; parser: %v; schema: %v", count, parseErr, schemaErr)
-				}
-			}
-		})
-	}
 }
 
 func TestCloudEventPayloadSchemaMatchesPublishedEvents(t *testing.T) {
@@ -145,4 +83,71 @@ func TestCloudEventPayloadSchemaMatchesPublishedEvents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCloudEventFunctionWireSchemas(t *testing.T) {
+	peer := newCallbackPeer(t, nil)
+	peer.registerWorker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := registerCloudEvents(ctx, peer.client, &Manager{CloudEventQueue: make(chan CloudEvent)}); err != nil {
+		t.Fatal(err)
+	}
+	var frame map[string]json.RawMessage
+	for frame == nil {
+		select {
+		case received := <-peer.frames:
+			if string(received["type"]) == `"registerfunction"` && string(received["id"]) == `"whatsapp::cloud::on-events"` {
+				frame = received
+			}
+		case <-ctx.Done():
+			t.Fatal("Cloud event function registration was not sent")
+		}
+	}
+	if string(frame["private"]) != "true" {
+		t.Error("whatsapp::cloud::on-events must be private: only this worker calls it")
+	}
+	if len(frame["args_format"]) != 0 {
+		t.Error("whatsapp::cloud::on-events takes no args; observers filter on its input")
+	}
+	if len(frame["observable"]) != 0 {
+		t.Errorf("whatsapp::cloud::on-events must stay observable, got observable: %s", frame["observable"])
+	}
+	formats := make(map[string]any)
+	for _, field := range []string{"request_format", "response_format"} {
+		var document map[string]any
+		if err := json.Unmarshal(frame[field], &document); err != nil || len(document) == 0 {
+			t.Fatalf("Cloud event function sends no typed %s", field)
+		}
+		formats[field] = document
+	}
+	if !reflect.DeepEqual(formats["request_format"], formats["response_format"]) {
+		t.Fatal("the event source must return the event it is called with")
+	}
+	var published map[string]any
+	if err := json.Unmarshal(cloudEventPayloadSchema, &published); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(formats["response_format"], published) {
+		t.Fatal("whatsapp::cloud::on-events must register the published Cloud event schema")
+	}
+	t.Run("filters select kind and chat", func(t *testing.T) {
+		filters := map[string]any{
+			"input.kind":    map[string]any{"$eq": "message.received"},
+			"input.chat_id": map[string]any{"$in": []string{"+15550000009", "+15550000010"}},
+		}
+		for _, tc := range []struct {
+			event CloudEvent
+			match bool
+		}{
+			{CloudEvent{Kind: "message.received", ChatID: "+15550000009", Data: json.RawMessage(`{}`)}, true},
+			{CloudEvent{Kind: "message.received", ChatID: "+15550000010", Data: json.RawMessage(`{}`)}, true},
+			{CloudEvent{Kind: "message.status", ChatID: "+15550000009", Data: json.RawMessage(`{}`)}, false},
+			{CloudEvent{Kind: "message.received", ChatID: "+15550000011", Data: json.RawMessage(`{}`)}, false},
+		} {
+			if got := filterSelects(t, filters, tc.event); got != tc.match {
+				t.Errorf("%s/%s: selected = %t, want %t", tc.event.Kind, tc.event.ChatID, got, tc.match)
+			}
+		}
+	})
 }

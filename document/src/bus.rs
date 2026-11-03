@@ -17,15 +17,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::Value;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// One bus call: a function id, a payload, a JSON answer or a message.
 pub trait Bus: Send + Sync {
-    fn trigger<'a>(
+    fn call<'a>(
         &'a self,
         function_id: &'a str,
         payload: Value,
@@ -45,7 +44,7 @@ impl EngineBus {
 }
 
 impl Bus for EngineBus {
-    fn trigger<'a>(
+    fn call<'a>(
         &'a self,
         function_id: &'a str,
         payload: Value,
@@ -53,7 +52,7 @@ impl Bus for EngineBus {
     ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             self.iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: function_id.to_string(),
                     payload,
                     action: None,
@@ -82,10 +81,10 @@ pub fn describe_bus_failure(function_id: &str, err: &str) -> String {
     }
     match worker {
         "browser" => "reading a scanned PDF needs the browser worker to render its pages; \
-                      install it with `iii trigger compose::add worker=browser`"
+                      install it with `iii call compose::add worker=browser`"
             .to_string(),
         "router" => "transcribing needs a model through llm-router; install it with \
-                     `iii trigger compose::add worker=llm-router` and configure a provider"
+                     `iii call compose::add worker=llm-router` and configure a provider"
             .to_string(),
         "state" => format!("{function_id} is unavailable: {err}"),
         _ => format!("{function_id} is not available: {err}"),
@@ -158,7 +157,7 @@ pub mod test_bus {
     }
 
     impl Bus for RecordedBus {
-        fn trigger<'a>(
+        fn call<'a>(
             &'a self,
             function_id: &'a str,
             payload: Value,
@@ -196,7 +195,7 @@ mod tests {
             "remote error (NOT_FOUND): browser::screenshot not registered",
         );
         assert!(
-            browser.contains("iii trigger compose::add worker=browser"),
+            browser.contains("iii call compose::add worker=browser"),
             "{browser}"
         );
 
@@ -216,9 +215,6 @@ mod tests {
             described.contains("scheme `file` is not allowed"),
             "{described}"
         );
-        assert!(
-            !described.contains("iii trigger compose::add"),
-            "{described}"
-        );
+        assert!(!described.contains("iii call compose::add"), "{described}");
     }
 }

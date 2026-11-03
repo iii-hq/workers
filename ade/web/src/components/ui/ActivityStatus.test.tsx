@@ -6,7 +6,7 @@ import { ActivityStatus } from './ActivityStatus'
 describe('ActivityStatus', () => {
   it.each([
     ['positive', 'ok', 'bg-ok-muted', 'stroke-ok'],
-    ['neutral', 'default', 'bg-surface', 'stroke-trigger-running'],
+    ['neutral', 'default', 'bg-surface', 'stroke-call-running'],
     ['accent', 'accent', 'bg-accent-muted', 'stroke-accent'],
     ['warning', 'warn', 'bg-warn-muted', 'stroke-warn'],
     ['danger', 'alert', 'bg-alert-muted', 'stroke-alert'],

@@ -348,7 +348,7 @@ fn handle_frame(
             // and returns S218 promptly. Without this, the temp
             // leaks for up to WRITE_IDLE_TIMEOUT (30s) before
             // streaming.rs's safety valve fires — too late for any
-            // caller-side test that asserts cleanup at trigger
+            // caller-side test that asserts cleanup at call
             // timeout.
             // A read or an exec's output streams stop too, so the guest
             // sends no more frames for the abandoned session.

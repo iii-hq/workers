@@ -16,7 +16,7 @@
 //! completed. The tier never deletes: merges supersede (pointer kept) and
 //! promotions only append.
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -148,7 +148,7 @@ pub(crate) async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<S
         return Ok(configured.to_string());
     }
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::models::list".into(),
             payload: json!({}),
             action: None,
@@ -187,7 +187,7 @@ pub(crate) async fn complete(
     max_output_tokens: u32,
 ) -> Result<Value, String> {
     let model = resolve_model(iii, configured_model).await?;
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "router::complete".into(),
         payload: json!({
             "model": model,

@@ -1,7 +1,7 @@
 //! `harness::sweep-pending` — the cron-bound expiry sweep for parked pending
-//! calls (harness.md § Deferred trigger). Resolves calls past their
+//! calls (harness.md, deferred calls). Resolves calls past their
 //! `pending_timeout_ms` with an error so a lost child or abandoned approval
-//! can never park a turn forever. Full resolution lands with deferred trigger.
+//! can never park a turn forever. Full resolution lands with deferred calls.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

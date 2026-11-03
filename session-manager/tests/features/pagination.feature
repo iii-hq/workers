@@ -4,7 +4,7 @@ Feature: lazy transcript readers — open a long session a page at a time
   Contract: `session::messages-tail` returns the NEWEST page of the active
   path and walks backwards from there (`before_entry_id`), counting pages in
   blocks: a plain entry, or one whole *activity run* — assistant messages
-  that call functions, the results answering them, and the trigger wakes
+  that call functions, the results answering them, and the observer wakes
   that led to them. A page never cuts inside a run. Inside a run only the
   last call, its results and the wakes come back whole; the rest is
   `elided: true` placeholders that keep identity (call ids, function ids,
@@ -169,7 +169,7 @@ Feature: lazy transcript readers — open a long session a page at a time
     And the response has no field "next_cursor"
 
   # Prevents: a renderer that must draw a call even while its group is
-  # collapsed (a registered trigger, a spawned agent) having to pull the
+  # collapsed (a registered observer, a spawned agent) having to pull the
   # whole run to get it.
   Scenario: messages-range returns specific entries in path order
     Given a user message "q" appended to "s_001"

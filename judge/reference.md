@@ -37,7 +37,7 @@ describes when an agent should invoke evaluation.
 
 ## Configuration
 
-The hub requires `configuration` at startup (engine **`iii/v0.24.0-rc.2`** or
+The hub requires `configuration` at startup (engine **`iii/v0.26.0`** or
 later, with `configuration::ensure`). Its entry, `judge` by default or the
 worker's `III_CONFIG_NAME`, holds two fields:
 
@@ -46,7 +46,10 @@ provider: typesafe   # judge-<provider> worker used when a request omits provide
 preload_all: false   # keep every local provider's model loaded, not only the default's
 ```
 
-Edit it under **Settings → Workers → judge** in the Console; valid changes apply
+Edit it under **Settings → Workers → judge** in the Console. The hub observes
+`configuration::on-updated` for its entry (filters `input.id` and
+`input.event_type: configuration:updated`) with `judge::on-config-change`,
+which re-reads the stored value; valid changes apply
 to new calls (in-flight calls keep their snapshot, rejected reloads keep the last
 valid value). `JUDGE_PROVIDER` in the hub's process environment (or `--provider`)
 seeds the entry only when nothing is stored yet; it is `typesafe` unless set, so
@@ -81,7 +84,7 @@ The hub never accepts an API key or provider URL in a request.
 This example uses the worker's default model. One evaluation can mix all three primitives:
 
 ```bash
-iii trigger judge::evaluate --timeout-ms 65000 --json '{
+iii call judge::evaluate --timeout-ms 65000 --json '{
   "timeout_ms": 60000,
   "evaluations": [{
     "id": "ticket-42",
@@ -320,7 +323,7 @@ cost. Record the effective model and failures alongside scores when comparing ru
 discovery.
 
 ```bash
-iii trigger judge::models::list --json '{}'
+iii call judge::models::list --json '{}'
 ```
 
 This calls `GET /v1/models` with the worker's credential snapshot. Its request
@@ -329,7 +332,7 @@ accepts optional `timeout_ms` (default **30000**), `expires_at_unix_ms`,
 that ceiling is below 30000, supply an explicit smaller timeout. Example:
 
 ```bash
-iii trigger judge::models::list --json '{"timeout_ms":5000}'
+iii call judge::models::list --json '{"timeout_ms":5000}'
 ```
 
 Success has `status: "ok"`, a `models` array and `stats`. Each model card has
@@ -387,7 +390,7 @@ rejected. Another caller cannot cancel it and receives `cancelled: false`.
 Completion or dropping the call removes its registration, allowing reuse.
 
 Use the **same persistent caller connection** for starting and cancelling work.
-Separate `iii trigger` CLI processes can receive different ephemeral caller IDs,
+Separate `iii call` CLI processes can receive different ephemeral caller IDs,
 so a second process is not a reliable way to cancel the first. Conceptually, one
 long-lived worker sends these bus messages while the first call is active:
 
@@ -428,9 +431,11 @@ about worker-defined chat mentions — `@<name>(id="<id>")` tokens for a
 ticket, a session, a trace… declared by their workers (see
 [`crates/mention-contract`](../crates/mention-contract/README.md)).
 
-`judge::mentions::pre-generate` (internal) is bound to
-`harness::hook::pre-generate` with `on_error: fail_open`, so a provider
-that is down never blocks a turn. On each generation it may append:
+`judge::mentions::pre-generate` (internal) observes the harness's
+`harness::hook::on-pre-generate` hook point with args
+`{ priority: 100, timeout_ms: 3000, on_error: "fail_open" }`, so a provider
+that is down never blocks a turn. The harness calls it through that observer
+with the hook input on each generation, and it may append:
 
 - `<mention_providers>`: the installed providers (`- @<name> — <label>:
   <description>`), the names an agent may write in a reply. Appended once per
@@ -457,7 +462,7 @@ tokens. Each get call has 1.5 s.
 `judge::mentions::resolve` does the same resolution for any caller:
 
 ```bash
-iii trigger judge::mentions::resolve --json '{"text":"see @kanban(id=\"KAN-12\")"}'
+iii call judge::mentions::resolve --json '{"text":"see @kanban(id=\"KAN-12\")"}'
 ```
 
 It returns `{ mentions: [{ token, name, id, status, label?, summary?,
@@ -466,7 +471,8 @@ details?: { function_id, payload }, error? }] }` with `status` one of
 carries the provider's canonical id.
 
 Start the worker with `JUDGE_MENTIONS=false` (or `--mentions false`) to leave
-both functions and the hook out.
+both functions and the observer out. Without a harness the observer stays
+`pending` until `harness::hook::on-pre-generate` registers.
 
 ## Limits and compatibility
 

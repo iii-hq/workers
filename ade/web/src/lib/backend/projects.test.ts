@@ -13,38 +13,38 @@ import {
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
 
 describe('harness project catalog', () => {
-  const trigger = vi.fn()
+  const call = vi.fn()
 
   beforeEach(() => {
-    trigger.mockReset()
-    vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+    call.mockReset()
+    vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
   })
 
   it('lists projects from the harness backend', async () => {
-    trigger.mockResolvedValue({
+    call.mockResolvedValue({
       projects: [{ path: '/work/harness', name: 'Harness', last_used_at: 42 }],
     })
 
     await expect(listHarnessProjects()).resolves.toEqual([
       { path: '/work/harness', name: 'Harness', last_used_at: 42 },
     ])
-    expect(trigger).toHaveBeenCalledWith(HARNESS_PROJECTS_LIST_FUNCTION_ID, {})
+    expect(call).toHaveBeenCalledWith(HARNESS_PROJECTS_LIST_FUNCTION_ID, {})
   })
 
   it('touches without a name and sends explicit renames', async () => {
-    trigger.mockResolvedValue({
+    call.mockResolvedValue({
       project: { path: '/work/harness', name: 'Harness', last_used_at: 42 },
     })
 
     await upsertHarnessProject('/work/harness')
     await upsertHarnessProject('/work/harness', 'Runtime')
 
-    expect(trigger).toHaveBeenNthCalledWith(
+    expect(call).toHaveBeenNthCalledWith(
       1,
       HARNESS_PROJECTS_UPSERT_FUNCTION_ID,
       { path: '/work/harness' },
     )
-    expect(trigger).toHaveBeenNthCalledWith(
+    expect(call).toHaveBeenNthCalledWith(
       2,
       HARNESS_PROJECTS_UPSERT_FUNCTION_ID,
       { path: '/work/harness', name: 'Runtime' },
@@ -52,15 +52,15 @@ describe('harness project catalog', () => {
   })
 
   it('deletes a project by path', async () => {
-    trigger.mockResolvedValue({ deleted: true })
+    call.mockResolvedValue({ deleted: true })
     await expect(deleteHarnessProject('/work/harness')).resolves.toBe(true)
-    expect(trigger).toHaveBeenCalledWith(HARNESS_PROJECTS_DELETE_FUNCTION_ID, {
+    expect(call).toHaveBeenCalledWith(HARNESS_PROJECTS_DELETE_FUNCTION_ID, {
       path: '/work/harness',
     })
   })
 
   it('keeps the synchronous extension view aligned with backend changes', async () => {
-    trigger
+    call
       .mockResolvedValueOnce({
         projects: [
           { path: '/work/older', name: 'Older', last_used_at: 10 },

@@ -1,18 +1,14 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
-import type {
-  FunctionTriggerMessage,
-  Message,
-  ThoughtMessage,
-} from '@/types/chat'
+import type { FunctionCallMessage, Message, ThoughtMessage } from '@/types/chat'
 import { MessageList } from './MessageList'
 
-const completedTrigger = (
+const completedCall = (
   id: string,
   description: string,
-): FunctionTriggerMessage => ({
+): FunctionCallMessage => ({
   id,
-  role: 'function-trigger',
+  role: 'function-call',
   functionId: 'directory::index',
   description,
   input: { path: '/repo/src' },
@@ -30,51 +26,41 @@ const completedThought = (id: string): ThoughtMessage => ({
   createdAt: 0,
 })
 
-const sevenCompletedTriggers: Message[] = [
-  completedTrigger(
-    'call-1',
-    'Localizando ferramentas para inspecionar o código',
-  ),
-  completedTrigger('call-2', 'Listando a estrutura principal do projeto'),
-  completedTrigger('call-3', 'Encontrando os módulos relacionados à tasklist'),
-  completedTrigger('call-4', 'Inspecionando os tipos usados pela interface'),
-  completedTrigger('call-5', 'Revisando o fluxo de atualização da tasklist'),
-  completedTrigger('call-6', 'Conferindo os testes existentes'),
-  completedTrigger('call-7', 'Ler arquivo principal index.ts do tasklist'),
+const sevenCompletedCalls: Message[] = [
+  completedCall('call-1', 'Localizando ferramentas para inspecionar o código'),
+  completedCall('call-2', 'Listando a estrutura principal do projeto'),
+  completedCall('call-3', 'Encontrando os módulos relacionados à tasklist'),
+  completedCall('call-4', 'Inspecionando os tipos usados pela interface'),
+  completedCall('call-5', 'Revisando o fluxo de atualização da tasklist'),
+  completedCall('call-6', 'Conferindo os testes existentes'),
+  completedCall('call-7', 'Ler arquivo principal index.ts do tasklist'),
 ]
 
-const triggersAcrossCompletedThoughts: Message[] = [
-  completedTrigger(
+const callsAcrossCompletedThoughts: Message[] = [
+  completedCall(
     'phase-call-1',
     'Localizando ferramentas para inspecionar o código',
   ),
   completedThought('phase-thought-1'),
-  completedTrigger('phase-call-2', 'Listando a estrutura principal do projeto'),
-  completedTrigger('phase-call-3', 'Inspecionando os módulos encontrados'),
+  completedCall('phase-call-2', 'Listando a estrutura principal do projeto'),
+  completedCall('phase-call-3', 'Inspecionando os módulos encontrados'),
   completedThought('phase-thought-2'),
-  completedTrigger('phase-call-4', 'Lendo os arquivos selecionados'),
+  completedCall('phase-call-4', 'Lendo os arquivos selecionados'),
 ]
 
-function ThinkingToTriggerHandoffDemo({
-  priorTrigger,
-}: {
-  priorTrigger: boolean
-}) {
+function ThinkingToCallHandoffDemo({ priorCall }: { priorCall: boolean }) {
   const [settled, setSettled] = useState(false)
   const thought = completedThought('handoff-thought')
-  const prior = completedTrigger(
-    'handoff-call-1',
-    'Inspecionando a implementação',
-  )
-  const next = completedTrigger(
-    priorTrigger ? 'handoff-call-2' : 'handoff-call-1',
+  const prior = completedCall('handoff-call-1', 'Inspecionando a implementação')
+  const next = completedCall(
+    priorCall ? 'handoff-call-2' : 'handoff-call-1',
     'Validando o próximo arquivo',
   )
   const messages: Message[] = settled
-    ? priorTrigger
+    ? priorCall
       ? [prior, thought, next]
       : [thought, next]
-    : priorTrigger
+    : priorCall
       ? [prior, { ...thought, streaming: true }]
       : [{ ...thought, streaming: true }]
 
@@ -116,22 +102,22 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-export const SevenCompletedTriggersCollapsed: Story = {
-  name: 'seven completed triggers · collapsed',
-  args: { messages: sevenCompletedTriggers },
+export const SevenCompletedCallsCollapsed: Story = {
+  name: 'seven completed calls · collapsed',
+  args: { messages: sevenCompletedCalls },
 }
 
-export const ConsecutiveTriggersAcrossSettledThoughts: Story = {
-  name: 'consecutive triggers across settled thoughts',
-  args: { messages: triggersAcrossCompletedThoughts },
+export const ConsecutiveCallsAcrossSettledThoughts: Story = {
+  name: 'consecutive calls across settled thoughts',
+  args: { messages: callsAcrossCompletedThoughts },
 }
 
-export const ThinkingToTriggerHandoff: Story = {
-  name: 'thinking → next trigger handoff',
-  render: () => <ThinkingToTriggerHandoffDemo priorTrigger />,
+export const ThinkingToCallHandoff: Story = {
+  name: 'thinking → next call handoff',
+  render: () => <ThinkingToCallHandoffDemo priorCall />,
 }
 
-export const ThinkingToFirstTriggerHandoff: Story = {
-  name: 'thinking → first trigger handoff',
-  render: () => <ThinkingToTriggerHandoffDemo priorTrigger={false} />,
+export const ThinkingToFirstCallHandoff: Story = {
+  name: 'thinking → first call handoff',
+  render: () => <ThinkingToCallHandoffDemo priorCall={false} />,
 }

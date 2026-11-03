@@ -10,12 +10,12 @@
  *      which proxies `/ws` to the engine).
  *   2. Open the WebSocket via `iii-browser-sdk::registerWorker(url)`.
  *   3. Mint a stable `browser_id` for this page; per-browser handlers are
- *      registered under `<functionId>::<browserId>` so engine triggers — the
- *      browser's own scoped stream subscriptions and the harness sessions
- *      fan-out — deliver to this specific browser's connection.
+ *      registered under `<functionId>::<browserId>`, and the tab's
+ *      observers name them as their target, so each call a tab observes is
+ *      delivered to this specific browser's connection.
  *
- * Once `_clientPromise` is resolved, every other call (`trigger`, `on`,
- * `dispose`) goes over the single WS connection.
+ * Once `_clientPromise` is resolved, every other call (`call`, `on`,
+ * `observe`, `dispose`) goes over the single WS connection.
  */
 
 import {
@@ -23,47 +23,87 @@ import {
   type InitOptions,
   type ISdk,
   type RegisterFunctionOptions,
-  type RegisterTriggerInput,
   type RemoteFunctionHandler,
   registerWorker,
+  type ObserveSource as SdkObserveSource,
 } from 'iii-browser-sdk'
 
-export type { IIIConnectionState, RegisterTriggerInput }
+export type { IIIConnectionState }
+
+/** The function a tab observes, with its args and filters. */
+export interface ObserveSource {
+  function_id: string
+  /**
+   * Unset, the namespace resolves as for a call; the engine's own sources
+   * (`engine::*`, `configuration::*`, `observability::*`, `stream::*`) are
+   * observed in `default`.
+   */
+  namespace?: string
+  /** For a function that takes args; its worker's README lists them. */
+  args?: Record<string, unknown>
+  /**
+   * Select calls by `input`, `output`, `error`, `caller` and `metadata`,
+   * each with an explicit operator: `{ 'input.session_id': { $eq: id } }`.
+   */
+  filters?: Record<string, unknown>
+  /** What the target receives: the event (`'output'`, the default), the call's `'input'`, or the `'envelope'`. */
+  deliver?: 'envelope' | 'input' | 'output'
+}
+
+/** Observer options: an explicit id, the metadata sidecar the target receives, and the policy. */
+export interface ObserverOptions {
+  id?: string
+  metadata?: Record<string, unknown>
+  max_fires?: number
+  expires_in_ms?: number
+  max_in_flight?: number
+}
+
+export interface CallOptions {
+  timeoutMs?: number
+  namespace?: string
+}
 
 export interface IiiClient {
   browserId: string
   /**
-   * Invoke an iii bus function and await its result. In the iii ecosystem
-   * every bus invocation is a *trigger* — there is no separate "call"
-   * concept. Thin wrapper over the SDK's `trigger({ function_id, payload })`.
+   * Call an iii function and await its result. Thin wrapper over the SDK's
+   * `call({ function_id, payload })`.
    *
-   * The SDK's default invocation timeout is 30s; pass `timeoutMs` for
+   * The client's default timeout is 5 minutes; pass `timeoutMs` for
    * functions that legitimately run longer (e.g. `context::compact`, whose
    * summariser call is budgeted up to 320s).
    */
-  trigger<T = unknown>(
+  call<T = unknown>(
     functionId: string,
     payload?: Record<string, unknown>,
-    options?: { timeoutMs?: number; namespace?: string },
+    options?: CallOptions,
   ): Promise<T>
+  /** @deprecated the same function as `call`, for injected UI built against older consoles */
+  trigger: IiiClient['call']
   on<P = unknown>(
     functionId: string,
     handler: (payload: P) => void | Promise<void>,
     options?: RegisterFunctionOptions,
   ): () => void
   /**
-   * Register an engine trigger bound to a function id. Thin passthrough to
-   * the SDK's `registerTrigger`; returns an unregister fn that is also run on
-   * `dispose()`. Pair with `on()` + `browserId` to bind a trigger to a
-   * browser-local handler:
+   * Observe `source` with `target`, a function registered with `on()` by
+   * its full id. Returns its disposer, which `dispose()` also runs.
+   * `deliver` defaults to `'output'`, so the handler receives the event the
+   * observed function returned:
    *   const off = client.on('foo', handler)
-   *   const offTrigger = client.registerTrigger({
-   *     type: 'worker',
-   *     function_id: `foo::${client.browserId}`,
-   *     config: { operations: ['add'] },
-   *   })
+   *   const offObserver = client.observe(
+   *     { function_id: 'session::on-created', filters: { 'input.session_id': { $eq: id } } },
+   *     `foo::${client.browserId}`,
+   *   )
+   * The observer stays pending until its function registers, so observing a
+   * source whose worker is absent never fails here.
    */
-  registerTrigger(input: RegisterTriggerInput): () => void
+  observe(
+    source: string | ObserveSource,
+    target: string,
+    options?: ObserverOptions,
+  ): () => void
   addConnectionStateListener(
     handler: (state: IIIConnectionState) => void,
   ): () => void
@@ -141,22 +181,22 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   // Track per-functionId unregister fns so dispose() can clean them all up
   // even if individual `on()` callers forgot.
   const handlerUnregisters = new Set<() => void>()
-  // Same idea for trigger registrations, so an unmount that forgets to
-  // unregister still releases the engine-side binding on dispose().
-  const triggerUnregisters = new Set<() => void>()
+  // Same idea for observers, so an unmount that forgets to dispose still
+  // releases the engine-side observer on dispose().
+  const observerDisposers = new Set<() => void>()
 
-  const DEFAULT_TRIGGER_TIMEOUT_MS = 5 * 60 * 1000
+  const DEFAULT_CALL_TIMEOUT_MS = 5 * 60 * 1000
 
-  function trigger<T>(
+  function call<T>(
     functionId: string,
     payload: Record<string, unknown> = {},
-    options?: { timeoutMs?: number; namespace?: string },
+    options?: CallOptions,
   ): Promise<T> {
     const namespace = options?.namespace ?? controlPlaneNamespace(functionId)
-    return sdk.trigger<unknown, T>({
+    return sdk.call<unknown, T>({
       function_id: functionId,
       payload,
-      timeoutMs: options?.timeoutMs ?? DEFAULT_TRIGGER_TIMEOUT_MS,
+      timeoutMs: options?.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
       ...(namespace === undefined ? {} : { namespace }),
     })
   }
@@ -229,21 +269,34 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     return unregister
   }
 
-  function registerTrigger(input: RegisterTriggerInput): () => void {
-    const trigger = sdk.registerTrigger(input)
+  function observe(
+    source: string | ObserveSource,
+    target: string,
+    options?: ObserverOptions,
+  ): () => void {
+    const spec: ObserveSource =
+      typeof source === 'string' ? { function_id: source } : source
+    const namespace = spec.namespace ?? sourceNamespace(spec.function_id)
+    const handle = sdk.observe(
+      {
+        ...spec,
+        deliver: spec.deliver ?? 'output',
+        ...(namespace === undefined ? {} : { namespace }),
+      } as SdkObserveSource,
+      target,
+      options,
+    )
     let active = true
-    const unregister = () => {
+    const disposeObserver = () => {
       if (!active) return
       active = false
-      triggerUnregisters.delete(unregister)
-      try {
-        trigger.unregister()
-      } catch {
-        // SDK already disposed; nothing to do.
-      }
+      observerDisposers.delete(disposeObserver)
+      handle.dispose().catch(() => {
+        // SDK already disposed; the engine drops the observer with the tab.
+      })
     }
-    triggerUnregisters.add(unregister)
-    return unregister
+    observerDisposers.add(disposeObserver)
+    return disposeObserver
   }
 
   function addConnectionStateListener(
@@ -256,17 +309,18 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     for (const unregister of [...handlerUnregisters]) {
       unregister()
     }
-    for (const unregister of [...triggerUnregisters]) {
-      unregister()
+    for (const disposeObserver of [...observerDisposers]) {
+      disposeObserver()
     }
     await sdk.shutdown()
   }
 
   return {
     browserId,
-    trigger,
+    call,
+    trigger: call,
     on,
-    registerTrigger,
+    observe,
     addConnectionStateListener,
     dispose,
   }
@@ -333,6 +387,13 @@ async function resolveNamespace(): Promise<string | undefined> {
 /** Engine-owned functions (control plane, iii-sandbox) are registered only in `default`. */
 function controlPlaneNamespace(functionId: string): string | undefined {
   return /^(configuration|engine|worker|sandbox)::/.test(functionId)
+    ? 'default'
+    : undefined
+}
+
+/** The engine's own sources are hosted only in `default`. */
+function sourceNamespace(functionId: string): string | undefined {
+  return /^(configuration|engine|observability|stream)::/.test(functionId)
     ? 'default'
     : undefined
 }

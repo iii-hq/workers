@@ -38,7 +38,7 @@
    {
     "function": {
      "description": "Invoke an iii function by id with a payload",
-     "name": "agent__trigger",
+     "name": "agent__call",
      "parameters": {
       "properties": {
        "function_id": {
@@ -63,7 +63,7 @@
     "role": "system"
    },
    {
-    "content": "List the files, then trigger the indexer.",
+    "content": "List the files, then run the indexer.",
     "role": "user"
    },
    {
@@ -81,7 +81,7 @@
      {
       "function": {
        "arguments": "{\"function_id\":\"index::run\",\"payload\":{\"deep\":true,\"paths\":[\"a\",\"b\"]}}",
-       "name": "agent__trigger"
+       "name": "agent__call"
       },
       "id": "c2",
       "type": "function"
@@ -144,7 +144,7 @@
     "role": "user"
    }
   ],
-  "prompt": "[@BOS@]\n<|start_of_turn|><|tool_declare|>\n<tools>\n{\"function\": {\"description\": \"Run a shell command — returns stdout\", \"name\": \"shell__exec\", \"parameters\": {\"properties\": {\"cmd\": {\"description\": \"command line\", \"type\": \"string\"}, \"timeout_ms\": {\"type\": \"integer\"}}, \"required\": [\"cmd\"], \"type\": \"object\"}}, \"type\": \"function\"}\n{\"function\": {\"description\": \"Invoke an iii function by id with a payload\", \"name\": \"agent__trigger\", \"parameters\": {\"properties\": {\"function_id\": {\"type\": \"string\"}, \"payload\": {\"type\": \"object\"}}, \"required\": [\"function_id\"], \"type\": \"object\"}}, \"type\": \"function\"}\n</tools><|end_of_turn|>\n<|start_of_turn|><|system|>\nYou are a coding agent. नमस्ते.<|end_of_turn|>\n<|start_of_turn|><|user|>\nList the files, then trigger the indexer.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\nRunning both.\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>ls -la</arg_value>\n<arg_key>timeout_ms</arg_key>\n<arg_value>5000</arg_value>\n</tool_call>\n<tool_call>agent__trigger\n<arg_key>function_id</arg_key>\n<arg_value>index::run</arg_value>\n<arg_key>payload</arg_key>\n<arg_value>{\"deep\": true, \"paths\": [\"a\", \"b\"]}</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\na.txt\nb.txt\n</tool_response>\n<tool_response>\n[PERMISSION_DENIED]\n{\"reason\":\"operator\",\"status\":\"denied\"}\n\n\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\n[image result of tool call c1]<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>pwd</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\nTool call was interrupted before completing. Continue without its output.\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\nThanks. Summarise.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\nTwo files; the indexer was denied.<|end_of_turn|>\n<|start_of_turn|><|user|>\nAnd now?<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n"
+  "prompt": "[@BOS@]\n<|start_of_turn|><|tool_declare|>\n<tools>\n{\"function\": {\"description\": \"Run a shell command — returns stdout\", \"name\": \"shell__exec\", \"parameters\": {\"properties\": {\"cmd\": {\"description\": \"command line\", \"type\": \"string\"}, \"timeout_ms\": {\"type\": \"integer\"}}, \"required\": [\"cmd\"], \"type\": \"object\"}}, \"type\": \"function\"}\n{\"function\": {\"description\": \"Invoke an iii function by id with a payload\", \"name\": \"agent__call\", \"parameters\": {\"properties\": {\"function_id\": {\"type\": \"string\"}, \"payload\": {\"type\": \"object\"}}, \"required\": [\"function_id\"], \"type\": \"object\"}}, \"type\": \"function\"}\n</tools><|end_of_turn|>\n<|start_of_turn|><|system|>\nYou are a coding agent. नमस्ते.<|end_of_turn|>\n<|start_of_turn|><|user|>\nList the files, then run the indexer.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\nRunning both.\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>ls -la</arg_value>\n<arg_key>timeout_ms</arg_key>\n<arg_value>5000</arg_value>\n</tool_call>\n<tool_call>agent__call\n<arg_key>function_id</arg_key>\n<arg_value>index::run</arg_value>\n<arg_key>payload</arg_key>\n<arg_value>{\"deep\": true, \"paths\": [\"a\", \"b\"]}</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\na.txt\nb.txt\n</tool_response>\n<tool_response>\n[PERMISSION_DENIED]\n{\"reason\":\"operator\",\"status\":\"denied\"}\n\n\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\n[image result of tool call c1]<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>pwd</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\nTool call was interrupted before completing. Continue without its output.\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\nThanks. Summarise.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\nTwo files; the indexer was denied.<|end_of_turn|>\n<|start_of_turn|><|user|>\nAnd now?<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n"
  },
  "reasoning_after_last_user": {
   "model": "sarvam-30b",
@@ -155,7 +155,7 @@
     "role": "system"
    },
    {
-    "content": "List the files, then trigger the indexer.",
+    "content": "List the files, then run the indexer.",
     "role": "user"
    },
    {
@@ -173,7 +173,7 @@
      {
       "function": {
        "arguments": "{\"function_id\":\"index::run\",\"payload\":{\"deep\":true,\"paths\":[\"a\",\"b\"]}}",
-       "name": "agent__trigger"
+       "name": "agent__call"
       },
       "id": "c2",
       "type": "function"
@@ -232,7 +232,7 @@
     "role": "assistant"
    }
   ],
-  "prompt": "[@BOS@]\n<|start_of_turn|><|system|>\nYou are a coding agent. नमस्ते.<|end_of_turn|>\n<|start_of_turn|><|user|>\nList the files, then trigger the indexer.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\nRunning both.\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>ls -la</arg_value>\n<arg_key>timeout_ms</arg_key>\n<arg_value>5000</arg_value>\n</tool_call>\n<tool_call>agent__trigger\n<arg_key>function_id</arg_key>\n<arg_value>index::run</arg_value>\n<arg_key>payload</arg_key>\n<arg_value>{\"deep\": true, \"paths\": [\"a\", \"b\"]}</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\na.txt\nb.txt\n</tool_response>\n<tool_response>\n[PERMISSION_DENIED]\n{\"reason\":\"operator\",\"status\":\"denied\"}\n\n\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\n[image result of tool call c1]<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>pwd</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\nTool call was interrupted before completing. Continue without its output.\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\nThanks. Summarise.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think>The user wants a summary.</think>\nTwo files; the indexer was denied.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n"
+  "prompt": "[@BOS@]\n<|start_of_turn|><|system|>\nYou are a coding agent. नमस्ते.<|end_of_turn|>\n<|start_of_turn|><|user|>\nList the files, then run the indexer.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\nRunning both.\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>ls -la</arg_value>\n<arg_key>timeout_ms</arg_key>\n<arg_value>5000</arg_value>\n</tool_call>\n<tool_call>agent__call\n<arg_key>function_id</arg_key>\n<arg_value>index::run</arg_value>\n<arg_key>payload</arg_key>\n<arg_value>{\"deep\": true, \"paths\": [\"a\", \"b\"]}</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\na.txt\nb.txt\n</tool_response>\n<tool_response>\n[PERMISSION_DENIED]\n{\"reason\":\"operator\",\"status\":\"denied\"}\n\n\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\n[image result of tool call c1]<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think></think>\n<tool_call>shell__exec\n<arg_key>cmd</arg_key>\n<arg_value>pwd</arg_value>\n</tool_call><|end_of_turn|>\n<|start_of_turn|><|observation|>\n<tool_response>\nTool call was interrupted before completing. Continue without its output.\n</tool_response><|end_of_turn|>\n<|start_of_turn|><|user|>\nThanks. Summarise.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n<think>The user wants a summary.</think>\nTwo files; the indexer was denied.<|end_of_turn|>\n<|start_of_turn|><|assistant|>\n"
  },
  "m_chat": {
   "model": "sarvam-m",

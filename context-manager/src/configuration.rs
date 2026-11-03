@@ -20,8 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -87,7 +86,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -145,7 +144,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// service/transport failure (`function_not_found`/`statement_not_found`)
 /// propagates as an error instead of seeding over a stored value.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -161,8 +160,8 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Internal `context::on-config-change` trigger payload. The handler
-/// re-fetches the authoritative configuration, so this carries only the
+/// The `configuration::on-updated` event, as `context::on-config-change`
+/// receives it. The handler re-fetches the authoritative configuration, so this carries only the
 /// (advisory) configuration id; a struct (not `Value`) keeps the request
 /// schema concrete and unknown fields are ignored.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
@@ -178,15 +177,17 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. `leases` is the live lease-store cell the handler rebuilds and
-/// swaps when `lease_dir` changes; every other field is read per call, so
-/// nothing requires a restart.
-pub fn register_config_trigger(
-    iii: &IIIClient,
-    cell: ConfigCell,
-    leases: LeaseCell,
-) -> Result<(), Error> {
+/// The configuration worker's change event.
+const CONFIG_ON_UPDATED_FN: &str = "configuration::on-updated";
+
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it for the `configuration:updated` events
+/// of this worker's entry. `leases` is the live lease-store cell the handler
+/// rebuilds and swaps when `lease_dir` changes; every other field is read per
+/// call, so nothing requires a restart. The observer stays `pending` while
+/// the configuration worker is not registered, and lives as long as the
+/// worker's connection.
+pub fn observe_config_changes(iii: &IIIClient, cell: ConfigCell, leases: LeaseCell) {
     let cell_for_fn = cell.clone();
     let leases_for_fn = leases.clone();
     let engine = iii.clone();
@@ -209,20 +210,25 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_ON_UPDATED_FN)
+            .filters(update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn update_filters(config_id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": config_id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Reload from the AUTHORITATIVE configuration.
 ///
-/// The caller-supplied trigger payload is intentionally ignored:
+/// The delivered event is intentionally ignored:
 /// `context::on-config-change` is a discoverable bus function, so trusting
 /// `payload.new_value` would let any caller inject arbitrary config without
 /// updating persisted state. Re-fetch the stored value via
@@ -266,7 +272,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, leases: &LeaseCell
     tracing::info!("context-manager configuration reloaded");
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -274,8 +280,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -386,6 +392,17 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&before, &after),
             "lease store must be swapped on a lease_dir change"
+        );
+    }
+
+    #[test]
+    fn update_filters_select_one_entrys_updates() {
+        assert_eq!(
+            super::update_filters("context-manager"),
+            serde_json::json!({
+                "input.id": { "$eq": "context-manager" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
         );
     }
 }

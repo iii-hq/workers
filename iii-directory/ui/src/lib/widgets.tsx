@@ -1,5 +1,5 @@
 /**
- * Compositions over the shared primitives that every function-trigger view
+ * Compositions over the shared primitives that every function-call view
  * repeats: a read-only row on the list recipe, an eyebrow-headed section,
  * the identity line, metadata pairs and the running-state body.
  */

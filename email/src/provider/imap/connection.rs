@@ -14,7 +14,7 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
 use crate::config::{ImapConfig, WorkerConfig};
-use crate::triggers::dispatcher::EventDispatcher;
+use crate::events::dispatcher::EventDispatcher;
 
 use super::Session;
 

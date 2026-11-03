@@ -2,41 +2,22 @@ mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::RegisterFunction;
+use iii_sdk::{Deliver, RegisterFunction, Source};
+use serde_json::json;
 use serial_test::serial;
 
 use common::engine;
 
 #[tokio::test]
 #[serial]
-async fn configuration_calls_reach_default_from_a_custom_namespace() {
-    let Some(iii) = engine::connect_fresh_in_namespace("cron-e2e-custom-namespace").await else {
-        return;
-    };
-
-    iii_cron::configuration::register_config(&iii, None)
-        .await
-        .expect("configuration::register should resolve in default");
-    iii_cron::configuration::fetch_config(&iii)
-        .await
-        .expect("configuration::get should resolve in default");
-
-    iii.shutdown_async().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn cron_trigger_fires_bound_function_with_parity_payload() {
+async fn an_observing_target_runs_on_its_schedule_with_the_tick() {
     let Some(iii) = engine::get_or_init().await else {
         return;
     };
 
-    let config = iii_cron::config::CronConfig::default();
-    let boot = iii_cron::boot::start(iii.clone(), config)
-        .await
-        .expect("cron worker should boot");
+    let boot = iii_cron::boot::start(iii.clone());
 
     let fires = Arc::new(AtomicUsize::new(0));
     let seen = Arc::new(tokio::sync::Mutex::new(None::<serde_json::Value>));
@@ -51,30 +32,29 @@ async fn cron_trigger_fires_bound_function_with_parity_payload() {
                 async move {
                     fires.fetch_add(1, Ordering::SeqCst);
                     *seen.lock().await = Some(payload);
-                    Ok::<_, iii_sdk::Error>(serde_json::json!({"ok": true}))
+                    Ok::<_, iii_sdk::Error>(json!({"ok": true}))
                 }
             }),
         );
     }
 
-    // The old consumer path: deprecated in iii-sdk 0.25, still served by the
-    // `cron` trigger type this worker keeps.
-    #[allow(deprecated)]
-    let trigger = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "cron".to_string(),
-            "e2e::cron-backend".to_string(),
-            serde_json::json!({"expression": "*/1 * * * * *"}),
-        ))
-        .expect("trigger registration");
+    let observer = iii.observe(
+        Source::function("cron::on-tick")
+            .args(json!({"expression": "*/1 * * * * *"}))
+            .deliver(Deliver::Output),
+        "e2e::cron-backend",
+    );
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("observer settled")
+        .expect("observer accepted");
 
     common::wait_for_fires(&fires, 1).await;
     let payload = seen.lock().await.clone().unwrap();
-    assert_eq!(payload["trigger"], "cron");
-    assert!(payload["job_id"].as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!(payload["expression"], "*/1 * * * * *");
     assert!(payload["scheduled_time"].as_str().is_some());
     assert!(payload["actual_time"].as_str().is_some());
 
-    trigger.unregister();
+    observer.dispose().await.unwrap();
     boot.shutdown().await;
 }

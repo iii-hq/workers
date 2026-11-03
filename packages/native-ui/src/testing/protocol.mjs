@@ -118,7 +118,7 @@ export function createDecoder() {
       case 8:
         return { op: 'response', reqId: e[1], ok: e[2] === 1, value: e[3] }
       case 9:
-        return { op: 'trigger', sub: e[1], payload: e[2] }
+        return { op: 'observed', sub: e[1], payload: e[2] }
       default:
         return { op: 'unknown', entry: e }
     }

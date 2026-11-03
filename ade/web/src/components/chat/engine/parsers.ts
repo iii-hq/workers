@@ -1,14 +1,17 @@
 /**
- * Zod schemas + envelope helpers for the three `engine::*::list` catalogue
- * tools. Mirrors the sandbox `parsers.ts` shape: non-strict schemas (so
- * unknown fields pass through), a re-exported `unwrapEnvelope`, and
- * `safeParseRequest` / `safeParseResponse` that unwrap the harness
- * `{ content, details, terminate }` envelope before parsing.
+ * Zod schemas + envelope helpers for the engine catalogue tools and the
+ * agent's observe surface. Mirrors the sandbox `parsers.ts` shape:
+ * non-strict schemas (so unknown fields pass through), a re-exported
+ * `unwrapEnvelope`, and `safeParseRequest` / `safeParseResponse` that unwrap
+ * the harness `{ content, details, terminate }` envelope before parsing.
  *
- * Wire source: `motia/engine/src/workers/engine_fn/mod.rs` —
- *   FunctionsListInput / FunctionSummary
- *   TriggersListInput / TriggerTypeSummary
- *   RegisteredTriggersListInput / RegisteredTriggerSummary
+ * Wire sources:
+ *   `iii/engine/src/workers/engine_fn/mod.rs` — FunctionsListInput /
+ *     FunctionSummary / FunctionDetail, WorkersListInput / WorkerSummary
+ *   `iii/engine/src/observer/builtins.rs` — ListObserversInput /
+ *     ObserverInfo / DisposeObserverResult
+ *   `harness/src/functions/subscribe.rs` — `harness::observe` /
+ *     `harness::unobserve`, the agent's observers
  */
 import { z } from 'zod'
 import { unwrapEnvelope } from '@/components/chat/sandbox/parsers'
@@ -18,14 +21,14 @@ export { unwrapEnvelope }
 export const ENGINE_FUNCTION_IDS = [
   'engine::functions::list',
   'engine::functions::info',
-  'engine::triggers::list',
-  'engine::triggers::info',
-  'engine::registered-triggers::list',
+  'engine::observers::list',
+  'engine::observers::get',
+  'engine::observers::dispose',
   'engine::workers::list',
   'engine::workers::info',
   'engine::workers::register',
-  'engine::register_trigger',
-  'engine::unregister_trigger',
+  'harness::observe',
+  'harness::unobserve',
 ] as const
 
 export type EngineFunctionId = (typeof ENGINE_FUNCTION_IDS)[number]
@@ -38,6 +41,9 @@ const ENGINE_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(
 export function isEngineListFunction(id: string): id is EngineFunctionId {
   return ENGINE_FUNCTION_ID_SET.has(id)
 }
+
+/** The agent's observe call, rendered as a registration receipt. */
+export const OBSERVE_FUNCTION_ID = 'harness::observe'
 
 /* ---------------- engine::functions::list ---------------- */
 
@@ -54,6 +60,14 @@ export const functionSummarySchema = z.object({
   worker_name: z.string(),
   namespace: z.string().optional(),
   description: z.string().nullable().optional(),
+  /** Observers of this function, active or pending. */
+  observer_count: z.number().optional(),
+  /** Present when observers of it pass args. */
+  args_format: z.unknown().optional(),
+  /** Only its own worker may call it. */
+  private: z.boolean().optional(),
+  /** `false` when nobody may observe it. */
+  observable: z.boolean().optional(),
 })
 export type FunctionSummary = z.infer<typeof functionSummarySchema>
 
@@ -71,16 +85,6 @@ export const functionInfoRequestSchema = z.object({
 })
 export type FunctionInfoRequest = z.infer<typeof functionInfoRequestSchema>
 
-/** Inline registered trigger payload from `FunctionDetail`. Different shape
- * than `RegisteredTriggerSummary` (used by `engine::registered-triggers::list`):
- * `config` is the raw JSON object, not a stringified `config_summary`. */
-export const registeredTriggerRefSchema = z.object({
-  id: z.string(),
-  trigger_type: z.string(),
-  config: z.unknown(),
-})
-export type RegisteredTriggerRef = z.infer<typeof registeredTriggerRefSchema>
-
 export const functionDetailSchema = z.object({
   function_id: z.string(),
   worker_name: z.string(),
@@ -88,7 +92,14 @@ export const functionDetailSchema = z.object({
   request_schema: z.unknown().optional(),
   response_schema: z.unknown().optional(),
   metadata: z.unknown().optional(),
-  registered_triggers: z.array(registeredTriggerRefSchema),
+  /** Observers of this function, active or pending. */
+  observer_count: z.number().optional(),
+  /** JSON Schema for observers' `args`; absent when it takes none. */
+  args_format: z.unknown().optional(),
+  /** Only its own worker may call it; others may observe it. */
+  private: z.boolean().optional(),
+  /** `false` when nobody may observe it. */
+  observable: z.boolean().optional(),
 })
 export type FunctionDetail = z.infer<typeof functionDetailSchema>
 
@@ -111,88 +122,84 @@ export function parseFunctionInfoResponse(
   return batch ? batch.functions : null
 }
 
-/* ---------------- engine::triggers::list ---------------- */
+/* ---------------- engine::observers::list / get ---------------- */
 
-export const triggersListRequestSchema = z.object({
-  search: z.string().optional(),
-  prefix: z.string().optional(),
+export const observersListRequestSchema = z.object({
+  function_id: z.string().optional(),
+  namespace: z.string().optional(),
   worker: z.string().optional(),
-  include_internal: z.boolean().optional(),
 })
-export type TriggersListRequest = z.infer<typeof triggersListRequestSchema>
+export type ObserversListRequest = z.infer<typeof observersListRequestSchema>
 
-export const triggerTypeSummarySchema = z.object({
+export const observerInfoSchema = z.object({
   id: z.string(),
-  worker_name: z.string(),
-  description: z.string(),
+  /** The observed function. */
+  function_id: z.string(),
+  namespace: z.string().optional(),
+  /** Read by the observed function's worker (a route, a schedule, a topic). */
+  args: z.unknown().optional(),
+  /** Which calls reach the target, normalized. */
+  filters: z.unknown().optional(),
+  target: z.object({
+    function_id: z.string(),
+    namespace: z.string().optional(),
+  }),
+  capture: z.array(z.string()).optional(),
+  on: z.string().optional(),
+  deliver: z.string().optional(),
+  /** The worker that created the observer. */
+  worker: z
+    .object({
+      worker_id: z.string(),
+      worker_name: z.string().nullable().optional(),
+    })
+    .optional(),
+  state: z.string(),
+  reason: z.object({ code: z.string(), message: z.string() }).optional(),
+  fires: z.number().optional(),
+  dropped: z.record(z.string(), z.number()).optional(),
+  activation_failures: z.record(z.string(), z.number()).optional(),
+  max_fires: z.number().optional(),
+  expires_in_ms: z.number().optional(),
+  max_in_flight: z.number().optional(),
+  created_at_ms: z.number().optional(),
 })
-export type TriggerTypeSummary = z.infer<typeof triggerTypeSummarySchema>
+export type ObserverInfo = z.infer<typeof observerInfoSchema>
 
-export const triggersListResponseSchema = z.object({
-  triggers: z.array(triggerTypeSummarySchema),
+export const observersListResponseSchema = z.object({
+  observers: z.array(observerInfoSchema),
 })
-export type TriggersListResponse = z.infer<typeof triggersListResponseSchema>
+export type ObserversListResponse = z.infer<typeof observersListResponseSchema>
 
-/* ---------------- engine::triggers::info ---------------- */
-
-export const triggerInfoRequestSchema = z.object({
+export const observerIdRequestSchema = z.object({
   id: z.string(),
 })
-export type TriggerInfoRequest = z.infer<typeof triggerInfoRequestSchema>
-
-export const triggerTypeDetailSchema = z.object({
-  id: z.string(),
-  worker_name: z.string(),
-  description: z.string().nullable().optional(),
-  /** Live registrations of this trigger type. */
-  instance_count: z.number().optional(),
-  /** Per-binding `config` shape accepted by `engine::register_trigger`. */
-  configuration_schema: z.unknown().optional(),
-  /** Payload shape delivered to the bound function when the trigger fires. */
-  request_schema: z.unknown().optional(),
-})
-export type TriggerTypeDetail = z.infer<typeof triggerTypeDetailSchema>
+export type ObserverIdRequest = z.infer<typeof observerIdRequestSchema>
 
 /**
- * `null` means the output didn't parse; the caller should fall back to the
- * generic panes rather than render a blank terminal tab (same contract as
- * `parseFunctionInfoResponse`).
+ * `engine::observers::get` answers with the observer, bare or under
+ * `observer`. `null` means neither shape parsed; the caller falls back to
+ * the generic panes.
  */
-export function parseTriggerInfoResponse(
+export function parseObserverInfoResponse(
   output: unknown,
-): TriggerTypeDetail | null {
-  return safeParseResponse(triggerTypeDetailSchema, output)
+): ObserverInfo | null {
+  const bare = safeParseResponse(observerInfoSchema, output)
+  if (bare) return bare
+  const wrapped = safeParseResponse(
+    z.object({ observer: observerInfoSchema }),
+    output,
+  )
+  return wrapped ? wrapped.observer : null
 }
 
-/* ------------- engine::registered-triggers::list ------------- */
+/* ---------------- engine::observers::dispose ---------------- */
 
-export const registeredTriggersListRequestSchema = z.object({
-  search: z.string().optional(),
-  trigger_type: z.string().optional(),
-  function_id: z.string().optional(),
-  worker: z.string().optional(),
-  include_internal: z.boolean().optional(),
+export const disposeObserverResponseSchema = z.object({
+  disposed: z.boolean(),
 })
-export type RegisteredTriggersListRequest = z.infer<
-  typeof registeredTriggersListRequestSchema
->
-
-export const registeredTriggerSummarySchema = z.object({
-  id: z.string(),
-  trigger_type: z.string(),
-  function_id: z.string(),
-  worker_name: z.string(),
-  config_summary: z.string(),
-})
-export type RegisteredTriggerSummary = z.infer<
-  typeof registeredTriggerSummarySchema
->
-
-export const registeredTriggersListResponseSchema = z.object({
-  registered_triggers: z.array(registeredTriggerSummarySchema),
-})
-export type RegisteredTriggersListResponse = z.infer<
-  typeof registeredTriggersListResponseSchema
+export type DisposeObserverResponse = z.infer<
+  typeof disposeObserverResponseSchema
 >
 
 /* ---------------- engine::workers::list ---------------- */
@@ -263,8 +270,8 @@ export type WorkerDetailEnvelope = z.infer<typeof workerDetailEnvelopeSchema>
 export const workerInfoResponseSchema = z.object({
   worker: workerDetailEnvelopeSchema,
   functions: z.array(functionSummarySchema),
-  trigger_types: z.array(triggerTypeSummarySchema),
-  registered_triggers: z.array(registeredTriggerSummarySchema),
+  /** Ids of the observers this worker created. */
+  observers: z.array(z.string()).optional(),
 })
 export type WorkerInfoResponse = z.infer<typeof workerInfoResponseSchema>
 
@@ -294,25 +301,23 @@ export type WorkersRegisterResponse = z.infer<
   typeof workersRegisterResponseSchema
 >
 
-/* ---------------- engine::register_trigger ---------------- */
+/* ---------------- harness::observe ---------------- */
 
 /**
- * Registration request. Covers both wire shapes seen under this id:
- *  - engine `RegisterTriggerInput` (iii-sdk `protocol.rs`): `{ trigger_type,
- *    function_id, config, metadata? }`.
- *  - harness `SubscribeArgs` (`harness/src/functions/subscribe.rs`):
- *    `{ trigger_type, config?, label?, once?, function_id?, metadata?,
- *    target? }` — `function_id` omitted means "notify this session", while
- *    `target` is its explicit long form.
- * Only `trigger_type` is guaranteed; everything else is optional so the view
- * always renders. `config`/`metadata` are opaque JSON parsed per-provider.
+ * The agent's observe request (`harness/src/functions/subscribe.rs`):
+ * `{ function_id, namespace?, args?, filters?, target?, label?, once?,
+ * conditions?, lifecycle? }` — `target` omitted means "wake this session".
+ * Only `function_id` is guaranteed; everything else is optional so the view
+ * always renders. `args` and `filters` are opaque JSON read per function.
  */
-export const registerTriggerRequestSchema = z.object({
-  trigger_type: z.string(),
-  function_id: z.string().optional(),
-  config: z.unknown().optional(),
-  metadata: z.unknown().optional(),
+export const observeRequestSchema = z.object({
+  function_id: z.string(),
+  namespace: z.string().optional(),
+  args: z.unknown().optional(),
+  filters: z.unknown().optional(),
   label: z.string().optional(),
+  /** What a fire means in user-facing prose. */
+  action: z.string().optional(),
   once: z.boolean().optional(),
   /** Gating predicates: each fire runs these before delivery. */
   conditions: z
@@ -327,10 +332,7 @@ export const registerTriggerRequestSchema = z.object({
     .object({
       once: z.boolean().optional(),
       max_fires: z.number().optional(),
-      // Relative deadline (current contract); expires_at survives for
-      // transcript cards recorded before the absolute form was retired.
       expires_in_ms: z.number().optional(),
-      expires_at: z.number().optional(),
     })
     .optional(),
   target: z
@@ -341,46 +343,27 @@ export const registerTriggerRequestSchema = z.object({
     })
     .optional(),
 })
-export type RegisterTriggerRequest = z.infer<
-  typeof registerTriggerRequestSchema
->
+export type ObserveRequest = z.infer<typeof observeRequestSchema>
 
-/** `config` shape for `trigger_type: "state"` (all fields optional filters). */
-export const stateTriggerConfigSchema = z.object({
-  scope: z.string().optional(),
-  key: z.string().optional(),
-  condition_function_id: z.string().optional(),
-})
-export type StateTriggerConfig = z.infer<typeof stateTriggerConfigSchema>
-
-/** Engine returns `{ id }`; the harness-intercepted path returns
- * `{ subscription_id, once }`. Model both loosely. */
-export const registerTriggerResponseSchema = z.object({
-  id: z.string().optional(),
-  subscription_id: z.string().optional(),
+/** The harness answers `{ observer_id, once, note? }`. */
+export const observeResponseSchema = z.object({
+  observer_id: z.string(),
   once: z.boolean().optional(),
   note: z.string().optional(),
 })
-export type RegisterTriggerResponse = z.infer<
-  typeof registerTriggerResponseSchema
->
+export type ObserveResponse = z.infer<typeof observeResponseSchema>
 
-/* ---------------- engine::unregister_trigger ---------------- */
+/* ---------------- harness::unobserve ---------------- */
 
-export const unregisterTriggerRequestSchema = z.object({
+export const unobserveRequestSchema = z.object({
   id: z.string(),
-  trigger_type: z.string().optional(),
 })
-export type UnregisterTriggerRequest = z.infer<
-  typeof unregisterTriggerRequestSchema
->
+export type UnobserveRequest = z.infer<typeof unobserveRequestSchema>
 
-export const unregisterTriggerResponseSchema = z.object({
+export const unobserveResponseSchema = z.object({
   removed: z.boolean(),
 })
-export type UnregisterTriggerResponse = z.infer<
-  typeof unregisterTriggerResponseSchema
->
+export type UnobserveResponse = z.infer<typeof unobserveResponseSchema>
 
 /* ---------------- generic helpers ---------------- */
 

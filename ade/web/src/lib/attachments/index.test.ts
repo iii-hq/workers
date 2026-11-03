@@ -9,7 +9,7 @@ import {
 
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
-    trigger: async (functionId: string) => {
+    call: async (functionId: string) => {
       if (functionId === 'pdf::classify') {
         return {
           document_type: 'text_based',

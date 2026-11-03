@@ -24,7 +24,7 @@ export const MAP_EDGES: MapEdge[] = [
   { id: 'upstream', from: 'interceptor', to: 'engine', d: 'M 490 150 C 700 150, 745 252, 830 268', label: 'upstream ws (rewritten)', lx: 660, ly: 168, dur: 2.2 },
   { id: 'chan-in', from: 'clients', to: 'channels', d: 'M 120 316 C 120 438, 210 438, 300 438', label: '/ws/channels/{id}', lx: 132, ly: 372, anchor: 'start', dashed: true, dur: 2.4 },
   { id: 'bridge', from: 'channels', to: 'engine', d: 'M 490 438 C 690 438, 770 360, 860 320', label: 'bridge 1:1', lx: 660, ly: 432, dur: 2.2 },
-  { id: 'identity', from: 'control', to: 'engine', d: 'M 750 432 C 800 424, 850 360, 872 320', label: 'register · iii.trigger', lx: 812, ly: 410, anchor: 'start', dur: 2 },
+  { id: 'identity', from: 'control', to: 'engine', d: 'M 750 432 C 800 424, 850 360, 872 320', label: 'register · iii.call', lx: 812, ly: 410, anchor: 'start', dur: 2 },
   { id: 'invoke-policy', from: 'control', to: 'policy', d: 'M 655 410 L 655 188', label: 'auth / mw / hooks', lx: 663, ly: 304, anchor: 'start', dur: 1.8 },
   { id: 'cfg', from: 'control', to: 'config', d: 'M 750 438 L 830 438', label: 'config feed', lx: 790, ly: 430, dur: 1.8 },
 ]
@@ -104,8 +104,8 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         heading: 'carries',
         items: [
           { name: 'rbac-proxy::status', desc: 'the one public health/identity probe.' },
-          { name: 'auth · middleware · hooks', desc: 'the operator policy functions, by iii.trigger.' },
-          { name: 'catalog + binding caches', desc: 'short-ttl reads the rewrites depend on.' },
+          { name: 'auth · middleware · hooks', desc: 'the operator policy functions, by iii.call.' },
+          { name: 'catalog cache', desc: 'short-ttl reads the rewrites depend on, invalidated by engine::on-functions-changed.' },
         ],
       },
     ],
@@ -114,14 +114,14 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   policy: {
     id: 'policy fns',
     kindLabel: 'trusted · operator',
-    role: 'operator-registered engine functions: the auth function, optional middleware, and the three registration hooks. the proxy invokes them by id.',
+    role: 'operator-registered engine functions: the auth function, optional middleware, and the two registration hooks. the proxy invokes them by id.',
     sections: [
       {
         heading: 'configured',
         items: [
           { name: 'auth_function_id', desc: 'runs once per upgrade; returns the session boundaries.' },
           { name: 'middleware_function_id', desc: 'wraps every allowed, non-engine:: call.' },
-          { name: 'on_*_registration', desc: 'map or deny function / trigger registrations.' },
+          { name: 'on_*_registration', desc: 'map or deny function and observer registrations.' },
         ],
       },
     ],
@@ -156,6 +156,6 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         ],
       },
     ],
-    note: 'on change it fires a trigger; the proxy re-fetches and decides rebind vs snapshot-swap by boot signature.',
+    note: 'the proxy observes configuration::on-updated for its entry; on a change it re-fetches and decides rebind vs snapshot-swap by boot signature.',
   },
 }

@@ -1,7 +1,7 @@
 /**
  * Sandbox error decoding — the daemon's Stripe-style flat error payload
  * (`{ type, code: "S###", message, fix_note?, retryable?, docs_url? }`,
- * errors.rs). By the time a failed trigger reaches the page it is usually
+ * errors.rs). By the time a failed call reaches the page it is usually
  * an `Error` whose message may be the plain text, the JSON payload, or
  * prose that merely quotes an S-code — all three decode here, tolerantly.
  */

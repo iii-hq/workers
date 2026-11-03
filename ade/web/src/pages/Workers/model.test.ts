@@ -117,8 +117,6 @@ describe('groupContainers', () => {
       tag: null,
       managementKind: 'standalone',
       status: 'connected',
-      stopEnabled: false,
-      stopDisabledReason: null,
       composeState: null,
       lastError: null,
       ...o,
@@ -126,8 +124,7 @@ describe('groupContainers', () => {
     const groups = groupContainers(containers, byName, '', [
       row('database', { managementKind: 'compose' }),
       row('by-hand', {}),
-      row('supervised', {
-        managementKind: 'supervisor',
+      row('offline', {
         status: 'stopped',
         runtime: null,
         version: null,
@@ -136,7 +133,7 @@ describe('groupContainers', () => {
     const outside = groups.find((g) => g.id === 'outside')
     expect(outside?.items.map((i) => [i.name, i.state, i.detail])).toEqual([
       ['by-hand', 'ready', 'standalone · node · 1.0.0'],
-      ['supervised', 'stopped', 'managed'],
+      ['offline', 'stopped', 'standalone'],
     ])
   })
 
@@ -1034,13 +1031,13 @@ describe('entryYaml', () => {
 describe('parseLogLine', () => {
   it('splits a tracing line into local time, level, target and text', () => {
     const parts = parseLogLine(
-      '2026-10-01T00:22:53.685636Z  INFO llm_router::triggers: trigger subscription registered',
+      '2026-10-01T00:22:53.685636Z  INFO llm_router::observers: observer added',
     )
     const local = new Date('2026-10-01T00:22:53.685Z')
     expect(parts).toMatchObject({
       level: 'INFO',
-      target: 'llm_router::triggers',
-      text: 'trigger subscription registered',
+      target: 'llm_router::observers',
+      text: 'observer added',
       stamp: '2026-10-01T00:22:53.685636Z',
     })
     expect(parts?.time).toBe(

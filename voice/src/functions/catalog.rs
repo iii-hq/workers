@@ -17,8 +17,8 @@ pub const LIST_DESC: &str =
 pub const DOWNLOAD_ID: &str = "voice::models::download";
 pub const DOWNLOAD_DESC: &str =
     "Download a local speech model (the active one when id is omitted), \
-                                 verifying every file's checksum. Progress arrives on the \
-                                 voice::model-progress trigger.";
+                                 verifying every file's checksum. Progress arrives as calls of \
+                                 voice::on-model-progress.";
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListRequest {}
@@ -101,15 +101,13 @@ pub async fn download(state: &AppState, req: DownloadRequest) -> Result<Download
     })
 }
 
-/// A sink that fans download progress out on `voice::model-progress`.
+/// A sink that calls `voice::on-model-progress` with download progress.
 pub fn progress_sink(state: &AppState) -> ProgressSink {
     let emitter = state.emitter.clone();
     Arc::new(move |progress: Progress| {
         let emitter = emitter.clone();
         tokio::spawn(async move {
-            emitter
-                .emit(EventKind::ModelProgress, None, &progress)
-                .await;
+            emitter.emit(EventKind::ModelProgress, &progress).await;
         });
     })
 }

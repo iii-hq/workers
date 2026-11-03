@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Check, Copy, X } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
-import { useFunctionTriggerRenderers } from '@/components/function-trigger/renderer-registry'
+import { useFunctionCallRenderers } from '@/components/function-call/renderer-registry'
 import { Button } from '@/components/shadcn/button'
 import {
   Tabs,
@@ -12,7 +12,7 @@ import {
 import { Hint } from '@/components/ui/Hint'
 import { cn } from '@/lib/utils'
 import { fetchOtelLogs } from '../api/otel-logs'
-import { spanRawRedactor } from '../lib/functionTriggerFromSpan'
+import { spanRawRedactor } from '../lib/functionCallFromSpan'
 import { formatSpanLabel } from '../lib/spanLabel'
 import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
@@ -113,9 +113,9 @@ export function SpanPanel({
     () => new Map((traceData?.spans ?? []).map((s) => [s.span_id, s] as const)),
     [traceData],
   )
-  const renderers = useFunctionTriggerRenderers()
+  const renderers = useFunctionCallRenderers()
   // Every tab below that reads `span.attributes`/`span.events` renders the
-  // SAME data the info tab's card is built from (functionTriggerFromSpan.ts)
+  // SAME data the info tab's card is built from (functionCallFromSpan.ts)
   // — the identical redactor has to cover them (tags, logs, errors), or the
   // runtime_id the info card hides is one tab-click away. The remaining tabs
   // (otel-logs, baggage, links) are exempt for a written reason at their own

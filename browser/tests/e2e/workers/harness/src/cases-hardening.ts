@@ -33,11 +33,15 @@ async function setBrowserConfig(call: Call, value: unknown): Promise<void> {
   await call('configuration::set', { id: 'browser', value })
 }
 
-async function guidanceTriggerVisible(call: Call): Promise<boolean> {
-  const listed = await call('engine::registered-triggers::list', { include_internal: true })
-  return (listed.registered_triggers ?? []).some(
-    (t: any) =>
-      t.trigger_type === 'harness::hook::pre-generate' && t.function_id === 'browser::inject-guidance',
+/** Whether the worker's guidance observer of the pre-generate hook is active. */
+async function guidanceObserverActive(call: Call): Promise<boolean> {
+  const listed = await call('engine::observers::list', { function_id: 'harness::hook::on-pre-generate' })
+  return (listed.observers ?? []).some(
+    (o: any) =>
+      o.target?.function_id === 'browser::inject-guidance' &&
+      o.state === 'active' &&
+      o.args?.on_error === 'fail_open' &&
+      typeof o.args?.inject_prompt === 'string',
   )
 }
 
@@ -382,14 +386,14 @@ export const HARDENING_CASES: TestCase[] = [
 
   // ---- configuration-mutating cases: keep these LAST, restore in finally ---
   {
-    name: 'inject_guidance: config flip binds and unbinds the pre-generate hook live',
+    name: 'inject_guidance: config flip observes and disposes the pre-generate hook live',
     async run({ call }) {
-      // The runner registers the harness::hook::pre-generate trigger type, so
-      // the worker's boot-time binding activates from the engine's pending map
-      // (asynchronously — hence a poll, not a one-shot check).
+      // The runner hosts harness::hook::on-pre-generate, so the worker's
+      // boot-time observer goes from pending to active (asynchronously —
+      // hence a poll, not a one-shot check).
       await pollUntil(
-        () => guidanceTriggerVisible(call),
-        'the boot-time guidance binding to activate (inject_guidance defaults true)',
+        () => guidanceObserverActive(call),
+        'the boot-time guidance observer to activate (inject_guidance defaults true)',
       )
       const original = await getBrowserConfig(call)
       try {
@@ -397,15 +401,15 @@ export const HARDENING_CASES: TestCase[] = [
         off.scrapling = { ...off.scrapling, inject_guidance: false }
         await setBrowserConfig(call, off)
         await pollUntil(
-          async () => !(await guidanceTriggerVisible(call)),
-          'guidance trigger to unbind after inject_guidance=false',
+          async () => !(await guidanceObserverActive(call)),
+          'guidance observer to be disposed after inject_guidance=false',
         )
         const on = structuredClone(original)
         on.scrapling = { ...on.scrapling, inject_guidance: true }
         await setBrowserConfig(call, on)
         await pollUntil(
-          () => guidanceTriggerVisible(call),
-          'guidance trigger to rebind after inject_guidance=true',
+          () => guidanceObserverActive(call),
+          'guidance observer to be active again after inject_guidance=true',
         )
       } finally {
         await setBrowserConfig(call, original)

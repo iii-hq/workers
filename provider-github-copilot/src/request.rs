@@ -130,14 +130,14 @@ mod tests {
     fn tools_serialize_when_present() {
         let mut a = args();
         a.tools = vec![AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "d".into(),
             parameters: serde_json::json!({ "type": "object" }),
             label: None,
             execution_mode: None,
         }];
         let body = build_body(&a);
-        assert_eq!(body["tools"][0]["function"]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["function"]["name"], "agent__call");
     }
 
     #[test]

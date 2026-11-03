@@ -57,7 +57,7 @@ function isUnavailable(err: unknown): boolean {
 export async function fetchWorkspaceLayout(): Promise<WorkspaceLayoutValue | null> {
   try {
     const client = await getIiiClient()
-    const resp = await client.trigger<{ value?: unknown }>(
+    const resp = await client.call<{ value?: unknown }>(
       WORKSPACE_GET_FUNCTION_ID,
       {},
     )
@@ -80,7 +80,7 @@ export async function setWorkspaceLayout(
   base: WorkspaceLayoutValue,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger(WORKSPACE_SET_FUNCTION_ID, {
+  await client.call(WORKSPACE_SET_FUNCTION_ID, {
     value,
     expected_revision: layoutRevision(base),
   })

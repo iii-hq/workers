@@ -146,28 +146,37 @@ describe('the capability object', () => {
     )
     await h.press('call-colon')
     expect(h.prop('out', 'text')).toBe('error forbidden: demo may only call demo::… functions (not demo:echo)')
-    await h.press('bind-other')
+    await h.press('observe-other')
     expect(h.prop('out', 'text')).toBe(
-      'threw forbidden: demo may only bind demo:… or demo::… triggers (not state::changed)',
+      'threw forbidden: demo may only observe demo::… functions (not state::on-changed)',
     )
-    await h.press('bind-engine')
+    await h.press('observe-engine')
     expect(h.prop('out', 'text')).toBe(
-      'threw forbidden: demo may only bind demo:… or demo::… triggers (not engine::functions-changed)',
+      'threw forbidden: demo may only observe demo::… functions (not engine::on-functions-changed)',
     )
-    await h.press('bind-longer-ns')
+    await h.press('observe-longer-ns')
     expect(h.prop('out', 'text')).toBe(
-      'threw forbidden: demo may only bind demo:… or demo::… triggers (not demos:changed)',
+      'threw forbidden: demo may only observe demo::… functions (not demos::on-changed)',
+    )
+    await h.press('observe-colon')
+    expect(h.prop('out', 'text')).toBe(
+      'threw forbidden: demo may only observe demo::… functions (not demo:ticket-changed)',
     )
     expect(h.requests.length).toBe(sent)
   })
 
-  it('binds trigger types of its namespace with one colon or two (D5), and the host takes both', async () => {
+  it('observes functions of its namespace, with their args and filters, and the host takes them', async () => {
     const h = await mounted('capabilities', { calls })
-    await h.press('bind-colon')
-    expect(h.prop('out', 'text')).toBe('bound demo:ticket-changed')
-    await h.press('bind-double-colon')
-    expect(h.prop('out', 'text')).toBe('bound demo::changed')
-    expect([...h.subscriptions.values()].map((s) => s.trigger)).toEqual(['demo:ticket-changed', 'demo::changed'])
+    await h.press('observe-own')
+    expect(h.prop('out', 'text')).toBe('observing demo::on-changed')
+    expect(h.requests.at(-1)).toMatchObject({ method: 'on', args: { fn: 'demo::on-changed', args: {}, filters: {} } })
+    await h.press('observe-args')
+    expect(h.prop('out', 'text')).toBe('observing demo::on-ticket-changed')
+    expect([...h.subscriptions.values()]).toEqual([
+      { fn: 'demo::on-changed', args: {}, filters: {} },
+      { fn: 'demo::on-ticket-changed', args: { board: 'b1' }, filters: { 'input.op': { $eq: 'moved' } } },
+    ])
+    expect(await h.emitObserved('demo::on-ticket-changed', { op: 'moved' })).toBe(1)
   })
 
   it('reaches the host UI, the clipboard, URLs, files and storage', async () => {
@@ -219,15 +228,17 @@ describe('hooks', () => {
     expect(h.requests.filter((r) => r.method === 'call').length).toBe(calls)
   })
 
-  it('useTrigger binds while enabled and unbinds when it is not', async () => {
+  it('useObserve observes while enabled and disposes the observer when it is not', async () => {
     const h = await mounted('hooks', { calls: { 'demo::echo': { echo: 'x' } } })
-    expect([...h.subscriptions.values()]).toEqual([{ trigger: 'demo::tick', config: { every: 1 } }])
-    expect(await h.emitTrigger('demo::tick', {})).toBe(1)
+    expect([...h.subscriptions.values()]).toEqual([
+      { fn: 'demo::on-tick', args: { every: 1 }, filters: { 'input.kind': { $eq: 'tick' } } },
+    ])
+    expect(await h.emitObserved('demo::on-tick', {})).toBe(1)
     expect(h.prop('events', 'text')).toBe('1')
     await h.toggle('live')
     expect(h.subscriptions.size).toBe(0)
     expect(h.requests.at(-1)?.method).toBe('off')
-    expect(await h.emitTrigger('demo::tick', {})).toBe(0)
+    expect(await h.emitObserved('demo::on-tick', {})).toBe(0)
     await h.toggle('live')
     expect(h.subscriptions.size).toBe(1)
   })
@@ -260,13 +271,13 @@ describe('hooks', () => {
 })
 
 describe('errors', () => {
-  it('reports a throwing handler or trigger without stopping the app', async () => {
+  it('reports a throwing handler or observer without stopping the app', async () => {
     const h = await mounted('errors')
     await h.press('throw')
     expect(h.prop('n', 'text')).toBe('1')
     expect(h.errors.at(-1)).toMatchObject({ message: 'TypeError: handler exploded' })
-    await h.emitTrigger('demo::boom', {})
-    expect(h.errors.at(-1)).toMatchObject({ message: 'trigger exploded' })
+    await h.emitObserved('demo::on-boom', {})
+    expect(h.errors.at(-1)).toMatchObject({ message: 'observer exploded' })
     await h.press('ok')
     expect(h.prop('n', 'text')).toBe('2')
     expect(h.failed).toBeNull()
@@ -294,12 +305,12 @@ describe('limits', () => {
   it('splits a batch the host refuses as too large, and stops on one entry that cannot fit', async () => {
     const h = await mounted('big', { maxMessageBytes: 4096 })
     const from = h.messages.length
-    await h.emitTrigger('demo::fill', { count: 6, size: 1000 })
+    await h.emitObserved('demo::on-fill', { count: 6, size: 1000 })
     const sent = h.messages.slice(from)
     expect(sent.length).toBeGreaterThan(1)
     for (const m of sent) expect(Buffer.byteLength(m)).toBeLessThanOrEqual(4096)
     expect(h.find({ type: 'List' }).items).toHaveLength(6)
-    await expect(h.emitTrigger('demo::fill', { count: 1, size: 5000 })).rejects.toThrow(/reported/)
+    await expect(h.emitObserved('demo::on-fill', { count: 1, size: 5000 })).rejects.toThrow(/reported/)
     expect(h.errors.at(-1)?.fatal).toBe(true)
   })
 })
@@ -314,7 +325,7 @@ describe('components', () => {
       placeholder: 'Loading…',
       events: ['longPress', 'frame'],
       wire: {
-        frames: { trigger: 'demo::frame-event', config: { session_id: '$session' } },
+        frames: { fn: 'demo::on-frame-event', args: { session_id: '$session' } },
         start: { fn: 'demo::screencast::start', args: { session_id: '$session', viewer_id: '$viewer' }, renewMs: 6000 },
       },
     })

@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import type { ExtensionIii } from './index.js'
+import type { ExtensionIii, ObserveSource } from './index.js'
 
 /**
  * Container-driven narrow state: attach `ref` to the pane root; `narrow`
@@ -55,12 +55,14 @@ export declare function useCopyFlash(
 export interface WorkerLiveOptions<T> {
   iii: ExtensionIii
   /**
-   * Trigger types whose events re-run `fetch`; an object form carries the
-   * binding `config` (a `state` trigger's `scope`/`key`).
+   * Functions whose calls re-run `fetch`, each observed with the target
+   * `${handlerId}::${browserId}`. An object form carries `args` (for a
+   * function that takes them) and `filters`:
+   * `{ function_id: 'state::on-changed', filters: { 'input.scope': { $eq: 'orders' } } }`.
    */
-  triggers: readonly (string | { type: string; config?: Record<string, unknown> })[]
+  sources: readonly (string | ObserveSource)[]
   fetch: () => Promise<T>
-  /** @deprecated Ignored: without live bindings the data is re-read on tab focus, never on a timer. */
+  /** @deprecated Ignored: without observers the data is re-read on tab focus, never on a timer. */
   pollMs?: number
   /** Tab-scoped handler id, e.g. `iii::<worker>-ui::events`; the host appends `::<browserId>`. */
   handlerId: string
@@ -69,9 +71,9 @@ export interface WorkerLive<T> {
   data: T | null
   loading: boolean
   error: string | null
-  /** True while updates arrive through the live trigger bindings. */
+  /** True while updates arrive through the observers. */
   live: boolean
   refresh: () => void
 }
-/** `fetch` once, re-fetch on every trigger event, poll only while not live. */
+/** `fetch` once, re-fetch on every observed call; without observers, re-read on tab focus. */
 export declare function useWorkerLive<T>(options: WorkerLiveOptions<T>): WorkerLive<T>

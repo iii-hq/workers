@@ -66,7 +66,8 @@ interface TurnCompletedEvent {
 export interface HarnessStack {
   ready: ReadyManifest
   consoleUrl: string
-  trigger(): Promise<unknown>
+  /** Send the scenario's message with `harness::send`. */
+  send(): Promise<unknown>
   /** Call any engine function, the way an agent or another worker would. */
   invoke(functionId: string, payload: Record<string, unknown>): Promise<unknown>
   waitForTurnCompleted(): Promise<TurnCompletedEvent>
@@ -151,12 +152,12 @@ function armCompletion(
 ): Promise<TurnCompletedEvent> {
   const functionId = `console-e2e::turn-completed::${ready.run_id}`
   let functionRef: ReturnType<ISdk['registerFunction']> | undefined
-  let triggerRef: ReturnType<ISdk['registerTrigger']> | undefined
+  let observerRef: ReturnType<ISdk['observe']> | undefined
   let timer: NodeJS.Timeout | undefined
   const cleanup = () => {
     if (timer) clearTimeout(timer)
     try {
-      triggerRef?.unregister()
+      void observerRef?.dispose()
       functionRef?.unregister()
     } catch {
       // The isolated stack may already be shutting down.
@@ -174,14 +175,17 @@ function armCompletion(
       },
       { metadata: { internal: true } },
     )
-    triggerRef = sdk.registerTrigger({
-      type: 'harness::turn-completed',
-      function_id: functionId,
-      config: { session_id: ready.session.id },
-    })
+    observerRef = sdk.observe(
+      {
+        function_id: 'harness::on-turn-completed',
+        filters: { 'input.session_id': { $eq: ready.session.id } },
+        deliver: 'output',
+      },
+      functionId,
+    )
     timer = setTimeout(() => {
       cleanup()
-      reject(new Error('harness::turn-completed was not delivered'))
+      reject(new Error('harness::on-turn-completed was not delivered'))
     }, 60_000)
   })
 }
@@ -278,13 +282,13 @@ export const test = base.extend<FixtureValues>({
       const stack: HarnessStack = {
         ready: manifest,
         consoleUrl: manifest.console_url,
-        trigger: () =>
-          connectedSdk.trigger({
+        send: () =>
+          connectedSdk.call({
             function_id: 'harness::send',
             payload: manifest.send,
           }),
         invoke: (functionId, payload) =>
-          connectedSdk.trigger({ function_id: functionId, payload }),
+          connectedSdk.call({ function_id: functionId, payload }),
         waitForTurnCompleted: () => armCompletion(connectedSdk, manifest),
         finish,
       }

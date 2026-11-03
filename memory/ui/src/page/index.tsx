@@ -3,10 +3,10 @@
  * PageHeader from @iii-dev/console-ui) over the bank rail (navigation
  * column) and the selected bank's workspace — rules, memories, graph, and
  * turn preview behind one segmented control in the workspace header.
- * Everything re-reads live off `memory::item-changed` /
- * `memory::bank-changed` (poll fallback while bindings are unavailable,
- * see useMemoryLive). Memory that acts visibly, not magically — watch a
- * memory appear the moment it's learned.
+ * Everything re-reads live off `memory::on-item-changed` /
+ * `memory::on-bank-changed` (re-read on tab focus while the observers are
+ * unavailable, see useMemoryLive). Memory that acts visibly, not
+ * magically — watch a memory appear the moment it's learned.
  *
  * Layout adapts to the width the page HAS (`useContainerNarrow` on its own
  * body, not a viewport media query — the console can host it in panes of
@@ -19,7 +19,8 @@
  * navigation asks before discarding them.
  *
  * No presence gate: the host only mounts this page while the memory worker's
- * script is loaded, which already tracks worker connectedness via trigger GC.
+ * script is loaded, which already tracks worker connectedness through its
+ * asset observers.
  */
 
 import {
@@ -234,8 +235,8 @@ export function MemoryPage({
               className="mem-ui-live"
               title={
                 live
-                  ? 'updates arrive on the memory trigger types'
-                  : 'live bindings unavailable; refreshing on a timer'
+                  ? 'updates arrive through observers of the memory change functions'
+                  : 'live observers unavailable; refreshing on tab focus'
               }
             >
               <StatusDot tone={live ? 'accent' : 'ink'} pulse={live} />

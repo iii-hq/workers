@@ -1,16 +1,15 @@
 //! @engine steps for bridged-instance stacks: drive mutations through
 //! a `BridgeStore`-backed production stack and assert what each
-//! instance's local subscribers received via the main's event feed.
+//! instance's local observers received via the main's event feed.
 //!
 //! Bridge-local deliveries arrive asynchronously (mutation ->
-//! publish_events -> main fan-out -> relay -> local emitter), so the
-//! receipt assertions poll with a deadline.
+//! publish-events -> main's `session::store::on-events` -> relay ->
+//! local emitter), so the receipt assertions poll with a deadline.
 
 use std::time::Duration;
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::trigger::TriggerConfig;
 
 use session_manager::events::EventKind;
 
@@ -41,40 +40,34 @@ async fn bridge_call(world: &mut SessionWorld, instance: String, function: Strin
 }
 
 #[given(
-    regex = r#"^a local binding "([^"]+)" on "([^"]+)" in bridged instance "([^"]+)" delivering to "([^"]+)" with config:$"#
+    regex = r#"^a local observer "([^"]+)" of "([^"]+)" in bridged instance "([^"]+)" delivering to "([^"]+)" with filters:$"#
 )]
-async fn bridge_local_binding(
+async fn bridge_local_observer(
     world: &mut SessionWorld,
     id: String,
-    trigger_type: String,
+    source: String,
     instance: String,
-    function_id: String,
+    target: String,
     step: &Step,
 ) {
     if world.skip_without_engine() {
         return;
     }
-    let kind = EventKind::from_trigger_type(&trigger_type)
-        .unwrap_or_else(|| panic!("unknown trigger type {trigger_type}"));
+    assert!(
+        EventKind::from_function_id(&source).is_some(),
+        "{source} is not a session event function"
+    );
     let raw = world.substitute(step.docstring.as_deref().unwrap_or("{}"));
-    let config: serde_json::Value = serde_json::from_str(raw.trim())
-        .unwrap_or_else(|e| panic!("binding config docstring must be valid JSON: {e}"));
+    let filters: serde_json::Value = serde_json::from_str(raw.trim())
+        .unwrap_or_else(|e| panic!("filters docstring must be valid JSON: {e}"));
     let stack = world
         .bridges
         .get(&instance)
         .unwrap_or_else(|| panic!("no bridged instance named `{instance}`"));
     stack
-        .emitter
-        .sets()
-        .for_kind(kind)
-        .add(TriggerConfig {
-            id,
-            function_id,
-            config,
-            metadata: None,
-            namespace: None,
-        })
-        .expect("bridge-local binding config must be valid");
+        .recorder
+        .observe(&id, &source, &filters, &target)
+        .expect("bridge-local observer filters must be valid");
 }
 
 fn bridge_deliveries(

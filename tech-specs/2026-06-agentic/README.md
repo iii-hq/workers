@@ -1,5 +1,14 @@
 # Agentic Workers
 
+> **Status (2026-10-29):** a design record written for iii 0.25 and earlier,
+> when an event was a trigger type that consumers bound with `registerTrigger`
+> and functions were invoked with `trigger`. iii 0.26 removes triggers: an
+> event is a private function its worker calls when the event happens, a
+> consumer observes it with `iii.observe`, and functions are invoked with
+> `iii.call`. The function each trigger type became is listed in
+> [`2026-10-observe-v2/functions.md`](../2026-10-observe-v2/functions.md).
+> This document is kept as written.
+
 A set of small, composable [iii](https://workers.iii.dev/) workers that, together, make up an
 agentic chat backend — and, taken individually, each solve one problem well enough to be used on
 their own.

@@ -1,14 +1,14 @@
 //! fp's entry in the builtin `configuration` worker (plumbing shared via
 //! `crates/config-client`): register the `FpConfig` schema (+ default seed)
-//! at boot, read the authoritative value, and bind a `configuration`
-//! trigger so `configuration:updated` re-fetches and applies the change —
-//! for fp that means binding or unbinding the `fp::inject-guidance`
-//! pre-generate hook at runtime.
+//! at boot, read the authoritative value, and observe
+//! `configuration::on-updated` so each `configuration:updated` event
+//! re-fetches and applies the change — for fp that means observing
+//! `harness::hook::on-pre-generate` with `fp::inject-guidance`, or disposing
+//! that observer, at runtime.
 
 use std::sync::Arc;
 
 use iii_config_client as config_client;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 
 use crate::config::FpConfig;
@@ -57,15 +57,16 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<FpConfig, String> {
     }
 }
 
-/// Register `fp::on-config-change` and bind it to `configuration:updated`
-/// for the `fp` entry. Every delivery re-fetches the authoritative value
-/// under the shared reload lock and reconciles the guidance binding; the
-/// returned [`config_client::Reload`] lets boot run one extra pass to close
-/// the fetch→bind gap.
-pub fn register_config_trigger(
+/// Register `fp::on-config-change` and observe `configuration::on-updated`
+/// with it for the `configuration:updated` events of the `fp` entry. Every
+/// delivery re-fetches the authoritative value under the shared reload lock
+/// and reconciles the guidance observer; the returned
+/// [`config_client::Reload`] lets boot run one extra pass to close the
+/// fetch→observe gap.
+pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     state: guidance::GuidanceState,
-) -> Result<config_client::Reload, Error> {
+) -> config_client::Reload {
     let engine = iii.clone();
     config_client::on_change(
         iii,

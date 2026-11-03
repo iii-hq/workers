@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-const DESCRIPTION: &str = "xAI Grok CLI as an iii worker — grok::* run headless Grok turns, deliver raw streaming-json events on the grok::raw-event trigger type and AgentEvent frames on grok::agent-event.";
+const DESCRIPTION: &str = "xAI Grok CLI as an iii worker — grok::* run headless Grok turns, deliver raw streaming-json events on grok::on-raw-event and AgentEvent frames on grok::on-agent-event, observed per session.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

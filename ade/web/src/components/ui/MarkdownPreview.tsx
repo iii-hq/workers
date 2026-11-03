@@ -8,7 +8,7 @@ interface MarkdownPreviewProps {
 
 /**
  * Rendered-markdown pane: `Markdown` with the standard `bg-bg` chrome the
- * function-trigger cards use for skill/prompt/README bodies. The shared
+ * function-call cards use for skill/prompt/README bodies. The shared
  * counterpart to `CodeEditor` — edit raw markdown on one side, preview it
  * through this on the other — and the component worker UI should reach
  * for instead of re-wrapping `Markdown` per worker.

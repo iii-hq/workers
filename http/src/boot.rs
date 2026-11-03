@@ -1,34 +1,23 @@
-//! Boot sequence: register the `http` trigger type (so the engine routes
-//! trigger registrations through our [`HttpTriggerHandler`] into the shared
-//! [`RouteTable`]), register the `http::on-request` observable function (whose
-//! observers land in the same table, see [`crate::on_request`]) and start the
-//! HTTP server.
+//! Boot sequence: register the `http::on-request` function (whose observers'
+//! routes land in the shared [`RouteTable`], see [`crate::on_request`]) and
+//! start the HTTP server.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::FunctionRef;
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::IIIClient;
 use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
 use crate::configuration::{self, ApplyLock, ConfigCell};
+use crate::inflight::InFlightRequests;
 use crate::on_request;
+use crate::routes::RouteTable;
 use crate::server::{self, HotRouter, RouterCell, ServerControlCell, ServerHandle};
-use crate::trigger::{HttpTriggerHandler, RouteTable};
-use crate::types::{HttpRequest, HttpTriggerConfig};
-use crate::TRIGGER_TYPE;
-
-/// Function id for `engine::workers::list`, used by [`guard_against_builtin_http`]
-/// to detect whether the built-in `iii-http` worker is connected.
-const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
-
-/// The worker id/name the built-in HTTP worker registers as.
-const BUILTIN_III_HTTP_WORKER_ID: &str = "iii-http";
 
 /// Handle to a running worker: the shared route table, the live config cell (so
-/// the caller can wire the `configuration:updated` trigger and observe
+/// the caller can observe `configuration::on-updated` and follow
 /// hot-reloads), the swappable router cell (so a same-address config change can
 /// rebuild the CORS/timeout/concurrency layers live), the shared [`HotRouter`]
 /// and [`ServerControlCell`] (so a host/port change can rebind the listener),
@@ -39,9 +28,10 @@ const BUILTIN_III_HTTP_WORKER_ID: &str = "iii-http";
 /// [`BootHandle::current_addr`] or from the config cell.
 ///
 /// `apply_lock` is shared with the caller so it can be threaded into
-/// [`configuration::register_config_trigger`], which serializes overlapping
+/// [`configuration::register_config_observer`], which serializes overlapping
 /// `http::on-config-change` runs onto it (see [`ApplyLock`]).
 pub struct BootHandle {
+    pub iii: Arc<IIIClient>,
     pub local_addr: SocketAddr,
     pub routes: Arc<RwLock<RouteTable>>,
     /// `http::on-request`; its observers' routes are in `routes`.
@@ -68,9 +58,9 @@ impl BootHandle {
     }
 
     /// Serialize shutdown against reload, drain both listeners, and join them,
-    /// then unregister `http::on-request` (the engine holds its observers
-    /// until it is registered again, by a restarted worker or a later
-    /// [`start`] on the same client).
+    /// then unregister `http::on-request` and clear its hooks (the engine
+    /// holds its observers until it is registered again, by a restarted
+    /// worker or a later [`start`] on the same client).
     pub async fn shutdown(self) {
         let _guard = self.apply_lock.lock().await;
         let normal = self.control.lock().await.take();
@@ -85,52 +75,42 @@ impl BootHandle {
         };
         tokio::join!(stop(normal), stop(webhook));
         self.on_request.unregister();
+        on_request::clear_hooks(&self.iii);
     }
 }
 
-/// Register this worker's trigger type ([`crate::TRIGGER_TYPE`]) and its
-/// observable function ([`on_request::ON_REQUEST_FN`]), and start the
-/// server. Returns once the listener is bound (its address available in
+/// Register this worker's function ([`on_request::ON_REQUEST_FN`]) and start
+/// the server. Returns once the listener is bound (its address available in
 /// [`BootHandle::local_addr`]).
-///
-/// Always refuses to start if the built-in `iii-http` worker already owns
-/// the `http` trigger type on the connected engine (see
-/// [`guard_against_builtin_http`]) -- two owners of the same trigger type
-/// collide (last-write-wins), so this turns the silent collision into a
-/// fail-fast error.
 pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result<BootHandle> {
-    guard_against_builtin_http(&iii).await?;
-
     let cell = configuration::new_cell(config.normalized());
     let apply_lock: ApplyLock = Arc::new(tokio::sync::Mutex::new(
         configuration::ReloadState::default(),
     ));
 
-    let handler = HttpTriggerHandler::new();
-    let routes = handler.routes.clone();
-
-    // Registering the trigger type makes the engine deliver every trigger
-    // binding of this type through `handler`, which populates `routes`.
-    // Kept until the trigger type is retired; old consumers bind it on 0.24
-    // and 0.25 engines.
-    #[allow(deprecated)]
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(TRIGGER_TYPE, "HTTP API trigger", handler)
-            .call_request_format::<HttpRequest>()
-            .trigger_request_format::<HttpTriggerConfig>(),
-    );
-    // Observers of `http::on-request` add their routes to the same table. On
-    // an engine without observe its hooks never run.
-    let on_request = on_request::register(&iii, routes.clone());
+    // Observers of `http::on-request` add their routes to this table, which
+    // its deliver hook matches requests against. The server and the hook
+    // share the requests in flight.
+    let routes: Arc<RwLock<RouteTable>> = Arc::default();
+    let requests = InFlightRequests::default();
+    let on_request = on_request::register(&iii, routes.clone(), requests.clone(), cell.clone());
 
     let ServerHandle {
         local_addr,
         router,
         hot_router,
         control,
-    } = server::serve(routes.clone(), iii, cell.clone()).await?;
+    } = match server::serve(routes.clone(), requests, iii.clone(), cell.clone()).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            on_request.unregister();
+            on_request::clear_hooks(&iii);
+            return Err(error);
+        }
+    };
 
     Ok(BootHandle {
+        iii,
         local_addr,
         routes,
         on_request,
@@ -140,95 +120,4 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
         control,
         apply_lock,
     })
-}
-
-/// Query the engine for connected workers and bail out if the built-in
-/// `iii-http` worker is active -- it already owns the `http` trigger type, so
-/// registering it here would silently collide (last-write-wins).
-async fn guard_against_builtin_http(iii: &Arc<IIIClient>) -> anyhow::Result<()> {
-    let workers_list = iii
-        .trigger(TriggerRequest {
-            function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
-            payload: serde_json::json!({}),
-            action: None,
-            timeout_ms: Some(5000),
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to query {LIST_WORKERS_FUNCTION_ID}: {e}"))?;
-
-    if builtin_iii_http_active(&workers_list) {
-        anyhow::bail!(
-            "cannot start the http worker: the built-in iii-http worker is active and owns the \
-             'http' trigger type. Remove iii-http from the engine config (a config.yaml that \
-             doesn't list it won't run it), then start this worker."
-        );
-    }
-
-    Ok(())
-}
-
-/// Inspect the `{ "workers": [ { "id", "name", ... }, ... ] }` payload
-/// returned by `engine::workers::list` and report whether the built-in
-/// `iii-http` worker is among them (matched by `id` or `name`).
-fn builtin_iii_http_active(workers_list: &serde_json::Value) -> bool {
-    workers_list
-        .get("workers")
-        .and_then(|w| w.as_array())
-        .is_some_and(|workers| {
-            workers.iter().any(|worker| {
-                worker.get("id").and_then(|v| v.as_str()) == Some(BUILTIN_III_HTTP_WORKER_ID)
-                    || worker.get("name").and_then(|v| v.as_str())
-                        == Some(BUILTIN_III_HTTP_WORKER_ID)
-            })
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn detects_builtin_iii_http_by_id() {
-        let workers_list = json!({
-            "workers": [
-                { "id": "iii-http", "name": "http builtin", "status": "connected" },
-                { "id": "some-other-worker", "name": "other", "status": "connected" },
-            ]
-        });
-        assert!(builtin_iii_http_active(&workers_list));
-    }
-
-    #[test]
-    fn detects_builtin_iii_http_by_name() {
-        let workers_list = json!({
-            "workers": [
-                { "id": "worker-123", "name": "iii-http", "status": "connected" },
-            ]
-        });
-        assert!(builtin_iii_http_active(&workers_list));
-    }
-
-    #[test]
-    fn no_match_when_absent() {
-        let workers_list = json!({
-            "workers": [
-                { "id": "shell", "name": "shell", "status": "connected" },
-                { "id": "email", "name": "email", "status": "connected" },
-            ]
-        });
-        assert!(!builtin_iii_http_active(&workers_list));
-    }
-
-    #[test]
-    fn no_match_when_workers_empty() {
-        let workers_list = json!({ "workers": [] });
-        assert!(!builtin_iii_http_active(&workers_list));
-    }
-
-    #[test]
-    fn no_match_when_workers_missing() {
-        let workers_list = json!({});
-        assert!(!builtin_iii_http_active(&workers_list));
-    }
 }

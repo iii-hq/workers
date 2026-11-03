@@ -88,8 +88,9 @@ describe('isAutoAcceptable (default policy)', () => {
   })
 
   it('rejects recursive-dispatch function ids', () => {
-    expect(isAutoAcceptable('agent::trigger')).toBe(false)
+    expect(isAutoAcceptable('agent::call')).toBe(false)
     expect(isAutoAcceptable('orchestrator::dispatch')).toBe(false)
+    expect(isAutoAcceptable('harness::observe')).toBe(false)
   })
 
   it('rejects credential / secret surfaces', () => {
@@ -149,12 +150,12 @@ describe('isAutoAcceptable (custom policy)', () => {
   it('honors a wider custom policy that strips most defaults', () => {
     const permissive: AutoAcceptPolicy = {
       denyPatterns: [],
-      denyExact: new Set(['agent::trigger']),
+      denyExact: new Set(['agent::call']),
       allowPatterns: [],
       allowExact: new Set(),
     }
     expect(isAutoAcceptable('fs::write', permissive)).toBe(true)
-    expect(isAutoAcceptable('agent::trigger', permissive)).toBe(false)
+    expect(isAutoAcceptable('agent::call', permissive)).toBe(false)
   })
 
   it('allowExact overrides denyPatterns and denyExact', () => {
@@ -171,11 +172,11 @@ describe('isAutoAcceptable (custom policy)', () => {
   it('allowPatterns overrides denyPatterns and denyExact', () => {
     const policy: AutoAcceptPolicy = {
       denyPatterns: [/.*/],
-      denyExact: new Set(['agent::trigger']),
+      denyExact: new Set(['agent::call']),
       allowPatterns: [/^agent::/],
       allowExact: new Set(),
     }
-    expect(isAutoAcceptable('agent::trigger', policy)).toBe(true)
+    expect(isAutoAcceptable('agent::call', policy)).toBe(true)
     expect(isAutoAcceptable('agent::dispatch', policy)).toBe(true)
     expect(isAutoAcceptable('fs::ls', policy)).toBe(false)
   })

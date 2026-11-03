@@ -1,6 +1,6 @@
 /**
  * Calls to `directory::download-kit` / `directory::kits::*` and the
- * `directory::kits::on-change` subscription the Kits page and the chat
+ * `directory::kits::on-change` observer the Kits page and the chat
  * cards share.
  */
 
@@ -22,7 +22,7 @@ export interface PlanRecord {
 
 export function kitsApi(host: Host) {
   const call = <T>(fn: string, payload: Record<string, unknown> = {}, timeoutMs?: number) =>
-    host.iii.trigger<T>(fn, payload, timeoutMs ? { timeoutMs } : undefined)
+    host.iii.call<T>(fn, payload, timeoutMs ? { timeoutMs } : undefined)
   return {
     list: () => call<KitsListing>('directory::kits::list'),
     get: (kit: string) => call<KitInfo>('directory::kits::get', { kit, registry: true }, PLAN_TIMEOUT_MS),
@@ -55,33 +55,29 @@ export function kitsApi(host: Host) {
 export type KitsApi = ReturnType<typeof kitsApi>
 
 /**
- * Tab-scoped binding on `directory::kits::on-change`. `scope` keeps two
- * subscribers in one tab (the page badge and the Kits view) on distinct
- * function ids.
+ * Tab-scoped observer of `directory::kits::on-change`. `scope` keeps two
+ * observers in one tab (the page badge and the Kits view) on distinct
+ * handler ids.
  */
 export function useKitsChange(host: Host, scope: string, onEvent: (change: KitsChange) => void) {
   const ref = useRef(onEvent)
   ref.current = onEvent
   useEffect(() => {
     // `on` registers the handler tab-scoped as `<id>::<browserId>`; the
-    // trigger must name that full id.
+    // observer's target must name that full id.
     const handlerId = `iii::iii-directory-ui::kits-on-change::${scope}`
     const off = host.iii.on<KitsChange>(handlerId, (payload) => {
       ref.current((payload ?? { op: 'updates' }) as KitsChange)
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: KITS_ON_CHANGE,
-      function_id: `${handlerId}::${host.iii.browserId}`,
-      config: {},
-    })
+    const unobserve = host.iii.observe(KITS_ON_CHANGE, `${handlerId}::${host.iii.browserId}`)
     return () => {
-      offTrigger()
+      unobserve()
       off()
     }
   }, [host, scope])
 }
 
-/** Error text from a rejected trigger, without the engine's wrapper prefix. */
+/** Error text from a rejected call, without the engine's wrapper prefix. */
 export function errorText(error: unknown): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : JSON.stringify(error)
   return raw

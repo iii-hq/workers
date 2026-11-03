@@ -31,7 +31,7 @@ Exits 0 on PASS, 1 on any failure.
 
 | group | what it covers |
 |---|---|
-| `run` | one-shot runs in both languages, the shared response shape, non-ASCII round-trips, and guest `iii.trigger` reaching the bus |
+| `run` | one-shot runs in both languages, the shared response shape, non-ASCII round-trips, and guest `iii.call` reaching the bus |
 | `keep` | `keep: true` → `runtime_id` → `teardown`, and that an id routes to its own engine without being told the language |
 | `register` | handlers published on the real bus and invoked through it, in both languages, plus namespace teardown |
 | `errors` | the taxonomy: which failures are responses and which are errors |
@@ -41,7 +41,7 @@ Exits 0 on PASS, 1 on any failure.
 Three things only a live engine can show:
 
 - **A registered function actually reaches the catalog** and answers a
-  trigger. A unit test can prove the router called `Engine::register`; it
+  call. A unit test can prove the router called `Engine::register`; it
   cannot prove a caller can then invoke the id.
 - **The response shape is identical across engines** once it has been through
   serde, the wire, and the SDK's decoder — the whole promise of this worker is
@@ -63,9 +63,14 @@ it creates, in a `finally`.
 
 The engine listens on a random high port, never 49134 — a developer's own
 stack usually holds that one, and a harness that hijacked it would take their
-workers down. The port is verified free before use, because the engine logs
-"address already in use" and then keeps running, which would otherwise produce
-a harness talking to somebody else's engine and reporting nonsense about it.
+workers down. `III_E2E_PORT=<port>` picks the port. The port is verified free
+before use, because the engine logs "address already in use" and then keeps
+running, which would otherwise produce a harness talking to somebody else's
+engine and reporting nonsense about it.
+
+The worker is built with `cargo build --release` and run from
+`$CARGO_TARGET_DIR/release` when `CARGO_TARGET_DIR` is set, `target/release`
+otherwise.
 
 ## Artifacts
 

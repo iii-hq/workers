@@ -178,7 +178,7 @@ fn example_search_input() -> serde_json::Value {
 /// Regex form: `query` is a regex only with `regex: true`.
 fn example_search_regex() -> serde_json::Value {
     serde_json::json!({
-        "query": "registerTrigger|registerFunction",
+        "query": "observe|registerFunction",
         "regex": true,
         "path": "src",
         "search_paths": false
@@ -2515,12 +2515,8 @@ mod tests {
     #[tokio::test]
     async fn file_path_searches_that_one_file() {
         let (tmp, r, c) = setup();
-        write(
-            &tmp,
-            "src/a.ts",
-            "one\nregisterTrigger(x)\nthree\nsubscribe()\n",
-        );
-        write(&tmp, "src/b.ts", "registerTrigger elsewhere\n");
+        write(&tmp, "src/a.ts", "one\nobserve(x)\nthree\nsubscribe()\n");
+        write(&tmp, "src/b.ts", "observe elsewhere\n");
         let out = handle(
             r,
             c,
@@ -2528,7 +2524,7 @@ mod tests {
                 path: "src/a.ts".into(),
                 regex: true,
                 context_lines_before: Some(1),
-                ..base_input("registerTrigger|subscribe")
+                ..base_input("observe|subscribe")
             },
         )
         .await
@@ -2542,7 +2538,7 @@ mod tests {
         assert_eq!(
             hits,
             vec![
-                (a.as_str(), 2, "registerTrigger(x)"),
+                (a.as_str(), 2, "observe(x)"),
                 (a.as_str(), 4, "subscribe()")
             ]
         );
@@ -2558,14 +2554,14 @@ mod tests {
         write(
             &tmp,
             "node_modules/@iii-dev/console-ui/index.d.ts",
-            "export declare function registerTrigger(): void;\n",
+            "export declare function observe(): void;\n",
         );
         let out = handle(
             r,
             c,
             SearchInput {
                 path: "node_modules/@iii-dev/console-ui/index.d.ts".into(),
-                ..base_input("registerTrigger")
+                ..base_input("observe")
             },
         )
         .await
@@ -2775,9 +2771,9 @@ mod tests {
     fn pattern_stands_in_for_query_as_a_regex() {
         let req = input(serde_json::json!({
             "path": "src",
-            "pattern": "registerTrigger|subscribe"
+            "pattern": "observe|subscribe"
         }));
-        assert_eq!(req.query, "registerTrigger|subscribe");
+        assert_eq!(req.query, "observe|subscribe");
         assert!(req.regex);
         assert_eq!(req.path, "src");
         assert_eq!(
@@ -2829,13 +2825,13 @@ mod tests {
     #[tokio::test]
     async fn pattern_search_runs_as_regex_and_returns_the_notice() {
         let (tmp, r, c) = setup();
-        write(&tmp, "a.txt", "registerTrigger(x)\n");
+        write(&tmp, "a.txt", "observe(x)\n");
         write(&tmp, "b.txt", "subscribe()\n");
         let out = handle(
             r.clone(),
             c.clone(),
             input(serde_json::json!({
-                "pattern": "registerTrigger|subscribe", "search_paths": false
+                "pattern": "observe|subscribe", "search_paths": false
             })),
         )
         .await

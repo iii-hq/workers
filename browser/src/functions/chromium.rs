@@ -81,8 +81,8 @@ pub enum InstallStatus {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ChromiumInstallOutput {
-    /// The install job; its progress arrives on the
-    /// `browser::chromium-install-progress` trigger and in
+    /// The install job; its progress arrives as calls of
+    /// `browser::on-chromium-install-progress` and in
     /// `browser::chromium::status` (`job`). Absent for `already-installed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,

@@ -6,11 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::RegisterFunction;
-use serde::Deserialize;
+use iii_sdk::{Deliver, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 
-use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
+use crate::client::Client;
 use crate::deadline::Deadline;
 use crate::types::probe::{ControlledTargetV1, LifecycleAcceptedV1, LifecycleEventV1};
 use crate::types::trace::strip_engine_fields;
@@ -19,9 +18,12 @@ pub(crate) const LIFECYCLE_FUNCTION_ID: &str = "integration-probe::turn-complete
 const READY_FUNCTION_ID: &str = "integration-probe::harness-ready";
 const TRACES_FUNCTION_ID: &str = "integration-probe::traces-changed";
 
-const LIFECYCLE_TRIGGER_TYPE: &str = "harness::turn-completed";
-const READY_TRIGGER_TYPE: &str = "harness::ready";
-const TRACE_TRIGGER_TYPE: &str = "trace";
+/// The harness's turn-completion event, filtered per session.
+const ON_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
+/// The harness's readiness event.
+const ON_READY_FN: &str = "harness::on-ready";
+/// The engine's span-store change event (hosted in `default`).
+const ON_SPAN_FN: &str = "observability::on-span";
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
@@ -29,15 +31,11 @@ pub(crate) struct CompletionObservation {
     pub event: LifecycleEventV1,
 }
 
+/// One observer the probe created, by the function it observes.
 #[derive(Clone)]
-struct BoundTrigger {
-    id: String,
-    trigger_type: &'static str,
-}
-
-#[derive(Deserialize)]
-struct RegisterTriggerResponse {
-    id: String,
+struct BoundObserver {
+    function_id: &'static str,
+    handle: ObserverHandle,
 }
 
 pub struct ScenarioProbe {
@@ -48,7 +46,7 @@ pub struct ScenarioProbe {
     ready_notify: Arc<tokio::sync::Notify>,
     trace_generation: Arc<AtomicU64>,
     trace_notify: Arc<tokio::sync::Notify>,
-    bindings: Mutex<Vec<BoundTrigger>>,
+    bindings: Mutex<Vec<BoundObserver>>,
     /// Every invocation payload the controlled function served, in arrival
     /// order. Probe-side WHOLE-RUN evidence: the serving process sees every
     /// execution regardless of which session (or no session at all — e.g. a
@@ -216,147 +214,109 @@ impl ScenarioProbe {
         self.target_response_notify.notify_waiters();
     }
 
-    /// Trigger ids are engine-local. Once that process restarts, discard the
-    /// stale ids before registering fresh observer bindings.
-    pub fn forget_observer_bindings(&self) -> anyhow::Result<()> {
-        self.bindings
-            .lock()
-            .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?
-            .clear();
+    /// Observers live in the engine. Once that process restarts, dispose
+    /// the probe's handles (the SDK would replay them) before observing anew.
+    pub async fn forget_observer_bindings(&self) -> anyhow::Result<()> {
+        let bindings = std::mem::take(
+            &mut *self
+                .bindings
+                .lock()
+                .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?,
+        );
+        for binding in bindings {
+            let _ = binding.handle.dispose().await;
+        }
         Ok(())
     }
 
-    /// Bind every observer through acknowledged engine RPCs. Because these
-    /// calls use the probe connection, each response is also a barrier for the
-    /// function registrations queued before it.
+    /// Observe the span store, this session's turn completions and the
+    /// harness's readiness. The span observer is engine-hosted, so awaiting it
+    /// is also a barrier for the function registrations queued before it; the
+    /// harness's observers stay `pending` until the harness registers its
+    /// functions and activate on their own.
     pub async fn bind_observers(&self, session_id: &str, deadline: Deadline) -> anyhow::Result<()> {
-        self.bind_engine_trigger(TRACE_TRIGGER_TYPE, TRACES_FUNCTION_ID, json!({}), deadline)
-            .await?;
-        self.bind_engine_trigger(
-            LIFECYCLE_TRIGGER_TYPE,
+        let spans = self.observe(
+            Source::function(ON_SPAN_FN).namespace("default"),
+            ON_SPAN_FN,
+            TRACES_FUNCTION_ID,
+        )?;
+        await_active(&spans, deadline).await?;
+        self.observe(
+            Source::function(ON_TURN_COMPLETED_FN)
+                .filters(json!({ "input.session_id": { "$eq": session_id } })),
+            ON_TURN_COMPLETED_FN,
             LIFECYCLE_FUNCTION_ID,
-            json!({ "session_id": session_id }),
-            deadline,
-        )
-        .await?;
-        self.bind_engine_trigger(READY_TRIGGER_TYPE, READY_FUNCTION_ID, json!({}), deadline)
-            .await?;
+        )?;
+        self.observe(
+            Source::function(ON_READY_FN),
+            ON_READY_FN,
+            READY_FUNCTION_ID,
+        )?;
         Ok(())
     }
 
-    /// Add a second lifecycle binding for direct children of `session_id`.
-    /// The root binding remains session-scoped; the parent filter captures
+    /// Add a second completion observer for direct children of `session_id`.
+    /// The root observer remains session-scoped; the parent filter captures
     /// every in-turn `harness::spawn` child without needing runtime child ids
-    /// before the first generation runs.
+    /// before the first generation runs. A spawned child's event names its
+    /// parent in `parent.session_id`, a displayed child's in
+    /// `parent_session_id`; the filter takes either.
     pub async fn bind_child_completion_observer(
         &self,
         parent_session_id: &str,
         deadline: Deadline,
     ) -> anyhow::Result<()> {
-        self.bind_engine_trigger(
-            LIFECYCLE_TRIGGER_TYPE,
+        let children = self.observe(
+            Source::function(ON_TURN_COMPLETED_FN).filters(json!({ "$or": [
+                { "input.parent.session_id": { "$eq": parent_session_id } },
+                { "input.parent_session_id": { "$eq": parent_session_id } },
+            ] })),
+            ON_TURN_COMPLETED_FN,
             LIFECYCLE_FUNCTION_ID,
-            json!({ "parent_session_id": parent_session_id }),
-            deadline,
-        )
-        .await?;
-        Ok(())
+        )?;
+        await_active(&children, deadline).await
     }
 
-    /// Deferred trigger replay cannot await the provider SDK's registration
-    /// acknowledgement because replay runs on that provider's read loop. Once
-    /// readiness proves the custom types exist, replace the deferred lifecycle
-    /// binding with an acknowledged active registration before any stimulus.
+    /// Once readiness proves the harness registered its functions, wait for
+    /// every completion observer to be active before any stimulus.
     pub async fn confirm_completion_binding(
         &self,
-        session_id: &str,
+        _session_id: &str,
         deadline: Deadline,
     ) -> anyhow::Result<()> {
-        let active_id = self
-            .bind_engine_trigger(
-                LIFECYCLE_TRIGGER_TYPE,
-                LIFECYCLE_FUNCTION_ID,
-                json!({ "session_id": session_id }),
-                deadline,
-            )
-            .await?;
-        let stale = {
-            let mut bindings = self
-                .bindings
-                .lock()
-                .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?;
-            let stale = bindings
-                .iter()
-                .filter(|binding| {
-                    binding.trigger_type == LIFECYCLE_TRIGGER_TYPE && binding.id != active_id
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            bindings.retain(|binding| {
-                binding.trigger_type != LIFECYCLE_TRIGGER_TYPE || binding.id == active_id
-            });
-            stale
-        };
-        for binding in stale {
-            self.unregister_binding(&binding, deadline).await?;
+        let completions = self
+            .bindings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?
+            .iter()
+            .filter(|binding| binding.function_id == ON_TURN_COMPLETED_FN)
+            .map(|binding| binding.handle.clone())
+            .collect::<Vec<_>>();
+        for handle in completions {
+            await_active(&handle, deadline).await?;
         }
         Ok(())
     }
 
-    async fn bind_engine_trigger(
+    /// Observe `source` with `target`, delivering the event itself.
+    fn observe(
         &self,
-        trigger_type: &'static str,
+        source: Source,
         function_id: &'static str,
-        config: Value,
-        deadline: Deadline,
-    ) -> anyhow::Result<String> {
-        let response = self
+        target: &'static str,
+    ) -> anyhow::Result<ObserverHandle> {
+        let handle = self
             .client
-            .call_with_deadline(
-                "engine::register_trigger",
-                json!({
-                    "trigger_type": trigger_type,
-                    "function_id": function_id,
-                    "config": config
-                }),
-                deadline,
-                DEFAULT_CALL_TIMEOUT_MS,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-        let registered: RegisterTriggerResponse =
-            serde_json::from_value(response).map_err(|error| {
-                anyhow::anyhow!("invalid {trigger_type} registration response: {error}")
-            })?;
-        let id = registered.id;
+            .inner()
+            .observe(source.deliver(Deliver::Output), target);
         self.bindings
             .lock()
             .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?
-            .push(BoundTrigger {
-                id: id.clone(),
-                trigger_type,
+            .push(BoundObserver {
+                function_id,
+                handle: handle.clone(),
             });
-        Ok(id)
-    }
-
-    async fn unregister_binding(
-        &self,
-        binding: &BoundTrigger,
-        deadline: Deadline,
-    ) -> anyhow::Result<()> {
-        self.client
-            .call_with_deadline(
-                "engine::unregister_trigger",
-                json!({
-                    "id": binding.id,
-                    "trigger_type": binding.trigger_type
-                }),
-                deadline,
-                DEFAULT_CALL_TIMEOUT_MS,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-        Ok(())
+        Ok(handle)
     }
 
     pub async fn wait_until_ready(&self, deadline: Deadline) -> anyhow::Result<()> {
@@ -438,28 +398,34 @@ impl ScenarioProbe {
             .unwrap_or_default();
         let deadline = Deadline::after(SHUTDOWN_TIMEOUT);
         for binding in bindings.into_iter().rev() {
-            if let Err(error) = self
-                .client
-                .call_with_deadline(
-                    "engine::unregister_trigger",
-                    json!({
-                        "id": binding.id,
-                        "trigger_type": binding.trigger_type
-                    }),
-                    deadline,
-                    DEFAULT_CALL_TIMEOUT_MS,
-                )
+            match deadline
+                .timeout("observer cleanup", binding.handle.dispose())
                 .await
             {
-                tracing::warn!(
-                    trigger_type = binding.trigger_type,
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(
+                    function_id = binding.function_id,
                     %error,
-                    "integration observer trigger cleanup failed"
-                );
+                    "integration observer cleanup failed"
+                ),
+                Err(error) => tracing::warn!(
+                    function_id = binding.function_id,
+                    %error,
+                    "integration observer cleanup timed out"
+                ),
             }
         }
         self.client.shutdown().await;
     }
+}
+
+/// Wait until `handle` is active; fails with the observer's reason when the
+/// engine or the function's worker refused it.
+async fn await_active(handle: &ObserverHandle, deadline: Deadline) -> anyhow::Result<()> {
+    deadline
+        .timeout("observer activation", handle.ready())
+        .await?
+        .map_err(|error| anyhow::anyhow!("observer {} failed: {error}", handle.id()))
 }
 
 async fn wait_for_trace_generation(

@@ -50,7 +50,7 @@ pub struct Catalog {
     /// Why a configured bucket has no backend, by bucket.
     pub errors: HashMap<String, BucketError>,
     /// Why a bucket's notifications source is not running (the bucket
-    /// itself works; its object triggers do not fire).
+    /// itself works; its object events are not called).
     pub notification_errors: HashMap<String, String>,
 }
 

@@ -339,7 +339,7 @@ mod tests {
         for rel in &t.files {
             assert!(t.dir.join(&t.worker.dir).join(rel).is_file(), "{rel}");
         }
-        assert_eq!(t.next_steps, ["Call it: iii trigger my-worker::hello"]);
+        assert_eq!(t.next_steps, ["Call it: iii call my-worker::hello"]);
         assert!(t.dir.is_absolute() && t.dir.ends_with("worker-mini"));
     }
 

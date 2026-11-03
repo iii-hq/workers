@@ -11,7 +11,17 @@ use crate::types::model::AgentFunction;
 use crate::types::turn::{ExposeMode, FunctionPolicy, ResponseLanguage};
 
 /// The single generic invocation surface name (default exposure).
-pub const AGENT_TRIGGER_NAME: &str = "agent_trigger";
+pub const AGENT_CALL_NAME: &str = "agent_call";
+/// The name transcripts written before 0.26 give the same wrapper. Readers of
+/// stored assistant messages accept it.
+const STORED_AGENT_CALL_NAME: &str = "agent_trigger";
+
+/// Whether `name` is the generic invocation wrapper, under its current name or
+/// the one stored transcripts carry.
+pub fn is_agent_call_name(name: &str) -> bool {
+    name == AGENT_CALL_NAME || name == STORED_AGENT_CALL_NAME
+}
+
 /// The synthetic output-contract surface name (harness-consumed, never
 /// dispatched).
 pub const SUBMIT_RESULT_NAME: &str = "submit_result";
@@ -23,22 +33,23 @@ pub const SUBMIT_RESULT_NAME: &str = "submit_result";
 /// whatever they request. Enforcement is the ordinary dispatch gates — the
 /// same fail-closed globs every call already passes through.
 ///
-/// `engine::register_trigger` is deliberately NOT here. Walling it off left a
-/// leaf with no way to wait at all: it could not park on its own background
-/// job or its own compose operation, so an obedient child polled, and a
-/// resourceful one ran `shell::exec sleep` (MOT-4766 — 9 denied registrations
-/// and 176s of sleeping in one measured run). Arming a wake for your own
-/// session is the leaf's own work, not the control plane. The control-plane
-/// half of that function — a binding that mechanically calls some OTHER
-/// function — stays refused for leaves, by shape, in
-/// `functions::subscribe::reject_leaf_control_plane`. Unregistration stays
-/// walled off because it can reach another session's bindings; a leaf's wake
-/// is required to be self-limiting instead.
+/// `harness::observe` is deliberately NOT here. Walling it off left a leaf
+/// with no way to wait at all: it could not park on its own background job or
+/// its own compose operation, so an obedient child polled, and a resourceful
+/// one ran `shell::exec sleep` (MOT-4766 — 9 denied wakes and 176s of
+/// sleeping in one measured run). Arming a wake for your own session is the
+/// leaf's own work, not the control plane. The control-plane half of that
+/// tool — an observer that mechanically calls some OTHER function — stays
+/// refused for leaves, by shape, in
+/// `functions::observe::reject_leaf_control_plane`. Removal stays walled off
+/// because it can reach another session's observers, and so does the
+/// engine's observer surface; a leaf's wake is required to be self-limiting
+/// instead.
 pub const CONTROL_PLANE_DENY: [&str; 4] = [
     "harness::spawn",
     "harness::send",
-    "engine::unregister_trigger",
-    "engine::registered-triggers::*",
+    "harness::unobserve",
+    "engine::observers::*",
 ];
 
 /// Whether a session is a leaf — spawned to perform an assignment, rather than
@@ -182,15 +193,15 @@ fn build_set(patterns: &[String]) -> Option<GlobSet> {
     }
 }
 
-/// The single `agent_trigger` schema attached by default — the model triggers
+/// The single `agent_call` schema attached by default — the model calls
 /// any allowed function via `{ function, description, payload }`. The
 /// `description` label names the session's response language (unknown: the
 /// one the session context names), so a model never guesses one.
-pub fn agent_trigger_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
+pub fn agent_call_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
     AgentFunction {
-        name: AGENT_TRIGGER_NAME.to_string(),
+        name: AGENT_CALL_NAME.to_string(),
         description:
-            "Trigger any allowed iii function by id. Discover task-capability IDs with directory::search_functions (its `capabilities` entries always in English); \
+            "Call any allowed iii function by id. Discover task-capability IDs with directory::search_functions (its `capabilities` entries always in English); \
                       when `<discovery_assist>` is present, follow it. Fall back to engine::functions::list only \
                       when directory::search_functions is unavailable. \
                       Fixed-prefix inventory checks for a documented surface or after an install still apply. \
@@ -237,14 +248,14 @@ pub fn submit_result_schema(output_schema: Option<&Value>) -> AgentFunction {
 /// What a planned call resolves to once unwrapped from the assistant message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallKind {
-    /// An `agent_trigger` wrapper or a native call to a real iii function.
-    Trigger,
+    /// An `agent_call` wrapper or a native call to a real iii function.
+    Call,
     /// The synthetic `submit_result` — consumed by the harness.
     SubmitResult,
 }
 
 /// One function call extracted from an assistant message, with the
-/// `agent_trigger` wrapper unwrapped to the concrete target.
+/// `agent_call` wrapper unwrapped to the concrete target.
 #[derive(Debug, Clone)]
 pub struct PlannedCall {
     pub id: String,
@@ -254,7 +265,7 @@ pub struct PlannedCall {
 }
 
 /// Extract the planned calls from an assistant message in content order. In
-/// `agent_trigger` exposure the wrapper carries `{ function, description,
+/// `agent_call` exposure the wrapper carries `{ function, description,
 /// payload }`; in
 /// native exposure the block's `function_id` is the target directly.
 pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<PlannedCall> {
@@ -276,7 +287,7 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 continue;
             }
             let (target, mut payload) =
-                if function_id == AGENT_TRIGGER_NAME || expose == ExposeMode::AgentTrigger {
+                if is_agent_call_name(function_id) || expose == ExposeMode::AgentCall {
                     let target = arguments
                         .get("function")
                         .and_then(Value::as_str)
@@ -335,7 +346,7 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 id: id.clone(),
                 function_id: target,
                 arguments: payload,
-                kind: CallKind::Trigger,
+                kind: CallKind::Call,
             });
         }
     }
@@ -389,7 +400,7 @@ mod tests {
         FunctionPolicy {
             allow: allow.iter().map(|s| s.to_string()).collect(),
             deny: deny.iter().map(|s| s.to_string()).collect(),
-            expose: ExposeMode::AgentTrigger,
+            expose: ExposeMode::AgentCall,
         }
     }
 
@@ -421,24 +432,24 @@ mod tests {
     #[test]
     fn the_control_plane_deny_set_walls_off_orchestration_only() {
         // The leaf wall is ordinary deny globs: the orchestration ids (and the
-        // registered-triggers read surface, glob-matched) go dark while the
-        // data plane stays open. Deny-overrides-allow makes it final under `*`.
+        // engine's observer surface, glob-matched) go dark while the data
+        // plane stays open. Deny-overrides-allow makes it final under `*`.
         let mut p = policy(&["*"], &[]);
         p.deny = CONTROL_PLANE_DENY.iter().map(|s| s.to_string()).collect();
         let compiled = CompiledPolicy::from(Some(&p));
         for id in [
             "harness::spawn",
             "harness::send",
-            "engine::unregister_trigger",
-            "engine::registered-triggers::list",
-            "engine::registered-triggers::info",
+            "harness::unobserve",
+            "engine::observers::list",
+            "engine::observers::dispose",
         ] {
             assert!(!compiled.allows(id), "{id} must be walled off");
         }
-        // Registration is NOT walled off at dispatch: a leaf with no way to
-        // arm a wake polls or sleeps instead (MOT-4766). The control-plane
-        // half of it is refused by shape, in `functions::subscribe`.
-        assert!(compiled.allows("engine::register_trigger"));
+        // Observing is NOT walled off at dispatch: a leaf with no way to arm
+        // a wake polls or sleeps instead (MOT-4766). The control-plane half
+        // of it is refused by shape, in `functions::observe`.
+        assert!(compiled.allows("harness::observe"));
         assert!(is_leaf(&compiled, true), "a spawned child under the wall");
         for id in ["state::set", "database::execute", "harness::status"] {
             assert!(compiled.allows(id), "{id} is data-plane and must survive");
@@ -506,34 +517,34 @@ mod tests {
     }
 
     #[test]
-    fn agent_trigger_call_is_unwrapped_to_target() {
+    fn agent_call_call_is_unwrapped_to_target() {
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({ "function": "shell::run", "payload": { "cmd": "ls" } }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function_id, "shell::run");
-        assert_eq!(calls[0].kind, CallKind::Trigger);
+        assert_eq!(calls[0].kind, CallKind::Call);
         assert_eq!(calls[0].arguments, json!({ "cmd": "ls" }));
     }
 
     // A wrapper call whose arguments carry no resolvable `function` (null —
     // e.g. a local model emitted unparseable args the provider degraded)
     // keeps the wrapper name as its target: the dispatch loop matches that
-    // sentinel and fails locally instead of triggering `agent_trigger` on
+    // sentinel and fails locally instead of calling `agent_call` on
     // the engine (a guaranteed function_not_found).
     #[test]
     fn wrapper_call_without_target_keeps_wrapper_sentinel() {
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: Value::Null,
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
-        assert_eq!(calls[0].function_id, AGENT_TRIGGER_NAME);
-        assert_eq!(calls[0].kind, CallKind::Trigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
+        assert_eq!(calls[0].function_id, AGENT_CALL_NAME);
+        assert_eq!(calls[0].kind, CallKind::Call);
     }
 
     #[test]
@@ -550,7 +561,7 @@ mod tests {
         });
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({
                 "function": "state::set",
                 "payload": { "scope": "s", "key": "k" },
@@ -558,39 +569,39 @@ mod tests {
                 "_invalid": invalid
             }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         assert_eq!(calls[0].function_id, "state::set");
         assert_eq!(calls[0].arguments["_partial"], true);
         assert_eq!(calls[0].arguments["_invalid"], invalid);
         assert_eq!(calls[0].arguments["scope"], "s");
-        assert!(crate::trigger::arguments_degraded(&calls[0].arguments));
+        assert!(crate::call::arguments_degraded(&calls[0].arguments));
     }
 
     #[test]
-    fn flattened_agent_trigger_args_are_hoisted_into_payload() {
+    fn flattened_agent_call_args_are_hoisted_into_payload() {
         // The model put the target's arguments beside `function` instead of
         // inside `payload` — they must reach the target, not vanish into {}.
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({
-                "function": "engine::register_trigger",
-                "description": "Registering the state trigger",
-                "trigger_type": "state",
-                "config": { "key": "k" }
+                "function": "harness::observe",
+                "description": "Observing the state key",
+                "function_id": "state::on-changed",
+                "filters": { "input.key": { "$eq": "k" } }
             }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
-        assert_eq!(calls[0].function_id, "engine::register_trigger");
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
+        assert_eq!(calls[0].function_id, "harness::observe");
         assert_eq!(
             calls[0].arguments,
-            json!({ "trigger_type": "state", "config": { "key": "k" } })
+            json!({ "function_id": "state::on-changed", "filters": { "input.key": { "$eq": "k" } } })
         );
     }
 
     #[test]
-    fn agent_trigger_schema_requires_a_bounded_user_facing_description() {
-        let schema = agent_trigger_schema(None);
+    fn agent_call_schema_requires_a_bounded_user_facing_description() {
+        let schema = agent_call_schema(None);
         let description = &schema.parameters["properties"]["description"];
         assert_eq!(description["type"], "string");
         assert_eq!(description["minLength"], 1);
@@ -601,18 +612,18 @@ mod tests {
     }
 
     #[test]
-    fn agent_trigger_schema_names_the_response_language() {
+    fn agent_call_schema_names_the_response_language() {
         let english = ResponseLanguage {
             code: "eng".into(),
             name: "English".into(),
         };
-        let named = agent_trigger_schema(Some(&english));
+        let named = agent_call_schema(Some(&english));
         assert_eq!(
             named.parameters["properties"]["description"]["description"],
             "Short user-facing description of the action, written in English. Describe the \
              work, not the function id."
         );
-        let unknown = agent_trigger_schema(None);
+        let unknown = agent_call_schema(None);
         let text = unknown.parameters["properties"]["description"]["description"]
             .as_str()
             .unwrap();
@@ -624,8 +635,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_trigger_schema_explains_serial_and_bulk_dispatch() {
-        let description = agent_trigger_schema(None).description;
+    fn agent_call_schema_explains_serial_and_bulk_dispatch() {
+        let description = agent_call_schema(None).description;
         assert!(
             description.contains("one assistant response execute sequentially in content order")
         );
@@ -634,8 +645,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_trigger_schema_defaults_discovery_to_directory_search() {
-        let description = agent_trigger_schema(None).description;
+    fn agent_call_schema_defaults_discovery_to_directory_search() {
+        let description = agent_call_schema(None).description;
         let primary = description
             .find("Discover task-capability IDs with directory::search_functions")
             .expect("tool description makes directory search the default discovery path");
@@ -652,26 +663,29 @@ mod tests {
     }
 
     #[test]
-    fn native_shaped_call_under_agent_trigger_exposure_keeps_arguments() {
+    fn native_shaped_call_under_agent_call_exposure_keeps_arguments() {
         // The model hallucinated the target id as the tool name with real args.
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: "engine::triggers::info".into(),
-            arguments: json!({ "id": "state" }),
+            function_id: "engine::observers::list".into(),
+            arguments: json!({ "function_id": "state::on-changed" }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
-        assert_eq!(calls[0].function_id, "engine::triggers::info");
-        assert_eq!(calls[0].arguments, json!({ "id": "state" }));
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
+        assert_eq!(calls[0].function_id, "engine::observers::list");
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "function_id": "state::on-changed" })
+        );
     }
 
     #[test]
     fn stringified_payload_object_is_recovered() {
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({ "function": "shell::run", "payload": "{\"cmd\":\"ls\"}" }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         assert_eq!(calls[0].arguments, json!({ "cmd": "ls" }));
     }
 
@@ -682,10 +696,10 @@ mod tests {
         let payload = "{\"key\":\"a\",\"value\":{\"x\":1}},\"loose_ends\":[\"l\"]}";
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({ "function": "state::set", "payload": payload }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         let args = &calls[0].arguments;
         assert_eq!(args["key"], "a");
         assert_eq!(args["_partial"], true);
@@ -701,7 +715,7 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("\"loose_ends\":[\"l\"]}"));
-        assert!(crate::trigger::arguments_degraded(args));
+        assert!(crate::call::arguments_degraded(args));
 
         // Whitespace between the object and the text: the offset and the
         // window point at the text, not at the end of the object.
@@ -709,10 +723,10 @@ mod tests {
         let payload = format!("{{\"key\":\"a\"}}{gap}}}");
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({ "function": "state::set", "payload": payload }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         let invalid = &calls[0].arguments["_invalid"];
         assert_eq!(invalid["offset"], payload.len() - 1);
         let context = invalid["context"].as_str().unwrap();
@@ -723,21 +737,21 @@ mod tests {
         // it cannot be told apart from an object closed too soon.
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({ "function": "state::set", "payload": "{\"key\":\"a\",\"value\":{\"x\":1}}}" }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
-        assert!(crate::trigger::arguments_degraded(&calls[0].arguments));
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
+        assert!(crate::call::arguments_degraded(&calls[0].arguments));
     }
 
     #[test]
     fn stringified_payload_with_only_whitespace_around_is_recovered() {
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({ "function": "state::set", "payload": " {\"key\":\"a\",\"value\":{\"x\":1}}\n\t " }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         assert_eq!(
             calls[0].arguments,
             json!({ "key": "a", "value": { "x": 1 } })
@@ -748,10 +762,10 @@ mod tests {
     fn non_object_string_payload_is_left_verbatim() {
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: AGENT_TRIGGER_NAME.into(),
+            function_id: AGENT_CALL_NAME.into(),
             arguments: json!({ "function": "shell::run", "payload": "not json" }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         assert_eq!(calls[0].arguments, json!("not json"));
     }
 
@@ -774,7 +788,7 @@ mod tests {
             function_id: SUBMIT_RESULT_NAME.into(),
             arguments: json!({ "category": "billing" }),
         }]);
-        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let calls = plan_calls(&msg, ExposeMode::AgentCall);
         assert_eq!(calls[0].kind, CallKind::SubmitResult);
         assert_eq!(calls[0].arguments, json!({ "category": "billing" }));
     }

@@ -158,7 +158,7 @@ pub fn register_all(
             let runtime = runtime.clone();
             async move { runtime.enqueue(input).await }
         })
-        .description("Internal provider for TriggerAction::Enqueue"),
+        .description("Internal provider for CallAction::Enqueue"),
     );
 
     let publish_adapter = adapter.clone();
@@ -425,6 +425,7 @@ mod tests {
     use crate::subscriber_config::SubscriberQueueConfig;
     use serde_json::json;
     use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
 
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
@@ -475,17 +476,16 @@ mod tests {
             });
         }
 
-        async fn subscribe_target(
+        async fn subscribe(
             &self,
             _topic: &str,
             _id: &str,
-            _target: crate::trigger::SubscriberTarget,
-            _condition_function_id: Option<String>,
+            _subscriber: crate::subscribers::Subscriber,
             _queue_config: Option<SubscriberQueueConfig>,
         ) {
         }
 
-        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+        async fn unsubscribe(&self, _topic: &str, _id: &str, _retain: Duration) {}
 
         async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
             self.calls.lock().unwrap().push(Call::RedriveDlq {

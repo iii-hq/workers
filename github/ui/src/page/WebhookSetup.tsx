@@ -218,7 +218,7 @@ export function WebhookSetup({ host }: { host: Host }) {
       setChecking(true)
       const started = Date.now()
       try {
-        const next = await host.iii.trigger<SetupStatus>(STATUS_FN, {}, { timeoutMs: 20_000 })
+        const next = await host.iii.call<SetupStatus>(STATUS_FN, {}, { timeoutMs: 20_000 })
         await new Promise((resolve) =>
           setTimeout(resolve, Math.max(0, MIN_CHECKING_MS - (Date.now() - started))),
         )
@@ -296,7 +296,7 @@ export function WebhookSetup({ host }: { host: Host }) {
     const present = installing ? 'Installing' : 'Updating'
     const functionId = installing ? 'compose::add' : 'compose::update'
     const operationId = `github-${action}-${worker}-${crypto.randomUUID().slice(0, 8)}`
-    const admitted = await host.iii.trigger(
+    const admitted = await host.iii.call(
       functionId,
       { workers: [worker], operation_id: operationId },
       { timeoutMs: 60_000 },
@@ -304,7 +304,7 @@ export function WebhookSetup({ host }: { host: Host }) {
     assertComposeOk(`${present} ${worker}`, admitted)
     const deadline = Date.now() + OPERATION_TIMEOUT_MS
     while (mounted.current) {
-      const snapshot = await host.iii.trigger<OperationSnapshot>(
+      const snapshot = await host.iii.call<OperationSnapshot>(
         'compose::operation',
         { operation_id: operationId },
         { timeoutMs: 15_000 },
@@ -342,14 +342,14 @@ export function WebhookSetup({ host }: { host: Host }) {
     })
     if (!ok) return
     await run('enable', async () => {
-      const next = await host.iii.trigger<SetupStatus>(ENABLE_FN, { enabled }, { timeoutMs: 30_000 })
+      const next = await host.iii.call<SetupStatus>(ENABLE_FN, { enabled }, { timeoutMs: 30_000 })
       if (next.restart_required) await restartGithub()
     })
   }
 
   /** Unconfirmed: callers confirm first (Enable/Disable or restartConfirmed). */
   const restartGithub = async () => {
-    const result = await host.iii.trigger(
+    const result = await host.iii.call(
       'compose::restart',
       { container: GITHUB_CONTAINER },
       { timeoutMs: 180_000 },
@@ -398,7 +398,7 @@ export function WebhookSetup({ host }: { host: Host }) {
             disabled={busy !== null}
             onClick={() =>
               void run('listener', () =>
-                host.iii.trigger(LISTENER_FN, { port: fix.port }, { timeoutMs: 30_000 }),
+                host.iii.call(LISTENER_FN, { port: fix.port }, { timeoutMs: 30_000 }),
               )
             }
           >

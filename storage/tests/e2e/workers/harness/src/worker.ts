@@ -1,6 +1,7 @@
-// Entry point: connect to the engine, register two sink functions for
-// object-created / object-deleted dispatches, run the suite, emit the
-// HARNESS_DONE sentinel that run-tests.sh greps for, then drain + shutdown.
+// Entry point: connect to the engine, register two sink functions that
+// observe storage::on-object-created / storage::on-object-deleted, run the
+// suite, emit the HARNESS_DONE sentinel that run-tests.sh greps for, then
+// shutdown.
 //
 // The harness is NOT registered in the engine's worker manifest — it runs
 // as a plain host node process and connects to the engine over WebSocket
@@ -33,14 +34,14 @@ function parseProviders(raw: string, varName: string): Provider[] {
 
 const PROVIDERS_RAW = process.env.HARNESS_PROVIDERS ?? 'local';
 const PROVIDERS = parseProviders(PROVIDERS_RAW, 'HARNESS_PROVIDERS');
-// Optional subset of providers whose trigger plumbing is wired in this
-// harness deployment. Defaults to PROVIDERS (fan triggers across every
-// selected provider) so existing callers don't need to know about it.
-// CI sets HARNESS_TRIGGER_PROVIDERS=local,s3 to keep r2 trigger ERRORs
+// Optional subset of providers whose object-event plumbing is wired in
+// this harness deployment. Defaults to PROVIDERS (fan object events across
+// every selected provider) so existing callers don't need to know about it.
+// CI sets HARNESS_EVENT_PROVIDERS=local,s3 to keep r2 object-event ERRORs
 // (no Cloudflare Queue plumbing in this harness) from failing the run.
-const TRIGGER_PROVIDERS_RAW = process.env.HARNESS_TRIGGER_PROVIDERS;
-const TRIGGER_PROVIDERS: Provider[] | undefined = TRIGGER_PROVIDERS_RAW
-  ? parseProviders(TRIGGER_PROVIDERS_RAW, 'HARNESS_TRIGGER_PROVIDERS')
+const EVENT_PROVIDERS_RAW = process.env.HARNESS_EVENT_PROVIDERS;
+const EVENT_PROVIDERS: Provider[] | undefined = EVENT_PROVIDERS_RAW
+  ? parseProviders(EVENT_PROVIDERS_RAW, 'HARNESS_EVENT_PROVIDERS')
   : undefined;
 
 const iii = registerWorker(URL);
@@ -49,18 +50,18 @@ const runner = new Runner({
   reportPath: REPORT_PATH,
   filterCase: FILTER,
   providers: PROVIDERS,
-  triggerProviders: TRIGGER_PROVIDERS,
+  eventProviders: EVENT_PROVIDERS,
 });
 
 iii.registerFunction(
   'harness::on_object_created',
   async (payload: unknown) => runner.onObjectCreated(payload),
-  { description: 'Sink for storage::object-created dispatches.' },
+  { description: 'Observer target for storage::on-object-created events.' },
 );
 iii.registerFunction(
   'harness::on_object_deleted',
   async (payload: unknown) => runner.onObjectDeleted(payload),
-  { description: 'Sink for storage::object-deleted dispatches.' },
+  { description: 'Observer target for storage::on-object-deleted events.' },
 );
 
 console.info('harness: registered, kicking off suite', {
@@ -92,20 +93,10 @@ console.info('harness: registered, kicking off suite', {
     console.log(`HARNESS_DONE: ${RED}FAIL${RESET} 0/0`);
     exitCode = 1;
   }
-  // runAll() called runner.unregisterAllTriggers() which writes UnregisterTrigger
-  // messages to the websocket synchronously. The SDK's Trigger.unregister() is
-  // fire-and-forget — sendMessage queues bytes but doesn't await the engine ACK.
-  // Without this drain step, process.exit() terminates before the OS flushes
-  // the TCP send buffer, the storage worker never sees the unregister, and its
-  // trigger registry keeps a zombie subscriber wired to the harness function id
-  // that's about to disappear — causing the engine to log "Function not found:
-  // harness::on_object_*" on every subsequent dispatch until the next run
-  // re-registers a fresh subscription.
-  //
-  // 200ms grace lets the OS flush ws bytes; iii.shutdown() then closes the ws
-  // and drains OTel queues. iii.shutdown() itself does NOT await the ws close
-  // handshake, hence the explicit delay.
-  await new Promise((r) => setTimeout(r, 200));
+  // A completed runAll() disposed every observer it created and awaited the
+  // engine's confirmation, so nothing still targets the sink functions that
+  // disappear with this process. iii.shutdown() closes the ws and drains
+  // OTel queues.
   await iii.shutdown();
   process.exit(exitCode);
 })();
