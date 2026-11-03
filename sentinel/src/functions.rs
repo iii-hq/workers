@@ -78,6 +78,11 @@ pub const GROUPS_HISTORY_DESC: &str = "Every move a group has made, newest first
 pub const DIAGNOSES_LIST_ID: &str = "sentinel::diagnoses::list";
 pub const DIAGNOSES_LIST_DESC: &str = "List every diagnosis recorded against a group, newest first. Each recording is a version and none are overwritten, so the same failure diagnosed twice can be compared.";
 
+pub const INVESTIGATE_MANY_ID: &str = "sentinel::investigate_many";
+pub const INVESTIGATE_MANY_DESC: &str = "Investigate 2 to 5 issues in one read-only session using an installed profile and a required idempotency request_id. Overlapping active investigations are refused atomically.";
+pub const SOURCE_READ_ID: &str = "sentinel::source::read";
+pub const SOURCE_READ_DESC: &str = "Read up to 200 lines of a regular source file jailed to a Sentinel project mapped to an authorized investigation member. Session identity is mandatory; absolute paths, traversal and symlinks are refused.";
+
 pub const INVESTIGATE_ID: &str = "sentinel::investigate";
 pub const INVESTIGATE_DESC: &str = "Open an investigation on a group: a harness session beside the page that starts from the frozen evidence. Mode assisted runs a first pass immediately; mode chat only seats the evidence and waits for a person. A first pass already running is returned rather than duplicated.";
 pub const INVESTIGATIONS_GET_ID: &str = "sentinel::investigations::get";
@@ -308,6 +313,40 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
             async move { deps.service.diagnoses(request).await.map_err(Into::into) }
         })
         .description(DIAGNOSES_LIST_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        SOURCE_READ_ID,
+        RegisterFunction::new_async(
+            move |request: crate::investigation::source::SourceReadRequest| {
+                let deps = current.clone();
+                async move {
+                    let caller = Caller {
+                        session_id: iii_helpers::observability::get_baggage_entry("iii.session.id"),
+                        turn_id: iii_helpers::observability::get_baggage_entry("iii.message.id"),
+                    };
+                    deps.investigations
+                        .source_read(caller, request)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            },
+        )
+        .description(SOURCE_READ_DESC),
+    );
+    let current = deps.clone();
+    iii.register_function(
+        INVESTIGATE_MANY_ID,
+        RegisterFunction::new_async(move |request: crate::InvestigateManyRequestV1| {
+            let deps = current.clone();
+            async move {
+                let outcome = deps.investigations.investigate_many(request).await?;
+                broadcast(&deps, outcome.events).await;
+                Ok::<crate::InvestigateManyResponseV1, iii_sdk::errors::Error>(outcome.value)
+            }
+        })
+        .description(INVESTIGATE_MANY_DESC),
     );
 
     // ── investigation ───────────────────────────────────────────────────
@@ -709,6 +748,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
             DIAGNOSES_LIST_DESC,
         ),
         spec::<InvestigateRequestV1, InvestigateResponseV1>(INVESTIGATE_ID, INVESTIGATE_DESC),
+        spec::<crate::InvestigateManyRequestV1, crate::InvestigateManyResponseV1>(
+            INVESTIGATE_MANY_ID,
+            INVESTIGATE_MANY_DESC,
+        ),
+        spec::<
+            crate::investigation::source::SourceReadRequest,
+            crate::investigation::source::SourceReadResponse,
+        >(SOURCE_READ_ID, SOURCE_READ_DESC),
         spec::<InvestigationGetRequestV1, InvestigationGetResponseV1>(
             INVESTIGATIONS_GET_ID,
             INVESTIGATIONS_GET_DESC,
@@ -760,6 +807,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
 /// or a page can explain a failure — and they are the one place the
 /// read-only rule does not hold: `github::*` can merge and create, and
 /// `web::fetch` can POST.
+pub const JOINT_ALLOW: [&str; 2] = [DIAGNOSIS_RECORD_ID, SOURCE_READ_ID];
+
 pub const INVESTIGATION_ALLOW: [&str; 13] = [
     "coder::info",
     "coder::read-file",
@@ -778,7 +827,8 @@ pub const INVESTIGATION_ALLOW: [&str; 13] = [
 
 /// Denied outright. Deny wins over allow in the harness policy, so a function
 /// added to this worker later is refused until somebody decides otherwise.
-pub const INVESTIGATION_DENY: [&str; 20] = [
+pub const INVESTIGATION_DENY: [&str; 22] = [
+    SOURCE_READ_ID,
     "shell::*",
     "state::*",
     "queue::*",
@@ -793,6 +843,7 @@ pub const INVESTIGATION_DENY: [&str; 20] = [
     "router::*",
     "sentinel::groups::*",
     "sentinel::investigate",
+    INVESTIGATE_MANY_ID,
     "sentinel::investigations::*",
     "sentinel::on-*",
     "sentinel::ingest",

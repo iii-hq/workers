@@ -1678,6 +1678,7 @@ dependencies = [
  "iii-console-ui",
  "iii-helpers",
  "iii-sdk",
+ "libc",
  "regex",
  "rusqlite",
  "schemars",

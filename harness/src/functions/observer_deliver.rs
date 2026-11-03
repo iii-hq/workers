@@ -892,12 +892,19 @@ fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
         .source_text()
         .map(|source| format!(" observing {source}"))
         .unwrap_or_default();
+    // Only a wake that parks the session must be dropped once its writes landed.
+    let parked = if crate::bindings::is_armed_wake(binding, AgentMessage::now_ms()) {
+        " If that read shows every write the condition awaits has already landed, unobserve \
+         the new observer before answering: an armed one-shot wake keeps this session parked."
+    } else {
+        ""
+    };
     format!(
         "[notification] binding {}{label}{watch} fired but was NOT delivered: {reason}. The \
          binding stays armed and every fire will keep skipping until the condition call \
          succeeds. If the condition is misconfigured, unobserve it, observe again corrected, \
          and then read the watched state once — events from before the new observer will \
-         never reach it.",
+         never reach it.{parked}",
         binding.id
     )
 }
@@ -1223,6 +1230,10 @@ mod tests {
             text.contains("read the watched state once"),
             "the reconcile step is the half agents keep missing: {text}"
         );
+        assert!(
+            text.contains("unobserve the new observer before answering"),
+            "an armed one-shot wake that can no longer fire keeps the session parked: {text}"
+        );
 
         // A runaway reason is bounded, never dropped.
         let huge = Skip {
@@ -1233,6 +1244,30 @@ mod tests {
         let text = condition_failure_text(&b, &huge);
         assert!(text.contains("…(truncated)"), "{text}");
         assert!(text.chars().count() < 1200, "{}", text.chars().count());
+    }
+
+    /// Prevents: telling the owner to unobserve a working observer. Only an
+    /// armed one-shot `harness::send` wake parks the session; a recurring
+    /// binding or a function-call target keeps the general recovery step only.
+    #[test]
+    fn only_a_parking_wake_is_told_to_unobserve_after_the_reconcile_read() {
+        let skip = Skip {
+            gate: "condition-error",
+            reason: "boom".into(),
+            retire: false,
+        };
+        let mut recurring = wake_binding("state::on-changed");
+        recurring.lifecycle.once = false;
+        let mut call = wake_binding("state::on-changed");
+        call.target = crate::bindings::BindingTarget::new("fp::pipe");
+        for b in [recurring, call] {
+            let text = condition_failure_text(&b, &skip);
+            assert!(text.contains("read the watched state once"), "{text}");
+            assert!(
+                !text.contains("unobserve the new observer before answering"),
+                "{text}"
+            );
+        }
     }
 
     #[test]

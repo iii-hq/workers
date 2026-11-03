@@ -1,13 +1,13 @@
 {
   "commit": "d9ac5f2d183a6fbf79b3bac445a97a9c3e761118",
   "files": {
-    "agents/ade-worker-builder.md": "60b5e4a294716e67fd658256e578e0c564cbc7a04a78d4ecd28754ad5705b9d2",
+    "agents/ade-worker-builder.md": "d14007ed341b34d853b0b3d3207725b1fd0887d97cae4b3eeb8cf79962533150",
     "agents/agent-profile-creator.md": "a34453621e8d68acdce88f07b063a6ea6149fa2ca416e4abbf76a009068879af",
-    "agents/backend-engineer.md": "68f0bda80dd629af48b8ce4603d097acf13af111c96992aaf0790fff43a9d43e",
-    "agents/frontend-engineer.md": "8c5f7e78fa4947c85b98fa13c5573aaee6370524e2f0de0b00670f6b7a28d7a1",
-    "agents/tech-lead.md": "69a9472e474744b2bfa8107a92e0ed15760bf1814883286f81e1f45d1438c542",
-    "skills/harness/ade-worker-design/console-design.md": "9407f60c4ce7063dea7923825e8f3d7cfa0af620ebd9e623a1616b7eacfd11d3",
-    "skills/harness/ade-worker-design/console-injectable-ui.md": "57e5cb9248fec24abb13649796389542e22b957e12e51eabed927e7dce5464f8",
+    "agents/backend-engineer.md": "e0de797450bbbbd5a6997b7a2836d6dd07fe4b51cfbc0d25f92131f89a2d26b3",
+    "agents/frontend-engineer.md": "40680ef24f6e4928b1172885331dbbc68d612d57aa36417278350364d9c42408",
+    "agents/tech-lead.md": "dbf888ef257ee2207fca1c2168465bf24905cf79f6c24e6896856bc218dccb1c",
+    "skills/harness/ade-worker-design/console-design.md": "5086359ef9845c648812e607ee2642b2e05579163d7e770c3973777ca119aa5c",
+    "skills/harness/ade-worker-design/console-injectable-ui.md": "ce83e47c9202425a92d16012308be4affe2475277102c8004173acf4756a62bc",
     "skills/harness/ade-worker-design/index.md": "50c4de466a1e57eb4b499b5e2fce736acf1a1188b0fe74b66d21bdc701c7dc03",
     "skills/harness/ade-worker-design/patterns.md": "43b2f8e69c45203c7785892b01c080e19737cbbf9d4df3643d7d0ee338e291e3",
     "skills/harness/frontend/frontend-testing.md": "bcdbf91e7d5e68adac93b53b2f7f37df2983661d55c380319fa9e352a562430b",
@@ -20,7 +20,7 @@
     "skills/harness/frontend/web-accessibility.md": "3d2f8dbbe09069bd317fcd785e18117051371831fe72f2e079ee1ba441c61df3",
     "skills/harness/frontend/web-performance.md": "90f2fef8197ae22a4800b0bef24bd12790cbdc7c8801397cbd449e8dfb8c46be",
     "skills/harness/iii-node/configuration.md": "21be3a299382757994cd1f9bf34df9c9d4930fe27818e44b7ff7ce99412ff6c3",
-    "skills/harness/iii-node/index.md": "66538b395fb9c656751bcfe09b8b3a136ebc002b201b6187b4bd93cb5fb4bf80",
+    "skills/harness/iii-node/index.md": "e25b76926226241eb08c7c95f0ac03ca038f69995b8688dd250b9032ba9555d6",
     "skills/harness/orchestration/index.md": "9176a7021d21604178ce91407a8794e5e5f0ece29d4d2a5a5804f651a3a9f492",
     "skills/harness/orchestration/report.md": "3814911aa2b2711903ad4afadd9cd01a949b4f928178689f57e8016a4a1e6a4b"
   },

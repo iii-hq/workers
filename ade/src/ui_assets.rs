@@ -746,7 +746,7 @@ impl Processor {
 
 /// Register `console::ui::asset` and `console::ui::on-assets-changed` with
 /// their observer hooks, and spawn the queue consumer. Returns the registry
-/// the HTTP routes and `console::ui-manifest` read from, plus the control
+/// the HTTP routes and `ade::ui-manifest` read from, plus the control
 /// handle the configuration module feeds the per-worker toggles through.
 pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     let registry = Arc::new(UiRegistry::default());

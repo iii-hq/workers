@@ -1982,7 +1982,6 @@ function resolveEmptyState(
   const base: EmptyStateProps = {
     variant: 'ready',
     density,
-    stages: harnessStatus.stages,
     errorMessage: harnessStatus.error,
     onInstallHarness: harnessStatus.install,
     onRetryInstall: harnessStatus.retry,

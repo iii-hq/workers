@@ -122,8 +122,8 @@ export function useMentionProviders(): MentionProvidersSnapshot {
 }
 
 /**
- * Reload the provider list the moment a worker finishes joining or
- * leaving, so a freshly added worker's `@name` shows up without a refresh.
+ * Reload the provider list the moment a worker connects, registers, or
+ * leaves, so a freshly added worker's `@name` shows up without a refresh.
  */
 export function useMentionProviderRefresh(enabled: boolean): void {
   useWorkersChanged({

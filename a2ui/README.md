@@ -24,7 +24,7 @@ Call `a2ui::generate` from a Harness turn. The Harness hook supplies the authori
 }
 ```
 
-The call returns a compact receipt such as `{ "surface_id": "deployment-approval", "revision": 3, "component_count": 11, "page": "a2ui" }`. `page` is the console page id: an agent opens it with `console::workspace::open { screen: "ext:a2ui" }`. The Console keeps that receipt visible in the chat feed and expands it into the full surface on selection, while the A2UI page keeps every surface in the active conversation live by observing `state::on-changed` filtered on the session's own entry (`{ "input.scope": { "$eq": "a2ui" }, "input.key": { "$eq": <session_id> } }`).
+The call returns a compact receipt such as `{ "surface_id": "deployment-approval", "revision": 3, "component_count": 11, "page": "a2ui" }`. `page` is the console page id: an agent opens it with `ade::workspace::open { screen: "ext:a2ui" }`. The Console keeps that receipt visible in the chat feed and expands it into the full surface on selection, while the A2UI page keeps every surface in the active conversation live by observing `state::on-changed` filtered on the session's own entry (`{ "input.scope": { "$eq": "a2ui" }, "input.key": { "$eq": <session_id> } }`).
 
 Patch an existing surface with another natural-language request. Supplying `expected_revision` prevents an older composition from overwriting a newer edit:
 

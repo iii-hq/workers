@@ -137,7 +137,7 @@ describe('workspace layout ring', () => {
 
     await settle(1_000)
     expect(observers).toEqual([
-      expect.objectContaining({ source: 'console::workspace::on-changed' }),
+      expect.objectContaining({ source: 'ade::workspace::on-changed' }),
     ])
   })
 

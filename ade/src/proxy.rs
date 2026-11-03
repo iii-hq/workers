@@ -21,8 +21,8 @@
 //!    here (not just in the SPA) means stale/cached bundles can't pollute
 //!    `engine::functions::list` either.
 //! 3. A `registerfunction` for one of the functions this worker hosts
-//!    (`console::ui::*`, `console::workspace::on-changed`,
-//!    `console::compose::on-changed`) is dropped (see
+//!    (`console::ui::*`, `ade::workspace::on-changed`,
+//!    `ade::compose::on-changed`) is dropped (see
 //!    [`is_provider_registration`]). A function has one host per namespace
 //!    and pages share this worker's: a page that registered
 //!    `console::ui::asset` first would receive every worker's UI asset
@@ -451,11 +451,11 @@ mod tests {
 
     #[test]
     fn stamp_adds_internal_metadata_when_absent() {
-        let wire = r#"{"type":"registerfunction","id":"console::harness-watch::r0::console-abc"}"#;
+        let wire = r#"{"type":"registerfunction","id":"ade::harness-watch::r0::console-abc"}"#;
         let out = stamp_internal_registration(wire).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["metadata"]["internal"], serde_json::json!(true));
-        assert_eq!(v["id"], "console::harness-watch::r0::console-abc");
+        assert_eq!(v["id"], "ade::harness-watch::r0::console-abc");
     }
 
     #[test]
@@ -553,8 +553,8 @@ mod tests {
             "console::ui::asset",
             "console::ui::on-assets-changed",
             "console::ui::anything-else",
-            "console::workspace::on-changed",
-            "console::compose::on-changed",
+            "ade::workspace::on-changed",
+            "ade::compose::on-changed",
         ] {
             let wire = format!(r#"{{"type":"registerfunction","id":"{id}"}}"#);
             assert!(is_provider_registration(&wire), "{id} was forwarded");
@@ -564,7 +564,7 @@ mod tests {
             r#"{"type":"registerfunction","id":"iii::console::ui-assets::console-1"}"#
         ));
         assert!(!is_provider_registration(
-            r#"{"type":"registerfunction","id":"console::workspace::list"}"#
+            r#"{"type":"registerfunction","id":"ade::workspace::list"}"#
         ));
         // Payload mentions it, but the frame is a different type — forward.
         assert!(!is_provider_registration(

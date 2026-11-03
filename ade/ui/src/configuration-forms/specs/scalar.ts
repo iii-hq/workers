@@ -146,7 +146,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
             'sandbox_image',
             'Image',
             [],
-            "Booted when a session names no image. The list is iii-sandbox's custom_images (name — OCI ref); add an OCI image there, in iii-sandbox's own configuration.",
+            "Booted when a session names no image. The list is iii-sandbox's custom_images (name — OCI ref); add an OCI image there, in sandbox-libkrun's configuration.",
             {
               optional: true,
               placeholder: 'Every session names its image',
@@ -604,7 +604,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         title: 'Connection',
         fields: [
           text('tailscale_binary', 'Tailscale executable'),
-          text('console_url', 'ADE URL', "Leave empty to use this project's ADE (console::status). Otherwise a loopback HTTP(S) ADE root."),
+          text('console_url', 'ADE URL', "Leave empty to use this project's ADE (ade::status). Otherwise a loopback HTTP(S) ADE root."),
           number('default_https_port', 'Default HTTPS port', undefined, { min: 1, max: 65535 }),
           number('command_timeout_ms', 'Command timeout (ms)', undefined, { min: 1 }),
         ],

@@ -33,7 +33,7 @@ public field is present the compiler requires the two lists to match.
 | Field | Purpose | Consumer |
 |---|---|---|
 | `registry_interface: false` | Declare that Registry interface publication is skipped | `validate_worker.py`, `ci.yml`, release compiler |
-| `runtime` / `scripts.start` | Public local and installed runtime definition | `iii worker`, Compose, release compiler |
+| `runtime` / `scripts.start` | Public local and installed runtime definition | Compose, release compiler |
 | `scripts.install` | Build command for local install | `compose::add` (local source) |
 | `tags` | Discovery aliases included in the compiled Registry projection | release compiler |
 | `iii_engine_version` | Engines the worker runs on, a semver range like Node's `engines` (e.g. `">=0.26.0"`; comparators `>=`, `>`, `<=`, `<`, `=`, `^`, `~` on `MAJOR.MINOR.PATCH`, joined by spaces or `\|\|`; no `v`, prerelease, wildcard or hyphen range). Optional; carried into the Registry publish payload | `validate_worker.py`, release compiler |

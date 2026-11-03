@@ -1,3 +1,51 @@
+## Joint investigations
+
+`sentinel::investigate_many` accepts `{group_ids: string[], profile_id: string,
+request_id: string, hypothesis?: string}`. Select 2–5 distinct IDs; identifiers
+and request_id are nonblank and at most 128 UTF-8 bytes; hypothesis is at most
+2000 bytes. Responses contain investigation_id, session_id, canonical group_ids,
+profile_id, existing and optional first_pass_turn_id. Reuse request_id for a
+retry of the same intent. Different intent under that ID is invalid_request.
+Active membership conflicts return invalid_request with investigation_overlap;
+no partial investigation is started. A failed send leaves a durable failed row;
+retrying its request returns that same record, not another model invocation.
+
+The installed directory profile is resolved server-side; its prompt and model
+are frozen into the request. Profile tools, metadata, filesystem scope and
+preloaded skills are deliberately not granted. Joint mode can read source only through sentinel::source::read, bound to an
+invocation session, authorized member and configured Sentinel project mapping.
+No generic coder root, shell, web/GitHub mutation or delegation is granted.
+Harness dispatch allows only diagnosis recording and this jailed source proxy. Profiles
+provide expertise, not authority; no options.agent is mixed with prompt override
+(Harness explicitly rejects that combination). Individual investigation stays
+on its existing contract/policy. Missing evidence and truncation are explicit
+per issue. Each snapshot includes at most 3500 bytes of evidence plus metadata;
+the serialized issue envelope is capped at 5000 bytes (escaping may reduce
+inline evidence further), and the entire opening message at 32768 bytes.
+
+Schema v3 adds membership and idempotency tables without replacing existing
+rows. Each member can find the session through investigations::list(group_id).
+Joint diagnoses require invocation session identity and stored membership, and
+append a diagnosis without changing any issue status or human decision. Joint
+completion/cancellation emits one investigation event per member and releases
+reservations; issues themselves are not automatically resolved or ignored.
+If the automatic pass finishes without diagnosing every member, the investigation
+is failed with partial_diagnosis and the missing member IDs in error. Existing
+diagnoses are retained. Completed means all members have at least one diagnosis.
+
+Source reads require group_id, a repository-relative path and optional 1-based
+line_from/line_to (at most 200 lines). The proxy returns content, line_from,
+truncated and redactions. It allows regular source files only, no dot-paths,
+symlinks or traversal, opens each component with openat/O_NOFOLLOW on macOS/Linux,
+requires a complete UTF-8 file of at most 256 KiB and returns at most 12000
+UTF-8 bytes after whole-file redaction. Oversized files and incomplete or
+mismatched PRIVATE KEY PEM delimiters fail closed: no prefix is returned.
+Redaction preserves original line positions before selecting the requested
+window, including multiline operator patterns, so a body-only PEM window cannot
+bypass masking. Other
+platforms fail closed. No mapping returns source_unavailable; no root is inferred
+from the profile or the chat workspace.
+
 # sentinel
 
 Error monitoring for an iii engine. The engine already exports every worker's

@@ -744,7 +744,7 @@ mod tests {
 
         let server = MockServer::start().await;
         let body = serde_json::json!({
-            "error": "acme/k requires iii >= 0.26.0, running 0.25.1; run: iii update",
+            "error": "acme/k requires iii >=0.26.0, running 0.25.1; run: iii update",
             "code": "incompatible_engine",
             "required_iii_engine_version": ">=0.26.0"
         });
@@ -757,7 +757,7 @@ mod tests {
             .mount(&server)
             .await;
         let reg = HttpKitRegistry::new(&server.uri(), 5_000, Some("0.25.1".into()));
-        let want = "D521 incompatible_engine: acme/k requires iii >= 0.26.0";
+        let want = "D521 incompatible_engine: acme/k requires iii >=0.26.0";
         let err = reg.detail("acme/k", "latest").await.unwrap_err();
         assert!(err.starts_with(want), "{err}");
         let q = UpdateQuery {

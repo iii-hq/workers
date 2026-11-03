@@ -144,7 +144,7 @@ consoles: feature-detect them.
 
 | Surface | What it is |
 |---|---|
-| `host.pages` | `register({ id, title, configurationId?, render })` registers a page the workspace opens through `host.panels.open` or `console::workspace::open { screen: "ext:<id>" }`, plus a nav entry. `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })` places any workspace screen, built-in ones like `traces` included, in this browser's tab without a bus round trip (optional on older consoles: feature-detect, fall back to `console::workspace::open`); `#/worker/<scope>[/<id>]` renders it alone (Testing below). `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
+| `host.pages` | `register({ id, title, configurationId?, render })` registers a page the workspace opens through `host.panels.open` or `ade::workspace::open { screen: "ext:<id>" }`, plus a nav entry. `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })` places any workspace screen, built-in ones like `traces` included, in this browser's tab without a bus round trip (optional on older consoles: feature-detect, fall back to `ade::workspace::open`); `#/worker/<scope>[/<id>]` renders it alone (Testing below). `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
 | `host.functionCalls` | Chat/trace renderers. Match only the worker's function ids; return `null` to fall through. `message.description` is the harness's short activity label. `metadata: { display: true }` keeps a successful rich artifact visible while raw details stay collapsed. If raw data can contain secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
 | `host.observerRenderers?` | Layered observer presentation; see below. |
 | `host.configForms` | The deliberate form for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker registers one. The host owns dirty tracking, validation, save, reset and the SaveBar; honor `focusField`. `{ layout: 'full' }` only for a workbench that owns its scrolling. Form anatomy and primitives: `ade/design-console-ui` › Configuration forms. |
@@ -491,7 +491,7 @@ end.
 | Whole console restyled | unscoped rules reached the console — check `warnings` in the manifest |
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |
 
-Inspect `console::ui-manifest` (or `GET <url>/ui`, `url` from `console::status`),
+Inspect `ade::ui-manifest` (or `GET <url>/ui`, `url` from `ade::status`),
 `/ui/<path>`, the worker's observers (`engine::observers::list { worker }`),
 and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
@@ -516,7 +516,7 @@ Validate all four layers; a green build alone is not enough.
    non-interactive compact display, complete-detail lifecycle fidelity,
    action fallback, fail-closed redaction, and disable/disconnect fallback.
 
-**The page alone: `<url>/#/worker/<scope>[/<page-id>][?context=<json>]`, with `url` from `console::status`.** The
+**The page alone: `<url>/#/worker/<scope>[/<page-id>][?context=<json>]`, with `url` from `ade::status`.** The
 console renders that one page over the full viewport — no tab strip, chat or
 palette; the tab title is `iii - <scope>` — and never reads or writes the
 shared workspace layout, so a Playwright or `browser`-worker session can open
@@ -529,7 +529,7 @@ place), the page's keyed commands, hot reload and the worker's overlays.
 `host.panels.open` delivers context in place for the page on screen and opens
 any other page in a new browser tab. `#/traces` renders the traces explorer
 the same way. Chat slots and the palette are out of its scope: validate those
-in the full console, opened through `console::workspace::open`.
+in the full console, opened through `ade::workspace::open`.
 
 ## Definition of done
 

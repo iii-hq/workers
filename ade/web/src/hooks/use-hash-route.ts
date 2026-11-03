@@ -12,7 +12,7 @@ import type { JsonValue } from '@/types/injectable-ui'
 // component spec sheet + streaming playground moved to Storybook, so the
 // first-party routed views are `traces`, `workers`, and `configuration`.
 // Worker pages have no workspace route: they open through `host.panels.open`
-// or `console::workspace::open` and live in the tab store. `#/worker/<scope>`
+// or `ade::workspace::open` and live in the tab store. `#/worker/<scope>`
 // and `#/traces` are standalone routes instead — Standalone.tsx renders that
 // one surface with no workspace at all.
 export type View = 'configuration' | 'traces' | 'workers'

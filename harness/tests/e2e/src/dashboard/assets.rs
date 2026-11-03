@@ -3,8 +3,11 @@ use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
+// shortcut: the site was removed in #765, so the dashboard serves its API but
+// no page (404) until the site returns; without allow_missing nothing builds.
 #[derive(RustEmbed)]
 #[folder = "../../../.github/benchmark-site/"]
+#[allow_missing = true]
 #[exclude = "*.test.cjs"]
 #[exclude = "README.md"]
 #[exclude = "sample-data.js"]

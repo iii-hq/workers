@@ -50,9 +50,9 @@ def test_malformed_range_is_rejected(tmp_path, bad):
 
 
 @pytest.mark.parametrize("bad", [
-    ">=0.2٦.0",  # an Arabic-Indic digit after a leading ASCII one
+    ">=0.2\u0666.0",  # an Arabic-Indic digit after a leading ASCII one
     ">=0.26.0\x1c<0.28.0",  # a separator Python's Unicode \s would accept
-    ">=0.26.0 <0.28.0",  # no-break space
+    ">=0.26.0\u00a0<0.28.0",  # no-break space
 ])
 def test_non_ascii_range_is_rejected(bad):
     assert not _lib.III_ENGINE_VERSION_RE.fullmatch(bad)

@@ -26,7 +26,7 @@ page observes from the browser with a per-tab target. The agent-finished steps
 observe `state::on-changed` with filters on `input.scope` (`learn-iii`) and
 `input.key` (`step_<id>_completed`); the first step observes
 `harness::on-turn-completed` and counts only turns of the tour's own chat. The
-page also observes `console::workspace::on-changed` to follow the layout, and
+page also observes `ade::workspace::on-changed` to follow the layout, and
 the worker serves its page through one `console::ui::asset` observer per asset
 (`{ kind: 'script' | 'style', path }`).
 

@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "template"
+ADAPTER = "sandbox-libkrun"
 # The fields of an `engine::functions::info` row (`FunctionDetail`, iii 0.26.0):
 # the typed schemas are `request_schema` / `response_schema`.
 FUNCTION_DETAIL_FIELDS = frozenset({
@@ -44,11 +45,12 @@ class TemplateTests(unittest.TestCase):
     def test_local_stack_matches_harness_and_adds_browser_and_computer(self):
         """Every declared worker must build from the expected sibling source."""
         base = load_yaml(ROOT / "harness/worker-compose.yaml")
-        self.assertEqual(set(self.containers), set(base["containers"]) | {"browser", "computer"})
+        self.assertEqual(set(self.containers), set(base["containers"]) | {"browser", "computer", ADAPTER})
         self.assertEqual(self.compose["engine"]["url"], base["engine"]["url"])
-        self.assertIn("iii-sandbox", self.compose["engine"]["workers"])
         self.assertEqual(self.compose["startup_timeout"], base["startup_timeout"])
         for name, container in self.containers.items():
+            if name == ADAPTER:
+                continue  # a published package: see test_sandbox_adapter_is_operator_declared
             with self.subTest(worker=name):
                 self.assertEqual(container["worker"], f"path://../{name}")
                 source = (TEMPLATE / container["worker"].removeprefix("path://")).resolve()
@@ -62,6 +64,16 @@ class TemplateTests(unittest.TestCase):
                 self.assertEqual(command[:3], ["cargo", "run", "--bin"])
                 self.assertIn(command[3], binaries)
                 self.assertEqual(command[3], name)
+
+    def test_sandbox_adapter_is_operator_declared(self):
+        """computer needs the adapter for sandbox::*, so Compose must never remove it."""
+        self.assertNotIn("workers", self.compose["engine"])
+        adapter = self.containers[ADAPTER]
+        self.assertEqual((adapter["worker"], adapter["version"]), ("package://sandbox-libkrun", "^0.2"))
+        self.assertEqual(adapter["config_override"]["image_allowlist"], ["desktop", "anthropic"])
+        self.assertEqual(adapter["config_override"]["custom_images"]["desktop"], "ghcr.io/trycua/linux:24.04-slim-20261013-36bc520")
+        lines = (TEMPLATE / "worker-compose.yaml").read_text().splitlines()
+        self.assertNotEqual(lines[lines.index(f"  {ADAPTER}:") - 1].strip(), "# added by compose::add")
 
     def test_dependencies_are_declared_before_consumers(self):
         """Compose dependency ordering must be valid and Harness must start last."""
@@ -78,6 +90,8 @@ class TemplateTests(unittest.TestCase):
     def test_default_env_file_exists_and_has_no_credentials(self):
         """The tracked environment example must be available and contain no keys."""
         for name, container in self.containers.items():
+            if name == ADAPTER:
+                continue  # holds no credentials: only its config_override
             self.assertEqual(
                 container["env_file"],
                 ["${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}"],

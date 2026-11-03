@@ -15,7 +15,7 @@ does not restate any of it.
 | How injection works, the `ui/` project layout, `setup(host)` and every slot, the wire contract, the shared build driver and its lint, scoped CSS, hooks/format/icons, debugging, the testing layers, the definition of done | `ade/skills/injectable-ui.md` (`ade/injectable-ui`) |
 | Responsive UX, archetypes, configuration and provider forms, the validation matrix | `ade/skills/design-console-ui.md` (`ade/design-console-ui`) |
 | Tokens, typography, shared components, every number | `ade/skills/design-system.md` (`ade/design-system`) |
-| The console worker: functions, the observable functions it hosts (`console::ui::asset`, `console::ui::on-assets-changed`), `console::ui-manifest` | `ade/skills/SKILL.md` |
+| The console worker: functions, the observable functions it hosts (`console::ui::asset`, `console::ui::on-assets-changed`), `ade::ui-manifest` | `ade/skills/SKILL.md` |
 | Observer-activity renderer authoring and its test matrix | `ade/web/docs/custom-observer-components.md` |
 | Per-worker conformance inventory and the deliberate local exceptions | `docs/sops/console-ui-conformance.md` |
 | The crate: defaults, overrides, what `register` does | `crates/console-ui/README.md`, `crates/console-ui/src/lib.rs` |
@@ -172,4 +172,4 @@ Testing.
 - `src/ui.rs` embeds every asset, `lib.rs` exports the module, boot calls
   `ui::register` after the functions.
 - `cargo test` runs the three UI tests.
-- `console::ui-manifest` lists the paths with an empty `warnings` array.
+- `ade::ui-manifest` lists the paths with an empty `warnings` array.

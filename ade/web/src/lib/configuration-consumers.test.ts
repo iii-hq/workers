@@ -22,8 +22,7 @@ beforeEach(() => {
 describe('namespace-scoped configuration consumers', () => {
   it('Console reads and writes the identity supplied by its backend', async () => {
     call.mockImplementation(async (fn) => {
-      if (fn === 'console::configuration-id')
-        return { id: 'project-console-hash' }
+      if (fn === 'ade::configuration-id') return { id: 'project-console-hash' }
       if (fn === 'configuration::get') return { value: { http_port: 3213 } }
       return {}
     })
@@ -46,7 +45,7 @@ describe('namespace-scoped configuration consumers', () => {
       'function_not_found',
     )
     expect(
-      call.mock.calls.every(([fn]) => fn === 'console::configuration-id'),
+      call.mock.calls.every(([fn]) => fn === 'ade::configuration-id'),
     ).toBe(true)
   })
 

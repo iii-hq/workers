@@ -10,8 +10,9 @@
 //!   4. Register every public function against the engine — every
 //!      registration sits under `directory::*` (search, skills, system
 //!      prompts, agents, registry, and one engine-info wrapper).
-//!   5. (Optional) Observe `engine::on-workers-changed` for auto-download
-//!      when a worker connects, and run a boot reconcile for missing skills.
+//!   5. (Optional) Run a boot reconcile for missing skills, and run its
+//!      worker pass again whenever a worker connects (it observes
+//!      `engine::on-workers-changed`), so workers added later get theirs.
 //!   6. Start the filesystem watch so external edits under the directory
 //!      roots call the matching `on-change` (best-effort, never fatal).
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
@@ -34,19 +35,16 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
-};
-use serde_json::{json, Value};
+use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use serde_json::Value;
 
 use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use iii_directory::functions::download::{
-    download_worker_skills, reconcile_decision, InFlightGuard,
+    download_worker_skills, reconcile_decision, refresh_decision, InFlightGuard,
 };
 use iii_directory::functions::registry::RegistryCache;
 use iii_directory::functions::skills::{
-    compose_status_request, make_registered_cache, parse_worker_names, RegisteredWorkersCache,
-    ENGINE_NAMESPACE,
+    compose_status_request, make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
 };
 use iii_directory::sources::registry::VersionSpec;
 use iii_directory::{configuration, events, functions, manifest};
@@ -283,9 +281,9 @@ async fn main() -> Result<()> {
     // directory::* function-call renderer, and the configuration form.
     iii_directory::ui::register(&iii);
 
-    // Auto-download: observe worker connections + boot reconcile. Wired
-    // from the boot value of `auto_download` (a topology field — changing it
-    // requires a restart).
+    // Auto-download: boot reconcile, then the worker pass again on every
+    // worker connection (observed). Wired from the boot value of
+    // `auto_download` (a topology field — changing it requires a restart).
     if auto_download {
         let in_flight = Arc::new(InFlightGuard::new());
         setup_auto_download(&iii, &cfg_handle, &registered_cache, &in_flight);
@@ -382,25 +380,35 @@ async fn main() -> Result<()> {
 }
 
 /// The `engine::on-workers-changed` event, delivered as output to
-/// `directory::__on_worker_added`. Only `worker_id` is read: the handler
-/// looks the worker's name up in `engine::workers::list`. Declared as a struct
-/// so the function publishes a typed schema.
+/// `directory::__on_workers_changed`. Only `event` is read; declared as a
+/// struct so the function publishes a typed schema.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-struct WorkerConnectedEvent {
+struct WorkersChanged {
     #[serde(default)]
-    worker_id: Option<String>,
+    event: String,
+}
+
+impl WorkersChanged {
+    /// A connection is when a worker Compose just added comes up; its
+    /// metadata update and every disconnect bring no new worker.
+    fn is_connect(&self) -> bool {
+        self.event == "worker_connected"
+    }
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-struct WorkerAddedAck {
+struct WorkersChangedAck {
     ok: bool,
 }
 
 /// The engine's worker connection events.
 const WORKERS_ON_CHANGED_FN: &str = "engine::on-workers-changed";
 
-/// Register the internal `directory::__on_worker_added` handler and observe
-/// `engine::on-workers-changed` with it for `worker_connected` events.
+/// Register the internal `directory::__on_workers_changed` handler and
+/// observe `engine::on-workers-changed` with it: each worker connection
+/// re-runs the boot reconcile's worker pass over `compose::status`, which
+/// skips every namespace already on disk and every worker version already
+/// tried.
 fn setup_auto_download(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
@@ -412,30 +420,44 @@ fn setup_auto_download(
     let cache_inner = cache.clone();
     let in_flight_inner = in_flight.clone();
 
-    // The internal handler that runs when a worker connects.
     iii.register_function(
-        "directory::__on_worker_added",
-        RegisterFunction::new_async(move |event: WorkerConnectedEvent| {
+        "directory::__on_workers_changed",
+        RegisterFunction::new_async(move |change: WorkersChanged| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             let in_flight = in_flight_inner.clone();
             async move {
-                handle_worker_connected(&iii, &cfg, &cache, &in_flight, &event).await;
-                Ok::<_, Error>(WorkerAddedAck { ok: true })
+                // The installed set may have changed; the next read refetches it.
+                cache.invalidate().await;
+                if change.is_connect() {
+                    // Off the observer's path: a download takes seconds.
+                    tokio::spawn(async move {
+                        let status = match iii.call(compose_status_request(10_000)).await {
+                            Ok(status) => status,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "compose::status unavailable; no worker pass");
+                                return;
+                            }
+                        };
+                        if worker_pass(&cfg, &in_flight, &status).await > 0 {
+                            cache.invalidate().await;
+                        }
+                    });
+                }
+                Ok::<_, Error>(WorkersChangedAck { ok: true })
             }
         })
-        .description("Internal: auto-download skills when a worker connects.")
+        .description("Internal: auto-download the skills of workers added after boot.")
         .metadata(serde_json::json!({ "internal": true })),
     );
 
-    // The observer stays `pending` until the engine source is registered,
-    // and lives as long as the worker's connection.
+    // Every event, unfiltered: each one invalidates the installed set. The
+    // observer stays `pending` until the engine source is registered, and
+    // lives as long as the worker's connection.
     let handle = iii.observe(
-        Source::function(WORKERS_ON_CHANGED_FN)
-            .filters(json!({ "input.event": { "$eq": "worker_connected" } }))
-            .deliver(Deliver::Output),
-        "directory::__on_worker_added",
+        Source::function(WORKERS_ON_CHANGED_FN).deliver(Deliver::Output),
+        "directory::__on_workers_changed",
     );
     tracing::info!(
         observer_id = handle.id(),
@@ -443,86 +465,67 @@ fn setup_auto_download(
     );
 }
 
-/// The name of the connected worker `worker_id`, from `engine::workers::list`.
-async fn connected_worker_name(iii: &IIIClient, worker_id: &str) -> Option<String> {
-    let reply = iii
-        .call(CallRequest {
-            function_id: "engine::workers::list".to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
-    let reply = match reply {
-        Ok(reply) => reply,
-        Err(e) => {
-            tracing::warn!(worker_id, error = %e, "engine::workers::list failed; skipping auto-download");
-            return None;
-        }
-    };
-    worker_name_in_list(&reply, worker_id)
+/// The `(container, version)` pairs of a `compose::status` reply; the
+/// version is empty when Compose reports none. `None` without a
+/// `containers` array.
+fn worker_versions(status: &Value) -> Option<Vec<(String, String)>> {
+    let containers = status.get("containers")?.as_array()?;
+    Some(
+        containers
+            .iter()
+            .filter_map(|c| {
+                let name = c.get("container")?.as_str()?;
+                let version = c
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                Some((name.to_string(), version.to_string()))
+            })
+            .collect(),
+    )
 }
 
-/// The `name` of the `engine::workers::list` row whose `id` is `worker_id`.
-fn worker_name_in_list(reply: &Value, worker_id: &str) -> Option<String> {
-    reply
-        .get("workers")?
-        .as_array()?
-        .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(worker_id))?
-        .get("name")?
-        .as_str()
-        .filter(|name| !name.trim().is_empty())
-        .map(str::to_string)
+/// A worker connection's pass over `compose::status`. Only a worker version
+/// this process has not tried reaches the registry, so a connection that
+/// adds no worker (an `iii call` client, a browser tab) asks it nothing.
+async fn worker_pass(cfg: &SkillsConfig, in_flight: &Arc<InFlightGuard>, status: &Value) -> u32 {
+    reconcile_workers(cfg, in_flight, &worker_versions(status).unwrap_or_default()).await
 }
 
-/// Handle a worker connection. Downloads the worker's skills when they are
-/// missing (no local override, no completion marker) and no download for it
-/// is already in flight. A worker reconnecting with its skills in place costs
-/// one `engine::workers::list` call.
-async fn handle_worker_connected(
-    iii: &IIIClient,
+/// Download skills for each of `workers` (container, version) whose
+/// namespace is missing, incomplete, or from another version than the one
+/// Compose runs, not overridden locally, and not tried at that version yet.
+/// Returns how many it downloaded.
+async fn reconcile_workers(
     cfg: &SkillsConfig,
-    cache: &RegisteredWorkersCache,
     in_flight: &Arc<InFlightGuard>,
-    event: &WorkerConnectedEvent,
-) {
-    let Some(worker_id) = event.worker_id.as_deref() else {
-        tracing::debug!("worker connection event missing 'worker_id'; skipping");
-        return;
-    };
-    let Some(worker) = connected_worker_name(iii, worker_id).await else {
-        tracing::debug!(worker_id, "connected worker has no listed name; skipping");
-        return;
-    };
-    let Some(spec) = reconcile_decision(
-        &worker,
-        None,
-        &cfg.local_skills_folder(),
-        &cfg.resolved_skills_folder(),
-    ) else {
-        tracing::debug!(worker = %worker, "worker skills present or overridden; skipping");
-        return;
-    };
-
-    // RAII: _claim drops at scope end (including on panic/early-return).
-    let Some(_claim) = in_flight.claim(&worker) else {
-        tracing::debug!(worker = %worker, "worker download already in-flight; skipping");
-        return;
-    };
-
-    match download_worker_skills(cfg, &worker, &spec).await {
-        Ok(true) => {
-            tracing::info!(worker = %worker, "auto-download complete on worker connect");
-            cache.invalidate().await;
+    workers: &[(String, String)],
+) -> u32 {
+    let global_root = cfg.resolved_skills_folder();
+    let local_root = cfg.local_skills_folder();
+    let mut reconciled = 0;
+    for (name, version) in workers {
+        // The version keys the attempt and picks the skills: those of the
+        // version Compose runs, or the latest tag when it reports none.
+        // `local` (a path:// worker) is no registry version.
+        let installed = if version == "local" {
+            ""
+        } else {
+            version.as_str()
+        };
+        let Some(spec) = reconcile_decision(name, Some(installed), &local_root, &global_root)
+            .or_else(|| refresh_decision(name, installed, &local_root, &global_root))
+        else {
+            continue;
+        };
+        if !in_flight.first_try(name, version) {
+            continue;
         }
-        Ok(false) => {
-            tracing::debug!(worker = %worker, "no skills bundle for worker (404)");
-        }
-        Err(e) => {
-            tracing::warn!(worker = %worker, error = %e, "auto-download failed on worker connect");
+        if reconcile_one(cfg, in_flight, name, &spec).await {
+            reconciled += 1;
         }
     }
+    reconciled
 }
 
 /// Reconcile a single namespace: claim the in-flight slot and download
@@ -540,15 +543,15 @@ async fn reconcile_one(
     };
     match download_worker_skills(cfg, name, spec).await {
         Ok(true) => {
-            tracing::info!(worker = name, "boot reconcile: downloaded skills");
+            tracing::info!(worker = name, "auto-download: downloaded skills");
             true
         }
         Ok(false) => {
-            tracing::debug!(worker = name, "boot reconcile: 404 (benign)");
+            tracing::debug!(worker = name, "auto-download: 404 (benign)");
             false
         }
         Err(e) => {
-            tracing::warn!(worker = name, error = %e, "boot reconcile: download failed");
+            tracing::warn!(worker = name, error = %e, "auto-download: download failed");
             false
         }
     }
@@ -563,18 +566,17 @@ async fn reconcile_one(
 /// `worker::list` in iii 0.23 and is registered in this worker's own
 /// namespace, so no namespace override.
 ///
-/// Returns the container names on success, or `None` if `compose::status`
-/// never became available within the retry budget (~30s). `compose::status`
-/// carries no per-worker version, so reconcile pulls the latest skill tag.
-async fn fetch_worker_names_with_retry(iii: &IIIClient) -> Option<Vec<String>> {
+/// Returns the (container, version) pairs on success, or `None` if
+/// `compose::status` never became available within the retry budget (~30s).
+async fn fetch_worker_names_with_retry(iii: &IIIClient) -> Option<Vec<(String, String)>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
         let result = iii.call(compose_status_request(10_000)).await;
 
         match result {
             Ok(val) => {
-                return match parse_worker_names(&val) {
-                    Some(names) => Some(names.into_iter().collect()),
+                return match worker_versions(&val) {
+                    Some(workers) => Some(workers),
                     None => {
                         tracing::warn!(
                             "boot reconcile: compose::status returned no `containers` array; skipping worker reconcile"
@@ -657,18 +659,7 @@ fn spawn_boot_reconcile(
             }
         };
 
-        for name in &workers {
-            // `compose::status` carries no worker version; reconcile the
-            // latest skill tag.
-            let spec = match reconcile_decision(name, None, &local_root, &global_root) {
-                Some(s) => s,
-                None => continue,
-            };
-
-            if reconcile_one(&cfg, &in_flight, name, &spec).await {
-                reconciled += 1;
-            }
-        }
+        reconciled += reconcile_workers(&cfg, &in_flight, &workers).await;
 
         if reconciled > 0 {
             cache.invalidate().await;
@@ -685,22 +676,112 @@ fn spawn_boot_reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
+    /// The `engine::on-workers-changed` event: only a connection runs a
+    /// worker pass.
     #[test]
-    fn worker_name_comes_from_the_listed_row_with_that_id() {
-        let reply = json!({ "workers": [
-            { "id": "w-1", "name": "kanban" },
-            { "id": "w-2", "name": "iii-directory" },
-            { "id": "w-3", "name": "  " },
-            { "id": "w-4" },
-        ] });
+    fn only_a_worker_connection_runs_a_worker_pass() {
+        let change = |event: &str| {
+            serde_json::from_value::<WorkersChanged>(json!({ "event": event, "worker_id": "w-1" }))
+                .unwrap()
+        };
+        assert!(change("worker_connected").is_connect());
+        assert!(!change("worker_disconnected").is_connect());
+        assert!(!change("worker_metadata_updated").is_connect());
+    }
+
+    /// A connection's worker pass downloads the skills of a worker Compose
+    /// added, and asks the registry once per worker version: a worker with
+    /// no skills bundle is not asked again on the next connection.
+    #[tokio::test]
+    async fn the_worker_pass_downloads_new_workers_and_asks_once_per_version() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        for version in ["1.0.0", "1.1.0"] {
+            let bundle = json!({
+                "name": "alpha",
+                "version": version,
+                "skills": [{"path": "index.md", "content": format!("# alpha {version}\n")}],
+                "prompts": []
+            });
+            Mock::given(method("GET"))
+                .and(path("/w/alpha/skills"))
+                .and(query_param("version", version))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&bundle))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/w/beta/skills"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+        let cfg = SkillsConfig {
+            skills_folder: dir("global"),
+            local_skills_folder: dir("local"),
+            agents_folder: dir("agents"),
+            registry_url: server.uri(),
+            ..SkillsConfig::default()
+        };
+        let in_flight = Arc::new(InFlightGuard::new());
+        let status = |alpha: &str, beta: &str| {
+            json!({ "containers": [
+                { "container": "alpha", "version": alpha, "state": "ready" },
+                { "container": "beta", "version": beta, "state": "ready" }
+            ]})
+        };
+        let asked = || async { server.received_requests().await.unwrap().len() };
+        let written = cfg.resolved_skills_folder().join("alpha").join("index.md");
+        let marked = || {
+            iii_directory::functions::download::read_worker_markers(&cfg.resolved_skills_folder())
+                .into_iter()
+                .find(|m| m.worker == "alpha")
+                .and_then(|m| m.version)
+        };
+
+        // The first download pulls the skills of the version Compose runs.
         assert_eq!(
-            worker_name_in_list(&reply, "w-2").as_deref(),
-            Some("iii-directory")
+            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0")).await,
+            1
         );
-        assert_eq!(worker_name_in_list(&reply, "w-3"), None);
-        assert_eq!(worker_name_in_list(&reply, "w-4"), None);
-        assert_eq!(worker_name_in_list(&reply, "w-9"), None);
-        assert_eq!(worker_name_in_list(&json!({}), "w-1"), None);
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "# alpha 1.0.0\n"
+        );
+        assert_eq!(asked().await, 2);
+
+        // The next connection: alpha is on disk, beta was asked at 2.0.0.
+        assert_eq!(
+            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0")).await,
+            0
+        );
+        assert_eq!(asked().await, 2);
+
+        // Another version of beta is asked again.
+        worker_pass(&cfg, &in_flight, &status("1.0.0", "2.1.0")).await;
+        assert_eq!(asked().await, 3);
+
+        // An updated alpha gets the skills of its new version, once.
+        assert_eq!(
+            worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0")).await,
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "# alpha 1.1.0\n"
+        );
+        assert_eq!(marked().as_deref(), Some("1.1.0"));
+        assert_eq!(asked().await, 4);
+        worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0")).await;
+        assert_eq!(asked().await, 4);
+
+        // A path:// worker reports `local`, which is no registry version.
+        worker_pass(&cfg, &in_flight, &status("local", "2.1.0")).await;
+        assert_eq!(asked().await, 4);
     }
 }

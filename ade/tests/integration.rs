@@ -7,7 +7,7 @@
 //!     ephemeral port with an engine-only config in a temp dir;
 //!   - `III_ENGINE_WS_URL`: an engine already running there (one no other
 //!     `ade` worker is connected to, since the test's worker hosts the
-//!     `console::*` functions);
+//!     `ade::*` and `console::ui::*` functions);
 //!   - `iii` on `PATH`, started here, when it is 0.26 or later.
 //!
 //! The worker listens on ephemeral ports and keeps its data in the temp dir.
@@ -502,13 +502,13 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
 
     let status = client
         .call(CallRequest {
-            function_id: "console::status".to_string(),
+            function_id: "ade::status".to_string(),
             payload: serde_json::json!({}),
             action: None,
             timeout_ms: Some(5_000),
         })
         .await
-        .expect("console::status failed after rebind");
+        .expect("ade::status failed after rebind");
     assert_eq!(status["http_port"], rebound_http_port);
     assert_eq!(status["url"], rebound_base);
 
@@ -524,14 +524,14 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         sleep(Duration::from_millis(100)).await;
     }
 
-    // 6. Observe console::workspace::on-changed: the console rings a new
+    // 6. Observe ade::workspace::on-changed: the console rings a new
     //    observer once it is active.
     let mut rung = recording_target(client, "integration::workspace-rung");
     let observer = client.observe(
-        Source::function("console::workspace::on-changed").deliver(Deliver::Output),
+        Source::function("ade::workspace::on-changed").deliver(Deliver::Output),
         "integration::workspace-rung",
     );
-    active(&observer, "the console::workspace::on-changed observer").await;
+    active(&observer, "the ade::workspace::on-changed observer").await;
     // The ring is a call of the function for this observer: `deliver: output`
     // hands the target the function's output, the empty event.
     assert_eq!(next_event(&mut rung, "the workspace ring").await, json!({}));
@@ -682,7 +682,7 @@ async fn ui_assets(client: &IIIClient, base: &str) {
     let _ = broken.dispose().await;
 }
 
-const WORKSPACE_CHANGED_FN: &str = "console::workspace::on-changed";
+const WORKSPACE_CHANGED_FN: &str = "ade::workspace::on-changed";
 const ASSETS_CHANGED_FN: &str = "console::ui::on-assets-changed";
 const ASSET_FN: &str = "console::ui::asset";
 
@@ -721,17 +721,17 @@ fn same_envelope(own: &Value, ordinary: &Value, function_id: &str, observer_id: 
     }
 }
 
-/// Stores the layout: every store write rings `console::workspace::on-changed`.
+/// Stores the layout: every store write rings `ade::workspace::on-changed`.
 async fn write_layout(client: &IIIClient) {
     client
         .call(CallRequest {
-            function_id: "console::workspace::set".to_string(),
+            function_id: "ade::workspace::set".to_string(),
             payload: json!({ "value": {} }),
             action: None,
             timeout_ms: Some(5_000),
         })
         .await
-        .expect("console::workspace::set failed");
+        .expect("ade::workspace::set failed");
 }
 
 /// Resolves once the console serves its own four assets, so no `set` of
@@ -741,7 +741,7 @@ async fn console_assets_served(client: &IIIClient) {
     loop {
         let manifest = client
             .call(CallRequest {
-                function_id: "console::ui-manifest".to_string(),
+                function_id: "ade::ui-manifest".to_string(),
                 payload: json!({}),
                 action: None,
                 timeout_ms: Some(2_000),
@@ -783,7 +783,7 @@ async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() 
     let client = &harness.client;
     console_assets_served(client).await;
 
-    // console::workspace::on-changed. A takes the envelope, B the output.
+    // ade::workspace::on-changed. A takes the envelope, B the output.
     let mut ring_a = recording_target(client, "integration::ring-envelope");
     let mut ring_b = recording_target(client, "integration::ring-output");
     let a = client.observe(

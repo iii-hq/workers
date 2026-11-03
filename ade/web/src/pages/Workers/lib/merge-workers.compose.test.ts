@@ -12,7 +12,6 @@ function row(rows: WorkerRow[], name: string): WorkerRow {
 function snapshot(partial: Partial<RawWorkersSnapshot>): RawWorkersSnapshot {
   return {
     engineWorkers: [],
-    supervisorWorkers: [],
     infoByName: new Map(),
     compose: null,
     ...partial,
@@ -72,23 +71,6 @@ describe('mergeWorkers with compose', () => {
       status: 'connected',
       composeState: 'ready',
       pid: 27610,
-      stopEnabled: false,
-      stopDisabledReason: null,
-    })
-  })
-
-  it('compose wins over supervisor classification', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        engineWorkers: [engineWorker('llm-router')],
-        supervisorWorkers: [
-          { name: 'llm-router', running: true, pid: 1, version: '1' },
-        ],
-        compose,
-      }),
-    )
-    expect(rows.find((r) => r.name === 'llm-router')).toMatchObject({
-      managementKind: 'compose',
     })
   })
 

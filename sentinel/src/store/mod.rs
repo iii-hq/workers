@@ -76,7 +76,7 @@ pub fn numbered_placeholders(sql: &str) -> String {
 /// Whether a write failed because a unique constraint refused it: another
 /// writer got there first. SQLite says so in words; through the `database`
 /// worker Postgres only says "db error" beside its SQLSTATE, 23505.
-fn is_conflict(error: &SentinelError) -> bool {
+pub(crate) fn is_conflict(error: &SentinelError) -> bool {
     let message = error.to_string().to_ascii_lowercase();
     message.contains("unique") || message.contains("constraint") || message.contains("23505")
 }

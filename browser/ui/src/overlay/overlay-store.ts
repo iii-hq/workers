@@ -56,14 +56,14 @@ export function openBrowserPane(host: Host, sessionId: string): void {
 
 /**
  * The browser page in a workspace tab of its own, showing this session. The
- * tab is the console's (`console::workspace::open`, `new-tab`); the context
+ * tab is the console's (`ade::workspace::open`, `new-tab`); the context
  * goes through the page registry once the tab is up, which is a round trip
  * away, so the page reads the front session meanwhile.
  */
 export function openBrowserWindow(host: Host, sessionId: string): void {
   hideBrowserOverlay(sessionId)
   void host.iii
-    .call('console::workspace::open', { screen: 'ext:browser', placement: 'new-tab' })
+    .call('ade::workspace::open', { screen: 'ext:browser', placement: 'new-tab' })
     .then(() => host.panels?.open({ pageId: 'browser', context: { sessionId } }))
     .catch(() => host.panels?.open({ pageId: 'browser', context: { sessionId } }))
 }

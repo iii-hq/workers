@@ -221,7 +221,7 @@ These functions carry a credential in their input or output. They are registered
 
 ## Limits and differences from OpenWA
 
-Use this worker's typed functions and inspect their contracts with `iii worker info whatsapp`. It is not an HTTP-compatible OpenWA deployment. The [native API boundaries](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#limits-and-differences-from-openwa) list unsupported operations and nullable metadata.
+Use this worker's typed functions and inspect their contracts with `iii call engine::workers::info name=whatsapp`. It is not an HTTP-compatible OpenWA deployment. The [native API boundaries](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#limits-and-differences-from-openwa) list unsupported operations and nullable metadata.
 
 Archives contain captured messages, not a complete remote history. Media transfers use bounded bytes; arbitrary host paths and download URLs are not accepted. The worker does not transcode files, host call audio, or settle payments. Native protocol support depends on the unofficial whatsmeow client; Cloud support depends on Meta's account permissions and feature availability.
 

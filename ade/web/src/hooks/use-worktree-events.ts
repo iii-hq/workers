@@ -21,8 +21,8 @@ import {
  * a subscription the client refuses.
  */
 
-const LANDED_FN = 'console::worktree-landed'
-const LAND_BLOCKED_FN = 'console::worktree-land-blocked'
+const LANDED_FN = 'ade::worktree-landed'
+const LAND_BLOCKED_FN = 'ade::worktree-land-blocked'
 
 export interface UseWorktreeEventsOptions {
   /** Only subscribe on the real backend with the worktree worker present. */

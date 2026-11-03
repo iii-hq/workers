@@ -27,6 +27,11 @@ impl IiiHarness {
 
 #[async_trait]
 impl Harness for IiiHarness {
+    async fn profile(&self, id: &str) -> Result<Value, SentinelError> {
+        self.runtime
+            .call("directory::agents::get", json!({"id":id}))
+            .await
+    }
     async fn grant_filesystem(&self, session_id: &str, root: &str) {
         if root.is_empty() {
             return;

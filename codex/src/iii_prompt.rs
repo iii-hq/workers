@@ -36,9 +36,9 @@ The live engine is the single source of truth. Ask it — never assume:
   to any function; a one-line description from `list` is a hint, not the contract.
 - `iii call engine::workers::list` — every WS-connected (currently running) worker;
   `iii call engine::workers::info name=<name>` — one worker's full surface.
-- `iii call worker::list` — installed + running workers, including daemon-managed
-  builtins. `engine::workers::list` sees only WS-connected workers, so to confirm a worker is
-  RUNNING, merge the two by name.
+- `iii call compose::status` — the workers the compose project declares and each
+  one's state (`starting`, `ready`, `failed`, ...). `engine::workers::list` sees only
+  WS-connected workers, so to confirm a declared worker is RUNNING, merge the two by name.
 - `iii call engine::observers::list` — every observer: the observed function, its args and
   filters, and the target it runs.
 
@@ -50,7 +50,8 @@ away. When nothing fits, search the public registry before building anything:
 `iii call directory::registry::workers::list --json '{"search":"<capability>"}'` pages the
 published catalogue and `iii call directory::registry::workers::info name=<name>` returns
 one worker's full detail. Say what you are about to install and why, install with
-`iii call worker::add --json '{"source":{"kind":"registry","name":"<name>"}}'`, then
+`iii call compose::add worker=<name>`, which answers with an `operation_id`; read
+`iii call compose::operation operation_id=<id>` until its status is terminal, then
 confirm the new ids appear via `engine::functions::list` with that prefix and fetch each
 contract with `--help` as usual.
 

@@ -4,8 +4,9 @@ import { getIiiClient } from '@/lib/iii-client'
 
 /**
  * Observe `engine::on-workers-changed` with a browser-local handler so the
- * UI reacts the instant a worker connects or leaves — whether from an in-app
- * CTA or an `iii call compose::add` run in the operator's own terminal.
+ * UI reacts the instant a worker connects, registers its name, or leaves —
+ * whether from an in-app CTA or an `iii call compose::add` run in the
+ * operator's own terminal.
  *
  * The event names the worker by its connection id (`worker_id`), not by
  * name: consumers re-read `engine::workers::list` (or whatever else they
@@ -56,15 +57,20 @@ export interface UseWorkersChangedOptions {
    * collides across tabs or mounts.
    */
   fnId: string
-  /** Which worker events to receive. Defaults to joins and leaves. */
+  /**
+   * Which worker events to receive. Defaults to all three: a worker's name
+   * is in `engine::workers::list` only after `worker_metadata_updated`, so a
+   * re-read on `worker_connected` alone can miss it.
+   */
   events?: readonly WorkersChangedKind[]
   /** Invoked with each matching event. */
   onChange: (event: WorkersChangedEvent) => void
 }
 
-const JOINS_AND_LEAVES: readonly WorkersChangedKind[] = [
+const ALL_EVENTS: readonly WorkersChangedKind[] = [
   'worker_connected',
   'worker_disconnected',
+  'worker_metadata_updated',
 ]
 
 export function useWorkersChanged(opts: UseWorkersChangedOptions): void {
@@ -82,7 +88,7 @@ export function useWorkersChanged(opts: UseWorkersChangedOptions): void {
 
   // Serialize the filter so an inline literal does not re-run the effect on
   // every render; the effect rebuilds the array from this stable key.
-  const eventsKey = (opts.events ?? JOINS_AND_LEAVES).join(',')
+  const eventsKey = (opts.events ?? ALL_EVENTS).join(',')
 
   useEffect(() => {
     if (!enabled) return

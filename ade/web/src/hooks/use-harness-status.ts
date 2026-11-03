@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { workerListed } from './use-worker-presence'
@@ -8,67 +8,34 @@ import { useWorkersChanged } from './use-workers-changed'
  * Watches the engine for the `harness` worker and drives an in-app install of
  * it via `compose::add`.
  *
- * Two signals feed `present`:
- *   1. An initial `engine::workers::list` read on mount.
- *   2. Every worker join `engine::on-workers-changed` announces, which reads
- *      the list again, so the UI reacts the instant harness connects —
- *      whether from the in-app CTA or an `iii call compose::add` run in the
- *      operator's own terminal (this is the educational, "you can do this in
- *      the CLI too" angle).
+ * `present` is an `engine::workers::list` read on mount, read again on every
+ * `engine::on-workers-changed` event, so the UI reacts the instant harness is
+ * added — whether from the in-app CTA or an `iii call compose::add` run in
+ * the operator's own terminal (this is the educational, "you can do this in
+ * the CLI too" angle).
  *
  * `install()` calls `compose::add` for the registry `harness` worker and
- * resolves with a terminal outcome; the install console records the add's
- * start and the moment harness connected.
+ * resolves off its result and a presence re-check.
  */
 
 /** Registry name + engine worker name for the harness meta-worker. */
 const HARNESS_WORKER_NAME = 'harness'
-/** Base id for the browser-local workers-changed handler. */
-const HARNESS_WATCH_FN = 'console::harness-watch'
-
-/** One line in the install console. */
-export interface InstallStage {
-  /** Lifecycle stage: started | done | failed */
-  stage: string
-  /** The worker being added. */
-  worker?: string
-  /** Optional 0..1 download progress. */
-  progress?: number
-  /** Present when `stage === 'failed'`. */
-  error?: { code?: string; message?: string }
-  /** When the stage was recorded (ms). */
-  at: number
-}
+/** Base id for the browser-local `engine::on-workers-changed` handler. */
+const HARNESS_WATCH_FN = 'ade::harness-watch'
 
 export interface HarnessStatus {
   /** Whether the `harness` worker is currently connected. */
   present: boolean
   /** Initial presence probe in flight. */
   loading: boolean
-  /** An add is in progress (in-app or detected from the CLI). */
+  /** An in-app add is in progress. */
   installing: boolean
-  /** Ordered console lines for the current/last add. */
-  stages: InstallStage[]
   /** Last install error message, or null. */
   error: string | null
   /** Add the harness registry worker to the active Compose project. */
   install: () => void
   /** Clear the error and retry the add. */
   retry: () => void
-}
-
-function stageNow(stage: string, error?: InstallStage['error']): InstallStage {
-  return {
-    stage,
-    worker: HARNESS_WORKER_NAME,
-    ...(error ? { error } : {}),
-    at: Date.now(),
-  }
-}
-
-/** Close a running add's console with `done`; any other console stays. */
-function finishStages(prev: InstallStage[]): InstallStage[] {
-  return prev.at(-1)?.stage === 'started' ? [...prev, stageNow('done')] : prev
 }
 
 async function checkHarnessPresent(client: IiiClient): Promise<boolean> {
@@ -96,35 +63,35 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
   const [present, setPresent] = useState<boolean>(!enabled)
   const [loading, setLoading] = useState<boolean>(enabled)
   const [installing, setInstalling] = useState<boolean>(false)
-  const [stages, setStages] = useState<InstallStage[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  // A worker joined: read the list again. Uses functional setState only so
-  // the handler has no reactive deps and stays stable.
-  const handleChange = useCallback(() => {
+  // Overlapping reads can resolve out of order: a reply older than one
+  // already applied is dropped so it never overwrites newer presence.
+  const reads = useRef({ issued: 0, applied: 0 })
+  const applyPresence = useCallback((seq: number, found: boolean) => {
+    if (seq <= reads.current.applied) return
+    reads.current.applied = seq
+    setPresent(found)
+  }, [])
+
+  // Harness added or removed out of band (a CLI `compose::add`): read the
+  // worker list again. A failed re-read keeps the last answer.
+  const recheck = useCallback(() => {
+    const seq = ++reads.current.issued
     void (async () => {
       try {
         const client = await getIiiClient()
-        if (!(await checkHarnessPresent(client))) return
+        applyPresence(seq, await checkHarnessPresent(client))
       } catch {
-        return
+        // keep the last known presence
       }
-      setPresent(true)
-      setInstalling(false)
-      setStages(finishStages)
     })()
-  }, [])
+  }, [applyPresence])
 
-  useWorkersChanged({
-    enabled,
-    fnId: HARNESS_WATCH_FN,
-    events: ['worker_connected'],
-    onChange: handleChange,
-  })
+  useWorkersChanged({ enabled, fnId: HARNESS_WATCH_FN, onChange: recheck })
 
-  // One-time presence probe on mount. Live changes — the in-app CTA or a CLI
-  // `iii call compose::add` — arrive through the workers-changed observer
-  // above (the engine's push channel). No polling, no focus re-checks.
+  // Presence probe on mount; later changes arrive through the observer above.
+  // No polling, no focus re-checks.
   useEffect(() => {
     if (!enabled) {
       setLoading(false)
@@ -132,13 +99,14 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
       return
     }
     let cancelled = false
+    const seq = ++reads.current.issued
     void (async () => {
       const client = await getIiiClient()
       try {
         const found = await checkHarnessPresent(client)
-        if (!cancelled) setPresent(found)
+        if (!cancelled) applyPresence(seq, found)
       } catch {
-        if (!cancelled) setPresent(false)
+        if (!cancelled) applyPresence(seq, false)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -146,54 +114,51 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     return () => {
       cancelled = true
     }
-  }, [enabled])
+  }, [enabled, applyPresence])
 
   const install = useCallback(() => {
     if (!enabled) return
     setError(null)
-    setStages([stageNow('started')])
     setInstalling(true)
     void (async () => {
       const client = await getIiiClient()
       try {
         await addHarnessToCompose(client)
-        // Terminal success. The workers-changed event may have already
-        // flipped these; setting them again is harmless and covers a missed
-        // event.
-        setPresent(true)
+        // Terminal success. A workers-changed event may have already set
+        // present; setting it again is harmless. Reads still in flight are
+        // older than this and must not undo it.
+        applyPresence(++reads.current.issued, true)
         setInstalling(false)
-        setStages(finishStages)
       } catch (err) {
         setInstalling(false)
         // The add may have actually landed even though the call rejected
         // (e.g. a late timeout) — re-check before surfacing the error.
+        // Numbered before the read, so a re-read issued meanwhile wins.
+        const seq = ++reads.current.issued
         try {
           if (await checkHarnessPresent(client)) {
-            setPresent(true)
+            applyPresence(seq, true)
             setError(null)
             return
           }
         } catch {
           // ignore; fall through to the original error
         }
-        const message = normalizeErrorMessage(err)
-        setStages((prev) => [...prev, stageNow('failed', { message })])
-        setError(message)
+        setError(normalizeErrorMessage(err))
       }
     })()
-  }, [enabled])
+  }, [enabled, applyPresence])
 
   return useMemo(
     () => ({
       present,
       loading,
       installing,
-      stages,
       error,
       install,
       retry: install,
     }),
-    [present, loading, installing, stages, error, install],
+    [present, loading, installing, error, install],
   )
 }
 
