@@ -314,6 +314,8 @@ export function SentinelPage({
             />
           ) : (
             <GroupsListView
+              api={api}
+              onInvestigationStarted={result => { notify(result.existing ? 'Opening the existing group investigation.' : 'Group investigation started.'); groups.refresh(); host.chat?.selectConversation?.(result.session_id) }}
               busy={bulk.busy}
               onBulk={bulk.run}
               status={status}

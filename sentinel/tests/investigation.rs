@@ -62,6 +62,7 @@ enum Call {
 #[derive(Default)]
 struct FakeHarnessState {
     calls: Vec<Call>,
+    requests: Vec<Value>,
     /// What `harness::status` answers, once the first pass is running.
     status: Option<TurnStatus>,
     /// Next turn id handed out by `send`.
@@ -119,6 +120,10 @@ impl FakeHarness {
 
 #[async_trait]
 impl Harness for FakeHarness {
+    async fn profile(&self, id: &str) -> Result<Value, SentinelErrorAlias> {
+        if id != "installed-reviewer" { return Err(sentinel::SentinelError::NotFound(id.into())); }
+        Ok(json!({"id":id,"name":"Reviewer","system_prompt":"Inspect independently","model":"test-provider::test-model","functions":["shell::exec","harness::spawn"],"skills":["unsafe-example"],"metadata":{"fs_scope":{"root":"/"}}}))
+    }
     async fn grant_filesystem(&self, session_id: &str, root: &str) {
         self.state.lock().unwrap().calls.push(Call::Grant {
             session_id: session_id.into(),
@@ -137,6 +142,7 @@ impl Harness for FakeHarness {
             .len();
         let mut state = self.state.lock().unwrap();
         state.seen_running = Some(running);
+        state.requests.push(request.clone());
         state.calls.push(Call::Send {
             idempotency_key: request["idempotency_key"].as_str().unwrap_or("").into(),
             body: request["message"].as_str().unwrap_or("").into(),
@@ -1371,4 +1377,217 @@ async fn a_decision_and_its_history_row_land_together_or_not_at_all() {
         "{:?}",
         history.transitions
     );
+}
+
+fn joint_request(ids: Vec<String>, request_id: &str) -> sentinel::InvestigateManyRequestV1 {
+    sentinel::InvestigateManyRequestV1 { group_ids: ids, profile_id: "installed-reviewer".into(), hypothesis: None, request_id:request_id.into(), _caller_worker_id:None }
+}
+
+async fn second_group(f: &Fixture) -> String {
+    f.store.db().execute("UPDATE sentinel_groups SET fingerprint = 'first' WHERE id = ?",vec![json!(f.group_id)]).await.unwrap();
+    f.store.db().execute("UPDATE sentinel_occurrences SET dedupe_key = 'first' WHERE group_id = ?",vec![json!(f.group_id)]).await.unwrap();
+    seed(&f.store).await
+}
+
+#[tokio::test]
+async fn joint_concurrent_same_request_creates_one_session_with_durable_membership() {
+    let f = fixture(MODEL).await;
+    let second = second_group(&f).await;
+    let request = || joint_request(vec![second.clone(), f.group_id.clone()], "joint-idempotent");
+    let (a,b) = tokio::join!(f.investigations.investigate_many(request()),f.investigations.investigate_many(request()));
+    let a=a.unwrap().value; let b=b.unwrap().value;
+    assert_eq!(a.session_id,b.session_id);
+    assert_ne!(a.existing,b.existing);
+    assert_eq!(f.harness.calls().iter().filter(|c|matches!(c,Call::Send {..})).count(),1);
+    for id in [&second,&f.group_id] {
+        let (listed, total) = f.store.list_investigations(Some(id), &[],0,10).await.unwrap();
+        assert_eq!(total,1); assert_eq!(listed[0].id,a.investigation_id);
+    }
+    let rows=f.store.db().query("SELECT evidence FROM sentinel_investigation_members WHERE investigation_id = ?",vec![json!(a.investigation_id)]).await.unwrap();
+    assert_eq!(rows.len(),2);
+    assert!(rows.iter().all(|r|r["evidence"].as_str().unwrap().contains("occurrence_id")));
+    let conflict=f.investigations.investigate_many(joint_request(vec![second.clone(),f.group_id.clone()],"another-intent")).await.unwrap_err();
+    assert!(conflict.to_string().contains("investigation_overlap"));
+    let mut reused=request(); reused.hypothesis=Some("changed".into());
+    assert_eq!(f.investigations.investigate_many(reused).await.unwrap_err().code(),"invalid_request");
+}
+
+#[tokio::test]
+async fn joint_diagnosis_is_member_only_and_never_moves_human_state() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    let result=f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second.clone()],"diagnose-joint")).await.unwrap().value;
+    f.store.db().execute("UPDATE sentinel_groups SET status = 'resolved' WHERE id = ?",vec![json!(second)]).await.unwrap();
+    let caller=Caller {session_id:Some(result.session_id.clone()),turn_id:result.first_pass_turn_id.clone()};
+    let diagnosis = a_diagnosis("Distinct cause");
+    let denied=f.investigations.record(caller.clone(),DiagnosisRecordRequestV1 {group_id:"outside-member".into(),diagnosis:diagnosis.clone(),_caller_worker_id:None}).await.unwrap_err();
+    assert_eq!(denied.code(),"not_this_group");
+    let recorded=f.investigations.record(caller,DiagnosisRecordRequestV1 {group_id:second.clone(),diagnosis,_caller_worker_id:None}).await.unwrap();
+    assert_eq!(recorded.value.group_status,GroupStatusV1::Resolved);
+    assert_eq!(f.store.diagnoses_for_group(&second,10).await.unwrap().len(),1);
+    assert!(f.store.diagnoses_for_group(&f.group_id,10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn joint_send_failure_is_durable_and_retry_does_not_send_again() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await; f.harness.fail_sends();
+    let ids=vec![f.group_id.clone(),second];
+    let error=f.investigations.investigate_many(joint_request(ids.clone(),"failed-joint")).await.unwrap_err();
+    assert_eq!(error.code(),"harness_unavailable");
+    let retry=f.investigations.investigate_many(joint_request(ids,"failed-joint")).await.unwrap().value;
+    assert!(retry.existing);
+    assert_eq!(f.store.investigation_by_id(&retry.investigation_id).await.unwrap().unwrap().status,InvestigationStatusV1::Failed);
+    assert!(f.store.running_investigation(&f.group_id).await.unwrap().is_none());
+    assert_eq!(f.harness.calls().iter().filter(|c|matches!(c,Call::Send {..})).count(),1);
+}
+
+#[tokio::test]
+async fn joint_invalid_selection_and_unknown_profile_leave_no_investigation() {
+    let f=fixture(MODEL).await;
+    for ids in [vec![f.group_id.clone()],vec![f.group_id.clone(),f.group_id.clone()],vec!["".into(),f.group_id.clone()],vec![f.group_id.clone();6]] {
+        assert_eq!(f.investigations.investigate_many(joint_request(ids,"invalid")).await.unwrap_err().code(),"invalid_request");
+    }
+    let second=second_group(&f).await;
+    let mut request=joint_request(vec![f.group_id.clone(),second],"unknown"); request.profile_id="missing".into();
+    assert_eq!(f.investigations.investigate_many(request).await.unwrap_err().code(),"not_found");
+    assert!(f.store.running_investigations(10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn joint_profile_cannot_inject_tools_filesystem_or_delegation() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second],"profile-boundary")).await.unwrap();
+    let state=f.harness.state.lock().unwrap();
+    let payload=&state.requests[0];
+    assert_eq!(payload["model"],"test-model");
+    assert_eq!(payload["provider"],"test-provider");
+    assert_eq!(payload["options"]["functions"]["allow"],json!(["sentinel::diagnosis::record","sentinel::source::read"]));
+    assert_eq!(payload["options"]["metadata"],json!({}));
+    assert!(payload["options"].get("agent").is_none());
+    assert!(payload["options"].get("output").is_none());
+    assert!(state.calls.iter().all(|call|!matches!(call,Call::Grant {..})));
+    let prompt=payload["options"]["system_prompt"].as_str().unwrap();
+    assert!(prompt.contains("Inspect independently"));
+    assert!(prompt.ends_with(sentinel::investigation::message::SYSTEM_PROMPT));
+}
+
+#[tokio::test]
+async fn joint_partial_completion_is_failed_observable_and_secondary_history_survives() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    let result=f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second.clone()],"partial-r1")).await.unwrap().value;
+    f.investigations.record(Caller {session_id:Some(result.session_id.clone()),turn_id:result.first_pass_turn_id.clone()},DiagnosisRecordRequestV1 {group_id:second.clone(),diagnosis:a_diagnosis("only second recorded"),_caller_worker_id:None}).await.unwrap();
+    f.harness.set_status("completed",None,result.first_pass_turn_id.as_deref());
+    let events=f.investigations.reconcile().await;
+    let stored=f.store.investigation_by_id(&result.investigation_id).await.unwrap().unwrap();
+    assert_eq!(stored.status,InvestigationStatusV1::Failed);
+    assert!(stored.error.unwrap().contains("partial_diagnosis"));
+    assert_eq!(events.iter().filter(|e|matches!(e,Announcement::Investigation(_))).count(),2);
+    for id in [f.group_id,second] {
+        assert_eq!(f.store.latest_investigation(&id).await.unwrap().unwrap().id,result.investigation_id);
+        assert!(f.store.running_investigation(&id).await.unwrap().is_none());
+    }
+}
+
+#[tokio::test]
+async fn joint_cancel_preserves_partial_diagnosis_and_releases_every_member() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    let ids=vec![f.group_id.clone(),second.clone()];
+    let result=f.investigations.investigate_many(joint_request(ids.clone(),"cancel-r1")).await.unwrap().value;
+    f.investigations.record(Caller {session_id:Some(result.session_id.clone()),turn_id:result.first_pass_turn_id.clone()},DiagnosisRecordRequestV1 {group_id:second.clone(),diagnosis:a_diagnosis("partial kept"),_caller_worker_id:None}).await.unwrap();
+    let cancelled=f.investigations.cancel(sentinel::InvestigationCancelRequestV1 {investigation_id:result.investigation_id.clone(),_caller_worker_id:None}).await.unwrap();
+    assert_eq!(cancelled.value.status,InvestigationStatusV1::Cancelled);
+    assert_eq!(f.store.diagnoses_for_group(&second,10).await.unwrap().len(),1);
+    assert_eq!(f.store.group_by_id(&second).await.unwrap().unwrap().state.status,GroupStatusV1::New);
+    assert_eq!(cancelled.events.iter().filter(|e|matches!(e,Announcement::Investigation(_))).count(),2);
+    assert!(!f.investigations.investigate_many(joint_request(ids,"cancel-retry-r1")).await.unwrap().value.existing);
+}
+
+#[tokio::test]
+async fn individual_and_joint_concurrency_never_duplicate_work() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    let (individual,joint)=tokio::join!(f.investigations.investigate(InvestigateRequestV1 {group_id:f.group_id.clone(),..Default::default()}),f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second],"race-r1")));
+    assert!(individual.is_ok());
+    if let Ok(joint)=joint {assert_eq!(individual.unwrap().value.session_id,joint.value.session_id);}
+    assert_eq!(f.store.running_investigations(10).await.unwrap().len(),1);
+    assert_eq!(f.harness.calls().iter().filter(|c|matches!(c,Call::Send {..})).count(),1);
+}
+
+#[tokio::test]
+async fn joint_complete_requires_distinct_diagnoses_for_all_members() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    let ids=vec![f.group_id.clone(),second];
+    let result=f.investigations.investigate_many(joint_request(ids.clone(),"complete-r1")).await.unwrap().value;
+    for id in ids { f.investigations.record(Caller {session_id:Some(result.session_id.clone()),turn_id:result.first_pass_turn_id.clone()},DiagnosisRecordRequestV1 {group_id:id,diagnosis:a_diagnosis("independent"),_caller_worker_id:None}).await.unwrap(); }
+    f.harness.set_status("completed",None,result.first_pass_turn_id.as_deref());
+    f.investigations.reconcile().await;
+    assert_eq!(f.store.investigation_by_id(&result.investigation_id).await.unwrap().unwrap().status,InvestigationStatusV1::Completed);
+}
+
+#[tokio::test]
+async fn source_proxy_requires_real_session_member_mapping_and_relative_path() {
+    let repo=RepositoryConfigV1 {id:"source-fixture".into(),path:env!("CARGO_MANIFEST_DIR").into(),workers:vec!["compose".into()]};
+    let f=fixture_with(MODEL,vec![repo]).await; let second=second_group(&f).await;
+    let result=f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second],"source-r1")).await.unwrap().value;
+    let request=|id:String,path:&str|sentinel::investigation::source::SourceReadRequest {group_id:id,path:path.into(),line_from:Some(1),line_to:Some(4),_caller_worker_id:None};
+    assert_eq!(f.investigations.source_read(Caller::default(),request(f.group_id.clone(),"src/lib.rs")).await.unwrap_err().code(),"no_investigation");
+    let caller=Caller {session_id:Some(result.session_id),turn_id:result.first_pass_turn_id};
+    assert_eq!(f.investigations.source_read(caller.clone(),request("not-member".into(),"src/lib.rs")).await.unwrap_err().code(),"not_this_group");
+    let source=f.investigations.source_read(caller.clone(),request(f.group_id.clone(),"src/lib.rs")).await.unwrap();
+    assert!(source.content.contains("sentinel"));
+    for path in ["../harness/src/lib.rs","/etc/passwd",".env"] {assert!(f.investigations.source_read(caller.clone(),request(f.group_id.clone(),path)).await.is_err());}
+}
+
+#[tokio::test]
+async fn joint_recovery_orphan_releases_members_and_keeps_history() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    let result=f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second.clone()],"orphan-r1")).await.unwrap().value;
+    f.harness.forget_session();
+    f.investigations.reconcile().await;
+    let stored=f.store.investigation_by_id(&result.investigation_id).await.unwrap().unwrap();
+    assert_eq!(stored.status,InvestigationStatusV1::Failed);
+    for id in [f.group_id,second] {
+        assert!(f.store.running_investigation(&id).await.unwrap().is_none());
+        assert_eq!(f.store.latest_investigation(&id).await.unwrap().unwrap().session_id,result.session_id);
+    }
+}
+
+#[tokio::test]
+async fn joint_evidence_envelopes_freeze_cuts_missing_and_utf8_limits() {
+    let f=fixture(MODEL).await; let second=second_group(&f).await;
+    f.store.db().execute("UPDATE sentinel_occurrences SET evidence = ? WHERE group_id = ?",vec![json!("\"\\\n😀".repeat(3000)),json!(f.group_id)]).await.unwrap();
+    f.store.db().execute("UPDATE sentinel_occurrences SET evidence = NULL WHERE group_id = ?",vec![json!(second)]).await.unwrap();
+    let result=f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second.clone()],"bounded-r1")).await.unwrap().value;
+    let rows=f.store.db().query("SELECT group_id,evidence FROM sentinel_investigation_members WHERE investigation_id = ?",vec![json!(result.investigation_id)]).await.unwrap();
+    for row in rows {
+        let encoded=row["evidence"].as_str().unwrap(); assert!(encoded.len()<=5000);
+        let packet:Value=serde_json::from_str(encoded).unwrap();
+        if row["group_id"]==second {assert_eq!(packet["missing"],true);} else {assert_eq!(packet["truncated"],true);assert!(packet["evidence"].as_str().unwrap().len()<=3500);}
+    }
+    let state=f.harness.state.lock().unwrap();assert!(state.requests[0]["message"].as_str().unwrap().len()<=32768);
+}
+
+#[tokio::test]
+async fn source_proxy_redacts_whole_synthetic_file_before_window_and_fails_closed_on_ceiling() {
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/evidence/group-investigation-a73c/r2-source-fixtures").join(format!("proxy-{}",uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&root).unwrap();
+    let pem="before\n-----BEGIN PRIVATE KEY-----\nQUJDREVGR0g=\n-----END PRIVATE KEY-----\nafter\n";
+    std::fs::write(root.join("synthetic.rs"),pem).unwrap();
+    std::fs::write(root.join("orphan-start.rs"),"QUJDREVGR0g=\n-----END PRIVATE KEY-----\n").unwrap();
+    std::fs::write(root.join("orphan-end.rs"),"-----BEGIN PRIVATE KEY-----\nQUJDREVGR0g=\n").unwrap();
+    let mut ceiling="x".repeat(262100);ceiling.push_str("\n-----BEGIN PRIVATE KEY-----\n");ceiling.push_str(&"Q".repeat(100));ceiling.push_str("\n-----END PRIVATE KEY-----");
+    std::fs::write(root.join("ceiling.rs"),ceiling).unwrap();
+    std::fs::write(root.join("response-cap.md"),"é".repeat(8000)).unwrap();
+    let repo=RepositoryConfigV1 {id:"synthetic-redaction".into(),path:root.to_str().unwrap().into(),workers:vec!["compose".into()]};
+    let f=fixture_with(MODEL,vec![repo]).await;let second=second_group(&f).await;
+    let joint=f.investigations.investigate_many(joint_request(vec![f.group_id.clone(),second],"synthetic-pem-r2")).await.unwrap().value;
+    let caller=Caller {session_id:Some(joint.session_id),turn_id:joint.first_pass_turn_id};
+    let request=|path:&str,from,to|sentinel::investigation::source::SourceReadRequest {group_id:f.group_id.clone(),path:path.into(),line_from:Some(from),line_to:Some(to),_caller_worker_id:None};
+    let body=f.investigations.source_read(caller.clone(),request("synthetic.rs",3,3)).await.unwrap();
+    assert_eq!(body.line_from,3);assert_eq!(body.content,"[redacted:source]");assert!(body.redactions>0);
+    let whole=f.investigations.source_read(caller.clone(),request("synthetic.rs",1,5)).await.unwrap();
+    assert_eq!(whole.content.lines().count(),5);assert_eq!(whole.content.lines().nth(4),Some("after"));assert!(!whole.content.contains("QUJDREVGR0g="));
+    for path in ["orphan-start.rs","orphan-end.rs","ceiling.rs"] {
+        let error=f.investigations.source_read(caller.clone(),request(path,1,10)).await.unwrap_err();assert_eq!(error.code(),"no_evidence");assert!(!error.to_string().contains("QUJDREVGR0g="));
+    }
+    let cap=f.investigations.source_read(caller,request("response-cap.md",1,1)).await.unwrap();
+    assert!(cap.truncated);assert_eq!(cap.content.len(),12000);assert!(cap.content.ends_with('é'));
 }

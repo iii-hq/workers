@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "synthetic_only": true,
+  "privacy": "No real issue IDs, data or logs; catalog and issue records are synthetic.",
+  "baseline": "9eb9b507598a0dbe0937b883aebe89ebcba7f6bb plus pre-fix source hashes recorded in fixture README",
+  "delivered_revision": "Git commit containing this manifest; exact commit is recorded in PR body to avoid circular identity.",
+  "conditions": {
+    "wide": "1440x1000",
+    "phone": "390x844",
+    "pane520": "520px pane in 1440x1000",
+    "themes": [
+      "dark",
+      "light"
+    ],
+    "reduced_motion": true,
+    "description_chars": 3500
+  },
+  "verification": "job a73c-sr-tests-49 exit0:53 Node,tsc/build/lint strict0/0,6 selector scenarios and full smoke regression PASS",
+  "pixel_inspection": "Not claimed: images omitted by tool; automated bounds/click/focus checks are not pixel review.",
+  "canonical": {
+    "bucket": "scratch",
+    "visibility": "private/local existing destination; no policy changed",
+    "objects": [
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sp-selector-before-wide-dark.png",
+        "size": 107516,
+        "content_type": "image/png",
+        "etag": "\"729a4195a9a40422c218b5e2576d6cd35b19b6488654cbdef540da2e2509abc4\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sr-after-wide-dark.png",
+        "size": 100717,
+        "content_type": "image/png",
+        "etag": "\"b57d25a2f47b092d69761585408ed4261ed72036708640dc11c98d53899e6006\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sp-selector-before-wide-light.png",
+        "size": 106659,
+        "content_type": "image/png",
+        "etag": "\"a43ad21804b03c49c77dd47f9fc592deecf955cd05f69172d445b6342616a947\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sr-after-wide-light.png",
+        "size": 100568,
+        "content_type": "image/png",
+        "etag": "\"5d5b644f86bfeac3e2a35be28353f5e16bc3f40136c3fcc3262bf021132dec6f\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sp-selector-before-phone-dark.png",
+        "size": 220804,
+        "content_type": "image/png",
+        "etag": "\"126da9e1687a8469b1f4f953ed9b7b362afad1e471d371371d7d98a327d62c60\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sr-after-phone-dark.png",
+        "size": 70230,
+        "content_type": "image/png",
+        "etag": "\"4315166e90b55d64946e1afc253ddfff56d445b59acbe7b456be091cf4d17377\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sp-selector-before-phone-light.png",
+        "size": 220319,
+        "content_type": "image/png",
+        "etag": "\"8a0f1f1331132bab6f833caaa2444534cfc83b29f26fdb57448543ba79d93bb5\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sr-after-phone-light.png",
+        "size": 74547,
+        "content_type": "image/png",
+        "etag": "\"4949efaf1f22fe0495abda5cfe62ab1fccac099a5dde537b00c33979cae61200\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sp-selector-before-pane520-dark.png",
+        "size": 106429,
+        "content_type": "image/png",
+        "etag": "\"7b2c87f17aab4c48502eea1110f33ff524b9925b4ad11bd22d31c53ffb24ae39\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sr-after-pane520-dark.png",
+        "size": 114966,
+        "content_type": "image/png",
+        "etag": "\"69c8ce8342ca72fd7cdebe761c74418dc068f03b740f069d785752b7dad4b382\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sp-selector-before-pane520-light.png",
+        "size": 105818,
+        "content_type": "image/png",
+        "etag": "\"c2c29966a64e3d97463553d8f00798d3414c3aeb8d3fe9e7f9e160a821eab1eb\"",
+        "etag_is_content_hash": false
+      },
+      {
+        "key": "evidence/workers-sentinel/KAN-63/selector-pr-resume/sr-after-pane520-light.png",
+        "size": 114844,
+        "content_type": "image/png",
+        "etag": "\"6dba60fa1599d6621a0abdeb49b4b1975626581492e96d0af16fec761acc6f9a\"",
+        "etag_is_content_hash": false
+      }
+    ]
+  },
+  "pairs": [
+    {
+      "scenario": "wide",
+      "theme": "dark",
+      "before": "sp-selector-before-wide-dark.png",
+      "after": "sr-selector-after-wide-dark.png",
+      "original_after": "sr-after-wide-dark.png"
+    },
+    {
+      "scenario": "wide",
+      "theme": "light",
+      "before": "sp-selector-before-wide-light.png",
+      "after": "sr-selector-after-wide-light.png",
+      "original_after": "sr-after-wide-light.png"
+    },
+    {
+      "scenario": "phone",
+      "theme": "dark",
+      "before": "sp-selector-before-phone-dark.png",
+      "after": "sr-selector-after-phone-dark.png",
+      "original_after": "sr-after-phone-dark.png"
+    },
+    {
+      "scenario": "phone",
+      "theme": "light",
+      "before": "sp-selector-before-phone-light.png",
+      "after": "sr-selector-after-phone-light.png",
+      "original_after": "sr-after-phone-light.png"
+    },
+    {
+      "scenario": "pane520",
+      "theme": "dark",
+      "before": "sp-selector-before-pane520-dark.png",
+      "after": "sr-selector-after-pane520-dark.png",
+      "original_after": "sr-after-pane520-dark.png"
+    },
+    {
+      "scenario": "pane520",
+      "theme": "light",
+      "before": "sp-selector-before-pane520-light.png",
+      "after": "sr-selector-after-pane520-light.png",
+      "original_after": "sr-after-pane520-light.png"
+    }
+  ]
+}

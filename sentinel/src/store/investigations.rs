@@ -54,9 +54,7 @@ impl<D: Db> Store<D> {
         &self,
         write: &InvestigationWrite,
     ) -> Result<bool, SentinelError> {
-        let result = self
-            .db()
-            .execute(
+        let mut statements = vec![Statement::new(
                 "INSERT INTO sentinel_investigations \
                  (id, group_id, occurrence_id, session_id, mode, nudged, model, provider, \
                   repository_id, checkout_ref, investigated_version, status, requested_by, \
@@ -77,8 +75,11 @@ impl<D: Db> Store<D> {
                     json!(write.requested_by),
                     json!(write.created_ms),
                 ],
-            )
-            .await;
+            )];
+        if write.status == InvestigationStatusV1::Running {
+            statements.push(Statement::new("INSERT INTO sentinel_investigation_members (investigation_id, group_id, evidence, active) VALUES (?, ?, '', 1)",vec![json!(write.id),json!(write.group_id)]));
+        }
+        let result = self.db().transaction(&statements).await;
         match result {
             Ok(_) => Ok(true),
             Err(error) if is_conflict(&error) => Ok(false),
@@ -109,9 +110,9 @@ impl<D: Db> Store<D> {
         Ok(self
             .db()
             .query(
-                "SELECT * FROM sentinel_investigations WHERE group_id = ? AND status = 'running' \
+                "SELECT * FROM sentinel_investigations WHERE (group_id = ? OR id IN (SELECT investigation_id FROM sentinel_investigation_members WHERE group_id = ?)) AND status = 'running' \
                  ORDER BY created_ms DESC LIMIT 1",
-                vec![json!(group_id)],
+                vec![json!(group_id), json!(group_id)],
             )
             .await?
             .first()
@@ -143,9 +144,8 @@ impl<D: Db> Store<D> {
         Ok(self
             .db()
             .query(
-                "SELECT * FROM sentinel_investigations WHERE group_id = ? \
-                 ORDER BY created_ms DESC LIMIT 1",
-                vec![json!(group_id)],
+                "SELECT * FROM sentinel_investigations WHERE (group_id = ? OR id IN (SELECT investigation_id FROM sentinel_investigation_members WHERE group_id = ?)) ORDER BY created_ms DESC LIMIT 1",
+                vec![json!(group_id), json!(group_id)],
             )
             .await?
             .first()
@@ -181,7 +181,8 @@ impl<D: Db> Store<D> {
         let mut where_sql = String::from("1 = 1");
         let mut params: Vec<Value> = Vec::new();
         if let Some(group_id) = group_id {
-            where_sql.push_str(" AND group_id = ?");
+            where_sql.push_str(" AND (group_id = ? OR id IN (SELECT investigation_id FROM sentinel_investigation_members WHERE group_id = ?))");
+            params.push(json!(group_id));
             params.push(json!(group_id));
         }
         if !statuses.is_empty() {
@@ -414,6 +415,17 @@ impl<D: Db> Store<D> {
         Err(SentinelError::dependency(
             "the group changed under every attempt to record the diagnosis",
         ))
+    }
+
+    pub async fn record_joint_diagnosis(&self, investigation_id: &str, group_id: &str, turn_id: Option<&str>, source: DiagnosisSourceV1, diagnosis: &DiagnosisV1) -> Result<DiagnosisOutcome, SentinelError> {
+        let group = self.group_by_id(group_id).await?.ok_or_else(|| SentinelError::NotFound(group_id.into()))?;
+        let diagnosis_id = ids::diagnosis_id();
+        let version = self.diagnosis_count(investigation_id).await? + 1;
+        let results = self.db().transaction(&[
+            Statement::new("INSERT INTO sentinel_diagnoses (id, investigation_id, group_id, turn_id, source, recorded_by, diagnosis, valid, created_ms) SELECT ?, ?, ?, ?, ?, 'agent', ?, 1, ? WHERE EXISTS (SELECT 1 FROM sentinel_investigation_members WHERE investigation_id = ? AND group_id = ?)",vec![json!(diagnosis_id),json!(investigation_id),json!(group_id),json!(turn_id),json!(source.as_str()),json!(serde_json::to_string(diagnosis).unwrap()),json!(ids::now_ms()),json!(investigation_id),json!(group_id)]),
+        ]).await?;
+        if !results.first().is_some_and(|step| step.affected_rows > 0) { return Err(SentinelError::NotThisGroup(group_id.into())); }
+        Ok(DiagnosisOutcome {diagnosis_id, version, group_status:group.state.status, group_moved:false})
     }
 
     pub async fn investigation_counts(&self) -> Result<InvestigationCountsV1, SentinelError> {

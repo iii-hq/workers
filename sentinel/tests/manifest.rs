@@ -1,3 +1,22 @@
+#[test]
+fn source_proxy_reads_invocation_identity_inside_its_handler_future() {
+    let source=include_str!("../src/functions.rs");
+    let start=source.find("iii.register_function(SOURCE_READ_ID,").expect("source proxy registered");
+    let block=&source[start..];
+    let block=&block[..block.find(".description(SOURCE_READ_DESC)").unwrap()];
+    assert!(block.find("get_baggage_entry").unwrap()>block.find("async move {").unwrap());
+    assert!(!block.contains("tokio::spawn"));
+}
+
+#[test]
+fn live_e2e_guard_precedes_client_creation_and_connection() {
+    let source=include_str!("e2e_ingest.rs");
+    let connect=&source[source.find("async fn connect(").unwrap()..];
+    assert!(connect.find("if !live_e2e_opted_in()").unwrap()<connect.find("register_worker(").unwrap(),"opt-in is checked before any client exists");
+    let test=&source[source.find("async fn a_real_failure_becomes_a_group_attributed_to_the_worker_that_owns_it()").unwrap()..];
+    assert!(test.find("if !live_e2e_opted_in()").unwrap()<test.find("connect(\"sentinel-e2e\")").unwrap(),"default cargo test must not connect to a live engine");
+}
+
 use sentinel::{manifest, WorkerConfig};
 
 #[test]

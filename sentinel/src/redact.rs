@@ -88,6 +88,36 @@ impl Redactor {
         (current, hits)
     }
 
+    /// Source reads need whole-file context before selecting a line window.
+    /// Preserve newline positions even when a multiline secret is removed.
+    pub fn redact_source(&self, value: &str) -> Result<(String, u64), String> {
+        let markers = Regex::new(r"----+(BEGIN|END) ([A-Z ]*PRIVATE KEY)-*").expect("static marker regex");
+        let mut opened: Option<String> = None;
+        for captures in markers.captures_iter(value) {
+            let full=captures.get(0).unwrap().as_str();
+            let expected=format!("-----{} {}-----", &captures[1], &captures[2]);
+            if full != expected {return Err("source_unavailable: incomplete PEM delimiter".into());}
+            match &captures[1] {
+                "BEGIN" if opened.is_none() => opened=Some(captures[2].to_string()),
+                "END" if opened.as_deref()==Some(&captures[2]) => opened=None,
+                _=>return Err("source_unavailable: unmatched PEM delimiter".into()),
+            }
+        }
+        if opened.is_some() {return Err("source_unavailable: incomplete PEM block".into());}
+        let mut current=value.to_string();
+        let mut hits=0;
+        for rule in &self.rules {
+            hits+=rule.pattern.find_iter(&current).count() as u64;
+            current=rule.pattern.replace_all(&current, |capture: &regex::Captures<'_>| {
+                let matched=capture.get(0).unwrap().as_str();
+                // A source excerpt needs the position of each original line,
+                // not the replacement template's content or capture groups.
+                matched.split('\n').map(|line|if line.is_empty(){String::new()}else{String::from("[redacted:source]")}).collect::<Vec<_>>().join("\n")
+            }).into_owned();
+        }
+        Ok((current,hits))
+    }
+
     /// Redact in place, for the common case of a field being overwritten.
     pub fn redact_in_place(&self, value: &mut String) -> u64 {
         let (redacted, hits) = self.redact(value);
