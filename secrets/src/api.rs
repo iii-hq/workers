@@ -41,9 +41,6 @@ pub mod ids {
         IMPORT,
         STATUS,
     ];
-    /// Functions whose input or output carries a value: registered with
-    /// `observable: false`, so no observer ever receives one.
-    pub const UNOBSERVABLE: [&str; 3] = [SET, COMPARE_AND_SET, RESOLVE];
 }
 
 /// Where a secret's value lives.

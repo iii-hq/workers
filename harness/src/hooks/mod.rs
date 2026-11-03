@@ -372,7 +372,7 @@ impl HookRegistry {
                     .map(|_| ())
                     .map_err(|message| ObserveRejection::new("CONFIG_ERROR", message))
             });
-            iii.on_observer_deliver_for(id, {
+            iii.on_observation_deliver_for(id, {
                 let iii = iii.clone();
                 move |call: Call, observers: Vec<Observer>| {
                     let iii = iii.clone();

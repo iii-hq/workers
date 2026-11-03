@@ -116,12 +116,12 @@ export function parseAsk(
  * question, by position.
  *
  * - `picked`: the option labels the user ticked, in any (click) order. A
- *   single-select (radio) holds at most one; if it holds more, the first in
+ *   single-select holds at most one; if it holds more, the first in
  *   option order counts. A label that is not one of the question's options
  *   is ignored.
  * - `other`: the free-text "Other" field as typed (a single-line input).
  *   On a single-select a non-blank `other` replaces the pick, so the card
- *   clears `other` when the user picks an option radio, and clears `picked`
+ *   clears `other` when the user ticks an option, and clears `picked`
  *   when they choose Other.
  */
 export interface AskSelection {

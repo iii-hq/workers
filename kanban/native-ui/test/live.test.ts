@@ -152,7 +152,7 @@ describe('this app’s own writes keep a partial lane’s count', () => {
   it('a ticket deleted and restored from its screen counts out and back in', async () => {
     const { host, answers } = await partialDone()
     await openUnread(host)
-    answers.menus.push('Delete ticket…')
+    answers.menus.push('Delete ticket')
     answers.confirms.push(true)
     await host.press(onTop(host, 'ticket-menu'))
     await host.settle()

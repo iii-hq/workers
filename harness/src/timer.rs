@@ -214,7 +214,7 @@ impl TimerBus {
         let bus = Self::new(iii.clone());
         iii.on_observer_added_for(ON_TIMER_FN, bus.clone());
         iii.on_observer_removed_for(ON_TIMER_FN, bus.clone());
-        iii.on_observer_match_for(ON_TIMER_FN, Match::keys(observer_instant, call_instant));
+        iii.on_observation_match_for(ON_TIMER_FN, Match::keys(observer_instant, call_instant));
         iii.register_function(
             ON_TIMER_FN,
             RegisterFunction::new(|event: TimerEvent| Ok::<TimerEvent, Error>(event))

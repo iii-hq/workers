@@ -21,7 +21,7 @@ use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::{SandboxError, SandboxErrorWire},
+    errors::{Payload, SandboxError, SandboxErrorWire},
     fs::adapter::FsRunner,
     registry::SandboxRegistry,
 };
@@ -261,11 +261,12 @@ pub(super) fn register(
     let iii_clone = iii.clone();
     iii.register_function(
         "sandbox-libkrun::fs::read",
-        RegisterFunction::new_async(move |req: ReadRequest| {
+        RegisterFunction::new_async(move |req: Payload<ReadRequest>| {
             let registry = registry.clone();
             let runner = runner.clone();
             let iii = iii_clone.clone();
             async move {
+                let req = req.decode()?;
                 let sid = req.sandbox_id.clone();
                 let start = std::time::Instant::now();
                 let result = handle_read(req, &registry, &*runner, &iii).await;

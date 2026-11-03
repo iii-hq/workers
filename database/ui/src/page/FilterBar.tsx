@@ -29,13 +29,13 @@
 
 import {
   Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  Input,
+  ShadcnDropdownMenu as DropdownMenu,
+  ShadcnDropdownMenuContent as DropdownMenuContent,
+  ShadcnDropdownMenuItem as DropdownMenuItem,
+  ShadcnDropdownMenuTrigger as DropdownMenuTrigger,
+  ShadcnInput as Input,
 } from '@iii-dev/console-ui'
-import { Code, Eye, EyeOff, Plus, X } from 'lucide-react'
+import { Code, Eye, EyeOff, ListFilter, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { cellText } from '../lib/grid-cursor'
 import {
@@ -174,8 +174,8 @@ export function FilterBar({
       )}
 
       <Button variant="ghost" size="sm" onClick={add} disabled={columns.length === 0}>
-        <Plus size={16} aria-hidden />
-        Filter
+        <ListFilter size={16} aria-hidden />
+        {filters.length > 0 ? 'Add filter' : 'Filter'}
       </Button>
       {allowRaw ? (
         <Button
@@ -439,11 +439,7 @@ function Picker({
 }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button type="button" className={`db-chip-seg ${className}`}>
-          {label}
-        </button>
-      </DropdownMenuTrigger>
+      <DropdownMenuTrigger className={`db-chip-seg ${className}`}>{label}</DropdownMenuTrigger>
       <DropdownMenuContent align="start">
         {items.map((it) => (
           <DropdownMenuItem key={it.value} onClick={() => onPick(it.value)}>
@@ -477,11 +473,10 @@ function ValueInput({
     <span className="db-chip-seg val">
       <Input
         value={cellTextOrEmpty(value)}
-        onChange={onChange}
+        onChange={(e) => onChange(e.target.value)}
         onFocus={onFocus}
         onBlur={onBlur}
         placeholder={label}
-        preserveCase
         aria-label={label}
         className="db-chip-input"
       />
@@ -524,7 +519,8 @@ function SetValue({
     <span className="db-chip-seg val set">
       <Input
         value={text}
-        onChange={(next) => {
+        onChange={(e) => {
+          const next = e.target.value
           setText(next)
           onChange(parseSetText(next))
           onFocusText?.(fragment(next))
@@ -532,7 +528,6 @@ function SetValue({
         onFocus={() => onFocusText?.(fragment(text))}
         onBlur={onBlur}
         placeholder="a, b, c"
-        preserveCase
         aria-label="values, comma separated"
         className="db-chip-input wide"
       />

@@ -116,7 +116,7 @@ tick that re-fires an already-running node is a no-op at the harness layer.
 A function id has one host per namespace: the engine rejects a second
 registration of the same id with `FUNCTION_NAMESPACE_CONFLICT`. The worker
 registers every `workflow::*` function, `workflow::on-run-completed` included,
-without `standby`, so the first instance in a namespace hosts them all and the
+so the first instance in a namespace hosts them all and the
 per-run `WorkflowLocks` live in that one process. A second instance in the same
 namespace gets every registration rejected while its observers (the sweep and
 the harness hooks) still deliver to the first instance's functions, so each

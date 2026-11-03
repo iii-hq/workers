@@ -256,7 +256,7 @@ pub fn register_function(iii: &Arc<IIIClient>, hub: &CrawlFeedHub) {
             tracing::info!(observer_id = obs.id(), "crawl-item observer removed");
         }
     });
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_CRAWL_ITEM_FN,
         Match::keys(
             |obs| Keys::from(observer_key(obs.args_value())),
@@ -264,7 +264,7 @@ pub fn register_function(iii: &Arc<IIIClient>, hub: &CrawlFeedHub) {
         ),
     );
     let engine = iii.clone();
-    iii.on_observer_deliver_for(
+    iii.on_observation_deliver_for(
         ON_CRAWL_ITEM_FN,
         move |call: Call, observers: Vec<Observer>| {
             let engine = engine.clone();

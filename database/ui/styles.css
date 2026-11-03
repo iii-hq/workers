@@ -94,9 +94,26 @@
  * ====================================================================== */
 
 [data-iii-ui="database"] .db-ui-shell {
+  /* Inter for everything a person reads: chrome, table names, cell values.
+     Geist Mono (`--font-mono`) stays on SQL, plans and identifiers typed as
+     code. The console loads Inter already (the workspace header, chat). */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  /* One black ground for every column, so the page reads as one surface;
+     the grid's header row and fields lift a step off it. */
+  --db-ground: var(--color-bg);
+  --db-lift: var(--color-panel);
+  /* A diagram node sits on the ground itself, so the neutral-100 edge
+     (the ground's own colour in light) would erase it: ink at 8% reads as
+     neutral-200 in light and the usual faint edge in dark. */
+  --db-node-edge: color-mix(in oklab, var(--color-ink) 8%, transparent);
   min-height: 360px;
   color: var(--color-ink);
+  background: var(--db-ground);
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  font-feature-settings: "cv11";
 }
 [data-iii-ui="database"] .db-ui-shell *,
 [data-iii-ui="database"] .db-ui-shell *::before,
@@ -111,23 +128,90 @@
   outline-offset: -2px;
 }
 
+/* --- header -------------------------------------------------------------- */
+[data-iii-ui="database"] .db-ui-header {
+  background: var(--db-ground);
+}
+[data-iii-ui="database"] .db-ui-header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+}
+[data-iii-ui="database"] .db-ui-header h1 + span {
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-ui-driver {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-ui-dbpick {
+  gap: 8px;
+  min-width: 140px;
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-ui-dbpick svg {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-ui-dbpick-row {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 320px;
+}
+[data-iii-ui="database"] .db-ui-dbpick-row .name {
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-ui-dbpick-row .meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+
 /* --- panel switcher ---------------------------------------------------- */
 [data-iii-ui="database"] .db-ui-modesbar {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 0 12px;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
   flex-shrink: 0;
+  min-height: 44px;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--db-ground);
+}
+[data-iii-ui="database"] .db-ui-tabs {
+  flex-shrink: 0;
+  gap: 0;
+}
+[data-iii-ui="database"] .db-ui-tabs-list {
+  height: 44px;
+  gap: 4px;
+  padding: 0;
+}
+[data-iii-ui="database"] .db-ui-tab {
+  height: 44px;
+  flex: none;
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+/* shadcn draws the line 5px under the trigger; the strip is the bar itself,
+   so the active line sits on the bar's bottom rule. */
+[data-iii-ui="database"] .db-ui-tab::after {
+  bottom: -1px;
 }
 /* The trace capability-hiding leaves: which modes this worker can't serve. */
 [data-iii-ui="database"] .db-ui-modes-hint {
-  padding: 6px 0 8px;
-  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
   color: var(--color-ink-faint);
-}
-[data-iii-ui="database"] .db-ui-tabs {
-  width: 100%;
-  flex-shrink: 0;
 }
 
 /* --- browser: navigation column + workspace ---------------------------- */
@@ -147,6 +231,10 @@
 [data-iii-ui="database"] .db-ui-main[hidden] {
   display: none;
 }
+[data-iii-ui="database"] .db-ui-side,
+[data-iii-ui="database"] .db-ui-main {
+  background: var(--db-ground);
+}
 [data-iii-ui="database"] .db-ui-side-head {
   display: flex;
   flex: 1;
@@ -155,13 +243,17 @@
   gap: 8px;
 }
 [data-iii-ui="database"] .db-ui-side-head .label {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  color: var(--color-ink-faint);
+  letter-spacing: 0.005em;
+  color: var(--color-ink);
 }
-[data-iii-ui="database"] .db-ui-side-head .count {
-  font-size: 11px;
-  color: var(--color-ink-ghost);
+[data-iii-ui="database"] .db-ui-side-head .count,
+[data-iii-ui="database"] .db-tree-grouphead .count {
+  height: 20px;
+  min-width: 20px;
+  padding: 0 7px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="database"] .db-ui-side-head .spacer {
@@ -170,8 +262,8 @@
 /* Selection is dimmed, not hidden, on modes that barely use it. */
 [data-iii-ui="database"] .db-ui-side-note {
   margin: 0;
-  padding: 8px 14px;
-  font-size: 11.5px;
+  padding: 4px 16px 8px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--color-ink-faint);
 }
@@ -182,7 +274,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 6px 12px;
+  padding: 0 8px 12px;
 }
 /* Fallback scroll for panes shorter than a panel's floor (the diagram frame
    keeps a minimum height); panels normally size to fit. */
@@ -195,7 +287,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--color-ink);
 }
@@ -203,7 +295,7 @@
 /* --- shared idioms ------------------------------------------------------ */
 [data-iii-ui="database"] .db-msg {
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 14px;
   /* faint, not ghost: these are answers ("no tables", "· probing…"), and
      ghost measures 2.3:1 on this paper. */
   color: var(--color-ink-faint);
@@ -222,24 +314,13 @@
 [data-iii-ui="database"] .db-bar {
   flex-wrap: wrap;
   height: auto;
-  min-height: 2.25rem;
-  padding-block: 4px;
-  font-size: 12px;
+  min-height: 52px;
+  padding: 8px 12px 8px 16px;
+  background: var(--db-ground);
+  font-size: 14px;
 }
 [data-iii-ui="database"] .db-toolbar-spacer {
   flex: 1 1 0;
-}
-[data-iii-ui="database"] .db-linkish {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
-  font: inherit;
-  color: var(--color-accent);
-}
-[data-iii-ui="database"] .db-linkish:hover {
-  text-decoration: underline;
 }
 [data-iii-ui="database"] .db-num {
   font-variant-numeric: tabular-nums;
@@ -264,7 +345,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11.5px;
+  font-size: 13px;
   padding: 3px 0;
 }
 [data-iii-ui="database"] .db-bar-label {
@@ -294,12 +375,49 @@
 
 /* ---- schema tree ---- */
 [data-iii-ui="database"] .db-tree-filter {
-  padding: 6px 4px 8px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 4px 0 12px;
+}
+[data-iii-ui="database"] .db-tree-filter-icon {
+  position: absolute;
+  left: 10px;
+  top: calc(50% - 4px);
+  transform: translateY(-50%);
+  color: var(--color-ink-ghost);
+  pointer-events: none;
+}
+[data-iii-ui="database"] .db-tree-filter-input {
+  height: 34px;
+  padding-left: 34px;
+  padding-right: 32px;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+[data-iii-ui="database"] .db-tree-filter-clear {
+  position: absolute;
+  right: 6px;
+  top: calc(50% - 4px);
+  transform: translateY(-50%);
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-tree-filter-clear:hover {
+  color: var(--color-ink);
 }
 [data-iii-ui="database"] .db-tree-grouphead {
-  padding: 12px 12px 4px;
-  font-size: 12px;
-  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 10px 6px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-tree ul {
@@ -307,36 +425,42 @@
   margin: 0;
   padding: 0;
 }
+[data-iii-ui="database"] .db-tree li + li {
+  margin-top: 1px;
+}
 [data-iii-ui="database"] .db-tree-row {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  min-height: 34px;
   padding-right: 8px;
   border-radius: 6px;
 }
 [data-iii-ui="database"] .db-tree-row:hover {
   background: var(--color-surface-hover);
 }
-/* Selection stays neutral: wash + edge rail + stronger name. */
+/* Selection stays neutral: wash + an ink rail on the leading edge + the
+   name in full ink — the table editor's "you are here". */
 [data-iii-ui="database"] .db-tree-row.active {
   background: var(--color-surface-selected);
 }
 [data-iii-ui="database"] .db-tree-row.active::before {
   content: "";
   position: absolute;
-  left: 4px;
-  top: 6px;
-  bottom: 6px;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
   width: 2px;
-  background: var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-ink);
 }
 [data-iii-ui="database"] .db-tree-toggle {
   appearance: none;
   background: transparent;
   border: 0;
   cursor: pointer;
-  padding: 6px 0 6px 10px;
+  padding: 8px 0 8px 6px;
   color: var(--color-ink-ghost);
   display: inline-flex;
 }
@@ -356,37 +480,57 @@
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   flex: 1;
   min-width: 0;
-  padding: 6px 0;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  padding: 7px 0 7px 4px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  letter-spacing: 0.01em;
   text-align: left;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-tree-name:hover {
   color: var(--color-ink);
 }
+[data-iii-ui="database"] .db-tree-icon {
+  flex: none;
+  color: var(--color-ink-ghost);
+}
 [data-iii-ui="database"] .db-tree-row.active .db-tree-name {
   color: var(--color-ink);
-  font-weight: 600;
+  font-weight: 500;
+}
+[data-iii-ui="database"] .db-tree-row.active .db-tree-icon {
+  color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-trunc {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="database"] .db-cols {
-  padding-bottom: 4px;
+[data-iii-ui="database"] .db-tree ul.db-cols {
+  margin: 2px 0 6px 18px;
+  padding-left: 12px;
+  border-left: 1px solid var(--color-edge);
 }
 [data-iii-ui="database"] .db-col {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 12px 3px 36px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 8px;
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-col-glyph {
+  width: 16px;
+  flex: none;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-col-glyph.key,
+[data-iii-ui="database"] .db-col-key {
+  flex: none;
+  color: var(--color-glyph-amber);
 }
 [data-iii-ui="database"] .db-col-name {
   color: var(--color-ink-faint);
@@ -395,21 +539,26 @@
   white-space: nowrap;
 }
 [data-iii-ui="database"] .db-col-type {
+  margin-left: auto;
+  padding-left: 8px;
   color: var(--color-ink-ghost);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 [data-iii-ui="database"] .db-idx-head {
-  padding: 6px 12px 2px 36px;
+  padding: 10px 8px 2px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink-ghost);
 }
 [data-iii-ui="database"] .db-idx {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 12px 3px 36px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 8px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-idx-name {
   color: var(--color-ink-faint);
@@ -418,12 +567,13 @@
   white-space: nowrap;
 }
 [data-iii-ui="database"] .db-idx-unique {
-  color: var(--color-accent);
-  font-size: 11px;
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-tree-msg {
-  padding: 4px 12px 4px 36px;
-  font-size: 11px;
+  padding: 6px 10px;
+  font-size: 13px;
   color: var(--color-ink-ghost);
 }
 [data-iii-ui="database"] .db-tree-msg.alert {
@@ -432,103 +582,205 @@
 }
 
 /* ---- result grid ---- */
-[data-iii-ui="database"] .db-grid-wrap {
-  overflow-x: auto;
-}
-/* Inside the panels' own scroll panes the wrap must NOT be a second scroll
-   container: nested x-scroll drew a phantom scrollbar strip under short
-   tables, and any overflow ancestor between thead.sticky and the real
-   scroller breaks sticky headers. The bare rule above stays for the
-   chat-card contexts, which have no scroll pane of their own. */
-[data-iii-ui="database"] .db-data-scroll .db-grid-wrap {
-  overflow-x: visible;
-}
-[data-iii-ui="database"] .db-sql-results .db-grid-wrap {
-  overflow-x: visible;
+/* The grid is the shadcn Table: its own `overflow-x-auto` container wraps
+   the <table>. Inside the panels' scroll panes that wrapper must NOT be a
+   second scroll container: nested x-scroll drew a phantom scrollbar strip
+   under short tables, and any overflow ancestor between the sticky header
+   and the real scroller breaks sticky headers. */
+[data-iii-ui="database"] .db-data-scroll [data-slot="table-container"],
+[data-iii-ui="database"] .db-sql-results [data-slot="table-container"] {
+  overflow: visible;
 }
 /* `table-layout: fixed`: without it the auto algorithm widens a column that
-   carries an explicit width, so a resize does not hold. */
+   carries an explicit width, so a resize does not hold. Every column starts
+   at 200px (a resize overrides it inline); wide tables scroll sideways like
+   a spreadsheet, narrow ones stretch to the pane. */
 [data-iii-ui="database"] .db-grid {
-  width: 100%;
-  border-collapse: collapse;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+/* The sticky header is its own stacking context (any sticky box is), so it
+   must sit above the body's sticky gutter cells or row numbers paint over
+   the header row while scrolling. */
+[data-iii-ui="database"] .db-grid thead.sticky {
+  position: sticky;
+  top: 0;
+  z-index: 3;
 }
 [data-iii-ui="database"] .db-grid thead.sticky th {
   position: sticky;
   top: 0;
   z-index: 10;
 }
+[data-iii-ui="database"] .db-grid thead tr {
+  border: 0;
+}
 [data-iii-ui="database"] .db-grid th {
   position: relative;
-  padding: 8px 12px;
-  font-size: 11px;
-  white-space: nowrap;
-  background: var(--color-panel-raised);
-  border-bottom: 1px solid var(--color-edge);
-  text-align: left;
+  height: 40px;
+  padding: 0 8px 0 12px;
+  font-size: 13px;
   font-weight: 500;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--color-ink);
+  background: var(--db-lift);
+  border-bottom: 1px solid var(--color-edge);
+  border-right: 1px solid var(--color-edge);
 }
-[data-iii-ui="database"] .db-grid th[style*="width"] {
+[data-iii-ui="database"] .db-grid th {
   overflow: hidden;
 }
-[data-iii-ui="database"] .db-grid th.num {
-  text-align: right;
+[data-iii-ui="database"] .db-th {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 [data-iii-ui="database"] .db-grid th .colname {
-  color: var(--color-ink-faint);
+  color: var(--color-ink);
   font-weight: 500;
 }
 [data-iii-ui="database"] .db-grid th .coltype {
-  color: var(--color-ink-faint);
+  color: var(--color-ink-ghost);
   font-weight: 400;
+}
+[data-iii-ui="database"] .db-col-sorted {
+  flex: none;
+  color: var(--color-ink);
 }
 [data-iii-ui="database"] .db-grid th .sorter {
   appearance: none;
   background: transparent;
   border: 0;
+  padding: 0;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   font: inherit;
+  letter-spacing: inherit;
   color: inherit;
-}
-[data-iii-ui="database"] .db-grid th.num .sorter {
-  flex-direction: row-reverse;
+  text-align: left;
 }
 [data-iii-ui="database"] .db-grid th .sorter:hover .colname {
-  color: var(--color-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--color-ink-ghost);
+  text-underline-offset: 3px;
 }
 [data-iii-ui="database"] .db-grid th .static {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+/* The ⌄ menu: quiet until the column is hovered or the menu is open. */
+[data-iii-ui="database"] .db-col-menu {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-exit);
+}
+[data-iii-ui="database"] .db-grid th:hover .db-col-menu,
+[data-iii-ui="database"] .db-col-menu:focus-visible,
+[data-iii-ui="database"] .db-col-menu[data-popup-open] {
+  opacity: 1;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-col-menu:hover,
+[data-iii-ui="database"] .db-col-menu[data-popup-open] {
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="database"] .db-grid td {
-  padding: 6px 12px;
-  font-size: 12.5px;
-  vertical-align: top;
+  height: 36px;
+  padding: 0 12px;
+  font-size: 14px;
+  vertical-align: middle;
   white-space: nowrap;
   max-width: 28rem;
   overflow: hidden;
   text-overflow: ellipsis;
   border-bottom: 1px solid var(--color-edge);
+  border-right: 1px solid var(--color-edge);
 }
+[data-iii-ui="database"] .db-grid tbody tr {
+  border: 0;
+}
+/* Numbers right-aligned in tabular figures, so magnitudes line up down the
+   column; the header follows its column. */
 [data-iii-ui="database"] .db-grid td.num {
   text-align: right;
 }
-[data-iii-ui="database"] .db-grid tbody tr:last-child td {
-  border-bottom: 0;
+[data-iii-ui="database"] .db-grid th.num .sorter {
+  justify-content: flex-end;
 }
 [data-iii-ui="database"] .db-grid tbody tr.clickable {
   cursor: pointer;
 }
 [data-iii-ui="database"] .db-grid tbody tr:hover {
-  background: var(--color-surface-hover);
+  background: var(--color-surface);
 }
 [data-iii-ui="database"] .db-grid tbody tr.selected {
   background: var(--color-surface-selected);
+}
+/* Row numbers: a narrow gutter outside the data, never part of the cursor. */
+[data-iii-ui="database"] .db-grid th.db-gutter,
+[data-iii-ui="database"] .db-grid td.db-gutter {
+  width: 56px;
+  min-width: 56px;
+  padding: 0 12px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-ghost);
+}
+/* The gutter stays put while a wide table scrolls sideways, so every row
+   keeps its number in view. Opaque, with the row's wash layered on top. */
+[data-iii-ui="database"] .db-grid th.db-gutter,
+[data-iii-ui="database"] .db-grid td.db-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+[data-iii-ui="database"] .db-grid td.db-gutter {
+  background: var(--db-ground);
+}
+[data-iii-ui="database"] .db-grid tbody tr:hover td.db-gutter {
+  background: linear-gradient(var(--color-surface), var(--color-surface)), var(--db-ground);
+}
+[data-iii-ui="database"] .db-grid tbody tr.selected td.db-gutter {
+  background: linear-gradient(var(--color-surface-selected), var(--color-surface-selected)), var(--db-ground);
+}
+[data-iii-ui="database"] .db-grid thead.sticky th.db-gutter {
+  z-index: 11;
+}
+/* A cell scrolled into view by the keyboard must clear the sticky gutter. */
+[data-iii-ui="database"] .db-grid td[data-cell] {
+  scroll-margin-left: 56px;
+}
+[data-iii-ui="database"] .db-grid tbody tr.selected td.db-gutter {
+  color: var(--color-ink);
 }
 [data-iii-ui="database"] .db-grid td .copycell {
   appearance: none;
@@ -537,6 +789,7 @@
   padding: 0;
   margin: 0;
   font: inherit;
+  letter-spacing: inherit;
   color: inherit;
   cursor: copy;
   text-align: left;
@@ -544,12 +797,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-[data-iii-ui="database"] .db-cell-null {
+[data-iii-ui="database"] .db-cell-null,
+[data-iii-ui="database"] .db-cell-empty {
   color: var(--color-ink-ghost);
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-cell-empty {
   font-style: italic;
 }
 [data-iii-ui="database"] .db-cell-bool-true {
-  color: var(--color-accent);
+  color: var(--color-ok);
 }
 /* Booleans are data, not judgments — warn ink turned a flag column full of
    `false` into a wall of caution. */
@@ -561,37 +818,41 @@
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="database"] .db-cell-json {
+  font-family: var(--font-mono);
+  font-size: 13px;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-cell-str {
   color: var(--color-ink);
 }
 [data-iii-ui="database"] .db-cell-date {
-  color: var(--color-ink-faint);
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="database"] .db-copied {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  color: var(--color-accent);
+  font-size: 13px;
+  color: var(--color-ok);
 }
 /* The shared status strip, tall enough for its buttons. */
 [data-iii-ui="database"] .db-grid-foot {
   height: auto;
-  min-height: 1.75rem;
+  min-height: 36px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-grid-empty {
-  padding: 12px;
-  font-size: 12.5px;
-  color: var(--color-ink-ghost);
+  padding: 16px;
+  font-size: 14px;
+  color: var(--color-ink-faint);
 }
 
 /* --- resizable, reorderable, hideable columns -------------------------- */
 [data-iii-ui="database"] .db-col-grip {
   position: absolute;
   top: 0;
-  right: -3px;
+  right: -4px;
   width: 7px;
   height: 100%;
   cursor: col-resize;
@@ -603,51 +864,27 @@
 [data-iii-ui="database"] .db-col-grip::after {
   content: "";
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 6px;
+  bottom: 6px;
   left: 3px;
   width: 1px;
   background: transparent;
   transition: background var(--motion-duration-fast) var(--motion-ease-exit);
 }
 [data-iii-ui="database"] .db-col-grip:hover::after {
-  background: var(--color-accent);
-}
-[data-iii-ui="database"] .db-col-hide {
-  position: absolute;
-  top: 50%;
-  right: 6px;
-  transform: translateY(-50%);
-  display: inline-flex;
-  padding: 1px;
-  border: 0;
-  background: transparent;
-  color: var(--color-ink-ghost);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--motion-duration-fast) var(--motion-ease-exit);
-  z-index: 1;
-}
-/* :focus-within beside :hover — a keyboard user must never focus an
-   invisible control. */
-[data-iii-ui="database"] .db-grid th:hover .db-col-hide,
-[data-iii-ui="database"] .db-grid th:focus-within .db-col-hide,
-[data-iii-ui="database"] .db-col-hide:focus-visible {
-  opacity: 1;
-}
-[data-iii-ui="database"] .db-col-hide:hover {
-  color: var(--color-alert);
+  background: var(--color-ink-faint);
 }
 /* Where a dragged column would land. */
 [data-iii-ui="database"] .db-grid th.dropping {
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  box-shadow: inset 2px 0 0 var(--color-ink);
 }
 
 /* --- grid cursor -------------------------------------------------------- */
 /* The focused cell is marked by an inset ring rather than a border, so
    focusing one cannot change the row height and shift the grid. */
 [data-iii-ui="database"] .db-grid td.cursor {
-  box-shadow: inset 0 0 0 1px var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-ink-faint);
+  background: var(--color-surface);
   outline: none;
 }
 [data-iii-ui="database"] .db-grid td:focus {
@@ -659,7 +896,7 @@
 /* Without this the focused row parks underneath the sticky header when
    scrolled into view — the trap every grid hits once. */
 [data-iii-ui="database"] .db-grid thead.sticky ~ tbody td {
-  scroll-margin-top: 30px;
+  scroll-margin-top: 40px;
 }
 
 /* ---- table data panel ---- */
@@ -670,7 +907,7 @@
   min-width: 0;
   width: 100%;
 }
-/* Its own container: the row inspector takes 320px from this column, so the
+/* Its own container: the row inspector takes 360px from this column, so the
    page cannot see how narrow the data area really is — the footer must
    respond to THIS width, not the page's. */
 [data-iii-ui="database"] .db-data-main {
@@ -681,16 +918,169 @@
   container-name: db-data-main;
   container-type: inline-size;
 }
-[data-iii-ui="database"] .db-data-bar {
+/* The table's one toolbar: name, filters, then the verbs on the right —
+   wraps under itself rather than clipping in a narrow pane. */
+[data-iii-ui="database"] .db-data-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid var(--color-edge);
+  font-size: 14px;
+}
+[data-iii-ui="database"] .db-data-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
   color: var(--color-ink-faint);
 }
-[data-iii-ui="database"] .db-data-bar .name {
+[data-iii-ui="database"] .db-data-title .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
   color: var(--color-ink);
-  font-weight: 500;
+}
+[data-iii-ui="database"] .db-data-title [data-slot="badge"] {
+  height: 22px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-data-sep {
+  align-self: center;
+  height: 20px;
+  margin: 0 4px;
+}
+[data-iii-ui="database"] .db-data-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-data-note {
   color: var(--color-ok);
-  font-size: 11px;
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-sort-chip {
+  color: var(--color-ink);
+  background: var(--color-surface);
+}
+[data-iii-ui="database"] .db-data-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--db-ground);
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-exit);
+}
+/* A page in flight: the old rows dim instead of posing as the new page. */
+[data-iii-ui="database"] .db-data-scroll.loading {
+  opacity: 0.55;
+}
+/* No table selected: the tables, listed. */
+[data-iii-ui="database"] .db-tablepick {
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 48px 16px;
+}
+[data-iii-ui="database"] .db-tablepick-head {
+  padding: 0 12px 12px;
+}
+[data-iii-ui="database"] .db-tablepick-head .title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-tablepick-head .hint {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-tablepick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="database"] .db-tablepick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  letter-spacing: inherit;
+  color: var(--color-ink);
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-tablepick-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="database"] .db-tablepick-row svg {
+  flex: none;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-tablepick-row .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-tablepick-row .kind {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-data-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+}
+/* Pager + counts: the table editor's bottom bar. */
+[data-iii-ui="database"] .db-data-foot {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px 16px;
+  min-height: 48px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-edge);
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-foot-stat {
+  white-space: nowrap;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="database"] .db-foot-stat.faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-kbd-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--color-ink-ghost);
 }
 [data-iii-ui="database"] .db-ui-conn-error {
   flex-shrink: 0;
@@ -736,7 +1126,7 @@
   align-items: center;
   gap: 2px 6px;
   padding-top: 4px;
-  font-size: 12px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-newrow-label .name {
   color: var(--color-ink);
@@ -751,7 +1141,7 @@
 [data-iii-ui="database"] .db-newrow-label .fk {
   flex-basis: 100%;
   color: var(--color-ink-ghost);
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-newrow-label .fk {
   display: inline-flex;
@@ -785,7 +1175,7 @@
   background: var(--color-bg);
   color: var(--color-ink);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   resize: vertical;
 }
@@ -797,7 +1187,7 @@
   padding: 4px 0;
   color: var(--color-ink-faint);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   font-style: italic;
   overflow-wrap: anywhere;
 }
@@ -807,7 +1197,7 @@
 }
 [data-iii-ui="database"] .db-newrow-error {
   grid-column: 2;
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-newrow-actions,
 [data-iii-ui="database"] .db-newrow-picker-foot,
@@ -823,7 +1213,7 @@
 [data-iii-ui="database"] .db-newrow-note {
   margin-right: auto;
   color: var(--color-ink-faint);
-  font-size: 12px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-newrow-picker .db-filters {
   padding: 0;
@@ -867,30 +1257,45 @@
 /* ---- pagination ---- */
 [data-iii-ui="database"] .db-pager {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px 16px;
-}
-[data-iii-ui="database"] .db-pager-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  gap: 6px;
   white-space: nowrap;
 }
 [data-iii-ui="database"] .db-pager-cap {
-  font-weight: 600;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="database"] .db-pager-input {
+  width: 52px;
+  height: 30px;
+  padding: 0 8px;
+  text-align: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="database"] .db-pager-size {
+  margin-left: 8px;
+  font-size: 13px;
 }
 
 /* ---- row inspector ---- */
 [data-iii-ui="database"] .db-rowdetail {
-  width: 320px;
+  width: 360px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
   border-left: 1px solid var(--color-edge);
   overflow-y: auto;
   min-height: 0;
+  background: var(--db-ground);
+}
+[data-iii-ui="database"] .db-inspector {
+  gap: 0;
+  min-height: 0;
 }
 /* The inspector's tab strip. Sticky, so close and the tabs survive scrolling
-   a long row; min-height pins its bottom rule to the filter bar's beside it:
+   a long row; min-height pins its bottom rule to the toolbar's beside it:
    one continuous line across both columns. */
 [data-iii-ui="database"] .db-inspector-head {
   position: sticky;
@@ -900,47 +1305,81 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 49px;
+  min-height: 52px;
   padding: 0 8px 0 12px;
-  background: var(--color-panel-raised);
+  background: var(--db-ground);
   border-bottom: 1px solid var(--color-edge);
 }
+[data-iii-ui="database"] .db-inspector-tabs {
+  height: 52px;
+  gap: 2px;
+  padding: 0;
+}
+[data-iii-ui="database"] .db-inspector-tabs [data-slot="tabs-trigger"] {
+  height: 52px;
+  flex: none;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+[data-iii-ui="database"] .db-inspector-tabs [data-slot="tabs-trigger"]::after {
+  bottom: -1px;
+}
+[data-iii-ui="database"] .db-inspector-body {
+  font-size: 14px;
+}
+[data-iii-ui="database"] .db-rowdetail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 16px 16px;
+}
 [data-iii-ui="database"] .db-field {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--color-edge);
+  padding: 10px 0;
 }
 [data-iii-ui="database"] .db-field-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  min-height: 28px;
 }
 [data-iii-ui="database"] .db-field-name {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 500;
-  color: var(--color-ink-faint);
-  flex: 1;
+  color: var(--color-ink);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 [data-iii-ui="database"] .db-field-type {
-  font-size: 11px;
-  color: var(--color-ink-ghost);
+  height: 20px;
+  padding: 0 7px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
 }
+[data-iii-ui="database"] .db-field-head > :last-child {
+  margin-left: auto;
+}
+/* The value sits in a field-shaped well, like the row editor's inputs. */
 [data-iii-ui="database"] .db-field-value {
-  margin-top: 4px;
-  font-size: 12px;
-  word-break: break-all;
+  margin-top: 6px;
+  padding: 8px 12px;
+  min-height: 36px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--db-lift);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
   white-space: pre-wrap;
 }
 [data-iii-ui="database"] .db-field-fk {
-  margin-top: 4px;
-  font-size: 11px;
+  margin-top: 6px;
+  font-size: 13px;
   color: var(--color-ink-ghost);
-}
-[data-iii-ui="database"] .db-rowdetail-body {
-  padding: 0 12px 12px;
 }
 
 /* ---- sql panel ---- */
@@ -952,36 +1391,294 @@
   min-width: 0;
   width: 100%;
 }
+/* The editor takes the top of the pane like a SQL editor's buffer; the
+   results own the rest. */
 [data-iii-ui="database"] .db-sql-top {
-  border-bottom: 1px solid var(--color-edge);
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 42%;
+  min-height: 120px;
+}
+/* Dragged to a height: the inline flex-basis holds it. */
+[data-iii-ui="database"] .db-sql-top.sized {
+  flex-grow: 0;
   flex-shrink: 0;
 }
-[data-iii-ui="database"] .db-sql-editor-wrap {
-  max-height: 240px;
-  overflow: auto;
-  background: var(--color-panel);
+/* The editor/results divider: a hairline with a wider grab area. */
+[data-iii-ui="database"] .db-sql-split {
+  position: relative;
+  flex: none;
+  height: 1px;
+  background: var(--color-edge);
+  cursor: row-resize;
+  touch-action: none;
+  outline: none;
 }
-[data-iii-ui="database"] .db-sql-code {
-  min-height: 104px;
+[data-iii-ui="database"] .db-sql-split::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+  z-index: 2;
 }
-/* A heads-up, not a gate: the statement will mutate and commit. Schema
-   changes get the louder ink. */
-[data-iii-ui="database"] .db-sql-warn {
-  font-size: 11px;
-  color: var(--color-warn-strong);
+[data-iii-ui="database"] .db-sql-split:hover,
+[data-iii-ui="database"] .db-sql-split:focus-visible {
+  background: var(--color-ink-faint);
 }
-[data-iii-ui="database"] .db-sql-warn.ddl {
+/* Results: a labelled header that carries the run's state, then the output. */
+[data-iii-ui="database"] .db-sql-out {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+[data-iii-ui="database"] .db-sql-reshead {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-edge);
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-sql-reslabel {
+  font-weight: 500;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-sql-reslabel.alert {
   color: var(--color-alert-strong);
 }
-[data-iii-ui="database"] .db-sql-meta {
-  margin-left: auto;
-  font-size: 11px;
+[data-iii-ui="database"] .db-sql-resstate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--color-ink-faint);
   font-variant-numeric: tabular-nums;
 }
 /* Numbers describing a statement the editor has moved past. */
-[data-iii-ui="database"] .db-sql-meta.stale {
-  opacity: 0.45;
+[data-iii-ui="database"] .db-sql-resstate.stale {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-sql-stale-note {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-sql-failed-stmt {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--db-lift);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* What a write did: headline, saved-where, the numbers, the statement, and
+   where to look next. Top-aligned like a result, not centred like a void. */
+[data-iii-ui="database"] .db-write {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 760px;
+  padding: 24px 20px;
+}
+[data-iii-ui="database"] .db-write-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+[data-iii-ui="database"] .db-write-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--color-ok);
+}
+[data-iii-ui="database"] .db-write-head.nothing .db-write-icon {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-write-titles .title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-write-titles .sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-write-head.nothing .sub {
+  color: var(--color-warn-strong);
+}
+/* The numbers as a row of label-over-value pairs between hairlines. */
+[data-iii-ui="database"] .db-write-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 40px;
+  margin: 0;
+  padding: 14px 0;
+  border-top: 1px solid var(--color-edge);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="database"] .db-write-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui="database"] .db-write-facts dt {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-write-facts dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-write-facts dd.mono {
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+[data-iii-ui="database"] .db-write-stmt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="database"] .db-write-stmt .label {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-write-stmt pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--db-lift);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+[data-iii-ui="database"] .db-write-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+[data-iii-ui="database"] .db-write-tip {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-write-tip code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-ink);
+}
+
+/* Nothing run yet, or a write with no rows: centred, quiet, one action. */
+[data-iii-ui="database"] .db-sql-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 100%;
+  padding: 32px 16px;
+  text-align: center;
+}
+[data-iii-ui="database"] .db-sql-empty-icon {
+  margin-bottom: 4px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="database"] .db-sql-empty .title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-sql-empty .hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-sql-empty .hint kbd {
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-sql-starter {
+  max-width: min(560px, 100%);
+  margin-top: 10px;
+}
+[data-iii-ui="database"] .db-sql-starter code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-sql-editor-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding-top: 8px;
+  background: var(--db-ground);
+}
+[data-iii-ui="database"] .db-sql-code {
+  height: 100%;
+}
+/* Secondary verbs on the left, the limit and Run on the right. */
+[data-iii-ui="database"] .db-sql-actions {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  min-height: 52px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-edge);
+  font-size: 14px;
+}
+@container (max-width: 560px) {
+  [data-iii-ui="database"] .db-sql-chord {
+    display: none;
+  }
+}
+[data-iii-ui="database"] .db-sql-limit {
+  font-size: 13px;
+}
+[data-iii-ui="database"] .db-sql-chord {
+  margin-left: 4px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  opacity: 0.6;
+}
+/* A heads-up, not a gate: the statement will mutate and commit. Schema
+   changes get the louder ink. */
+[data-iii-ui="database"] .db-sql-warn {
+  font-size: 13px;
+  color: var(--color-warn-strong);
+}
+[data-iii-ui="database"] .db-sql-warn.ddl {
+  color: var(--color-alert-strong);
 }
 /* One row per statement of a multi-statement run; the current one is the
    grid below. */
@@ -1004,7 +1701,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--color-ink);
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
@@ -1030,7 +1727,7 @@
 }
 [data-iii-ui="database"] .db-sql-step .meta {
   color: var(--color-ink-faint);
-  font-size: 11px;
+  font-size: 13px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -1072,8 +1769,8 @@
   flex: 1;
   min-width: 0;
   text-align: left;
-  font: inherit;
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: 13px;
   color: var(--color-ink-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1083,9 +1780,9 @@
   color: var(--color-ink);
 }
 [data-iii-ui="database"] .db-sql-history-note {
-  padding: 4px 16px 6px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--color-edge);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-sql-results {
@@ -1098,12 +1795,6 @@
    the answer to the statement in flight. */
 [data-iii-ui="database"] .db-sql-results.running {
   opacity: 0.55;
-}
-/* ink-faint, not ghost: "statement ran — dropped table x" is a result. */
-[data-iii-ui="database"] .db-sql-placeholder {
-  padding: 16px;
-  font-size: 12px;
-  color: var(--color-ink-faint);
 }
 
 /* --- schema diagram ----------------------------------------------------- */
@@ -1148,7 +1839,7 @@
   padding: 6px 12px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--color-edge);
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-erd-frontier-label {
   color: var(--color-ink-ghost);
@@ -1160,7 +1851,7 @@
   background: transparent;
   padding: 1px 7px;
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-faint);
   cursor: pointer;
 }
@@ -1174,7 +1865,7 @@
   background: transparent;
   padding: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-ghost);
   cursor: pointer;
   text-decoration: underline;
@@ -1190,8 +1881,14 @@
   min-height: 260px;
   overflow: hidden;
   cursor: grab;
-  background: var(--color-surface);
+  /* A dotted board on the black ground, the schema visualiser's canvas. */
+  background-color: var(--db-ground);
+  background-image: radial-gradient(var(--color-surface-selected) 1px, transparent 1px);
+  background-size: 20px 20px;
   touch-action: none;
+  /* The board pans on drag; without this a drag selects column text. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 [data-iii-ui="database"] .db-erd-frame:active {
   cursor: grabbing;
@@ -1213,9 +1910,9 @@
   top: -8px;
   left: 12px;
   padding: 0 6px;
-  background: var(--color-surface);
+  background: var(--db-ground);
   color: var(--color-ink-ghost);
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.06em;
   white-space: nowrap;
 }
@@ -1253,9 +1950,11 @@
 }
 [data-iii-ui="database"] .db-erd-node {
   position: absolute;
+  overflow: hidden;
+  border-radius: 6px;
   background: var(--color-panel);
-  border: 1px solid var(--color-edge);
-  font-size: 11px;
+  border: 1px solid var(--db-node-edge);
+  font-size: 13px;
   transition:
     opacity var(--motion-duration-fast) var(--motion-ease-exit),
     border-color var(--motion-duration-fast) var(--motion-ease-exit);
@@ -1304,7 +2003,7 @@
 }
 [data-iii-ui="database"] .db-erd-node-name {
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0.04em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1313,7 +2012,7 @@
 [data-iii-ui="database"] .db-erd-node-deg {
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-erd-cols {
   padding: 8px 0;
@@ -1349,11 +2048,11 @@
 }
 [data-iii-ui="database"] .db-erd-col-type {
   color: var(--color-ink-faint);
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-erd-req {
   color: var(--color-warn-strong);
-  font-size: 11px;
+  font-size: 13px;
   flex: none;
 }
 /* Below 0.5 zoom the column text is unreadable anyway; dropping the bodies
@@ -1387,8 +2086,10 @@
   overflow: auto;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px;
-  padding: 12px;
+  /* Cards keep their own height instead of stretching down the pane. */
+  align-content: start;
+  gap: 16px;
+  padding: 16px;
   transition: opacity var(--motion-duration-fast) var(--motion-ease-exit);
 }
 /* Cards describing the previous read while a new one is in flight. */
@@ -1404,7 +2105,7 @@
 }
 [data-iii-ui="database"] .db-health-note {
   margin: 0;
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-health-note.quiet {
@@ -1430,7 +2131,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-faint);
 }
 [data-iii-ui="database"] .db-health-id {
@@ -1448,14 +2149,14 @@
 [data-iii-ui="database"] .db-health-sql {
   display: block;
   margin-top: 2px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-ghost);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 [data-iii-ui="database"] .db-health-table {
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-health-table .num {
   text-align: right;
@@ -1488,7 +2189,7 @@
   align-items: center;
   gap: 7px;
   padding: 3px 8px 3px 0;
-  font-size: 11px;
+  font-size: 13px;
   border-bottom: 1px solid var(--color-edge);
 }
 [data-iii-ui="database"] .db-plan-node.flag-warn {
@@ -1549,7 +2250,7 @@
   width: 60px;
 }
 [data-iii-ui="database"] .db-plan-detail {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-ghost);
   padding-bottom: 3px;
 }
@@ -1568,7 +2269,7 @@
   flex-wrap: wrap;
 }
 [data-iii-ui="database"] .db-stats-col {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--color-ink);
 }
 [data-iii-ui="database"] .db-stats-sub {
@@ -1584,7 +2285,7 @@
   align-items: center;
   gap: 8px;
   padding: 3px 0;
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-stats-val {
   min-width: 90px;
@@ -1599,8 +2300,8 @@
 [data-iii-ui="database"] .db-inspect {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
+  gap: 12px;
+  padding: 16px;
   min-height: 0;
 }
 [data-iii-ui="database"] .db-inspect-head {
@@ -1610,11 +2311,17 @@
   flex-wrap: wrap;
 }
 [data-iii-ui="database"] .db-inspect-path {
-  font-size: 12px;
+  font-size: 14px;
+  font-weight: 500;
   color: var(--color-ink);
 }
+[data-iii-ui="database"] .db-inspect-head [data-slot="badge"] {
+  height: 20px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="database"] .db-inspect-pos {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
 }
@@ -1624,14 +2331,16 @@
   overflow: auto;
   border: 1px solid var(--color-edge);
   border-radius: 6px;
-  padding: 8px;
-  font-size: 11px;
+  padding: 10px 12px;
+  background: var(--db-lift);
+  font-size: 14px;
 }
 [data-iii-ui="database"] .db-inspect-pre {
   margin: 0;
   font: inherit;
-  font-size: 11px;
-  color: var(--color-ink-faint);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-ink);
   white-space: pre;
 }
 [data-iii-ui="database"] .db-inspect-pre.wrap {
@@ -1646,7 +2355,7 @@
 
 /* --- json tree ------------------------------------------------------------ */
 [data-iii-ui="database"] .db-json {
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-json-row {
   display: flex;
@@ -1749,17 +2458,16 @@
 }
 
 /* --- filter chips ----------------------------------------------------------- */
+/* Inline in the data toolbar: chips, then Filter / SQL, then the count. */
 [data-iii-ui="database"] .db-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--color-edge);
+  min-width: 0;
 }
 [data-iii-ui="database"] .db-filters-count {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
 }
@@ -1768,10 +2476,10 @@
 [data-iii-ui="database"] .db-chip {
   display: inline-flex;
   align-items: stretch;
-  height: 22px;
+  height: 30px;
   border: 1px solid var(--color-edge);
   border-radius: 6px;
-  background: var(--color-panel);
+  background: var(--db-lift);
   overflow: hidden;
 }
 /* Dashed while incomplete — the repo's convention for not-yet-real content. */
@@ -1785,12 +2493,13 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0 7px;
+  padding: 0 10px;
   border: 0;
   border-right: 1px solid var(--color-edge);
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
+  letter-spacing: 0.01em;
   color: var(--color-ink);
   cursor: pointer;
   white-space: nowrap;
@@ -1803,7 +2512,7 @@
 }
 [data-iii-ui="database"] .db-chip-seg.toggle,
 [data-iii-ui="database"] .db-chip-seg.remove {
-  padding: 0 5px;
+  padding: 0 7px;
   color: var(--color-ink-ghost);
 }
 [data-iii-ui="database"] .db-chip-seg.remove:hover {
@@ -1816,35 +2525,38 @@
   padding: 0;
   cursor: text;
 }
+/* The value is the shadcn input with its frame removed: the chip is the frame. */
 [data-iii-ui="database"] .db-chip-input {
-  height: 20px;
-  width: 96px;
+  height: 28px;
+  width: 120px;
   border: 0;
+  border-radius: 0;
   background: transparent;
-  font-size: 11px;
-  padding: 0 7px;
+  box-shadow: none;
+  font-size: 13px;
+  padding: 0 10px;
 }
 [data-iii-ui="database"] .db-chip-input.wide {
-  width: 150px;
+  width: 170px;
 }
 /* Raw SQL chip: a transparent input over a painted copy of its own text. */
 [data-iii-ui="database"] .db-rawsql {
   position: relative;
   display: inline-block;
-  width: 240px;
-  height: 20px;
+  width: 260px;
+  height: 28px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-rawsql-paint,
 [data-iii-ui="database"] .db-rawsql-input {
   position: absolute;
   inset: 0;
   margin: 0;
-  padding: 0 7px;
+  padding: 0 10px;
   border: 0;
   font: inherit;
-  line-height: 20px;
+  line-height: 28px;
   letter-spacing: normal;
   white-space: pre;
 }
@@ -1911,21 +2623,22 @@
 [data-iii-ui="database"] .db-suggest-label {
   margin-right: 2px;
   color: var(--color-ink-ghost);
-  font-size: 11px;
+  font-size: 13px;
 }
 [data-iii-ui="database"] .db-suggest-item {
   display: inline-flex;
   max-width: 220px;
   align-items: baseline;
   gap: 6px;
-  height: 20px;
-  padding: 0 7px;
+  height: 26px;
+  align-items: center;
+  padding: 0 10px;
   border: 1px solid var(--color-edge);
   border-radius: 6px;
-  background: var(--color-panel);
+  background: var(--db-lift);
   color: var(--color-ink);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 13px;
   cursor: pointer;
 }
 [data-iii-ui="database"] .db-suggest-item:hover {
@@ -1947,7 +2660,7 @@
 }
 [data-iii-ui="database"] .db-pick-hint {
   color: var(--color-ink-ghost);
-  font-size: 11px;
+  font-size: 13px;
   margin-left: 12px;
 }
 
@@ -1982,7 +2695,7 @@
   margin: 0;
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-edge);
-  font-size: 11.5px;
+  font-size: 13px;
   line-height: 1.5;
   max-width: 62ch;
   color: var(--color-ink-faint);
@@ -1999,7 +2712,7 @@
   align-items: center;
   gap: 10px;
   padding: 5px 12px;
-  font-size: 11px;
+  font-size: 13px;
   border-bottom: 1px solid var(--color-edge);
 }
 [data-iii-ui="database"] .db-change:last-child {
@@ -2046,6 +2759,7 @@
 }
 [data-iii-ui="database"] .db-ui-browser.narrow .db-rowdetail {
   width: auto;
+  flex-shrink: 1;
   max-height: 50%;
   border-left: 0;
   border-top: 1px solid var(--color-edge);

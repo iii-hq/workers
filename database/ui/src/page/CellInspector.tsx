@@ -12,7 +12,7 @@
  * and "why did this fail to insert" usually ends here.
  */
 
-import { Badge, Button, MetaRow } from '@iii-dev/console-ui'
+import { Button, MetaRow, ShadcnBadge } from '@iii-dev/console-ui'
 import { copyText } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, Copy, Link2 } from 'lucide-react'
@@ -63,7 +63,7 @@ export function CellInspector({
         <span className="db-inspect-path">
           {table}.{column}
         </span>
-        {type ? <Badge variant="default">{type}</Badge> : null}
+        {type ? <ShadcnBadge variant="outline">{type.toLowerCase()}</ShadcnBadge> : null}
       </div>
 
       <div className="db-inspect-pos">

@@ -87,7 +87,7 @@ impl RouterEvents {
                 }
             });
         }
-        iii.on_observer_match_for(ON_READY_ID, Match::predicate(for_this_observer));
+        iii.on_observation_match_for(ON_READY_ID, Match::predicate(for_this_observer));
 
         iii.register_function(
             ON_READY_ID,

@@ -205,7 +205,7 @@ observer (a schedule, a route, a watch); name them and their schema, and
 the rejection codes `onObserverAdded` throws. A function without args
 answers `INVALID_ARGS` to an observer that passes some; its observers
 select events with filters on the event's fields. When the function
-delivers calls itself (`onObserverDeliver`), say what each target
+delivers calls itself (`onObservationDeliver`), say what each target
 receives and what the caller gets back.
 
 This is one of the few cases the README **should** carry a reference

@@ -65,7 +65,13 @@ describe('composer starter prompts', () => {
 
   it('keeps an existing draft without offering replacement prompts', async () => {
     const { container } = await mount('Keep my unfinished request')
-    expect(container.textContent).not.toContain('Explain this project')
+    // Still mounted (so the centred composer holds still) but faded and
+    // out of reach: no clicks, no focus, nothing read out.
+    const prompts = container.querySelector<HTMLElement>(
+      '[aria-label="Suggested prompts"]',
+    )
+    expect(prompts?.hasAttribute('inert')).toBe(true)
+    expect(prompts?.hasAttribute('data-dormant')).toBe(true)
     expect(
       container.querySelector('[contenteditable="true"]')?.textContent,
     ).toBe('Keep my unfinished request')

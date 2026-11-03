@@ -108,6 +108,7 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		{Source: observedSource{FunctionID: "quick-tunnel::on-changed", Filters: map[string]any{
 			"input.tunnel_id": map[string]any{"$eq": "webhooks"},
 		}, Deliver: "output"}},
+		{Source: observedSource{FunctionID: "secrets::on-changed", Deliver: "output"}},
 	}
 	targets := []string{
 		"whatsapp::on-config-change",
@@ -117,6 +118,7 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		"whatsapp::ui-content",
 		"whatsapp::ui-content",
 		"whatsapp::cloud::tunnel::changed",
+		"whatsapp::on-secret-changed",
 	}
 	for i := range want {
 		want[i].Target.FunctionID = targets[i]

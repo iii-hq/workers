@@ -13,9 +13,9 @@ import {
   MessageSquareOff,
   MessageSquareQuote,
   MessagesSquare,
+  SquareFunction,
   Timer,
   Trash2,
-  Wrench,
   X,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
@@ -865,7 +865,11 @@ function SideChatIntro({
           ? 'This chat, up to now'
           : `This chat, up to ${clockTime(since)}`,
     },
-    { icon: Wrench, label: 'Tools', value: 'Same tools and approvals' },
+    {
+      icon: SquareFunction,
+      label: 'Functions',
+      value: 'Same functions and approvals',
+    },
     {
       icon: MessageSquareOff,
       label: 'Main chat',
@@ -886,7 +890,7 @@ function SideChatIntro({
       {/* A quiet tile: a hairline ring over a faint wash, no fill to shout. */}
       <span
         aria-hidden
-        className="flex size-10 items-center justify-center rounded-lg bg-gradient-to-b from-foreground/[0.07] to-foreground/[0.02] text-foreground ring-1 ring-foreground/10"
+        className="flex size-10 items-center justify-center rounded-lg bg-gradient-to-b from-foreground/[0.07] to-foreground/[0.02] text-foreground ring-1 ring-card-edge"
       >
         <MessagesSquare className="size-5" />
       </span>
@@ -900,7 +904,7 @@ function SideChatIntro({
         A scratch chat beside this one, for the question you don't want in the
         main thread.
       </p>
-      <dl className="mt-5 w-full divide-y divide-foreground/[0.07] rounded-xl bg-card text-left ring-1 ring-foreground/10">
+      <dl className="mt-5 w-full divide-y divide-foreground/[0.07] rounded-xl bg-card text-left ring-1 ring-card-edge">
         {facts.map(({ icon: Icon, label, value }) => (
           <div key={label} className="flex items-center gap-3 px-3.5 py-2.5">
             <dt className="flex w-24 shrink-0 items-center gap-2 text-xs font-medium text-muted-foreground">

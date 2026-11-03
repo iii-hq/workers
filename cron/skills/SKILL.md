@@ -52,9 +52,9 @@ fires a day early. Names avoid the whole question.
   next upcoming UTC fire from the time it is running.
 - Five-field crontab expressions are refused (`INVALID_CRON_EXPRESSION`).
   Include the seconds field.
-- `cron::on-tick` has one host per namespace. A second instance of the worker
-  waits as a standby and takes over the schedules when the first one leaves,
-  so each expression fires once per scheduled time.
+- `cron::on-tick` has one host per namespace, so each expression fires once
+  per scheduled time. Run one instance; a restarted one gets the schedules
+  back.
 - For data-change or stream-change reactions, use the relevant state, stream,
   queue, or database worker instead; `cron` fires on the clock only.
 

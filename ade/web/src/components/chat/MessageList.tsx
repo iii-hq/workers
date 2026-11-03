@@ -63,6 +63,7 @@ import type {
   FunctionCallMessage,
   Message as MessageType,
 } from '@/types/chat'
+import { ConversationSkeleton } from './ConversationSkeleton'
 import type { WorktreePickerOptions } from './DirectoryPicker'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import { functionCallGroups } from './function-call-groups'
@@ -1410,17 +1411,17 @@ export function MessageList({
         </div>
       </section>
       {opening ? (
-        // Same copy and voice as ChatPanel's "conversation not yet loaded"
+        // The same skeleton as ChatPanel's "conversation not yet loaded"
         // state, so the two waits read as one to the reader.
         <div
           data-transcript-loading=""
           aria-live="polite"
           className={cn(
-            'pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-base text-ink-faint transition-opacity duration-[var(--motion-duration-control)]',
+            'pointer-events-none absolute inset-0 overflow-hidden transition-opacity duration-[var(--motion-duration-control)]',
             openingIndicator ? 'opacity-100' : 'opacity-0',
           )}
         >
-          Loading conversation…
+          <ConversationSkeleton />
         </div>
       ) : null}
       {tailState === 'paused' ? (
@@ -1629,7 +1630,7 @@ function FunctionCallGroup({
   // A batch observed live opens in full: its rows arrive one by one and the
   // reader watches them settle. A settled batch from the transcript folds to
   // its latest call (plus anything a renderer keeps on display) behind the
-  // header, where "Used 11 tools" and a chevron say what is there.
+  // header, where "Called 11 functions" and a chevron say what is there.
   const live = row.items.some(
     (item) =>
       item.kind === 'function-call' &&
@@ -1781,17 +1782,18 @@ function FunctionCallGroup({
         <span className="chat-tool-group__label">
           <span className="chat-call-disclosure-label">
             <span data-active={live} aria-hidden={!live}>
-              Using
+              Calling
             </span>
             <span data-active={!live} aria-hidden={live}>
-              Used
+              Called
             </span>
           </span>
           <AnimatedCount
             value={row.items.length}
             reducedMotion={reducedMotion}
           />
-          <span>{row.items.length === 1 ? 'tool' : 'tools'}</span>
+          {/* iii has functions, not "tools": the batch says what it called. */}
+          <span>{row.items.length === 1 ? 'function' : 'functions'}</span>
         </span>
         {failedCount > 0 ? (
           <span

@@ -87,7 +87,7 @@ pub fn register(
     };
     iii.on_observer_added_for(ON_REQUEST_FN, hooks.clone());
     iii.on_observer_removed_for(ON_REQUEST_FN, hooks.clone());
-    iii.on_observer_deliver_for(ON_REQUEST_FN, hooks);
+    iii.on_observation_deliver_for(ON_REQUEST_FN, hooks);
 
     iii.register_function(
         ON_REQUEST_FN,
@@ -104,7 +104,7 @@ pub fn register(
 pub fn clear_hooks(iii: &IIIClient) {
     iii.clear_observer_added_for(ON_REQUEST_FN);
     iii.clear_observer_removed_for(ON_REQUEST_FN);
-    iii.clear_observer_deliver_for(ON_REQUEST_FN);
+    iii.clear_observation_deliver_for(ON_REQUEST_FN);
 }
 
 /// The id of the request in flight the server named in the call's metadata.

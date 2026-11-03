@@ -117,7 +117,7 @@ class AgentFeed:
         """Set the hooks by id, then register the private feed function."""
         self._iii.on_observer_added(self.function_id, self.admit)
         self._iii.on_observer_removed(self.function_id, self.release)
-        self._iii.on_observer_match(self.function_id, observer=observer_keys, call=call_keys)
+        self._iii.on_observation_match(self.function_id, observer=observer_keys, call=call_keys)
         self._iii.register_function(
             self.function_id,
             _identity,

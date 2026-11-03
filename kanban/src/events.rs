@@ -235,17 +235,17 @@ pub fn register(iii: &IIIClient) {
         }
         Ok(())
     });
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_CHANGE_FN,
         Match::predicate(|obs, call| wants_change(obs.args_value(), call)),
     );
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_COMMENT_FN,
         Match::predicate(|obs, call| wants_comment(obs.args_value(), call)),
     );
     for function_id in [ON_CHANGE_FN, ON_COMMENT_FN] {
         let engine = iii.clone();
-        iii.on_observer_deliver_for(function_id, move |call: Call, observers: Vec<Observer>| {
+        iii.on_observation_deliver_for(function_id, move |call: Call, observers: Vec<Observer>| {
             let engine = engine.clone();
             async move { deliver(&engine, call, observers).await }
         });

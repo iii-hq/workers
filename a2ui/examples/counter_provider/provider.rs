@@ -103,7 +103,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         async move { result }
     });
     // Each bump reaches the observers whose args name its counter.
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_COUNTER_CHANGED_FN,
         Match::keys(
             |obs| Keys::from(obs.args_value()["counter"].as_str()),

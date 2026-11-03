@@ -26,12 +26,95 @@ import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { SecretKeyField } from '@/components/secrets/SecretKeyField'
 import {
+  Avatar as ShadcnAvatar,
+  AvatarFallback as ShadcnAvatarFallback,
+  AvatarGroup as ShadcnAvatarGroup,
+  AvatarGroupCount as ShadcnAvatarGroupCount,
+  AvatarImage as ShadcnAvatarImage,
+} from '@/components/shadcn/avatar'
+import { Badge as ShadcnBadge } from '@/components/shadcn/badge'
+import { Button as ShadcnButton } from '@/components/shadcn/button'
+import {
+  Card as ShadcnCard,
+  CardAction as ShadcnCardAction,
+  CardContent as ShadcnCardContent,
+  CardDescription as ShadcnCardDescription,
+  CardFooter as ShadcnCardFooter,
+  CardHeader as ShadcnCardHeader,
+  CardTitle as ShadcnCardTitle,
+} from '@/components/shadcn/card'
+import { Checkbox as ShadcnCheckbox } from '@/components/shadcn/checkbox'
+import {
+  Dialog as ShadcnDialog,
+  DialogClose as ShadcnDialogClose,
+  DialogContent as ShadcnDialogContent,
+  DialogDescription as ShadcnDialogDescription,
+  DialogFooter as ShadcnDialogFooter,
+  DialogHeader as ShadcnDialogHeader,
+  DialogTitle as ShadcnDialogTitle,
+  DialogTrigger as ShadcnDialogTrigger,
+} from '@/components/shadcn/dialog'
+import {
+  DropdownMenu as ShadcnDropdownMenu,
+  DropdownMenuCheckboxItem as ShadcnDropdownMenuCheckboxItem,
+  DropdownMenuContent as ShadcnDropdownMenuContent,
+  DropdownMenuGroup as ShadcnDropdownMenuGroup,
+  DropdownMenuItem as ShadcnDropdownMenuItem,
+  DropdownMenuLabel as ShadcnDropdownMenuLabel,
+  DropdownMenuRadioGroup as ShadcnDropdownMenuRadioGroup,
+  DropdownMenuRadioItem as ShadcnDropdownMenuRadioItem,
+  DropdownMenuSeparator as ShadcnDropdownMenuSeparator,
+  DropdownMenuShortcut as ShadcnDropdownMenuShortcut,
+  DropdownMenuSub as ShadcnDropdownMenuSub,
+  DropdownMenuSubContent as ShadcnDropdownMenuSubContent,
+  DropdownMenuSubTrigger as ShadcnDropdownMenuSubTrigger,
+  DropdownMenuTrigger as ShadcnDropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
+import { Input as ShadcnInput } from '@/components/shadcn/input'
+import {
+  Kbd as ShadcnKbd,
+  KbdGroup as ShadcnKbdGroup,
+} from '@/components/shadcn/kbd'
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/shadcn/popover'
+import { Progress as ShadcnProgress } from '@/components/shadcn/progress'
+import {
+  Select as ShadcnSelect,
+  SelectContent as ShadcnSelectContent,
+  SelectGroup as ShadcnSelectGroup,
+  SelectItem as ShadcnSelectItem,
+  SelectLabel as ShadcnSelectLabel,
+  SelectSeparator as ShadcnSelectSeparator,
+  SelectTrigger as ShadcnSelectTrigger,
+  SelectValue as ShadcnSelectValue,
+} from '@/components/shadcn/select'
 import { Separator } from '@/components/shadcn/separator'
+import { Skeleton as ShadcnSkeleton } from '@/components/shadcn/skeleton'
+import { Switch as ShadcnSwitch } from '@/components/shadcn/switch'
+import {
+  Table as ShadcnTable,
+  TableBody as ShadcnTableBody,
+  TableCell as ShadcnTableCell,
+  TableHead as ShadcnTableHead,
+  TableHeader as ShadcnTableHeader,
+  TableRow as ShadcnTableRow,
+} from '@/components/shadcn/table'
+import {
+  Tabs as ShadcnTabs,
+  TabsContent as ShadcnTabsContent,
+  TabsList as ShadcnTabsList,
+  TabsTrigger as ShadcnTabsTrigger,
+} from '@/components/shadcn/tabs'
+import { Textarea as ShadcnTextarea } from '@/components/shadcn/textarea'
 import { Toggle } from '@/components/shadcn/toggle'
+import {
+  Tooltip as ShadcnTooltip,
+  TooltipContent as ShadcnTooltipContent,
+  TooltipTrigger as ShadcnTooltipTrigger,
+} from '@/components/shadcn/tooltip'
 import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -245,6 +328,71 @@ const conformance: {
   SettingsList: typeof ConsoleUi.SettingsList
   SettingsRow: typeof ConsoleUi.SettingsRow
   SettingsSection: typeof ConsoleUi.SettingsSection
+  ShadcnAvatar: typeof ConsoleUi.ShadcnAvatar
+  ShadcnAvatarFallback: typeof ConsoleUi.ShadcnAvatarFallback
+  ShadcnAvatarGroup: typeof ConsoleUi.ShadcnAvatarGroup
+  ShadcnAvatarGroupCount: typeof ConsoleUi.ShadcnAvatarGroupCount
+  ShadcnAvatarImage: typeof ConsoleUi.ShadcnAvatarImage
+  ShadcnButton: typeof ConsoleUi.ShadcnButton
+  ShadcnCard: typeof ConsoleUi.ShadcnCard
+  ShadcnCardAction: typeof ConsoleUi.ShadcnCardAction
+  ShadcnCardContent: typeof ConsoleUi.ShadcnCardContent
+  ShadcnCardDescription: typeof ConsoleUi.ShadcnCardDescription
+  ShadcnCardFooter: typeof ConsoleUi.ShadcnCardFooter
+  ShadcnCardHeader: typeof ConsoleUi.ShadcnCardHeader
+  ShadcnCardTitle: typeof ConsoleUi.ShadcnCardTitle
+  ShadcnCheckbox: typeof ConsoleUi.ShadcnCheckbox
+  ShadcnDialog: typeof ConsoleUi.ShadcnDialog
+  ShadcnDialogClose: typeof ConsoleUi.ShadcnDialogClose
+  ShadcnDialogContent: typeof ConsoleUi.ShadcnDialogContent
+  ShadcnDialogDescription: typeof ConsoleUi.ShadcnDialogDescription
+  ShadcnDialogFooter: typeof ConsoleUi.ShadcnDialogFooter
+  ShadcnDialogHeader: typeof ConsoleUi.ShadcnDialogHeader
+  ShadcnDialogTitle: typeof ConsoleUi.ShadcnDialogTitle
+  ShadcnDialogTrigger: typeof ConsoleUi.ShadcnDialogTrigger
+  ShadcnDropdownMenuSub: typeof ConsoleUi.ShadcnDropdownMenuSub
+  ShadcnDropdownMenuSubContent: typeof ConsoleUi.ShadcnDropdownMenuSubContent
+  ShadcnDropdownMenuSubTrigger: typeof ConsoleUi.ShadcnDropdownMenuSubTrigger
+  ShadcnKbd: typeof ConsoleUi.ShadcnKbd
+  ShadcnKbdGroup: typeof ConsoleUi.ShadcnKbdGroup
+  ShadcnProgress: typeof ConsoleUi.ShadcnProgress
+  ShadcnSkeleton: typeof ConsoleUi.ShadcnSkeleton
+  ShadcnSwitch: typeof ConsoleUi.ShadcnSwitch
+  ShadcnTextarea: typeof ConsoleUi.ShadcnTextarea
+  ShadcnTooltip: typeof ConsoleUi.ShadcnTooltip
+  ShadcnTooltipContent: typeof ConsoleUi.ShadcnTooltipContent
+  ShadcnTooltipTrigger: typeof ConsoleUi.ShadcnTooltipTrigger
+  ShadcnBadge: typeof ConsoleUi.ShadcnBadge
+  ShadcnDropdownMenu: typeof ConsoleUi.ShadcnDropdownMenu
+  ShadcnDropdownMenuCheckboxItem: typeof ConsoleUi.ShadcnDropdownMenuCheckboxItem
+  ShadcnDropdownMenuContent: typeof ConsoleUi.ShadcnDropdownMenuContent
+  ShadcnDropdownMenuGroup: typeof ConsoleUi.ShadcnDropdownMenuGroup
+  ShadcnDropdownMenuItem: typeof ConsoleUi.ShadcnDropdownMenuItem
+  ShadcnDropdownMenuLabel: typeof ConsoleUi.ShadcnDropdownMenuLabel
+  ShadcnDropdownMenuRadioGroup: typeof ConsoleUi.ShadcnDropdownMenuRadioGroup
+  ShadcnDropdownMenuRadioItem: typeof ConsoleUi.ShadcnDropdownMenuRadioItem
+  ShadcnDropdownMenuSeparator: typeof ConsoleUi.ShadcnDropdownMenuSeparator
+  ShadcnDropdownMenuShortcut: typeof ConsoleUi.ShadcnDropdownMenuShortcut
+  ShadcnDropdownMenuTrigger: typeof ConsoleUi.ShadcnDropdownMenuTrigger
+  ShadcnInput: typeof ConsoleUi.ShadcnInput
+  ShadcnSelect: typeof ConsoleUi.ShadcnSelect
+  ShadcnSelectContent: typeof ConsoleUi.ShadcnSelectContent
+  ShadcnSelectGroup: typeof ConsoleUi.ShadcnSelectGroup
+  ShadcnSelectItem: typeof ConsoleUi.ShadcnSelectItem
+  ShadcnSelectLabel: typeof ConsoleUi.ShadcnSelectLabel
+  ShadcnSelectSeparator: typeof ConsoleUi.ShadcnSelectSeparator
+  ShadcnSelectTrigger: typeof ConsoleUi.ShadcnSelectTrigger
+  ShadcnSelectValue: typeof ConsoleUi.ShadcnSelectValue
+  ShadcnTable: typeof ConsoleUi.ShadcnTable
+  ShadcnTableBody: typeof ConsoleUi.ShadcnTableBody
+  ShadcnTableCell: typeof ConsoleUi.ShadcnTableCell
+  ShadcnTableHead: typeof ConsoleUi.ShadcnTableHead
+  ShadcnTableHeader: typeof ConsoleUi.ShadcnTableHeader
+  ShadcnTableRow: typeof ConsoleUi.ShadcnTableRow
+  ShadcnTabs: typeof ConsoleUi.ShadcnTabs
+  ShadcnTabsContent: typeof ConsoleUi.ShadcnTabsContent
+  ShadcnTabsList: typeof ConsoleUi.ShadcnTabsList
+  ShadcnTabsTrigger: typeof ConsoleUi.ShadcnTabsTrigger
   Skeleton: typeof ConsoleUi.Skeleton
   StatusDot: typeof ConsoleUi.StatusDot
   StatusPanel: typeof ConsoleUi.StatusPanel
@@ -363,6 +511,71 @@ const conformance: {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  ShadcnAvatar,
+  ShadcnAvatarFallback,
+  ShadcnAvatarGroup,
+  ShadcnAvatarGroupCount,
+  ShadcnAvatarImage,
+  ShadcnButton,
+  ShadcnCard,
+  ShadcnCardAction,
+  ShadcnCardContent,
+  ShadcnCardDescription,
+  ShadcnCardFooter,
+  ShadcnCardHeader,
+  ShadcnCardTitle,
+  ShadcnCheckbox,
+  ShadcnDialog,
+  ShadcnDialogClose,
+  ShadcnDialogContent,
+  ShadcnDialogDescription,
+  ShadcnDialogFooter,
+  ShadcnDialogHeader,
+  ShadcnDialogTitle,
+  ShadcnDialogTrigger,
+  ShadcnDropdownMenuSub,
+  ShadcnDropdownMenuSubContent,
+  ShadcnDropdownMenuSubTrigger,
+  ShadcnKbd,
+  ShadcnKbdGroup,
+  ShadcnProgress,
+  ShadcnSkeleton,
+  ShadcnSwitch,
+  ShadcnTextarea,
+  ShadcnTooltip,
+  ShadcnTooltipContent,
+  ShadcnTooltipTrigger,
+  ShadcnBadge,
+  ShadcnDropdownMenu,
+  ShadcnDropdownMenuCheckboxItem,
+  ShadcnDropdownMenuContent,
+  ShadcnDropdownMenuGroup,
+  ShadcnDropdownMenuItem,
+  ShadcnDropdownMenuLabel,
+  ShadcnDropdownMenuRadioGroup,
+  ShadcnDropdownMenuRadioItem,
+  ShadcnDropdownMenuSeparator,
+  ShadcnDropdownMenuShortcut,
+  ShadcnDropdownMenuTrigger,
+  ShadcnInput,
+  ShadcnSelect,
+  ShadcnSelectContent,
+  ShadcnSelectGroup,
+  ShadcnSelectItem,
+  ShadcnSelectLabel,
+  ShadcnSelectSeparator,
+  ShadcnSelectTrigger,
+  ShadcnSelectValue,
+  ShadcnTable,
+  ShadcnTableBody,
+  ShadcnTableCell,
+  ShadcnTableHead,
+  ShadcnTableHeader,
+  ShadcnTableRow,
+  ShadcnTabs,
+  ShadcnTabsContent,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
   Skeleton,
   StatusDot,
   StatusPanel,

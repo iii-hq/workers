@@ -176,6 +176,11 @@ a.iii-ui-list-item,
   line-height: 1.25rem;
   text-align: left;
   cursor: pointer;
+  /* A row is a control: a double-click (rename) or a macOS right-click must
+     not paint a word in the charcoal selection. The rename field inside
+     stays selectable — form fields ignore an ancestor's user-select. */
+  user-select: none;
+  -webkit-user-select: none;
   transition:
     background-color var(--motion-duration-control) var(--motion-ease-standard),
     color var(--motion-duration-control) var(--motion-ease-standard);
@@ -436,7 +441,7 @@ a.iii-ui-tree-item {
 
 /* Cards and panels are the shadcn Card (components/shadcn/card.tsx) written
  * as plain CSS so worker UIs without Tailwind get the same surface: a 12px
- * radius, a 1px edge of ink at 10% (`ring-1 ring-foreground/10`), the card
+ * radius, a 1px `--color-card-edge` (`ring-1 ring-card-edge`), the card
  * fill and no drop shadow. The edge is a border rather than a box-shadow
  * ring: this rule is unlayered, so a box-shadow here would beat the
  * `shadow-floating` utility on panels that float (Selector, Sections menu),
@@ -446,7 +451,7 @@ a.iii-ui-tree-item {
 .iii-ui-panel {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in oklab, var(--color-ink) 10%, transparent);
+  border: 1px solid var(--color-card-edge);
   border-radius: var(--radius-xl);
   background: var(--color-panel-raised);
   color: var(--color-ink);
@@ -1140,7 +1145,7 @@ a.iii-ui-tree-item {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--color-edge);
+  border: 1px solid var(--color-control-edge);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
   color: var(--color-accent-fg);
@@ -1330,7 +1335,7 @@ a.iii-ui-tree-item {
 .iii-ui-settings-list {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in oklab, var(--color-ink) 10%, transparent);
+  border: 1px solid var(--color-card-edge);
   border-radius: var(--radius-xl);
   background: var(--color-panel-raised);
   color: var(--color-ink);

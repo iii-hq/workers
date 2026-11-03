@@ -104,7 +104,18 @@ export interface AdhocResult {
    * human account of a schema change ("dropped table x") — the row count is
    * the wrong summary for DDL, which MySQL reports as `0 affected`.
    */
-  write?: { affectedRows: number; lastInsertId: string | null; echo: string | null }
+  write?: { affectedRows: number; lastInsertId: string | null; echo: string | null; info?: WriteInfo | null }
+}
+
+/** What a write statement does and to what, read off its text. */
+export interface WriteInfo {
+  kind: 'insert' | 'update' | 'delete' | 'create' | 'drop' | 'alter' | 'truncate'
+  /** `table`, `index`, `view`… for schema statements; null for row writes. */
+  object: string | null
+  /** The table (or object) it names, unquoted; null when it can't be read. */
+  target: string | null
+  /** It carries a RETURNING clause, so the changed rows come back. */
+  returning: boolean
 }
 
 /** Split a schema-qualified name for the worker, which takes them apart. */
@@ -297,21 +308,81 @@ export async function runAdhocSql(
       affectedRows: res.affected_rows,
       lastInsertId: res.last_insert_id ?? null,
       echo: ddl ? ddl.past : null,
+      info: describeWrite(statement),
     },
   }
+}
+
+const IDENT = '((?:[`"\\[]?[\\w$]+[`"\\]]?\\.)?[`"\\[]?[\\w$]+[`"\\]]?)'
+const unquote = (name: string) => name.replace(/[`"[\]]/g, '')
+
+const WRITE_PATTERNS: Array<[WriteInfo['kind'], RegExp]> = [
+  // A leading CTE (`with x as (…) insert …`) is skipped lazily up to the verb.
+  ['insert', new RegExp(`^(?:with\\b[\\s\\S]*?\\)\\s*)?(?:insert|replace)\\s+(?:or\\s+\\w+\\s+)?(?:ignore\\s+)?into\\s+${IDENT}`, 'i')],
+  ['update', new RegExp(`^(?:with\\b[\\s\\S]*?\\)\\s*)?update\\s+(?:or\\s+\\w+\\s+)?(?:only\\s+)?${IDENT}`, 'i')],
+  ['delete', new RegExp(`^(?:with\\b[\\s\\S]*?\\)\\s*)?delete\\s+from\\s+(?:only\\s+)?${IDENT}`, 'i')],
+]
+const CREATE_RE = new RegExp(
+  `^create\\s+(?:or\\s+replace\\s+)?(?:temp(?:orary)?\\s+)?(?:unique\\s+)?(materialized\\s+view|table|view|index|trigger|schema|database|sequence|type|function|extension)\\s+(?:if\\s+not\\s+exists\\s+)?${IDENT}`,
+  'i',
+)
+
+/**
+ * Read what a write does off its text — the verb and the object — so the
+ * result can say "Inserted 1 row into todos" rather than "1 affected". A
+ * display hint, never a routing decision; null when the shape isn't known.
+ */
+export function describeWrite(sql: string): WriteInfo | null {
+  const text = stripSqlComments(sql).trim()
+  const returning = /\breturning\b/i.test(text)
+  for (const [kind, re] of WRITE_PATTERNS) {
+    const m = re.exec(text)
+    if (m) return { kind, object: null, target: unquote(m[1]), returning }
+  }
+  const created = CREATE_RE.exec(text)
+  if (created) {
+    return { kind: 'create', object: created[1].toLowerCase().replace(/\s+/, ' '), target: unquote(created[2]), returning }
+  }
+  const ddl = DDL_RE.exec(text)
+  if (ddl) {
+    return {
+      kind: ddl[1].toLowerCase() as 'drop' | 'alter' | 'truncate',
+      object: ddl[2]?.toLowerCase() ?? (ddl[1].toLowerCase() === 'truncate' ? 'table' : null),
+      target: ddl[3] ? unquote(ddl[3]) : null,
+      returning,
+    }
+  }
+  return null
+}
+
+const rows = (n: number) => `${n.toLocaleString()} row${n === 1 ? '' : 's'}`
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
+/** One line saying what a write did: "Inserted 2 rows into orders". */
+export function writeHeadline(write: NonNullable<AdhocResult['write']>): string {
+  const info = write.info
+  const n = write.affectedRows
+  if (info?.target) {
+    const t = info.target
+    switch (info.kind) {
+      case 'insert':
+        return `Inserted ${rows(n)} into ${t}`
+      case 'update':
+        return `Updated ${rows(n)} in ${t}`
+      case 'delete':
+        return `Deleted ${rows(n)} from ${t}`
+      case 'create':
+        return `Created ${info.object ?? ''} ${t}`.replace(/\s+/g, ' ')
+    }
+  }
+  if (write.echo) return capital(write.echo)
+  return `${rows(n)} affected`
 }
 
 /** `12 rows in 4 ms · truncated at 100`, or the write's own account. */
 export function resultSummary(outcome: AdhocResult): string {
   const ms = outcome.serverMs ?? outcome.durationMs
-  if (outcome.write) {
-    const what =
-      outcome.write.echo ??
-      `${outcome.write.affectedRows} affected${
-        outcome.write.lastInsertId !== null ? ` · id ${outcome.write.lastInsertId}` : ''
-      }`
-    return `${what} in ${ms} ms`
-  }
+  if (outcome.write) return `${writeHeadline(outcome.write)} in ${ms} ms`
   const n = outcome.result.row_count
   const rows = `${n.toLocaleString()} row${n === 1 ? '' : 's'} in ${ms} ms`
   return outcome.truncatedAt ? `${rows} · truncated at ${outcome.truncatedAt.toLocaleString()}` : rows

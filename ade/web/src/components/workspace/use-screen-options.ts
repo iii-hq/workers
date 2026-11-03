@@ -6,6 +6,7 @@ import {
   Code,
   Database,
   FileText,
+  FolderKanban,
   Gauge,
   GitBranch,
   GitPullRequest,
@@ -15,11 +16,14 @@ import {
   type LucideIcon,
   MessageSquareText,
   Mic,
+  Milestone,
   Monitor,
   Puzzle,
   SquareCode,
   SquareFunction,
+  SquareKanban,
   SquareTerminal,
+  Ticket,
 } from 'lucide-react'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { buildViewOptions } from '@/lib/nav-options'
@@ -36,6 +40,8 @@ export interface ScreenOption {
   icon: LucideIcon
   description?: string
   keywords?: string[]
+  /** The worker scope that injected the page; absent for console pages. */
+  source?: string
 }
 
 interface PagePresentation {
@@ -92,6 +98,26 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     icon: Brain,
     description: 'Stored agent memory.',
   },
+  'kanban-board': {
+    icon: SquareKanban,
+    description: 'Tickets by status, assigned to agents.',
+    keywords: ['board', 'tickets', 'issues', 'tasks', 'todo'],
+  },
+  'kanban-ticket': {
+    icon: Ticket,
+    description: 'One ticket, opened from the board.',
+    keywords: ['issue', 'task'],
+  },
+  'kanban-releases': {
+    icon: Milestone,
+    description: 'Releases, target dates and progress.',
+    keywords: ['milestones', 'versions', 'roadmap'],
+  },
+  'kanban-projects': {
+    icon: FolderKanban,
+    description: 'Projects and their tickets.',
+    keywords: ['epics'],
+  },
   'pdf-reader': {
     icon: FileText,
     description: 'PDF documents and pages.',
@@ -139,7 +165,7 @@ export function useScreenOptions(): {
       value: CHAT_SCREEN,
       label: 'chat',
       icon: MessageSquareText,
-      description: 'Conversations and tools.',
+      description: 'Conversations and functions.',
       keywords: ['assistant', 'agent'],
     },
     ...buildViewOptions().map((option): ScreenOption => {
@@ -168,6 +194,7 @@ export function useScreenOptions(): {
         label: page.title,
         ...presentation,
         keywords: [page.id, page.scope, ...(presentation.keywords ?? [])],
+        source: page.scope,
       }
     }),
   ]

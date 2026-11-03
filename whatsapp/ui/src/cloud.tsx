@@ -46,6 +46,7 @@ function CloudSetup({ host, status, statusError, refreshStatus, onBrowse, config
     {statusError && <StatusPanel role="status" variant="warn" headline="Could not refresh Cloud API status" detail={statusError} action={<Button variant="ghost" onClick={refreshStatus}>Try again</Button>} />}
     <div className="wa-ui-actions"><Button onClick={() => setConfigureOpen(true)}>Configure Cloud API</Button></div>
     {missing && <p className="wa-ui-note">Still needed: {missing}.</p>}
+    {Object.entries(status.credential_errors ?? {}).map(([field, problem]) => <p key={field} className="wa-ui-note wa-ui-field-error" role="status">{FIELD_LABELS[field] ?? field}: {problem}.</p>)}
     <WorkerConfigurationDialog configurationId={configureOpen ? configurationId : null} onClose={() => setConfigureOpen(false)} />
     <ol className="wa-ui-setup-steps">
       <li><strong>Account</strong><p>Enable Cloud API and add your business account ID, phone number ID, and access token.</p></li>

@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iii_sdk::{CallRequest, Deliver, Error, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{
+    CallRequest, Deliver, Error, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -314,59 +316,49 @@ where
     panic!("{what}: timed out");
 }
 
-/// Two instances of the worker on separate connections. The second
-/// registers `cron::on-tick` as a standby: while the first hosts it, only the
-/// first runs jobs and each expression fires once per scheduled time. When
-/// the first leaves, the second takes over the existing observers and their
-/// ticks continue.
+/// A restarted instance: when the host leaves, the engine holds
+/// `cron::on-tick`'s observers, and the next instance that registers the
+/// function takes them over; their ticks continue, once per scheduled time.
 #[tokio::test]
 #[serial]
-async fn a_standby_instance_takes_over_the_observers_when_the_host_leaves() {
-    let Some(first) = engine::connect_fresh_named("cron-e2e-standby-first").await else {
+async fn a_restarted_instance_takes_over_the_observers() {
+    let Some(first) = engine::connect_fresh_named("cron-e2e-restart-first").await else {
         return;
     };
     let first_boot = iii_cron::boot::start(first.clone());
-    let Some(consumer) = engine::connect_fresh_named("cron-e2e-standby-consumer").await else {
+    let Some(consumer) = engine::connect_fresh_named("cron-e2e-restart-consumer").await else {
         return;
     };
-    let received = recorder(&consumer, "e2e::tick-standby");
-    let handle = consumer.observe(on_tick(EVERY_SECOND), "e2e::tick-standby");
+    let received = recorder(&consumer, "e2e::tick-restart");
+    let handle = consumer.observe(on_tick(EVERY_SECOND), "e2e::tick-restart");
     settled(&handle)
         .await
         .expect("the first instance accepts the observer");
     assert!(first_boot.scheduler.retains(handle.id()).await);
-
-    let Some(second) = engine::connect_fresh_named("cron-e2e-standby-second").await else {
-        return;
-    };
-    let second_boot = iii_cron::boot::start(second.clone());
-
-    // Past a few of the standby's registration attempts (one a second).
-    tokio::time::sleep(Duration::from_millis(3500)).await;
-    assert!(
-        first_boot.scheduler.retains(handle.id()).await,
-        "the host runs the observer's job"
-    );
-    assert_eq!(
-        second_boot.scheduler.job_count().await,
-        0,
-        "the standby runs no job while the first instance hosts the function"
-    );
+    common::wait_for_fires(&received.fires, 3).await;
     let before = scheduled_times(&received, |p| &p["input"]);
-    assert!(before.len() >= 3, "{before:?}");
 
     // The host leaves: its process stops the function, then disconnects.
     first_boot.shutdown().await;
     first.shutdown_async().await;
+    wait_for("the observer waits for a host", || async {
+        handle.state() == ObserverState::Pending
+    })
+    .await;
+
+    let Some(second) = engine::connect_fresh_named("cron-e2e-restart-second").await else {
+        return;
+    };
+    let second_boot = iii_cron::boot::start(second.clone());
     wait_for(
-        "the standby takes over the observer and starts its job",
+        "the restarted instance takes over the observer and starts its job",
         || second_boot.scheduler.retains(handle.id()),
     )
     .await;
 
     let seen = received.count();
     common::wait_for_fires(&received.fires, seen + 2).await;
-    // One tick per scheduled time across the handover, every one of them
+    // One tick per scheduled time across the restart, every one of them
     // through the observer the consumer created before it.
     let after = scheduled_times(&received, |p| &p["input"]);
     assert!(after.len() >= before.len() + 2, "{after:?}");
@@ -376,16 +368,17 @@ async fn a_standby_instance_takes_over_the_observers_when_the_host_leaves() {
     }
 
     handle.dispose().await.unwrap();
-    wait_for("the last observer stops the standby's job", || async {
-        !second_boot.scheduler.retains(handle.id()).await
-    })
+    wait_for(
+        "the last observer stops the restarted instance's job",
+        || async { !second_boot.scheduler.retains(handle.id()).await },
+    )
     .await;
     second_boot.shutdown().await;
     consumer.shutdown_async().await;
     second.shutdown_async().await;
 }
 
-/// A second instance under the worker's own name never becomes a standby: the
+/// A second instance under the worker's own name is refused: the
 /// engine admits one live worker per name and namespace, so it refuses the
 /// registration (`WORKER_NAMESPACE_CONFLICT`) and the SDK stops. The binary
 /// exits on [`iii_cron::boot::refused`] instead of idling without a function.

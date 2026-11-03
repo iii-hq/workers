@@ -101,7 +101,7 @@ export function summaryText(value: ImportSummary): string {
   if (value.imported === 0) return `Nothing imported${failures}`
   const commands =
     value.commands === 0 ? '' : ` · ${plural(value.commands, 'command')}`
-  return `Imported ${plural(value.imported, 'conversation')} · ${plural(value.messages, 'message')}${commands}${failures}`
+  return `Imported ${plural(value.imported, 'chat')} · ${plural(value.messages, 'message')}${commands}${failures}`
 }
 
 /** "2h ago" for a source timestamp, in the sidebar's own elapsed copy. */
@@ -692,18 +692,18 @@ export function PreviewPane({
   return (
     <section
       aria-label="Preview"
-      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card ring-1 ring-card-edge"
     >
       {conversation ? (
         <header className="shrink-0 border-b border-border px-4 pt-3.5 pb-3">
           <div className="flex items-start gap-2">
             {onBack ? (
-              <Hint label="Back to conversations">
+              <Hint label="Back to chats">
                 <Button
                   variant="ghost"
                   size="icon-sm"
                   className="-mt-0.5 -ml-1.5 shrink-0 @2xl:hidden"
-                  aria-label="Back to conversations"
+                  aria-label="Back to chats"
                   onClick={onBack}
                 >
                   <ArrowLeft />
@@ -757,13 +757,13 @@ export function PreviewPane({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {!conversation ? (
           <Placeholder icon={MessagesSquare} title="Nothing to preview">
-            Choose a conversation to read the end of it here.
+            Choose a chat to read the end of it here.
           </Placeholder>
         ) : error ? (
           <Placeholder
             icon={TriangleAlert}
             tone="alert"
-            title="Could not read this conversation"
+            title="Could not read this chat"
           >
             <span className="break-all font-geist-mono text-xs">{error}</span>
           </Placeholder>
@@ -789,7 +789,7 @@ export function PreviewPane({
             ))}
             {rows.length === 0 ? (
               <Placeholder icon={MessagesSquare} title="Nothing to import">
-                This conversation has no messages or commands to bring across.
+                This chat has no messages or commands to bring across.
               </Placeholder>
             ) : null}
             {rows.map((row) =>
@@ -986,9 +986,7 @@ export function ImportFooter({
           </Button>
           {summary.lastSessionId ? (
             <Button onClick={onOpen}>
-              {summary.imported > 1
-                ? 'Open last imported'
-                : 'Open conversation'}
+              {summary.imported > 1 ? 'Open last imported' : 'Open chat'}
             </Button>
           ) : (
             <Button onClick={onRetryFailed}>Retry failed</Button>
@@ -1010,7 +1008,7 @@ export function ImportFooter({
         <Button disabled={!canImport} onClick={onImport}>
           {selectedCount === 0
             ? 'Import'
-            : `Import ${plural(selectedCount, 'conversation')}`}
+            : `Import ${plural(selectedCount, 'chat')}`}
         </Button>
       </div>
     </div>
@@ -1279,7 +1277,7 @@ export function ImportConversationsDialog({
       <DialogContent className="flex h-[min(720px,calc(100dvh-2rem))] w-[calc(100%-2rem)] max-w-[1000px] [--dialog-max-width:1000px] flex-col gap-0 overflow-hidden p-0">
         <div className="shrink-0 px-5 pt-5 pr-12">
           <DialogTitle className="font-inter text-base font-semibold tracking-[-0.01em] text-ink">
-            Import conversations
+            Import chats
           </DialogTitle>
           <DialogDescription className="mt-1 font-inter text-sm text-ink-faint">
             Pick up Codex and Claude Code sessions from this machine where they
@@ -1345,12 +1343,12 @@ export function ImportConversationsDialog({
               >
                 {discovery?.next_cursor
                   ? 'None of the newest histories match. Older ones have not been searched yet.'
-                  : 'Search matches conversation titles and project folders.'}
+                  : 'Search matches chat titles and project folders.'}
               </Placeholder>
             ) : (
               <Placeholder
                 icon={MessagesSquare}
-                title={`No ${conversationSources[source]} conversations yet`}
+                title={`No ${conversationSources[source]} chats yet`}
                 actions={SOURCE_OPTIONS.filter((o) => o.value !== source).map(
                   (o) => (
                     <Button
@@ -1464,7 +1462,7 @@ export function ImportConversationsDialog({
                           aria-hidden
                         />
                       ) : null}
-                      Load older conversations
+                      Load older chats
                     </Button>
                   ) : null}
                   {notices?.problems.map((problem) => (

@@ -1,11 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { AgentEntry } from '@/lib/backend/directory-prompts'
 import type { AgentProfileSnapshot, ModelOption } from '@/types/chat'
 import { AgentProfilePicker } from './AgentProfilePicker'
 import { Composer } from './Composer'
 import { EmptyState } from './EmptyState'
 import { DEFAULT_SYSTEM_PROMPT_STATE } from './system-prompt-selection'
+import { WelcomeHandoff } from './WelcomeHandoff'
 
 const agents: AgentEntry[] = [
   {
@@ -51,12 +52,20 @@ function NewConversation({
     [],
   )
   const welcome = messages.length === 0
+  const bodyRef = useRef<HTMLDivElement>(null)
   return (
     <section className="conversation-surface @container flex h-dvh min-w-0 flex-col bg-bg text-ink">
       <div
+        ref={bodyRef}
         className="chat-conversation-body flex min-h-0 flex-1 flex-col"
         data-welcome={welcome || undefined}
       >
+        <WelcomeHandoff
+          bodyRef={bodyRef}
+          welcome={welcome}
+          sent={!welcome}
+          conversationId="story"
+        />
         {welcome ? (
           <EmptyState variant="ready" />
         ) : (

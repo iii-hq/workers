@@ -61,6 +61,12 @@ type callbackConfigurationID struct {
 	ID string `json:"id"`
 }
 
+// secretChangedNotification is the part of a secrets::on-changed delivery the
+// worker reads; the rest (name, action, fingerprint, updated_at) is ignored.
+type secretChangedNotification struct {
+	Ref string `json:"ref,omitempty"`
+}
+
 type callbackOK struct {
 	OK bool `json:"ok"`
 }

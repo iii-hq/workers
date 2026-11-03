@@ -67,7 +67,7 @@ pub fn register(iii: &IIIClient, capture: &Arc<NativeCapture>) -> FunctionRef {
         let capture = removed.clone();
         async move { capture.removed(&obs).await }
     });
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ROW_CHANGED_FN,
         Match::keys(
             |obs| observer_keys(obs.args_value()).into(),

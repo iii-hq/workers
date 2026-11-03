@@ -117,6 +117,8 @@ Other fields and defaults are documented in the [configuration schema](https://g
 
 Under **Meta Cloud API**, enable the integration and enter the WhatsApp Business Account (WABA) ID, Phone Number ID, access token, app secret, and a verify token you choose. The verify token must match Meta's webhook settings. Phone Number ID is a Meta identifier, not the phone's digits.
 
+With the [secrets worker](https://github.com/iii-hq/workers/blob/main/secrets/README.md) running, **Save to secrets** keeps the access token, app secret and verify token in its encrypted vault and saves only a `secret://NAME` reference in the configuration. See [secrets worker references](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#secrets-worker-references).
+
 You can supply these fields through the WhatsApp process environment instead:
 
 ```dotenv

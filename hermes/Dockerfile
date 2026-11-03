@@ -35,12 +35,12 @@ RUN mkdir -p /opt/hermes-agent \
 # The agent runs `iii call <function>` (src/iii_prompt.py), so the build fails
 # when the bundled CLI has no `call` subcommand.
 RUN case "${TARGETARCH}" in \
-      amd64) iii_target=x86_64-unknown-linux-gnu; iii_sha=ef42cd139b4f9f47d1530e2156699781ea29e85653185424c0f073f2d4f248dd ;; \
-      arm64) iii_target=aarch64-unknown-linux-gnu; iii_sha=435356823b9966e2a13eea669fd42922995457d15cbbc79cb72579f241631a56 ;; \
+      amd64) iii_target=x86_64-unknown-linux-gnu; iii_sha=7369fcdafdb94f5493ef3d51adacdd5e3d4f15de23c14538f55e43dd3027bbc3 ;; \
+      arm64) iii_target=aarch64-unknown-linux-gnu; iii_sha=eea6d4bb14ac81798f2e32b604b24d2f9be30d492686f32f1be9cbcc74fa03f8 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 2 ;; \
     esac \
     && iii_archive="iii-${iii_target}.tar.gz" \
-    && iii_url="https://github.com/iii-hq/iii/releases/download/iii/v0.26.0-rc.2/${iii_archive}" \
+    && iii_url="https://github.com/iii-hq/iii/releases/download/iii/v0.26.0-rc.4/${iii_archive}" \
     && python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "${iii_url}" "/tmp/${iii_archive}" \
     && echo "${iii_sha}  /tmp/${iii_archive}" | sha256sum -c - \
     && tar -xzf "/tmp/${iii_archive}" -C /usr/local/bin iii \

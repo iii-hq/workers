@@ -1283,7 +1283,7 @@ impl Interceptor {
                 UpstreamAction::Forward(v.to_string())
             }
             "registrationrejected" => {
-                // A registration the engine refused (a standby's
+                // A registration the engine refused (a
                 // FUNCTION_NAMESPACE_CONFLICT included) is not this
                 // connection's: its id stops being own. Strip the prefix so
                 // the worker sees the id it sent.

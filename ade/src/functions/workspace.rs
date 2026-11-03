@@ -862,7 +862,7 @@ fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
             Ok(())
         }
     });
-    iii.on_observer_match_for(ON_CHANGED_FN, for_observer::every_call());
+    iii.on_observation_match_for(ON_CHANGED_FN, for_observer::every_call());
     iii.register_function(
         ON_CHANGED_FN,
         RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))

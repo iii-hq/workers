@@ -93,6 +93,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if !*collect {
+		config.Cloud = resolveCloudCredentials(ctx, busSecretResolver(client), config.Cloud, CloudConfig{}, "")
+	}
 	applyDeviceProps(config)
 	if *collect {
 		manager, err := newInterfaceManager(config)

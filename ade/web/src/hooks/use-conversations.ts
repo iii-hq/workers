@@ -46,6 +46,11 @@ import { upsertHarnessProject } from '@/lib/backend/projects'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
+import {
+  FILE_MENTION_RE,
+  formatLineRange,
+  parseFileMentionInner,
+} from '@/lib/file-mention-token'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { findMentions } from '@/lib/mentions/token'
 import { getMentionViewState } from '@/lib/mentions/views'
@@ -231,10 +236,35 @@ function mentionTitleText(text: string): string {
   return out + text.slice(last)
 }
 
+/** A `#file(/abs/path/src/a.ts:12-40)` token reads as `@a.ts:12-40`: the
+ *  name the pill shows, not a path that fills the whole title. */
+function fileMentionTitleText(text: string): string {
+  return text.replace(FILE_MENTION_RE, (_token, inner: string) => {
+    const ref = parseFileMentionInner(inner)
+    const folder = ref.path.endsWith('/')
+    const name = ref.path.split('/').filter(Boolean).pop() ?? ref.path
+    const range = ref.range ? `:${formatLineRange(ref.range)}` : ''
+    return `@${name}${folder ? '/' : ''}${range}`
+  })
+}
+
+/** Long enough that the sidebar's hover marquee and a wide tab show the
+ *  whole ask; the row and the tab still clip it to their own width. */
+const TITLE_MAX_CHARS = 60
+
+/** An unsent chat's title: the same words as the New chat button. */
+const UNTITLED_CHAT = 'New chat'
+
+/** The ask as typed — its casing too, so `KAN-12`, `API` and file names
+ *  keep their meaning and a derived title reads like a renamed one. */
 export function deriveTitle(text: string): string {
-  const clean = mentionTitleText(text).replace(/\s+/g, ' ').trim().toLowerCase()
-  if (!clean) return 'new chat'
-  return clean.length > 32 ? `${clean.slice(0, 32)}…` : clean
+  const clean = fileMentionTitleText(mentionTitleText(text))
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!clean) return UNTITLED_CHAT
+  return clean.length > TITLE_MAX_CHARS
+    ? `${clean.slice(0, TITLE_MAX_CHARS).trimEnd()}…`
+    : clean
 }
 
 export function emptyConversation(
@@ -246,7 +276,7 @@ export function emptyConversation(
   return {
     id: newSessionId(),
     title:
-      draft?.title?.trim() || (draft ? deriveTitle(draft.text) : 'new chat'),
+      draft?.title?.trim() || (draft ? deriveTitle(draft.text) : UNTITLED_CHAT),
     ...(draft
       ? { draftText: draft.text, titleManual: Boolean(draft.title?.trim()) }
       : {}),

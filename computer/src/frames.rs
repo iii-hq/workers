@@ -442,7 +442,7 @@ pub fn register(iii: &IIIClient) -> Arc<FrameNotifier> {
         }
     });
     // A change goes to the observers of its session: one lookup.
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_FRAME_CHANGED_FN,
         Match::keys(
             |observer| {
@@ -454,7 +454,7 @@ pub fn register(iii: &IIIClient) -> Arc<FrameNotifier> {
             |call| call.input["session_id"].as_str().into(),
         ),
     );
-    iii.on_observer_deliver_for(ON_FRAME_CHANGED_FN, {
+    iii.on_observation_deliver_for(ON_FRAME_CHANGED_FN, {
         let notifier = notifier.clone();
         move |call: Call, observers: Vec<Observer>| {
             let notifier = notifier.clone();

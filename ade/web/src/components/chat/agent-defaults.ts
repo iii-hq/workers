@@ -28,6 +28,11 @@ export const COMPOSER_PLACEHOLDER_MAX_CHARS = 200
 /** The composer's hint when the selected profile has no example of its own. */
 export const GENERIC_COMPOSER_PLACEHOLDER = 'Send a message…'
 
+/** Before the first message: what to type, and the one shortcut worth
+ *  learning on the way in. */
+export const WELCOME_COMPOSER_PLACEHOLDER =
+  'Describe a task, or type @ to mention a file…'
+
 /**
  * Plain-text example from a catalog row or persisted metadata: whitespace
  * collapsed, blank or non-string = none, capped defensively at the server
@@ -82,9 +87,9 @@ export function agentToPreselect(
 }
 
 /**
- * The composer hint while idle: the selected profile's example before the
- * first message, the generic hint otherwise (after the first turn the
- * example no longer describes a useful next step).
+ * The composer hint while idle: the selected profile's example (or the
+ * welcome hint) before the first message, the generic hint otherwise
+ * (after the first turn the example no longer describes a useful next step).
  */
 export function idleComposerPlaceholder(
   agentProfile: AgentProfileSnapshot | undefined,
@@ -93,6 +98,6 @@ export function idleComposerPlaceholder(
   if (hasMessages) return GENERIC_COMPOSER_PLACEHOLDER
   return (
     normalizeComposerPlaceholder(agentProfile?.composerPlaceholder) ??
-    GENERIC_COMPOSER_PLACEHOLDER
+    WELCOME_COMPOSER_PLACEHOLDER
   )
 }

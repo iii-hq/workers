@@ -122,7 +122,7 @@ export function FunctionCallView({
 
   return (
     <div className="flex flex-col gap-4" data-function-call-view>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl bg-card ring-1 ring-foreground/10 px-3 py-2.5 @md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl bg-card ring-1 ring-card-edge px-3 py-2.5 @md:grid-cols-3">
         <div className="col-span-2 flex min-w-0 flex-col gap-0.5 @md:col-span-3">
           <span className="text-[11px] text-muted-foreground">Function</span>
           <span className="flex min-w-0 items-center gap-2">
