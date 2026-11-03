@@ -8,6 +8,8 @@
 
 #[path = "support/db.rs"]
 mod db;
+#[path = "support/temp_dir.rs"]
+mod temp_dir;
 
 use std::sync::{Arc, Mutex};
 
@@ -1984,10 +1986,8 @@ async fn joint_evidence_envelopes_freeze_cuts_missing_and_utf8_limits() {
 
 #[tokio::test]
 async fn source_proxy_redacts_whole_synthetic_file_before_window_and_fails_closed_on_ceiling() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("docs/evidence/group-investigation-a73c/r2-source-fixtures")
-        .join(format!("proxy-{}", uuid::Uuid::now_v7()));
-    std::fs::create_dir_all(&root).unwrap();
+    let fixture = temp_dir::TempDir::new("source-proxy");
+    let root = fixture.path();
     let pem =
         "before\n-----BEGIN PRIVATE KEY-----\nQUJDREVGR0g=\n-----END PRIVATE KEY-----\nafter\n";
     std::fs::write(root.join("synthetic.rs"), pem).unwrap();

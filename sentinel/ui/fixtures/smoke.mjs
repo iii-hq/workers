@@ -1,13 +1,13 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import assert from 'node:assert/strict'
 const require = createRequire(new URL('../../../ade/web/package.json', import.meta.url))
 const { createServer } = await import(require.resolve('vite'))
 const { chromium, expect } = require('@playwright/test')
 const server = await createServer({ configFile: fileURLToPath(new URL('./vite.config.mjs', import.meta.url)) })
-await server.listen()
-const evidence = fileURLToPath(new URL('../../docs/evidence/group-investigation-a73c', import.meta.url))
+const evidence = process.env.SENTINEL_UI_EVIDENCE_DIR || fileURLToPath(new URL('../../docs/evidence/group-investigation-a73c', import.meta.url))
+await mkdir(evidence, { recursive: true })
 const observations = []
 let browser
 const issue1 = 'TimeoutError: upstream request exceeded deadline'
@@ -37,11 +37,55 @@ const chooseProfile = async (page, mobile) => {
 const capture = async (page, name) => {
   const text = await page.locator('body').innerText()
   assert.equal(/-----BEGIN .*PRIVATE KEY-----|AKIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{30,}/.test(text), false, 'Sensitive content before screenshot')
-  await page.screenshot({ path: `${evidence}/sr-regression-${name}.png`, fullPage: true })
+  await page.screenshot({ path: `${evidence}/cr-regression-${name}.png`, fullPage: true })
 }
 try {
+  if (process.env.SENTINEL_UI_FORCE_EARLY_FAILURE === '1') throw new Error('Synthetic early fixture failure')
+  await server.listen()
   browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH })
   for (const theme of ['dark', 'light']) {
+    for (const uuidMode of ['throws', 'missing']) {
+      const recovery = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' })
+      recovery.setDefaultTimeout(6000)
+      const errors = []
+      recovery.on('pageerror', error => errors.push(String(error)))
+      await recovery.goto(`http://127.0.0.1:4197/?theme=${theme}`)
+      for (const title of [issue1, issue2]) await recovery.getByRole('checkbox', { name: `Select ${title}`, exact: true }).check()
+      await openReview(recovery)
+      await chooseProfile(recovery, true)
+      await recovery.evaluate(mode => {
+        const original = Object.getOwnPropertyDescriptor(crypto, 'randomUUID')
+        window.__restoreFixtureUUID = () => { if (original) Object.defineProperty(crypto, 'randomUUID', original); else delete crypto.randomUUID }
+        window.__breakFixtureUUID = () => Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: mode === 'missing' ? undefined : () => { throw new Error('Synthetic UUID generation failed') } })
+        window.__breakFixtureUUID()
+      }, uuidMode)
+      await start(recovery).click()
+      await expect(review(recovery).getByRole('alert')).toContainText(uuidMode === 'throws' ? 'Synthetic UUID generation failed' : 'randomUUID')
+      await expect(review(recovery).getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled()
+      await expect(start(recovery)).toBeEnabled()
+      assert.equal((await attempts(recovery)).length, 0, 'UUID failure sends no investigation RPC')
+      // Restoring the native API retries successfully in the very same dialog.
+      await recovery.evaluate(() => window.__restoreFixtureUUID())
+      await start(recovery).click()
+      await expect(review(recovery)).toBeHidden()
+      assert.equal((await attempts(recovery)).length, 1)
+      // A second failed intent can be dismissed with Escape after gate release.
+      for (const title of [issue1, issue2]) await recovery.getByRole('checkbox', { name: `Select ${title}`, exact: true }).check()
+      await openReview(recovery)
+      await chooseProfile(recovery, true)
+      await recovery.evaluate(() => window.__breakFixtureUUID())
+      await start(recovery).click()
+      await expect(review(recovery).getByRole('alert')).toContainText(uuidMode === 'throws' ? 'Synthetic UUID generation failed' : 'randomUUID')
+      assert.equal((await attempts(recovery)).length, 1)
+      await expect(review(recovery).getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled()
+      await recovery.keyboard.press('Escape')
+      await expect(review(recovery)).toBeHidden()
+      await expect(selected(recovery)).toBeVisible()
+      await recovery.evaluate(() => window.__restoreFixtureUUID())
+      assert.deepEqual(errors, [])
+      observations.push({ theme, uuidMode, checks: ['error visible', 'Cancel enabled', 'pending and gate released', 'zero RPC on UUID failure', 'native UUID restored and successful retry in same dialog', 'Escape dismisses after another failed intent'], errors })
+      await recovery.close()
+    }
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' })
     page.setDefaultTimeout(6000)
     const errors = []
@@ -180,9 +224,9 @@ try {
     observations.push({ theme, pane: '600px in 1440x1000 viewport', checks: ['narrow pane keyboard', 'desktop Select semantics in narrow pane', 'cancel preserves selection', 'no RPC start', 'no overflow'] })
     await split.close()
   }
-  await writeFile(`${evidence}/sr-regression.json`, JSON.stringify({ baseline: '9eb9b507598a0dbe0937b883aebe89ebcba7f6bb', conditions: { reducedMotion: true, source: 'real GroupsListView + InvestigateMany + Console primitives; only iii RPC host mocked', pixelReview: 'not performed by this script' }, observations }, null, 2))
+  await writeFile(`${evidence}/cr-regression.json`, JSON.stringify({ baseline: '9eb9b507598a0dbe0937b883aebe89ebcba7f6bb', conditions: { reducedMotion: true, source: 'real GroupsListView + InvestigateMany + Console primitives; only iii RPC host mocked', pixelReview: 'not performed by this script' }, observations }, null, 2))
   console.log(JSON.stringify({ ok: true, observations }))
 } catch (error) {
-  await writeFile(`${evidence}/sr-regression-failure.json`, JSON.stringify({ error: String(error), stack: error.stack, observations }, null, 2))
+  await writeFile(`${evidence}/cr-regression-failure.json`, JSON.stringify({ error: String(error), stack: error.stack, observations }, null, 2))
   throw error
 } finally { await browser?.close(); await server.close() }

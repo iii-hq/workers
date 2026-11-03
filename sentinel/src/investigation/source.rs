@@ -142,29 +142,14 @@ impl<D: Db> Investigations<D> {
 /// symlinks at every step closes both traversal and rename/symlink races.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn jailed_open(root: &str, relative: &str) -> Result<std::fs::File, SentinelError> {
+    use libc::{
+        openat, O_CLOEXEC as CLOEXEC, O_DIRECTORY as DIRECTORY, O_NOFOLLOW as NOFOLLOW,
+        O_NONBLOCK as NONBLOCK,
+    };
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::{Component, Path};
-    #[cfg(target_os = "macos")]
-    const NOFOLLOW: i32 = 0x100;
-    #[cfg(target_os = "macos")]
-    const DIRECTORY: i32 = 0x100000;
-    #[cfg(target_os = "macos")]
-    const CLOEXEC: i32 = 0x1000000;
-    #[cfg(target_os = "linux")]
-    const NOFOLLOW: i32 = 0x20000;
-    #[cfg(target_os = "linux")]
-    const DIRECTORY: i32 = 0x10000;
-    #[cfg(target_os = "linux")]
-    const CLOEXEC: i32 = 0x80000;
-    #[cfg(target_os = "macos")]
-    const NONBLOCK: i32 = 0x4;
-    #[cfg(target_os = "linux")]
-    const NONBLOCK: i32 = 0x800;
-    extern "C" {
-        fn openat(fd: i32, path: *const std::os::raw::c_char, flags: i32, ...) -> i32;
-    }
     let refused = || {
         SentinelError::NoEvidence(
             "source_unavailable: path must be a regular non-symlink file inside its mapped project"
@@ -234,6 +219,10 @@ fn jailed_open(_root: &str, _relative: &str) -> Result<std::fs::File, SentinelEr
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/temp_dir.rs"]
+mod temp_dir;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -255,19 +244,11 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn synthetic_root(label: &str) -> std::path::PathBuf {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("docs/evidence/group-investigation-a73c/r2-source-fixtures")
-            .join(format!("{label}-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    #[cfg(unix)]
     #[test]
     fn allowed_extension_symlinks_and_intermediate_symlinks_are_refused() {
         use std::os::unix::fs::symlink;
-        let base = synthetic_root("nofollow");
+        let fixture = temp_dir::TempDir::new("nofollow");
+        let base = fixture.path();
         let root = base.join("mapped");
         let outside = base.join("unmapped");
         std::fs::create_dir_all(&root).unwrap();
@@ -290,7 +271,8 @@ mod tests {
     #[test]
     fn opened_inode_stays_safe_after_path_replaced_by_symlink() {
         use std::os::unix::fs::symlink;
-        let base = synthetic_root("inode");
+        let fixture = temp_dir::TempDir::new("inode");
+        let base = fixture.path();
         let root = base.join("mapped");
         std::fs::create_dir_all(&root).unwrap();
         let original = root.join("source.rs");
@@ -310,7 +292,8 @@ mod tests {
     #[test]
     fn bounded_directory_swap_race_never_reads_symlink_target() {
         use std::os::unix::fs::symlink;
-        let base = synthetic_root("race");
+        let fixture = temp_dir::TempDir::new("race");
+        let base = fixture.path();
         let root = base.join("mapped");
         let outside = base.join("unmapped");
         std::fs::create_dir_all(root.join("source")).unwrap();
@@ -318,7 +301,7 @@ mod tests {
         std::fs::write(root.join("source/code.rs"), "SAFE_MAPPED_SOURCE").unwrap();
         std::fs::write(outside.join("code.rs"), "SYNTHETIC_UNMAPPED_SOURCE").unwrap();
         let root2 = root.clone();
-        let base2 = base.clone();
+        let base2 = base.to_path_buf();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let barrier2 = barrier.clone();
         let writer = std::thread::spawn(move || {

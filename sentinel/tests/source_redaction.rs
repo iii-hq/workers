@@ -8,7 +8,7 @@ fn pem_body_only_window_never_exposes_body_and_keeps_original_lines() {
     assert!(hits > 0);
     assert!(!safe.contains("QUJDREVGR0g="));
     assert_eq!(safe.lines().count(), 5);
-    assert_eq!(safe.lines().nth(0), Some("before"));
+    assert_eq!(safe.lines().next(), Some("before"));
     assert_eq!(safe.lines().nth(4), Some("after"));
     assert!(safe.lines().nth(2).unwrap().contains("redacted"));
 }

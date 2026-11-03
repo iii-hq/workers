@@ -1,13 +1,43 @@
+fn identity_is_read_inside_future(source: &str, function_id: &str) -> bool {
+    let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+    let registration = format!("iii.register_function({function_id},");
+    let Some(start) = compact.find(&registration) else {
+        return false;
+    };
+    let block = &compact[start..];
+    let Some(end) = block.find(".description(") else {
+        return false;
+    };
+    let block = &block[..end];
+    let Some(future) = block.find("asyncmove{") else {
+        return false;
+    };
+    let reads: Vec<_> = block.match_indices("get_baggage_entry").collect();
+    reads.len() == 2
+        && reads.iter().all(|(position, _)| *position > future)
+        && block.contains("get_baggage_entry(\"iii.session.id\")")
+        && block.contains("get_baggage_entry(\"iii.message.id\")")
+        && !block.contains("tokio::spawn")
+}
+
 #[test]
 fn source_proxy_reads_invocation_identity_inside_its_handler_future() {
-    let source = include_str!("../src/functions.rs");
-    let start = source
-        .find("iii.register_function(SOURCE_READ_ID,")
-        .expect("source proxy registered");
-    let block = &source[start..];
-    let block = &block[..block.find(".description(SOURCE_READ_DESC)").unwrap()];
-    assert!(block.find("get_baggage_entry").unwrap() > block.find("async move {").unwrap());
-    assert!(!block.contains("tokio::spawn"));
+    assert!(identity_is_read_inside_future(
+        include_str!("../src/functions.rs"),
+        "SOURCE_READ_ID"
+    ));
+}
+
+#[test]
+fn identity_guard_accepts_formatting_but_rejects_context_losing_reads() {
+    let safe = "iii.register_function(\n SOURCE_READ_ID, handler(|request| { async move { get_baggage_entry(\"iii.session.id\"); get_baggage_entry(\"iii.message.id\"); } })).description(SOURCE_READ_DESC)";
+    assert!(identity_is_read_inside_future(safe, "SOURCE_READ_ID"));
+    let outside = safe.replace("async move { get_baggage_entry(\"iii.session.id\"); get_baggage_entry(\"iii.message.id\");", "get_baggage_entry(\"iii.session.id\"); get_baggage_entry(\"iii.message.id\"); async move {");
+    assert!(!identity_is_read_inside_future(&outside, "SOURCE_READ_ID"));
+    assert!(!identity_is_read_inside_future(
+        &safe.replace("async move {", "async move { tokio::spawn("),
+        "SOURCE_READ_ID"
+    ));
 }
 
 #[test]
@@ -151,28 +181,9 @@ fn the_caller_identity_is_read_inside_the_handler_future() {
     // therefore runs outside that context and finds nothing — which showed up
     // on a live stack as an agent calling `record` six times in a row and
     // being told each time that its call carried no session.
-    let source = include_str!("../src/functions.rs");
-    let start = source
-        .find("DIAGNOSIS_RECORD_ID,")
-        .expect("the diagnosis write is registered");
-    let block = &source[start..];
-    let end = block.find(".description(").expect("the registration ends");
-    let block = &block[..end];
-
-    let future = block
-        .find("async move {")
-        .expect("the handler returns an async block");
-    let read = block
-        .find("get_baggage_entry")
-        .expect("the caller identity comes from the invocation baggage");
     assert!(
-        read > future,
-        "the baggage read must sit inside the async block, not in the closure body that \
-         builds it — outside the future there is no invocation context to read from"
-    );
-    assert!(
-        !block.contains("tokio::spawn"),
-        "a bare spawn would drop the context the identity lives in"
+        identity_is_read_inside_future(include_str!("../src/functions.rs"), "DIAGNOSIS_RECORD_ID"),
+        "caller identity must be read inside the handler future without spawning away its context"
     );
 }
 

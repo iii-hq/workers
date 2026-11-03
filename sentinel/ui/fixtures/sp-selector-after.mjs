@@ -1,17 +1,19 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
 const require = createRequire(new URL('../../../ade/web/package.json', import.meta.url))
 const { createServer } = await import(require.resolve('vite'))
 const { chromium, expect } = require('@playwright/test')
 const server = await createServer({ configFile: fileURLToPath(new URL('./vite.config.mjs', import.meta.url)) })
-const evidence = fileURLToPath(new URL('../../docs/evidence/group-investigation-a73c', import.meta.url))
+const evidence = process.env.SENTINEL_UI_EVIDENCE_DIR || fileURLToPath(new URL('../../docs/evidence/group-investigation-a73c', import.meta.url))
+await mkdir(evidence, { recursive: true })
 const observations = []
 let browser
 const bounds = locator => locator.evaluateAll(nodes => nodes.map(node => { const box = node.getBoundingClientRect(); return { x:box.x,y:box.y,width:box.width,height:box.height,right:box.right,bottom:box.bottom,scrollWidth:node.scrollWidth,clientWidth:node.clientWidth,scrollHeight:node.scrollHeight,clientHeight:node.clientHeight,textLength:node.textContent.length } }))
 try {
+  if (process.env.SENTINEL_UI_FORCE_EARLY_FAILURE === '1') throw new Error('Synthetic early fixture failure')
   await server.listen()
   browser = await chromium.launch({ headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH })
   for (const theme of ['dark','light']) for (const scenario of [{name:'wide',width:1440,height:1000},{name:'phone',width:390,height:844},{name:'pane520',width:1440,height:1000,pane:520}]) {
@@ -42,7 +44,7 @@ try {
     }
     assert.equal(await options.first().locator('.sentinel-ui-profile-description').textContent(),'SyntheticDescription'.repeat(175),'full long description retained')
     await expect(options.filter({hasText:'Broken chain'})).toBeDisabled()
-    await page.screenshot({path:`${evidence}/sr-after-${scenario.name}-${theme}.png`,fullPage:true})
+    await page.screenshot({path:`${evidence}/cr-after-${scenario.name}-${theme}.png`,fullPage:true})
     // Ordinary Playwright click: no force, injected click, or coordinates.
     await options.filter({hasText:'Default · default'}).click()
     await expect(trigger).toBeFocused()
@@ -84,7 +86,7 @@ try {
   }
   const hashes={}
   for(const file of ['../src/page/InvestigateMany.tsx','../src/page/ProfilePicker.tsx','../styles.css','./sp-selector-data.ts']) hashes[file]=createHash('sha256').update(await readFile(new URL(file,import.meta.url))).digest('hex')
-  await writeFile(`${evidence}/sr-after.json`,JSON.stringify({syntheticOnly:true,head:'9eb9b507598a0dbe0937b883aebe89ebcba7f6bb',reducedMotion:true,hashes,observations,pixelReview:'not performed by this script'},null,2))
+  await writeFile(`${evidence}/cr-after.json`,JSON.stringify({syntheticOnly:true,head:'9eb9b507598a0dbe0937b883aebe89ebcba7f6bb',reducedMotion:true,hashes,observations,pixelReview:'not performed by this script'},null,2))
   console.log(JSON.stringify({ok:true,scenarios:observations.length,hashes,observations:observations.map(({theme,scenario,normalClickDefault,errors})=>({theme,scenario,normalClickDefault,errors}))}))
-} catch(error) { await writeFile(`${evidence}/sr-after-failure.json`,JSON.stringify({error:String(error),stack:error.stack,observations},null,2));throw error }
+} catch(error) { await writeFile(`${evidence}/cr-after-failure.json`,JSON.stringify({error:String(error),stack:error.stack,observations},null,2));throw error }
 finally {await browser?.close();await server.close()}

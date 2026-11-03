@@ -37,9 +37,9 @@ export function InvestigateMany({ api, groups, onCancel, onStarted }: {
     gate.current = true
     setPending(true)
     setError('')
-    const signature = intentSignature(ids, profile, hypothesis)
-    if (intent.current.signature !== signature) intent.current = { signature, id: crypto.randomUUID() }
     try {
+      const signature = intentSignature(ids, profile, hypothesis)
+      if (intent.current.signature !== signature) intent.current = { signature, id: crypto.randomUUID() }
       const result = await api.investigateMany(ids, profile, hypothesis || undefined, intent.current.id)
       onStarted(result)
     } catch (cause) {
