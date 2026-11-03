@@ -18,7 +18,7 @@ beforeEach(() => {
 })
 
 describe('workspace layout transport', () => {
-  it('talks to the console worker store, never the configuration entry', () => {
+  it('talks to the ADE worker store, never the configuration entry', () => {
     expect(WORKSPACE_GET_FUNCTION_ID).toBe('ade::workspace::get')
     expect(WORKSPACE_SET_FUNCTION_ID).toBe('ade::workspace::set')
   })

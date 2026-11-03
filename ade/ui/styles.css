@@ -1,4 +1,4 @@
-/* The console worker's own stylesheet (`console:style`, console/styles.css):
+/* The ADE worker's own stylesheet (`console:style`, console/styles.css):
  * the console entry's settings form, the declarative worker configuration
  * forms, the working-directory proposal card and the two engine-catalogue
  * pages. Every rule is scoped under [data-iii-ui="console"]; tokens only. */

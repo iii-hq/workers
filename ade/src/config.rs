@@ -1,4 +1,4 @@
-//! Local seed/fallback configuration for the `console` worker.
+//! Local seed/fallback configuration for the `ade` worker.
 //!
 //! The YAML config file exposes three operator-facing knobs:
 //!
@@ -29,7 +29,7 @@ pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 #[derive(Deserialize, Debug, Clone)]
 pub struct ConsoleConfig {
     /// Interface the HTTP listener binds. Defaults to `127.0.0.1`, limiting
-    /// the console and its engine WebSocket proxy to local access. Set
+    /// the ADE worker and its engine WebSocket proxy to local access. Set
     /// `0.0.0.0` to expose all IPv4 interfaces.
     #[serde(default = "default_http_host")]
     pub http_host: String,
@@ -112,7 +112,7 @@ mod tests {
             let host: std::net::IpAddr = cfg.http_host.parse().unwrap();
             assert!(
                 host.is_loopback(),
-                "shipped config exposes the console on {host}"
+                "shipped config exposes the ADE worker on {host}"
             );
         }
     }

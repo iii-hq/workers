@@ -4,7 +4,7 @@ interface ImportMetaEnv {
   /**
    * Override the engine WebSocket URL used by `iii-client.ts`. Defaults to
    * `wss://${window.location.host}/ws` (HTTPS) or the `ws://` variant,
-   * which lets dev hit the Vite `/ws` proxy and prod reach the `console`
+   * which lets dev hit the Vite `/ws` proxy and prod reach the `ade`
    * worker (or any reverse proxy) forwarding `/ws` to the engine. Set
    * this for direct, non-proxied connections (e.g.
    * `wss://engine.example.com/ws`).

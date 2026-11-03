@@ -5,14 +5,14 @@
 //!
 //! - Workers register `console:script` / `console:style` /
 //!   `console:module` triggers whose `config.path` is the asset's identity;
-//!   the trigger's `function_id` names the *content function* the console
+//!   the trigger's `function_id` names the *content function* the ADE worker
 //!   invokes to fetch source. Modules are served like scripts but the SPA
 //!   loader never imports them at mount — pages pull them on demand via
 //!   `host.importModule`.
 //! - Console tabs register `console:assets` triggers — subscriptions whose
-//!   `function_id` is the per-tab handler the console pushes
+//!   `function_id` is the per-tab handler the ADE worker pushes
 //!   `sync`/`set`/`delete` events to.
-//! - "Same path ⇒ override" is console-worker policy: a path-keyed
+//! - "Same path ⇒ override" is ADE worker policy: a path-keyed
 //!   last-writer-wins registry, with `engine::unregister_trigger` pruning
 //!   the superseded engine row so at most one live trigger per path exists
 //!   in steady state.
@@ -45,7 +45,7 @@ pub const MODULE_TYPE: &str = "console:module";
 pub const ASSETS_TYPE: &str = "console:assets";
 
 /// Max bytes per fetched asset. Multi-MiB assets are a bundling smell; the
-/// cap keeps a misbehaving worker from ballooning console memory.
+/// cap keeps a misbehaving worker from ballooning ADE worker memory.
 const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 
 /// Content-fetch budget at registration time: 2 attempts × 3s + 250ms
@@ -56,7 +56,7 @@ const FETCH_TIMEOUT_MS: u64 = 3_000;
 const FETCH_BACKOFF_MS: u64 = 250;
 
 /// Trigger config schema for every asset type (`additionalProperties`
-/// enforced console-side; the engine treats trigger config schemas as
+/// enforced ADE-side; the engine treats trigger config schemas as
 /// advisory).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -152,7 +152,7 @@ fn worker_of(path: &str) -> &str {
     path.split('/').next().unwrap_or(path)
 }
 
-/// The console's own injected UI ships the form that flips these toggles —
+/// The ADE worker's own injected UI ships the form that flips these toggles —
 /// letting it disable itself would lock the operator out of the UI that
 /// re-enables workers. Guarded here (the enforcement point), not just in
 /// the form.
@@ -181,7 +181,7 @@ impl RegistryInner {
 }
 
 /// In-memory asset registry + subscriber set. Rebuilt from engine replay on
-/// console restart; deliberately not persisted.
+/// ADE worker restart; deliberately not persisted.
 #[derive(Default)]
 pub struct UiRegistry {
     inner: Mutex<RegistryInner>,
@@ -778,7 +778,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
             SCRIPT_TYPE,
             "An ESM JavaScript asset injected into the console UI. `config.path` is the \
              asset identity (re-registering a path overrides it); the trigger's \
-             function_id is the content function the console fetches source from.",
+             function_id is the content function the ADE worker fetches source from.",
             QueueingTriggerHandler {
                 source: EventSource::Script,
                 tx: tx.clone(),
@@ -815,7 +815,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         RegisterTriggerType::new(
             ASSETS_TYPE,
             "A console tab's live-update subscription. The trigger's function_id is the \
-             per-tab handler the console pushes sync/set/delete asset events to.",
+             per-tab handler the ADE worker pushes sync/set/delete asset events to.",
             QueueingTriggerHandler {
                 source: EventSource::Subscription,
                 tx,

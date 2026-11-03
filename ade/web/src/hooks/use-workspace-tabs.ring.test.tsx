@@ -151,7 +151,7 @@ describe('workspace layout ring', () => {
     await settle(15_000)
     expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(1)
 
-    // The console rings every binding once when it lands: a catch-up read.
+    // The ADE worker rings every binding once when it lands: a catch-up read.
     server = home(['chat', 'traces'])
     await ring()
     await settle()

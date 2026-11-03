@@ -15,8 +15,8 @@ never restate one). Behavior across widths and forms: `ade/design-console-ui`.
 
 A worker registers `console:script` and `console:style` triggers (plus
 `console:module` for code loaded on demand) whose `config.path` identifies an
-asset and whose `function_id` serves `{content}` for `{path}`. The console
-hashes and serves those bytes, then pushes changes to open tabs. Tabs
+asset and whose `function_id` serves `{content}` for `{path}`. The ADE
+worker hashes and serves those bytes, then pushes changes to open tabs. Tabs
 `import()` scripts and call their default `setup(host)`; styles load as scoped
 `<link>` assets; modules load only when a script calls
 `host.importModule(path)`. Re-registering a path hot-reloads it.
@@ -289,8 +289,8 @@ const { Terminal } = await host.importModule<typeof import('./xterm')>('ide/xter
 
 `importModule` loads the hash-versioned URL when the tab knows the module, so
 a hot reload applies at the next call, and the bare `/ui/<path>` otherwise,
-so a call that beats the module's push to the tab still loads it. The console
-serves a module only once its registration lands: register modules before
+so a call that beats the module's push to the tab still loads it. The ADE
+worker serves a module only once its registration lands: register modules before
 the scripts that import them (`ConsoleUi` does), and retry a rejected import
 with backoff, since the registration may still be landing (the ide terminal
 does).
@@ -324,7 +324,7 @@ attribute** — the console mounts each render inside
 - No unscoped selectors (`:root`, `html`, `body`, `*`, bare elements), no
   `@font-face`: injected CSS is unlayered and would beat the console's
   layered stylesheet document-wide. `assertScoped` refuses the build; the
-  console's fetch-time lint reports leftovers in the manifest's `warnings`.
+  ADE worker's fetch-time lint reports leftovers in the manifest's `warnings`.
 - No Tailwind utility classes in injected markup — worker class names are not
   in the console's compiled output. Shared components and `uiClasses` first;
   scoped CSS only for domain layout and data visualization.
@@ -418,7 +418,7 @@ ConsoleUi::new("mywork")
 ```
 
 This registers `<worker>::ui-content`, one Message-path trigger per asset,
-and the `III_<WORKER>_UI_WATCH` watcher; it panics on a path the console
+and the `III_<WORKER>_UI_WATCH` watcher; it panics on a path the ADE worker
 would reject; `.module(path, content)` adds a `console:module` the same way.
 Export `ui` from the worker library and call `ui::register(&iii)` after its
 normal functions; adapt `state/build.rs` so missing or stale UI sources build
@@ -487,7 +487,7 @@ Validate all four layers; a green build alone is not enough.
    React, editor or ANSI parser.
 2. **Embedding:** accepted assets, an ESM export, the built CSS scope
    (esbuild may omit selector quotes); targeted Rust tests.
-3. **Delivery:** boot engine + console + worker; manifest paths, hashes, no
+3. **Delivery:** boot engine + ADE + worker; manifest paths, hashes, no
    warnings, fetchable bytes, a changed hash after hot reload.
 4. **Real rendering:** the actual console at a phone-sized, a narrow split
    and a wide pane (`ade/design-system` › Numbers), both split positions,

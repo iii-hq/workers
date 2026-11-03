@@ -25,7 +25,7 @@ enum Command {
     Run(RunArgs),
     /// Validate registered fixtures without booting a stack.
     Validate(SelectionArgs),
-    /// Boot one stack and Console for manual or Playwright stimulus.
+    /// Boot one stack and ADE for manual or Playwright stimulus.
     Playground(PlaygroundArgs),
 }
 
@@ -69,11 +69,11 @@ struct PlaygroundArgs {
     #[command(flatten)]
     bins: StackBinArgs,
 
-    /// Production Console binary to run against the isolated stack.
+    /// Production ADE binary to run against the isolated stack.
     #[arg(long)]
     console_bin: PathBuf,
 
-    /// Optional file atomically published after the Console is ready.
+    /// Optional file atomically published after ADE is ready.
     #[arg(long)]
     ready_file: Option<PathBuf>,
 

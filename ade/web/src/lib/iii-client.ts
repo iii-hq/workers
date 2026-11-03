@@ -6,7 +6,7 @@
  *      relative-path default against `window.location.host`. There is no
  *      HTTP bootstrap — the browser opens a single WebSocket directly to
  *      the engine (dev: through the Vite `/ws` proxy in
- *      `ade/web/vite.config.ts`; prod: through the `console` worker
+ *      `ade/web/vite.config.ts`; prod: through the `ade` worker
  *      which proxies `/ws` to the engine).
  *   2. Open the WebSocket via `iii-browser-sdk::registerWorker(url)`.
  *   3. Mint a stable `browser_id` for this page; per-browser handlers are
@@ -277,7 +277,7 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
  *   1. `VITE_ENGINE_WS_URL` if set at build time.
  *   2. Relative path against `window.location` (`wss://` for HTTPS pages,
  *      `ws://` otherwise) so dev hits the Vite `/ws` proxy and prod hits
- *      the `console` worker (or whatever reverse proxy) forwarding `/ws`
+ *      the `ade` worker (or whatever reverse proxy) forwarding `/ws`
  *      to the engine.
  * Outside a browser (tests), default to `ws://127.0.0.1:49134`.
  */
@@ -295,7 +295,7 @@ function resolveWsUrl(): string {
 }
 
 /**
- * Read the namespace from the console worker that serves this SPA. Browser
+ * Read the namespace from the ADE worker that serves this SPA. Browser
  * clients have no `III_NAMESPACE` environment variable, so the namespace must
  * be passed explicitly to iii-browser-sdk 0.23.
  */

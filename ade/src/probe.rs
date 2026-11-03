@@ -1,4 +1,4 @@
-//! `POST /probe` — run a trigger-catalog test request from the console
+//! `POST /probe` — run a trigger-catalog test request from the ADE worker
 //! process instead of the browser tab.
 //!
 //! A browser `fetch` cannot show a redirect's status code: following the 3xx
@@ -10,7 +10,7 @@
 //! SSRF note: the request body carries only the method, path, and body. The
 //! target host and port are resolved server-side from the HTTP worker's own
 //! configuration entry — never taken from the caller — so `/probe` can reach
-//! only that worker, not an arbitrary address the console can see.
+//! only that worker, not an arbitrary address the ADE worker can see.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -76,7 +76,7 @@ fn validate(method: &str, path: &str) -> Result<String, String> {
     Ok(method)
 }
 
-/// Turn a configured bind host into a URL authority host. The console runs
+/// Turn a configured bind host into a URL authority host. The ADE worker runs
 /// beside the HTTP worker, so a wildcard/loopback bind (v4 or v6) is always
 /// reachable at 127.0.0.1 — and that sidesteps the LAN hostname rewrite the
 /// browser needed when it made the call itself. A real IPv6 literal must be
@@ -167,7 +167,7 @@ pub async fn probe_handler(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
     // Read chunk by chunk and stop at the cap, so a large or fast upstream
-    // cannot exhaust console memory. `from_utf8_lossy` decodes the bounded
+    // cannot exhaust the ADE worker's memory. `from_utf8_lossy` decodes the bounded
     // buffer safely even when the cap lands inside a multibyte character.
     // End of body, or a mid-stream read error, ends the loop: a partial body
     // is an acceptable probe result — the status is what the panel needs.

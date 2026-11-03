@@ -762,7 +762,7 @@ pub struct OpenInput {
     /// Column widths for the tab AFTER this call — one positive number per
     /// column, normalized by their sum. Applied in the same write that places
     /// the screen, so there is no window for another writer in between. Omit
-    /// to let the console share the widths out.
+    /// to let the ADE worker share the widths out.
     #[serde(default)]
     pub sizes: Option<Vec<f64>>,
     /// Make the tab holding the screen the active one in every connected
@@ -783,7 +783,7 @@ pub struct OpenOutput {
     pub placement: Placement,
     pub screens: Vec<Option<String>>,
     /// The tab's column widths as stored, whether they came from `sizes` or
-    /// from the console sharing them out.
+    /// from the ADE worker sharing them out.
     pub sizes: Vec<f64>,
     pub activated: bool,
 }
@@ -852,7 +852,7 @@ type Bindings = Arc<RwLock<HashMap<String, Binding>>>;
 /// would let a reattach's unregister/register pair land out of order.
 ///
 /// ponytail: a binding whose unregister never arrives (engine restart) stays
-/// until the console restarts, and every ring to it logs "function not found"
+/// until the ADE worker restarts, and every ring to it logs "function not found"
 /// engine-side. Ring with a short awaited timeout and prune on that error if
 /// the log ever matters.
 struct ChangedHandler {

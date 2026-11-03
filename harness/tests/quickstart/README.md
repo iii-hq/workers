@@ -11,7 +11,7 @@ iii -c config.yaml
 iii compose --engine ws://127.0.0.1:49134 --namespace default \
   --file worker-compose.yaml --up
 iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"harness"}'
-iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"console"}'
+iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"ade"}'
 ```
 
 The `quickstart` project template seeds `worker-compose.yaml` with the
@@ -27,10 +27,10 @@ It verifies that:
 
 - the published installer provides a working `iii` CLI;
 - a clean engine starts;
-- the core harness and Console functions register;
+- the core harness and ADE functions register;
 - `ANTHROPIC_API_KEY` exposes exactly `anthropic/claude-sonnet-5-5` and
   `OPENAI_API_KEY` exposes exactly `openai/gpt-5.6-luna`;
-- `ade::status` and the Console HTTP root respond;
+- `ade::status` and the ADE HTTP root respond;
 - a user can complete a message with Claude Sonnet 5.5, switch to GPT-5.6 Luna
   in the same chat, and complete another message without changing sessions;
 - a user can create a new chat and complete a third message with GPT-5.6 Luna;
@@ -41,7 +41,7 @@ It verifies that:
   conversation after a reload;
 - the capability call and its exact output are present in the durable session
   transcript; and
-- `worker-compose.yaml` declares harness and Console with pinned versions.
+- `worker-compose.yaml` declares harness and ADE with pinned versions.
 
 Run it locally with:
 
@@ -55,12 +55,12 @@ The machine needs `curl`, `jq`, `ffmpeg`, the `ade/web` dependencies, and
 Chromium for Playwright. The validator invokes the repository's local
 Playwright binary directly, so Corepack cannot silently select a different
 pnpm version while the quickstart is running.
-The default engine and Console ports (`49134` and `3113`) must be available.
+The default engine and ADE ports (`49134` and `3113`) must be available.
 The CLI installer and Registry worker selectors are independent:
 `III_CLI_CHANNEL` chooses `latest` or `rc` for `iii` (default `rc`; the CLI's
 `next` channel is dead, and `iii compose` needs 0.23.0-rc or newer — the
 validator refuses a CLI without the `compose` command). `III_WORKER_TAG` is
-restricted to `latest`, so `harness`, `console`, and their Registry dependency
+restricted to `latest`, so `harness`, `ade`, and their Registry dependency
 graph always resolve from the stable channel before the generated compose file
 pins exact versions. Release-triggered validation can still replace the one
 worker under test with an explicit immutable candidate version. The old

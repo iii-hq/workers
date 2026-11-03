@@ -1194,7 +1194,7 @@ jobs:
           go-version: ${{ steps.optout.outputs.go_version }}
           cache-dependency-path: ${{ matrix.worker }}/go.sum
 
-      # Workers that embed a Vite SPA into the binary (e.g. console) have a
+      # Workers that embed a Vite SPA into the binary (e.g. ade) have a
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
       # short-circuits it — mirrors the `rust` job above. provider-opencode-go
       # embeds the llm-router UI transitively, so it needs that UI prepared too.

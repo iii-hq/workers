@@ -22,7 +22,7 @@ the map below before writing any code that binds a port inside a worker.
 `engine::workers::info { name }` → `isolation: "libkrun"` with `os: "linux … (arm64)"`
 means yes, whatever the host OS is. Workers added from a local project directory
 (`worker::add { source: { kind: "local" } }`) and other managed Node/Python workers
-get a VM; the always-on Rust workers (console, state, shell, cron, …) run natively
+get a VM; the always-on Rust workers (ade, state, shell, cron, …) run natively
 on the host. Consequences that bite immediately:
 
 * `process.platform` / `process.arch` are the **guest's** — on an Apple-silicon host
@@ -163,7 +163,7 @@ A worker ships console UI as assets; no console rebuild:
 * verify with `ade::ui-manifest` (paths, hashes, style-lint warnings, per-worker
   enable state); users can disable a worker's UI via the console config
   (`injectableUi.disabledWorkers`).
-* an `<iframe>` to the pump's loopback port works: the console sets no restrictive
+* an `<iframe>` to the pump's loopback port works: the ADE worker sets no restrictive
   CSP, so all that matters is the embedded service not sending `X-Frame-Options` /
   `frame-ancestors`. Check with `curl -D -` before designing around it.
 * prefix every CSS class and keep selectors scoped — injected styles are global.

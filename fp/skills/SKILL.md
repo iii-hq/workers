@@ -40,7 +40,7 @@ for small values).
   per-step dispatch policy, so `fp::pipe` is not agent-callable without
   approval by default; the pure transforms are (see iii-permissions.yaml).
 - Refused as steps: `shell::*`/`coder::*`, trigger control
-  (`engine::register_trigger`/`engine::unregister_trigger`), nested pipes,
+  (`engine::register_trigger`/`engine::unregister_trigger`), nested pipes, `fp::batch` as a step (a batch is not a pipe step),
   and the agent-policy hard-denied classes (session writes/`approval::*`,
   credentials via `configuration::*`/`oauth::*`, model spend via
   `router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus

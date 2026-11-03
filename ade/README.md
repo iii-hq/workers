@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="https://raw.githubusercontent.com/iii-hq/workers/main/ade/docs/images/console-traces.webp">
-    <img src="https://raw.githubusercontent.com/iii-hq/workers/main/ade/docs/images/console-traces.webp" alt="console — chat and OpenTelemetry trace explorer in a single binary" width="100%" />
+    <img src="https://raw.githubusercontent.com/iii-hq/workers/main/ade/docs/images/console-traces.webp" alt="ADE — chat and OpenTelemetry trace explorer in a single binary" width="100%" />
   </a>
 </p>
 
@@ -111,7 +111,7 @@ Returns `{ http_port, engine_url, version }` — useful for liveness and readine
 
 </details>
 
-## Why `console`
+## Why `ade`
 
 - **One port, one binary.** The React UI is baked into the executable with [`rust-embed`](https://docs.rs/rust-embed), and the engine WebSocket is reverse-proxied at `/ws` on the same origin. No CORS preflight, no side-car static server, no `dist/` directory to deploy. See [`src/assets.rs`](src/assets.rs) and [`src/proxy.rs`](src/proxy.rs).
 - **Live engine, live UI.** Functions, models, traces, and chat sessions all stream over a single WebSocket via the iii browser SDK. Mention any registered function with `@`, switch models on the fly, and watch the trace appear in the panel next to you. See [`web/src/lib/iii-client.ts`](web/src/lib/iii-client.ts).
@@ -161,7 +161,7 @@ name, in the composer and in sent messages; hovering a pill shows the item's
 preview card — the generic one, or the worker's own
 (`host.mentions.registerRenderer`) — and clicking it opens the item. What
 the agent was told about the mentions shows as a quiet "Context for the
-agent" row in the turn. The console itself provides `@trace`:
+agent" row in the turn. The ADE worker itself provides `@trace`:
 `ade::mentions::trace::search` / `ade::mentions::trace::get` wrap
 `engine::traces::list`, and a trace pill opens the traces screen on that
 trace.
@@ -212,7 +212,7 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 
 ### Worker SDK surface
 
-`console` registers a health probe for `iii worker info` smoke tests, plus the workspace functions that let an agent show the human a screen next to the conversation:
+`ade` registers a health probe for `iii worker info` smoke tests, plus the workspace functions that let an agent show the human a screen next to the conversation:
 
 | Function | Input | Output |
 |---|---|---|
@@ -223,7 +223,7 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 | `ade::workspace::get` (internal) | `{}` | `{ value, path }` — the raw layout document and the file it lives in |
 | `ade::workspace::set` (internal) | `{ value, expected_revision? }` | `{ ok }` — replaces the document wholesale (the SPA's read-modify-write path). Every write stamps the document's `revision`; with `expected_revision` older than the stored one, nothing is written and the call fails `WORKSPACE_CONFLICT` |
 
-A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is stored by the console worker in `<data_dir>/workspace.json` (`data_dir` is a `console` configuration setting, default `data/ade`) and every write rings the `ade::workspace::changed` trigger type (empty config, empty event: re-read with `list`), which each browser pointed at this engine binds to pick the change up at once (every binding is also rung once as it registers, which catches a browser up after its first read and after each reconnect; a tab polls only until that first ring arrives, and re-reads when it regains focus); it is ephemeral per-instance state and is deliberately kept out of the committed configuration YAML. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel the active tab shows — and `direction` (`right`, the default, or `left`) picks the side of it. A named anchor (anything but `chat`) is looked for in every tab, the active one first, because the active pointer is whichever browser clicked last; an anchor mounted nowhere puts the column at the end of the active tab. `activate` (default `true`) stamps a function activation every time, pointer moved or not, so every open console switches to the tab holding the screen. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreadable or unwritable `data_dir` with `WORKSPACE_UNAVAILABLE`.
+A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is stored by the ADE worker in `<data_dir>/workspace.json` (`data_dir` is a `console` configuration setting, default `data/ade`) and every write rings the `ade::workspace::changed` trigger type (empty config, empty event: re-read with `list`), which each browser pointed at this engine binds to pick the change up at once (every binding is also rung once as it registers, which catches a browser up after its first read and after each reconnect; a tab polls only until that first ring arrives, and re-reads when it regains focus); it is ephemeral per-instance state and is deliberately kept out of the committed configuration YAML. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel the active tab shows — and `direction` (`right`, the default, or `left`) picks the side of it. A named anchor (anything but `chat`) is looked for in every tab, the active one first, because the active pointer is whichever browser clicked last; an anchor mounted nowhere puts the column at the end of the active tab. `activate` (default `true`) stamps a function activation every time, pointer moved or not, so every open console switches to the tab holding the screen. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreadable or unwritable `data_dir` with `WORKSPACE_UNAVAILABLE`.
 
 Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs); the file store is [`src/workspace_store.rs`](src/workspace_store.rs).
 
@@ -231,7 +231,7 @@ Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functi
 
 The `workers` screen lists every worker the compose daemon runs, grouped into what needs attention, registry packages and local-path workers, plus the workers connected to the engine outside compose. A container opens on its followed log (`compose::logs`), its Source (pin another registry version through `compose::add`, which restarts only that container, or point a local worker at another checkout), its Settings (run script, `start_after`, environment, `config_override`) and, while connected, the functions it registered. The project view shows the start order, which packages have newer releases, the compose file and the daemon; **Add worker** declares one from the registry or a local directory. Lifecycle is the daemon's own `compose::*` functions; `add`, `update` and `remove` run as compose operations the page follows with `compose::operation`. A change restarts only the container it touches (a Settings edit to a registry package restarts it explicitly, since compose only bounces a package whose version changed); because compose brings every declared container up after an add or a remove, the page names the stopped ones first.
 
-The console adds what the daemon does not expose, read from the compose file and this host (the console runs beside the daemon):
+The ADE worker adds what the daemon does not expose, read from the compose file and this host (the ADE worker runs beside the daemon):
 
 | Function | Input | Output |
 |---|---|---|
@@ -248,21 +248,21 @@ The console adds what the daemon does not expose, read from the compose file and
 
 ```mermaid
 flowchart LR
-    Browser["Browser SPA<br/>(iii-browser-sdk)"] -->|"HTTP GET /"| Console
-    Browser -->|"HTTP GET /runtime"| Console
-    Browser -->|"WS /ws"| Console
-    Console["console binary<br/>(axum + rust-embed)"] -->|"WebSocket"| Engine["iii engine<br/>:49134"]
-    Console -. "registers ade::status, ade::workspace::*" .-> Engine
+    Browser["Browser SPA<br/>(iii-browser-sdk)"] -->|"HTTP GET /"| ADE
+    Browser -->|"HTTP GET /runtime"| ADE
+    Browser -->|"WS /ws"| ADE
+    ADE["ade binary<br/>(axum + rust-embed)"] -->|"WebSocket"| Engine["iii engine<br/>:49134"]
+    ADE -. "registers ade::status, ade::workspace::*" .-> Engine
 ```
 
-`console` is a thin HTTP server. It serves the embedded SPA bundle and
+`ade` is a thin HTTP server. It serves the embedded SPA bundle and
 runtime connection settings, hosts injected worker UI assets, and transparently
 proxies `/ws` to the iii engine. The browser only ever talks to one origin.
 
 ## Configuration
 
-Console registers a `console` entry with the central `configuration` worker.
-Its `http_port` value is authoritative after first registration: Console reads
+The ADE worker registers a `console` entry with the central `configuration` worker.
+Its `http_port` value is authoritative after first registration: ADE reads
 it before binding, watches `configuration:updated`, and moves the listener live
 when the port changes. The replacement port is bound and started before the old
 listener is gracefully drained; a failed bind keeps the previous listener and
@@ -287,7 +287,7 @@ data_dir: data/ade    # ephemeral per-instance state: the workspace layout (defa
 
 The configuration entry also stores UI preferences and
 `injectableUi.disabledWorkers`. Port, `data_dir` and per-worker UI changes apply
-without a Console restart; the local `injectable_ui` kill switch remains
+without an ADE restart; the local `injectable_ui` kill switch remains
 startup-only.
 
 To make the ADE listener reachable from other machines, explicitly set
@@ -312,7 +312,7 @@ The workspace layout itself (tabs, panes, active tab) is **not** part of the
 entry: it changes on every click, and the configuration YAML is meant to be
 committed. It lives in `<data_dir>/workspace.json` (atomic writes; a missing
 or unreadable file starts from the default chat + traces tab). Entries written
-by older Console versions still carry a `workspace` section — on boot the
+by older ADE versions still carry a `workspace` section — on boot the
 worker imports it into the file once (unless the file already exists) and
 removes it from the entry.
 
@@ -332,14 +332,14 @@ removes it from the entry.
 |---|---|
 | `GET /` | Embedded `index.html` (SPA shell, hash-routed client-side). `Cache-Control: no-cache, must-revalidate` |
 | `GET /assets/*` | Embedded JS / CSS, content-hashed filenames. `Cache-Control: public, max-age=31536000, immutable` |
-| `GET /runtime` | Runtime settings for the SPA: the console worker namespace and the [usage reporting](#anonymous-usage-reporting) settings. `Cache-Control: no-store` |
+| `GET /runtime` | Runtime settings for the SPA: the ADE worker namespace and the [usage reporting](#anonymous-usage-reporting) settings. `Cache-Control: no-store` |
 | `GET /ui` | Injected-asset manifest JSON (same shape as `ade::ui-manifest`). `no-cache` |
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
 | `GET /ws` (Upgrade) | WebSocket upgrade; transparent proxy to `engine_url` (drops browser-originated `registertriggertype` frames; stamps `metadata.internal` on `registerfunction`) |
 | anything else | `404 Not Found` |
 
-The SPA bundle is embedded into the binary at compile time via [`rust-embed`](https://docs.rs/rust-embed) — the released `console` has no separate `dist/` directory, no side-car asset server, and no runtime filesystem dependency for the UI.
+The SPA bundle is embedded into the binary at compile time via [`rust-embed`](https://docs.rs/rust-embed) — the released `ade` has no separate `dist/` directory, no side-car asset server, and no runtime filesystem dependency for the UI.
 
 ## Anonymous usage reporting
 
@@ -381,10 +381,10 @@ CI environment, with `III_TELEMETRY_DEV=true`, or when
 `~/.iii/telemetry_dev_optout` exists.
 
 An engine that does not have `iii-telemetry::settings` gets a local check
-instead: the console reads the same environment variables and files in its
+instead: the ADE worker reads the same environment variables and files in its
 own process, and its device id from `~/.iii/telemetry.yaml`. This check cannot
 see the engine's config, and `POSTHOG_PROJECT_API_KEY` (or `POSTHOG_API_KEY`)
-and `POSTHOG_HOST` in the console's environment change the PostHog project and
+and `POSTHOG_HOST` in the ADE worker's environment change the PostHog project and
 host.
 
 ## Injectable UI
@@ -392,7 +392,7 @@ host.
 Workers extend the console at **runtime** — whole pages, function-trigger
 renderers, and layered trigger-activity renderers as plain React
 components sharing the console's React instance
-(spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns four
+(spec: `iii/tech-specs/2026-07-17-injectable-ui`). The ADE worker owns four
 injectable-UI trigger types:
 
 | Type id | Registered by | Carries |
@@ -400,10 +400,10 @@ injectable-UI trigger types:
 | `console:script` | workers | an ESM script asset; `config.path` (e.g. `state/page.js`) is its identity — re-registering a path overrides it (hot reload) |
 | `console:module` | workers | an ESM module served at `/ui/<path>` like a script (`.js`, same cap and per-worker toggle) but never imported at mount: a script loads it with `host.importModule(path)` (the ide's xterm terminal). Manifest and pushes carry it as kind `module` |
 | `console:style` | workers | a CSS asset, applied as a `<link>` swap |
-| `console:assets` | console tabs | the live-update subscription the console pushes `sync`/`set`/`delete` events to |
+| `console:assets` | console tabs | the live-update subscription the ADE worker pushes `sync`/`set`/`delete` events to |
 
 The trigger's `function_id` is the worker's *content function*
-(`{path} → {content, content_type?}`); the console fetches over the bus,
+(`{path} → {content, content_type?}`); the ADE worker fetches over the bus,
 hashes, serves from `/ui/*`, and pushes invalidations so every open tab
 disposes the old module and re-imports the new one. Injected scripts default-
 export `setup(host)` and register through `host.pages` (whole pages, opened

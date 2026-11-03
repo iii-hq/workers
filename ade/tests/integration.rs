@@ -1,4 +1,4 @@
-//! End-to-end test: spawn a private `iii` engine and the `console` worker,
+//! End-to-end test: spawn a private `iii` engine and the `ade` worker,
 //! then drive the worker through its HTTP port and the `/ws` proxy.
 //!
 //! Both processes run on free ports with a throwaway `HOME` and working
@@ -115,7 +115,7 @@ async fn boot() -> Option<Harness> {
         .env("III_COMPOSE_DIR", dir.path());
     let worker = spawn_isolated(command, dir.path())?;
     if !wait_for_listen(http_port, Duration::from_secs(8)).await {
-        eprintln!("skipping: the console never listened on {http_port}");
+        eprintln!("skipping: the ADE worker never listened on {http_port}");
         return None;
     }
 
@@ -310,7 +310,7 @@ async fn end_to_end_child() {
 
     assert!(
         wait_for_listen(rebound_http_port, Duration::from_secs(8)).await,
-        "rebound Console port never started listening"
+        "rebound ADE port never started listening"
     );
     let rebound = reqwest::get(format!("http://127.0.0.1:{rebound_http_port}/"))
         .await
@@ -339,7 +339,7 @@ async fn end_to_end_child() {
         }
         assert!(
             std::time::Instant::now() < old_deadline,
-            "original Console port kept accepting connections after rebind"
+            "original ADE port kept accepting connections after rebind"
         );
         sleep(Duration::from_millis(100)).await;
     }
@@ -443,7 +443,7 @@ async fn ws_proxy_forwards_oversized_engine_message() {
         while let Some(Ok(_)) = ws.next().await {}
     });
 
-    // Console worker's HTTP server (port 0 = OS-assigned) fronting it.
+    // ADE worker's HTTP server (port 0 = OS-assigned) fronting it.
     let engine_url = Arc::new(format!("ws://{engine_addr}"));
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();

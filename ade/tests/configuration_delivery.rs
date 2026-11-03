@@ -73,7 +73,7 @@ async fn exercise_delivery() {
     let frames = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured = frames.clone();
     let fixture_id = id.clone();
-    // An entry written by a Console that still kept the tab layout in the
+    // An entry written by an ADE version that still kept the tab layout in the
     // configuration entry (a legacy *entry* on a modern engine, not a legacy
     // engine). The only scenario in which a `configuration::set` is
     // legitimate: the one that lifts `workspace` out.

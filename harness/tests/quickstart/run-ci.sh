@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Validate the published quickstart in an isolated home and project:
-# install iii, boot an empty engine, bring up harness + console through
+# install iii, boot an empty engine, bring up harness + ADE through
 # `iii compose`, and complete the first Console conversation, switch from
 # Anthropic Sonnet 5.5 to OpenAI Luna, start a second Luna conversation, and
 # exercise one real Harness capability.
@@ -362,7 +362,7 @@ wait_for_functions() {
     "ade::status"
   ]'
 
-  log "Waiting for the harness and Console function surface (up to ${wait_seconds}s)"
+  log "Waiting for the harness and ADE function surface (up to ${wait_seconds}s)"
   log_command "iii trigger engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
@@ -764,12 +764,12 @@ wait_for_compose
 # with an engine URL, so Compose can load it before the first worker is added.
 [[ -s "$compose_file" ]] || die "project init did not create worker-compose.yaml"
 
-log "Step 3/9: Add harness and Console from worker tag $worker_tag via compose"
+log "Step 3/9: Add harness and ADE from worker tag $worker_tag via compose"
 run_compose_add "harness@$worker_tag" 2>&1 | tee "$log_dir/compose-add-harness.log"
-run_compose_add "console@$worker_tag" 2>&1 | tee "$log_dir/compose-add-console.log"
+run_compose_add "ade@$worker_tag" 2>&1 | tee "$log_dir/compose-add-ade.log"
 python3 "$script_dir/configure_compose_environment.py" "$compose_file"
 run_compose_restart 2>&1 | tee "$log_dir/compose-restart-provider-env.log"
-ok "compose declared harness + console from latest and applied provider credentials to llm-router"
+ok "compose declared harness + ADE from latest and applied provider credentials to llm-router"
 
 log "Step 4/9: Apply exact release candidate override"
 if [[ -n "$release_worker" ]]; then
@@ -788,7 +788,7 @@ log "Step 6/9: Verify Sonnet 5.5 and Luna availability"
 wait_for_model anthropic claude-sonnet-5-5 "$artifact_dir/model-anthropic.json"
 wait_for_model openai gpt-5.6-luna "$artifact_dir/model-openai.json"
 
-log "Step 7/9: Verify the Console HTTP surface"
+log "Step 7/9: Verify the ADE HTTP surface"
 log_command "iii trigger ade::status --port $engine_port --json '{}'"
 console_status=$("$iii_bin" trigger ade::status --port "$engine_port" \
   --json '{}' 2>"$log_dir/console-status.log")
@@ -798,7 +798,7 @@ console_port=$(jq -er '.http_port | select(type == "number")' <<<"$console_statu
 log_command "curl -fsS http://127.0.0.1:$console_port/"
 curl -fsS --retry 10 --retry-all-errors --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
-ok "Console answered on port $console_port"
+ok "ADE answered on port $console_port"
 
 log "Step 8/9: Validate provider switching and the first real capability"
 record_browser_video
@@ -808,8 +808,8 @@ verify_first_capability
 log "Step 9/9: Verify generated project files and secret-safe evidence"
 [[ -s "$project_dir/config.yaml" ]] || die "the engine config.yaml is missing"
 [[ -s "$compose_file" ]] || die "compose::add did not write worker-compose.yaml"
-for required in harness console; do
-  grep -Eiq "$required" "$compose_file" \
+for required in harness ade; do
+  grep -Eiwq "$required" "$compose_file" \
     || die "worker-compose.yaml does not contain $required"
 done
 grep -Eq '^[[:space:]]+version:' "$compose_file" \

@@ -153,7 +153,7 @@ loop, spelled out.
    - Embedding: the worker's asset tests, when the project has them.
    - Delivery: `ade::ui-manifest` lists the path with a fresh hash and an empty
      `warnings` array; `web::fetch` of `<url>/ui/<path>` returns the bytes, with `url` from
-     `ade::status` (an older console answers only `http_port`: use
+     `ade::status` (an older ADE worker answers only `http_port`: use
      `http://127.0.0.1:<http_port>`). Never assume 3113: another project on this machine may own
      it; if `ade::status` is not found, report delivery and rendering as not verified.
    - Real rendering: open `<url>/#/worker/<scope>/<page>` (the page alone) in a `browser::sessions::start` session at roughly

@@ -90,7 +90,7 @@ Exit codes are:
 make -C harness integration-playground III_BIN=<path-to-pinned-iii>
 ```
 
-The command builds and starts the production Console together with the
+The command builds and starts the production ADE worker together with the
 isolated integration stack. It creates the scenario session and prints its
 Console URL. For the default UI-001 scenario:
 
@@ -110,7 +110,7 @@ The underlying command accepts one scenario only:
 harness-integration playground \
   --engine-bin <iii> \
   --harness-bin <harness> \
-  --console-bin <console> \
+  --console-bin <ade> \
   --worker-bin queue=<queue> \
   --worker-bin session-manager=<session-manager> \
   --worker-bin context-manager=<context-manager> \

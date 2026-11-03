@@ -40,7 +40,7 @@ dirs = "5"
 notify = "8"
 # Injectable console UI registration (content function + console:script /
 # console:style triggers + dev watcher). Path-linked, never published —
-# versions with the console worker in this repo.
+# versions with the ADE worker in this repo.
 iii-console-ui = { path = "../crates/console-ui" }
 # Hook-binding reconcile (BindingSlot/try_bind) for the pre-generate hint —
 # the configuration register/fetch here stays hand-rolled on purpose.

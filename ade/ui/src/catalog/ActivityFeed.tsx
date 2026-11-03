@@ -2,7 +2,7 @@
  * Live calls of one function: who called it, how long it took, what went in
  * and what came back — updating as the engine records spans.
  *
- * The old console could not show this. It exists here because the console
+ * The old console could not show this. It exists here because the ADE
  * worker already streams: the `trace` trigger is a coalesced "spans changed"
  * tick, so the feed re-reads `engine::traces::spans` filtered to this
  * function's span name on each beat instead of polling a timer.

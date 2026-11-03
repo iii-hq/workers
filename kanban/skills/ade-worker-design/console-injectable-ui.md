@@ -15,7 +15,7 @@ architecture that best fits the worker.
 
 A worker registers `console:script` and `console:style` triggers whose
 `config.path` identifies an asset and whose `function_id` serves `{content}`
-for `{path}`. The console hashes and serves those bytes, then pushes changes
+for `{path}`. The ADE worker hashes and serves those bytes, then pushes changes
 to open tabs. Tabs `import()` scripts and call their default `setup(host)`;
 styles load as scoped `<link>` assets. Re-registering a path hot-reloads it.
 Registration is deployment; disconnect is teardown.
@@ -92,8 +92,8 @@ For UI structure, consult the references below before writing code.
 | Need | Read | Reuse |
 |---|---|---|
 | Public API | `packages/console-ui/index.d.ts` | Exact exports and props |
-| Shared page chrome | `console/web/src/components/ui/PageChrome.tsx` | `PageShell`, `PageHeader`, surface roles |
-| Catalog/detail | `console/ui/src/catalog/widgets.tsx`, `console/ui/src/catalog/FunctionsPage.tsx`, `console/ui/src/catalog/TriggersPage.tsx`, `console/ui/styles.css` | Grouped rows, persistent hero, identity masthead, facts, tabs, contextual rail |
+| Shared page chrome | `ade/web/src/components/ui/PageChrome.tsx` | `PageShell`, `PageHeader`, surface roles |
+| Catalog/detail | `ade/ui/src/catalog/widgets.tsx`, `ade/ui/src/catalog/FunctionsPage.tsx`, `ade/ui/src/catalog/TriggersPage.tsx`, `ade/ui/styles.css` | Grouped rows, persistent hero, identity masthead, facts, tabs, contextual rail |
 | Data workbench | `database/ui/src/page/index.tsx`, `database/ui/src/page/TableDataPanel.tsx`, `database/ui/styles.css` | Mode bar, schema tree, toolbars, data grid, inspector, nested container responses |
 | List/detail editor | `iii-directory/ui/page.tsx`, `iii-directory/ui/src/page/browser.tsx`, `iii-directory/ui/styles.css` | `setup(host)`, container-width drill-in, dirty-draft guards, per-tab state |
 | Multi-level browser | `state/ui/page.tsx`, `state/ui/src/page/browser.tsx`, `state/ui/styles.css` | One-pane-at-a-time narrow flow, live state updates, stale-request guards |
@@ -520,7 +520,7 @@ Never hardcode theme colors.
 What must NOT be in the sheet: unscoped selectors (`:root`, `html`, `body`,
 `*`, bare element names) and `@font-face` — injected CSS is unlayered, so an
 unscoped rule silently beats the console's fully-layered CSS document-wide.
-The console lints every style on fetch (warn-only) and reports findings in
+The ADE worker lints every style on fetch (warn-only) and reports findings in
 the manifest's `warnings` array; keep it empty.
 
 Do not use Tailwind utility classes in injected markup: the worker's class
@@ -565,7 +565,7 @@ if (process.argv.includes('--watch')) {
 }
 ```
 
-Everything else gets bundled in; keep output well under the console's 8 MiB
+Everything else gets bundled in; keep output well under the ADE worker's 8 MiB
 per-asset cap (a slot component should be tens of KiB). Three footguns:
 
 - **A forgotten `react` external bundles a second React** — hooks resolve
@@ -633,7 +633,7 @@ returns a remover for manual teardown.
 
 `host.pages.register({id, title, render})` registers a page (opened through
 `host.panels.open` or `ade::workspace::open`; `<url>/#/worker/<scope>/<id>`,
-with `url` from `ade::status` (an older console answers only `http_port`:
+with `url` from `ade::status` (an older ADE worker answers only `http_port`:
 use `http://127.0.0.1:<http_port>`; never `engine_url`), renders it alone) and
 adds it to the nav. Its `render` receives:
 
@@ -798,7 +798,7 @@ Validate all four layers; a successful esbuild run alone is not enough.
    non-empty assets, and no bundled React/editor copy (`grep 'from "react"' dist/ui/page.js` should show bare imports).
 2. **Embedding:** test accepted assets, an ESM export, and the built worker CSS
    scope (esbuild may omit selector quotes); run targeted Rust tests.
-3. **Delivery:** boot engine + console + worker; require manifest paths,
+3. **Delivery:** boot engine + ADE + worker; require manifest paths,
    hashes, no warnings, fetchable bytes, and a changed hash after hot reload.
 4. **Real rendering:** exercise the actual console, not only an isolated
    component harness — the `browser` worker can drive it (`browser::sessions::start` on the `url` from `ade::status`, never an assumed 3113, `browser::snapshot` for structure, `browser::act`/`browser::evaluate` for interaction, `browser::screenshot` for both themes; toggle `document.documentElement.dataset.theme` to preview dark). Open `<url>/#/worker/<scope>[/<page-id>]` to render the page alone — no tab strip, no chat, the shared workspace layout untouched; `?context=<json>` in the hash replays a `host.panels.open` context, and in that shell `host.panels.open` for another page opens a new browser tab. The page's settings action, the settings shortcut and its keyed commands work there (`#/traces` renders the traces explorer the same way); chat slots and the palette need the full console, opened through `ade::workspace::open`. Synthetic pointer drags do not fire HTML5 drag events; dispatch `DragEvent`s to test drag-and-drop. Cover at least a phone-sized pane (~320–430 px), a

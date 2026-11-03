@@ -6,7 +6,7 @@
 //! the entry: it changes on every click, and the configuration YAML is meant
 //! to be committed. It lives in `<data_dir>/workspace.json` instead
 //! ([`crate::workspace_store`]); [`migrate_legacy_workspace`] moves the
-//! `workspace` section entries written by older Console versions still carry.
+//! `workspace` section entries written by older ADE versions still carry.
 //!
 //! The local YAML/CLI port is a first-registration seed and a fallback when the
 //! configuration worker is unavailable. Once stored, `http_port` is fetched
@@ -16,7 +16,7 @@
 //! untouched; a successful bind starts the replacement before gracefully
 //! draining the old listener.
 //!
-//! Configuration integration remains best-effort so a directly-run Console
+//! Configuration integration remains best-effort so a directly-run ADE worker
 //! can still serve when the configuration worker is disabled or unreachable.
 
 use std::collections::HashSet;
@@ -98,8 +98,8 @@ const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
 /// The `console` entry schema. `http_port` is strictly bounded to a TCP port
 /// and `data_dir` to a non-empty path; the UI-owned preference sections stay
-/// deliberately permissive so their detailed shapes can evolve without a
-/// console-worker redeploy. Only the preference envelope — `traces.views[]`
+/// deliberately permissive so their detailed shapes can evolve without an
+/// ADE worker redeploy. Only the preference envelope — `traces.views[]`
 /// entries carrying `id` and `name` — is pinned.
 fn schema() -> Value {
     json!({
@@ -256,7 +256,7 @@ pub async fn register_console_config(
     let existing = existing_value(iii)
         .await
         .map_err(|error| format!("console configuration lookup failed: {error}"))?;
-    // Entries created by older Console versions already contain preferences
+    // Entries created by older ADE versions already contain preferences
     // but no port. Backfill the active local seed after the schema refresh so
     // the configuration form displays the listener's real value and future
     // restarts no longer depend on a possibly-changed local seed.
@@ -313,7 +313,7 @@ mod initialization;
 const CONFIG_CHANGE_FN_ID: &str = "ade::on-config-change";
 
 /// Fetch the runtime-owned fields from the authoritative entry. A missing
-/// `http_port` or `data_dir` (including entries created by older Console
+/// `http_port` or `data_dir` (including entries created by older ADE
 /// versions) retains the supplied seed/fallback value.
 pub async fn fetch_runtime_config(
     iii: &IIIClient,
@@ -369,7 +369,7 @@ fn runtime_config_from(
 }
 
 /// One-time move of the `workspace` section (tabs, panes, active pointer)
-/// out of the configuration entry into the workspace store. Older Console
+/// out of the configuration entry into the workspace store. Older ADE
 /// versions persisted the layout there; it is ephemeral state and the YAML is
 /// meant to be committed. The stored layout is imported only when the file
 /// does not exist yet (a file already there is the newer truth); the section
@@ -495,14 +495,14 @@ pub async fn apply_current_config(
                 %error,
                 old = current_port,
                 new = candidate.http_port,
-                "console rebind failed; keeping previous port and listener"
+                "ADE rebind failed; keeping previous port and listener"
             );
             return;
         }
         tracing::info!(
             old = current_port,
             new = candidate.http_port,
-            "console server rebound after configuration change; old port shutting down"
+            "ADE server rebound after configuration change; old port shutting down"
         );
     }
 
@@ -510,14 +510,14 @@ pub async fn apply_current_config(
     if workspace.set_dir(next_data_dir.clone()).await {
         tracing::info!(
             data_dir = %next_data_dir.display(),
-            "console workspace store re-pointed after configuration change"
+            "ADE workspace store re-pointed after configuration change"
         );
     }
 
     apply_runtime_ui(&candidate, ui_control).await;
 }
 
-/// Rebind the Console listener with the HTTP worker's bind-new-before-stop-old
+/// Rebind the ADE listener with the HTTP worker's bind-new-before-stop-old
 /// ordering. All fallible work completes before the live port snapshot or
 /// current-server slot changes.
 async fn rebind(
@@ -533,7 +533,7 @@ async fn rebind(
         let mut current = control.lock().await;
         if current.is_none() {
             server::stop_old_server(new_control);
-            anyhow::bail!("console server is already shut down");
+            anyhow::bail!("ADE server is already shut down");
         }
 
         *port.write().await = new_port;

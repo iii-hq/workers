@@ -7,7 +7,7 @@
 //! 3. Ensures the injected console UI assets exist: `src/ui.rs` embeds
 //!    `ui/dist/page.js` and `ui/dist/styles.css` via `include_str!`, so if
 //!    either is missing or stale we run `pnpm install && pnpm build` inside
-//!    `ui/` first (the console worker's `web/` precedent). Set
+//!    `ui/` first (the ADE worker's `web/` precedent). Set
 //!    `SKIP_UI_BUILD=1` to use the existing `ui/dist/` outputs as-is.
 
 use std::path::{Path, PathBuf};

@@ -1,4 +1,4 @@
-/** Purpose-built configuration for the Console worker. */
+/** Purpose-built configuration for the ADE worker. */
 
 import {
   Button,

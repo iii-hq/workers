@@ -11,7 +11,7 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EvalApi } from '../../api'
 import { useAnalysisCompleted } from '../../events'
 import { type Filter, isActive } from '../../model'
@@ -264,9 +264,14 @@ export function MonitorView({
                   />
                 </>
               ) : null}
+              {dialog.details.map((line) => (
+                <Fragment key={line}>
+                  <br />
+                  {line}
+                </Fragment>
+              ))}
             </>
           ),
-          details: dialog.details,
           confirmLabel: dialog.confirmLabel,
         })
         // A newer question took this one's place: its answer is the answer.
