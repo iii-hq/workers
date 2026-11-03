@@ -79,6 +79,11 @@ pub async fn register_all(iii: &Arc<IIIClient>) -> Result<Arc<Shared>> {
             .to_string_lossy()
             .into_owned(),
         registry_url: mock_server.uri(),
+        // Pin the install filter off, as tests/e2e/config.yaml does: the
+        // fixture namespaces (`ns`, `team-a`, ...) are no installed worker,
+        // so on an engine that runs Compose (`compose::status` answers an
+        // empty project) the default-on filter would hide every one of them.
+        filter_unregistered: false,
         ..SkillsConfig::default()
     });
     let sources = events::register_all(iii);
