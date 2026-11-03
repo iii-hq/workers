@@ -175,9 +175,7 @@ async fn main() -> Result<()> {
         let (registry, control) = ui_assets::start(&iii);
         (Some(registry), Some(control))
     } else {
-        tracing::info!(
-            "injectable_ui disabled — skipping the ade::ui::* functions and /ui routes"
-        );
+        tracing::info!("injectable_ui disabled — skipping the ade::ui::* functions and /ui routes");
         (None, None)
     };
 

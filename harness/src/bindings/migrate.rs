@@ -926,10 +926,7 @@ mod tests {
             let notice = retirement_notice(&binding, &watched, why);
             assert!(notice.contains("RETIRED"), "{notice}");
             assert!(notice.contains("ade::ui::asset"), "{notice}");
-            assert!(
-                notice.contains("ade::ui::on-assets-changed"),
-                "{notice}"
-            );
+            assert!(notice.contains("ade::ui::on-assets-changed"), "{notice}");
             assert!(!notice.contains("engine::functions::list"), "{notice}");
         }
     }
