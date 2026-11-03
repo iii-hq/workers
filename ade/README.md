@@ -28,8 +28,9 @@ This worker used to be called `console`. Its worker identity and function namesp
 - source directory: `console/` → `ade/`; dependents pin `ade` in their `iii.worker.yaml`
 - function IDs: `console::*` → `ade::*` (case-sensitive), including `ade::status`, `ade::ui-manifest`, `ade::configuration-id`, `ade::ui-content`, `ade::workspace::*` and the observable `ade::ui::asset`, `ade::ui::on-assets-changed`, `ade::workspace::on-changed` and `ade::compose::on-changed`
 - the `iii::console::*` stream topics, the `console` configuration entry and the `console/…` asset paths keep their existing names
+- `console::ui::asset` stays registered as a deprecated alias of `ade::ui::asset` (same contract and hooks), so a worker built before the rename keeps publishing its pages; the ADE logs a warning per asset observed through it. New code observes `ade::ui::asset`.
 
-Update consumers, permissions, observers and agent tool lists together with ADE. The old function IDs are no longer registered; there are no compatibility aliases.
+Update consumers, permissions, observers and agent tool lists together with ADE. The other old function IDs are no longer registered; `console::ui::asset` is the only compatibility alias.
 
 ## Install
 

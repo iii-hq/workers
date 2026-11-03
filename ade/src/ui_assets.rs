@@ -54,6 +54,11 @@ use crate::for_observer;
 /// The asset function: one observer per asset; the console calls it once per
 /// observer to fetch the asset's content.
 pub const ASSET_FN: &str = "ade::ui::asset";
+/// The asset function's pre-rename id (iii-hq/workers#1628 renamed the
+/// console's `console::*` functions to `ade::*`). Registered as a deprecated
+/// alias with the same contract and hooks, so a worker built before the
+/// rename keeps publishing its pages; new code observes [`ASSET_FN`].
+pub const LEGACY_ASSET_FN: &str = "console::ui::asset";
 /// The tabs' live feed of asset changes.
 pub const ON_ASSETS_CHANGED_FN: &str = "ade::ui::on-assets-changed";
 
@@ -379,14 +384,16 @@ impl UiBus for SdkBus {
     }
 
     async fn fetch_content(&self, observer_id: &str, path: &str) -> Result<FetchedContent, String> {
-        let target = self
+        // The fetch goes through the function the observer announced itself
+        // on: `ade::ui::asset`, or its deprecated alias.
+        let (target, function_id) = self
             .observers
             .get(observer_id)
-            .map(|obs| obs.target().to_string())
+            .map(|obs| (obs.target().to_string(), obs.function_id().to_string()))
             .ok_or_else(|| format!("observer {observer_id} was removed"))?;
         let mut last_err = String::new();
         for attempt in 1..=FETCH_ATTEMPTS {
-            let request = for_observer::call(ASSET_FN, json!({ "path": path }), observer_id)
+            let request = for_observer::call(&function_id, json!({ "path": path }), observer_id)
                 .timeout(Duration::from_millis(
                     FETCH_TIMEOUT_MS + FETCH_HOOK_MARGIN_MS,
                 ));
@@ -759,44 +766,70 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     let control = UiControl { tx: tx.clone() };
     tokio::spawn(Processor::new(registry.clone(), bus).run(rx));
 
-    // Hooks by id before registering, so they see every observer.
-    {
-        let observers = observers.clone();
-        let tx = tx.clone();
-        iii.on_observer_added_for(ASSET_FN, move |obs: Observer| {
+    // Hooks by id before registering, so they see every observer. The
+    // legacy id gets the same hooks: its observers are asset observers like
+    // any other, and the queue never looks at which id announced them.
+    for asset_fn in [ASSET_FN, LEGACY_ASSET_FN] {
+        {
             let observers = observers.clone();
             let tx = tx.clone();
-            async move {
-                let args: AssetArgs = obs.args()?;
-                validate_args(&args).map_err(|e| ObserveRejection::new(CODE_INVALID_ARGS, e))?;
-                let observer_id = obs.id().to_string();
-                observers.lock().insert(observer_id.clone(), obs);
-                tx.send(QueueEvent::AssetAdded { observer_id, args })
-                    .map_err(|_| ObserveRejection::from("ui asset queue is gone".to_string()))
-            }
-        });
-    }
-    {
-        let observers = observers.clone();
-        let tx = tx.clone();
-        iii.on_observer_removed_for(ASSET_FN, move |obs: Observer| {
-            let observers = observers.clone();
-            let tx = tx.clone();
-            async move {
-                let (ack, done) = oneshot::channel();
-                let observer_id = obs.id().to_string();
-                if tx
-                    .send(QueueEvent::AssetRemoved {
-                        observer_id: observer_id.clone(),
-                        ack,
-                    })
-                    .is_ok()
-                {
-                    let _ = done.await;
+            iii.on_observer_added_for(asset_fn, move |obs: Observer| {
+                let observers = observers.clone();
+                let tx = tx.clone();
+                async move {
+                    let args: AssetArgs = obs.args()?;
+                    validate_args(&args)
+                        .map_err(|e| ObserveRejection::new(CODE_INVALID_ARGS, e))?;
+                    if obs.function_id() == LEGACY_ASSET_FN {
+                        tracing::warn!(
+                            path = %args.path,
+                            target = obs.target(),
+                            "ui asset observed through the deprecated {LEGACY_ASSET_FN}; \
+                             the worker should observe {ASSET_FN}"
+                        );
+                    }
+                    let observer_id = obs.id().to_string();
+                    observers.lock().insert(observer_id.clone(), obs);
+                    tx.send(QueueEvent::AssetAdded { observer_id, args })
+                        .map_err(|_| ObserveRejection::from("ui asset queue is gone".to_string()))
                 }
-                observers.lock().remove(&observer_id);
-            }
-        });
+            });
+        }
+        {
+            let observers = observers.clone();
+            let tx = tx.clone();
+            iii.on_observer_removed_for(asset_fn, move |obs: Observer| {
+                let observers = observers.clone();
+                let tx = tx.clone();
+                async move {
+                    let (ack, done) = oneshot::channel();
+                    let observer_id = obs.id().to_string();
+                    if tx
+                        .send(QueueEvent::AssetRemoved {
+                            observer_id: observer_id.clone(),
+                            ack,
+                        })
+                        .is_ok()
+                    {
+                        let _ = done.await;
+                    }
+                    observers.lock().remove(&observer_id);
+                }
+            });
+        }
+        // A content fetch is a call for one asset observer; nothing else
+        // calls the function.
+        iii.on_observation_match_for(asset_fn, for_observer::own_calls_only());
+        {
+            let iii_for_hook = iii.clone();
+            iii.on_observation_deliver_for(
+                asset_fn,
+                move |call: Call, observers: Vec<Observer>| {
+                    let iii = iii_for_hook.clone();
+                    async move { deliver_content(&iii, call, observers).await }
+                },
+            );
+        }
     }
     {
         let observers = observers.clone();
@@ -821,17 +854,6 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
             }
         });
     }
-
-    // A content fetch is a call for one asset observer; nothing else calls
-    // the function.
-    iii.on_observation_match_for(ASSET_FN, for_observer::own_calls_only());
-    {
-        let iii_for_hook = iii.clone();
-        iii.on_observation_deliver_for(ASSET_FN, move |call: Call, observers: Vec<Observer>| {
-            let iii = iii_for_hook.clone();
-            async move { deliver_content(&iii, call, observers).await }
-        });
-    }
     iii.on_observation_match_for(ON_ASSETS_CHANGED_FN, for_observer::every_call());
 
     iii.register_function(
@@ -851,6 +873,21 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
             .args_format::<AssetArgs>()
             .private(),
     );
+    // The pre-rename id (iii-hq/workers#1628 renamed `console::*` to
+    // `ade::*`): a worker built before it observes this one and keeps
+    // publishing its pages. Same contract and hooks; only the id and the
+    // deprecation notice differ.
+    iii.register_function(
+        LEGACY_ASSET_FN,
+        RegisterFunction::new(|request: ContentRequest| Ok::<_, Error>(request))
+            .description(
+                "Deprecated alias of ade::ui::asset, kept for workers built before the \
+                 console -> ade rename: the same contract, hooks and content fetch. Observe \
+                 ade::ui::asset instead.",
+            )
+            .args_format::<AssetArgs>()
+            .private(),
+    );
     iii.register_function(
         ON_ASSETS_CHANGED_FN,
         RegisterFunction::new(|event: UiAssetsEvent| Ok::<_, Error>(event))
@@ -863,7 +900,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
             .private(),
     );
     tracing::info!(
-        functions = ?[ASSET_FN, ON_ASSETS_CHANGED_FN],
+        functions = ?[ASSET_FN, LEGACY_ASSET_FN, ON_ASSETS_CHANGED_FN],
         "registered injectable-ui functions"
     );
     (registry, control)

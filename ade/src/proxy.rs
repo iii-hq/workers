@@ -255,6 +255,7 @@ pub(crate) fn enforce_worker_namespace(text: &str, namespace: Option<&str>) -> O
 /// The functions this worker hosts, which a page must not register first.
 const PROVIDER_FUNCTIONS: &[&str] = &[
     crate::ui_assets::ASSET_FN,
+    crate::ui_assets::LEGACY_ASSET_FN,
     crate::ui_assets::ON_ASSETS_CHANGED_FN,
     crate::functions::workspace::ON_CHANGED_FN,
     crate::compose::ON_CHANGED_FN,
