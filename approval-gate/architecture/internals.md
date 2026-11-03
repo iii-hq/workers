@@ -160,7 +160,8 @@ Verified against the engine source (`~/workspaces/personal/motia/iii`):
   no engine. The `approval::*` handlers run against a real spawned engine via
   `testkit::engine` (`III_ENGINE_BIN` or `iii` on PATH, plus the standalone
   `state` worker from `III_STATE_BIN`, a `state/` build or the Compose
-  package cache; self-skips otherwise), so `delete_with_gate`'s
+  package cache; self-skips otherwise, but a named `III_STATE_BIN` that
+  fails is a test failure), so `delete_with_gate`'s
   null-tombstone invariant is exercised against the genuine kv contract.
   The gate suite reproduces the seven prior-art permission-matrix cases
   plus the fail-closed rows.

@@ -1,7 +1,8 @@
 //! Engine-backed test bootstrap (llm-router's `engine_fixture` pattern): an
 //! engine with `configuration` inline plus the standalone `state` worker,
 //! which engines since 0.23 refuse inline (`UNSUPPORTED_CONFIG_WORKERS`).
-//! Self-skips, saying why, when either binary is missing or never answers.
+//! Self-skips, saying why, when either binary is missing or never answers;
+//! a state worker named by `III_STATE_BIN` that fails is a test failure.
 
 use std::io::Write as _;
 use std::sync::{Arc, Mutex};
@@ -212,7 +213,7 @@ pub async fn spawn_engine() -> Option<Engine> {
         );
         return None;
     };
-    engine.state_child = std::process::Command::new(&state_bin)
+    let state_ready = match std::process::Command::new(&state_bin)
         .arg("--url")
         .arg(&engine.url)
         .arg("--config")
@@ -223,28 +224,45 @@ pub async fn spawn_engine() -> Option<Engine> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .ok();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut state_ready = false;
-    while engine.state_child.is_some() && Instant::now() < deadline {
-        state_ready = probe
-            .trigger(TriggerRequest {
-                function_id: "state::get".into(),
-                payload: json!({ "scope": "testkit", "key": "ready" }),
-                action: None,
-                timeout_ms: Some(1000),
-            })
-            .await
-            .is_ok();
-        if state_ready {
-            break;
+    {
+        Err(e) => Err(format!("cannot start it: {e}")),
+        Ok(child) => {
+            let child = engine.state_child.insert(child);
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if probe
+                    .trigger(TriggerRequest {
+                        function_id: "state::get".into(),
+                        payload: json!({ "scope": "testkit", "key": "ready" }),
+                        action: None,
+                        timeout_ms: Some(1000),
+                    })
+                    .await
+                    .is_ok()
+                {
+                    break Ok(());
+                }
+                if let Ok(Some(status)) = child.try_wait() {
+                    break Err(format!("it exited ({status}) before answering state::get"));
+                }
+                if Instant::now() >= deadline {
+                    break Err("it never answered state::get in 15s".to_string());
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    };
     probe.shutdown();
-    if !state_ready {
+    if let Err(why) = state_ready {
+        // A binary the caller named failing is their error to see; a discovered one is a skip.
+        if std::env::var_os("III_STATE_BIN").is_some() {
+            panic!(
+                "state worker named by III_STATE_BIN={} is unusable: {why}",
+                state_bin.display()
+            );
+        }
         eprintln!(
-            "skipping: state worker {} never answered state::get",
+            "skipping: state worker {} is unusable: {why}",
             state_bin.display()
         );
         return None;
