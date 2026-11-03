@@ -18,18 +18,33 @@ import {
   EmptyState,
   type Host,
   IconButton,
+  Separator,
+  ShadcnBadge,
   Skeleton,
-  StatusBar,
   StatusPanel,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-  Toolbar,
+  ShadcnTabs as Tabs,
+  ShadcnTabsContent as TabsContent,
+  ShadcnTabsList as TabsList,
+  ShadcnTabsTrigger as TabsTrigger,
   uiClasses,
 } from '@iii-dev/console-ui'
 import { copyText } from '@iii-dev/console-ui/format'
-import { CircleAlert, Plus, Table2, X } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  ChartColumn,
+  Braces,
+  CircleAlert,
+  Columns3,
+  Eye,
+  LoaderCircle,
+  Plus,
+  RefreshCw,
+  Rows3,
+  SquareTerminal,
+  Table2,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cellText, rowAsTsv } from '../lib/grid-cursor'
 import { type FilterSpec, isComplete, PAGE_SIZE } from '../lib/rpc'
@@ -77,6 +92,8 @@ interface TableDataPanelProps {
   canSuggest?: boolean
 }
 
+type InspectorTab = 'row' | 'cell' | 'stats'
+
 const SUGGESTIONS = 12
 const INSERTED_NOTE_MS = 4000
 
@@ -110,6 +127,7 @@ export function TableDataPanel({
   const [sort, setSort] = useState<TableSort | null>(null)
   const [selectedRow, setSelectedRow] = useState<number | null>(null)
   const [filters, setFilters] = useState<FilterSpec[]>(initialFilters ?? [])
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('row')
 
   // Only complete, enabled chips are sent. Serialising them into the fetcher's
   // dependency key means a half-typed value does not trigger a read, and the
@@ -229,150 +247,170 @@ export function TableDataPanel({
     />
   ) : null
 
+  const result = pageRead.data
+  const filtering = applied.length > 0
+  const rows = result?.rows ?? []
+  const columnCount = result?.columns?.length ?? Object.keys(rows[0] ?? {}).length
+
+  // One toolbar in every state: when a filter itself caused a failure (or
+  // matched nothing), hiding the bar would trap the user with no way to edit
+  // or remove the offending chip.
+  const toolbar = (
+    <div className="db-data-toolbar" role="toolbar" aria-label="table data">
+      <div className="db-data-title">
+        {kind === 'view' ? <Eye size={16} aria-hidden /> : <Table2 size={16} aria-hidden />}
+        <span className="name" title={table}>
+          {table}
+        </span>
+        {kind === 'view' ? <ShadcnBadge variant="outline">view</ShadcnBadge> : null}
+      </div>
+      <Separator orientation="vertical" className="db-data-sep" />
+      {filterBar}
+      <span className="db-toolbar-spacer" />
+      {pageRead.loading && result ? (
+        <span className="db-data-busy" role="status">
+          <LoaderCircle size={16} className={uiClasses.spin} aria-hidden />
+          Refreshing
+        </span>
+      ) : null}
+      {insertedNote ? (
+        <span className="db-data-note" role="status">
+          {insertedNote}
+        </span>
+      ) : null}
+      {sort ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="db-sort-chip"
+          title="clear the sort"
+          onClick={() => {
+            setSort(null)
+            setPage(0)
+          }}
+        >
+          {sort.dir === 'asc' ? <ArrowUp size={16} aria-hidden /> : <ArrowDown size={16} aria-hidden />}
+          Sorted by {sort.column}
+          <X size={16} aria-hidden />
+        </Button>
+      ) : null}
+      {view.view.hidden.length > 0 ? (
+        <Button variant="ghost" size="sm" onClick={view.showAll}>
+          <Columns3 size={16} aria-hidden />
+          {view.view.hidden.length} hidden · Show all
+        </Button>
+      ) : null}
+      {Object.keys(view.view.widths).length > 0 || view.view.order.length > 0 ? (
+        <Button variant="ghost" size="sm" onClick={view.reset}>
+          Reset layout
+        </Button>
+      ) : null}
+      {onOpenInSql ? (
+        <Button variant="secondary" size="sm" onClick={() => onOpenInSql(table)}>
+          <SquareTerminal size={16} aria-hidden />
+          Open in SQL
+        </Button>
+      ) : null}
+      {insertable ? (
+        <Button variant="primary" size="sm" onClick={() => setNewRowOpen(true)}>
+          <Plus size={16} aria-hidden />
+          Insert row
+        </Button>
+      ) : null}
+    </div>
+  )
+
   if (pageRead.error) {
-    // The filter bar stays: when a filter itself caused the failure, hiding
-    // it traps the user with no way to edit or remove the offending chip.
     return (
       <div className="db-data">
         <div className="db-data-main">
-          {filterBar}
+          {toolbar}
           <div className="db-pad">
             <StatusPanel
               variant="alert"
               icon={<CircleAlert size={18} />}
-              headline="Database read failed"
+              headline={filtering ? 'Read failed — check the filters above' : 'Database read failed'}
               detail={pageRead.error}
+              action={
+                <Button variant="secondary" size="sm" onClick={pageRead.refresh}>
+                  <RefreshCw size={16} aria-hidden />
+                  Retry
+                </Button>
+              }
             />
           </div>
-        </div>
-      </div>
-    )
-  }
-
-  if (pageRead.loading && !pageRead.data) {
-    return (
-      <div className="db-skel">
-        <Skeleton style={{ display: 'block', height: 28, width: '100%' }} />
-        <Skeleton style={{ display: 'block', height: 24, width: '100%' }} />
-        <Skeleton style={{ display: 'block', height: 24, width: '100%' }} />
-        <Skeleton style={{ display: 'block', height: 24, width: '66%' }} />
-      </div>
-    )
-  }
-
-  const result = pageRead.data
-  const filtering = applied.length > 0
-  if (!result || (result.rows.length === 0 && page === 0)) {
-    return (
-      <div className="db-data">
-        <div className="db-data-main">
-          {filterBar}
-          <EmptyState
-            icon={Table2}
-            title={filtering ? 'No matching rows' : 'Empty table'}
-            description={
-              filtering
-                ? `no rows in ${table} match the ${applied.length} filter${applied.length === 1 ? '' : 's'} above`
-                : `${table} has no rows`
-            }
-            action={insertable ? { label: 'New row', onClick: () => setNewRowOpen(true) } : undefined}
-          />
-          {insertedNote ? (
-            <span className="db-sr-only" role="status">
-              {insertedNote}
-            </span>
-          ) : null}
         </div>
         {newRow}
       </div>
     )
   }
 
-  const rows = result.rows
+  if (pageRead.loading && !pageRead.data) {
+    return (
+      <div className="db-data">
+        <div className="db-data-main">
+          {toolbar}
+          <div className="db-skel">
+            <Skeleton style={{ display: 'block', height: 36, width: '100%' }} />
+            <Skeleton style={{ display: 'block', height: 32, width: '100%' }} />
+            <Skeleton style={{ display: 'block', height: 32, width: '100%' }} />
+            <Skeleton style={{ display: 'block', height: 32, width: '66%' }} />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!result || (result.rows.length === 0 && page === 0)) {
+    return (
+      <div className="db-data">
+        <div className="db-data-main">
+          {toolbar}
+          <div className="db-data-empty">
+            <EmptyState
+              icon={Table2}
+              title={filtering ? 'No matching rows' : 'This table is empty'}
+              description={
+                filtering
+                  ? `No rows in ${table} match the ${applied.length} filter${applied.length === 1 ? '' : 's'} above.`
+                  : insertable
+                    ? `${table} has no rows yet. Insert one to get started.`
+                    : `${table} has no rows yet.`
+              }
+              action={insertable ? { label: 'Insert row', onClick: () => setNewRowOpen(true) } : undefined}
+            />
+          </div>
+        </div>
+        {newRow}
+      </div>
+    )
+  }
+
   const detailRow = selectedRow !== null && selectedRow < rows.length ? rows[selectedRow] : null
+  // The picked tab, unless what it shows is gone: no row selected falls to
+  // the cell, no cursor falls back to the row.
+  const shownTab: InspectorTab =
+    inspectorTab === 'row' && !detailRow ? 'cell' : inspectorTab !== 'row' && !keyboard.cursor ? 'row' : inspectorTab
 
   return (
     <div className="db-data">
       <div className="db-data-main">
-        {filterBar}
-        <Toolbar
-          aria-label="table data"
-          className="db-bar db-data-bar"
-          end={
-            insertable || onOpenInSql ? (
-              <>
-                {insertable ? (
-                  <Button variant="ghost" size="sm" onClick={() => setNewRowOpen(true)}>
-                    <Plus size={16} aria-hidden />
-                    New row
-                  </Button>
-                ) : null}
-                {onOpenInSql ? (
-                  <Button variant="ghost" size="sm" onClick={() => onOpenInSql(table)}>
-                    Open in SQL
-                  </Button>
-                ) : null}
-              </>
-            ) : undefined
-          }
-        >
-          <span className="name">{table}</span>
-          <span>
-            {(() => {
-              const n = result.columns?.length ?? Object.keys(rows[0] ?? {}).length
-              return `${n} column${n === 1 ? '' : 's'}`
-            })()}
-          </span>
-          {/* A count is only trustworthy when it is described: "12,443 rows"
-              beside three active filters reads as the table's size. The
-              worker counts with the same filters applied, so say so. */}
-          <span className={total === null ? uiClasses.pulse : undefined}>
-            {total !== null ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}` : '… rows'}
-            {filtering ? ' matching' : ''}
-            {typeof result.elapsed_ms === 'number' ? ` · ${result.elapsed_ms} ms` : ''}
-          </span>
-          {insertedNote ? (
-            <span className="db-data-note" role="status">
-              {insertedNote}
-            </span>
-          ) : null}
-          {/* The audible twin of the counts: rows and page after each load,
-              silence while loading. */}
-          <span className="db-sr-only" role="status">
-            {pageRead.loading
-              ? ''
-              : `${(total ?? rows.length).toLocaleString()} rows, page ${page + 1} of ${totalPages}`}
-          </span>
-          {sort ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setSort(null)
-                setPage(0)
-              }}
-            >
-              Sorted by {sort.column} {sort.dir} · Clear
-            </Button>
-          ) : null}
-          {pageRead.loading ? <span className={uiClasses.pulse}>Refreshing…</span> : null}
-          {view.view.hidden.length > 0 ? (
-            <Button variant="ghost" size="sm" onClick={view.showAll}>
-              {view.view.hidden.length} column
-              {view.view.hidden.length === 1 ? '' : 's'} hidden · Show all
-            </Button>
-          ) : null}
-          {Object.keys(view.view.widths).length > 0 || view.view.order.length > 0 ? (
-            <Button variant="ghost" size="sm" onClick={view.reset}>
-              Reset layout
-            </Button>
-          ) : null}
-        </Toolbar>
+        {toolbar}
+        {/* The audible twin of the counts: rows and page after each load,
+            silence while loading. */}
+        <span className="db-sr-only" role="status">
+          {pageRead.loading ? '' : `${(total ?? rows.length).toLocaleString()} rows, page ${page + 1} of ${totalPages}`}
+        </span>
         {/* One tab stop: the grid handles arrows itself. The container only
             catches keys bubbling from the focused cell, so it is a scroll
             region rather than a control of its own. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: scroll container catching keys bubbled from the focused gridcell */}
-        <div className="db-data-scroll" ref={gridRef} onKeyDown={keyboard.onKeyDown}>
+        <div
+          className={`db-data-scroll${pageRead.loading ? ' loading' : ''}`}
+          ref={gridRef}
+          onKeyDown={keyboard.onKeyDown}
+          aria-busy={pageRead.loading || undefined}
+        >
           <ResultGrid
             keyboard={keyboard}
             view={view}
@@ -392,52 +430,68 @@ export function TableDataPanel({
             onFollowFk={onFollow ? (fk, value) => onFollow(fk.table, fk.column, value) : undefined}
             stickyHeader
             hideFooter
+            rowNumbers
+            rowOffset={page * pageSize}
           />
         </div>
-        <StatusBar
-          className="db-data-foot"
-          end={
-            <Pagination
-              currentPage={page + 1}
-              totalPages={totalPages}
-              totalItems={total ?? rows.length + page * pageSize}
-              pageSize={pageSize}
-              onPageChange={(next) => {
-                setPage(next - 1)
-                setSelectedRow(null)
-              }}
-              onPageSizeChange={(next) => {
-                setPageSize(next)
-                setPage(0)
-                setSelectedRow(null)
-              }}
-            />
-          }
-        >
+        <div className="db-data-foot">
+          <Pagination
+            currentPage={page + 1}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            onPageChange={(next) => {
+              setPage(next - 1)
+              setSelectedRow(null)
+            }}
+            onPageSizeChange={(next) => {
+              setPageSize(next)
+              setPage(0)
+              setSelectedRow(null)
+            }}
+          />
+          {/* A count is only trustworthy when it is described: "12,443
+              records" beside three active filters reads as the table's
+              size. The worker counts with the same filters applied. */}
+          <span className={`db-foot-stat${total === null ? ` ${uiClasses.pulse}` : ''}`}>
+            {total !== null ? `${total.toLocaleString()} record${total === 1 ? '' : 's'}` : '… records'}
+            {filtering ? ' matching' : ''}
+          </span>
+          <span className="db-foot-stat faint">
+            {columnCount} column{columnCount === 1 ? '' : 's'}
+            {typeof result.elapsed_ms === 'number' ? ` · ${result.elapsed_ms} ms` : ''}
+          </span>
+          <span className="db-toolbar-spacer" />
           {/* Advertised nowhere else — without this line the roving-cursor
               grid reads as mouse-only. */}
           <span className="db-kbd-hint">
-            Arrows move · PgUp/PgDn turn pages · {MOD}c copies a cell · {MOD}⇧c the row
+            Arrows move · PgUp/PgDn turn pages · {MOD}C copies a cell · {MOD}⇧C the row
           </span>
-        </StatusBar>
+        </div>
       </div>
       {/* Three views of the same selection share one slot — at 320px they
           would otherwise compete for width. */}
       {detailRow || keyboard.cursor ? (
-        <div className="db-rowdetail">
-          <Tabs defaultValue={detailRow ? 'row' : 'cell'}>
+        <aside className="db-rowdetail" aria-label="inspector">
+          <Tabs
+            value={shownTab}
+            onValueChange={(next) => setInspectorTab(next as InspectorTab)}
+            className="db-inspector"
+          >
             {/* The inspector opens implicitly (row click, cell cursor) — so
                 it must close explicitly too: without this button, a cell
                 cursor pinned the panel open with no way out. */}
             <div className="db-inspector-head">
-              <TabsList>
+              <TabsList variant="line" className="db-inspector-tabs">
                 <TabsTrigger value="row" disabled={!detailRow}>
+                  <Rows3 size={16} aria-hidden />
                   Row
                 </TabsTrigger>
                 <TabsTrigger value="cell" disabled={!keyboard.cursor}>
+                  <Braces size={16} aria-hidden />
                   Cell
                 </TabsTrigger>
                 <TabsTrigger value="stats" disabled={!cursorColumn}>
+                  <ChartColumn size={16} aria-hidden />
                   Stats
                 </TabsTrigger>
               </TabsList>
@@ -451,10 +505,10 @@ export function TableDataPanel({
                 <X size={16} />
               </IconButton>
             </div>
-            <TabsContent value="row">
+            <TabsContent value="row" className="db-inspector-body">
               {detailRow ? <RowDetail row={detailRow} columns={columnInfo} /> : null}
             </TabsContent>
-            <TabsContent value="cell">
+            <TabsContent value="cell" className="db-inspector-body">
               {keyboard.cursor && cursorColumn ? (
                 <CellInspector
                   table={table}
@@ -470,11 +524,11 @@ export function TableDataPanel({
                 />
               ) : null}
             </TabsContent>
-            <TabsContent value="stats">
+            <TabsContent value="stats" className="db-inspector-body">
               {cursorColumn ? <ColumnStatsPanel host={host} db={db} table={table} column={cursorColumn} /> : null}
             </TabsContent>
           </Tabs>
-        </div>
+        </aside>
       ) : null}
       {newRow}
     </div>

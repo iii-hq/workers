@@ -38,7 +38,7 @@ function wireErrorCardProps(error: SandboxErrorWire): ErrorCardProps {
   const streams = execStreamsFromFix(error)
   return {
     badge: error.code,
-    title: error.code === 'S200' ? 'Command timed out' : 'Tool failed',
+    title: error.code === 'S200' ? 'Command timed out' : 'Function failed',
     category: humanize(error.type),
     message: error.message,
     retryable: error.retryable === true,

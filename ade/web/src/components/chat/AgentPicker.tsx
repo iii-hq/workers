@@ -152,7 +152,7 @@ export function AgentPicker({
           position="popper"
           sideOffset={4}
           className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised text-ink font-inter text-sm shadow-floating',
+            'z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-popover-edge bg-popover text-ink font-inter text-sm shadow-floating',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
           )}

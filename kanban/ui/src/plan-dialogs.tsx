@@ -1,36 +1,32 @@
 import {
-  Badge,
-  Breadcrumb,
-  Button,
-  Checkbox,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
   type Host,
-  IconButton,
-  Input,
   type PageRenderProps,
-  Panel,
-  PanelHeader,
-  SegmentedControl,
-  Selector,
-  Skeleton,
-  Table,
-  TableBody,
-  TableCell,
-  TableFooter,
-  TableFrame,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TableViewport,
-  Toolbar,
-  uiClasses,
+  ShadcnBadge,
+  ShadcnButton,
+  ShadcnCheckbox,
+  ShadcnDialog,
+  ShadcnDialogContent,
+  ShadcnDialogDescription,
+  ShadcnDialogFooter,
+  ShadcnDialogHeader,
+  ShadcnDialogTitle,
+  ShadcnInput,
+  ShadcnProgress,
+  ShadcnSkeleton,
+  ShadcnTable,
+  ShadcnTableBody,
+  ShadcnTableCell,
+  ShadcnTableHead,
+  ShadcnTableHeader,
+  ShadcnTableRow,
+  ShadcnTabs,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
+  ShadcnTextarea,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useDebounce } from '@iii-dev/console-ui/hooks'
-import { ArrowLeft, Bell, Check, Flag, Folder, Info, RotateCcw, Tag, TriangleAlert } from 'lucide-react'
+import { Bell, CircleAlert, Info, Milestone, RotateCcw, Tag } from 'lucide-react'
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
@@ -73,10 +69,14 @@ import {
   PLAN_CHANGED_EVENT,
   type ProjectView,
   type ReleaseView,
-  StatusGlyph,
   subscribeChanges,
   type TicketSummary,
 } from './shared'
+import { Crumbs, FolderGlyph, LeadPicker, PickerButton, PROJECT_TONES } from './plan/parts'
+import { Field } from './ui/feedback'
+import { ColumnStatusIcon } from './ui/glyphs'
+import { type PickerOption, SearchPicker } from './ui/search-picker'
+import { toneOf } from './ui/tone'
 
 /* ── data ─────────────────────────────────────────────────────────────── */
 
@@ -180,7 +180,7 @@ export function agentOptions(agents: AgentProfile[], current?: string | null) {
   return options
 }
 
-export const TONES: GlyphTone[] = ['blue', 'purple', 'teal', 'green', 'amber', 'rose']
+export const TONES: GlyphTone[] = PROJECT_TONES
 
 export const titleCase = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
@@ -188,14 +188,10 @@ export const titleCase = (text: string) => text.charAt(0).toUpperCase() + text.s
 
 /** One 16px folder in the project's identity tone (`ink-ghost` without one). */
 export function ProjectGlyph({ color }: { color: GlyphTone | null }) {
-  return (
-    <span aria-hidden="true" className={`${uiClasses.treeItemIcon} kanban-plan-glyph`} data-color={color ?? undefined}>
-      <Folder size={16} />
-    </span>
-  )
+  return <FolderGlyph color={color} />
 }
 
-/** A derived status: the word in ink, the tone on the dot. */
+/** A derived status as an outline badge: the word in ink, the tone on the dot. */
 export function StatusBadge({
   tone,
   children,
@@ -206,23 +202,27 @@ export function StatusBadge({
   title?: string
 }) {
   return (
-    <Badge className="kanban-plan-badge" title={title}>
-      <span aria-hidden="true" className="kanban-plan-dot" data-tone={tone} />
+    <ShadcnBadge className="kb-plan-badge" title={title} variant="outline">
+      <span aria-hidden="true" className="kb-plan-dot" data-tone={tone} />
       {children}
-    </Badge>
+    </ShadcnBadge>
   )
 }
 
+/** Progress as a thin shadcn bar; the numbers sit beside it, not in it. */
 export function ProgressBar({ done, total, label }: { done: number; total: number; label?: string }) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
   return (
-    <span aria-label={label ?? `${done} of ${total} tickets done`} className="kanban-plan-bar" role="img">
-      <span style={{ width: `${pct}%` }} />
-    </span>
+    <ShadcnProgress
+      aria-label={label ?? `${done} of ${total} tickets done`}
+      className="kb-plan-bar"
+      data-complete={total > 0 && done >= total ? 'true' : undefined}
+      value={pct}
+    />
   )
 }
 
-/** The column counts of a release or a project, one tile per board column. */
+/** The column counts of a release or a project, one compact stat per board column. */
 export function ColumnTiles({
   columns,
   doneStatus,
@@ -237,14 +237,14 @@ export function ColumnTiles({
   extra?: ReactNode
 }) {
   return (
-    <div aria-label="Tickets by status" className="kanban-plan-tiles" role="group">
+    <div aria-label="Tickets by status" className="kb-plan-tiles" role="group">
       {columns.map((column) => (
-        <div className="kanban-plan-tile" key={column.id}>
-          <span className="kanban-plan-tile__label">
-            <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={column.id} />
+        <div className="kb-plan-tile" data-zero={(counts[column.id] ?? 0) === 0 ? 'true' : undefined} key={column.id}>
+          <span className="kb-plan-tile__label">
+            <ColumnStatusIcon canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={column.id} />
             {column.label}
           </span>
-          <span className="kanban-plan-tile__n">{counts[column.id] ?? 0}</span>
+          <span className="kb-plan-tile__n">{counts[column.id] ?? 0}</span>
         </div>
       ))}
       {extra}
@@ -252,21 +252,9 @@ export function ColumnTiles({
   )
 }
 
-/** The top of a narrow pane that shows one record: the way back, then where you are (`Releases / Phase 2`). */
+/** The top of a page that shows one record: the way back, then where you are (`Releases › Phase 2`). */
 export function DrillBar({ root, name, onBack }: { root: string; name: string; onBack: () => void }) {
-  return (
-    <Toolbar aria-label={`${root} navigation`} className="kanban-plan-drill">
-      <IconButton
-        className="kanban-plan-touch"
-        label={`Back to the ${root.toLowerCase()}`}
-        onClick={onBack}
-        variant="ghost"
-      >
-        <ArrowLeft size={16} />
-      </IconButton>
-      <Breadcrumb items={[{ label: root, onClick: onBack }, { label: name }]} />
-    </Toolbar>
-  )
+  return <Crumbs name={name} onBack={onBack} root={root} />
 }
 
 /**
@@ -350,11 +338,11 @@ export function useInlineEdit({
   }
 
   const editor = editing ? (
-    <div className="kanban-plan-edit">
+    <div className="kb-plan-edit" data-multiline={multiline ? 'true' : undefined}>
       {multiline ? (
-        <textarea
+        <ShadcnTextarea
           {...common}
-          className="kanban-field__textarea"
+          className="kb-plan-edit__area"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
@@ -370,13 +358,13 @@ export function useInlineEdit({
           value={draft}
         />
       ) : (
-        <Input
+        <ShadcnInput
           {...common}
-          className={mono ? 'kanban-plan-mono' : undefined}
+          className={mono ? 'kb-plan-edit__input kb-plan-mono' : 'kb-plan-edit__input'}
           onBlur={() => {
             if (!skipBlur.current) void commit()
           }}
-          onChange={setDraft}
+          onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault()
@@ -391,17 +379,17 @@ export function useInlineEdit({
         />
       )}
       {multiline ? (
-        <div className="kanban-plan-edit__foot">
-          <Button className="kanban-plan-touch" onClick={cancel} size="sm" variant="ghost">
+        <div className="kb-plan-edit__foot">
+          <ShadcnButton onClick={cancel} size="sm" type="button" variant="ghost">
             Cancel
-          </Button>
-          <Button className="kanban-plan-touch" disabled={busy} onClick={() => void commit()} size="sm" variant="pill">
+          </ShadcnButton>
+          <ShadcnButton disabled={busy} onClick={() => void commit()} size="sm" type="button">
             Save
-          </Button>
+          </ShadcnButton>
         </div>
       ) : null}
       {error ? (
-        <p className="kanban-field__error" id={errorId} role="alert">
+        <p className="kb-field__error" id={errorId} role="alert">
           {error}
         </p>
       ) : null}
@@ -469,6 +457,7 @@ export function NewReleaseDialog({
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const uid = useId()
 
   useEffect(() => {
     if (!open) return
@@ -504,75 +493,59 @@ export function NewReleaseDialog({
   const nameError = error && isNameError(error) ? error : null
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="kanban-dialog">
-        <DialogTitle>New release</DialogTitle>
-        <DialogDescription>Group tickets into a delivery with a target date.</DialogDescription>
-        <div className="kanban-dialog__form" onKeyDown={submitOnEnter(() => void submit())}>
-          <div className="kanban-plan-pair">
-            <label className="kanban-field">
-              <span className="kanban-plan-labelrow">
-                <span className="kanban-field__label">Name</span>
-                <span className="kanban-plan-opt-note">Required</span>
-              </span>
-              <Input
-                aria-describedby={nameError ? 'kanban-new-release-name-error' : undefined}
+    <ShadcnDialog onOpenChange={onOpenChange} open={open}>
+      <ShadcnDialogContent className="kb-dialog kb-plan-dialog">
+        <ShadcnDialogHeader>
+          <ShadcnDialogTitle>New release</ShadcnDialogTitle>
+          <ShadcnDialogDescription>Group tickets into a delivery with a target date.</ShadcnDialogDescription>
+        </ShadcnDialogHeader>
+        <div className="kb-plan-form" onKeyDown={submitOnEnter(() => void submit())}>
+          <div className="kb-plan-pair">
+            <Field error={nameError} htmlFor={`${uid}-name`} label="Name">
+              <ShadcnInput
                 aria-invalid={nameError ? true : undefined}
                 autoFocus
-                onChange={(next) => {
-                  setName(next)
+                id={`${uid}-name`}
+                onChange={(event) => {
+                  setName(event.target.value)
                   setError(null)
                 }}
                 placeholder="Phase 3"
                 value={name}
               />
-              {nameError ? (
-                <p className="kanban-plan-error" id="kanban-new-release-name-error" role="alert">
-                  <TriangleAlert size={16} />
-                  {nameError}
-                </p>
-              ) : null}
-            </label>
-            <label className="kanban-field">
-              <span className="kanban-plan-labelrow">
-                <span className="kanban-field__label">Target date</span>
-                <span className="kanban-plan-opt-note">Optional</span>
-              </span>
-              <Input
+            </Field>
+            <Field error={targetProblem} hint="Optional" htmlFor={`${uid}-target`} label="Target date">
+              <ShadcnInput
                 aria-invalid={targetProblem ? true : undefined}
-                className="kanban-plan-mono"
-                onChange={setTarget}
+                className="kb-plan-mono"
+                id={`${uid}-target`}
+                onChange={(event) => setTarget(event.target.value)}
                 placeholder="YYYY-MM-DD"
                 value={target}
               />
-              {targetProblem ? <p className="kanban-field__error">{targetProblem}</p> : null}
-            </label>
+            </Field>
           </div>
-          <label className="kanban-field">
-            <span className="kanban-plan-labelrow">
-              <span className="kanban-field__label">Description</span>
-              <span className="kanban-plan-opt-note">Optional</span>
-            </span>
-            <textarea
-              className="kanban-field__textarea"
+          <Field hint="Optional" htmlFor={`${uid}-description`} label="Description">
+            <ShadcnTextarea
+              id={`${uid}-description`}
               onChange={(event) => setDescription(event.target.value)}
               placeholder="What this release delivers"
               rows={3}
               value={description}
             />
-          </label>
-          {error && !nameError ? <p className="kanban-field__error">{error}</p> : null}
+          </Field>
+          {error && !nameError ? <p className="kb-field__error">{error}</p> : null}
         </div>
-        <div className="kanban-dialog__foot">
-          <Button onClick={() => onOpenChange(false)} variant="ghost">
+        <ShadcnDialogFooter>
+          <ShadcnButton onClick={() => onOpenChange(false)} type="button" variant="outline">
             Cancel
-          </Button>
-          <Button disabled={!canSubmit} onClick={() => void submit()} variant="primary">
+          </ShadcnButton>
+          <ShadcnButton disabled={!canSubmit} onClick={() => void submit()} type="button">
             {busy ? 'Creating…' : 'Create release'}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+          </ShadcnButton>
+        </ShadcnDialogFooter>
+      </ShadcnDialogContent>
+    </ShadcnDialog>
   )
 }
 
@@ -634,102 +607,73 @@ export function NewProjectDialog({
   const nameError = error && isNameError(error) ? error : null
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="kanban-dialog">
-        <DialogTitle>New project</DialogTitle>
-        <DialogDescription>A ticket belongs to at most one project.</DialogDescription>
-        <div className="kanban-dialog__form" onKeyDown={submitOnEnter(() => void submit())}>
-          <label className="kanban-field">
-            <span className="kanban-plan-labelrow">
-              <span className="kanban-field__label">Name</span>
-              <span className="kanban-plan-opt-note">Required</span>
-            </span>
-            <Input
-              aria-describedby="kanban-new-project-name-hint"
+    <ShadcnDialog onOpenChange={onOpenChange} open={open}>
+      <ShadcnDialogContent className="kb-dialog kb-plan-dialog">
+        <ShadcnDialogHeader>
+          <ShadcnDialogTitle>New project</ShadcnDialogTitle>
+          <ShadcnDialogDescription>A ticket belongs to at most one project.</ShadcnDialogDescription>
+        </ShadcnDialogHeader>
+        <div className="kb-plan-form" onKeyDown={submitOnEnter(() => void submit())}>
+          <Field error={nameError} hint="Unique on this board. Case is ignored." htmlFor={`${colorLabel}-name`} label="Name">
+            <ShadcnInput
               aria-invalid={nameError ? true : undefined}
               autoFocus
-              onChange={(next) => {
-                setName(next)
+              id={`${colorLabel}-name`}
+              onChange={(event) => {
+                setName(event.target.value)
                 setError(null)
               }}
               placeholder="iii cloud"
               value={name}
             />
-            {nameError ? (
-              <p className="kanban-plan-error" role="alert">
-                <TriangleAlert size={16} />
-                {nameError}
-              </p>
-            ) : (
-              <span className="kanban-plan-hint" id="kanban-new-project-name-hint">
-                Unique on this board. Case is ignored.
-              </span>
-            )}
-          </label>
-          <label className="kanban-field">
-            <span className="kanban-plan-labelrow">
-              <span className="kanban-field__label">Description</span>
-              <span className="kanban-plan-opt-note">Optional</span>
-            </span>
-            <textarea
-              className="kanban-field__textarea"
+          </Field>
+          <Field hint="Optional" htmlFor={`${colorLabel}-description`} label="Description">
+            <ShadcnTextarea
+              id={`${colorLabel}-description`}
               onChange={(event) => setDescription(event.target.value)}
               placeholder="What is this project for?"
-              rows={4}
+              rows={3}
               value={description}
             />
-          </label>
-          <div className="kanban-plan-pair">
-            <div className="kanban-field">
-              <span className="kanban-plan-labelrow">
-                <span className="kanban-field__label">Lead</span>
-                <span className="kanban-plan-opt-note">Optional</span>
-              </span>
-              <Selector
-                allowEmpty
-                aria-label="Lead"
-                emptyLabel="None"
-                onChange={setLead}
-                onClear={() => setLead(undefined)}
-                options={agentOptions(agents)}
-                placeholder="None"
-                value={lead}
-              />
-            </div>
-            <div className="kanban-field">
-              <span className="kanban-field__label" id={colorLabel}>
+          </Field>
+          <div className="kb-plan-pair">
+            <Field label="Lead">
+              <LeadPicker agents={agents} onChange={(next) => setLead(next ?? undefined)} value={lead ?? null} />
+            </Field>
+            <div className="kb-field">
+              <span className="kb-field__label" id={colorLabel}>
                 Color
               </span>
-              <div aria-labelledby={colorLabel} className="kanban-plan-tones" role="radiogroup">
+              <div aria-labelledby={colorLabel} className="kb-plan-swatches" role="radiogroup">
                 {TONES.map((tone) => (
                   <button
                     aria-checked={color === tone}
-                    className="kanban-plan-tone"
+                    aria-label={titleCase(tone)}
+                    className="kb-plan-swatch"
+                    data-tone={tone}
                     key={tone}
                     onClick={() => setColor(tone)}
                     role="radio"
                     type="button"
                   >
-                    <ProjectGlyph color={tone} />
-                    <span className="kanban-plan-tone__name">{titleCase(tone)}</span>
-                    {color === tone ? <Check size={16} /> : <span className="kanban-plan-tone__gap" />}
+                    <span aria-hidden="true" className="kb-plan-swatch__dot" />
                   </button>
                 ))}
               </div>
             </div>
           </div>
-          {error && !nameError ? <p className="kanban-field__error">{error}</p> : null}
+          {error && !nameError ? <p className="kb-field__error">{error}</p> : null}
         </div>
-        <div className="kanban-dialog__foot">
-          <Button onClick={() => onOpenChange(false)} variant="ghost">
+        <ShadcnDialogFooter>
+          <ShadcnButton onClick={() => onOpenChange(false)} type="button" variant="outline">
             Cancel
-          </Button>
-          <Button disabled={!canSubmit} onClick={() => void submit()} variant="primary">
+          </ShadcnButton>
+          <ShadcnButton disabled={!canSubmit} onClick={() => void submit()} type="button">
             {busy ? 'Creating…' : 'Create project'}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+          </ShadcnButton>
+        </ShadcnDialogFooter>
+      </ShadcnDialogContent>
+    </ShadcnDialog>
   )
 }
 
@@ -761,7 +705,6 @@ export function ShipDialog({
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
-  const group = useId()
   const unfinished = notDone(release)
 
   useEffect(() => {
@@ -799,16 +742,18 @@ export function ShipDialog({
   const holds = target ? target.total + unfinished : 0
 
   return (
-    <Dialog onOpenChange={(next_) => !busy && onOpenChange(next_)} open={open}>
-      <DialogContent className="kanban-dialog kanban-plan-dialog">
-        <DialogTitle>Mark {release.name} as released?</DialogTitle>
-        <DialogDescription>
-          {unfinished > 0
-            ? 'This closes the release. Choose where its unfinished tickets go.'
-            : 'This closes the release.'}
-        </DialogDescription>
-        <div className="kanban-dialog__form">
-          <ul aria-label="What happens to the tickets" className="kanban-plan-facts">
+    <ShadcnDialog onOpenChange={(next_) => !busy && onOpenChange(next_)} open={open}>
+      <ShadcnDialogContent className="kb-dialog kb-plan-dialog">
+        <ShadcnDialogHeader>
+          <ShadcnDialogTitle>Mark {release.name} as released?</ShadcnDialogTitle>
+          <ShadcnDialogDescription>
+            {unfinished > 0
+              ? 'This closes the release. Choose where its unfinished tickets go.'
+              : 'This closes the release.'}
+          </ShadcnDialogDescription>
+        </ShadcnDialogHeader>
+        <div className="kb-plan-form">
+          <ul aria-label="What happens to the tickets" className="kb-plan-facts">
             {liveCount(release) === 0 ? (
               <li>
                 <Info size={16} />
@@ -817,17 +762,17 @@ export function ShipDialog({
             ) : (
               <>
                 <li>
-                  <span className="kanban-plan-dot" data-tone="ok" />
+                  <span className="kb-plan-dot" data-tone="ok" />
                   <span>
-                    <span className="kanban-plan-mono">{release.done}</span> done{' '}
+                    <span className="kb-plan-num-inline">{release.done}</span> done{' '}
                     {release.done === 1 ? 'ticket stays' : 'tickets stay'} in {release.name}
                   </span>
                 </li>
                 {unfinished > 0 ? (
                   <li>
-                    <span className="kanban-plan-dot" data-tone="ghost" />
+                    <span className="kb-plan-dot" data-tone="ghost" />
                     <span>
-                      <span className="kanban-plan-mono">{unfinished}</span> {unfinished === 1 ? 'is' : 'are'} not done
+                      <span className="kb-plan-num-inline">{unfinished}</span> {unfinished === 1 ? 'is' : 'are'} not done
                       and must go somewhere
                     </span>
                   </li>
@@ -837,38 +782,43 @@ export function ShipDialog({
           </ul>
 
           {unfinished > 0 ? (
-            <fieldset className="kanban-plan-fieldset">
-              <legend className="kanban-field__label">Where do they go?</legend>
-              <label className="kanban-plan-opt" data-on={dest === 'move'}>
-                <input
+            <fieldset className="kb-plan-choices">
+              <legend className="kb-field__label">Where do they go?</legend>
+              <label className="kb-plan-choice" data-on={dest === 'move' ? 'true' : undefined}>
+                {/* One choice, drawn as a checkbox (the board's one selection control): ticking one unticks the other. */}
+                <ShadcnCheckbox
                   checked={dest === 'move'}
+                  className="kb-plan-choice__box"
                   disabled={targets.length === 0}
-                  name={group}
-                  onChange={() => setDest('move')}
-                  type="radio"
+                  onCheckedChange={(next) => {
+                    if (next) setDest('move')
+                  }}
                 />
-                <span className="kanban-plan-opt__body">
-                  <span className="kanban-plan-opt__line">
-                    Move them to
-                    {targets.length > 0 ? (
-                      <Selector
-                        aria-label="Release to move the tickets to"
-                        className="kanban-plan-opt__select"
-                        onChange={(value) => {
-                          setTargetId(value)
-                          setDest('move')
-                        }}
-                        options={targets.map((candidate) => ({
-                          value: candidate.id,
-                          label: candidate.name,
-                          description: candidate.target_at ? `Target ${formatTarget(candidate.target_at)}` : undefined,
-                        }))}
-                        searchPlaceholder="Search releases"
-                        value={targetId}
-                      />
-                    ) : null}
-                  </span>
-                  <span className="kanban-plan-hint">
+                <span className="kb-plan-choice__body">
+                  <span className="kb-plan-choice__line">Move them to another release</span>
+                  {targets.length > 0 ? (
+                    <SearchPicker
+                      label="Release to move the tickets to"
+                      onChange={(value) => {
+                        setTargetId(value)
+                        setDest('move')
+                      }}
+                      options={targets.map((candidate) => ({
+                        value: candidate.id,
+                        label: candidate.name,
+                        description: candidate.target_at ? `Target ${formatTarget(candidate.target_at)}` : undefined,
+                        icon: <Milestone size={16} />,
+                      }))}
+                      searchPlaceholder="Find a release…"
+                      trigger={
+                        <PickerButton icon={<Milestone size={16} />} placeholder={!target}>
+                          {target?.name ?? 'Pick a release'}
+                        </PickerButton>
+                      }
+                      value={targetId ?? null}
+                    />
+                  ) : null}
+                  <span className="kb-field__hint">
                     {target
                       ? `${target.id === next?.id && isNextByDate(target, release) ? `${target.name} is the next release by target date. ` : ''}It will hold ${plural(holds, 'ticket')}.`
                       : targets.length > 0
@@ -877,17 +827,23 @@ export function ShipDialog({
                   </span>
                 </span>
               </label>
-              <label className="kanban-plan-opt" data-on={dest === 'remove'}>
-                <input checked={dest === 'remove'} name={group} onChange={() => setDest('remove')} type="radio" />
-                <span className="kanban-plan-opt__body">
-                  <span className="kanban-plan-opt__line">Remove them from any release</span>
-                  <span className="kanban-plan-hint">They stay on the board with no release.</span>
+              <label className="kb-plan-choice" data-on={dest === 'remove' ? 'true' : undefined}>
+                <ShadcnCheckbox
+                  checked={dest === 'remove'}
+                  className="kb-plan-choice__box"
+                  onCheckedChange={(next) => {
+                    if (next) setDest('remove')
+                  }}
+                />
+                <span className="kb-plan-choice__body">
+                  <span className="kb-plan-choice__line">Remove them from any release</span>
+                  <span className="kb-field__hint">They stay on the board with no release.</span>
                 </span>
               </label>
             </fieldset>
           ) : null}
 
-          <ul className="kanban-plan-notes">
+          <ul className="kb-plan-notes">
             {unfinished > 0 ? (
               <li>
                 <Bell size={16} />
@@ -899,19 +855,19 @@ export function ShipDialog({
               <span>You can reopen the release later{unfinished > 0 ? "; moved tickets don't come back" : ''}</span>
             </li>
           </ul>
-          {error ? <p className="kanban-field__error">{error}</p> : null}
+          {error ? <p className="kb-field__error">{error}</p> : null}
         </div>
-        <div className="kanban-dialog__foot">
+        <ShadcnDialogFooter>
           {/* A ConfirmDialog cannot hold the radios; this one gives Cancel the focus the way it does. */}
-          <Button autoFocus disabled={busy} onClick={() => onOpenChange(false)} variant="ghost">
+          <ShadcnButton autoFocus disabled={busy} onClick={() => onOpenChange(false)} type="button" variant="outline">
             Cancel
-          </Button>
-          <Button disabled={busy || blocked} onClick={() => void submit()} variant="primary">
+          </ShadcnButton>
+          <ShadcnButton disabled={busy || blocked} onClick={() => void submit()} type="button">
             {busy ? 'Marking…' : 'Mark as released'}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+          </ShadcnButton>
+        </ShadcnDialogFooter>
+      </ShadcnDialogContent>
+    </ShadcnDialog>
   )
 }
 
@@ -1213,352 +1169,345 @@ export function ConvertDialog({
   const everyOn = tableRows.every(isOn)
   const someOn = tableRows.some((entry) => !isChosen(entry) && isOn(entry))
 
+  const labelOptions: PickerOption[] = labels.map((entry) => ({
+    value: entry.label,
+    label: entry.label,
+    count: entry.count,
+    icon: <span aria-hidden="true" className="kb-label__dot" data-tone={toneOf(entry.label)} />,
+  }))
+  const entityOptions: PickerOption[] = entities.map((entity) => ({
+    value: entity.id,
+    label: entity.name,
+    count: liveCount(entity),
+    icon: into === 'release' ? <Milestone size={16} /> : <FolderGlyph color={(entity as ProjectView).color ?? null} />,
+  }))
+
   return (
-    <Dialog onOpenChange={(next) => !busy && onOpenChange(next)} open={open}>
-      <DialogContent className="kanban-dialog kanban-plan-dialog kanban-plan-dialog--wide">
-        <DialogTitle>Create from a label</DialogTitle>
-        <DialogDescription>Puts the tickets that carry a label into a {noun}. Nothing is deleted.</DialogDescription>
-        <div className="kanban-dialog__form">
-          <div className="kanban-plan-pair kanban-plan-pair--wide">
-            <div className="kanban-field">
-              <span className="kanban-field__label">Label</span>
-              <WithCount count={chosenLabel ? plural(chosenLabel.count, 'ticket') : undefined}>
-                <Selector
-                  aria-label="Label"
-                  emptyMessage="No ticket carries that label"
-                  onChange={chooseLabel}
-                  options={labels.map((entry) => ({
-                    value: entry.label,
-                    label: entry.label,
-                    description: plural(entry.count, 'ticket'),
-                  }))}
-                  placeholder={labels.length === 0 ? 'No ticket has a label yet' : 'Pick a label'}
-                  searchPlaceholder="Search labels"
-                  triggerIcon={<Tag size={16} />}
-                  value={label}
-                />
-              </WithCount>
-            </div>
-            <div className="kanban-field">
-              <span className="kanban-field__label" id={`${uid}-into`}>
+    <ShadcnDialog onOpenChange={(next) => !busy && onOpenChange(next)} open={open}>
+      <ShadcnDialogContent className="kb-dialog kb-plan-dialog kb-plan-dialog--wide">
+        <ShadcnDialogHeader>
+          <ShadcnDialogTitle>Create from a label</ShadcnDialogTitle>
+          <ShadcnDialogDescription>
+            Puts the tickets that carry a label into a {noun}. Nothing is deleted.
+          </ShadcnDialogDescription>
+        </ShadcnDialogHeader>
+        <div className="kb-plan-form kb-plan-form--scroll">
+          <div className="kb-plan-pair">
+            <Field label="Label" hint={chosenLabel ? plural(chosenLabel.count, 'ticket') : undefined}>
+              <SearchPicker
+                empty="No ticket carries a label yet."
+                label="Label"
+                onChange={chooseLabel}
+                options={labelOptions}
+                searchPlaceholder="Find a label…"
+                trigger={
+                  <PickerButton
+                    icon={label ? <span aria-hidden="true" className="kb-label__dot" data-tone={toneOf(label)} /> : <Tag size={16} />}
+                    placeholder={!label}
+                  >
+                    {label ?? (labels.length === 0 ? 'No ticket has a label yet' : 'Pick a label')}
+                  </PickerButton>
+                }
+                value={label ?? null}
+              />
+            </Field>
+            <div className="kb-field">
+              <span className="kb-field__label" id={`${uid}-into`}>
                 Put them in
               </span>
-              <SegmentedControl
-                aria-label="Put them in"
-                onChange={(next) => {
+              <ShadcnTabs
+                onValueChange={(next) => {
                   autoExisting.current = false
-                  switchMode(next)
+                  switchMode(next === 'existing' ? 'existing' : 'new')
                 }}
-                options={[
-                  { value: 'new', label: `Create a new ${noun}`, icon: false },
-                  { value: 'existing', label: `Add to an existing ${noun}`, icon: false },
-                ]}
-                variant="radio"
                 value={mode}
-              />
+              >
+                <ShadcnTabsList aria-labelledby={`${uid}-into`} className="kb-plan-modes">
+                  <ShadcnTabsTrigger value="new">New {noun}</ShadcnTabsTrigger>
+                  <ShadcnTabsTrigger value="existing">Existing {noun}</ShadcnTabsTrigger>
+                </ShadcnTabsList>
+              </ShadcnTabs>
             </div>
             {mode === 'new' ? (
               <>
-                <label className="kanban-field">
-                  <span className="kanban-field__label">{titleCase(noun)} name</span>
-                  <Input
+                <Field
+                  hint={
+                    chosenPreview && !failed(chosenPreview) && chosenPreview.entity
+                      ? `A ${noun} named ${chosenPreview.entity.name} already exists. The tickets are added to it.`
+                      : undefined
+                  }
+                  htmlFor={`${uid}-name`}
+                  label={`${titleCase(noun)} name`}
+                >
+                  <ShadcnInput
                     disabled={!label}
-                    onChange={(next) => label && setNames((current) => ({ ...current, [key(label)]: next }))}
+                    id={`${uid}-name`}
+                    onChange={(event) => {
+                      const next = event.target.value
+                      if (label) setNames((current) => ({ ...current, [key(label)]: next }))
+                    }}
                     placeholder={label ? suggestName(label) : ''}
                     value={label ? nameOf(label) : ''}
                   />
-                  {chosenPreview && !failed(chosenPreview) && chosenPreview.entity ? (
-                    <span className="kanban-plan-hint" role="status">
-                      A {noun} named {chosenPreview.entity.name} already exists. The tickets are added to it.
-                    </span>
-                  ) : null}
-                </label>
+                </Field>
                 {into === 'release' ? (
-                  <label className="kanban-field">
-                    <span className="kanban-plan-labelrow">
-                      <span className="kanban-field__label">Target date</span>
-                      <span className="kanban-plan-opt-note">Optional</span>
-                    </span>
-                    <Input
+                  <Field
+                    error={targetProblem}
+                    hint={batch && label ? `Only for ${nameOf(label)}. Set the others on their pages.` : 'Optional'}
+                    htmlFor={`${uid}-target`}
+                    label="Target date"
+                  >
+                    <ShadcnInput
                       aria-invalid={targetProblem ? true : undefined}
-                      className="kanban-plan-mono"
-                      onChange={setTarget}
+                      className="kb-plan-mono"
+                      id={`${uid}-target`}
+                      onChange={(event) => setTarget(event.target.value)}
                       placeholder="YYYY-MM-DD"
                       value={target}
                     />
-                    {targetProblem ? (
-                      <span className="kanban-field__error">{targetProblem}</span>
-                    ) : batch && label ? (
-                      <span className="kanban-plan-hint">Only for {nameOf(label)}. Set the others on their pages.</span>
-                    ) : null}
-                  </label>
+                  </Field>
                 ) : null}
               </>
             ) : (
               <>
-                <div className="kanban-field">
-                  <span className="kanban-field__label">{titleCase(noun)}</span>
-                  <WithCount count={existing ? plural(liveCount(existing), 'ticket') : undefined}>
-                    <Selector
-                      aria-label={titleCase(noun)}
-                      onChange={setExistingId}
-                      options={entities.map((entity) => ({
-                        value: entity.id,
-                        label: entity.name,
-                        description: plural(liveCount(entity), 'ticket'),
-                      }))}
-                      placeholder={entities.length === 0 ? `No ${noun} yet` : `Pick a ${noun}`}
-                      searchPlaceholder={`Search ${noun}s`}
-                      triggerIcon={into === 'release' ? <Flag size={16} /> : <Folder size={16} />}
-                      value={existingId}
-                    />
-                  </WithCount>
-                </div>
-                {existing ? (
-                  <div className="kanban-plan-status">
-                    <span
-                      className="kanban-plan-dot"
-                      data-tone={
-                        existing.status === 'released'
-                          ? 'ok'
-                          : existing.status === 'planned' || existing.status === 'archived'
-                            ? 'ghost'
-                            : 'ink'
-                      }
-                    />
-                    {titleCase(existing.status)}
-                    {'target_at' in existing && existing.target_at
-                      ? ` · target ${formatTarget(existing.target_at)}`
-                      : ''}
-                  </div>
-                ) : null}
+                <Field
+                  hint={
+                    existing
+                      ? `${titleCase(existing.status)}${'target_at' in existing && existing.target_at ? ` · target ${formatTarget(existing.target_at)}` : ''}`
+                      : undefined
+                  }
+                  label={titleCase(noun)}
+                >
+                  <SearchPicker
+                    empty={`No ${noun} yet.`}
+                    label={titleCase(noun)}
+                    onChange={setExistingId}
+                    options={entityOptions}
+                    searchPlaceholder={`Find a ${noun}…`}
+                    trigger={
+                      <PickerButton
+                        icon={into === 'release' ? <Milestone size={16} /> : <FolderGlyph color={(existing as ProjectView | undefined)?.color ?? null} />}
+                        placeholder={!existing}
+                      >
+                        {existing?.name ?? (entities.length === 0 ? `No ${noun} yet` : `Pick a ${noun}`)}
+                      </PickerButton>
+                    }
+                    value={existingId ?? null}
+                  />
+                </Field>
               </>
             )}
           </div>
 
           {label ? (
-            <section aria-label={`Preview for ${label}`} className="kanban-plan-preview">
-              <div className="kanban-plan-preview__head">
-                <h3>
-                  Preview for <span className="kanban-plan-mono">{label}</span>
+            <section aria-label={`Preview for ${label}`} className="kb-plan-preview">
+              <header className="kb-plan-preview__head">
+                <h3 className="kb-plan-preview__title">
+                  Preview for <span className="kb-plan-mono">{label}</span>
                   {heading}
                 </h3>
-                <span className="kanban-plan-hint">{labelSummary}</span>
-              </div>
+                <span className="kb-field__hint">{labelSummary}</span>
+              </header>
               {chosenPreview && failed(chosenPreview) ? (
-                <p className="kanban-field__error" role="alert">
+                <p className="kb-field__error" role="alert">
                   {chosenPreview.error}
                 </p>
               ) : buckets ? (
-                <div className="kanban-plan-buckets">
+                <ul className="kb-plan-buckets">
                   <Bucket
                     n={buckets.added.length}
                     note={`Go into ${existing?.name ?? chosenName(chosenPreview, nameOf(label), noun)}`}
-                    title="will be added"
+                    title="Will be added"
+                    tone="ok"
                   />
+                  <Bucket n={buckets.already_here.length} note="Left as they are" title="Already here" />
                   <Bucket
-                    muted={buckets.already_here.length === 0}
-                    n={buckets.already_here.length}
-                    note="Left as they are"
-                    title="already here"
-                  />
-                  <Bucket
-                    muted={buckets.in_other.length === 0}
                     n={buckets.in_other.length}
                     note={
-                      <Checkbox
-                        checked={replace}
-                        disabled={inOther === 0}
-                        label="Move them here"
-                        onChange={(event) => setReplace(event.target.checked)}
-                      />
+                      // biome-ignore lint/a11y/noLabelWithoutControl: the Base UI checkbox inside is the control
+                      <label className="kb-plan-check" data-disabled={inOther === 0 ? 'true' : undefined}>
+                        <ShadcnCheckbox checked={replace} disabled={inOther === 0} onCheckedChange={setReplace} />
+                        Move them here
+                      </label>
                     }
-                    title={`in another ${noun}`}
+                    title={`In another ${noun}`}
+                    tone={buckets.in_other.length > 0 ? 'warn' : undefined}
                   />
-                  <Bucket
-                    muted={buckets.deleted.length === 0}
-                    n={buckets.deleted.length}
-                    note="Skipped"
-                    title="deleted"
-                  />
-                </div>
+                  <Bucket n={buckets.deleted.length} note="Skipped" title="Deleted" />
+                </ul>
               ) : (
-                <div className="kanban-plan-buckets">
+                <ul className="kb-plan-buckets" aria-busy="true">
                   {[0, 1, 2, 3].map((index) => (
-                    <Skeleton className="kanban-plan-skeleton" key={index} />
+                    <li className="kb-plan-bucket" key={index}>
+                      <ShadcnSkeleton className="kb-plan-skeleton kb-plan-skeleton--line" />
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
             </section>
           ) : null}
 
           {batch ? (
-            <Panel aria-labelledby={`${uid}-batch`} className="kanban-plan-batch" role="region">
-              <PanelHeader>
-                <h3 id={`${uid}-batch`}>One {noun} for each matching label</h3>
-                <span className="kanban-plan-mono kanban-plan-hint">{stem}</span>
-                <span className="kanban-plan-hint kanban-plan-batch__count">
+            <section aria-labelledby={`${uid}-batch`} className="kb-plan-batch">
+              <header className="kb-plan-batch__head">
+                <h3 className="kb-plan-preview__title" id={`${uid}-batch`}>
+                  One {noun} for each matching label
+                </h3>
+                <span className="kb-plan-mono kb-field__hint">{stem}</span>
+                <span className="kb-plan-spacer" />
+                <span className="kb-field__hint">
                   {selected.length} of {tableRows.length} selected
                 </span>
-              </PanelHeader>
-              <TableViewport>
-                <TableFrame>
-                  <Table density="compact" inset>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>
-                          <Checkbox
-                            aria-label={`Select all ${tableRows.length} labels`}
-                            checked={everyOn}
-                            indeterminate={!everyOn && someOn}
-                            onChange={() =>
-                              setPicked(everyOn ? {} : Object.fromEntries(tableRows.map((entry) => [key(entry), true])))
-                            }
-                          />
-                        </TableHead>
-                        <TableHead>Label</TableHead>
-                        <TableHead>{titleCase(noun)} name</TableHead>
-                        <TableHead className="kanban-plan-num">Tickets</TableHead>
-                        <TableHead className="kanban-plan-num">Done</TableHead>
-                        <TableHead className="kanban-plan-num">Will add</TableHead>
-                        <TableHead className="kanban-plan-num">Already here</TableHead>
-                        <TableHead className="kanban-plan-num">In another</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {tableRows.map((entry) => {
-                        const preview = previewOf(entry)
-                        const on = isOn(entry)
-                        const own = stats[key(entry)]
-                        return (
-                          <TableRow
-                            aria-current={isChosen(entry) ? 'true' : undefined}
-                            data-off={on ? undefined : 'true'}
-                            key={key(entry)}
-                          >
-                            <TableCell>
-                              <Checkbox
-                                aria-label={`Create a ${noun} for ${entry}`}
-                                checked={on}
-                                disabled={isChosen(entry)}
-                                onChange={(event) =>
-                                  setPicked((current) => ({ ...current, [key(entry)]: event.target.checked }))
-                                }
-                              />
-                            </TableCell>
-                            <TableCell className="kanban-plan-mono">{entry}</TableCell>
-                            <TableCell>
-                              <Input
-                                aria-label={`${titleCase(noun)} name for ${entry}`}
-                                onChange={(next) => setNames((current) => ({ ...current, [key(entry)]: next }))}
-                                value={nameOf(entry)}
-                              />
-                            </TableCell>
-                            <TableCell className="kanban-plan-num kanban-plan-mono">{own?.total ?? 0}</TableCell>
-                            <TableCell className="kanban-plan-num kanban-plan-mono">{own?.done ?? 0}</TableCell>
-                            <TableCell className="kanban-plan-num kanban-plan-mono">
-                              {preview ? willAdd(preview.buckets, replace) : '…'}
-                            </TableCell>
-                            <TableCell className="kanban-plan-num kanban-plan-mono">
-                              {preview ? preview.buckets.already_here.length : '…'}
-                            </TableCell>
-                            <TableCell className="kanban-plan-num kanban-plan-mono">
-                              {preview ? preview.buckets.in_other.length : '…'}
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                    <TableFooter>
-                      <TableRow>
-                        <TableCell />
-                        <TableCell>Total</TableCell>
-                        <TableCell>{plural(selected.length, noun)}</TableCell>
-                        <TableCell className="kanban-plan-num kanban-plan-mono">{labelTicketCount}</TableCell>
-                        <TableCell className="kanban-plan-num kanban-plan-mono">
-                          {selected.reduce((sum, entry) => sum + (stats[key(entry)]?.done ?? 0), 0)}
-                        </TableCell>
-                        <TableCell className="kanban-plan-num kanban-plan-mono">{sumAdd}</TableCell>
-                        <TableCell className="kanban-plan-num kanban-plan-mono">
-                          {selected.reduce(
-                            (sum, entry) => sum + (previewOf(entry)?.buckets.already_here.length ?? 0),
-                            0,
-                          )}
-                        </TableCell>
-                        <TableCell className="kanban-plan-num kanban-plan-mono">{inOther}</TableCell>
-                      </TableRow>
-                    </TableFooter>
-                  </Table>
-                </TableFrame>
-              </TableViewport>
-            </Panel>
+              </header>
+              <div className="kb-plan-batch__table">
+                <ShadcnTable>
+                  <ShadcnTableHeader>
+                    <ShadcnTableRow>
+                      <ShadcnTableHead className="kb-plan-cell--check">
+                        <ShadcnCheckbox
+                          aria-label={`Select all ${tableRows.length} labels`}
+                          checked={everyOn}
+                          indeterminate={!everyOn && someOn}
+                          onCheckedChange={() =>
+                            setPicked(everyOn ? {} : Object.fromEntries(tableRows.map((entry) => [key(entry), true])))
+                          }
+                        />
+                      </ShadcnTableHead>
+                      <ShadcnTableHead>Label</ShadcnTableHead>
+                      <ShadcnTableHead>{titleCase(noun)} name</ShadcnTableHead>
+                      <ShadcnTableHead className="kb-plan-num">Tickets</ShadcnTableHead>
+                      <ShadcnTableHead className="kb-plan-num">Done</ShadcnTableHead>
+                      <ShadcnTableHead className="kb-plan-num">Will add</ShadcnTableHead>
+                      <ShadcnTableHead className="kb-plan-num">Here</ShadcnTableHead>
+                      <ShadcnTableHead className="kb-plan-num">Elsewhere</ShadcnTableHead>
+                    </ShadcnTableRow>
+                  </ShadcnTableHeader>
+                  <ShadcnTableBody>
+                    {tableRows.map((entry) => {
+                      const preview = previewOf(entry)
+                      const on = isOn(entry)
+                      const own = stats[key(entry)]
+                      return (
+                        <ShadcnTableRow
+                          aria-current={isChosen(entry) ? 'true' : undefined}
+                          className="kb-plan-batch__row"
+                          data-off={on ? undefined : 'true'}
+                          key={key(entry)}
+                        >
+                          <ShadcnTableCell className="kb-plan-cell--check">
+                            <ShadcnCheckbox
+                              aria-label={`Create a ${noun} for ${entry}`}
+                              checked={on}
+                              disabled={isChosen(entry)}
+                              onCheckedChange={(checked) => setPicked((current) => ({ ...current, [key(entry)]: checked }))}
+                            />
+                          </ShadcnTableCell>
+                          <ShadcnTableCell className="kb-plan-mono">{entry}</ShadcnTableCell>
+                          <ShadcnTableCell>
+                            <ShadcnInput
+                              aria-label={`${titleCase(noun)} name for ${entry}`}
+                              className="kb-plan-batch__input"
+                              onChange={(event) => {
+                                const next = event.target.value
+                                setNames((current) => ({ ...current, [key(entry)]: next }))
+                              }}
+                              value={nameOf(entry)}
+                            />
+                          </ShadcnTableCell>
+                          <ShadcnTableCell className="kb-plan-num">{own?.total ?? 0}</ShadcnTableCell>
+                          <ShadcnTableCell className="kb-plan-num">{own?.done ?? 0}</ShadcnTableCell>
+                          <ShadcnTableCell className="kb-plan-num">
+                            {preview ? willAdd(preview.buckets, replace) : '…'}
+                          </ShadcnTableCell>
+                          <ShadcnTableCell className="kb-plan-num">
+                            {preview ? preview.buckets.already_here.length : '…'}
+                          </ShadcnTableCell>
+                          <ShadcnTableCell className="kb-plan-num">
+                            {preview ? preview.buckets.in_other.length : '…'}
+                          </ShadcnTableCell>
+                        </ShadcnTableRow>
+                      )
+                    })}
+                    <ShadcnTableRow className="kb-plan-batch__total">
+                      <ShadcnTableCell />
+                      <ShadcnTableCell>Total</ShadcnTableCell>
+                      <ShadcnTableCell>{plural(selected.length, noun)}</ShadcnTableCell>
+                      <ShadcnTableCell className="kb-plan-num">{labelTicketCount}</ShadcnTableCell>
+                      <ShadcnTableCell className="kb-plan-num">
+                        {selected.reduce((sum, entry) => sum + (stats[key(entry)]?.done ?? 0), 0)}
+                      </ShadcnTableCell>
+                      <ShadcnTableCell className="kb-plan-num">{sumAdd}</ShadcnTableCell>
+                      <ShadcnTableCell className="kb-plan-num">
+                        {selected.reduce((sum, entry) => sum + (previewOf(entry)?.buckets.already_here.length ?? 0), 0)}
+                      </ShadcnTableCell>
+                      <ShadcnTableCell className="kb-plan-num">{inOther}</ShadcnTableCell>
+                    </ShadcnTableRow>
+                  </ShadcnTableBody>
+                </ShadcnTable>
+              </div>
+            </section>
           ) : null}
 
           {label ? (
-            <div className="kanban-plan-checks">
+            <div className="kb-plan-checks">
               {into === 'release' ? (
-                <Checkbox
-                  checked={markNow}
-                  disabled={markDisabled}
-                  label={
-                    <span className="kanban-plan-check">
-                      <span>Mark releases whose tickets are all done as Released</span>
-                      <span className="kanban-plan-hint">
-                        {mode === 'existing'
-                          ? `When every ticket of ${existing?.name ?? 'the release'} is done`
-                          : releasable.length > 0
-                            ? `${plural(releasable.length, 'release')}: ${nameList(releasable.map(nameOf))}`
-                            : 'No selected label has all its tickets done'}
-                      </span>
-                    </span>
-                  }
-                  onChange={(event) => setMarkReleased(event.target.checked)}
-                />
-              ) : null}
-              <Checkbox
-                checked={removeLabel}
-                label={
-                  <span className="kanban-plan-check">
-                    <span>Remove the label from these tickets</span>
-                    <span className="kanban-plan-hint">
-                      {removeLabel
-                        ? `Off the tickets that end up in the ${noun}`
-                        : `Off: ${selected.length > 1 ? `${selected[0]} … ${selected[selected.length - 1]} stay` : `${selected[0] ?? label} stays`} on all ${labelTicketCount} ${labelTicketCount === 1 ? 'ticket' : 'tickets'}`}
+                // biome-ignore lint/a11y/noLabelWithoutControl: the Base UI checkbox inside is the control
+                <label className="kb-plan-check" data-disabled={markDisabled ? 'true' : undefined}>
+                  <ShadcnCheckbox checked={markNow} disabled={markDisabled} onCheckedChange={setMarkReleased} />
+                  <span className="kb-plan-check__text">
+                    <span>Mark releases whose tickets are all done as Released</span>
+                    <span className="kb-field__hint">
+                      {mode === 'existing'
+                        ? `When every ticket of ${existing?.name ?? 'the release'} is done`
+                        : releasable.length > 0
+                          ? `${plural(releasable.length, 'release')}: ${nameList(releasable.map(nameOf))}`
+                          : 'No selected label has all its tickets done'}
                     </span>
                   </span>
-                }
-                onChange={(event) => setRemoveLabel(event.target.checked)}
-              />
+                </label>
+              ) : null}
+              {/* biome-ignore lint/a11y/noLabelWithoutControl: the Base UI checkbox inside is the control */}
+              <label className="kb-plan-check">
+                <ShadcnCheckbox checked={removeLabel} onCheckedChange={setRemoveLabel} />
+                <span className="kb-plan-check__text">
+                  <span>Remove the label from these tickets</span>
+                  <span className="kb-field__hint">
+                    {removeLabel
+                      ? `Off the tickets that end up in the ${noun}`
+                      : `Off: ${selected.length > 1 ? `${selected[0]} … ${selected[selected.length - 1]} stay` : `${selected[0] ?? label} stays`} on all ${labelTicketCount} ${labelTicketCount === 1 ? 'ticket' : 'tickets'}`}
+                  </span>
+                </span>
+              </label>
             </div>
           ) : null}
 
           {error ? (
-            <p className="kanban-field__error" role="alert">
+            <p className="kb-field__error" role="alert">
               {error}
             </p>
           ) : null}
         </div>
-        <div className="kanban-dialog__foot">
-          <Button disabled={busy} onClick={() => onOpenChange(false)} variant="ghost">
-            Cancel
-          </Button>
+        <ShadcnDialogFooter className="kb-plan-dialog__foot">
           {reason && label ? (
-            <span className="kanban-plan-reason" id={`${uid}-why`}>
-              <Info size={16} />
+            <span className="kb-plan-reason" id={`${uid}-why`}>
+              <CircleAlert size={16} />
               {reason}
             </span>
           ) : null}
-          <Button
+          <ShadcnButton disabled={busy} onClick={() => onOpenChange(false)} type="button" variant="outline">
+            Cancel
+          </ShadcnButton>
+          <ShadcnButton
             aria-describedby={reason ? `${uid}-why` : undefined}
             disabled={!canRun}
             onClick={() => void run()}
-            variant="primary"
+            type="button"
           >
             {busy ? 'Working…' : confirmLabel}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+          </ShadcnButton>
+        </ShadcnDialogFooter>
+      </ShadcnDialogContent>
+    </ShadcnDialog>
   )
 }
 
@@ -1567,29 +1516,15 @@ function chosenName(preview: Preview | undefined, fallback: string, noun: string
   return fallback.trim() || `the ${noun}`
 }
 
-/** The host's Selector trigger shows only the label: the count sits over its right edge, clear of the chevron. */
-function WithCount({ count, children }: { count?: string; children: ReactNode }) {
-  if (!count) return <>{children}</>
+/** One preview bucket: the count, what it means, and what happens to those tickets. */
+function Bucket({ n, title, note, tone }: { n: number; title: string; note: ReactNode; tone?: 'ok' | 'warn' }) {
   return (
-    <div className="kanban-plan-withcount">
-      {children}
-      <span aria-hidden="true" className="kanban-plan-withcount__n">
-        {count}
+    <li className="kb-plan-bucket" data-zero={n === 0 ? 'true' : undefined}>
+      <span className="kb-plan-bucket__n" data-tone={n > 0 ? tone : undefined}>
+        {n}
       </span>
-    </div>
-  )
-}
-
-function Bucket({ n, title, note, muted }: { n: number; title: string; note: ReactNode; muted?: boolean }) {
-  return (
-    <div className="kanban-plan-bucket">
-      <div className="kanban-plan-bucket__top">
-        <span className="kanban-plan-bucket__n" data-muted={muted ? 'true' : undefined}>
-          {n}
-        </span>
-        <span>{title}</span>
-      </div>
-      <div className="kanban-plan-bucket__note">{note}</div>
-    </div>
+      <span className="kb-plan-bucket__title">{title}</span>
+      <span className="kb-plan-bucket__note">{note}</span>
+    </li>
   )
 }

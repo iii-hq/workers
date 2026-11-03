@@ -78,7 +78,7 @@ test.describe('touch rows', () => {
     await page.setViewportSize({ width: 1280, height: 800 })
     await openSession(page, stack)
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.getByRole('button', { name: 'back to conversations' }).tap()
+    await page.getByRole('button', { name: 'back to chats' }).tap()
 
     const title = stack.ready.session.title
     const row = page.getByRole('button', { name: `open ${title}`, exact: true })

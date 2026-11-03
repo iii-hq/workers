@@ -210,7 +210,7 @@ export function AgentProfilePicker({
   const selected = agents.find((entry) => entry.id === activeId)
   // A kit with several profiles offers one action: on the chosen profile.
   const selectedUpdate = updateFor(selected)
-  const label =
+  const name =
     agentProfile?.name ||
     selected?.name ||
     activeId ||
@@ -219,6 +219,9 @@ export function AgentProfilePicker({
       : systemPrompt.choice === 'custom'
         ? 'Custom instructions'
         : systemPrompt.choice.named)
+  // Out of the menu, a profile called "Default" doesn't say what it is the
+  // default of; the trigger names the noun.
+  const label = /^default$/i.test(name.trim()) ? 'Default agent' : name
 
   return (
     <Popover
@@ -245,7 +248,7 @@ export function AgentProfilePicker({
         className="composer-agent-trigger inline-flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-2 font-inter text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus"
       >
         <Bot aria-hidden className="size-4 shrink-0" />
-        <span className="max-w-32 truncate">{label}</span>
+        <span className="composer-agent-label max-w-32 truncate">{label}</span>
         {selectedUpdate ? (
           <span
             aria-hidden

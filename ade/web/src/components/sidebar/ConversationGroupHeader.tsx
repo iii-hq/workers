@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, FolderOpen, Plus } from 'lucide-react'
+import { ChevronRight, Plus } from 'lucide-react'
 import { Hint } from '@/components/ui/Hint'
 import { cn } from '@/lib/utils'
 
@@ -81,8 +81,9 @@ export function ConversationGroupHeader({
 
 /**
  * A project in the conversation tree, the way a workspace app lists repos:
- * a folder tile that opens when the project is expanded, the folder name in
- * full ink, and a plus that starts a chat already scoped to the folder. The
+ * the folder name in full ink (no folder glyph: the chats' own marks are the
+ * only icons in the list), and a plus that starts a chat already scoped to
+ * the folder. The
  * chats sit indented under it (`.conversation-project-rows`).
  */
 function ProjectHeader({
@@ -94,7 +95,6 @@ function ProjectHeader({
   narrow,
   onCreate,
 }: Omit<ConversationGroupHeaderProps, 'project'>) {
-  const Icon = collapsed ? Folder : FolderOpen
   return (
     <div
       className={cn(
@@ -107,14 +107,8 @@ function ProjectHeader({
         aria-expanded={!collapsed}
         title={title}
         onClick={onToggle}
-        className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch rounded-xl border-0 bg-transparent pl-[7px] text-left font-inter focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55"
+        className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch rounded-xl border-0 bg-transparent pl-2.5 text-left font-inter focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55"
       >
-        <span
-          aria-hidden
-          className="flex size-6 shrink-0 items-center justify-center rounded-md bg-surface text-ink ring-1 ring-foreground/10"
-        >
-          <Icon className="size-4" />
-        </span>
         <span
           className={cn(
             'min-w-0 truncate font-medium text-ink',

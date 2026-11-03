@@ -162,9 +162,7 @@ describe('ChatPanel contextual delete confirmation', () => {
       })
       await click('Request removal')
       expect(button(label).disabled).toBe(false)
-      expect(dialog()?.querySelector('h2')?.textContent).toBe(
-        `${label} conversation?`,
-      )
+      expect(dialog()?.querySelector('h2')?.textContent).toBe(`${label} chat?`)
       expect(dialog()?.textContent?.includes('subagent')).toBe(hasChildren)
       expect(dialog()?.textContent?.includes('Running work')).toBe(
         hasRunningWork,
@@ -307,7 +305,7 @@ describe('ChatPanel contextual delete confirmation', () => {
     // title is the row the user just picked.
     expect(dialog()?.textContent).not.toContain('Selected child')
     expect(dialog()?.textContent).toContain(
-      'This conversation and its subagent conversations will be permanently deleted.',
+      'This chat and its subagent chats will be permanently deleted.',
     )
     expect(dialog()?.textContent).toContain(
       'The parent will be notified, not stopped or deleted.',
@@ -375,9 +373,9 @@ describe('ChatPanel contextual delete confirmation', () => {
         </TooltipProvider>,
       ),
     )
-    expect(dialog()?.textContent).toContain('This conversation')
+    expect(dialog()?.textContent).toContain('This chat')
     await act(async () => pending.reject(new Error('finalization failed')))
-    expect(dialog()?.textContent).toContain('This conversation')
+    expect(dialog()?.textContent).toContain('This chat')
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
       'finalization failed',
     )
@@ -403,7 +401,7 @@ describe('ChatPanel contextual delete confirmation', () => {
     const description = document.getElementById(descriptionId ?? '')
     expect(description?.textContent).not.toContain(title)
     expect(description?.textContent).toBe(
-      'This conversation will be permanently deleted. This cannot be undone.',
+      'This chat will be permanently deleted. This cannot be undone.',
     )
     await click('Delete')
     const alert = dialog()?.querySelector('[role="alert"]')
@@ -421,7 +419,7 @@ describe('ChatPanel contextual delete confirmation', () => {
       'function_not_found',
     )
     expect(mocks.useConversationsCtx().conversations).toContain(child)
-    expect(dialog()?.textContent).toContain('This conversation')
+    expect(dialog()?.textContent).toContain('This chat')
     expect(button('Retry stop and delete').disabled).toBe(false)
     await click('Retry stop and delete')
     expect(mocks.remove).toHaveBeenCalledTimes(2)

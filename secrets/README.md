@@ -157,9 +157,10 @@ with the caller) is `SECRET_FORBIDDEN`, and one that is shared but not set is
 `CALLER_LOOKUP_FAILED`. No error message contains a value. Schemas are
 available through `iii call <function> --help`.
 
-`secrets::set`, `secrets::compare-and-set` and `secrets::resolve` carry a
-value in their input or output, so they are registered with
-`observable: false`: observing one fails with `NOT_OBSERVABLE`.
+Every function above except `secrets::on-changed` is registered with
+`observable: false`: observing one fails with `NOT_OBSERVABLE`. An observer
+would get a copy of each input and output, a value or a key pasted into any
+other field.
 
 The "Agents" column is the default in
 [`iii-permissions.yaml`](https://github.com/iii-hq/workers/blob/main/secrets/iii-permissions.yaml).
@@ -301,7 +302,11 @@ This first version is a local protected store, not a hardware-backed vault.
   removes it from its environment.
 - A resolved value is plaintext in the consumer's memory and crosses the
   local engine connection. This worker turns off the SDK's payload capture in
-  traces for its own handlers. Each consumer is responsible for not logging
+  traces for its own handlers, and every `secrets::*` function but
+  `secrets::on-changed` refuses observers (`NOT_OBSERVABLE`), which would get
+  a copy of each input and output: a value, or a key pasted into another
+  field. Follow changes by observing `secrets::on-changed`, whose events never
+  carry a value. Each consumer is responsible for not logging
   the value it receives.
 - There is no master-key rotation or OS keychain integration yet. Rotate an
   individual secret with `secrets::set`.

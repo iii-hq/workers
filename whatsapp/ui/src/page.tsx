@@ -210,8 +210,7 @@ function WhatsAppWorkspace({ host, configurationId, paneId, tabId, panelSide, on
     try {
       const accepted = await confirm({
         title: `Remove session "${target.session_id}"?`,
-        description: 'This stops the session and permanently deletes its saved credentials and local message archive. You will need to link your phone again. It does not unlink the device on your phone.',
-        details: dirty ? ['Your unsent draft will be discarded. A send already requested may still complete.'] : undefined,
+        description: `This stops the session and permanently deletes its saved credentials and local message archive. You will need to link your phone again. It does not unlink the device on your phone.${dirty ? ' Your unsent draft will be discarded. A send already requested may still complete.' : ''}`,
         confirmLabel: 'Remove session', cancelLabel: 'Keep session', tone: 'danger',
       })
       if (!accepted || !current()) {

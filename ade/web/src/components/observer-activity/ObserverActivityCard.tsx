@@ -132,7 +132,7 @@ export function ObserverActivityCard({
   if (!activity) {
     return (
       <article
-        className="flex items-start gap-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10 sm:p-3"
+        className="flex items-start gap-3 rounded-xl bg-card p-4 ring-1 ring-card-edge sm:p-3"
         data-message-role="observer-activity"
       >
         <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-warn-muted sm:size-9">

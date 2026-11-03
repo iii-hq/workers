@@ -102,15 +102,6 @@ async fn console_stores_router_resolves_others_are_refused() {
         "router-test::on-secret-changed",
     )
     .await;
-    // Functions whose payloads carry a value cannot be observed.
-    for id in ids::UNOBSERVABLE {
-        let refused = router.observe(id, "router-test::on-secret-changed");
-        let error = tokio::time::timeout(Duration::from_secs(10), refused.ready())
-            .await
-            .expect("the engine answers the observe")
-            .unwrap_err();
-        assert_eq!(remote_code(error), "NOT_OBSERVABLE", "{id}");
-    }
 
     let meta = invoke(
         &console,
@@ -158,6 +149,22 @@ async fn console_stores_router_resolves_others_are_refused() {
         .await
         .unwrap_err();
     assert_eq!(remote_code(missing), "SECRET_NOT_FOUND");
+
+    // An observer would get a copy of every input and output: a value, or a
+    // key pasted into any other field. No secrets::* function admits one.
+    intruder.register_function(
+        "intruder::sink",
+        RegisterFunction::new_async(|_: Value| async { Ok::<Value, Error>(json!({})) }),
+    );
+    wait_for(&console, "intruder::sink").await;
+    for id in ids::ALL_FUNCTIONS {
+        let observer = intruder.observe(Source::function(id), "intruder::sink");
+        let refused = tokio::time::timeout(Duration::from_secs(5), observer.ready())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(remote_code(refused), "NOT_OBSERVABLE", "{id}");
+    }
 
     // Rotation reaches the observer and the next resolve.
     invoke(

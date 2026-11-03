@@ -156,7 +156,7 @@ describe('Session removal', () => {
     confirm.mockResolvedValue(false)
     const view = await render()
     await view.click('Make draft'); await view.click('Remove session')
-    expect(confirm.mock.calls[0][0].details).toEqual(['Your unsent draft will be discarded. A send already requested may still complete.'])
+    expect(confirm.mock.calls[0][0].description).toContain('Your unsent draft will be discarded. A send already requested may still complete.')
     expect(view.deleteCalls()).toHaveLength(0)
     expect(view.selected()).toBe('first')
   })

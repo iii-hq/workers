@@ -885,7 +885,7 @@ export function TracesV2({
   )
   const traceDetail =
     selectedTraceId !== null ? (
-      <div className="mx-2 my-1.5 overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+      <div className="mx-2 my-1.5 overflow-hidden rounded-xl bg-card ring-1 ring-card-edge">
         {isLoadingSpans && (
           <TraceDetailSkeleton
             onClose={() => selectTrace(null)}
@@ -1162,18 +1162,18 @@ export function TracesV2({
                     ))}
                   </div>
                 ) : visibleTraceGroups.length === 0 ? (
-                  <div className="p-6">
+                  <div className="flex flex-1 items-center justify-center overflow-y-auto p-6">
                     {narrowed ? (
                       <EmptyState
                         icon={Search}
                         title="no traces match"
                         description={
                           debouncedSearch.trim()
-                            ? `nothing on this engine matches “${debouncedSearch.trim()}” with the current filters. try a shorter query, or clear the filters.`
-                            : 'nothing on this engine matches the current filters.'
+                            ? `nothing matches “${debouncedSearch.trim()}” with the current filters. try a shorter query, or clear the filters.`
+                            : 'nothing matches the current filters.'
                         }
                         action={{
-                          label: 'clear search and filters',
+                          label: 'clear filters',
                           onClick: clearNarrowing,
                         }}
                       />
@@ -1182,20 +1182,20 @@ export function TracesV2({
                         icon={GitBranch}
                         title={
                           sessionScope
-                            ? 'no stored traces for this session'
+                            ? 'no traces for this chat'
                             : 'no traces recorded'
                         }
                         description={
                           sessionScope
                             ? // The client cannot tell "never ran" from "already
                               // expired", so the copy owns both honestly.
-                              'the list follows the active chat, and nothing is stored for this conversation — no work recorded yet, or its traces already expired. new activity appears here as it runs, or clear the session chip above to see every trace.'
-                            : 'traces appear here when functions execute. fire a request to your engine and refresh.'
+                              'work from this conversation shows up here as it runs. older traces may have expired.'
+                            : 'traces show up here when functions run. send a request to your engine to see one.'
                         }
                         action={
                           sessionScope
                             ? {
-                                label: 'show every session',
+                                label: 'show all sessions',
                                 onClick: () =>
                                   setScopeDismissedFor(sessionScope),
                               }

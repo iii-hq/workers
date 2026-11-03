@@ -113,6 +113,7 @@ export function ChangesPanel({
     <div className="db-changes">
       <Toolbar
         aria-label="row changes"
+        className="db-bar"
         end={
           feed.pending > 0 && onRefresh ? (
             <Button
@@ -141,11 +142,13 @@ export function ChangesPanel({
       {capOpen ? <p className="db-changes-capnote">{CAPTURE_NOTE}</p> : null}
 
       {feed.changes.length === 0 ? (
-        <EmptyState
-          icon={History}
-          title="Nothing yet"
-          description={`Writes to ${table} appear here as they commit. What counts as a write depends on this connection's capture mode — the "Following" indicator above explains it.`}
-        />
+        <div className="db-data-empty">
+          <EmptyState
+            icon={History}
+            title="No changes yet"
+            description={`Writes to ${table} appear here as they commit. What counts as a write depends on this connection's capture mode — the "Following" indicator above explains it.`}
+          />
+        </div>
       ) : (
         // role="log": arrivals are announced politely without stealing focus —
         // the whole point of a feed whose job is telling you about writes.

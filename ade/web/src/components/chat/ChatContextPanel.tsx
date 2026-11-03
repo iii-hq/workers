@@ -1410,7 +1410,7 @@ function Section({
       data-reorder-item={id}
       hidden={hidden}
       className={cn(
-        'group/section flex shrink-0 flex-col rounded-xl border border-foreground/10 bg-card data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
+        'group/section flex shrink-0 flex-col rounded-xl border border-card-edge bg-card data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
         open && 'pb-1',
       )}
     >

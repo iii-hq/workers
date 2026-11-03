@@ -148,8 +148,9 @@ fn register_fn<Req, Resp, F, Fut>(
     .description(description)
     .request_format(schema::<Req>())
     .response_format(schema::<Resp>())
-    // A value in the input or the output never reaches an observer.
-    .observable(!ids::UNOBSERVABLE.contains(&id));
+    // An observer gets a copy of the input and output: a value, or a key
+    // pasted into any other field. Changes are announced by secrets::on-changed.
+    .observable(false);
     ctx.iii.register_function(id, registration);
 }
 

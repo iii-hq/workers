@@ -3,6 +3,8 @@ import { formatBytes } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { ChevronDown } from 'lucide-react'
 import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { CredentialControl } from './credential'
+import { credentialSecretName } from './secrets'
 import { CLOUD_DEFAULTS, configNumber, DEFAULTS, isObject, isOpaqueCloudField, isOpaqueField, withCloudField, withCloudValue, withConfigField, withDatabaseField, type CloudConfigKey, type ConfigKey, type ConfigStatus } from './model'
 
 const FIELDS: { key: ConfigKey; label: string; description: string; min?: number; max?: number }[] = [
@@ -54,7 +56,7 @@ function OpaqueField({ value, label, onChange, onReplace, control, secret = fals
     : <div className="wa-ui-stack"><span className="wa-ui-note">Custom value preserved.</span><Button {...control} variant="ghost" onClick={onReplace}>Use default value</Button></div>
 }
 
-export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focusField }: ConfigFormProps & { host: Host }) {
+export function WhatsAppConfigForm({ host, id, value, onChange, schema, errors, focusField }: ConfigFormProps & { host: Host }) {
   const root = useRef<HTMLDivElement>(null)
   const advanced = useRef<HTMLDetailsElement>(null)
   const handled = useRef('')
@@ -90,14 +92,16 @@ export function WhatsAppConfigForm({ host, value, onChange, schema, errors, focu
     const current = isObject(cloud) ? cloud[item.key] : undefined
     const opaque = isOpaqueCloudField(item.key, current)
     return <SettingsField key={item.key} field={`cloud.${item.key}`} label={item.label} description={item.description}
-      error={errors?.get(`/cloud/${item.key}`)} controlSize={item.key === 'enabled' && !opaque ? 'fit' : opaque ? 'full' : 'default'}
+      error={errors?.get(`/cloud/${item.key}`)} controlSize={item.key === 'enabled' && !opaque ? 'fit' : opaque || item.secret ? 'full' : 'default'}
       layout={item.key === 'enabled' && !opaque ? 'inline' : 'auto'}
       renderControl={(control) => opaque
         ? <OpaqueField control={control} label={item.label} value={current!} secret={item.secret} onChange={(next) => onChange(withCloudField(value, item.key, next))} onReplace={() => onChange(withCloudField(value, item.key, undefined))} />
-        : item.key === 'enabled'
+        : item.secret
+          ? <CredentialControl host={host} control={control} label={item.label} value={current} target={credentialSecretName(item.environment, id)} onChange={(next) => onChange(withCloudField(value, item.key, next))} />
+          : item.key === 'enabled'
           ? <Switch {...control} checked={current === true} onChange={(event) => onChange(withCloudField(value, item.key, event.target.checked))} />
-          : <Input {...control} className="wa-ui-mono" type={item.secret ? 'password' : 'text'} value={typeof current === 'string' ? current : ''}
-            placeholder={item.key === 'api_version' ? CLOUD_DEFAULTS.api_version : undefined} autoComplete={item.secret ? 'new-password' : 'off'} spellCheck={false}
+          : <Input {...control} className="wa-ui-mono" type="text" value={typeof current === 'string' ? current : ''}
+            placeholder={item.key === 'api_version' ? CLOUD_DEFAULTS.api_version : undefined} autoComplete="off" spellCheck={false}
             onChange={(next) => onChange(withCloudField(value, item.key, next || undefined))} />} />
   }
   const field = (item: typeof FIELDS[number]) => {

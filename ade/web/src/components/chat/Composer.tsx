@@ -46,6 +46,7 @@ import {
   shortcutPlatform,
 } from '@/lib/keybindings/bindings'
 import type { MentionSearchContext } from '@/lib/mentions/types'
+import { type SendKey, sendBinding, useSendKey } from '@/lib/send-key'
 import { cn } from '@/lib/utils'
 import type {
   Attachment,
@@ -65,7 +66,7 @@ import { ChatSettingsSheet } from './ChatSettingsSheet'
 import './conversation-design.css'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
-import { LexicalShell, SEND_BINDING } from './LexicalShell'
+import { LexicalShell } from './LexicalShell'
 import {
   $insertAttachmentNodes,
   AttachmentNode,
@@ -102,10 +103,10 @@ const STARTER_PROMPTS = [
   },
 ]
 
-/** The send key spelled for this keyboard: ↵ (Shift+↵ breaks the line). */
-function sendShortcutLabel(): string {
+/** The chosen send key spelled for this keyboard: ↵, ⌘↵ or ⇧↵. */
+function sendShortcutLabel(sendKey: SendKey): string {
   const platform = shortcutPlatform()
-  return formatBinding(SEND_BINDING, platform).join(
+  return formatBinding(sendBinding(sendKey), platform).join(
     platform === 'mac' ? '' : '+',
   )
 }
@@ -190,7 +191,7 @@ const actionIdleClass =
 const actionPressVariants = {
   rest: { scale: 1 },
   hover: { scale: 1.06 },
-  pressed: { scale: 0.9 },
+  pressed: { scale: 0.96 },
 }
 const actionPressSpring = {
   type: 'spring',
@@ -478,6 +479,7 @@ export function Composer({
     setCollapsed(next)
   }, [])
   const mobileLayout = useMediaQuery(MOBILE_LAYOUT_QUERY)
+  const sendKey = useSendKey()
   const hasProjectStrip = Boolean(showWorkingDir && onWorkingDirChange)
   const cardHidden = collapsed && mobileLayout && hasProjectStrip
   const cardId = useId()
@@ -875,7 +877,7 @@ export function Composer({
       </Hint>
     ) : (
       <Hint
-        label={`${isStreaming ? 'Queue message' : 'Send message'} · ${sendShortcutLabel()}`}
+        label={`${isStreaming ? 'Queue message' : 'Send message'} · ${sendShortcutLabel(sendKey)}`}
         side="top"
       >
         <motion.button
@@ -982,7 +984,7 @@ export function Composer({
               worktrees={worktreePicker}
               triggerAppearance="chip"
               popoverAlign="start"
-              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-lg [&>button]:bg-surface [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-surface-hover"
+              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-xl [&>button]:border [&>button]:border-neutral-200 [&>button]:bg-white [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-neutral-50 dark:[&>button]:border-neutral-800 dark:[&>button]:bg-neutral-900 dark:[&>button:hover]:bg-neutral-800"
             />
             {projectControls}
             <Hint
@@ -1110,10 +1112,11 @@ export function Composer({
             the model (with its provider), then the agent, memory and
             permission pickers; what you do with it on the right — injected
             actions, attach, and send, where the eye lands after typing. */}
-          {/* In a narrow pane (a side panel, a split) the left group wraps
-            and the send button stays in view. */}
-          <div className="composer-desktop-toolbar hidden min-w-0 flex-wrap items-center gap-1 px-2 pb-2 sm:flex">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          {/* One row at every pane width: in a narrow pane (a side panel, a
+            split) the pickers shrink — the model name truncates, the agent
+            drops to its icon — and the send button stays in view. */}
+          <div className="composer-desktop-toolbar hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
+            <div className="flex min-w-0 flex-1 items-center gap-1">
               <ModelPicker
                 value={model}
                 options={modelOptions}
@@ -1147,7 +1150,7 @@ export function Composer({
               ) : null}
             </div>
 
-            <div className="flex min-w-0 items-center gap-1">
+            <div className="flex shrink-0 items-center gap-1">
               <ComposerActionsSlot layout="wide">
                 {composerActions}
               </ComposerActionsSlot>
@@ -1165,21 +1168,21 @@ export function Composer({
           </div>
         </div>
       </div>
-      {showSuggestions &&
-      !hasText &&
-      attachments.length === 0 &&
-      !inputDisabled &&
-      !isStreaming &&
-      !cardHidden ? (
+      {/* The prompts stay mounted while a draft exists — faded and inert —
+        because the welcome stack is centred: unmounting them on the first
+        keystroke would shrink the stack and drop the composer mid-type. */}
+      {showSuggestions && !inputDisabled && !isStreaming && !cardHidden ? (
         <section
           className="composer-suggestions mt-4 flex flex-wrap justify-center gap-2"
           aria-label="Suggested prompts"
+          data-dormant={hasText || attachments.length > 0 || undefined}
+          inert={hasText || attachments.length > 0}
         >
           {STARTER_PROMPTS.map(({ label, prompt, icon: Icon }) => (
             <button
               key={label}
               type="button"
-              className="inline-flex items-center gap-2 rounded-lg bg-surface/50 px-3 py-2.5 font-inter text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus"
+              className="inline-flex items-center gap-2 rounded-lg bg-surface/50 px-3 py-2.5 font-inter text-xs text-ink-faint transition-[background-color,color,scale] duration-150 ease-out hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus motion-safe:active:scale-96"
               onClick={() => {
                 if (textRef.current.trim()) return
                 const target = lexicalEditorRef.current

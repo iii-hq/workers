@@ -291,12 +291,10 @@ async fn check(signal: Option<&str>) {
     assert!(on_changed.get("args_format").is_none());
     assert!(on_changed["response_format"]["properties"]["action"].is_object());
     assert!(on_changed["request_format"]["properties"]["ref"].is_object());
-    // A value in the input or the output is never observable.
-    for id in secrets::api::ids::UNOBSERVABLE {
+    // Every secrets::* function refuses observers: an observer gets the
+    // input, and a key can be pasted into any field, not only `value`.
+    for id in secrets::api::ids::ALL_FUNCTIONS {
         assert_eq!(registration(id)["observable"], false, "{id}");
-    }
-    for id in ["secrets::list", "secrets::get", "secrets::status"] {
-        assert!(registration(id).get("observable").is_none(), "{id}");
     }
     let set_schema = registration("secrets::set");
     assert!(set_schema["request_format"]["properties"]["value"].is_object());

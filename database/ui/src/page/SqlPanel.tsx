@@ -23,11 +23,16 @@ import {
   type CodeEditorSelectionAction,
   type Host,
   IconButton,
-  Select,
+  Kbd,
+  ShadcnSelect,
+  ShadcnSelectContent,
+  ShadcnSelectItem,
+  ShadcnSelectTrigger,
+  ShadcnSelectValue,
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { CircleAlert, History, Play, WandSparkles, X } from 'lucide-react'
+import { CircleAlert, History, LoaderCircle, Play, SquareTerminal, WandSparkles, X } from 'lucide-react'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { errText } from '../lib/errors'
 import { type ExplainResult, explain, formatSql } from '../lib/rpc'
@@ -35,6 +40,7 @@ import { splitStatements } from '../lib/sql'
 import { type AdhocResult, type DbDriver, ddlInfo, isReadOnlySql, resultSummary, runAdhocSql } from './db-data'
 import { PlanTree } from './PlanTree'
 import { ResultGrid } from './result-grid'
+import { WriteOutcome } from './WriteOutcome'
 
 interface SqlPanelProps {
   host: Host
@@ -69,6 +75,8 @@ interface SqlPanelProps {
    * typed or edited counts.
    */
   onDirtyChange?: (dirty: boolean) => void
+  /** Show a table's rows in the Data panel — offered after a write to it. */
+  onOpenTable?: (table: string) => void
 }
 
 /** Imperative handle so the page's `S` command can move focus into the
@@ -83,6 +91,29 @@ const HISTORY_LIMIT = 20
 const ROW_LIMITS = [100, 500, 1000, 5000, 0] as const
 const DEFAULT_ROW_LIMIT = 100
 const LIMIT_KEY = 'iii-console:database:sql-row-limit'
+const SPLIT_KEY = 'iii-console:database:sql-editor-height'
+/** The editor never shrinks below a few lines, nor squeezes the results out. */
+const MIN_EDITOR_PX = 120
+const MIN_RESULTS_PX = 160
+const SPLIT_STEP_PX = 24
+
+function loadSplit(): number | null {
+  try {
+    const raw = Number(window.localStorage.getItem(SPLIT_KEY))
+    return Number.isFinite(raw) && raw >= MIN_EDITOR_PX ? raw : null
+  } catch {
+    return null
+  }
+}
+
+function saveSplit(px: number | null) {
+  try {
+    if (px === null) window.localStorage.removeItem(SPLIT_KEY)
+    else window.localStorage.setItem(SPLIT_KEY, String(Math.round(px)))
+  } catch {
+    // a remembered split is a convenience
+  }
+}
 
 function loadLimit(): number {
   try {
@@ -107,10 +138,15 @@ function saveLimit(limit: number) {
 interface RunStep {
   sql: string
   result?: AdhocResult
+  /** When it finished (ms since epoch) — a write's "saved at". */
+  at?: number
   error?: string
   /** Not run: an earlier statement failed. */
   skipped?: boolean
 }
+
+/** Whitespace-insensitive form, for "does the message already quote it". */
+const squash = (text: string) => text.replace(/\s+/g, ' ').trim()
 
 /** The run chord, written the way this keyboard has it. */
 const RUN_CHORD =
@@ -173,7 +209,7 @@ function saveHistory(db: string, entries: string[]) {
 }
 
 export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPanel(
-  { host, db, driver, canFormat, canLimit, seedSql, tables, starterSql, onWrite, onDirtyChange },
+  { host, db, driver, canFormat, canLimit, seedSql, tables, starterSql, onWrite, onDirtyChange, onOpenTable },
   ref,
 ) {
   const [sql, setSql] = useState(seedSql ?? '')
@@ -194,6 +230,20 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
   // The statement the current outcome belongs to — once the editor moves on,
   // the result line dims rather than passing off old numbers as current.
   const [ranSql, setRanSql] = useState<string | null>(null)
+  // Whole seconds since the run started: a slow query should read as
+  // working, not hung.
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!running) return
+    setElapsed(0)
+    const started = Date.now()
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 500)
+    return () => clearInterval(timer)
+  }, [running])
+  // Editor height in px once dragged; null = the default share of the pane.
+  const [editorHeight, setEditorHeight] = useState<number | null>(() => loadSplit())
+  const panelRef = useRef<HTMLDivElement>(null)
+  const topRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<CodeEditorHandle>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
   const historyRef = useRef<HTMLDivElement>(null)
@@ -265,7 +315,7 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
         try {
           const result = await runAdhocSql(host, db, statement, { maxRows })
           if (result.write) wrote = true
-          done.push({ sql: statement, result })
+          done.push({ sql: statement, result, at: Date.now() })
         } catch (err) {
           done.push({ sql: statement, error: errText(err) })
         }
@@ -353,25 +403,73 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
   const ddl = useMemo(() => (firstWrite ? ddlInfo(firstWrite) : null), [firstWrite])
   const stale = outcome !== null && ranSql !== null && sql.trim() !== ranSql
 
+  const clampSplit = (px: number) => {
+    const total = panelRef.current?.getBoundingClientRect().height ?? 0
+    const max = Math.max(MIN_EDITOR_PX, total - MIN_RESULTS_PX)
+    return Math.min(max, Math.max(MIN_EDITOR_PX, px))
+  }
+  const commitSplit = (px: number | null) => {
+    const next = px === null ? null : clampSplit(px)
+    setEditorHeight(next)
+    saveSplit(next)
+  }
+  const startSplitDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    const top = topRef.current
+    if (!top) return
+    e.preventDefault()
+    const origin = top.getBoundingClientRect().top
+    const handle = e.currentTarget
+    handle.setPointerCapture(e.pointerId)
+    const onMove = (move: PointerEvent) => setEditorHeight(clampSplit(move.clientY - origin))
+    const onUp = (up: PointerEvent) => {
+      commitSplit(up.clientY - origin)
+      handle.removeEventListener('pointermove', onMove)
+      handle.removeEventListener('pointerup', onUp)
+      handle.removeEventListener('pointercancel', onUp)
+    }
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', onUp)
+    handle.addEventListener('pointercancel', onUp)
+  }
+
+  const failedSql = step?.sql ?? ranSql
+  const resultsLabel = error && (!steps || !outcome) ? 'Error' : plan ? 'Query plan' : 'Results'
+
   return (
-    <div className="db-sql">
-      <div className="db-sql-top">
-        <div className="db-sql-editor-wrap">
+    <div className="db-sql" ref={panelRef}>
+      <div
+        className={`db-sql-top${editorHeight !== null ? ' sized' : ''}`}
+        ref={topRef}
+        style={editorHeight !== null ? { flexBasis: editorHeight } : undefined}
+      >
+        {/* ⌘⏎ is caught on the way DOWN: Monaco binds it to "insert line
+            below" and consumes it, so a bubbling handler never saw it and
+            the chord typed a newline instead of running. */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: capture-phase chord for the editor inside; not a control */}
+        <div
+          className="db-sql-editor-wrap"
+          onKeyDownCapture={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault()
+              e.stopPropagation()
+              void run(sql)
+            }
+          }}
+        >
           <CodeEditor
             value={sql}
             onChange={setSql}
             language="sql"
             className="db-sql-code"
+            fill
+            lineNumbers
+            fontSize={14}
             placeholder={`select * from … — ${RUN_CHORD} runs against ${db}`}
             aria-label="sql statement"
             completions={completions}
             selectionActions={selectionActions}
             ref={editorRef}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                e.preventDefault()
-                void run(sql)
-              }
               // Monaco keeps Tab for indentation, so Escape is the keyboard
               // exit: land on the first usable action, or just release focus
               // when they're all disabled. (Monaco consumes Escape while a
@@ -384,16 +482,9 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
             }}
           />
         </div>
-        <div className={`${uiClasses.toolbar} db-bar`} role="toolbar" aria-label="sql actions" ref={actionsRef}>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void run(sql)}
-            disabled={running || sql.trim() === ''}
-            title={statements.length > 1 ? 'Runs every statement in order; select text to run only that' : undefined}
-          >
-            <Play size={16} aria-hidden />
-            {running ? 'Running…' : statements.length > 1 ? `Run all · ${statements.length}` : 'Run'}
+        <div className="db-sql-actions" role="toolbar" aria-label="sql actions" ref={actionsRef}>
+          <Button variant="ghost" size="sm" onClick={() => void explainNow()} disabled={running || sql.trim() === ''}>
+            Explain
           </Button>
           {canFormat ? (
             <Button
@@ -406,26 +497,6 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
               {formatting ? 'Formatting…' : 'Format'}
             </Button>
           ) : null}
-          {canLimit ? (
-            <Select
-              appearance="inline"
-              aria-label="row limit"
-              sheetTitle="Row limit"
-              value={String(limit)}
-              options={ROW_LIMITS.map((n) => ({
-                value: String(n),
-                label: n === 0 ? 'No limit' : `Limit ${n.toLocaleString()}`,
-              }))}
-              onChange={(next) => {
-                const n = Number(next)
-                setLimit(n)
-                saveLimit(n)
-              }}
-            />
-          ) : null}
-          <Button variant="ghost" size="sm" onClick={() => void explainNow()} disabled={running || sql.trim() === ''}>
-            Explain
-          </Button>
           <span ref={historyBtnRef} style={{ display: 'contents' }}>
             <Button
               variant="ghost"
@@ -435,22 +506,63 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
               aria-expanded={historyOpen}
             >
               <History size={16} aria-hidden />
-              History · {history.length}
+              History{history.length > 0 ? ` · ${history.length}` : ''}
             </Button>
           </span>
           {isWrite ? (
             // A heads-up, not a gate: this statement will mutate and commit.
             // Schema changes get the louder ink and name what they do.
             <span className={`db-sql-warn${ddl ? ' ddl' : ''}`}>
-              {ddl ? `${ddl.present} — commits on ${db}` : `write — runs and commits on ${db}`}
+              {ddl ? `${ddl.present} — commits on ${db}` : `Write — runs and commits on ${db}`}
             </span>
           ) : null}
           {formatError ? (
             <span className="db-sql-warn" role="alert">
-              format failed — {formatError}
+              Format failed — {formatError}
             </span>
           ) : null}
-          {outcome ? <span className={`db-sql-meta${stale ? ' stale' : ''}`}>{resultSummary(outcome)}</span> : null}
+          <span className="db-toolbar-spacer" />
+          {canLimit ? (
+            <ShadcnSelect
+              items={ROW_LIMITS.map((n) => ({
+                value: String(n),
+                label: n === 0 ? 'No limit' : `Limit ${n.toLocaleString()}`,
+              }))}
+              value={String(limit)}
+              onValueChange={(next) => {
+                if (next === null) return
+                const n = Number(next)
+                setLimit(n)
+                saveLimit(n)
+              }}
+            >
+              <ShadcnSelectTrigger size="sm" className="db-sql-limit" aria-label="row limit">
+                <ShadcnSelectValue />
+              </ShadcnSelectTrigger>
+              <ShadcnSelectContent align="end">
+                {ROW_LIMITS.map((n) => (
+                  <ShadcnSelectItem key={n} value={String(n)}>
+                    {n === 0 ? 'No limit' : `Limit ${n.toLocaleString()}`}
+                  </ShadcnSelectItem>
+                ))}
+              </ShadcnSelectContent>
+            </ShadcnSelect>
+          ) : null}
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void run(sql)}
+            disabled={running || sql.trim() === ''}
+            title={statements.length > 1 ? 'Runs every statement in order; select text to run only that' : undefined}
+          >
+            {running ? (
+              <LoaderCircle size={16} className={uiClasses.spin} aria-hidden />
+            ) : (
+              <Play size={16} aria-hidden />
+            )}
+            {running ? 'Running…' : statements.length > 1 ? `Run all · ${statements.length}` : 'Run'}
+            <kbd className="db-sql-chord">{RUN_CHORD}</kbd>
+          </Button>
           {/* The audible twin of the visual states: one polite live region
               voices running/result/failure and the write heads-up. The armed
               message is static on purpose — including the typed table name
@@ -503,7 +615,40 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
           </div>
         ) : null}
       </div>
-      <div className={`db-sql-results${running ? ' running' : ''}`}>
+      {/* biome-ignore lint/a11y/useSemanticElements: an <hr> cannot take pointer capture or arrow keys */}
+      <div
+        className="db-sql-split"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="resize the editor"
+        aria-valuemin={MIN_EDITOR_PX}
+        aria-valuenow={Math.round(editorHeight ?? topRef.current?.getBoundingClientRect().height ?? 0)}
+        tabIndex={0}
+        title="Drag to resize · double-click to reset"
+        onPointerDown={startSplitDrag}
+        onDoubleClick={() => commitSplit(null)}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+          e.preventDefault()
+          const current = editorHeight ?? topRef.current?.getBoundingClientRect().height ?? MIN_EDITOR_PX
+          commitSplit(current + (e.key === 'ArrowDown' ? SPLIT_STEP_PX : -SPLIT_STEP_PX))
+        }}
+      />
+      <div className="db-sql-out">
+        <div className="db-sql-reshead">
+          <span className={`db-sql-reslabel${resultsLabel === 'Error' ? ' alert' : ''}`}>{resultsLabel}</span>
+          {running ? (
+            <span className="db-sql-resstate">
+              <LoaderCircle size={16} className={uiClasses.spin} aria-hidden />
+              Running{elapsed > 0 ? ` · ${elapsed}s` : '…'}
+            </span>
+          ) : outcome && !plan ? (
+            <span className={`db-sql-resstate${stale ? ' stale' : ''}`}>
+              {resultSummary(outcome)}
+              {stale ? <span className="db-sql-stale-note"> · from an earlier version of the query</span> : null}
+            </span>
+          ) : null}
+        </div>
         {steps && steps.length > 1 ? (
           <ol className="db-sql-steps" aria-label="statements run">
             {steps.map((s, i) => (
@@ -524,56 +669,76 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(function SqlPa
             ))}
           </ol>
         ) : null}
-        {error && (!steps || !outcome) ? (
-          <div className="db-pad">
-            <StatusPanel variant="alert" icon={<CircleAlert size={18} />} headline="Query failed" detail={error} />
-          </div>
-        ) : plan ? (
-          <PlanTree plan={plan} />
-        ) : outcome ? (
-          outcome.write && outcome.result.rows.length === 0 ? (
-            // A write without RETURNING has no grid to draw; an empty one
-            // reads as "nothing happened", which is the opposite of the truth.
-            <p className="db-sql-placeholder">
-              Statement ran —{' '}
-              {outcome.write.echo ??
-                `${outcome.write.affectedRows} row${outcome.write.affectedRows === 1 ? '' : 's'} affected`}
-            </p>
-          ) : (
-            <ResultGrid
-              columns={outcome.result.columns}
-              rows={outcome.result.rows}
-              rowCount={outcome.result.row_count}
-              stickyHeader
-            />
-          )
-        ) : (
-          <p className={`db-sql-placeholder${running ? ` ${uiClasses.pulse}` : ''}`}>
-            {running ? (
-              'running…'
-            ) : starterSql ? (
-              <>
-                results appear here. try{' '}
-                {/* The old copy suggested `select name from sqlite_master`
-                    whatever the driver was — an error on two of the three.
-                    A statement from the schema in front of you runs, and one
-                    click beats retyping it. */}
-                <button
-                  type="button"
-                  className="db-linkish"
-                  onClick={() => {
-                    setSql(starterSql)
-                    void run(starterSql)
-                  }}
-                >
-                  {starterSql}
-                </button>
-              </>
+        <div className={`db-sql-results${running ? ' running' : ''}`} aria-busy={running || undefined}>
+          {error && (!steps || !outcome) ? (
+            <div className="db-pad">
+              <StatusPanel variant="alert" icon={<CircleAlert size={18} />} headline="Query failed" detail={error} />
+              {failedSql && !squash(error).includes(squash(failedSql)) ? (
+                // What ran, beside why it failed — the editor may already
+                // hold something else. Skipped when the driver's message
+                // already quotes the statement.
+                <pre className="db-sql-failed-stmt">{failedSql}</pre>
+              ) : null}
+            </div>
+          ) : plan ? (
+            <PlanTree plan={plan} />
+          ) : outcome ? (
+            outcome.write && outcome.result.rows.length === 0 ? (
+              // A write without RETURNING has no grid to draw; an empty one
+              // reads as "nothing happened", which is the opposite of the truth.
+              <WriteOutcome
+                outcome={outcome}
+                sql={step?.sql ?? ranSql ?? ''}
+                db={db}
+                driver={driver}
+                at={step?.at}
+                tables={tables}
+                onOpenTable={onOpenTable}
+              />
             ) : (
-              'results appear here.'
-            )}
-          </p>
-        )}
+              <ResultGrid
+                columns={outcome.result.columns}
+                rows={outcome.result.rows}
+                rowCount={outcome.result.row_count}
+                stickyHeader
+                hideFooter
+                rowNumbers
+              />
+            )
+          ) : (
+            <div className={`db-sql-empty${running ? ` ${uiClasses.pulse}` : ''}`}>
+              {running ? (
+                <p className="title">Running…</p>
+              ) : (
+                <>
+                  <SquareTerminal size={16} className="db-sql-empty-icon" aria-hidden />
+                  <p className="title">Run a query to see results</p>
+                  <p className="hint">
+                    <Kbd>{RUN_CHORD}</Kbd> runs the editor · select text to run only that part
+                  </p>
+                  {starterSql ? (
+                    // The old copy suggested `select name from sqlite_master`
+                    // whatever the driver was — an error on two of the three.
+                    // A statement from the schema in front of you runs, and
+                    // one click beats retyping it.
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="db-sql-starter"
+                      onClick={() => {
+                        setSql(starterSql)
+                        void run(starterSql)
+                      }}
+                    >
+                      <Play size={16} aria-hidden />
+                      <code>{starterSql}</code>
+                    </Button>
+                  ) : null}
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
