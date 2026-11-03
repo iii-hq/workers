@@ -153,7 +153,7 @@ engine_alive() {
 stop_compose() {
   [[ -n "$compose_pid" ]] || return 0
   if engine_alive && kill -0 "$compose_pid" 2>/dev/null; then
-    "$iii_bin" trigger compose::down --port "$engine_port" \
+    "$iii_bin" call compose::down --port "$engine_port" \
       --json "$(jq -cn --arg file "$compose_file" '{file: $file}')" \
       >"$log_dir/compose-down.log" 2>&1 || true
   fi
@@ -199,7 +199,7 @@ stop_owned_orphans() {
 collect_worker_logs() {
   engine_alive && [[ -n "$compose_pid" ]] || return 0
   local response name
-  response=$(timeout 20 "$iii_bin" trigger compose::logs --port "$engine_port" \
+  response=$(timeout 20 "$iii_bin" call compose::logs --port "$engine_port" \
     --json "$(jq -cn --arg file "$compose_file" '{file: $file, tail: 1000}')" \
     2>>"$log_dir/compose-logs.log") || return 0
   while IFS= read -r name; do
@@ -333,7 +333,7 @@ compose_add() {
   payload=$(jq -cn --arg file "$compose_file" '{file: $file, workers: $ARGS.positional}' \
     --args "$@")
   response=$(timeout --signal=TERM --kill-after=15s "$((add_timeout_seconds + 30))" \
-    "$iii_bin" trigger compose::add --port "$engine_port" \
+    "$iii_bin" call compose::add --port "$engine_port" \
     --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload") || return 1
   printf '%s\n' "$response"
   status=$(jq -r '.status // empty' <<<"$response" 2>/dev/null || true)

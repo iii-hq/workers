@@ -127,7 +127,7 @@ fn evaluate<'a>(
         let shell_surface_ready = context.function_exists("shell::exec").await?;
         let coder_surface_ready = context.function_exists("coder::create-file").await?;
         let sandbox_surface_ready = context
-            .trigger_value("sandbox::adapter::info", json!({}))
+            .call_value("sandbox::adapter::info", json!({}))
             .await?["info"]
             .is_object();
         let surfaces_ready = shell_surface_ready && coder_surface_ready && sandbox_surface_ready;

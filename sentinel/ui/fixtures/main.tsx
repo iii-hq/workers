@@ -15,7 +15,7 @@ const groups = ['TimeoutError: upstream request exceeded deadline', 'ConnectionE
 const calls: unknown[] = []
 const fixture = { calls, mode: params.get('mode') || 'success', delay: 200, baseline: '9eb9b507598a0dbe0937b883aebe89ebcba7f6bb' }
 ;(window as any).__SENTINEL_FIXTURE__ = fixture
-const api = client({ trigger: async (id: string, payload: unknown) => {
+const api = client({ call: async (id: string, payload: unknown) => {
   calls.push({ id, payload })
   if (id === 'directory::agents::list') {
     if (fixture.mode === 'catalog-error') throw new Error('Fixture catalog unavailable')
