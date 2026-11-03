@@ -251,7 +251,7 @@ pub async fn register_console_config(
     seed_http_port: u16,
     seed_data_dir: &str,
 ) -> Result<(), String> {
-    iii_console_ui::register_configuration_identity(iii, "console", config_id());
+    iii_console_ui::register_configuration_identity(iii, "ade", config_id());
     let existing = existing_value(iii)
         .await
         .map_err(|error| format!("console configuration lookup failed: {error}"))?;

@@ -241,7 +241,7 @@ async function call(functionId, payload = {}, options) {
           ? []
           : [
               {
-                function_id: `${name === 'ade' ? 'console' : name}::configuration-id`,
+                function_id: `${name}::configuration-id`,
                 worker_name: name,
                 namespace: 'workers-test',
               },

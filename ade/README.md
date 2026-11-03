@@ -22,11 +22,14 @@
 
 ## Notice: renamed from `console`
 
-This worker used to be called `console`. Only its identity changed, so nothing that talks to it needs to be rewritten:
+This worker used to be called `console`. Its worker identity and function namespace now use `ade`:
 
 - worker name, binary, Cargo package and registry entry: `console` → `ade` (`iii call compose::add worker=ade`, `npx skills add iii-hq/workers --skill ade`)
 - source directory: `console/` → `ade/`; dependents pin `ade` in their `iii.worker.yaml`
-- unchanged on purpose: the `ade::*` function ids (`ade::status`, `ade::ui-manifest`, `ade::workspace::*`, `ade::ui::asset`, …), the `iii::console::*` stream topics, and the `console` configuration entry, shared through `iii-console-ui` / `@iii-dev/console-ui`
+- function IDs: `console::*` → `ade::*` (case-sensitive), including `ade::status`, `ade::ui-manifest`, `ade::configuration-id`, `ade::ui-content`, `ade::workspace::*` and the observable `ade::ui::asset`, `ade::ui::on-assets-changed`, `ade::workspace::on-changed` and `ade::compose::on-changed`
+- the `iii::console::*` stream topics, the `console` configuration entry and the `console/…` asset paths keep their existing names
+
+Update consumers, permissions, observers and agent tool lists together with ADE. The old function IDs are no longer registered; there are no compatibility aliases.
 
 ## Install
 

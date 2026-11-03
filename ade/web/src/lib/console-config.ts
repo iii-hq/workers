@@ -37,7 +37,7 @@ export async function fetchConsoleConfigValue(): Promise<ConsoleConfigValue | nu
   try {
     const client = await getIiiClient()
     const resp = await client.call<{ value?: unknown }>('configuration::get', {
-      id: await resolveConfigurationId(client, 'console'),
+      id: await resolveConfigurationId(client, 'ade'),
       raw: true,
     })
     const value = resp?.value
@@ -56,7 +56,7 @@ export async function setConsoleConfigValue(
 ): Promise<void> {
   const client = await getIiiClient()
   await client.call('configuration::set', {
-    id: await resolveConfigurationId(client, 'console'),
+    id: await resolveConfigurationId(client, 'ade'),
     value,
   })
 }
