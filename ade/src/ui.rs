@@ -1,5 +1,5 @@
-//! The console worker's *own* injected UI — shipped through the same
-//! `console::ui::asset` function it hosts (the engine announces each asset
+//! The ADE worker's *own* injected UI — shipped through the same
+//! `ade::ui::asset` function it hosts (the engine announces each asset
 //! observer straight back to this worker).
 //!
 //! Two contributions:
@@ -22,7 +22,7 @@
 //! the bytes built from `ui/` (see `build.rs`). Dev loop:
 //! `cd ui && pnpm watch` + `III_CONSOLE_UI_WATCH=1`.
 //!
-//! The registry refuses to disable the `console` worker itself
+//! The registry refuses to disable the ADE worker itself
 //! (`ui_assets::UNDISABLEABLE_WORKER`), so this form cannot lock the
 //! operator out of its own toggles.
 
@@ -53,14 +53,15 @@ const STYLES_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/d
 
 fn console_ui() -> ConsoleUi {
     ConsoleUi::new("console")
+        .content_function_id("ade::ui-content")
         .script(CONFIG_FORM_PATH, CONFIG_FORM_JS)
         .script(CATALOG_PAGE_PATH, CATALOG_PAGE_JS)
         .script(WORKSPACE_PROPOSAL_PATH, WORKSPACE_PROPOSAL_JS)
         .style(STYLES_PATH, STYLES_CSS)
 }
 
-/// Observe the console's own UI assets. Call only when `injectable_ui` is
-/// on (the `console::ui::*` functions must be hosted), after
+/// Observe the ADE worker's own UI assets. Call only when `injectable_ui` is
+/// on (the `ade::ui::*` functions must be hosted), after
 /// `ui_assets::start`.
 pub fn register(iii: &Arc<IIIClient>) {
     console_ui().register(iii);
@@ -72,7 +73,7 @@ mod tests {
 
     #[test]
     fn ui_builder_accepts_the_assets() {
-        // The builder panics on any path/kind the console would reject.
+        // The builder panics on any path/kind the ADE worker would reject.
         let _ = console_ui();
     }
 
@@ -156,7 +157,7 @@ mod tests {
     #[test]
     fn embedded_workspace_proposal_is_nonempty_esm() {
         assert!(
-            WORKSPACE_PROPOSAL_JS.contains("console::working-directory::propose"),
+            WORKSPACE_PROPOSAL_JS.contains("ade::working-directory::propose"),
             "built workspace-proposal.js looks wrong"
         );
     }

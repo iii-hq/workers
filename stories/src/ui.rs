@@ -6,7 +6,7 @@
 //! `stories/page.js` (a `script` asset) registers the explorer/compare page
 //! and the configuration form; `stories/styles.css` (a `style` asset) is the
 //! stylesheet, every rule scoped under `[data-iii-ui="stories"]`. Each asset
-//! is one observer of `console::ui::asset` with args `{ kind, path }`
+//! is one observer of `ade::ui::asset` with args `{ kind, path }`
 //! (the shared `iii-console-ui` crate). Set `III_STORIES_UI_WATCH=1` for hot
 //! reload from `ui/dist`.
 

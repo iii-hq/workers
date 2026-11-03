@@ -13,7 +13,7 @@ architecture that best fits the worker.
 
 ## How it works
 
-A worker observes `console::ui::asset` once per asset, with args
+A worker observes `ade::ui::asset` once per asset, with args
 `{ kind: 'script' | 'style', path }` naming the asset and its content
 function as the target, which serves `{content}` for `{path}`. The console
 calls the content function through the observer, hashes and serves those
@@ -584,7 +584,7 @@ per-asset cap (a slot component should be tens of KiB). Three footguns:
 ## 4. Registration (the worker side)
 
 The wire contract is: one content function serving all of the worker's
-assets (dispatch on `path`), one `console::ui::asset` observer per asset.
+assets (dispatch on `path`), one `ade::ui::asset` observer per asset.
 
 ### Rust workers — the `iii-console-ui` crate
 
@@ -611,11 +611,11 @@ before `include_str!`; preserve unrelated duties of an existing build script.
 
 Node workers implement the same contract directly: register one function
 that maps `{path}` to `{content, content_type?}`, then observe
-`console::ui::asset` once per asset:
+`ade::ui::asset` once per asset:
 
 ```ts
 iii.observe(
-  { function_id: 'console::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
+  { function_id: 'ade::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
   'mywork::ui-content',
 )
 ```
@@ -628,7 +628,7 @@ their assets.
 
 | | |
 |---|---|
-| Function | `console::ui::asset`; never observe the tab-only `console::ui::on-assets-changed` |
+| Function | `ade::ui::asset`; never observe the tab-only `ade::ui::on-assets-changed` |
 | Args | `{ "kind": "script" \| "style", "path": string }`, nothing else: `script` is ESM JS, `style` is CSS |
 | Target | the worker's content function, called through the observer once it is active |
 | Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the kind (`.js` / `.css`); **convention: first segment = your worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
@@ -791,7 +791,7 @@ link-swap with no flash. Unchanged content is hash-deduped end to end.
 | A dragged card vanishes and never comes back | the list removed the card while dragging and `dragend` never fired; keep it mounted (dimmed) and clear state from document-level `dragend`/`drop` |
 | Detail opened inside the board instead of a new pane | use `host.panels.open({ pageId })` with a separately registered page rather than local selection state |
 
-Inspect `console::ui-manifest` (or `GET <console-host>:3113/ui`),
+Inspect `ade::ui-manifest` (or `GET <console-host>:3113/ui`),
 `/ui/<path>`, the worker's observers (`engine::workers::info { "name": "<worker>" }`),
 and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.

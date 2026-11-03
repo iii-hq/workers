@@ -13,10 +13,10 @@ never restate one). Behavior across widths and forms: `ade/design-console-ui`.
 
 ## How it works
 
-A worker observes `console::ui::asset` once per asset, with args
+A worker observes `ade::ui::asset` once per asset, with args
 `{ kind: 'script' | 'style' | 'module', path }` naming the asset (`module` for
 code loaded on demand) and its content function as the target, which serves
-`{content}` for `{path}`. The console calls the content function through the
+`{content}` for `{path}`. The ADE worker calls the content function through the
 observer, hashes and serves those bytes, then pushes changes to open tabs.
 Tabs `import()` scripts and call their default `setup(host)`; styles load as
 scoped `<link>` assets; modules load only when a script calls
@@ -144,7 +144,7 @@ consoles: feature-detect them.
 
 | Surface | What it is |
 |---|---|
-| `host.pages` | `register({ id, title, configurationId?, render })` registers a page the workspace opens through `host.panels.open` or `console::workspace::open { screen: "ext:<id>" }`, plus a nav entry. `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })` places any workspace screen, built-in ones like `traces` included, in this browser's tab without a bus round trip (optional on older consoles: feature-detect, fall back to `console::workspace::open`); `#/worker/<scope>[/<id>]` renders it alone (Testing below). `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
+| `host.pages` | `register({ id, title, configurationId?, render })` registers a page the workspace opens through `host.panels.open` or `ade::workspace::open { screen: "ext:<id>" }`, plus a nav entry. `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })` places any workspace screen, built-in ones like `traces` included, in this browser's tab without a bus round trip (optional on older consoles: feature-detect, fall back to `ade::workspace::open`); `#/worker/<scope>[/<id>]` renders it alone (Testing below). `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
 | `host.functionCalls` | Chat/trace renderers. Match only the worker's function ids; return `null` to fall through. `message.description` is the harness's short activity label. `metadata: { display: true }` keeps a successful rich artifact visible while raw details stay collapsed. If raw data can contain secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
 | `host.observerRenderers?` | Layered observer presentation; see below. |
 | `host.configForms` | The deliberate form for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker registers one. The host owns dirty tracking, validation, save, reset and the SaveBar; honor `focusField`. `{ layout: 'full' }` only for a workbench that owns its scrolling. Form anatomy and primitives: `ade/design-console-ui` › Configuration forms. |
@@ -292,8 +292,8 @@ const { Terminal } = await host.importModule<typeof import('./xterm')>('ide/xter
 
 `importModule` loads the hash-versioned URL when the tab knows the module, so
 a hot reload applies at the next call, and the bare `/ui/<path>` otherwise,
-so a call that beats the module's push to the tab still loads it. The console
-serves a module only once its registration lands: register modules before
+so a call that beats the module's push to the tab still loads it. The ADE
+worker serves a module only once its registration lands: register modules before
 the scripts that import them (`ConsoleUi` does), and retry a rejected import
 with backoff, since the registration may still be landing (the ide terminal
 does).
@@ -327,7 +327,7 @@ attribute** — the console mounts each render inside
 - No unscoped selectors (`:root`, `html`, `body`, `*`, bare elements), no
   `@font-face`: injected CSS is unlayered and would beat the console's
   layered stylesheet document-wide. `assertScoped` refuses the build; the
-  console's fetch-time lint reports leftovers in the manifest's `warnings`.
+  ADE worker's fetch-time lint reports leftovers in the manifest's `warnings`.
 - No Tailwind utility classes in injected markup — worker class names are not
   in the console's compiled output. Shared components and `uiClasses` first;
   scoped CSS only for domain layout and data visualization.
@@ -409,7 +409,7 @@ packages/console-ui/lint-worker-ui.mjs <worker>/ui [--strict] [--json]`;
 ## 4. Registration (the worker side)
 
 One content function serving all of the worker's assets (dispatch on
-`path`), one `console::ui::asset` observer per asset. Rust workers use the
+`path`), one `ade::ui::asset` observer per asset. Rust workers use the
 `iii-console-ui` crate:
 
 ```rust
@@ -422,17 +422,17 @@ ConsoleUi::new("mywork")
 ```
 
 This registers `<worker>::ui-content`, one observer per asset, and the
-`III_<WORKER>_UI_WATCH` watcher; it panics on a path the console would
+`III_<WORKER>_UI_WATCH` watcher; it panics on a path the ADE worker would
 reject; `.module(path, content)` adds a `module` asset the same way.
 Export `ui` from the worker library and call `ui::register(&iii)` after its
 normal functions; adapt `state/build.rs` so missing or stale UI sources build
 before `include_str!`. Node workers register one function
 mapping `{path}` to `{content, content_type?}`, then observe
-`console::ui::asset` once per asset:
+`ade::ui::asset` once per asset:
 
 ```ts
 iii.observe(
-  { function_id: 'console::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
+  { function_id: 'ade::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
   'mywork::ui-content',
 )
 ```
@@ -451,9 +451,9 @@ reconnect.
 
 | | |
 |---|---|
-| Function | `console::ui::asset`; never observe the tab-only `console::ui::on-assets-changed` |
+| Function | `ade::ui::asset`; never observe the tab-only `ade::ui::on-assets-changed` |
 | Args | `{ "kind": "script" \| "module" \| "style", "path": string }`, nothing else: `script` is ESM JS imported at mount, `module` ESM JS imported only by `host.importModule` (kind `module` in the manifest and tab pushes), `style` CSS |
-| Target | the worker's content function: once the observer is active it receives `{ path }`, in a call of `console::ui::asset` for that observer alone that the function's deliver hook hands to it |
+| Target | the worker's content function: once the observer is active it receives `{ path }`, in a call of `ade::ui::asset` for that observer alone that the function's deliver hook hands to it |
 | Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the kind (`.js` for scripts and modules, `.css`); **convention: first segment = worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
 | Content function | input `{ "path": string }` → output `{ "content": string, "content_type"?: string }` |
 | Size cap | 8 MiB per asset — a larger asset's observer is rejected (the driver fails first) |
@@ -491,7 +491,7 @@ end.
 | Whole console restyled | unscoped rules reached the console — check `warnings` in the manifest |
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |
 
-Inspect `console::ui-manifest` (or `GET <url>/ui`, `url` from `console::status`),
+Inspect `ade::ui-manifest` (or `GET <url>/ui`, `url` from `ade::status`),
 `/ui/<path>`, the worker's observers (`engine::observers::list { worker }`),
 and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
@@ -505,7 +505,7 @@ Validate all four layers; a green build alone is not enough.
    React, editor or ANSI parser.
 2. **Embedding:** accepted assets, an ESM export, the built CSS scope
    (esbuild may omit selector quotes); targeted Rust tests.
-3. **Delivery:** boot engine + console + worker; manifest paths, hashes, no
+3. **Delivery:** boot engine + ADE + worker; manifest paths, hashes, no
    warnings, fetchable bytes, a changed hash after hot reload.
 4. **Real rendering:** the actual console at a phone-sized, a narrow split
    and a wide pane (`ade/design-system` › Numbers), both split positions,
@@ -516,7 +516,7 @@ Validate all four layers; a green build alone is not enough.
    non-interactive compact display, complete-detail lifecycle fidelity,
    action fallback, fail-closed redaction, and disable/disconnect fallback.
 
-**The page alone: `<url>/#/worker/<scope>[/<page-id>][?context=<json>]`, with `url` from `console::status`.** The
+**The page alone: `<url>/#/worker/<scope>[/<page-id>][?context=<json>]`, with `url` from `ade::status`.** The
 console renders that one page over the full viewport — no tab strip, chat or
 palette; the tab title is `iii - <scope>` — and never reads or writes the
 shared workspace layout, so a Playwright or `browser`-worker session can open
@@ -529,7 +529,7 @@ place), the page's keyed commands, hot reload and the worker's overlays.
 `host.panels.open` delivers context in place for the page on screen and opens
 any other page in a new browser tab. `#/traces` renders the traces explorer
 the same way. Chat slots and the palette are out of its scope: validate those
-in the full console, opened through `console::workspace::open`.
+in the full console, opened through `ade::workspace::open`.
 
 ## Definition of done
 

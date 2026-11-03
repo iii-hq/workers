@@ -17,7 +17,7 @@ use iii_sdk::{Deliver, Error, RegisterFunction, Source};
 use real_engine::RealEngine;
 use serde_json::{json, Value};
 
-const TARGET: &str = "console::github-activity";
+const TARGET: &str = "ade::github-activity";
 
 fn schema_of_called_event() -> Value {
     serde_json::to_value(

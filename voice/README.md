@@ -428,7 +428,7 @@ The session's own `output_function_id` receives every event with a plain
 call, whether or not anything observes `voice::on-transcript`.
 
 The worker observes `configuration::on-updated` (filters on `input.id` and
-`input.event_type`) to hot-reload its settings, and `console::ui::asset`
+`input.event_type`) to hot-reload its settings, and `ade::ui::asset`
 (through the shared console UI crate) to serve its console page. The console
 page observes `voice::on-model-progress` and `voice::on-hotkey`, and
 `harness::on-turn-started`, `harness::on-turn-completed` and

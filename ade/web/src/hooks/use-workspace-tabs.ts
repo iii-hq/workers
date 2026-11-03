@@ -1,13 +1,13 @@
 /**
  * Server-persisted workspace tabs (see `lib/workspace-tabs.ts` for the
- * model). Tabs live in the console worker's layout store
+ * model). Tabs live in the ADE worker's layout store
  * (`<data_dir>/workspace.json`, read and written through
- * `console::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
- * layout follows the engine. The console calls `console::workspace::on-changed`
+ * `ade::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
+ * layout follows the engine. The ADE worker calls `ade::workspace::on-changed`
  * after every write and the query re-reads on the ring, so a tab created in
  * another browser (or opened by an agent or an injected page through
- * `console::workspace::open`) shows up here at once, without a reload. The
- * console also rings each new observer once when it is accepted, which
+ * `ade::workspace::open`) shows up here at once, without a reload. The
+ * ADE worker also rings each new observer once when it is accepted, which
  * catches this tab up after its first read and after each reconnect. The strip polls only
  * until that first ring proves the observer active, and returning to the tab
  * re-reads a stale copy.
@@ -17,7 +17,7 @@
  * the click), then writes through the serialized read-modify-write funnel;
  * the next read reconciles with whatever the server actually stored.
  *
- * When the console worker's store is unreachable (an older worker without
+ * When the ADE worker's store is unreachable (an older worker without
  * the functions, engine down), tabs degrade to localStorage so the strip
  * keeps working offline.
  */
@@ -69,7 +69,7 @@ import {
 const LOCAL_KEY = 'iii-workspace-tabs'
 const SESSION_ACTIVE_KEY = 'iii-workspace-active'
 const POINTER_WRITE_DELAY_MS = 150
-/** Per-tab handler observing `console::workspace::on-changed`; `client.on` appends
+/** Per-tab handler observing `ade::workspace::on-changed`; `client.on` appends
  *  `::<browserId>`. The `iii::` prefix keeps the rings out of user-function
  *  telemetry. */
 const WORKSPACE_CHANGED_FN = 'iii::console::workspace_changed'
@@ -308,7 +308,7 @@ export function useWorkspaceTabs({
         if (cancelled) return
         offHandler = client.on(WORKSPACE_CHANGED_FN, ring)
         offObserver = client.observe(
-          'console::workspace::on-changed',
+          'ade::workspace::on-changed',
           `${WORKSPACE_CHANGED_FN}::${client.browserId}`,
         )
       } catch {

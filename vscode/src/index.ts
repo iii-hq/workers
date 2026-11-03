@@ -268,7 +268,7 @@ iii.registerFunction('vscode::ui-content', (input: { path: string }) => uiConten
 /** The console fetches the asset through this observer, calling `vscode::ui-content` with `{ path }`. */
 function observeUiAsset(path: string) {
   return iii.observe(
-    { function_id: 'console::ui::asset', args: { kind: uiAssets[path].kind, path } },
+    { function_id: 'ade::ui::asset', args: { kind: uiAssets[path].kind, path } },
     'vscode::ui-content',
   );
 }

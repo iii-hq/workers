@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "harness"
-version = "1.8.66"
+version = "1.8.67"
 edition = "2021"
 publish = false
 
@@ -27,7 +27,7 @@ iii-sdk = "=0.26.0-rc.4"
 iii-helpers = "=0.26.0-rc.4"
 # Judge routing keys (`iii.judge.provider` baggage, provider-name check).
 judge-contract = { path = "../crates/judge-contract" }
-# Worker-side injectable console UI (content function + `console::ui::asset`
+# Worker-side injectable console UI (content function + `ade::ui::asset`
 # observers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 # Compose-aware path resolution (III_COMPOSE_DIR, `~/`, absolute) for configured files.

@@ -13,14 +13,14 @@ import { isEmailish } from '@/lib/email-prompt'
 import { getIiiClient } from '@/lib/iii-client'
 
 /** This worker owns the signup; the browser only hands it an address. */
-const SUBSCRIBE_FN = 'console::subscribe'
+const SUBSCRIBE_FN = 'ade::subscribe'
 const SUBSCRIBE_TIMEOUT_MS = 20_000
 
 /**
  * Asks once for an email address, after thirty minutes of console use.
  *
- * The browser sends the address to `console::subscribe` over the engine
- * WebSocket and nowhere else. The console worker adds it to the product update
+ * The browser sends the address to `ade::subscribe` over the engine
+ * WebSocket and nowhere else. The ADE worker adds it to the product update
  * list and announces it for the engine to write to this machine's person; the
  * browser never sends the address to the list or to the analytics vendor.
  */

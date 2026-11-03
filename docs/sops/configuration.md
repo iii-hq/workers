@@ -140,7 +140,7 @@ Multiple projects can share a configuration service and the same form family.
 
 Workers consumed by the Console expose a namespace-scoped internal function,
 `<worker>::configuration-id`, taking `{}` and returning `{ "id": "<effective-id>" }`.
-`console`, `ide`, `http`, `voice`, `security-scan`, and `approval-gate` implement it.
+`ade`, `ide`, `http`, `voice`, `security-scan`, and `approval-gate` implement it.
 The callback exposes no configuration value. Call it in the target worker's
 namespace, then use the returned ID with `configuration::*` in `default`.
 Read-modify-write consumers resolve once and use the same ID for both operations;

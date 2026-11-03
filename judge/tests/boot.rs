@@ -215,7 +215,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     mention_hook = true;
                 }
                 "observe"
-                    if value["source"]["function_id"] == "console::ui::asset"
+                    if value["source"]["function_id"] == "ade::ui::asset"
                         && value["source"]["args"]["kind"] == "script" =>
                 {
                     assert!(console_ui_enabled);
@@ -224,7 +224,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     script = true;
                 }
                 "observe"
-                    if value["source"]["function_id"] == "console::ui::asset"
+                    if value["source"]["function_id"] == "ade::ui::asset"
                         && value["source"]["args"]["kind"] == "style" =>
                 {
                     assert!(console_ui_enabled);

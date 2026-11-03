@@ -1,7 +1,7 @@
 /**
- * Entry for the console worker's own injected UI — compiled by esbuild
+ * Entry for the ADE worker's own injected UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/config-form.js and
- * shipped as a `script` asset of `console::ui::asset` (see src/ui.rs). The
+ * shipped as a `script` asset of `ade::ui::asset` (see src/ui.rs). The
  * stylesheet is its own `style` asset: console/styles.css.
  *
  * Contributions: the custom form for the `console` entry and an explicit,

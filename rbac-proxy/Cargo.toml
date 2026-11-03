@@ -32,7 +32,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # `JsonSchema` impls satisfy `RegisterFunction::new_async`.
 schemars = "0.8"
 
-# HTTP + WS proxy (the `console` proxy stack, verbatim).
+# HTTP + WS proxy (the `ade` proxy stack, verbatim).
 axum = { version = "0.7", features = ["ws"] }
 # The public listener is served over hyper directly, for a header deadline
 # (see server.rs `HEADER_READ_TIMEOUT`); both already come in through axum.

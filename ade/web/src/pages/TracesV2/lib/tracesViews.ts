@@ -48,7 +48,7 @@ export interface TracesView extends TracesViewConfig {
 }
 
 /**
- * Id of the "sessions" view the console worker seeds into a fresh `console`
+ * Id of the "sessions" view the ADE worker seeds into a fresh `console`
  * configuration entry (src/configuration.rs — keep the id in sync). Selected
  * by default whenever the config records no `traces.activeViewId` pointer.
  */

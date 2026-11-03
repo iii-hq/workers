@@ -249,14 +249,14 @@ export function useTour(host: Host): TourController {
 
   /**
    * Open the step's screen beside the chat, in the tab showing. The layout
-   * change calls `console::workspace::on-changed`, which `useScreenPresent`
+   * change calls `ade::workspace::on-changed`, which `useScreenPresent`
    * follows, so the step moves on by itself.
    */
   const openScreen = useCallback(
     (step: Step) => {
       if (!step.to_open) return
       void host.iii
-        .call('console::workspace::open', { screen: step.to_open.screen, relative_to: 'chat' })
+        .call('ade::workspace::open', { screen: step.to_open.screen, relative_to: 'chat' })
         .catch((cause: unknown) => setError(errorMessage(cause)))
     },
     [host],
@@ -337,7 +337,7 @@ export function useTour(host: Host): TourController {
   const closing = openStep?.to_close && records[openStep.id]?.status !== 'complete' ? openStep.to_close.screen : null
   useEffect(() => {
     if (!closing) return
-    void host.iii.call('console::workspace::close', { screen: closing }).catch(() => undefined)
+    void host.iii.call('ade::workspace::close', { screen: closing }).catch(() => undefined)
   }, [host, closing])
 
   const markSubscribed = useCallback(() => setSubscribed(true), [])
@@ -376,7 +376,7 @@ interface ScreenPresence {
  * Whether `screen` is in any workspace tab: `null` while unknown — not
  * watching, not read yet, or a console too old to say.
  *
- * The console calls `console::workspace::on-changed` after every layout
+ * The ADE worker calls `ade::workspace::on-changed` after every layout
  * write, opening or closing a pane or a tab included. That makes this
  * reactive rather than polled: one read of the layout per layout change, and
  * none while nothing moves. A console without that function leaves the
@@ -392,7 +392,7 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
     let live = true
     const check = () =>
       void host.iii
-        .call<{ tabs: { id: string; screens: string[]; active?: boolean }[] }>('console::workspace::list')
+        .call<{ tabs: { id: string; screens: string[]; active?: boolean }[] }>('ade::workspace::list')
         .then((ws) => {
           if (!live) return
           const holding = ws.tabs.filter((tab) => tab.screens.includes(screen))
@@ -414,7 +414,7 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
     let offObserver: () => void = () => {}
     try {
       offHandler = host.iii.on(localId, check)
-      offObserver = host.iii.observe('console::workspace::on-changed', `${localId}::${host.iii.browserId}`)
+      offObserver = host.iii.observe('ade::workspace::on-changed', `${localId}::${host.iii.browserId}`)
     } catch {
       // Same rule as `bindCondition`: no handler without its observer. The
       // read below still runs once.

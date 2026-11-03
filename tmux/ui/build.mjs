@@ -2,7 +2,7 @@ import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 
 await buildWorkerUi({
   scope: 'tmux',
-  // xterm.ts → dist/xterm.js, the `module` asset (console::ui::asset) the
+  // xterm.ts → dist/xterm.js, the `module` asset (ade::ui::asset) the
   // terminal imports lazily.
   entryPoints: ['page.tsx', 'styles.css', 'xterm.ts'],
   // styles.css @imports @xterm/xterm's own sheet, whose `.xterm*` rules are

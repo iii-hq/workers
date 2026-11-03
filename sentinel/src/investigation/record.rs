@@ -55,7 +55,9 @@ impl<D: Db> Investigations<D> {
                     "session {session_id} names no investigation this worker opened"
                 ))
             })?;
-        if investigation.group_id != request.group_id {
+        let members = self.member_ids(&investigation.id).await?;
+        let joint = members.len() > 1;
+        if investigation.group_id != request.group_id && !members.contains(&request.group_id) {
             return Err(SentinelError::NotThisGroup(format!(
                 "this session investigates {}, not {}",
                 investigation.group_id, request.group_id
@@ -73,28 +75,39 @@ impl<D: Db> Investigations<D> {
             DiagnosisSourceV1::Conversation
         };
 
-        let outcome = self
-            .store()
-            .record_diagnosis(
-                &investigation.id,
-                &investigation.group_id,
-                caller.turn_id.as_deref(),
-                source,
-                &request.diagnosis,
-            )
-            .await?;
+        let outcome = if joint {
+            self.store()
+                .record_joint_diagnosis(
+                    &investigation.id,
+                    &request.group_id,
+                    caller.turn_id.as_deref(),
+                    source,
+                    &request.diagnosis,
+                )
+                .await?
+        } else {
+            self.store()
+                .record_diagnosis(
+                    &investigation.id,
+                    &investigation.group_id,
+                    caller.turn_id.as_deref(),
+                    source,
+                    &request.diagnosis,
+                )
+                .await?
+        };
 
         let mut events = vec![Announcement::Investigation(InvestigationChangedEventV1 {
             op: InvestigationChangedOpV1::Recorded,
             investigation_id: investigation.id.clone(),
-            group_id: investigation.group_id.clone(),
+            group_id: request.group_id.clone(),
             session_id: investigation.session_id.clone(),
             status: investigation.status,
             error: None,
         })];
         if outcome.group_moved {
             events.push(Announcement::Group(GroupStateResponseV1 {
-                group_id: investigation.group_id.clone(),
+                group_id: request.group_id.clone(),
                 status: outcome.group_status,
                 reason: Some(GroupChangeReasonV1::Diagnosed),
             }));

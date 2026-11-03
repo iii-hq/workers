@@ -21,7 +21,7 @@ path = "src/lib.rs"
 iii-sdk = "=0.26.0-rc.4"
 iii-helpers = "=0.26.0-rc.4"
 iii-worker-paths = { path = "../crates/worker-paths" }
-# Worker-side injectable console UI (content function + one console::ui::asset
+# Worker-side injectable console UI (content function + one ade::ui::asset
 # observer per asset + hot-reload watcher) — direct path link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }

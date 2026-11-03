@@ -35,7 +35,7 @@ dependencies installed (`react` and `react-dom` 18+); a project with its own
 | Field | Default | Meaning |
 |---|---|---|
 | `data_path` | `data/stories` | Lines, content-addressed files, renders, history, the compiler. |
-| `console_url` | unset | Console origin the browser worker navigates to for renders. Unset: the ADE's address from `console::status`. |
+| `console_url` | unset | Console origin the browser worker navigates to for renders. Unset: the ADE's address from `ade::status`. |
 | `watch` | `true` | Rebuild the working tree when a story input changes. |
 | `keep_lines` | `12` | Built ref/turn lines kept per workspace before pruning. |
 | `viewport` | `1024×768 @1` | Default render viewport. |
@@ -114,7 +114,7 @@ hash of every input's content, so a component unchanged between two lines
 shares the same render cache.
 
 Story documents are served to the console through `stories::ui-file` behind
-the console's `/ui-files/stories/<workspace>/<line>/<path>` route; the page
+the ADE worker's `/ui-files/stories/<workspace>/<line>/<path>` route; the page
 embeds them in a same-origin iframe.
 
 ## Development

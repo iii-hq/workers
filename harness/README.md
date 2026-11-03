@@ -743,7 +743,7 @@ The harness also observes, for its own plumbing: `engine::on-workers-changed`,
 `engine::on-functions-changed`, `directory::skills::on-change`, `cron::on-tick`
 (`{ expression }`, the pending-call sweep), `session::on-deleted`,
 `configuration::on-updated`, `compose::on-operation-progress` (terminal events)
-and `console::ui::asset` for its console UI.
+and `ade::ui::asset` for its console UI.
 
 See the spec at
 [`tech-specs/2026-06-agentic/harness.md`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/harness.md)

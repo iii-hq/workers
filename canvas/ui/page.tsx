@@ -1,7 +1,7 @@
 /**
  * Entry for the canvas worker's injected console UI — compiled by esbuild
  * (react and @iii-dev/console-ui external) into dist/page.js and served over
- * a `console::ui::asset` observer with `{ kind: 'script' }` (see src/ui.rs).
+ * a `ade::ui::asset` observer with `{ kind: 'script' }` (see src/ui.rs).
  * The stylesheet is its own asset: ./styles.css ships as a `style` asset,
  * canvas/styles.css. The
  * mermaid and freeform vendor bundles are separate script assets, lazily

@@ -1,4 +1,4 @@
-//! `console` worker entry point.
+//! `ade` worker entry point.
 //!
 //! Boot sequence:
 //!   1. Parse CLI / load the optional YAML seed (with fallback to defaults).
@@ -7,7 +7,7 @@
 //!      `http_port` and `data_dir` (falling back to the local seed if
 //!      unavailable); point the workspace store at `<data_dir>/workspace.json`
 //!      and move a legacy `workspace` section out of the configuration entry.
-//!   4. Register `console::status` and the `console::workspace::*` functions.
+//!   4. Register `ade::status` and the `ade::workspace::*` functions.
 //!   5. Bind the HTTP server on `http_port` and serve `/`, `/assets/*`,
 //!      and `/ws` (WebSocket proxy back to the engine).
 //!   6. Subscribe to configuration changes so port edits rebind live.
@@ -43,8 +43,8 @@ struct Cli {
     #[arg(long)]
     http_port: Option<u16>,
 
-    /// Interface to bind (`0.0.0.0` by default; `127.0.0.1` limits the console
-    /// and its engine WebSocket proxy to local access). Overrides
+    /// Interface to bind (`127.0.0.1` by default; `0.0.0.0` exposes the ADE worker
+    /// and its engine WebSocket proxy on all IPv4 interfaces). Overrides
     /// `http_host` from the seed file. Boot-time only: it does not hot-reload.
     #[arg(long)]
     http_host: Option<String>,
@@ -142,13 +142,13 @@ async fn main() -> Result<()> {
     cfg.data_dir = runtime_config.data_dir.clone();
     // The interface is a boot-time decision: `--http-host` wins, then the
     // stored `http_host` (compose's `config_override` lands there), then the
-    // local seed (`0.0.0.0` unless the seed file says otherwise).
+    // local seed (`127.0.0.1` unless the seed file says otherwise).
     let bind_host = bind_host_for(host_from_cli, seed_host, runtime_config.http_host);
     server::set_bind_host(bind_host);
 
     // Ephemeral per-instance state (the workspace tabs/panes layout) lives
     // under `data_dir`, never in the committed configuration YAML. Entries
-    // written by older Console versions still carry it: move it over once.
+    // written by older ADE versions still carry it: move it over once.
     let workspace = Arc::new(WorkspaceStore::new(runtime_config.resolved_data_dir()));
     if let Err(error) = configuration::migrate_legacy_workspace(&iii, &workspace).await {
         tracing::warn!(
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(cfg);
     let port = configuration::new_port_cell(cfg.http_port);
 
-    // The console::ui::* functions register with their observer hooks
+    // The ade::ui::* functions register with their observer hooks
     // before the console's own UI observes them. `None` = injectable UI
     // disabled via config.
     let (ui, ui_control) = if cfg.injectable_ui {
@@ -176,12 +176,12 @@ async fn main() -> Result<()> {
         (Some(registry), Some(control))
     } else {
         tracing::info!(
-            "injectable_ui disabled — skipping the console::ui::* functions and /ui routes"
+            "injectable_ui disabled — skipping the ade::ui::* functions and /ui routes"
         );
         (None, None)
     };
 
-    // console::status is agent-callable: never hand out URL credentials.
+    // ade::status is agent-callable: never hand out URL credentials.
     let engine_url_redacted = redact_url(&engine_url);
     functions::register_all(
         &iii,
@@ -191,7 +191,7 @@ async fn main() -> Result<()> {
         workspace.clone(),
     );
 
-    // The console's own injected UI — live port + injectable-UI controls for
+    // The ADE worker's own injected UI — live port + injectable-UI controls for
     // the `console` configuration entry. Same mechanism as any worker's.
     if cfg.injectable_ui {
         ui::register(&iii);
@@ -241,13 +241,13 @@ async fn main() -> Result<()> {
     // Print the address actually bound: a `0.0.0.0` listener is reachable
     // from other hosts, and a reader tailing this log deserves to know.
     tracing::info!(
-        "console ready — UI on http://{}/, /ws proxies to {}",
+        "ade ready — UI on http://{}/, /ws proxies to {}",
         ready_addr,
         engine_url_redacted,
     );
 
     wait_for_shutdown_signal().await?;
-    tracing::info!("console shutting down");
+    tracing::info!("ade shutting down");
 
     // Serialize shutdown with any in-flight rebind. `rebind` also refuses to
     // install a replacement after the control slot becomes `None`.
@@ -317,6 +317,21 @@ mod tests {
         assert_eq!(bind_host_for(false, any, None), any);
         assert_eq!(bind_host_for(false, any, Some(local)), local);
         assert_eq!(bind_host_for(true, any, Some(local)), any);
+        assert_eq!(bind_host_for(false, local, Some(any)), any);
+        assert_eq!(bind_host_for(true, local, Some(any)), local);
+    }
+
+    #[tokio::test]
+    async fn default_listener_is_loopback_only() {
+        let cfg = ade::config::ConsoleConfig::default();
+        let host = bind_host_for(false, cfg.http_host.parse().unwrap(), None);
+        ade::server::set_bind_host(host);
+        let listener = ade::server::bind_listener(0).await.unwrap();
+
+        assert!(
+            listener.local_addr().unwrap().ip().is_loopback(),
+            "the default ADE listener must not bind every interface"
+        );
     }
 
     #[test]

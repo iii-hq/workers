@@ -188,7 +188,7 @@ since that is what discovery results and filters operate on):
 It is refreshed lazily on a short TTL (5 s) and proactively whenever
 `engine::on-functions-changed` is called: the control connection observes it
 with `rbac-proxy::on-functions-changed`, which invalidates the cache. Mirror
-`console`'s function-list cache.
+`ade`'s function-list cache.
 
 **Cache-miss semantics.** A miss is not uniformly fail-closed — it depends on
 the filter kind:

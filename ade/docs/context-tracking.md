@@ -2,7 +2,7 @@
 
 Users ask in chat to keep release progress, a goal, status or a checklist in the
 Context sidebar. They do not write code or install a custom extension per item.
-The agent discovers `console::context::{list,save,remove}` and stores a structured
+The agent discovers `ade::context::{list,save,remove}` and stores a structured
 snapshot. `save` creates without an id; with an existing visible id it replaces
 all fields and may move scope. The Harness pre-call hook stamps the current
 session, overriding an agent-supplied session id. A pre-generation hook explains
@@ -64,11 +64,11 @@ cargo build --bin ade
 ```
 
 The opt-in Playwright test boots its own engine, real session-manager and built
-Console, with temporary data and dynamically allocated ports. It does not use the
+ADE worker, with temporary data and dynamically allocated ports. It does not use the
 operator's engine or a model provider. It verifies public function dispatch,
 conversation isolation, project sharing, guidance, real rendering at 1440/780/390
 pixels, light/dark, reduced motion, horizontal overflow, draft actions, persistence
-across a Console process restart and removal. It is not an LLM-behaviour eval.
+across an ADE process restart and removal. It is not an LLM-behaviour eval.
 
 ```sh
 cd ade/web

@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react'
 import type { Plugin } from 'vite'
 import { configDefaults, defineConfig } from 'vitest/config'
 
-// Engine WebSocket URL, same knob as the console binary's `--url`
+// Engine WebSocket URL, same knob as the `ade` binary's `--url`
 // (DEFAULT_ENGINE_URL in src/config.rs).
 const ENGINE_URL = process.env.III_ENGINE_URL ?? 'ws://127.0.0.1:49134'
 
@@ -18,8 +18,8 @@ const ENGINE_URL = process.env.III_ENGINE_URL ?? 'ws://127.0.0.1:49134'
  *   III_WORKER_UI_OVERRIDES="harness=../../harness/ui/dist,voice=../../voice/ui/dist"
  *
  * Only `/ui/<scope>/<file>` requests for a listed scope are answered here;
- * everything else still proxies to the console worker, which keeps the
- * worker's `console::ui::asset` observer (and the hash in `?v=`) its own.
+ * everything else still proxies to the ADE worker, which keeps the
+ * worker's `ade::ui::asset` observer (and the hash in `?v=`) its own.
  */
 function workerUiOverrides(): Plugin {
   const spec = process.env.III_WORKER_UI_OVERRIDES ?? ''
@@ -78,7 +78,7 @@ export default defineConfig({
     // lacks, so jsdom's storage would never be installed.
     execArgv: ['--no-experimental-webstorage'],
   },
-  // Dev twin of the console worker's HTTP server (src/server.rs): the same
+  // Dev twin of the ADE worker's HTTP server (src/server.rs): the same
   // /ws proxy contract, bound on 0.0.0.0 like the binary so the dev server
   // is reachable from containers/LAN. The binary's proxy additionally stamps
   // `metadata.internal = true` on browser `registerfunction` frames, but
@@ -90,7 +90,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       // iii-browser-sdk hits ws(s)://${host}/ws by default; the proxy
-      // forwards to the engine WebSocket. In prod the `console` worker
+      // forwards to the engine WebSocket. In prod the `ade` worker
       // exposes the same /ws contract.
       '/ws': {
         target: ENGINE_URL,
@@ -98,7 +98,7 @@ export default defineConfig({
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/ws/, ''),
       },
-      // Injected UI assets are registered with (and served by) the console
+      // Injected UI assets are registered with (and served by) the ADE
       // WORKER, not this dev server — proxy the asset routes to it so the
       // injectable-UI dev loop works against `vite dev` too. (`/vendor/*`
       // needs no proxy: the shims live in public/ and Vite serves them.)

@@ -1,0 +1,78 @@
+{
+  "description": "Read up to 200 lines of a regular source file jailed to a Sentinel project mapped to an authorized investigation member. Session identity is mandatory; absolute paths, traversal and symlinks are refused.",
+  "function_id": "sentinel::source::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "line_from": {
+        "default": null,
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "line_to": {
+        "default": null,
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Relative to the repository configured for this member's worker.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "group_id",
+      "path"
+    ],
+    "title": "SourceReadRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "content": {
+        "type": "string"
+      },
+      "group_id": {
+        "type": "string"
+      },
+      "line_from": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "path": {
+        "type": "string"
+      },
+      "redactions": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "truncated": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "content",
+      "group_id",
+      "line_from",
+      "path",
+      "redactions",
+      "truncated"
+    ],
+    "title": "SourceReadResponse",
+    "type": "object"
+  }
+}

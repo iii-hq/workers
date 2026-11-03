@@ -1,7 +1,7 @@
 /**
  * Entry for the state worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served as a
- * `script` asset of `console::ui::asset` (see src/ui.rs). The stylesheet is
+ * `script` asset of `ade::ui::asset` (see src/ui.rs). The stylesheet is
  * its own asset: ../styles.css ships as the `style` asset state/styles.css —
  * the console mounts and link-swaps it, styles-before-scripts on boot.
  *

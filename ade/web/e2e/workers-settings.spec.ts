@@ -106,7 +106,7 @@ async function openSettings(page: Page, parameters = '') {
 async function editCalls(page: Page) {
   return page.evaluate(() =>
     window.__WORKERS_HARNESS__.calls.filter(
-      (call) => call.functionId === 'console::compose::edit',
+      (call) => call.functionId === 'ade::compose::edit',
     ),
   )
 }
@@ -638,7 +638,7 @@ test('uses full-width drill-in settings in a fresh 720px pane while preserving n
         await page.evaluate(() =>
           window.__WORKERS_HARNESS__.calls.filter((call) =>
             [
-              'console::compose::edit',
+              'ade::compose::edit',
               'compose::restart',
               'compose::start',
               'compose::stop',
@@ -1784,7 +1784,7 @@ test('reports native filtered log clipboard success and failure while preserving
             await page.evaluate(() => ({
               clipboard: window.__CLIPBOARD_HARNESS__,
               writes: window.__WORKERS_HARNESS__.calls.filter(
-                (call) => call.functionId === 'console::compose::edit',
+                (call) => call.functionId === 'ade::compose::edit',
               ),
               active: document.activeElement?.getAttribute('aria-label'),
             })),
@@ -2082,7 +2082,7 @@ test('reports native filtered log clipboard success and failure while preserving
         await page.evaluate(() =>
           window.__WORKERS_HARNESS__.calls.filter((call) =>
             [
-              'console::compose::edit',
+              'ade::compose::edit',
               'compose::restart',
               'compose::start',
               'compose::stop',
@@ -2279,7 +2279,7 @@ test('opens the worker Log natively from a restart-failure result without anothe
   const before = await page.evaluate(() =>
     window.__WORKERS_HARNESS__.calls.filter((call) =>
       [
-        'console::compose::edit',
+        'ade::compose::edit',
         'compose::restart',
         'compose::start',
         'compose::stop',
@@ -2302,7 +2302,7 @@ test('opens the worker Log natively from a restart-failure result without anothe
     await page.evaluate(() =>
       window.__WORKERS_HARNESS__.calls.filter((call) =>
         [
-          'console::compose::edit',
+          'ade::compose::edit',
           'compose::restart',
           'compose::start',
           'compose::stop',
@@ -2601,7 +2601,7 @@ for (const scenario of [
     ).toEqual([])
     if (!catalog) {
       expect(calls).toContainEqual({
-        functionId: 'console::configuration-id',
+        functionId: 'ade::configuration-id',
         payload: {},
         options: { namespace: 'workers-test' },
       })
@@ -3817,7 +3817,7 @@ test('refreshes a clean declaration on revisit and explicit Refresh while preser
   const beforeSlow = await page.evaluate(() => ({
     completed: window.__WORKERS_HARNESS__.readsCompleted,
     calls: window.__WORKERS_HARNESS__.calls.filter(
-      (call) => call.functionId === 'console::compose::container',
+      (call) => call.functionId === 'ade::compose::container',
     ).length,
   }))
   await page.evaluate(() => {
@@ -3832,7 +3832,7 @@ test('refreshes a clean declaration on revisit and explicit Refresh while preser
       page.evaluate(
         () =>
           window.__WORKERS_HARNESS__.calls.filter(
-            (call) => call.functionId === 'console::compose::container',
+            (call) => call.functionId === 'ade::compose::container',
           ).length,
       ),
     )

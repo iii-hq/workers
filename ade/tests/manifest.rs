@@ -12,7 +12,7 @@ fn manifest_subcommand_emits_valid_json() {
     let output = Command::new(bin)
         .arg("--manifest")
         .output()
-        .expect("spawn console --manifest");
+        .expect("spawn ade --manifest");
 
     assert!(
         output.status.success(),

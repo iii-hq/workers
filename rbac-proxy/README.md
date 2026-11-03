@@ -30,7 +30,7 @@ listener, while at the boundary it:
   client**: anything else, a binary frame included, is dropped, so a protocol
   addition stays closed until the proxy learns to gate it.
 
-It is the [`console`](https://github.com/iii-hq/workers/tree/main/ade) reverse-proxy pattern (`src/proxy.rs`: one
+It is the [`ade`](https://github.com/iii-hq/workers/tree/main/ade) reverse-proxy pattern (`src/proxy.rs`: one
 outbound engine WebSocket per inbound connection) with an RBAC interceptor
 spliced into the pump and a second proxied route for `/ws/channels/{id}`.
 

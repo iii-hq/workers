@@ -189,7 +189,7 @@ export function ObserversPage({
     // Every event source lists, observed or not. Internal ones (the
     // engine's own, every worker's plumbing) only with `internal` on.
     for (const fn of catalog.data.functions) {
-      if (!isEventSource(fn) || fn.function_id.startsWith('console::ui::'))
+      if (!isEventSource(fn) || fn.function_id.startsWith('ade::ui::'))
         continue
       if (!showInternal && isInternalSource(fn)) continue
       sources.set(fn.function_id, fn)

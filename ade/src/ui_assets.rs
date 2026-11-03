@@ -1,18 +1,18 @@
-//! Injectable console UI — the `console::ui::*` functions and asset registry.
+//! Injectable console UI — the `ade::ui::*` functions and asset registry.
 //!
 //! Implements the injection protocol from
 //! `iii/tech-specs/2026-07-17-injectable-ui/injection-protocol.md` with two
 //! private functions this worker hosts:
 //!
-//! - **`console::ui::asset`**: a worker ships one asset by observing it with
+//! - **`ade::ui::asset`**: a worker ships one asset by observing it with
 //!   args `{ kind: "script" | "style" | "module", path }` and its *content
-//!   function* as the target. Once the observer is active, the console calls
+//!   function* as the target. Once the observer is active, the ADE worker calls
 //!   the function with `{ path }` for that observer alone (metadata
 //!   `for_observer`); the function's deliver hook calls the content function
-//!   through the observer and answers with what it returns, which the console
+//!   through the observer and answers with what it returns, which the ADE worker
 //!   stores. Modules are served like scripts but the SPA loader never imports
 //!   them at mount — pages pull them on demand via `host.importModule`.
-//! - **`console::ui::on-assets-changed`**: console tabs observe it. Each new
+//! - **`ade::ui::on-assets-changed`**: console tabs observe it. Each new
 //!   observer gets one call of its own once it is active,
 //!   `{ op: "sync", assets }` (metadata `for_observer`), and every later
 //!   change is one call of the function with `{ op: "set", asset }` or
@@ -53,9 +53,9 @@ use crate::for_observer;
 
 /// The asset function: one observer per asset; the console calls it once per
 /// observer to fetch the asset's content.
-pub const ASSET_FN: &str = "console::ui::asset";
+pub const ASSET_FN: &str = "ade::ui::asset";
 /// The tabs' live feed of asset changes.
-pub const ON_ASSETS_CHANGED_FN: &str = "console::ui::on-assets-changed";
+pub const ON_ASSETS_CHANGED_FN: &str = "ade::ui::on-assets-changed";
 
 /// Late rejection of an asset observer a later observer of its path replaced.
 pub const CODE_SUPERSEDED: &str = "UI_ASSET_SUPERSEDED";
@@ -67,7 +67,7 @@ pub const CODE_TOO_LARGE: &str = "UI_ASSET_TOO_LARGE";
 const CODE_INVALID_ARGS: &str = "INVALID_ARGS";
 
 /// Max bytes per fetched asset. Multi-MiB assets are a bundling smell; the
-/// cap keeps a misbehaving worker from ballooning console memory.
+/// cap keeps a misbehaving worker from ballooning ADE worker memory.
 const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 
 /// Content-fetch budget per asset: 2 attempts × 3s + 250ms backoff ≈ 6.5s
@@ -76,14 +76,14 @@ const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 const FETCH_ATTEMPTS: u32 = 2;
 const FETCH_TIMEOUT_MS: u64 = 3_000;
 const FETCH_BACKOFF_MS: u64 = 250;
-/// What the console's call of `console::ui::asset` allows its deliver hook
+/// What the console's call of `ade::ui::asset` allows its deliver hook
 /// beyond the content function's own budget, so the content function's
 /// timeout is the one that answers.
 const FETCH_HOOK_MARGIN_MS: u64 = 500;
 /// Budget of a tab's `sync` call: it runs in the queue too.
 const SYNC_TIMEOUT_MS: u64 = 5_000;
 
-/// Args of a `console::ui::asset` observer (`additionalProperties` refused).
+/// Args of a `ade::ui::asset` observer (`additionalProperties` refused).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AssetArgs {
@@ -138,7 +138,7 @@ pub struct AssetRef {
     pub hash: String,
 }
 
-/// The event `console::ui::on-assets-changed` is called with, and what its
+/// The event `ade::ui::on-assets-changed` is called with, and what its
 /// observers receive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "lowercase")]
@@ -153,7 +153,7 @@ pub enum UiAssetsEvent {
 
 #[derive(Debug, Clone)]
 pub struct Asset {
-    /// The `console::ui::asset` observer that ships it.
+    /// The `ade::ui::asset` observer that ships it.
     pub observer_id: String,
     pub kind: AssetKind,
     /// First 16 hex chars of sha256(content) — the version that travels in
@@ -198,7 +198,7 @@ fn worker_of(path: &str) -> &str {
     path.split('/').next().unwrap_or(path)
 }
 
-/// The console's own injected UI ships the form that flips these toggles —
+/// The ADE worker's own injected UI ships the form that flips these toggles —
 /// letting it disable itself would lock the operator out of the UI that
 /// re-enables workers. Guarded here (the enforcement point), not just in
 /// the form.
@@ -241,7 +241,7 @@ impl RegistryInner {
 }
 
 /// In-memory asset registry. Rebuilt from the observers the engine announces
-/// again on console restart; deliberately not persisted.
+/// again on ADE worker restart; deliberately not persisted.
 #[derive(Default)]
 pub struct UiRegistry {
     inner: Mutex<RegistryInner>,
@@ -329,14 +329,14 @@ pub trait UiBus: Send + Sync + 'static {
     /// Resolves `true` once the observer is accepted (active), `false` when
     /// it was rejected or removed first.
     async fn accepted(&self, observer_id: &str) -> bool;
-    /// Call `console::ui::asset` with `{path}` for one asset observer; its
+    /// Call `ade::ui::asset` with `{path}` for one asset observer; its
     /// deliver hook calls the observer's target (the worker's content
     /// function) and answers `{content, content_type?}`.
     async fn fetch_content(&self, observer_id: &str, path: &str) -> Result<FetchedContent, String>;
-    /// Call `console::ui::on-assets-changed` with an event for one tab's
+    /// Call `ade::ui::on-assets-changed` with an event for one tab's
     /// observer alone (metadata `for_observer`).
     async fn publish_for(&self, observer_id: &str, event: UiAssetsEvent);
-    /// Call `console::ui::on-assets-changed` with an event, which iii
+    /// Call `ade::ui::on-assets-changed` with an event, which iii
     /// delivers to every tab observing it.
     async fn publish(&self, event: UiAssetsEvent);
     /// Late-reject an asset observer: it stops being active, and its
@@ -457,18 +457,18 @@ impl UiBus for SdkBus {
 }
 
 enum QueueEvent {
-    /// A `console::ui::asset` observer was added: once accepted, fetch its
+    /// A `ade::ui::asset` observer was added: once accepted, fetch its
     /// content and publish it.
     AssetAdded {
         observer_id: String,
         args: AssetArgs,
     },
-    /// A `console::ui::asset` observer was removed.
+    /// A `ade::ui::asset` observer was removed.
     AssetRemoved {
         observer_id: String,
         ack: oneshot::Sender<()>,
     },
-    /// A `console::ui::on-assets-changed` observer was added: once accepted,
+    /// A `ade::ui::on-assets-changed` observer was added: once accepted,
     /// send it the served set.
     TabAdded { observer_id: String },
     /// Replace the per-worker disable set (from the console configuration
@@ -508,7 +508,7 @@ impl UiControl {
     }
 }
 
-/// Validate a `console::ui::asset` observer's args: the path rules and an
+/// Validate a `ade::ui::asset` observer's args: the path rules and an
 /// extension that fits the kind.
 fn validate_args(args: &AssetArgs) -> Result<(), String> {
     validate_path(&args.path)?;
@@ -744,9 +744,9 @@ impl Processor {
     }
 }
 
-/// Register `console::ui::asset` and `console::ui::on-assets-changed` with
+/// Register `ade::ui::asset` and `ade::ui::on-assets-changed` with
 /// their observer hooks, and spawn the queue consumer. Returns the registry
-/// the HTTP routes and `console::ui-manifest` read from, plus the control
+/// the HTTP routes and `ade::ui-manifest` read from, plus the control
 /// handle the configuration module feeds the per-worker toggles through.
 pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     let registry = Arc::new(UiRegistry::default());
@@ -840,9 +840,9 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
             .description(
                 "A worker's injected console UI asset. Observe it once per asset with args \
                  { kind: 'script' | 'style' | 'module', path } and the worker's content \
-                 function as the target. Once the observer is active, the console calls this \
+                 function as the target. Once the observer is active, the ADE worker calls this \
                  function with { path } for that observer alone, and the target receives \
-                 { path } and answers { content, content_type? }, which the console serves. \
+                 { path } and answers { content, content_type? }, which the ADE worker serves. \
                  A later observer of the same path supersedes the earlier one \
                  (UI_ASSET_SUPERSEDED); a failed fetch rejects the observer \
                  (UI_ASSET_FETCH_FAILED). An observer announced again after its worker \
@@ -869,7 +869,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     (registry, control)
 }
 
-/// What the console calls `console::ui::asset` with, and what its deliver
+/// What the console calls `ade::ui::asset` with, and what its deliver
 /// hook sends the asset observer's target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ContentRequest {
@@ -877,7 +877,7 @@ pub struct ContentRequest {
     pub path: String,
 }
 
-/// `console::ui::asset`'s deliver hook. A content fetch is a call for one
+/// `ade::ui::asset`'s deliver hook. A content fetch is a call for one
 /// asset observer (its match hook gives the call to that observer alone):
 /// the hook calls the observer's target, the worker's content function,
 /// through the observer with `{ path }`, and the call answers with what the

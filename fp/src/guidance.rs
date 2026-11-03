@@ -110,7 +110,7 @@ place: `results: [{ id, function, status: "ok", result, chars } | { id, function
 "error", code, message }]`, `ok` false when any failed. Defaults: 10 s per call, 16 KB per
 result (a bigger one comes back cut as text with `truncated: true` — use a pipe to move it),
 12 calls (more runs but warns: the whole response must still fit through the chat). Nothing is
-threaded between calls; a chain is a pipe. The same step exclusions apply."#;
+threaded between calls; a chain is a pipe. A batch is not a pipe step and a pipe is not a batch call; the same step exclusions apply."#;
 
 /// The `pre_generate` hook envelope slice we read; the generation context is nested
 /// under `generate`.
@@ -313,6 +313,7 @@ mod tests {
             "no schema lookup needed",
             "Producer responses are OBJECTS",
             "fp::get {path:\"/content_matches\"}",
+            "a pipe is not a batch call",
         ] {
             assert!(GUIDANCE.contains(needle), "missing: {needle}");
         }

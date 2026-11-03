@@ -431,11 +431,11 @@ iii.registerFunction(
   },
 )
 
-// One `console::ui::asset` observer per asset; the console fetches its
+// One `ade::ui::asset` observer per asset; the console fetches its
 // content by calling through the observer with `{ path }`.
 const observeUiAsset = (path) => {
   const handle = iii.observe(
-    { function_id: 'console::ui::asset', args: { kind: uiAssets[path].kind, path } },
+    { function_id: 'ade::ui::asset', args: { kind: uiAssets[path].kind, path } },
     'learn-iii::ui-content',
   )
   handle.onStateChange((state, reason) => {

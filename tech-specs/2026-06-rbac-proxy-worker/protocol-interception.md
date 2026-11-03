@@ -8,8 +8,8 @@ flows over the wire and what the proxy does to each frame.
 
 The transport mechanics — one outbound engine WebSocket per inbound connection,
 `axum::ws::Message` ↔ `tokio_tungstenite::Message` conversion, `tokio::select!`
-on the two pump halves, close propagation — are the `console`
-[`src/proxy.rs`](../../console/src/proxy.rs) pattern unchanged. The interceptor
+on the two pump halves, close propagation — are the `ade`
+[`src/proxy.rs`](../../ade/src/proxy.rs) pattern unchanged. The interceptor
 is spliced into each pump half.
 
 ## Frame format
@@ -354,7 +354,7 @@ Bridge contract:
   through verbatim to `{engine_url}/ws/channels/{channel_id}`.
 - Frames relay 1:1 in both directions: **Text↔Text, Binary↔Binary, Close↔Close**
   (preserving close code/reason), `Ping`/`Pong` pass through. This is the exact
-  `axum_to_tungstenite` / `tungstenite_to_axum` conversion `console` already
+  `axum_to_tungstenite` / `tungstenite_to_axum` conversion `ade` already
   uses.
 - **No auth function on the channel socket.** Channel access is independently
   validated by the engine against the `access_key` capability token (the engine
@@ -365,7 +365,7 @@ Bridge contract:
   channel sockets to the originating session can do so in the bridge, but it is
   not required for parity with the engine.)
 - **Failure to dial the engine channel** → close the downstream channel socket
-  with code `1011` (`internal error`), mirroring `console`'s dial-failure
+  with code `1011` (`internal error`), mirroring `ade`'s dial-failure
   handling.
 
 > **Backpressure / TTL.** The proxy bridge holds no buffer of its own beyond the

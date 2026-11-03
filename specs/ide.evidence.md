@@ -5,7 +5,7 @@
 - `pnpm test`: 44 files, 363 tests passed, including the new `scm-view.test.tsx` case (folder `a` actions receive `a/b/y.txt,a/x.txt`; `a/b` receives `a/b/y.txt`; Timeline markup unchanged by existing tests).
 
 ## Frontend, layers 2-4 — blocked
-- `console::ui-manifest` serves `ide/page.js` hash 020705eef9f0b844 (old build).
+- `ade::ui-manifest` serves `ide/page.js` hash 020705eef9f0b844 (old build).
 - The live ide worker is PID 2217192, started by compose project `my-project` as `cargo run --locked --bin ide` in /home/layon/workspaces/worktrees/workers-main-20260919/ide. UI is embedded at compile time, so changes in /home/layon/workspaces/workers/ide are not visible in the ADE until that worker runs this checkout.
 
 ## Delta: images open directly (C5)

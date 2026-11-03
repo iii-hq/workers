@@ -9,7 +9,7 @@
 //!   under `[data-iii-ui="pdf"]`.
 //!
 //! The registration machinery (content function `pdf::ui-content`, one
-//! `console::ui::asset` observer per asset, the `III_PDF_UI_WATCH` hot-reload
+//! `ade::ui::asset` observer per asset, the `III_PDF_UI_WATCH` hot-reload
 //! watcher)
 //! lives in the shared `iii-console-ui` crate; this module only names the
 //! assets and embeds their bytes.
@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn ui_builder_accepts_the_assets() {
-        // The builder panics on any path or kind the console would reject.
+        // The builder panics on any path or kind the ADE worker would reject.
         let _ = console_ui();
     }
 

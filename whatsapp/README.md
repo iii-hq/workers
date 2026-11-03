@@ -200,7 +200,7 @@ Read the [observer walkthrough](https://github.com/iii-hq/workers/blob/main/what
 | `configuration::on-updated` | filters `input.id` (the configuration entry) and `input.event_type` `configuration:updated` | `whatsapp::on-config-change` |
 | `http::on-request` | args `{ method: GET \| POST, path: /webhooks/whatsapp-cloud/<configuration ID>, public_webhook: true }` | `whatsapp::cloud::webhook::verify`, `whatsapp::cloud::webhook::receive` |
 | `http::on-request` | args `{ method: POST, path: /webhooks/whatsapp-flows/<configuration ID>, public_webhook: true }` | `whatsapp::cloud::flows::endpoint` |
-| `console::ui::asset` | args `{ kind: script, path: whatsapp/page.js }`, `{ kind: style, path: whatsapp/styles.css }` | `whatsapp::ui-content` |
+| `ade::ui::asset` | args `{ kind: script, path: whatsapp/page.js }`, `{ kind: style, path: whatsapp/styles.css }` | `whatsapp::ui-content` |
 | `quick-tunnel::on-changed` | filter `input.tunnel_id` `webhooks` | `whatsapp::cloud::tunnel::changed` |
 
 Each observer stays pending until its provider runs; a refused observer is logged and the worker keeps serving its own functions.

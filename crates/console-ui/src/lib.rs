@@ -5,9 +5,9 @@
 //! One builder owns the whole worker-side registration contract so an author
 //! cannot get it subtly wrong:
 //!
-//! - the *content function* (`<worker>::ui-content` by default) the console
+//! - the *content function* (`<worker>::ui-content` by default) the ADE worker
 //!   calls through each asset's observer with `{path}` to fetch its source,
-//! - one observer of `console::ui::asset` per asset, with args
+//! - one observer of `ade::ui::asset` per asset, with args
 //!   `{ kind: "script" | "style" | "module", path }` and the content function
 //!   as its target (the SDK replays it by id after a reconnect, and the
 //!   engine disposes it once the worker stays disconnected). Modules and
@@ -32,13 +32,13 @@
 //! ```
 //!
 //! The builder panics on wire-contract violations (bad path, extension/kind
-//! mismatch, duplicate path) — the console would reject the registration
+//! mismatch, duplicate path) — the ADE worker would reject the registration
 //! anyway, and a panic at first boot or in a unit test is a far shorter
 //! feedback loop than a warn-log on a running engine.
 //!
 //! This crate is linked by path (`iii-console-ui = { path =
 //! "../crates/console-ui" }`) and deliberately not published: it versions
-//! with the console worker in this repo, not with the SDK.
+//! with the ADE worker in this repo, not with the SDK.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -81,7 +81,7 @@ pub fn register_configuration_identity(iii: &IIIClient, worker: &str, id: &'stat
 
 /// The console's asset function: one observer per asset, its args naming the
 /// asset and its target the content function.
-const ASSET_FN: &str = "console::ui::asset";
+const ASSET_FN: &str = "ade::ui::asset";
 const WATCH_POLL: Duration = Duration::from_millis(1000);
 /// Console-enforced ceiling on the `path` arg's length.
 const MAX_PATH_LEN: usize = 512;
@@ -111,7 +111,7 @@ enum AssetKind {
 }
 
 impl AssetKind {
-    /// The `kind` arg of the asset's `console::ui::asset` observer.
+    /// The `kind` arg of the asset's `ade::ui::asset` observer.
     fn as_str(self) -> &'static str {
         match self {
             AssetKind::Script => "script",
@@ -187,7 +187,7 @@ impl ConsoleUi {
     /// `import()` and call `setup(host)` on). `content` is the initial
     /// source — typically `include_str!` of the build output.
     ///
-    /// Panics on a path the console would reject (see crate docs).
+    /// Panics on a path the ADE worker would reject (see crate docs).
     pub fn script(self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.asset(AssetKind::Script, path.into(), content.into())
     }
@@ -195,7 +195,7 @@ impl ConsoleUi {
     /// Add a `style` asset (a stylesheet the console tabs mount as a
     /// `<link>`); every rule must be scoped under `[data-iii-ui="<worker>"]`.
     ///
-    /// Panics on a path the console would reject (see crate docs).
+    /// Panics on a path the ADE worker would reject (see crate docs).
     pub fn style(self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.asset(AssetKind::Style, path.into(), content.into())
     }
@@ -206,7 +206,7 @@ impl ConsoleUi {
     /// (a terminal emulator, a diagram renderer) stays out of every tab's
     /// first load.
     ///
-    /// Panics on a path the console would reject (see crate docs).
+    /// Panics on a path the ADE worker would reject (see crate docs).
     pub fn module(self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.asset(AssetKind::Module, path.into(), content.into())
     }
@@ -250,7 +250,7 @@ impl ConsoleUi {
         self
     }
 
-    /// Register the content function and observe `console::ui::asset` once
+    /// Register the content function and observe `ade::ui::asset` once
     /// per asset; spawn the dev watcher when the watch env var is set. Call
     /// once, after the worker's regular functions are registered, inside a
     /// tokio runtime.
@@ -307,7 +307,7 @@ impl ConsoleUi {
                 })
                 .description(format!(
                     "Serve the {worker} worker's injected console UI assets (the target of \
-                     its console::ui::asset observers; the console calls it through each \
+                     its ade::ui::asset observers; the console calls it through each \
                      asset's observer with {{path}})."
                 ))
                 // Console plumbing, not an API for agents/workers to discover.
@@ -386,7 +386,7 @@ fn observe_watched(iii: &Arc<IIIClient>, function_id: &str, spec: AssetSpec) -> 
     }
 }
 
-/// Enforce the console's path rules at build time — the console rejects the
+/// Enforce the ADE worker's path rules at build time — it rejects the
 /// registration otherwise, with a much slower feedback loop.
 fn validate_path(path: &str, kind: AssetKind) {
     assert!(!path.is_empty(), "ui asset path must not be empty");
@@ -480,7 +480,7 @@ impl Served {
     }
 }
 
-/// Observe `console::ui::asset` for one asset, with the content function as
+/// Observe `ade::ui::asset` for one asset, with the content function as
 /// the target. A rejection is logged when it arrives.
 fn observe_asset(
     iii: &Arc<IIIClient>,
@@ -512,7 +512,7 @@ fn observe_asset(
     handle
 }
 
-/// The args of an asset's `console::ui::asset` observer.
+/// The args of an asset's `ade::ui::asset` observer.
 fn asset_args(kind: AssetKind, path: &str) -> serde_json::Value {
     serde_json::json!({ "kind": kind.as_str(), "path": path })
 }
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn each_asset_observes_the_asset_function_with_kind_and_path_args() {
-        assert_eq!(ASSET_FN, "console::ui::asset");
+        assert_eq!(ASSET_FN, "ade::ui::asset");
         assert_eq!(
             asset_args(AssetKind::Script, "demo/page.js"),
             serde_json::json!({ "kind": "script", "path": "demo/page.js" })

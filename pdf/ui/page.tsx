@@ -1,7 +1,7 @@
 /**
  * Entry for the pdf worker's injected console UI — compiled by esbuild (react
  * and @iii-dev/console-ui external) into dist/page.js and served over a
- * `console::ui::asset` observer with `{ kind: 'script' }` (see src/ui.rs). The
+ * `ade::ui::asset` observer with `{ kind: 'script' }` (see src/ui.rs). The
  * stylesheet is its own asset: ./styles.css ships as a `style` asset,
  * pdf/styles.css.
  *

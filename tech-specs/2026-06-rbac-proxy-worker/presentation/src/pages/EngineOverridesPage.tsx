@@ -75,7 +75,7 @@ export function EngineOverridesPage() {
             </SpecRow>
             <SpecRow name="refresh" type="ttl + observer">
               lazy on a short ttl, proactively when engine::on-functions-changed
-              is called, mirroring console&apos;s function-list cache.
+              is called, mirroring ade&apos;s function-list cache.
             </SpecRow>
           </div>
         </SpecSheet>

@@ -1,7 +1,7 @@
 /**
  * Entry for the shell worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served
- * as a `console::ui::asset` of kind `script` (see src/ui.rs). The
+ * as a `ade::ui::asset` of kind `script` (see src/ui.rs). The
  * stylesheet is its own asset: ./styles.css ships as kind `style`, at
  * ide/styles.css.
  *

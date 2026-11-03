@@ -1,4 +1,4 @@
-//! The compose project watch behind `console::compose::on-changed`: one
+//! The compose project watch behind `ade::compose::on-changed`: one
 //! filesystem watch of the daemon's state dir and the compose file's dir,
 //! started with the function's first observer and closed with its last.
 
@@ -54,7 +54,7 @@ pub enum ChangeKind {
     File,
 }
 
-/// The event `console::compose::on-changed` is called with: what changed
+/// The event `ade::compose::on-changed` is called with: what changed
 /// (`state`: the daemon wrote state.json; `file`: the compose file), in
 /// which project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -140,7 +140,7 @@ impl WatchBackend for ComposeFs {
     }
 }
 
-/// The watch `console::compose::on-changed` runs while it is observed: the
+/// The watch `ade::compose::on-changed` runs while it is observed: the
 /// added hook starts it with the first observer (and re-arms one that
 /// dropped), the removed hook closes it with the last.
 #[derive(Clone)]
@@ -371,7 +371,7 @@ fn changes_for_event(
     changes
 }
 
-/// Call `console::compose::on-changed` once with the change, when anyone
+/// Call `ade::compose::on-changed` once with the change, when anyone
 /// observes it.
 fn emit_change(iii: &Arc<IIIClient>, location: &ProjectLocation, kind: ChangeKind, path: String) {
     if !iii.is_observed(ON_CHANGED_FN) {

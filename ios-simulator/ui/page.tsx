@@ -1,6 +1,6 @@
 /**
  * Entry for the ios-simulator worker's console UI (src/ui.rs serves the
- * built dist/page.js as a `script` asset of `console::ui::asset`, and
+ * built dist/page.js as a `script` asset of `ade::ui::asset`, and
  * styles.css as a `style` asset).
  *
  * - src/page/ — the Simulators page: a device rail and a live iPhone you

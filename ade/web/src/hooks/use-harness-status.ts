@@ -24,7 +24,7 @@ import { useWorkersChanged } from './use-workers-changed'
 /** Registry name + engine worker name for the harness meta-worker. */
 const HARNESS_WORKER_NAME = 'harness'
 /** Base id for the browser-local workers-changed handler. */
-const HARNESS_WATCH_FN = 'console::harness-watch'
+const HARNESS_WATCH_FN = 'ade::harness-watch'
 
 /** One line in the install console. */
 export interface InstallStage {

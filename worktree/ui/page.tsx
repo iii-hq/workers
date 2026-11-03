@@ -1,7 +1,7 @@
 /**
  * Entry for the worktree worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served over
- * an observer of `console::ui::asset` with `kind: 'script'` (see src/ui.rs).
+ * an observer of `ade::ui::asset` with `kind: 'script'` (see src/ui.rs).
  * The stylesheet is its own asset: ../styles.css ships with `kind: 'style'`
  * as worktree/styles.css —
  * the console mounts and link-swaps it, styles-before-scripts on boot.

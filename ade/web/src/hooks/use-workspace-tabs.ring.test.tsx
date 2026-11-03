@@ -137,7 +137,7 @@ describe('workspace layout ring', () => {
 
     await settle(1_000)
     expect(observers).toEqual([
-      expect.objectContaining({ source: 'console::workspace::on-changed' }),
+      expect.objectContaining({ source: 'ade::workspace::on-changed' }),
     ])
   })
 
@@ -151,7 +151,7 @@ describe('workspace layout ring', () => {
     await settle(15_000)
     expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(1)
 
-    // The console rings each observer once when it is accepted: a catch-up read.
+    // The ADE worker rings each observer once when it is accepted: a catch-up read.
     server = home(['chat', 'traces'])
     await ring()
     await settle()

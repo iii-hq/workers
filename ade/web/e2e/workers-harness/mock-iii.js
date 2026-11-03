@@ -185,7 +185,7 @@ async function call(functionId, payload = {}, options) {
       }
     case 'compose::list':
       return { projects: [{ namespace: 'iii-local', file, containers }] }
-    case 'console::compose::project':
+    case 'ade::compose::project':
       return {
         file,
         namespace: 'iii-local',
@@ -241,7 +241,7 @@ async function call(functionId, payload = {}, options) {
           ? []
           : [
               {
-                function_id: `${name === 'ade' ? 'console' : name}::configuration-id`,
+                function_id: `${name}::configuration-id`,
                 worker_name: name,
                 namespace: 'workers-test',
               },
@@ -249,7 +249,7 @@ async function call(functionId, payload = {}, options) {
         observers: [],
       }
     }
-    case 'console::configuration-id':
+    case 'ade::configuration-id':
       return { id: 'actual-ade-config' }
     case 'agent::configuration-id':
       return { id: 'actual-agent-config' }
@@ -266,7 +266,7 @@ async function call(functionId, payload = {}, options) {
     }
     case 'engine::functions::list':
       return { functions: [] }
-    case 'console::compose::container': {
+    case 'ade::compose::container': {
       if (harness.readDelay)
         await new Promise((resolve) => setTimeout(resolve, harness.readDelay))
       if (harness.loadFailures > 0) {
@@ -342,14 +342,14 @@ async function call(functionId, payload = {}, options) {
           },
         ],
       }
-    case 'console::compose::versions':
+    case 'ade::compose::versions':
       return {
         container: payload.container,
         reference: payload.container,
         declared: null,
         versions: [],
       }
-    case 'console::compose::edit': {
+    case 'ade::compose::edit': {
       if (harness.saveDelay)
         await new Promise((resolve) => setTimeout(resolve, harness.saveDelay))
       if (harness.saveMode === 'error')

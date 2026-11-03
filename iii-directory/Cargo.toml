@@ -39,8 +39,8 @@ dirs = "5"
 # stay scan-on-demand — the watch only calls the on-change doorbells).
 notify = "8"
 # Injectable console UI registration (content function + one
-# console::ui::asset observer per asset + dev watcher). Path-linked, never
-# published — versions with the console worker in this repo.
+# ade::ui::asset observer per asset + dev watcher). Path-linked, never
+# published — versions with the ADE worker in this repo.
 iii-console-ui = { path = "../crates/console-ui" }
 # Hook-observer reconcile (ObserverSlot) for the pre-generate hint —
 # the configuration register/fetch here stays hand-rolled on purpose.

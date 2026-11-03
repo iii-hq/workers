@@ -14,7 +14,7 @@ const writers = new WeakMap<QueryClient, SerializedConfigWriter>()
 
 /**
  * The one writer for the workspace layout document
- * (`console::workspace::get` / `set`).
+ * (`ade::workspace::get` / `set`).
  *
  * The layout used to share the `console` configuration entry — and its
  * writer — with the traces preferences. It now has its own store, so it gets

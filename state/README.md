@@ -83,10 +83,10 @@ the incoming value instead). The observer is disposed with the page; the
   `@iii-dev/console-ui` external — they resolve through the console's
   import map at runtime. Types come from the workspace-linked
   `packages/console-ui` (repo-root pnpm workspace).
-- Deployment: boot observes `console::ui::asset` twice, with args
+- Deployment: boot observes `ade::ui::asset` twice, with args
   `{ kind: 'script', path: 'state/page.js' }` and
   `{ kind: 'style', path: 'state/styles.css' }`, both targeting
-  `state::ui-content`; the console fetches, hashes, and serves the assets,
+  `state::ui-content`; the ADE worker fetches, hashes, and serves the assets,
   and drops them when this worker disconnects. The
   stylesheet is scoped under `[data-iii-ui="state"]` and mounted as a
   `<link>` (styles-before-scripts on boot, link-swap on change).

@@ -1,7 +1,7 @@
 /**
  * Entry for the computer worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served as a
- * `script` asset, one `console::ui::asset` observer (see src/ui.rs). The
+ * `script` asset, one `ade::ui::asset` observer (see src/ui.rs). The
  * stylesheet is its own `style` asset, computer/styles.css — the console
  * mounts and link-swaps it, styles-before-scripts on boot.
  *

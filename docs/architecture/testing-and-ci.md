@@ -54,7 +54,7 @@ Skill documentation is optional and is not part of this validation gate.
 | Node | `biome ci` | `npm test` (if `tests/` exists) |
 | Python | `ruff check`, `ruff format --check` | `pytest` (if `tests/` exists) |
 
-Workers with `web/package.json` (e.g. `console`) pre-build the SPA before cargo
+Workers with `web/package.json` (e.g. `ade`) pre-build the SPA before cargo
 in both `rust` and `interface-smoke` jobs.
 
 ### Rust reproducibility and caches

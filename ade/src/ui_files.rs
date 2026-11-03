@@ -1,6 +1,6 @@
 //! `GET /ui-files/:worker/*path` — documents and assets a worker serves for
 //! its own iframes (the stories worker's built story pages and their
-//! chunks). The console pulls the bytes through `<worker>::ui-file { path }`
+//! chunks). The ADE worker pulls the bytes through `<worker>::ui-file { path }`
 //! → `{ content_base64 | content, content_type, cache? }` and answers with
 //! them. The route exists so an injected page can embed a worker-served
 //! document without the worker opening a port: every request goes over the
@@ -18,7 +18,7 @@ use crate::server::AppState;
 
 const FETCH_TIMEOUT_MS: u64 = 15_000;
 /// Story bundles include the project's React and CSS; 32 MiB leaves room
-/// for an unminified chunk graph while bounding console memory.
+/// for an unminified chunk graph while bounding ADE worker memory.
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 
 pub fn valid_worker(name: &str) -> bool {
@@ -101,7 +101,7 @@ pub async fn ui_file_handler(
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, cache)
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-        // The console's defaults deny framing everywhere; these documents
+        // The ADE worker's defaults deny framing everywhere; these documents
         // exist to be framed by the console's own injected pages.
         .header(header::X_FRAME_OPTIONS, "SAMEORIGIN")
         .header(

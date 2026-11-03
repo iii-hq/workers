@@ -23,7 +23,7 @@ import { ProviderIcon } from './ProviderIcon'
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 /** Base id for the browser-local handler observing worker joins. */
-const PROVIDER_ADD_WATCH_FN = 'console::provider-add-watch'
+const PROVIDER_ADD_WATCH_FN = 'ade::provider-add-watch'
 
 type AddStatus =
   | { kind: 'adding'; progress?: number }

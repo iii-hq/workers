@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn the_call_names_its_observer_in_metadata() {
-        let request = call("console::ui::asset", json!({ "path": "a/b.js" }), "obs-1");
+        let request = call("ade::ui::asset", json!({ "path": "a/b.js" }), "obs-1");
         let debug = format!("{request:?}");
         assert!(debug.contains("for_observer"), "{debug}");
         assert!(debug.contains("obs-1"), "{debug}");

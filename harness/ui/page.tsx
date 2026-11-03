@@ -1,7 +1,7 @@
 /**
  * Entry for the harness worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served as a
- * `script` asset through `console::ui::asset` (see src/ui.rs). The
+ * `script` asset through `ade::ui::asset` (see src/ui.rs). The
  * stylesheet is its own `style` asset: ../styles.css ships as
  * harness/styles.css.
  *

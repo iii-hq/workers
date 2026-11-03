@@ -14,7 +14,7 @@
 //!   styles-before-scripts on boot.
 //!
 //! The registration machinery (content function
-//! `sandbox-code-runner::ui-content`, one observer of `console::ui::asset` per asset,
+//! `sandbox-code-runner::ui-content`, one observer of `ade::ui::asset` per asset,
 //! `III_SANDBOX_CODE_RUNNER_UI_WATCH` hot-reload watcher) lives in the shared
 //! `iii-console-ui` crate (path-linked from `workers/crates/console-ui`);
 //! this module only names the assets and embeds their bytes.
@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn ui_builder_accepts_the_assets() {
-        // The builder panics on any path/kind the console would reject.
+        // The builder panics on any path/kind the ADE worker would reject.
         let _ = console_ui();
     }
 

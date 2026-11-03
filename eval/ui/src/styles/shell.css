@@ -549,15 +549,6 @@
   min-height: 44px;
 }
 
-/* ── confirmations ───────────────────────────────────────────────────── */
-
-/* The details of a confirmation are whole sentences: they wrap instead of ending in an ellipsis. */
-[data-iii-ui="eval"] [role="alertdialog"] li.truncate {
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
-}
-
 /* ── detail: notices ─────────────────────────────────────────────────── */
 
 /* The one action of a notice sits inside it, under the facts. */

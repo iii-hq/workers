@@ -148,9 +148,9 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    // Injectable console UI: content function + one `console::ui::asset`
+    // Injectable console UI: content function + one `ade::ui::asset`
     // observer per asset. Ordering doesn't matter for the console side (an
-    // observer stays pending until the console hosts the function), but the
+    // observer stays pending until an ADE worker hosts the function), but the
     // content function must exist before an observer names it.
     ui::register(&iii);
 

@@ -7,17 +7,17 @@ import {
 } from './stored-records'
 
 describe('sourceOfStored', () => {
-  it('reads the console asset types as console::ui::asset with kind and path', () => {
+  it('reads the console asset types as ade::ui::asset with kind and path', () => {
     for (const kind of ['script', 'style', 'module']) {
       expect(
         sourceOfStored(`console:${kind}`, { path: `state/page.${kind}` }),
       ).toEqual({
-        function_id: 'console::ui::asset',
+        function_id: 'ade::ui::asset',
         args: { kind, path: `state/page.${kind}` },
       })
     }
     expect(sourceOfStored('console:assets', {})).toEqual({
-      function_id: 'console::ui::on-assets-changed',
+      function_id: 'ade::ui::on-assets-changed',
     })
   })
 
@@ -161,7 +161,7 @@ describe('takesArgs', () => {
       'harness::hook::on-post-call',
       'harness::hook::on-post-turn',
       'harness::on-timer',
-      'console::ui::asset',
+      'ade::ui::asset',
       'shell::on-changed',
       'shell::on-git-changed',
       'shell::on-job-finished',
@@ -226,7 +226,7 @@ describe('observerFiredOf', () => {
     })
   })
 
-  it('reads a stored console asset record as console::ui::asset', () => {
+  it('reads a stored console asset record as ade::ui::asset', () => {
     expect(
       observerFiredOf({
         subscription_id: 'sub-2',
@@ -239,7 +239,7 @@ describe('observerFiredOf', () => {
       }),
     ).toMatchObject({
       observer_id: 'sub-2',
-      function_id: 'console::ui::asset',
+      function_id: 'ade::ui::asset',
       args: { kind: 'module', path: 'ide/xterm.js' },
     })
   })

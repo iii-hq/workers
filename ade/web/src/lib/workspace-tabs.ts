@@ -4,7 +4,7 @@
  * `workers`, …), a worker-injected page (`ext:<page-id>`), or the chat
  * view (`chat`).
  *
- * Tabs are server-persisted by the console worker in
+ * Tabs are server-persisted by the ADE worker in
  * `<data_dir>/workspace.json` (`lib/workspace-layout.ts`) as one flat
  * document — `tabs` plus the active pointer `activeTabId` and its
  * provenance — following the same read-modify-write convention as the
@@ -24,8 +24,8 @@ import { moveItem } from '@/lib/reorder'
 export type TabScreen = string
 
 /**
- * The persisted layout document, as stored and served by the console worker
- * (`console::workspace::get` / `set`). Parsers below read `tabs`,
+ * The persisted layout document, as stored and served by the ADE worker
+ * (`ade::workspace::get` / `set`). Parsers below read `tabs`,
  * `activeTabId`, `activatedAt` and `activatedBy` out of it; writers keep
  * every other key untouched.
  */
@@ -710,7 +710,7 @@ export function adjacentTabId(
 }
 
 /** Where the tabs in hand come from: `pending` until the first server
-    answer, `server` while the console worker's layout store is readable,
+    answer, `server` while the ADE worker's layout store is readable,
     `local` when it is not (the localStorage copy). */
 export type WorkspaceLayoutSource = 'pending' | 'server' | 'local'
 
@@ -756,7 +756,7 @@ export interface OpenWorkspaceScreenResult {
  * A named anchor (anything but the generic chat) is looked for in every tab,
  * the active one first, so the screen lands beside the one its caller can
  * see; the generic chat anchor stays on the active tab. Mirrors
- * `open_screen` in the console worker (shared fixtures).
+ * `open_screen` in the ADE worker (shared fixtures).
  */
 export function withWorkspaceScreenOpened(
   tabs: WorkspaceTab[],

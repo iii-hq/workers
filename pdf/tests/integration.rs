@@ -236,7 +236,7 @@ async fn caller_mistakes_come_back_as_errors() {
 
 /// This worker is called on demand, so it must cost a turn that has nothing to
 /// do with a document exactly nothing. Its only observers are its console UI
-/// assets (`console::ui::asset`) and its configuration reload
+/// assets (`ade::ui::asset`) and its configuration reload
 /// (`configuration::on-updated`): none of `harness::hook::on-*` or any other
 /// turn source. It hosts no event source either (no private function). An
 /// agent finds it through the function registry, and a person finds it
@@ -290,9 +290,9 @@ async fn the_worker_never_runs_on_a_turn_that_does_not_ask_for_it() {
         assert_eq!(
             observed,
             [
+                ("ade::ui::asset", "pdf::ui-content"),
+                ("ade::ui::asset", "pdf::ui-content"),
                 ("configuration::on-updated", "pdf::on-config-change"),
-                ("console::ui::asset", "pdf::ui-content"),
-                ("console::ui::asset", "pdf::ui-content"),
             ],
             "pdf observes its UI assets and its configuration, nothing else: {listed}"
         );

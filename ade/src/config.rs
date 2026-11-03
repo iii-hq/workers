@@ -1,14 +1,14 @@
-//! Local seed/fallback configuration for the `console` worker.
+//! Local seed/fallback configuration for the `ade` worker.
 //!
 //! The YAML config file exposes three operator-facing knobs:
 //!
-//! - `http_host` — HTTP bind address. Defaults to `0.0.0.0` (all IPv4
-//!   interfaces); set `127.0.0.1` for local access only. Boot-time only.
+//! - `http_host` — HTTP bind address. Defaults to `127.0.0.1` (local access
+//!   only); set `0.0.0.0` to expose all IPv4 interfaces. Boot-time only.
 //! - `http_port` — first-registration seed/fallback for the TCP port serving
 //!   `/`, `/assets/*`, and `/ws`. Defaults to `3113`; after registration the
 //!   central `console.http_port` value is authoritative and hot-reloads.
 //! - `injectable_ui` — kill switch for runtime-injected worker UI
-//!   (the `console::ui::asset` and `console::ui::on-assets-changed`
+//!   (the `ade::ui::asset` and `ade::ui::on-assets-changed`
 //!   functions, the `/ui` + `/vendor` routes, and the SPA loader). Defaults
 //!   to `true`.
 //! - `data_dir` — first-registration seed/fallback for the directory holding
@@ -28,9 +28,9 @@ pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ConsoleConfig {
-    /// Interface the HTTP listener binds. Defaults to all IPv4 interfaces
-    /// (`0.0.0.0`); set `127.0.0.1` to limit the console and its engine
-    /// WebSocket proxy to local access.
+    /// Interface the HTTP listener binds. Defaults to `127.0.0.1`, limiting
+    /// the ADE worker and its engine WebSocket proxy to local access. Set
+    /// `0.0.0.0` to expose all IPv4 interfaces.
     #[serde(default = "default_http_host")]
     pub http_host: String,
     #[serde(default = "default_http_port")]
@@ -44,7 +44,7 @@ pub struct ConsoleConfig {
 }
 
 fn default_http_host() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 
 fn default_http_port() -> u16 {
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn defaults_from_empty_yaml() {
         let cfg: ConsoleConfig = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(cfg.http_host, "0.0.0.0");
+        assert_eq!(cfg.http_host, "127.0.0.1");
         assert_eq!(cfg.http_port, 3113);
         assert!(cfg.injectable_ui);
         assert_eq!(cfg.data_dir, "data/ade");
@@ -96,9 +96,25 @@ mod tests {
     }
 
     #[test]
-    fn custom_yaml_overrides_http_host() {
-        let cfg: ConsoleConfig = serde_yaml::from_str("http_host: 127.0.0.1\n").unwrap();
-        assert_eq!(cfg.http_host, "127.0.0.1");
+    fn custom_yaml_allows_explicit_wildcard_host() {
+        let cfg: ConsoleConfig = serde_yaml::from_str("http_host: 0.0.0.0\n").unwrap();
+        assert_eq!(cfg.http_host, "0.0.0.0");
+    }
+
+    #[test]
+    fn shipped_configs_restrict_the_listener_to_loopback() {
+        let seed: ConsoleConfig = serde_yaml::from_str(include_str!("../config.yaml")).unwrap();
+        let worker: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../iii.worker.yaml")).unwrap();
+        let packaged: ConsoleConfig = serde_yaml::from_value(worker["config"].clone()).unwrap();
+
+        for cfg in [seed, packaged] {
+            let host: std::net::IpAddr = cfg.http_host.parse().unwrap();
+            assert!(
+                host.is_loopback(),
+                "shipped config exposes the ADE worker on {host}"
+            );
+        }
     }
 
     #[test]

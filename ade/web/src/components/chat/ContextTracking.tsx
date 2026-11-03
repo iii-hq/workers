@@ -72,7 +72,7 @@ export function useContextTracking({
     void getIiiClient()
       .then((client) =>
         client.call<{ items: ContextTrackingItem[] }>(
-          'console::context::list',
+          'ade::context::list',
           { session_id: sessionId },
         ),
       )

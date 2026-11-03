@@ -4,8 +4,8 @@
  *
  * The layout is ephemeral per-instance state (it changes on every click), so
  * it does NOT live in the `console` configuration entry — whose YAML is meant
- * to be committed — but in `<data_dir>/workspace.json`, owned by the console
- * worker and exposed through `console::workspace::get` / `set`
+ * to be committed — but in `<data_dir>/workspace.json`, owned by the ADE
+ * worker and exposed through `ade::workspace::get` / `set`
  * (`ade/src/functions/workspace.rs`). `data_dir` is the entry's `data_dir`
  * setting (default `data/ade`).
  *
@@ -17,15 +17,15 @@
  * writer's read and write (an agent's `open`, another browser) is never
  * erased: that writer reads again and re-applies its change.
  *
- * When the console worker's functions are unavailable (an older worker, or
+ * When the ADE worker's functions are unavailable (an older worker, or
  * the engine is unreachable), reads resolve to `null` and the strip degrades
  * to its localStorage copy.
  */
 
 import { getIiiClient } from '@/lib/iii-client'
 
-export const WORKSPACE_GET_FUNCTION_ID = 'console::workspace::get'
-export const WORKSPACE_SET_FUNCTION_ID = 'console::workspace::set'
+export const WORKSPACE_GET_FUNCTION_ID = 'ade::workspace::get'
+export const WORKSPACE_SET_FUNCTION_ID = 'ade::workspace::set'
 
 /** The stored document: `tabs`, `activeTabId`, `activatedAt`, `activatedBy`, … */
 export type WorkspaceLayoutValue = Record<string, unknown>
@@ -50,7 +50,7 @@ function isUnavailable(err: unknown): boolean {
 }
 
 /**
- * Read the whole layout document. `null` means the console worker does not
+ * Read the whole layout document. `null` means the ADE worker does not
  * expose the store — callers should fall back to the local copy rather than
  * erroring. An empty store answers `{}`.
  */

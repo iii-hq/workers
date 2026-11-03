@@ -1,7 +1,7 @@
 # Adversarial review: chat-owned Context tracking
 
 Target: PR #1505, implementation commit `a4ef9fb0aa234b13783a9313ed70995274929d16`.
-Console executable SHA-256: `ee1055111b48dbdede3cad406274ca9920cc31673ed426de88ba45f66b2d88a5`.
+ADE executable SHA-256: `ee1055111b48dbdede3cad406274ca9920cc31673ed426de88ba45f66b2d88a5`.
 
 These tests run an actual isolated iii engine, configuration worker,
 session-manager and the Console production bundle in Chromium. Each scenario has

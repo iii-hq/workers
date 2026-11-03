@@ -19,7 +19,7 @@
 //! (see `ui/mermaid-entry.ts` / `ui/freeform-entry.ts`).
 //!
 //! The registration machinery (content function `canvas::ui-content`, one
-//! `console::ui::asset` observer per asset, the `III_CANVAS_UI_WATCH`
+//! `ade::ui::asset` observer per asset, the `III_CANVAS_UI_WATCH`
 //! hot-reload watcher) lives in the shared `iii-console-ui` crate; this module only names
 //! the assets and embeds their bytes.
 //!
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn ui_builder_accepts_the_assets() {
-        // The builder panics on any path or kind the console would reject.
+        // The builder panics on any path or kind the ADE worker would reject.
         let _ = console_ui();
     }
 
@@ -102,7 +102,7 @@ mod tests {
         }
     }
 
-    /// The console rejects any asset over 8 MiB; the vendor bundles are the
+    /// The ADE worker rejects any asset over 8 MiB; the vendor bundles are the
     /// ones that can silently grow past it on a dependency bump.
     #[test]
     fn every_embedded_asset_stays_under_the_console_cap() {

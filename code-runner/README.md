@@ -294,8 +294,8 @@ to serve separately:
 
 | Asset | Slot | What it does |
 |---|---|---|
-| `code-runner/page.js` | `console::ui::asset`, `kind: script` | how `run` / `register_function` / `teardown` render in chat and the traces span view |
-| `code-runner/styles.css` | `console::ui::asset`, `kind: style` | the stylesheet, every rule scoped under `[data-iii-ui="code-runner"]` |
+| `code-runner/page.js` | `ade::ui::asset`, `kind: script` | how `run` / `register_function` / `teardown` render in chat and the traces span view |
+| `code-runner/styles.css` | `ade::ui::asset`, `kind: style` | the stylesheet, every rule scoped under `[data-iii-ui="code-runner"]` |
 
 One renderer per op, under `ui/src/function-call-message/`, sharing the card
 frame in `ui/src/lib/shared.tsx`. They replace the console's raw-JSON card,

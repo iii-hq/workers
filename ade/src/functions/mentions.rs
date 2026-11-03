@@ -1,8 +1,8 @@
-//! `console::mentions::trace::{search,get}` — the `@trace(id="<trace_id>")`
+//! `ade::mentions::trace::{search,get}` — the `@trace(id="<trace_id>")`
 //! chat mention provider.
 //!
 //! Traces belong to the engine (`engine::traces::*`), which registers no
-//! function metadata, so the console — the worker that owns the traces page
+//! function metadata, so the ADE worker — the one that owns the traces page
 //! — declares the provider and wraps `engine::traces::list`. Search feeds
 //! the composer's `@trace:` menu; get turns one trace id into the pill, the
 //! preview card and the agent's one-line summary. Agents read the span tree
@@ -20,8 +20,8 @@ use mention_contract::{
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
-pub const SEARCH_ID: &str = "console::mentions::trace::search";
-pub const GET_ID: &str = "console::mentions::trace::get";
+pub const SEARCH_ID: &str = "ade::mentions::trace::search";
+pub const GET_ID: &str = "ade::mentions::trace::get";
 pub const MENTION_NAME: &str = "trace";
 pub const ICON: &str = "trace";
 /// The console screen a trace opens in.

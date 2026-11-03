@@ -4,7 +4,7 @@
  * A step carries:
  *   - `anchors`: selectors for the console element the step talks about, best
  *     first. The first one is always the `learn-iii-*` class the console
- *     carries FOR THIS TOUR (added in console/web/src, and checked by
+ *     carries FOR THIS TOUR (added in ade/web/src, and checked by
  *     tests/); the ones after it are the console's own stable hooks, so the
  *     spotlight still lands on a console build that predates the anchor
  *     classes.

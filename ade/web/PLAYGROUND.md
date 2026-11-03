@@ -447,7 +447,7 @@ grep -E '"happy-(ask|agent)"|"abort-mid-thought"|"long-markdown"' dist/assets/*.
 ```
 
 Storybook builds separately: `pnpm build-storybook` emits `storybook-static/`,
-which is git-ignored and never embedded into the `console` binary.
+which is git-ignored and never embedded into the `ade` binary.
 
 ## Adding a new scenario
 

@@ -11,9 +11,9 @@ const RETIRED: &[(&str, &str)] = &[
         "agent::events",
         "claude::on-agent-event / pi::on-agent-event",
     ),
-    ("console:script", "console::ui::asset"),
-    ("console:style", "console::ui::asset"),
-    ("console:module", "console::ui::asset"),
+    ("console:script", "ade::ui::asset"),
+    ("console:style", "ade::ui::asset"),
+    ("console:module", "ade::ui::asset"),
 ];
 
 const SCANNED: &[&str] = &["rs", "md", "ts", "tsx", "mjs", "css", "yaml", "json"];

@@ -337,7 +337,7 @@ pub(crate) fn client_frame_to_engine(msg: AxumMessage) -> Option<TungMessage> {
 }
 
 /// Convert an axum `Message` into a tungstenite `Message` (verbatim from
-/// `console`). Returns `None` when the variant has no useful equivalent.
+/// `ade`). Returns `None` when the variant has no useful equivalent.
 pub(crate) fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungMessage> {
     Some(match msg {
         AxumMessage::Text(t) => TungMessage::Text(t),
@@ -352,7 +352,7 @@ pub(crate) fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungMessage> {
 }
 
 /// Convert a tungstenite `Message` into an axum `Message` (verbatim from
-/// `console`). Returns `None` for raw `Frame`.
+/// `ade`). Returns `None` for raw `Frame`.
 pub(crate) fn tungstenite_to_axum(msg: TungMessage) -> Option<AxumMessage> {
     Some(match msg {
         TungMessage::Text(t) => AxumMessage::Text(t),

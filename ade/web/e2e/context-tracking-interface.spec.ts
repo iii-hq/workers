@@ -7,7 +7,7 @@ test.skip(
   !process.env.CONTEXT_ENGINE_BIN ||
     !process.env.CONTEXT_SESSION_BIN ||
     !process.env.CONTEXT_CONSOLE_BIN,
-  'Interface smoke requires real engine, session-manager and Console binaries',
+  'Interface smoke requires real engine, session-manager and ADE binaries',
 )
 
 test('Context functions publish typed schemas accepted by the CI interface validator', async ({
@@ -15,10 +15,10 @@ test('Context functions publish typed schemas accepted by the CI interface valid
 }, info) => {
   const functions = []
   for (const function_id of [
-    'console::context::list',
-    'console::context::save',
-    'console::context::remove',
-    'console::context::inject-guidance',
+    'ade::context::list',
+    'ade::context::save',
+    'ade::context::remove',
+    'ade::context::inject-guidance',
   ]) {
     const detail = await stack.call('engine::functions::info', { function_id })
     functions.push({
@@ -42,19 +42,19 @@ test('Context functions publish typed schemas accepted by the CI interface valid
   ])
   const session_id = await stack.create('Typed guidance')
   expect(
-    await stack.call('console::context::inject-guidance', {
+    await stack.call('ade::context::inject-guidance', {
       session_id,
       generate: { system_prompt: 'BASE', tools: [] },
     }),
   ).toEqual({ mutations: {} })
-  const result = await stack.call('console::context::inject-guidance', {
+  const result = await stack.call('ade::context::inject-guidance', {
     session_id,
     generate: {
       system_prompt: 'BASE',
-      tools: [{ name: 'console::context::save' }],
+      tools: [{ name: 'ade::context::save' }],
     },
   })
-  expect(result.mutations.system_prompt).toContain('console::context::save')
+  expect(result.mutations.system_prompt).toContain('ade::context::save')
   await info.attach('context-interface', {
     path: file,
     contentType: 'application/json',

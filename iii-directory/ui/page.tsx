@@ -1,7 +1,7 @@
 /**
  * Entry for the iii-directory worker's injected console UI — compiled by
  * esbuild (react + @iii-dev/console-ui external) into dist/page.js and
- * served as a `script` asset of `console::ui::asset` (see src/ui.rs). The
+ * served as a `script` asset of `ade::ui::asset` (see src/ui.rs). The
  * stylesheet is its own `style` asset: ../styles.css ships as
  * iii-directory/styles.css.
  *

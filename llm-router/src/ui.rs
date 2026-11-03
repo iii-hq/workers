@@ -14,7 +14,7 @@
 //!   scoped under `[data-iii-ui="llm-router"]`.
 //!
 //! The registration machinery (content function `llm-router::ui-content`,
-//! one `console::ui::asset` observer per asset, `III_LLM_ROUTER_UI_WATCH` hot-reload
+//! one `ade::ui::asset` observer per asset, `III_LLM_ROUTER_UI_WATCH` hot-reload
 //! watcher) lives in the shared `iii-console-ui` crate; this module only
 //! names the assets and embeds their bytes.
 
@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn ui_builder_accepts_the_assets() {
-        // The builder panics on any path/kind the console would reject.
+        // The builder panics on any path/kind the ADE worker would reject.
         let _ = console_ui();
     }
 
