@@ -21,7 +21,7 @@ path = "src/main.rs"
 [dependencies]
 iii-sdk = "=0.26.0-rc.5"
 # The converter. Pure Rust, no system libraries, no subprocess, no network.
-# Registry-verified 0.1.9 with ZIP 9/calamine 0.37 security dependency fixes.
+# Registry-verified 0.1.9 with ZIP 9/calamine 0.38 security dependency fixes.
 # Remove the local patch once an upstream release carries these fixes.
 anydoc = { version = "=0.1.9", path = "vendor/anydoc" }
 base64 = "0.22"

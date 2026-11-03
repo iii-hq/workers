@@ -12,13 +12,16 @@ Published crate: https://crates.io/crates/anydoc/0.1.9
 ## Local changes
 
 - Upgrade `zip` from 8.6.0 to 9.0.5.
-- Upgrade `calamine` from 0.36.1 to 0.37.0, the release that uses ZIP 9.
+- Upgrade `calamine` from 0.36.1 to 0.38.0. 0.37.0 is the release that uses
+  ZIP 9; 0.38.0 also fixes the CFB/OLE2 parser panic and unbounded allocation
+  on malformed input (RUSTSEC-2026-0436).
 - Keep the converter implementation and public API unchanged.
 - Express one existing multiline test string with newline escapes, preserving
   its exact expected bytes while avoiding a trailing-whitespace diff error.
 
 These updates remove ZIP 8 from the document worker's dependency graph and
-address RUSTSEC-2026-0367, RUSTSEC-2026-0368, and RUSTSEC-2026-0369 without
+address RUSTSEC-2026-0367, RUSTSEC-2026-0368, RUSTSEC-2026-0369, and
+RUSTSEC-2026-0436 without
 suppressing security advisories. The latest inspected upstream release,
 `anydoc 0.2.4`, still depends on ZIP 8 and cannot resolve the findings alone.
 
