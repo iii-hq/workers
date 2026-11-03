@@ -54,7 +54,7 @@ export function useConfigurationsList() {
 }
 
 /** Browser-local handler id bound to `engine::workers-available`. */
-const WORKER_REGISTRY_WATCH_FN = 'console::workers-config-watch'
+const WORKER_REGISTRY_WATCH_FN = 'ade::workers-config-watch'
 /** Browser-local handler id bound to the `configuration` trigger. */
 const CONFIGURATION_WATCH_FN = 'iii::console::configuration-list-watch'
 

@@ -28,7 +28,7 @@ gates still apply only to workers the PR author edited).
 
 **Metadata-only PRs:** if a worker's only changes match
 `.deploy/workers.yaml`, `iii.worker.yaml`, `README.md`, `Cargo.toml`, `Cargo.lock`, `AGENTS*.md`,
-version/tests/README gates downgrade to GitHub notices.
+`screenshots/**`, version/tests/README gates downgrade to GitHub notices.
 
 ## pr-checks (per changed worker)
 
@@ -37,9 +37,12 @@ version/tests/README gates downgrade to GitHub notices.
 1. `README.md` exists and is non-empty
 2. the `.deploy/workers.yaml` entry parses with required private build fields
 3. `iii.worker.yaml` remains valid and agrees with the catalog on identity,
-   package manifest, deploy shape and semver dependencies
+   package manifest, deploy shape and semver dependencies; `iii_engine_version`,
+   when present, is a semver range such as `">=0.26.0"`
 4. Package-manifest version ≥ version on base branch
 5. `tests/` exists and is non-empty
+6. `screenshots/screenshots.yaml`, when present, passes the Registry's limits
+   (see [`../sops/screenshots.md`](../sops/screenshots.md))
 
 Skill documentation is optional and is not part of this validation gate.
 

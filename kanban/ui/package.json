@@ -12,12 +12,16 @@
     "@iii-dev/console-ui": "workspace:*"
   },
   "devDependencies": {
+    "@tailwindcss/node": "^4.3.0",
+    "@tailwindcss/oxide": "^4.3.0",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "esbuild": "catalog:",
     "lucide-react": "catalog:",
+    "postcss": "^8.5.0",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "tailwindcss": "^4.3.0",
     "typescript": "catalog:"
   }
 }

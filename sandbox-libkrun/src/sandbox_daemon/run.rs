@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::sandbox_daemon::{
     config::SandboxConfig,
     create::{CreateRequest, CreateResponse, handle_create},
-    errors::{SandboxError, SandboxErrorWire},
+    errors::{Payload, SandboxError, SandboxErrorWire},
     exec::{EnvShape, ExecRequest, ExecResponse, ShellRunner, handle_exec},
     fs::FsRunner,
     fs::write::{WriteContent, WriteRequest, handle_write},
@@ -345,7 +345,7 @@ pub(super) fn register(
     let engine_address = iii.address().to_string();
     iii.register_function(
         "sandbox-libkrun::run",
-        RegisterFunction::new_async(move |req: RunRequest| {
+        RegisterFunction::new_async(move |req: Payload<RunRequest>| {
             let registry = registry.clone();
             let cfg = cfg.clone();
             let launcher = launcher.clone();
@@ -354,6 +354,7 @@ pub(super) fn register(
             let stopper = stopper.clone();
             let engine_address = engine_address.clone();
             async move {
+                let req = req.decode()?;
                 let start = std::time::Instant::now();
                 let result = handle_run(
                     req,

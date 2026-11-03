@@ -12,10 +12,18 @@ pub struct HeadReq {
     pub bucket: String,
     pub key: String,
     pub version_id: Option<String>,
+    #[serde(default)]
+    pub checksum_mode: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HeadResp {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<std::collections::HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checksum_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checksum_type: Option<String>,
     pub content_type: String,
     pub etag: String,
     pub last_modified: DateTime<Utc>,
@@ -29,6 +37,7 @@ pub async fn handle(state: &AppState, req: HeadReq) -> Result<HeadResp, String> 
         .head(BackendHeadReq {
             key: req.key.clone(),
             version_id: req.version_id,
+            checksum_mode: req.checksum_mode,
         })
         .await
         .map_err(|e| {
@@ -40,6 +49,9 @@ pub async fn handle(state: &AppState, req: HeadReq) -> Result<HeadResp, String> 
             ))
         })?;
     Ok(HeadResp {
+        metadata: resp.metadata,
+        checksum_sha256: resp.checksum_sha256,
+        checksum_type: resp.checksum_type,
         content_type: resp.content_type,
         etag: resp.etag,
         last_modified: resp.last_modified,
@@ -75,6 +87,9 @@ mod tests {
     async fn happy_path_returns_metadata() {
         let now = Utc::now();
         let (st, _m) = state_with(Some(Ok(BackendHeadResp {
+            metadata: None,
+            checksum_sha256: None,
+            checksum_type: None,
             content_type: "image/png".into(),
             etag: "\"abc123\"".into(),
             last_modified: now,
@@ -121,6 +136,9 @@ mod tests {
     #[tokio::test]
     async fn version_id_is_threaded_to_backend() {
         let (st, mock) = state_with(Some(Ok(BackendHeadResp {
+            metadata: None,
+            checksum_sha256: None,
+            checksum_type: None,
             content_type: "application/octet-stream".into(),
             etag: String::new(),
             last_modified: Utc::now(),

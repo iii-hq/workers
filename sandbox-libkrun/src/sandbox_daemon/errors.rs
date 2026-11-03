@@ -529,6 +529,48 @@ impl From<SandboxErrorWire> for iii_sdk::Error {
     }
 }
 
+/// A handler's request, decoded by the handler instead of the SDK.
+///
+/// `RegisterFunction::new_async` decodes a typed argument before the handler
+/// runs and answers a failure as a bare `serialization error`, with no S-code.
+/// Taking `Payload<T>` instead keeps that failure for [`Payload::decode`],
+/// which answers S001 like every other invalid request. The advertised
+/// request schema is `T`'s.
+pub struct Payload<T>(pub Result<T, serde_json::Error>);
+
+impl<T> Payload<T> {
+    pub fn decode(self) -> Result<T, SandboxErrorWire> {
+        self.0
+            .map_err(|e| SandboxErrorWire(SandboxError::InvalidRequest(e.to_string())))
+    }
+}
+
+impl<'de, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Payload<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Any JSON value decodes, so the SDK always reaches the handler.
+        let value = serde_json::Value::deserialize(d)?;
+        Ok(Self(serde_json::from_value(value)))
+    }
+}
+
+impl<T: schemars::JsonSchema> schemars::JsonSchema for Payload<T> {
+    fn is_referenceable() -> bool {
+        T::is_referenceable()
+    }
+
+    fn schema_name() -> String {
+        T::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        T::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        T::json_schema(generator)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

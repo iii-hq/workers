@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::{SandboxError, SandboxErrorWire},
+    errors::{Payload, SandboxError, SandboxErrorWire},
     fs::adapter::FsRunner,
     registry::SandboxRegistry,
 };
@@ -371,11 +371,12 @@ pub(super) fn register(
     let engine_address = iii.address().to_string();
     iii.register_function(
         "sandbox-libkrun::fs::write",
-        RegisterFunction::new_async(move |req: WriteRequest| {
+        RegisterFunction::new_async(move |req: Payload<WriteRequest>| {
             let registry = registry.clone();
             let runner = runner.clone();
             let engine_address = engine_address.clone();
             async move {
+                let req = req.decode()?;
                 let sid = req.sandbox_id.clone();
                 let start = std::time::Instant::now();
                 let result = handle_write(req, &registry, &*runner, &engine_address).await;
@@ -737,6 +738,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, b"abcd");
+    }
+
+    /// Uploads `frames` to a fake guest and returns the error. The guest must
+    /// never get FsEnd: it would commit.
+    async fn write_to_fake_guest(frames: Vec<Frame>) -> SandboxError {
+        use crate::sandbox_daemon::fs::adapter::IiiShellFsRunner;
+        use iii_shell_proto::{ShellMessage, decode_frame_body};
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("shell.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // Relay and guest in one: hand out id range 0, then record every frame
+        // until the host hangs up. It hangs up itself after FsEnd, which it
+        // never answers: the host would wait for that reply forever.
+        let guest = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+            let (mut got, mut len) = (Vec::new(), [0u8; 4]);
+            while s.read_exact(&mut len).is_ok() {
+                let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+                s.read_exact(&mut body).unwrap();
+                got.push(decode_frame_body(&body).unwrap().2);
+                if matches!(got.last(), Some(ShellMessage::FsEnd)) {
+                    break;
+                }
+            }
+            got
+        });
+
+        let frames = std::sync::Mutex::new(frames.into_iter());
+        let reader = ChannelReaderAdapter::from_source(move || {
+            let frame = frames.lock().unwrap().next().unwrap_or(Ok(None));
+            Box::pin(async move { frame })
+        });
+        let err = IiiShellFsRunner
+            .fs_write_stream(sock, "/f".into(), "0644".into(), false, Box::new(reader))
+            .await
+            .unwrap_err();
+        let got = guest.join().unwrap();
+        assert!(
+            matches!(
+                got.first(),
+                Some(ShellMessage::FsRequest(FsOp::WriteStart { .. }))
+            ),
+            "got {got:?}"
+        );
+        assert!(
+            !got.iter().any(|m| matches!(m, ShellMessage::FsEnd)),
+            "the guest got FsEnd and would commit: {got:?}"
+        );
+        err
+    }
+
+    /// A caller's upload that breaks mid-stream answers S218, retryable, and
+    /// the guest never gets FsEnd, so it commits nothing.
+    #[tokio::test]
+    async fn a_broken_upload_answers_s218_and_commits_nothing() {
+        let err = write_to_fake_guest(vec![
+            Ok(Some(b"partial".to_vec())),
+            Err(iii_sdk::Error::WebSocket("closed with 1011".into())),
+        ])
+        .await;
+        assert_eq!(err.code().as_str(), "S218", "got {err:?}");
+        assert!(err.code().retryable());
+    }
+
+    /// A channel that fails before its first byte (the engine answers a bad or
+    /// taken ref with HTTP 404) stays S216: retrying that ref cannot work.
+    #[tokio::test]
+    async fn a_channel_that_fails_to_open_answers_s216() {
+        let err = write_to_fake_guest(vec![Err(iii_sdk::Error::WebSocket(
+            "HTTP error: 404 Not Found".into(),
+        ))])
+        .await;
+        assert_eq!(err.code().as_str(), "S216", "got {err:?}");
+        assert!(!err.code().retryable());
     }
 
     /// Dropping the adapter mid-upload ends its pending channel read.

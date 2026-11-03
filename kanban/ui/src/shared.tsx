@@ -1,8 +1,10 @@
-import { Chip, type ExtensionIii, Select } from '@iii-dev/console-ui'
+import { type ExtensionIii, ShadcnBadge } from '@iii-dev/console-ui'
 import * as lucide from 'lucide-react'
-import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon, Tag } from 'lucide-react'
-import { type SyntheticEvent, useSyncExternalStore } from 'react'
+import { type LucideIcon, Tag } from 'lucide-react'
+import { useSyncExternalStore } from 'react'
 import { type StatusStep, statusStep } from './board-state'
+import { ColumnStatusIcon, PriorityIcon, priorityRank } from './ui/glyphs'
+import { PriorityMenu, StatusMenu } from './ui/properties'
 
 export type Column = { id: string; label: string }
 
@@ -372,66 +374,38 @@ export function priorityLabel(priority: string): string {
 
 export type StatusTone = 'ghost' | 'faint' | 'ink' | 'warn' | 'ok'
 
-/**
- * The glyph per step (`statusStep`): start (dashed), ready (circle), in progress (half, ink — accent is reserved
- * for live state), review (pie, warn), done (check, ok), canceled (cross, ghost).
- */
-const STEP_GLYPH: Record<StatusStep, { Icon: LucideIcon; tone: StatusTone }> = {
-  unknown: { Icon: Circle, tone: 'ghost' },
-  start: { Icon: CircleDashed, tone: 'ghost' },
-  ready: { Icon: Circle, tone: 'faint' },
-  progress: { Icon: Contrast, tone: 'ink' },
-  review: { Icon: ChartPie, tone: 'warn' },
-  done: { Icon: CircleCheck, tone: 'ok' },
-  canceled: { Icon: CircleX, tone: 'ghost' },
+const STEP_TONE: Record<StatusStep, StatusTone> = {
+  unknown: 'ghost',
+  start: 'ghost',
+  ready: 'faint',
+  progress: 'ink',
+  review: 'warn',
+  done: 'ok',
+  canceled: 'ghost',
 }
 
+/** The step of a status and its tone (chat cards colour by it). */
 export function statusGlyph(columns: Column[], status: string, doneStatus: string, canceledStatus: string | null) {
-  return STEP_GLYPH[statusStep(columns, status, doneStatus, canceledStatus)]
+  const step = statusStep(columns, status, doneStatus, canceledStatus)
+  return { step, tone: STEP_TONE[step] }
 }
 
-export function StatusGlyph({
-  columns,
-  status,
-  doneStatus,
-  canceledStatus,
-}: {
-  columns: Column[]
-  status: string
-  doneStatus: string
-  canceledStatus: string | null
-}) {
-  const { Icon, tone } = statusGlyph(columns, status, doneStatus, canceledStatus)
-  return (
-    <span aria-hidden="true" className="kanban-status-glyph" data-tone={tone}>
-      <Icon size={16} />
-    </span>
-  )
+/** The status glyph of a column: dashed backlog, open to do, half in progress, pie in review, check done. */
+export function StatusGlyph(props: { columns: Column[]; status: string; doneStatus: string; canceledStatus: string | null }) {
+  return <ColumnStatusIcon {...props} />
 }
 
-/**
- * A priority as a Chip: a tone dot on a muted tint, the word in ink. The most
- * urgent configured priority (last in config order) is alert, the next warn,
- * the rest neutral.
- */
+/** A priority as a quiet badge: signal bars and the word. */
 export function PriorityChip({ priority, priorities }: { priority: string; priorities: string[] }) {
-  const index = priorities.indexOf(priority)
-  const fromTop = index < 0 ? -1 : priorities.length - 1 - index
-  const tone = fromTop === 0 ? 'alert' : fromTop === 1 ? 'warn' : 'neutral'
   return (
-    <Chip className="kanban-priority" data-tone={tone}>
-      <span aria-hidden="true" className="kanban-priority__dot" />
+    <ShadcnBadge className="kb-priority-badge" data-rank={priorityRank(priority, priorities) === 0 ? 'top' : undefined} variant="outline">
+      <PriorityIcon priorities={priorities} priority={priority} />
       {priorityLabel(priority)}
-    </Chip>
+    </ShadcnBadge>
   )
 }
 
-const swallow = (event: SyntheticEvent) => event.stopPropagation()
-
-/**
- * The status as a picker: the glyph, then an inline Select over the columns. Clicks and keys stay inside it, so a
- * card around it does not open (the menu is a portal, but React still bubbles through it).
- */
+/** The status as a quiet picker (glyph + column name). */
 export function StatusPicker({
   columns,
   status,
@@ -448,21 +422,19 @@ export function StatusPicker({
   onChange: (status: string) => void
 }) {
   return (
-    <span className="kanban-pick kanban-pick--status" onClick={swallow} onKeyDown={swallow} title="Status">
-      <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={status} />
-      <Select
-        appearance="inline"
-        aria-label="Status"
-        disabled={disabled}
-        onChange={onChange}
-        options={columns.map((column) => ({ value: column.id, label: column.label }))}
-        value={status}
-      />
-    </span>
+    <StatusMenu
+      canceledStatus={canceledStatus}
+      columns={columns}
+      disabled={disabled}
+      doneStatus={doneStatus}
+      onChange={onChange}
+      quiet
+      status={status}
+    />
   )
 }
 
-/** The priority as a picker: the tone dot, then an inline Select over the configured priorities. */
+/** The priority as a quiet picker (signal bars + word). */
 export function PriorityPicker({
   priority,
   priorities,
@@ -474,23 +446,7 @@ export function PriorityPicker({
   disabled?: boolean
   onChange: (priority: string) => void
 }) {
-  const index = priorities.indexOf(priority)
-  const fromTop = index < 0 ? -1 : priorities.length - 1 - index
-  const tone = fromTop === 0 ? 'alert' : fromTop === 1 ? 'warn' : 'neutral'
-  const values = index < 0 && priority ? [...priorities, priority] : priorities
-  return (
-    <span className="kanban-pick kanban-priority" data-tone={tone} onClick={swallow} onKeyDown={swallow} title="Priority">
-      <span aria-hidden="true" className="kanban-priority__dot" />
-      <Select
-        appearance="inline"
-        aria-label="Priority"
-        disabled={disabled}
-        onChange={onChange}
-        options={values.map((value) => ({ value, label: priorityLabel(value) }))}
-        value={priority}
-      />
-    </span>
-  )
+  return <PriorityMenu disabled={disabled} onChange={onChange} priorities={priorities} priority={priority} quiet />
 }
 
 /** The lucide icon a pill names (`alarm-clock` is `AlarmClock`); a tag when the name is unknown. */
@@ -504,18 +460,18 @@ export function pillIcon(name: string): LucideIcon {
   return icon && (typeof icon === 'function' || typeof icon === 'object') ? icon : Tag
 }
 
-/** The pills of a ticket as chips, on the card and the ticket page. Nothing when there are none. */
+/** The pills another worker pinned on a ticket, as secondary badges. Nothing when there are none. */
 export function Pills({ pills }: { pills: Pill[] | undefined }) {
   if (!pills?.length) return null
   return (
-    <span className="kanban-pills">
+    <span className="kb-pills">
       {pills.map((pill, index) => {
         const Icon = pillIcon(pill.icon)
         return (
-          <Chip className="kanban-pill" key={`${pill.icon}:${pill.text}:${index}`}>
+          <ShadcnBadge className="kb-pill" key={`${pill.icon}:${pill.text}:${index}`} variant="secondary">
             <Icon size={16} />
             {pill.text}
-          </Chip>
+          </ShadcnBadge>
         )
       })}
     </span>

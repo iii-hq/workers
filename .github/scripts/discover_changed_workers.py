@@ -34,6 +34,11 @@ METADATA_GLOBS = (
     "AGENTS-*.md",
     "Cargo.lock",
     "Cargo.toml",
+    # Store screenshots and their list (worker_screenshots.py): published with
+    # the next version. No worker builds them in today; one whose build read
+    # them (an image whose Dockerfile copied the folder, say) would need its
+    # own rule here.
+    "screenshots/*",
 )
 
 # Top-level dirs we never treat as workers, regardless of contents.

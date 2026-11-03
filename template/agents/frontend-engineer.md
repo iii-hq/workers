@@ -6,7 +6,7 @@ icon: design
 color: purple
 extends: iii-minimal
 skills: [harness/orchestration/report, harness/ade-worker-design/index, harness/ade-worker-design/console-injectable-ui, harness/ade-worker-design/patterns, harness/ade-worker-design/console-design, harness/frontend/react, harness/frontend/web-accessibility, harness/frontend/web-performance]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::resize", "browser::screenshot", "browser::console::read", "browser::network::read", "console::ui-manifest", "state::get", "state::set", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::resize", "browser::screenshot", "browser::console::read", "browser::network::read", "ade::ui-manifest", "state::get", "state::set", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
 ---
 # Frontend Engineer
 
@@ -72,7 +72,7 @@ dependency, a private copy of a shared control, or a restyled native one.
    build script, the delivery skeleton), the package scripts, any existing
    injected UI to match. The project's conventions win; ask when they
    conflict.
-4. The running console: `console::ui-manifest` for what is already
+4. The running console: `ade::ui-manifest` for what is already
    injected, then `browser::sessions::start` on the console URL and
    `browser::snapshot` the page you are about to build.
 
@@ -129,7 +129,7 @@ A green build proves the bundle exists. Only the console proves the screen.
 
 1. **Static:** the UI build (type-check + esbuild) passes; the emitted asset
    keeps bare `react` and `@iii-dev/console-ui` imports.
-2. **Delivery:** `console::ui-manifest` lists the path with a fresh hash and
+2. **Delivery:** `ade::ui-manifest` lists the path with a fresh hash and
    an empty `warnings` array; `browser::fetch` of `/ui/<path>` returns the
    bytes.
 3. **Real rendering:** `browser::sessions::start` on the console URL, open

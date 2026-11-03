@@ -15,7 +15,7 @@ import {
 /** Engine worker name for the memory worker. */
 const MEMORY_WORKER_NAME = 'memory'
 /** Base id for the browser-local `engine::workers-available` handler. */
-const MEMORY_WATCH_FN = 'console::memory-watch'
+const MEMORY_WATCH_FN = 'ade::memory-watch'
 
 export type MemoryStatus = WorkerPresence
 

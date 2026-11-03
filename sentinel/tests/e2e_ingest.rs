@@ -7,9 +7,9 @@
 //! it is the only place that can catch the class of bug where each piece is
 //! right and the wiring between them is not.
 //!
-//! Connect-or-skip: with no engine it prints why and returns, so CI and a
-//! casual `cargo test` stay green. `III_E2E_REQUIRE=1` turns a missing engine
-//! into a failure, for a run that means it.
+//! Explicit opt-in only: without III_E2E_REQUIRE=1 or SENTINEL_RUN_LIVE_E2E=1,
+//! this test returns BEFORE creating a client or connecting to any engine.
+//! III_E2E_REQUIRE=1 also makes an unavailable engine a hard failure.
 //!
 //! ```text
 //! III_NAMESPACE=my-project III_E2E_REQUIRE=1 cargo test --test e2e_ingest -- --nocapture
@@ -48,7 +48,40 @@ struct BoomResponse {
 }
 
 /// Connect, or say why the test is being skipped.
+fn live_e2e_enabled(require: Option<&str>, run: Option<&str>) -> bool {
+    require == Some("1") || run == Some("1")
+}
+
+fn live_e2e_opted_in() -> bool {
+    live_e2e_enabled(
+        std::env::var("III_E2E_REQUIRE").ok().as_deref(),
+        std::env::var("SENTINEL_RUN_LIVE_E2E").ok().as_deref(),
+    )
+}
+
+#[test]
+fn live_e2e_requires_explicit_positive_opt_in() {
+    for (require, run) in [
+        (None, None),
+        (Some("0"), None),
+        (None, Some("0")),
+        (Some("true"), Some("false")),
+        (Some(""), Some("")),
+    ] {
+        assert!(
+            !live_e2e_enabled(require, run),
+            "an implicit/default run must never connect"
+        );
+    }
+    assert!(live_e2e_enabled(Some("1"), None));
+    assert!(live_e2e_enabled(None, Some("1")));
+}
+
 async fn connect(name: &str) -> Option<Arc<IIIClient>> {
+    if !live_e2e_opted_in() {
+        eprintln!("[skip] live E2E not authorized: set III_E2E_REQUIRE=1 or SENTINEL_RUN_LIVE_E2E=1 explicitly");
+        return None;
+    }
     let iii = Arc::new(register_worker(
         &url(),
         InitOptions {
@@ -69,7 +102,7 @@ async fn connect(name: &str) -> Option<Arc<IIIClient>> {
         }
     }
     iii.shutdown_async().await;
-    if std::env::var("III_E2E_REQUIRE").is_ok() {
+    if std::env::var("III_E2E_REQUIRE").as_deref() == Ok("1") {
         panic!("no engine at {} and III_E2E_REQUIRE is set", url());
     }
     eprintln!(
@@ -99,6 +132,10 @@ async fn sentinel_is_ingesting(iii: &IIIClient) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_real_failure_becomes_a_group_attributed_to_the_worker_that_owns_it() {
+    if !live_e2e_opted_in() {
+        eprintln!("[skip] live E2E disabled before client creation");
+        return;
+    }
     let Some(iii) = connect("sentinel-e2e").await else {
         return;
     };

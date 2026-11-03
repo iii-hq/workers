@@ -20,7 +20,7 @@ import { useWorkersChanged } from './use-workers-changed'
 /** Registry name + engine worker name for the harness meta-worker. */
 const HARNESS_WORKER_NAME = 'harness'
 /** Base id for the browser-local `engine::workers-available` handler. */
-const HARNESS_WATCH_FN = 'console::harness-watch'
+const HARNESS_WATCH_FN = 'ade::harness-watch'
 
 export interface HarnessStatus {
   /** Whether the `harness` worker is currently connected. */

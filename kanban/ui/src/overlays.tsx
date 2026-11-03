@@ -1,16 +1,18 @@
 import {
   Button,
   Chip,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
   Input,
   ListItem,
   RawValueInput,
   Select,
-  Selector,
   SettingsDeck,
+  ShadcnButton,
+  ShadcnDialog,
+  ShadcnDialogContent,
+  ShadcnDialogDescription,
+  ShadcnDialogTitle,
+  ShadcnSwitch,
+  ShadcnTextarea,
   SettingsField,
   SettingsList,
   SettingsRow,
@@ -20,12 +22,11 @@ import {
   type Host,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Plus, Trash2 } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import {
   PLAN_CHANGED_EVENT,
   api,
-  priorityLabel,
   statusLabel,
   type AgentProfile,
   type Column,
@@ -33,7 +34,7 @@ import {
   type Ticket,
 } from './shared'
 import { NO_FACETS, laneName, resolveDefaults, type Facets, type NewTicketDefaults, type Plan } from './subtask-rules'
-import { ParentSelector, ProjectSelector, ReleaseSelector } from './subtasks'
+import { AssigneePicker, ParentPicker, PriorityMenu, ProjectPicker, ReleasePicker, StatusMenu } from './ui/properties'
 
 type CreateTicketDialogProps = {
   open: boolean
@@ -43,9 +44,13 @@ type CreateTicketDialogProps = {
   priorities: string[]
   agents: AgentProfile[]
   defaultStatus: string
+  /** For the status glyphs: the board's done and canceled columns. */
+  doneStatus?: string
+  canceledStatus?: string | null
   /** Opened from a swimlane cell: the column and the project, release or parent the new ticket starts with. */
   defaults?: NewTicketDefaults
-  onCreated: (ticket: Ticket) => void
+  /** `keepOpen`: "Create more" is on — the dialog stays open for the next ticket. */
+  onCreated: (ticket: Ticket, options?: { keepOpen?: boolean }) => void
 }
 
 export function CreateTicketDialog({
@@ -56,6 +61,8 @@ export function CreateTicketDialog({
   priorities,
   agents,
   defaultStatus,
+  doneStatus = '',
+  canceledStatus = null,
   defaults,
   onCreated,
 }: CreateTicketDialogProps) {
@@ -72,7 +79,9 @@ export function CreateTicketDialog({
   const [plan, setPlan] = useState<Plan | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const hintId = useId()
+  // Linear's "Create more": the dialog stays open, cleared, for the next ticket.
+  const [createMore, setCreateMore] = useState(false)
+  const titleRef = useRef<HTMLInputElement>(null)
   // The board hands over fresh objects on every reload: only opening the dialog reads them, so a reload while
   // it is open never wipes what was typed.
   const defaultsRef = useRef(defaults)
@@ -142,12 +151,6 @@ export function CreateTicketDialog({
 
   const setFacet = (kind: keyof Facets, next: string | null) => setFacets((now) => ({ ...now, [kind]: next }))
   const prefilled = (kind: keyof Facets) => Boolean(seeded[kind]) && seeded[kind] === facets[kind]
-  const hint = (kind: keyof Facets) =>
-    prefilled(kind) ? (
-      <span className="kanban-field__hint" id={`${hintId}-${kind}`}>
-        Prefilled from the swimlane
-      </span>
-    ) : undefined
   const lane = plan ? laneName(plan, seeded, laneLabel) : laneLabel
 
   const submit = async () => {
@@ -167,7 +170,14 @@ export function CreateTicketDialog({
         ...(facets.parent ? { parent: facets.parent } : {}),
         actor: 'user',
       })
-      onCreated(ticket)
+      if (createMore) {
+        onCreated(ticket, { keepOpen: true })
+        setTitle('')
+        setDescription('')
+        titleRef.current?.focus()
+      } else {
+        onCreated(ticket)
+      }
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -175,119 +185,109 @@ export function CreateTicketDialog({
     }
   }
 
+  const prefilledAny = (['project', 'release', 'parent'] as const).some(prefilled)
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="kanban-dialog">
-        <DialogTitle>New ticket</DialogTitle>
-        <DialogDescription>
+    <ShadcnDialog onOpenChange={onOpenChange} open={open}>
+      <ShadcnDialogContent className="kb-dialog kb-new-ticket">
+        <header className="kb-new-ticket__top">
+          <span className="kb-new-ticket__crumb">
+            <span className="kb-new-ticket__crumb-root">Kanban</span>
+            {lane ? (
+              <>
+                <ChevronRight aria-hidden="true" size={16} />
+                <span className="kb-new-ticket__crumb-root">{lane}</span>
+              </>
+            ) : null}
+            <ChevronRight aria-hidden="true" size={16} />
+            <span>New ticket</span>
+          </span>
+        </header>
+        <ShadcnDialogTitle className="kb-sr-only">New ticket</ShadcnDialogTitle>
+        <ShadcnDialogDescription className="kb-sr-only">
           {lane
             ? `Opened from the ${lane} swimlane, in the ${statusLabel(columns, status)} column.`
-            : 'It is added to the board, and the ticket opens beside it.'}
-        </DialogDescription>
+            : `Added to the ${statusLabel(columns, status)} column; the ticket opens beside the board.`}
+        </ShadcnDialogDescription>
         <div
-          className="kanban-dialog__form"
+          className="kb-new-ticket__body"
           onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault()
+              void submit()
+              return
+            }
             if (event.key === 'Enter' && !event.shiftKey && event.target instanceof HTMLInputElement) {
               event.preventDefault()
               void submit()
             }
           }}
         >
-          <label className="kanban-field">
-            <span className="kanban-field__label">Title</span>
-            <Input autoFocus onChange={setTitle} placeholder="What needs doing?" value={title} />
-          </label>
-          <label className="kanban-field">
-            <span className="kanban-field__label">Description</span>
-            <textarea
-              className="kanban-field__textarea"
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="Markdown supported"
-              rows={4}
-              value={description}
-            />
-          </label>
-          <div className="kanban-dialog__grid">
-            <label className="kanban-field">
-              <span className="kanban-field__label">Status</span>
-              <Select
-                onChange={setStatus}
-                options={columns.map((column) => ({ value: column.id, label: column.label }))}
-                value={status}
-              />
-            </label>
-            <label className="kanban-field">
-              <span className="kanban-field__label">Priority</span>
-              <Select
-                onChange={setPriority}
-                options={priorities.map((value) => ({ value, label: priorityLabel(value) }))}
-                value={priority}
-              />
-            </label>
-            <div className="kanban-field">
-              <span className="kanban-field__label">Assignee</span>
-              <Selector
-                allowEmpty
-                aria-label="Assignee"
-                emptyLabel="Unassigned"
-                onChange={setAssignee}
-                onClear={() => setAssignee(undefined)}
-                options={agents.map((agent) => ({
-                  value: agent.id,
-                  label: `${agent.logo ? `${agent.logo} ` : ''}${agent.name}`,
-                  description: agent.description ?? undefined,
-                }))}
-                placeholder="Unassigned"
-                value={assignee}
-              />
-            </div>
-          </div>
-          <div className="kanban-dialog__grid">
-            <div className="kanban-field">
-              <span className="kanban-field__label">Project</span>
-              <ProjectSelector
-                aria-describedby={prefilled('project') ? `${hintId}-project` : undefined}
-                onChange={(next) => setFacet('project', next)}
-                projects={plan?.projects ?? null}
-                value={facets.project}
-              />
-              {hint('project')}
-            </div>
-            <div className="kanban-field">
-              <span className="kanban-field__label">Release</span>
-              <ReleaseSelector
-                aria-describedby={prefilled('release') ? `${hintId}-release` : undefined}
-                onChange={(next) => setFacet('release', next)}
-                releases={plan?.releases ?? null}
-                value={facets.release}
-              />
-              {hint('release')}
-            </div>
-            <div className="kanban-field">
-              <span className="kanban-field__label">Parent</span>
-              <ParentSelector
-                aria-describedby={prefilled('parent') ? `${hintId}-parent` : undefined}
-                current={null}
-                onChange={(next) => setFacet('parent', next)}
-                selfId={null}
-                tickets={plan?.tickets ?? null}
-                value={facets.parent}
-              />
-              {hint('parent')}
-            </div>
-          </div>
-          {error ? <p className="kanban-field__error">{error}</p> : null}
+          <input
+            aria-label="Title"
+            autoFocus
+            className="kb-new-ticket__title"
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Ticket title"
+            ref={titleRef}
+            value={title}
+          />
+          <ShadcnTextarea
+            aria-label="Description"
+            className="kb-new-ticket__description"
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Add description…"
+            rows={4}
+            value={description}
+          />
         </div>
-        <div className="kanban-dialog__foot">
-          <Button onClick={() => onOpenChange(false)} variant="ghost">
+        <div aria-label="Properties" className="kb-new-ticket__props" role="group">
+          <StatusMenu
+            canceledStatus={canceledStatus}
+            columns={columns}
+            doneStatus={doneStatus}
+            onChange={setStatus}
+            status={status}
+          />
+          <PriorityMenu onChange={setPriority} priorities={priorities} priority={priority} />
+          <AssigneePicker agents={agents} onChange={(next) => setAssignee(next ?? undefined)} value={assignee ?? null} />
+          <ProjectPicker onChange={(next) => setFacet('project', next)} projects={plan?.projects ?? null} value={facets.project} />
+          <ReleasePicker onChange={(next) => setFacet('release', next)} releases={plan?.releases ?? null} value={facets.release} />
+          <ParentPicker
+            current={null}
+            onChange={(next) => setFacet('parent', next)}
+            selfId={null}
+            tickets={plan?.tickets ?? null}
+            value={facets.parent}
+          />
+        </div>
+        {prefilledAny || error ? (
+          <div className="kb-new-ticket__notes">
+            {prefilledAny ? <p className="kb-field__hint">Project, release or parent prefilled from the swimlane.</p> : null}
+            {error ? (
+              <p className="kb-field__error" role="alert">
+                {error}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        <footer className="kb-new-ticket__foot">
+          <label className="kb-new-ticket__more">
+            <ShadcnSwitch checked={createMore} onCheckedChange={setCreateMore} />
+            Create more
+          </label>
+          <span className="kb-new-ticket__spacer" />
+          <ShadcnButton onClick={() => onOpenChange(false)} size="sm" type="button" variant="ghost">
             Cancel
-          </Button>
-          <Button disabled={busy || title.trim().length === 0} onClick={() => void submit()} variant="primary">
+          </ShadcnButton>
+          <ShadcnButton disabled={busy || title.trim().length === 0} onClick={() => void submit()} size="sm" type="button">
             {busy ? 'Creating…' : 'Create ticket'}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+            <span aria-hidden="true" className="kb-new-ticket__kbd">
+              ⌘↵
+            </span>
+          </ShadcnButton>
+        </footer>
+      </ShadcnDialogContent>
+    </ShadcnDialog>
   )
 }
 

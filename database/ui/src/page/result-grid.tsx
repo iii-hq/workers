@@ -12,9 +12,26 @@
  * swaps Tailwind utilities for the page's scoped classes + design tokens.
  */
 
-import { Button, StatusBar } from '@iii-dev/console-ui'
+import {
+  Button,
+  ShadcnDropdownMenu as DropdownMenu,
+  ShadcnDropdownMenuContent as DropdownMenuContent,
+  ShadcnDropdownMenuGroup as DropdownMenuGroup,
+  ShadcnDropdownMenuItem as DropdownMenuItem,
+  ShadcnDropdownMenuLabel as DropdownMenuLabel,
+  ShadcnDropdownMenuSeparator as DropdownMenuSeparator,
+  ShadcnDropdownMenuTrigger as DropdownMenuTrigger,
+  StatusBar,
+  ShadcnTable as Table,
+  ShadcnTableBody as TableBody,
+  ShadcnTableCell as TableCell,
+  ShadcnTableHead as TableHead,
+  ShadcnTableHeader as TableHeader,
+  ShadcnTableRow as TableRow,
+} from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { ArrowDown, ArrowUp, Check, KeyRound, Link2, X } from 'lucide-react'
+import { ArrowDown, ArrowDownUp, ArrowUp, Check, ChevronDown, Copy, EyeOff, KeyRound, Link2 } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { cellText } from '../lib/grid-cursor'
 import {
@@ -29,8 +46,14 @@ import type { TableViewControls } from './useTableView'
 const CLAMP_ROWS = 30
 /** Below this a column cannot show even a truncated value. */
 const MIN_COL_WIDTH = 48
+/** Where every column starts until it is resized. */
+const DEFAULT_COL_WIDTH = 200
+/** The row-number gutter. */
+const GUTTER_WIDTH = 56
 const STRING_TRUNCATE = 160
 const JSON_PREVIEW = 80
+/** Longer than a column usually shows: the full text rides on hover. */
+const TITLE_FROM = 40
 
 interface ResultGridProps {
   columns?: ColumnMeta[]
@@ -66,6 +89,12 @@ interface ResultGridProps {
    * persists it through the worker rather than keeping it in this browser.
    */
   view?: TableViewControls
+  /**
+   * Leading row-number gutter, numbered from `rowOffset + 1` — the page's
+   * position in the whole table, not in the page.
+   */
+  rowNumbers?: boolean
+  rowOffset?: number
 }
 
 /** Column order: declared `columns` metadata first, else keys of row 0. */
@@ -118,6 +147,14 @@ function CellValue({
     )
   }
   const text = String(value)
+  // An empty string and NULL are different answers; a blank cell said neither.
+  if (text === '') {
+    return (
+      <span className="db-cell-empty" title="empty string">
+        empty
+      </span>
+    )
+  }
   const cls =
     category === 'date'
       ? 'db-cell-date'
@@ -131,7 +168,11 @@ function CellValue({
       </span>
     )
   }
-  return <span className={cls}>{text}</span>
+  return (
+    <span className={cls} title={text.length > TITLE_FROM ? text : undefined}>
+      {text}
+    </span>
+  )
 }
 
 /** A cell that copies itself on click; the flash is per cell, so each owns
@@ -188,6 +229,8 @@ export function ResultGrid({
   onFollowFk,
   keyboard,
   view,
+  rowNumbers,
+  rowOffset = 0,
 }: ResultGridProps) {
   const [expanded, setExpanded] = useState(false)
   const [dragging, setDragging] = useState<string | null>(null)
@@ -206,6 +249,21 @@ export function ResultGrid({
       .map((n) => byName.get(n))
       .filter((c): c is ColumnMeta => c !== undefined)
   }, [allCols, view])
+  // Numbers align right so magnitudes line up. A declared numeric type
+  // decides; an untyped column (ad-hoc SQL) is numeric when its values are.
+  const numericCols = useMemo(() => {
+    const out = new Set<string>()
+    for (const col of cols) {
+      if (typeCategory(col.type) === 'numeric') {
+        out.add(col.name)
+        continue
+      }
+      if (col.type) continue
+      const present = rows.map((r) => r[col.name]).filter((v) => v !== null && v !== undefined)
+      if (present.length > 0 && present.every((v) => typeof v === 'number')) out.add(col.name)
+    }
+    return out
+  }, [cols, rows])
   const total = rowCount ?? rows.length
   const clamped = !stickyHeader && !expanded && rows.length > CLAMP_ROWS
   const visible = clamped ? rows.slice(0, CLAMP_ROWS) : rows
@@ -261,69 +319,51 @@ export function ResultGrid({
     return <div className="db-grid-empty">· 0 rows</div>
   }
 
+  // Fixed layout honours widths only against an explicit table width; the
+  // sum keeps every column at its own width (CSS `min-width: 100%` stretches
+  // a narrow table to the pane).
+  const tableWidth =
+    (rowNumbers ? GUTTER_WIDTH : 0) +
+    cols.reduce((sum, col) => sum + (view?.view.widths[col.name] ?? DEFAULT_COL_WIDTH), 0)
+
   return (
     <div>
       <div className="db-grid-wrap">
         {/* With the roving cursor the table is a grid for real — the role
             makes the per-cell `gridcell`s valid instead of orphaned. */}
-        <table className="db-grid" role={keyboard ? 'grid' : undefined}>
-          <thead className={stickyHeader ? 'sticky' : undefined}>
-            <tr>
+        <Table className="db-grid" role={keyboard ? 'grid' : undefined} style={{ width: tableWidth }}>
+          <TableHeader className={stickyHeader ? 'sticky' : undefined}>
+            <TableRow>
+              {rowNumbers ? (
+                <TableHead className="db-gutter" aria-label="row number" style={{ width: GUTTER_WIDTH }}>
+                  #
+                </TableHead>
+              ) : null}
               {cols.map((col) => {
-                const category = typeCategory(col.type)
-                const isNum = category === 'numeric'
+                const isNum = numericCols.has(col.name)
                 const sorted = sort?.column === col.name ? sort.dir : null
                 const label = (
                   <>
                     {pkSet.has(col.name) ? (
-                      <KeyRound
-                        size={16}
-                        aria-label="primary key"
-                        style={{ color: 'var(--color-accent)' }}
-                      />
+                      <KeyRound size={16} aria-label="primary key" className="db-col-key" />
                     ) : null}
                     <span className="colname">{col.name}</span>
-                    {col.type ? (
-                      <span className="coltype">{col.type}</span>
-                    ) : null}
+                    {col.type ? <span className="coltype">{col.type.toLowerCase()}</span> : null}
                     {sorted === 'asc' ? (
-                      <ArrowUp
-                        size={16}
-                        style={{ color: 'var(--color-accent)' }}
-                      />
+                      <ArrowUp size={16} className="db-col-sorted" aria-hidden />
                     ) : sorted === 'desc' ? (
-                      <ArrowDown
-                        size={16}
-                        style={{ color: 'var(--color-accent)' }}
-                      />
+                      <ArrowDown size={16} className="db-col-sorted" aria-hidden />
                     ) : null}
                   </>
                 )
                 const width = view?.view.widths[col.name]
                 return (
-                  <th
+                  <TableHead
                     key={col.name}
-                    className={
-                      [
-                        isNum ? 'num' : '',
-                        dragOver === col.name ? 'dropping' : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' ') || undefined
-                    }
-                    style={
-                      width
-                        ? { width, minWidth: width, maxWidth: width }
-                        : undefined
-                    }
+                    className={[isNum ? 'num' : '', dragOver === col.name ? 'dropping' : ''].filter(Boolean).join(' ') || undefined}
+                    style={width ? { width, minWidth: width, maxWidth: width } : { width: DEFAULT_COL_WIDTH }}
                     aria-sort={
-                      onSort
-                        ? sorted === 'asc'
-                          ? 'ascending'
-                          : sorted === 'desc'
-                            ? 'descending'
-                            : 'none'
-                        : undefined
+                      onSort ? (sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : 'none') : undefined
                     }
                     // Reorder by dragging the header. HTML drag-and-drop rather
                     // than pointer maths: it is the one interaction the platform
@@ -339,11 +379,7 @@ export function ResultGrid({
                           }
                         : undefined
                     }
-                    onDragLeave={
-                      view
-                        ? () => setDragOver((d) => (d === col.name ? null : d))
-                        : undefined
-                    }
+                    onDragLeave={view ? () => setDragOver((d) => (d === col.name ? null : d)) : undefined}
                     onDrop={
                       view
                         ? (e) => {
@@ -369,44 +405,44 @@ export function ResultGrid({
                         : undefined
                     }
                   >
-                    {onSort ? (
-                      <button
-                        type="button"
-                        className="sorter"
-                        onClick={() => onSort(nextSort(sort, col.name))}
-                        title={`sort by ${col.name}`}
-                      >
-                        {label}
-                      </button>
-                    ) : (
-                      <span className="static">{label}</span>
-                    )}
-                    {view ? (
-                      <>
+                    <span className="db-th">
+                      {onSort ? (
                         <button
                           type="button"
-                          className="db-col-hide"
-                          title={`hide ${col.name}`}
-                          aria-label={`hide ${col.name}`}
-                          onClick={() => view.hide(col.name)}
+                          className="sorter"
+                          onClick={() => onSort(nextSort(sort, col.name))}
+                          title={`sort by ${col.name}`}
                         >
-                          <X size={16} aria-hidden />
+                          {label}
                         </button>
-                        {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-only resize grip; the same width is settable through saveTableView */}
-                        <span
-                          className="db-col-grip"
-                          title="drag to resize · double-click to reset"
-                          onPointerDown={(e) => startResize(e, col.name)}
-                          onDoubleClick={() => view.clearWidth(col.name)}
+                      ) : (
+                        <span className="static">{label}</span>
+                      )}
+                      {onSort || view ? (
+                        <ColumnMenu
+                          column={col.name}
+                          type={col.type}
+                          sorted={sorted}
+                          onSort={onSort ? (dir) => onSort(dir ? { column: col.name, dir } : null) : undefined}
+                          onHide={view ? () => view.hide(col.name) : undefined}
                         />
-                      </>
+                      ) : null}
+                    </span>
+                    {view ? (
+                      // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only resize grip; the same width is settable through saveTableView
+                      <span
+                        className="db-col-grip"
+                        title="drag to resize · double-click to reset"
+                        onPointerDown={(e) => startResize(e, col.name)}
+                        onDoubleClick={() => view.clearWidth(col.name)}
+                      />
                     ) : null}
-                  </th>
+                  </TableHead>
                 )
               })}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {visible.map((row, i) => {
               const rowClass = [
                 onRowClick ? 'clickable' : '',
@@ -415,7 +451,7 @@ export function ResultGrid({
                 .filter(Boolean)
                 .join(' ')
               return (
-                <tr
+                <TableRow
                   key={i}
                   onClick={onRowClick ? () => onRowClick(i) : undefined}
                   // Selectable rows are their own control: reachable by tab,
@@ -432,10 +468,12 @@ export function ResultGrid({
                   tabIndex={onRowClick ? 0 : undefined}
                   aria-selected={onRowClick ? selectedRow === i : undefined}
                   className={rowClass || undefined}
+                  data-state={selectedRow === i ? 'selected' : undefined}
                 >
+                  {rowNumbers ? <TableCell className="db-gutter">{rowOffset + i + 1}</TableCell> : null}
                   {cols.map((col, c) => {
                     const category = typeCategory(col.type)
-                    const isNum = category === 'numeric'
+                    const isNum = numericCols.has(col.name)
                     const value = row[col.name]
                     const content = (
                       <CellValue value={value} category={category} />
@@ -447,7 +485,7 @@ export function ResultGrid({
                       .join(' ')
                     return (
                       // biome-ignore lint/a11y/useKeyWithClickEvents: gridcell in the roving-tabindex pattern; keys are handled once on the grid container, never per cell
-                      <td
+                      <TableCell
                         key={col.name}
                         className={cls || undefined}
                         role={keyboard ? 'gridcell' : undefined}
@@ -492,14 +530,14 @@ export function ResultGrid({
                         ) : (
                           <CopyCell value={value}>{content}</CopyCell>
                         )}
-                      </td>
+                      </TableCell>
                     )
                   })}
-                </tr>
+                </TableRow>
               )
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       {hideFooter ? null : (
         <StatusBar className="db-grid-foot">
@@ -527,5 +565,70 @@ export function ResultGrid({
         </StatusBar>
       )}
     </div>
+  )
+}
+
+/**
+ * The header's ⌄ menu: sort either way, clear the sort, copy the name, hide
+ * the column. Clicking the label still cycles the sort; the menu is the
+ * discoverable, explicit route to the same verbs.
+ */
+function ColumnMenu({
+  column,
+  type,
+  sorted,
+  onSort,
+  onHide,
+}: {
+  column: string
+  type?: string
+  sorted: 'asc' | 'desc' | null
+  onSort?: (dir: 'asc' | 'desc' | null) => void
+  onHide?: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger className="db-col-menu" aria-label={`${column} column options`}>
+        <ChevronDown size={16} aria-hidden />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {/* Base UI only allows a menu label inside a group. */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>
+            {column}
+            {type ? ` · ${type.toLowerCase()}` : ''}
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
+        {onSort ? (
+          <>
+            <DropdownMenuItem onClick={() => onSort('asc')} disabled={sorted === 'asc'}>
+              <ArrowUp size={16} aria-hidden />
+              Sort ascending
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onSort('desc')} disabled={sorted === 'desc'}>
+              <ArrowDown size={16} aria-hidden />
+              Sort descending
+            </DropdownMenuItem>
+            {sorted ? (
+              <DropdownMenuItem onClick={() => onSort(null)}>
+                <ArrowDownUp size={16} aria-hidden />
+                Clear sort
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        <DropdownMenuItem onClick={() => void copyText(column)}>
+          <Copy size={16} aria-hidden />
+          Copy name
+        </DropdownMenuItem>
+        {onHide ? (
+          <DropdownMenuItem onClick={onHide}>
+            <EyeOff size={16} aria-hidden />
+            Hide column
+          </DropdownMenuItem>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

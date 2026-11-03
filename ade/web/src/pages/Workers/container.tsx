@@ -277,7 +277,7 @@ export function ContainerView({
             {outdated ? (
               <Badge
                 variant="outline"
-                className="wk-machine border-neutral-200 bg-neutral-100 text-emerald-700 dark:border-neutral-800 dark:bg-neutral-900 dark:text-emerald-400"
+                className="wk-machine border-neutral-100 bg-neutral-100 text-emerald-700 dark:border-neutral-800 dark:bg-neutral-900 dark:text-emerald-400"
               >
                 {latest} available
               </Badge>

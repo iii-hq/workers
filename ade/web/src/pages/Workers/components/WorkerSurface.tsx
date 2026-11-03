@@ -102,11 +102,11 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="wk-card min-w-0 overflow-hidden rounded-xl border border-neutral-200 font-inter dark:border-neutral-800">
-      <h3 className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3 text-[13px] font-medium leading-5 text-neutral-900 dark:border-neutral-800 dark:text-neutral-50">
+    <section className="wk-card min-w-0 overflow-hidden rounded-xl border border-neutral-100 font-inter dark:border-neutral-800">
+      <h3 className="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 text-[13px] font-medium leading-5 text-neutral-900 dark:border-neutral-800 dark:text-neutral-50">
         <span className="text-neutral-500 dark:text-neutral-400">{icon}</span>
         {title}
-        <span className="ml-auto rounded-lg border border-neutral-200 px-2 py-0.5 text-[12px] font-medium tabular-nums text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        <span className="ml-auto rounded-lg border border-neutral-100 px-2 py-0.5 text-[12px] font-medium tabular-nums text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
           {count}
         </span>
       </h3>
@@ -115,7 +115,7 @@ function Section({
           {empty}
         </p>
       ) : (
-        <div className="flex flex-col divide-y divide-neutral-200 dark:divide-neutral-800">
+        <div className="flex flex-col divide-y divide-neutral-100 dark:divide-neutral-800">
           {children}
         </div>
       )}

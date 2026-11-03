@@ -18,6 +18,10 @@ from pathlib import Path
 
 import deployment_targets
 import validate_oci_dockerfile
+import worker_screenshots
+
+# Where the prepared directory carries the descriptor's screenshots, by name.
+PREPARED_SCREENSHOTS = "screenshots"
 
 def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(command))
@@ -62,10 +66,12 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
         "descriptor_sha256", "source", "artifact", "runtime",
         "interface_capture", "publish", "build_units", "registry_projection",
     }
-    if set(descriptor) != required:
+    # Present only when the worker has a screenshots list.
+    optional = {"screenshots"}
+    if not required <= set(descriptor) or set(descriptor) - required - optional:
         raise SystemExit(
             "deployment descriptor fields differ from compiler contract: "
-            f"missing={sorted(required - set(descriptor))} unknown={sorted(set(descriptor) - required)}"
+            f"missing={sorted(required - set(descriptor))} unknown={sorted(set(descriptor) - required - optional)}"
         )
     if descriptor["contract"] != "deployment-descriptor":
         raise SystemExit("deployment descriptor contract mismatch")
@@ -80,6 +86,17 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
         raise SystemExit("deployment descriptor interface_capture must be required or skipped")
     if not isinstance(descriptor["build_units"], list) or not descriptor["build_units"]:
         raise SystemExit("deployment descriptor build_units must be non-empty")
+    if "screenshots" in descriptor:
+        try:
+            worker_screenshots.check_descriptor_entries(
+                descriptor["screenshots"],
+                kind=str(descriptor["artifact"].get("kind")),
+                # The slug the registry publishes the worker under.
+                worker=str(descriptor["registry_projection"].get("worker_name", descriptor["worker"])),
+                source_path=str(descriptor["source"].get("path", "")),
+            )
+        except worker_screenshots.ScreenshotError as error:
+            raise SystemExit(f"deployment descriptor screenshots: {error}") from None
     return descriptor
 
 
@@ -626,6 +643,7 @@ def assemble(args: argparse.Namespace) -> int:
     actual_units = {entry["unit"] for entry in entries if entry["role"] != "checksum"}
     if expected_units != actual_units:
         raise SystemExit(f"assembled units differ: expected={sorted(expected_units)} actual={sorted(actual_units)}")
+    _assemble_screenshots(descriptor, args.source_root, args.out)
     (args.out / "deployment-descriptor.json").write_bytes(descriptor_bytes)
     prepared = {"contract": "prepared-artifacts", "worker": descriptor["worker"],
                 "source_sha": descriptor["source_sha"], "descriptor_sha256": descriptor["descriptor_sha256"],
@@ -633,6 +651,50 @@ def assemble(args: argparse.Namespace) -> int:
     (args.out / "prepared-artifacts.json").write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(prepared, sort_keys=True))
     return 0
+
+
+def _assemble_screenshots(descriptor: dict, source_root: Path, out: Path) -> None:
+    """Copy the descriptor's screenshots from the source checkout to `<out>/screenshots/<name>`.
+
+    The bytes are the ones the compiler read at the same source SHA: size,
+    SHA-256, format and pixel size are checked against the descriptor before
+    anything is written, and the checked bytes are what is written.
+    """
+    entries = descriptor.get("screenshots") or []
+    if not entries:
+        return
+    folder = out / PREPARED_SCREENSHOTS
+    folder.mkdir()
+    for entry in entries:
+        try:
+            data = worker_screenshots.verify_file(source_root / str(entry["path"]), entry)
+        except worker_screenshots.ScreenshotError as error:
+            raise SystemExit(f"screenshot {entry['name']} differs from the deployment descriptor: {error}") from None
+        (folder / str(entry["name"])).write_bytes(data)
+
+
+def _verify_prepared_screenshots(descriptor: dict, root: Path) -> None:
+    """The prepared `screenshots/` folder holds exactly the descriptor's images, byte for byte."""
+    entries = descriptor.get("screenshots") or []
+    folder = root / PREPARED_SCREENSHOTS
+    if not entries:
+        if os.path.lexists(folder):
+            raise SystemExit("prepared directory carries screenshots the deployment descriptor does not list")
+        return
+    if folder.is_symlink() or not folder.is_dir():
+        raise SystemExit("prepared screenshots must be a directory")
+    expected = {str(entry["name"]) for entry in entries}
+    actual = {path.name for path in folder.iterdir()}
+    if actual != expected:
+        raise SystemExit(
+            f"prepared screenshots differ from the deployment descriptor: missing={sorted(expected - actual)} "
+            f"unknown={sorted(actual - expected)}"
+        )
+    for entry in entries:
+        try:
+            worker_screenshots.verify_file(folder / str(entry["name"]), entry)
+        except worker_screenshots.ScreenshotError as error:
+            raise SystemExit(f"prepared screenshot bytes differ from the deployment descriptor: {error}") from None
 
 
 def _verify_prepared_inventory(descriptor: dict, descriptor_path: Path, prepared_path: Path) -> dict:
@@ -678,6 +740,7 @@ def _verify_prepared_inventory(descriptor: dict, descriptor_path: Path, prepared
             f"prepared directory differs from inventory: missing={sorted(expected_files - actual)} "
             f"unknown={sorted(actual - expected_files)}"
         )
+    _verify_prepared_screenshots(descriptor, prepared_path.parent)
     return prepared
 
 
@@ -725,6 +788,8 @@ def make_parser() -> argparse.ArgumentParser:
     assemble_parser.set_defaults(handler=assemble)
     assemble_parser.add_argument("--descriptor", type=Path, required=True)
     assemble_parser.add_argument("--artifacts-dir", type=Path, required=True)
+    # The source checkout the descriptor's screenshot paths are relative to.
+    assemble_parser.add_argument("--source-root", type=Path, default=Path("."))
     assemble_parser.add_argument("--out", type=Path, required=True)
     verify_parser = sub.add_parser("verify-prepared")
     verify_parser.set_defaults(handler=verify_prepared)

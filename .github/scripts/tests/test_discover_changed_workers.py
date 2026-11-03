@@ -40,6 +40,15 @@ def test_harness_ignores_worker_release_metadata() -> None:
     assert harness_changed(["ade/Cargo.toml", "ade/Cargo.lock"]) is False
 
 
+def test_store_screenshots_are_worker_metadata() -> None:
+    assert discover.is_metadata("screenshots/screenshots.yaml")
+    assert discover.is_metadata("screenshots/android-board.webp")
+    assert discover.is_metadata("screenshots/phone/board.png")
+    assert not discover.is_metadata("src/screenshots.rs")
+    assert not discover.is_metadata("ui/screenshots/board.png")
+    assert harness_changed(["ade/screenshots/screenshots.yaml", "ade/screenshots/board.png"]) is False
+
+
 def test_harness_runs_for_worker_source_changes() -> None:
     assert harness_changed(["ade/src/main.rs"]) is True
 

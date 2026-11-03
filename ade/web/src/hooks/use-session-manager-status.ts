@@ -11,7 +11,7 @@ import { useWorkerPresence, type WorkerPresence } from './use-worker-presence'
  */
 
 const SESSION_MANAGER_WORKER_NAME = 'session-manager'
-const SESSION_MANAGER_WATCH_FN = 'console::session-manager-watch'
+const SESSION_MANAGER_WATCH_FN = 'ade::session-manager-watch'
 
 export type SessionManagerStatus = WorkerPresence
 

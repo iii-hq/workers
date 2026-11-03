@@ -30,7 +30,6 @@
  */
 
 import {
-  Badge,
   Button,
   EmptyState,
   type Host,
@@ -41,8 +40,15 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
-  SegmentedControl,
-  Select,
+  ShadcnBadge,
+  ShadcnSelect,
+  ShadcnSelectContent,
+  ShadcnSelectItem,
+  ShadcnSelectTrigger,
+  ShadcnSelectValue,
+  ShadcnTabs,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
   Skeleton,
   StatusPanel,
   Toolbar,
@@ -50,14 +56,27 @@ import {
   useConfirm,
 } from '@iii-dev/console-ui'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import { ChevronLeft, ChevronRight, CircleAlert, Database, RefreshCw, Table2 } from 'lucide-react'
+import {
+  Activity,
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
+  Database,
+  Eye,
+  History,
+  type LucideIcon,
+  Network,
+  RefreshCw,
+  SquareTerminal,
+  Table2,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TEST_STAGE_LABELS } from '../configuration/connection'
 import { ALL, type Capabilities, MIN_VERSION_HINT, probe } from '../lib/capabilities'
 import { ConnectionIcon } from '../lib/connection-icons'
 import { DB, dbEndpoint } from '../lib/rpc'
 import { ChangesPanel } from './ChangesPanel'
-import { type DbInfo, driverLabel, listDbs, listTables, PAGE_SIZE, quoteTableRef } from './db-data'
+import { commonSchema, type DbInfo, driverLabel, listDbs, listTables, PAGE_SIZE, quoteTableRef } from './db-data'
 import { ErdPanel } from './ErdPanel'
 import { HealthPanel } from './HealthPanel'
 import { parseDatabasePanelContext } from './panel-context'
@@ -86,6 +105,14 @@ const PANEL_LABELS: Record<PanelMode, string> = {
   diagram: 'Diagram',
   health: 'Health',
   changes: 'Changes',
+}
+
+const PANEL_ICONS: Record<PanelMode, LucideIcon> = {
+  data: Table2,
+  sql: SquareTerminal,
+  diagram: Network,
+  health: Activity,
+  changes: History,
 }
 
 /** Container width (px) below which the page collapses to the drill-in
@@ -218,6 +245,8 @@ export function DatabasePage({
   const tablesRead = useDatabaseRead(!!activeDb, tablesFetcher)
   const tables = tablesRead.data && tablesRead.data.db === activeDb?.name ? tablesRead.data.list : []
   const tableCount = tables.filter((t) => t.kind === 'table').length
+  // A schema every table shares (`public.`) is noise in a list of names.
+  const schemaPrefix = commonSchema(tables.map((t) => t.name))
   const viewCount = tables.length - tableCount
 
   // Selection means "open these rows" on data, a focus on the diagram, a
@@ -344,25 +373,23 @@ export function DatabasePage({
     <PageShell ref={shellRef} className="db-ui-shell">
       {dialog}
       <PageHeader
+        className="db-ui-header"
         icon={activeDb ? <ConnectionIcon name={activeDb.icon} color={activeDb.color} /> : <Database size={16} />}
         title="Database"
         description={subtitle}
         actions={
           <>
-            {activeDb ? <Badge>{driverLabel(activeDb.driver)}</Badge> : null}
+            {activeDb ? (
+              <ShadcnBadge variant="outline" className="db-ui-driver">
+                {driverLabel(activeDb.driver)}
+              </ShadcnBadge>
+            ) : null}
             {activeDb && dbs.length > 1 ? (
-              <Select
+              <ShadcnSelect
+                items={dbs.map((db) => ({ value: db.name, label: db.name }))}
                 value={activeDb.name}
-                options={dbs.map((db) => ({
-                  value: db.name,
-                  label: db.name,
-                  title: db.url,
-                  // The connection's state where it is chosen: one that the
-                  // worker could not open says why before it is picked.
-                  description: db.error ? `Unavailable · ${db.error}` : `${driverLabel(db.driver)} · ${dbEndpoint(db)}`,
-                }))}
-                onChange={async (next) => {
-                  if (next === activeDb.name) return
+                onValueChange={async (next) => {
+                  if (!next || next === activeDb.name) return
                   // The SQL panel is per-database (remounted on switch), so an
                   // unsaved statement would vanish — ask first.
                   if (
@@ -377,8 +404,26 @@ export function DatabasePage({
                   setSelectedDb(next)
                   setSelectedTable(null)
                 }}
-                aria-label="database"
-              />
+              >
+                <ShadcnSelectTrigger size="sm" className="db-ui-dbpick" aria-label="database">
+                  <Database size={16} aria-hidden />
+                  <ShadcnSelectValue />
+                </ShadcnSelectTrigger>
+                <ShadcnSelectContent align="end" alignItemWithTrigger={false}>
+                  {dbs.map((db) => (
+                    // The connection's state where it is chosen: one that the
+                    // worker could not open says why before it is picked.
+                    <ShadcnSelectItem key={db.name} value={db.name} label={db.name} title={db.url}>
+                      <span className="db-ui-dbpick-row">
+                        <span className="name">{db.name}</span>
+                        <span className="meta">
+                          {db.error ? `Unavailable · ${db.error}` : `${driverLabel(db.driver)} · ${dbEndpoint(db)}`}
+                        </span>
+                      </span>
+                    </ShadcnSelectItem>
+                  ))}
+                </ShadcnSelectContent>
+              </ShadcnSelect>
             ) : null}
             <IconButton label="Refresh database" onClick={refresh}>
               <RefreshCw size={16} aria-hidden />
@@ -429,16 +474,19 @@ export function DatabasePage({
             </div>
           ) : null}
           <div className="db-ui-modesbar">
-            <SegmentedControl<PanelMode>
-              value={mode}
-              onChange={pickMode}
-              options={modes.map((panelMode) => ({
-                value: panelMode,
-                label: PANEL_LABELS[panelMode],
-              }))}
-              className="db-ui-tabs"
-              aria-label="Database panel"
-            />
+            <ShadcnTabs value={mode} onValueChange={(next) => pickMode(next as PanelMode)} className="db-ui-tabs">
+              <ShadcnTabsList variant="line" aria-label="Database panel" className="db-ui-tabs-list">
+                {modes.map((panelMode) => {
+                  const Icon = PANEL_ICONS[panelMode]
+                  return (
+                    <ShadcnTabsTrigger key={panelMode} value={panelMode} className="db-ui-tab">
+                      <Icon size={16} aria-hidden />
+                      {PANEL_LABELS[panelMode]}
+                    </ShadcnTabsTrigger>
+                  )
+                })}
+              </ShadcnTabsList>
+            </ShadcnTabs>
             {hiddenModes.length > 0 ? (
               <span className="db-ui-modes-hint">
                 {hiddenModes.map((item) => PANEL_LABELS[item]).join(' · ')} hidden: {MIN_VERSION_HINT}
@@ -462,7 +510,11 @@ export function DatabasePage({
               header={
                 <div className="db-ui-side-head">
                   <span className="label">Tables</span>
-                  {tableCount > 0 ? <span className="count">{tableCount}</span> : null}
+                  {tableCount > 0 ? (
+                    <ShadcnBadge variant="secondary" className="count">
+                      {tableCount}
+                    </ShadcnBadge>
+                  ) : null}
                   <span className="spacer" />
                 </div>
               }
@@ -568,23 +620,63 @@ export function DatabasePage({
                       starterSql={starterSql}
                       onWrite={refresh}
                       onDirtyChange={onSqlDirtyChange}
+                      onOpenTable={(table) => {
+                        setTrail([])
+                        setSelectedTable(table)
+                        setMode('data')
+                      }}
                     />
                   </div>
                   <div className="db-keep" hidden={mode !== 'data'}>
                     {!selectedTable ? (
-                      <div className="db-pad">
-                        <EmptyState
-                          icon={Table2}
-                          title="Select a table"
-                          description={
-                            tableCount > 0
-                              ? `${tableCount} table${tableCount === 1 ? '' : 's'}${
-                                  viewCount > 0 ? ` and ${viewCount} view${viewCount === 1 ? '' : 's'}` : ''
-                                } in ${activeDb.name} — pick one to browse its rows, sort columns, and inspect values.`
-                              : `No tables in ${activeDb.name} yet`
-                          }
-                        />
-                      </div>
+                      tables.length > 0 ? (
+                        // Nothing selected: the tables themselves, one click
+                        // from open — not a card telling you to look left.
+                        <div className="db-tablepick">
+                          <div className="db-tablepick-head">
+                            <p className="title">Choose a table</p>
+                            <p className="hint">
+                              {tableCount} table{tableCount === 1 ? '' : 's'}
+                              {viewCount > 0 ? ` and ${viewCount} view${viewCount === 1 ? '' : 's'}` : ''} in{' '}
+                              {activeDb.name}
+                            </p>
+                          </div>
+                          <ul className="db-tablepick-list">
+                            {tables.map((t) => {
+                              const shown =
+                                schemaPrefix && t.name.startsWith(`${schemaPrefix}.`)
+                                  ? t.name.slice(schemaPrefix.length + 1)
+                                  : t.name
+                              const Icon = t.kind === 'view' ? Eye : Table2
+                              return (
+                                <li key={t.name}>
+                                  <button
+                                    type="button"
+                                    className="db-tablepick-row"
+                                    title={t.name}
+                                    onClick={() => {
+                                      setTrail([])
+                                      setSelectedTable(t.name)
+                                    }}
+                                  >
+                                    <Icon size={16} aria-hidden />
+                                    <span className="name">{shown}</span>
+                                    {t.kind === 'view' ? <span className="kind">view</span> : null}
+                                  </button>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        </div>
+                      ) : (
+                        <div className="db-pad db-data-empty">
+                          <EmptyState
+                            icon={Table2}
+                            title="No tables yet"
+                            description={`${activeDb.name} has no tables. Create one from the SQL tab and it shows up here.`}
+                          />
+                        </div>
+                      )
                     ) : (
                       // Keyed by db/table/arrival — navigation restarts the
                       // panel clean. A header refresh re-reads through

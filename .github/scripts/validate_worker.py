@@ -12,6 +12,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
+import worker_screenshots  # noqa: E402
 
 
 BINARY_NAME_EXCEPTIONS = frozenset({"acp"})
@@ -62,6 +63,16 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
         for name, version in dependencies.items()
     ):
         hard(f"{worker}/iii.worker.yaml dependencies must be a string-to-string mapping")
+
+    iii_engine_version = manifest.raw.get("iii_engine_version")
+    if "iii_engine_version" in manifest.raw and not (
+        isinstance(iii_engine_version, str) and _lib.III_ENGINE_VERSION_RE.fullmatch(iii_engine_version)
+    ):
+        hard(
+            f"{worker}/iii.worker.yaml iii_engine_version must be a semver range like "
+            '">=0.26.0" (comparators >=, >, <=, <, =, ^, ~ on MAJOR.MINOR.PATCH, '
+            f"joined by spaces or ||), got {iii_engine_version!r}"
+        )
 
     if "interface_smoke" in manifest.raw:
         hard(f"{worker}/iii.worker.yaml interface_smoke was replaced by registry_interface")
@@ -134,6 +145,12 @@ def main(argv: list[str] | None = None) -> int:
         expected_path = pathlib.Path(worker).resolve()
         if spec.path != expected_path:
             hard(f"{worker}: source.path must be {worker!r}, got {spec.source.get('path')!r}")
+        # The descriptor compiler runs these same checks on main; a list the
+        # Registry would refuse fails the whole descriptor index there.
+        try:
+            worker_screenshots.collect(spec.path, root=spec.path.parent, kind=spec.artifact_kind, worker=worker)
+        except worker_screenshots.ScreenshotError as error:
+            hard(str(error))
         readme = spec.path / "README.md"
         if not readme.exists():
             soft(f"{worker}/README.md is missing")

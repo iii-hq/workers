@@ -882,19 +882,13 @@
 
   /* context menu — the console's DropdownMenu anchored at the pointer */
   .shui-context-menu { min-width: 220px; max-width: 320px; }
-  /* Every IDE menu (context menus, toolbar dropdowns, their submenus)
-     floats over the panel it opens from: a fill a step off that panel, a
-     hairline ring (ink at 12%, the selected fill's value in both themes) and
-     the raised and floating shadows together. In the dark
-     theme the menu's own fill is the tree's, so without them it dissolves
-     into the rows behind it. */
+  /* Every IDE menu (context menus, toolbar dropdowns, their submenus) is
+     the console's popover: white with a neutral-200 line in light, black
+     with neutral-900 in dark, and the raised and floating shadows. */
   [role="menu"] {
-    background-color: light-dark(
-      var(--color-panel),
-      color-mix(in oklab, var(--color-panel-raised), var(--color-ink) 7%)
-    );
+    background-color: var(--color-popover-surface);
     box-shadow:
-      0 0 0 1px var(--color-surface-selected),
+      0 0 0 1px var(--color-popover-edge),
       var(--shadow-raised),
       var(--shadow-floating);
   }
@@ -1580,16 +1574,21 @@
   .shui-repo-choice-text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
   .shui-repo-choice-title { font: 500 13px / 19px var(--font-sans); color: var(--color-ink); }
   .shui-repo-choice-detail { font: 400 12px / 17px var(--font-sans); color: var(--color-ink-faint); text-wrap: pretty; }
-  .shui-repo-choice-radio {
+  .shui-repo-choice-box {
+    display: inline-flex;
     flex: none;
+    align-items: center;
+    justify-content: center;
     width: 16px;
     height: 16px;
     box-sizing: border-box;
     border: 1.5px solid color-mix(in oklab, var(--color-ink) 30%, transparent);
-    border-radius: var(--radius-full);
-    transition: border-width var(--motion-duration-fast) var(--motion-ease-standard), border-color var(--motion-duration-fast) var(--motion-ease-standard);
+    border-radius: var(--radius-xs);
+    color: transparent;
+    transition: background-color var(--motion-duration-fast) var(--motion-ease-standard), border-color var(--motion-duration-fast) var(--motion-ease-standard), color var(--motion-duration-fast) var(--motion-ease-standard);
   }
-  .shui-repo-choice:has(:checked) .shui-repo-choice-radio { border-width: 5px; border-color: var(--color-ink); }
+  .shui-repo-choice-box svg { width: 12px; height: 12px; stroke-width: 3; }
+  .shui-repo-choice:has(:checked) .shui-repo-choice-box { border-color: var(--color-ink); background: var(--color-ink); color: var(--color-panel); }
 
   /* finished */
   .shui-repo-done {

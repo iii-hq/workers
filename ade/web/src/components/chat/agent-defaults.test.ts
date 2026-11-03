@@ -8,6 +8,7 @@ import {
   GENERIC_COMPOSER_PLACEHOLDER,
   idleComposerPlaceholder,
   normalizeComposerPlaceholder,
+  WELCOME_COMPOSER_PLACEHOLDER,
 } from './agent-defaults'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -119,10 +120,10 @@ describe('composer placeholder', () => {
       GENERIC_COMPOSER_PLACEHOLDER,
     )
     expect(idleComposerPlaceholder({ id: 'plain', name: 'plain' }, false)).toBe(
-      GENERIC_COMPOSER_PLACEHOLDER,
+      WELCOME_COMPOSER_PLACEHOLDER,
     )
     expect(idleComposerPlaceholder(undefined, false)).toBe(
-      GENERIC_COMPOSER_PLACEHOLDER,
+      WELCOME_COMPOSER_PLACEHOLDER,
     )
   })
 })

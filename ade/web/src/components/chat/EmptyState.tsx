@@ -52,9 +52,11 @@ export interface EmptyStateProps {
 
 const HARNESS_INSTALL_COMMAND = 'iii trigger compose::add worker=harness'
 
+// One heading and one body style for every variant, the welcome hero's.
 const HEADING_CLASS =
-  'text-balance font-sans text-3xl font-semibold tracking-tight text-ink'
-const BODY_CLASS = 'text-pretty font-sans text-base/7 text-ink-faint'
+  'text-balance font-inter text-2xl font-medium tracking-tight text-ink @2xl:text-[28px]'
+const BODY_CLASS =
+  'max-w-md text-pretty font-inter text-sm leading-relaxed text-ink-faint'
 
 export function EmptyState({
   variant,
@@ -116,10 +118,8 @@ function ReadyBody() {
     <>
       <Wordmark appearance="inset" className="size-10 fill-ink-faint/60" />
       <div className="flex max-w-full flex-col items-center gap-3">
-        <h1 className="text-balance font-inter text-2xl font-medium tracking-tight text-ink @2xl:text-[28px]">
-          What would you like to build?
-        </h1>
-        <p className="max-w-md text-pretty font-inter text-sm leading-relaxed text-ink-faint">
+        <h1 className={HEADING_CLASS}>What would you like to build?</h1>
+        <p className={BODY_CLASS}>
           Explore your project, fix an issue, or start something new.
         </p>
       </div>
@@ -136,15 +136,15 @@ function NoProviderBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>Connect a model.</h1>
+      <h1 className={HEADING_CLASS}>Connect a model</h1>
       <p className={BODY_CLASS}>
-        the harness is running, but no model is connected yet. setup finds
-        claude code, codex or an api key already on this machine and connects it
+        The harness is running, but no model is connected yet. Setup finds
+        Claude Code, Codex or an API key already on this machine and connects it
         in a couple of clicks.
       </p>
       <div>
         <Button variant="primary" onClick={onConfigureProvider}>
-          set up a model
+          Set up a model
         </Button>
       </div>
     </>
@@ -160,15 +160,15 @@ function NoHarnessBody({
 }) {
   return (
     <>
-      <h1 className={HEADING_CLASS}>Install the harness worker.</h1>
+      <h1 className={HEADING_CLASS}>Install the harness worker</h1>
       <p className={BODY_CLASS}>
-        chat runs on the <span className="text-ink">harness</span> worker, and
-        it isn't connected yet. add it to start a session.
+        Chat runs on the <span className="text-ink">harness</span> worker, which
+        isn't connected yet. Add it to start a chat.
       </p>
       <div className="flex flex-col gap-4">
         <div>
           <Button variant="primary" onClick={onInstallHarness}>
-            add harness
+            Add harness
           </Button>
         </div>
         <div className="flex flex-col gap-1.5">
@@ -199,12 +199,12 @@ function InstallingBody({
   return (
     <>
       <h1 className={HEADING_CLASS}>
-        {failed ? 'install failed.' : 'installing harness…'}
+        {failed ? 'Harness install failed' : 'Installing harness…'}
       </h1>
       <p className={BODY_CLASS}>
         {failed
-          ? "compose couldn't finish adding harness. you can retry here, or run it from your terminal."
-          : 'adding the harness worker. this mirrors what the cli does — you could run the same command in your terminal.'}
+          ? "Compose couldn't finish adding the harness. Retry here, or run the command below in your terminal."
+          : 'Adding the harness worker. This runs the same command as the CLI, shown below.'}
       </p>
       <InstallConsole running={!failed} />
       {failed ? (
@@ -216,7 +216,7 @@ function InstallingBody({
           ) : null}
           <div>
             <Button variant="primary" onClick={onRetryInstall}>
-              retry
+              Retry install
             </Button>
           </div>
         </div>

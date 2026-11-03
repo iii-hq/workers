@@ -77,7 +77,7 @@ describe('presence re-reads', () => {
       () =>
         useWorkerPresence({
           workerName: 'shell',
-          watchFnId: 'console::test-watch',
+          watchFnId: 'ade::test-watch',
           enabled: true,
         }).present,
       'shell',

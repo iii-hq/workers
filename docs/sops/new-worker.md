@@ -15,6 +15,9 @@ are in [`binary-worker.md`](binary-worker.md) for Rust and
 - Add `iii.worker.yaml` for local development, scaffolding and Compose.
 - Add an entry to the private
   [`.deploy/workers.yaml`](../../.deploy/workers.yaml) build catalog.
+- Optionally add `screenshots/` with the images the Worker Store shows and
+  their list, `screenshots/screenshots.yaml`; see
+  [`screenshots.md`](screenshots.md).
 
 The private entry contains exactly `source`, `artifact`, and `publish`. Public
 runtime and Registry metadata stay in `iii.worker.yaml`.
@@ -28,6 +31,11 @@ For a first-party package, set private `publish: true` and put its non-empty
 license, description, dependency ranges, configuration, and discovery tags in
 the public manifest. Fixtures use private `publish: false` and are never
 deployment targets.
+
+When a worker needs a minimum iii engine, declare it in the public manifest as
+`iii_engine_version`, a semver range like Node's `engines` (e.g. `">=0.26.0"`;
+no `v`, prerelease, wildcard or hyphen range). The field is optional; CI rejects
+any other shape.
 
 Never put API keys, tokens, `III_*` connection settings, or mutable external
 references in public defaults; the compiler rejects them before producing the
@@ -71,6 +79,10 @@ If registration needs safe startup defaults, add `config.collect.yaml` beside
 `iii.worker.yaml`. The compiler records its SHA-256 in the immutable descriptor;
 release prepare reads those exact bytes from the selected source SHA and passes
 the file only to the isolated interface-capture process.
+
+When the worker has `screenshots/screenshots.yaml`, both commands above check
+it against the Registry's limits (format, pixel size, file size, counts,
+captions) and name each entry that fails; see [`screenshots.md`](screenshots.md).
 
 ## Release readiness
 

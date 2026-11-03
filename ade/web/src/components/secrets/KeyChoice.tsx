@@ -1,5 +1,6 @@
 import { ExternalLink, FileKey2, LockKeyhole } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { Checkbox } from '@/components/shadcn/checkbox'
 import { Input } from '@/components/ui/Input'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
 import {
@@ -316,13 +317,17 @@ function KeyOption({
   meta?: string
 }) {
   return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: the Checkbox below renders the control (a role="checkbox" plus its hidden input)
     <label className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-sm px-2 hover:bg-surface-hover">
-      <input
-        type="radio"
+      {/* One choice, drawn as the console's one selection control (a
+          checkbox): ticking a key picks it; the others untick. */}
+      <Checkbox
         name={name}
         checked={checked}
-        onChange={onSelect}
-        className="size-4 shrink-0 accent-[var(--color-accent)]"
+        onCheckedChange={(next) => {
+          if (next) onSelect()
+        }}
+        className="shrink-0"
       />
       <span className="min-w-0 flex-1 font-sans text-[13px] text-ink">
         {label}

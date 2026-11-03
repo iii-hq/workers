@@ -3,9 +3,19 @@
 /* The tmux worker's console stylesheet (asset tmux/styles.css): every rule
    nests under [data-iii-ui="tmux"], the wrapper the console mounts around
    the page and its configuration form. Console tokens only, except the
-   terminal's own dark canvas, declared once on the scope root. */
+   terminal's own dark canvas and the two type faces, declared once on the
+   scope root. */
 
 [data-iii-ui="tmux"] {
+  /* The ADE redesign's two faces, re-pointed the way the ide page does
+     (ide/ui/styles.css): Inter for anything read as interface, Geist Mono
+     for code and machine values (window indexes, ports, paths) and for the
+     terminal, which reads --font-code. The console keeps Geist and Monaco,
+     so without this the page's own text and the shared components inside
+     it (already Inter) would mix two sans faces. */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-code: var(--font-mono);
   --tmux-term-bg: #141414;
 
   /* ── shared bits ─────────────────────────────────────────────────── */
@@ -23,6 +33,14 @@
 
   /* ── page layout ─────────────────────────────────────────────────── */
   .tmux-shell { min-height: 0; }
+  /* The sessions pane sits on the canvas layer, like the ide explorer and
+     the browser's chrome since the redesign. The drawer (a narrow pane)
+     carries the same surface on its sliding panel: `> [id]` is that panel,
+     the one child PageSidebar gives an id (`id={contentId}` in
+     ade/web/src/components/ui/PageSidebar.tsx). PageSidebar has no class
+     hook for it, so this follows that markup. */
+  .tmux-sidebar,
+  .tmux-sidebar[data-drawer] > [id] { background: var(--color-bg); }
   .tmux-side {
     display: flex;
     flex-direction: column;
@@ -40,7 +58,7 @@
     overflow: auto;
     padding: 4px 6px 12px;
   }
-  .tmux-side-note { padding: 8px 10px; font-size: 12px; }
+  .tmux-side-note { padding: 8px 10px; font-size: 13px; }
 
   .tmux-main {
     display: flex;
@@ -67,6 +85,21 @@
   .tmux-tab-scroll { overflow: auto; }
 
   /* ── session tree ────────────────────────────────────────────────── */
+  /* The sidebar's rhythm since the redesign (the chat sidebar's
+     conversation tree): 36px rows on a 10px inset, rounded-xl, 14px labels
+     and 12px meta. Doubled with the recipe's class so these outrank
+     `.iii-ui-tree` whichever stylesheet loads first; a narrow pane keeps
+     the recipe's 44px touch rows. */
+  .iii-ui-tree.tmux-tree {
+    --iii-ui-tree-inset: 10px;
+    --iii-ui-tree-trailing: 10px;
+  }
+  .iii-ui-tree.tmux-tree:not([data-narrow]) { --iii-ui-tree-row: 2.25rem; }
+  .tmux-tree .iii-ui-tree-item {
+    border-radius: var(--radius-xl);
+    font-size: 0.875rem;
+  }
+  .tmux-tree .iii-ui-tree-item__meta { font-size: 0.75rem; }
   .tmux-tree-group { display: contents; }
   .tmux-window-index {
     margin-right: 6px;
@@ -165,7 +198,7 @@
     overflow-wrap: anywhere;
     color: var(--color-ink);
   }
-  .tmux-step-thinking .tmux-step-text { color: var(--color-ink-faint); }
+  .tmux-step[data-kind="thinking"] .tmux-step-text { color: var(--color-ink-faint); }
   .tmux-step-code {
     max-height: 240px;
     overflow: auto;
@@ -176,7 +209,7 @@
     font-family: var(--font-mono);
     font-size: 12px;
   }
-  .tmux-step-error .tmux-step-head { color: var(--color-alert); }
+  .tmux-step[data-error] .tmux-step-head { color: var(--color-alert); }
 
   /* ── terminal ────────────────────────────────────────────────────── */
   .tmux-terminal {
@@ -244,6 +277,9 @@
     padding: 16px;
   }
   .tmux-ports-empty { padding: 24px; }
+  /* A location is a small button: centre every cell on it, so the port,
+     address and process read on the same line as `web:1`. */
+  .tmux-ports .iii-ui-table__cell { vertical-align: middle; }
   .tmux-ports-section {
     display: flex;
     flex-direction: column;

@@ -13,10 +13,13 @@ export const GENERAL_ANCHOR = {
   completionBell: 'settings-general-completion-bell',
   uiSounds: 'settings-general-ui-sounds',
   soundCheck: 'settings-general-sound-check',
+  chat: 'settings-general-chat',
+  sendKey: 'settings-general-send-key',
   permissions: 'settings-general-permissions',
   defaultMode: 'settings-general-default-mode',
   allowlist: 'settings-general-allowlist',
   workspace: 'settings-general-workspace',
+  newChat: 'settings-general-new-chat',
   tabLimit: 'settings-general-tab-limit',
   providers: 'settings-general-providers',
   modelProviders: 'settings-general-model-providers',
@@ -72,6 +75,32 @@ const BASE_FIELDS: SettingsSearchField[] = [
     keywords: ['test bell', 'audio'],
     anchor: A.soundCheck,
   },
+  {
+    key: 'chat',
+    label: 'Chat',
+    trail: [],
+    anchor: A.chat,
+  },
+  {
+    key: 'send-key',
+    label: 'Send messages with',
+    trail: ['Chat'],
+    description:
+      'Enter, Cmd/Ctrl + Enter, or Shift + Enter sends; the others add a new line.',
+    keywords: [
+      'enter',
+      'return',
+      'shift',
+      'cmd',
+      'ctrl',
+      'submit',
+      'newline',
+      'new line',
+      'keyboard',
+      'composer',
+    ],
+    anchor: A.sendKey,
+  },
 ]
 
 const PERMISSION_FIELDS: SettingsSearchField[] = [
@@ -107,6 +136,15 @@ const TRAILING_FIELDS: SettingsSearchField[] = [
     label: 'Workspace',
     trail: [],
     anchor: A.workspace,
+  },
+  {
+    key: 'new-chat',
+    label: 'New chat opens',
+    trail: ['Workspace'],
+    description:
+      'A blank chat with the full composer, or a quick dialog that starts the chat in one step.',
+    keywords: ['new chat', 'dialog', 'blank', 'welcome', 'compose'],
+    anchor: A.newChat,
   },
   {
     key: 'tab-limit',

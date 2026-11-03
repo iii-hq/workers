@@ -254,13 +254,13 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
 
     let status = client
         .trigger(TriggerRequest {
-            function_id: "console::status".to_string(),
+            function_id: "ade::status".to_string(),
             payload: serde_json::json!({}),
             action: None,
             timeout_ms: Some(5_000),
         })
         .await
-        .expect("console::status failed after rebind");
+        .expect("ade::status failed after rebind");
     assert_eq!(status["http_port"], REBOUND_HTTP_PORT);
     assert_eq!(
         status["url"],

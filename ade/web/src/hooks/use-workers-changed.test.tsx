@@ -30,7 +30,7 @@ describe('useWorkersChanged', () => {
     function Probe() {
       useWorkersChanged({
         enabled: true,
-        fnId: 'console::test-watch',
+        fnId: 'ade::test-watch',
         onChange,
       })
       return null

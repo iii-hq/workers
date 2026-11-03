@@ -26,8 +26,10 @@ pub struct LoadedEntry {
 /// How much of each message [`SessionClient::messages_from`] asks for.
 /// `Usage` keeps the message shapes but not their bulk: assistant content
 /// is only its `function_call` blocks (no arguments), other roles' content
-/// is empty — enough for usage counters. A session-manager that predates
-/// the option ignores it and returns full content, which reads the same.
+/// is empty — enough for usage counters — and the `superseded_generation`
+/// custom entries are included (they carry billed usage). A session-manager
+/// that predates the option ignores it and returns full content, which reads
+/// the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Projection {
     Full,
@@ -480,6 +482,17 @@ impl SessionClient {
         Ok(resp.get("revision").and_then(Value::as_u64).unwrap_or(0))
     }
 
+    /// An entry's revision (0 when it is gone): every `update_message` moves it.
+    pub async fn revision(&self, session_id: &str, entry_id: &str) -> Result<u64, HarnessError> {
+        let resp = self
+            .call(
+                "session::get-message",
+                json!({ "session_id": session_id, "entry_id": entry_id }),
+            )
+            .await?;
+        Ok(resp["entry"]["revision"].as_u64().unwrap_or(0))
+    }
+
     /// Load the **entire** active path, oldest first. `include_custom`
     /// interleaves `kind: custom` entries (where the compaction record lives).
     ///
@@ -556,28 +569,13 @@ impl SessionClient {
         after_entry_id: Option<&str>,
         projection: Projection,
     ) -> Result<Vec<LoadedEntry>, HarnessError> {
-        const PAGE_LIMIT: u64 = 500;
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
         let mut seen_cursors = BTreeSet::new();
 
         loop {
-            let mut payload = json!({
-                "session_id": session_id,
-                "include_custom": false,
-                "limit": PAGE_LIMIT,
-            });
-            // Ignored by session-manager once a cursor is set: the cursor
-            // already carries the position.
-            if let Some(after) = after_entry_id {
-                payload["after_entry_id"] = json!(after);
-            }
-            if projection == Projection::Usage {
-                payload["content"] = json!("usage");
-            }
-            if let Some(value) = &cursor {
-                payload["cursor"] = json!(value);
-            }
+            let payload =
+                messages_page_payload(session_id, after_entry_id, projection, cursor.as_deref());
             let response = self.call("session::messages", payload).await?;
             let messages = response
                 .get("messages")
@@ -702,6 +700,37 @@ fn init_payload(
     payload
 }
 
+/// One `session::messages` page request of [`SessionClient::messages_from`].
+fn messages_page_payload(
+    session_id: &str,
+    after_entry_id: Option<&str>,
+    projection: Projection,
+    cursor: Option<&str>,
+) -> Value {
+    let mut payload = json!({
+        "session_id": session_id,
+        // Usage readers also need the superseded_generation entries a
+        // regenerated step keeps (custom entries come back only on request).
+        "include_custom": projection == Projection::Usage,
+        "limit": 500,
+    });
+    // Ignored by session-manager once a cursor is set: the cursor
+    // already carries the position.
+    if let Some(after) = after_entry_id {
+        payload["after_entry_id"] = json!(after);
+    }
+    if projection == Projection::Usage {
+        payload["content"] = json!("usage");
+        // Custom entries keep their full data under the usage projection; a
+        // session-manager that predates this filter returns them all.
+        payload["custom_types"] = json!([crate::turn_loop::SUPERSEDED_GENERATION]);
+    }
+    if let Some(value) = cursor {
+        payload["cursor"] = json!(value);
+    }
+    payload
+}
+
 /// The `session::append` request for a bookkeeping entry. The record MUST ride
 /// the dedicated `custom` field: `session::append` only creates a
 /// `kind: "custom"` entry from it — a `role: "custom"` message wrapper is
@@ -793,6 +822,26 @@ mod tests {
         let legacy: GetSessionResponse =
             serde_json::from_value(json!({ "meta": { "session_id": "s_1" } })).unwrap();
         assert_eq!(legacy.meta.kind, None);
+    }
+
+    // Prevents: harness::metrics never seeing the superseded_generation
+    // entries a regenerated step keeps — session-manager returns custom
+    // entries only with `include_custom`, and the usage reads go through
+    // this request — so metrics under-report the billed spend.
+    #[test]
+    fn usage_reads_ask_for_custom_entries() {
+        let usage = messages_page_payload("s_1", Some("e_9"), Projection::Usage, None);
+        assert_eq!(usage["include_custom"], true);
+        // Not the compaction summaries and notices the projection exists to skip.
+        assert_eq!(usage["custom_types"], json!(["superseded_generation"]));
+        assert_eq!(usage["content"], "usage");
+        assert_eq!(usage["after_entry_id"], "e_9");
+
+        let full = messages_page_payload("s_1", None, Projection::Full, Some("c_1"));
+        assert_eq!(full["include_custom"], false);
+        assert!(full.get("content").is_none());
+        assert!(full.get("custom_types").is_none());
+        assert_eq!(full["cursor"], "c_1");
     }
 
     #[test]

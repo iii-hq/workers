@@ -58,7 +58,7 @@ export function StatusPanel({
   return (
     <div
       className={cn(
-        'flex items-start gap-x-3 rounded-xl px-3.5 py-3 font-inter text-sm ring-1 ring-foreground/10',
+        'flex items-start gap-x-3 rounded-xl px-3.5 py-3 font-inter text-sm ring-1 ring-card-edge',
         tone.fill,
         className,
       )}

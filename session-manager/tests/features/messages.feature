@@ -234,6 +234,22 @@ Feature: session::messages — load the active path, oldest first
     And the response field "messages.1.custom.custom_type" is "compaction"
     And the response has no field "messages.1.message"
 
+  # Prevents: a reader that needs one kind of bookkeeping entry (usage
+  # readers and the harness's superseded_generation) downloading every
+  # compaction summary and notice on the path along with it.
+  Scenario: custom_types keeps only the custom entries of those types
+    Given a user message "one" appended to "s_001"
+    And a custom entry of type "compaction" appended to "s_001"
+    And a custom entry of type "superseded_generation" appended to "s_001"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "include_custom": true, "custom_types": ["superseded_generation"] }
+      """
+    Then the response field "messages" has length 2
+    And the response field "messages.0.entry_id" is "e_001"
+    And the response field "messages.1.entry_id" is "e_003"
+    And the response field "messages.1.custom.custom_type" is "superseded_generation"
+
   # Prevents: ambiguity when both roles and include_custom are set — a
   # roles filter is an explicit narrowing to message roles.
   Scenario: a roles filter drops custom entries even with include_custom

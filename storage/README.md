@@ -5,6 +5,44 @@ filesystem backend. Streamed uploads, signed downloads, and `object-created` /
 `object-deleted` triggers — all behind one `bucket:` name regardless of
 the cloud underneath.
 
+## S3 multipart controls
+
+`storage::multipartCapabilities` takes only `{ "bucket": "<configured name>" }`
+and returns `{ "provider": "s3", "contract": "sha256-composite-v2-list-optional" }`
+for the S3/R2 backend, or `contract: null` for unsupported backends. Unknown or
+unavailable buckets fail normally. Before returning a supported contract, this
+metadata-only operation sends `HeadBucket` using the live configured backend:
+404, denied credentials and a disconnected provider fail the call. It requires
+bucket-scoped `s3:ListBucket` permission for HEAD, not account-wide ListBuckets.
+It neither lists object contents nor creates uploads/objects, and returns no
+credentials.
+The contract identifies checksum-bound signing, optional listing checksums,
+mandatory checksums on every Complete part and SHA256/COMPOSITE HEAD support.
+It is independent of the package version and does not certify a provider's
+multipart implementation or write/checksum permissions. Consumers must still
+validate the actual provider's complete multipart contract before rollout.
+
+
+The S3 backend supports multipart create, checksum-bound part signing, list,
+complete and abort, plus checksum-enabled object HEAD. These controls require a
+provider that implements the matching SHA-256 composite checksum contract;
+validate against the actual provider and version before enabling an application.
+Other backends return unsupported for these operations. Browser part bytes travel
+directly to storage; the caller owns authorization, session lifecycle and cleanup.
+Configure an incomplete-multipart lifecycle rule or an approved equivalent.
+
+ListParts returns each part's number, size and opaque ETag; `checksum_sha256` is
+optional and is omitted when the provider does not report it. A present checksum
+must be valid SHA-256. This does not relax UploadPart signing or Complete:
+completion parts still require their authorized SHA-256 checksums. Callers must
+compare listed identity, size and ETag (and checksum when present) against the
+closed manifest, then require the exact checksum-enabled SHA256 COMPOSITE HEAD
+before publishing, including recovery after a lost completion response.
+
+Worker release versions are selected and published by Release Control from a
+verified source SHA and build manifest; see [deployment operations](../docs/sops/release.md).
+The version in Cargo.toml is source metadata, not proof that this code is published.
+
 ## Install
 
 ```bash
@@ -674,3 +712,28 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ./target/debug/storage --manifest | jq .
 ```
+
+### S3 multipart provider contract (opt-in)
+
+This check is for an **isolated test bucket**, never a production bucket. Set
+`S3_TEST_ENDPOINT`, `S3_TEST_BUCKET`, `S3_TEST_REGION`, `AWS_ACCESS_KEY_ID`,
+and `AWS_SECRET_ACCESS_KEY` in your environment (and `AWS_SESSION_TOKEN` if
+needed), then run:
+
+```sh
+cargo test --manifest-path storage/Cargo.toml --test schemas e2e::multipart::multipart_contract -- --ignored --exact
+```
+
+Add `--nocapture` after `--exact` to display the conditional probe result.
+
+The endpoint uses path-style addressing. The test creates a unique
+`qa/multipart/<uuid>/` prefix, checks SHA256/COMPOSITE multipart uploads,
+incorrect checksums, ETags, abort, metadata and ranged reads, and attempts to
+remove only its own uploads and objects. A missing required variable fails the
+explicit run. The conditional-completion probe reports whether an existing
+object was rejected with `PreconditionFailed`, explicitly reports `NotImplemented`,
+or reports that the precondition was ignored. Other errors fail the test.
+A successful SDK test does not establish browser CORS, exposed ETag, signed
+Content-Length enforcement, lifecycle cleanup, or provider/version compatibility:
+verify those separately against the actual product before enabling uploads.
+Never record credentials or signed URLs in test evidence.

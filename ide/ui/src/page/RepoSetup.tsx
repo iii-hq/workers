@@ -650,7 +650,10 @@ export function RepoSetup({ host, root, start, onInitialized, onRunInTerminal, o
                       <span className="shui-repo-choice-title">{title}</span>
                       <span className="shui-repo-choice-detail">{detail}</span>
                     </span>
-                    <span className="shui-repo-choice-radio" aria-hidden />
+                    {/* The console's one selection control, a checkbox, even for this one-of choice. */}
+                    <span className="shui-repo-choice-box" aria-hidden>
+                      <Check />
+                    </span>
                   </label>
                 ))}
               </div>

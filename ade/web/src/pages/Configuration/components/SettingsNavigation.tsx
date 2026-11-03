@@ -176,7 +176,7 @@ export function SettingsNavigation({
         'flex min-h-0 flex-col bg-neutral-50 dark:bg-black',
         narrow
           ? 'min-w-0 flex-1'
-          : 'w-[250px] shrink-0 border-r border-neutral-200 dark:border-neutral-800',
+          : 'w-[250px] shrink-0 border-r border-neutral-100 dark:border-neutral-800',
       )}
       aria-label="Settings navigation"
     >
@@ -260,7 +260,7 @@ export function SettingsNavigation({
             </button>
           ) : (
             <kbd
-              className="pointer-events-none absolute right-2 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-200 bg-neutral-50 px-1 font-inter text-xs text-neutral-400 pointer-coarse:hidden dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-500"
+              className="pointer-events-none absolute right-2 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-100 bg-neutral-50 px-1 font-inter text-xs text-neutral-400 pointer-coarse:hidden dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-500"
               aria-hidden
             >
               /
@@ -638,7 +638,7 @@ function SearchEmptyState({
       className="flex flex-col items-center px-3 pt-8 pb-4 text-center"
       role="status"
     >
-      <div className="mb-4 flex size-11 items-center justify-center rounded-xl border border-neutral-200 bg-white shadow-xs dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="mb-4 flex size-11 items-center justify-center rounded-xl border border-neutral-100 bg-white shadow-xs dark:border-neutral-800 dark:bg-neutral-900">
         <SearchX
           className="size-5 text-neutral-500 dark:text-neutral-400"
           aria-hidden

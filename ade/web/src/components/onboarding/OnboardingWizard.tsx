@@ -108,7 +108,7 @@ export function stepPosition(
 
 /**
  * The first-run setup wizard. Mounted once in `App`: it opens by itself the
- * first time a person loads this machine's ADE (`console::onboarding::get`
+ * first time a person loads this machine's ADE (`ade::onboarding::get`
  * reports `new` and does not turn auto-open off; never in a browser under
  * automation; never once a model is connected — see
  * `shouldAutoOpenOnboarding`), and whenever something calls
@@ -121,7 +121,7 @@ export function stepPosition(
  *
  * Ready shows what setup connected. Explore iii, after it, offers three
  * ways in: the example prompts the project's template declares
- * (`onboarding.yaml`, read through `console::onboarding::prompts`; a click
+ * (`onboarding.yaml`, read through `ade::onboarding::prompts`; a click
  * opens a new chat that sends the prompt, its agent profile and model chosen
  * — see `openExamplePrompt`), the learn-iii tour (its worker added when it
  * is not running yet), or closing setup to explore alone.
@@ -484,7 +484,7 @@ export function OnboardingWizardHost() {
           }}
         >
           <DialogContent
-            className="@container flex h-[min(720px,calc(100dvh-32px))] max-h-none w-[min(836px,calc(100vw-32px))] max-w-none flex-row overflow-hidden rounded-xl border border-neutral-200 bg-white p-0 font-sans text-sm font-normal leading-normal tracking-normal text-ink shadow-floating dark:border-neutral-800 dark:bg-neutral-950 [&>button:last-child]:hidden"
+            className="@container flex h-[min(720px,calc(100dvh-32px))] max-h-none w-[min(836px,calc(100vw-32px))] max-w-none flex-row overflow-hidden rounded-xl bg-dialog-surface p-0 font-sans text-sm font-normal leading-normal tracking-normal text-ink shadow-floating [&>button:last-child]:hidden"
             onOpenAutoFocus={(event) => {
               // Land on the step's primary action, not the first button in it.
               event.preventDefault()
@@ -497,7 +497,7 @@ export function OnboardingWizardHost() {
             <DialogDescription className="sr-only">
               Connect a model provider and see what the harness can do.
             </DialogDescription>
-            <aside className="hidden w-[200px] shrink-0 flex-col border-r border-neutral-200 bg-neutral-50 px-5 pt-5 pb-5 dark:border-neutral-800 dark:bg-neutral-900/50 @lg:flex">
+            <aside className="hidden w-[200px] shrink-0 flex-col border-r border-neutral-100 bg-neutral-50 px-5 pt-5 pb-5 dark:border-neutral-800 dark:bg-neutral-900/50 @lg:flex">
               <div
                 aria-hidden
                 className="flex h-6 items-center gap-2 text-[13px] font-medium leading-none text-ink"
@@ -519,7 +519,7 @@ export function OnboardingWizardHost() {
               <div className="hidden h-12 shrink-0 items-start justify-end px-4 pt-4 @lg:flex">
                 <CloseButton />
               </div>
-              <header className="flex shrink-0 flex-col gap-3 border-b border-neutral-200 px-4 pt-3 pb-3.5 dark:border-neutral-800 @md:px-6 @lg:hidden">
+              <header className="flex shrink-0 flex-col gap-3 border-b border-neutral-100 px-4 pt-3 pb-3.5 dark:border-neutral-800 @md:px-6 @lg:hidden">
                 <div className="flex h-8 items-center gap-2 text-[13px] font-medium leading-none text-ink">
                   <Wordmark className="size-4" aria-hidden />
                   <span aria-hidden>Set up the harness</span>

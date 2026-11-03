@@ -1,0 +1,18 @@
+# Store screenshots of the database worker, in display order (the registry CLI's
+# `registry publish --screenshots` list). Captured from the iii app with demo data.
+
+- file: android-query.webp
+  platform: android
+  caption: "Run SQL and read the results"
+- file: android-table.webp
+  platform: android
+  caption: "Browse a table and filter it by value"
+- file: android-filter-values.webp
+  platform: android
+  caption: "Pick filter values from the column's own data"
+- file: android-connections.webp
+  platform: android
+  caption: "PostgreSQL and SQLite connections on the engine"
+- file: android-explorer.webp
+  platform: android
+  caption: "Tables, views and saved queries beside the data"

@@ -18,6 +18,7 @@ import deployment_targets
 import deployment_train
 import discover_changed_workers
 import validate_worker
+from _screenshot_images import png
 from build_publish_payload import build_payload
 
 
@@ -42,21 +43,21 @@ def test_compiler_digest_changes_when_go_target_policy_changes(tmp_path, monkeyp
     assert deployment_compiler.compiler_digest(script, schema) != before
 
 
-def go_worker(root: Path) -> dict:
-    worker = root / "smoke"
+def go_worker(root: Path, name: str = "smoke") -> dict:
+    worker = root / name
     worker.mkdir()
-    (worker / "package.json").write_text('{"name":"smoke","version":"0.4.2-rc.3","private":true}\n')
-    (worker / "go.mod").write_text("module example.test/smoke\n\ngo 1.27.1\n")
+    (worker / "package.json").write_text(f'{{"name":"{name}","version":"0.4.2-rc.3","private":true}}\n')
+    (worker / "go.mod").write_text(f"module example.test/{name}\n\ngo 1.27.1\n")
     (worker / "go.sum").touch()
     (worker / "config.collect.yaml").write_text("data_dir: /tmp/capture\n")
     (worker / "iii.worker.yaml").write_text(
-        "iii: v1\nname: smoke\nlanguage: go\ndeploy: binary\nmanifest: package.json\n"
-        "bin: smoke\nlicense: Apache-2.0\ndescription: Go smoke worker\ntags: [smoke]\n"
+        f"iii: v1\nname: {name}\nlanguage: go\ndeploy: binary\nmanifest: package.json\n"
+        f"bin: {name}\nlicense: Apache-2.0\ndescription: Go smoke worker\ntags: [smoke]\n"
     )
     return {
-        "source": {"path": "smoke", "package_manifest": "package.json"},
+        "source": {"path": name, "package_manifest": "package.json"},
         "artifact": {
-            "kind": "go-binary", "binary": "smoke",
+            "kind": "go-binary", "binary": name,
             "toolchain": {"name": "go", "version": "1.27.1"},
             "targets": ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"],
             "windows_exception": "This fixture only supports Unix.",
@@ -109,6 +110,44 @@ def test_go_catalog_and_pr_validation_accept_adjacent_go_tests(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_lib, "worker_catalog_path", lambda: catalog)
     assert validate_worker.main(["--worker", "smoke", "--base-ref", "HEAD", "--source-changed", '["smoke"]']) == 0
+
+
+def test_pr_validation_refuses_a_screenshots_list_the_registry_would_refuse(tmp_path, monkeypatch, capsys):
+    entry = go_worker(tmp_path)
+    (tmp_path / "smoke/README.md").write_text("# Smoke\n")
+    (tmp_path / "smoke/main_test.go").write_text("package main\n")
+    (tmp_path / "smoke/screenshots").mkdir()
+    (tmp_path / "smoke/screenshots/screenshots.yaml").write_text("- file: board.gif\n  platform: android\n")
+    (tmp_path / ".deploy").mkdir()
+    catalog = tmp_path / ".deploy/workers.yaml"
+    catalog.write_text(yaml.safe_dump({"workers": {"smoke": entry}}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_lib, "worker_catalog_path", lambda: catalog)
+    assert validate_worker.main(["--worker", "smoke", "--base-ref", "HEAD", "--source-changed", "[]"]) == 1
+    assert (
+        "::error::smoke/screenshots/screenshots.yaml: 1 problem(s), the registry would refuse it:"
+        in capsys.readouterr().out
+    )
+    (tmp_path / "smoke/screenshots/screenshots.yaml").write_text("[]\n")
+    assert validate_worker.main(["--worker", "smoke", "--base-ref", "HEAD", "--source-changed", "[]"]) == 0
+
+
+def test_pr_validation_refuses_screenshots_for_the_worker_the_registry_hides(tmp_path, monkeypatch, capsys):
+    entry = go_worker(tmp_path, "iii")
+    (tmp_path / "iii/README.md").write_text("# iii\n")
+    (tmp_path / "iii/main_test.go").write_text("package main\n")
+    (tmp_path / "iii/screenshots").mkdir()
+    (tmp_path / "iii/screenshots/board.png").write_bytes(png(400, 800))
+    (tmp_path / "iii/screenshots/screenshots.yaml").write_text("- file: board.png\n  platform: android\n")
+    (tmp_path / ".deploy").mkdir()
+    catalog = tmp_path / ".deploy/workers.yaml"
+    catalog.write_text(yaml.safe_dump({"workers": {"iii": entry}}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_lib, "worker_catalog_path", lambda: catalog)
+    assert validate_worker.main(["--worker", "iii", "--base-ref", "HEAD", "--source-changed", "[]"]) == 1
+    assert "::error::iii/screenshots/screenshots.yaml: the registry hides the iii worker" in capsys.readouterr().out
+    (tmp_path / "iii/screenshots/screenshots.yaml").write_text("[]\n")
+    assert validate_worker.main(["--worker", "iii", "--base-ref", "HEAD", "--source-changed", "[]"]) == 0
 
 
 def test_discovery_routes_go_changes_to_go_job(tmp_path, monkeypatch, capsys):

@@ -1,5 +1,5 @@
 /* The tool group: one raised card per phase of agent activity. A header
-   names the batch ("Using 3 tools" while live, "Used 3 tools" once settled,
+   names the batch ("Calling 3 functions" while live, "Called 3 functions" once settled,
    with a failure count when any call errored) and the rows under it are the
    calls themselves, each a 40px line with its status at the trailing edge.
    Everything that changes state crossfades in place; rows grow in, nothing

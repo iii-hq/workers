@@ -26,15 +26,15 @@ it('uses read discovery/preview functions and imports only explicitly selected i
   await importConversation('claude-code', 'history-1')
   expect(trigger.mock.calls).toEqual([
     [
-      'console::conversations::discover',
+      'ade::conversations::discover',
       { source: 'codex', query: 'project', cursor: 'next' },
     ],
     [
-      'console::conversations::preview',
+      'ade::conversations::preview',
       { source: 'claude-code', id: 'history-1' },
     ],
     [
-      'console::conversations::import',
+      'ade::conversations::import',
       { source: 'claude-code', id: 'history-1' },
     ],
   ])
@@ -66,7 +66,7 @@ it('says a timed-out import may still be running instead of reporting a plain fa
     .fn()
     .mockRejectedValue(
       new Error(
-        'Invocation timeout after 300000ms: console::conversations::import',
+        'Invocation timeout after 300000ms: ade::conversations::import',
       ),
     )
   vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)

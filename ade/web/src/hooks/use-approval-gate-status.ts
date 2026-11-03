@@ -18,7 +18,7 @@ import {
 /** Engine worker name for the standalone approval-gate worker. */
 const APPROVAL_GATE_WORKER_NAME = 'approval-gate'
 /** Base id for the browser-local `engine::workers-available` handler. */
-const APPROVAL_GATE_WATCH_FN = 'console::approval-gate-watch'
+const APPROVAL_GATE_WATCH_FN = 'ade::approval-gate-watch'
 
 export type ApprovalGateStatus = WorkerPresence
 

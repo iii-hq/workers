@@ -64,6 +64,7 @@ pub use contract::{
     SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
     TraceStoreStateV1, TriageKindV1, TriageSourceV1, TurnCompletedEventV1,
 };
+pub use contract::{InvestigateManyRequestV1, InvestigateManyResponseV1};
 pub use error::SentinelError;
 pub use events::Emitter;
 pub use evidence::EvidenceBundleV1;

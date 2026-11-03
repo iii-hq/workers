@@ -17,7 +17,13 @@
 //! the missing field. The new_async path uses `serde_json::from_value`
 //! internally, so this asserts the same thing the handler does without
 //! booting a daemon.
+//!
+//! Handlers take `Payload<T>`, so that failure reaches the handler and
+//! answers S001 like any other invalid request; the `*_answers_s001` tests
+//! pin that body.
 
+use sandbox_libkrun::sandbox_daemon::errors::Payload;
+use sandbox_libkrun::sandbox_daemon::exec::ExecRequest;
 use sandbox_libkrun::sandbox_daemon::fs::ls::LsRequest;
 
 #[test]
@@ -45,6 +51,47 @@ fn ls_request_missing_sandbox_id_fails_with_named_field() {
     assert!(
         msg.contains("sandbox_id") && (msg.contains("missing") || msg.contains("required")),
         "decode error message must name the missing field; got {msg:?}"
+    );
+}
+
+/// The body a handler answers for `payload`, decoded the way the SDK does it.
+fn decode_error<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> serde_json::Value {
+    let req = serde_json::from_value::<Payload<T>>(payload).expect("any JSON reaches the handler");
+    let Err(err) = req.decode() else {
+        panic!("the payload decoded")
+    };
+    serde_json::from_str(&err.to_string()).unwrap()
+}
+
+fn assert_s001(body: &serde_json::Value, field: &str) {
+    assert_eq!(body["code"], "S001", "{body}");
+    assert_eq!(body["type"], "validation", "{body}");
+    assert_eq!(body["retryable"], false, "{body}");
+    assert_eq!(
+        body["docs_url"],
+        "https://iii.dev/docs/creating-workers/sandboxes#S001"
+    );
+    assert!(body["message"].as_str().unwrap().contains(field), "{body}");
+}
+
+#[test]
+fn exec_without_sandbox_id_answers_s001() {
+    let body = decode_error::<ExecRequest>(serde_json::json!({ "cmd": "true" }));
+    assert_s001(&body, "sandbox_id");
+}
+
+#[test]
+fn ls_with_a_numeric_sandbox_id_answers_s001() {
+    let body = decode_error::<LsRequest>(serde_json::json!({ "sandbox_id": 42, "path": "/" }));
+    assert_s001(&body, "string");
+}
+
+/// The wrapper must not change the request schema the adapter advertises.
+#[test]
+fn payload_advertises_the_request_schema() {
+    assert_eq!(
+        schemars::schema_for!(Payload<ExecRequest>),
+        schemars::schema_for!(ExecRequest)
     );
 }
 

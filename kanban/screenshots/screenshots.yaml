@@ -1,0 +1,18 @@
+# Store screenshots of the kanban worker, in display order (the registry CLI's
+# `registry publish --screenshots` list). Captured from the iii app with demo data.
+
+- file: android-board.webp
+  platform: android
+  caption: "The board, one lane at a time"
+- file: android-ticket.webp
+  platform: android
+  caption: "A ticket with its Markdown description"
+- file: android-comments.webp
+  platform: android
+  caption: "Threaded comments and linked tickets"
+- file: android-filters.webp
+  platform: android
+  caption: "Filter by assignee, priority, label, project or release"
+- file: android-lanes.webp
+  platform: android
+  caption: "The lanes side by side"

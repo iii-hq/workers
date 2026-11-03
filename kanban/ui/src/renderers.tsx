@@ -1,28 +1,23 @@
 import {
-  Badge,
-  Card,
   type FunctionTriggerMessage,
   type Host,
   Markdown,
   type MentionRendererProps,
   type MentionRendererRegistration,
-  MetaRow,
-  type MetaRowItem,
-  StatusDot,
-  Table,
-  TableBody,
-  TableCell,
-  TableFrame,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TableViewport,
+  ShadcnBadge,
+  ShadcnCard,
+  ShadcnProgress,
+  ShadcnTable,
+  ShadcnTableBody,
+  ShadcnTableCell,
+  ShadcnTableHead,
+  ShadcnTableHeader,
+  ShadcnTableRow,
   type TriggerActivityMessage,
 } from '@iii-dev/console-ui'
 import { formatRelative, unwrapEnvelope } from '@iii-dev/console-ui/format'
-import { ChevronRight, Flag, MessageCircle } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { ProjectGlyph, StatusBadge } from './plan-dialogs'
+import { ChevronRight, CircleX, Folder, MessageSquare, Milestone } from 'lucide-react'
+import { type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 import { formatTarget, plural, releaseStatusText, triggerScope } from './plan-rules'
 import {
   api,
@@ -38,6 +33,8 @@ import {
   type Ticket,
   type TicketSummary,
 } from './shared'
+import { AssigneeAvatar } from './ui/avatar'
+import { StatusIcon } from './ui/glyphs'
 
 const TICKET_FUNCTIONS = [
   'kanban::ticket::get',
@@ -188,15 +185,52 @@ function useCardLookup(host: Host, projectId?: string | null, releaseId?: string
 const columnLabel = (columns: Column[], status: string) =>
   columns.find((column) => column.id === status)?.label ?? titleCase(status)
 
-/** The dot of a status badge, by the column's place on the board (the same reading as its glyph). */
-function statusTone(lookup: Lookup | undefined | null, status: string): 'ink' | 'ghost' | 'ok' {
-  if (!lookup || lookup.columns.length === 0) return 'ghost'
-  const { tone } = statusGlyph(lookup.columns, status, lookup.doneStatus, lookup.canceledStatus)
-  return tone === 'ok' ? 'ok' : tone === 'ghost' || tone === 'faint' ? 'ghost' : 'ink'
+/** A facet with nothing in it: said in the ghost ink, not left out. */
+const none = () => <span className="kb-chat-card__none">none</span>
+
+type Fact = { label: string; value: ReactNode }
+
+/** Facts about a card as quiet `label value` pairs on one wrapping line. */
+function Facts({ items, label }: { items: Fact[]; label: string }) {
+  if (items.length === 0) return null
+  return (
+    <div aria-label={label} className="kb-chat-card__facts" role="group">
+      {items.map((item) => (
+        <span className="kb-chat-card__fact" key={item.label}>
+          <span className="kb-chat-card__fact-label">{item.label}</span>
+          <span className="kb-chat-card__fact-value">{item.value}</span>
+        </span>
+      ))}
+    </div>
+  )
 }
 
-/** A facet with nothing in it: said in the ghost ink, not left out. */
-const none = () => <span className="kanban-chat-none">none</span>
+/** A state badge with a tone dot: the column a ticket is in, or a release's or project's status. */
+function StateBadge({ tone, children }: { tone: 'ink' | 'ghost' | 'ok'; children: ReactNode }) {
+  return (
+    <ShadcnBadge className="kb-chat-card__status" variant="outline">
+      <span aria-hidden="true" className="kb-swim__dot" data-tone={tone} />
+      {children}
+    </ShadcnBadge>
+  )
+}
+
+/** A card that opens a pane when the console can open one: clickable, focusable, Enter and Space. */
+function cardProps(interactive: boolean, open: () => void, label: string) {
+  if (!interactive) return {}
+  return {
+    'aria-label': label,
+    onClick: open,
+    onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        open()
+      }
+    },
+    role: 'button',
+    tabIndex: 0,
+  }
+}
 
 function TicketCard({
   host,
@@ -218,7 +252,7 @@ function TicketCard({
   const lookup = answer?.lookup
   const columns = lookup?.columns ?? []
   // "none" is known at once; a name waits for the lookup. Nothing is said of a field the projection did not carry.
-  const facets: MetaRowItem[] = []
+  const facets: Fact[] = []
   if (ticket.parent_id) facets.push({ label: 'Parent', value: ticket.parent?.key ?? ticket.parent_id })
   if (ticket.release_id === null) facets.push({ label: 'Release', value: none() })
   else if (ticket.release_id && answer)
@@ -226,71 +260,57 @@ function TicketCard({
   if (ticket.project_id === null) facets.push({ label: 'Project', value: none() })
   else if (ticket.project_id && answer)
     facets.push({ label: 'Project', value: lookup?.projects.get(ticket.project_id) ?? ticket.project_id })
+  const step = lookup && columns.length > 0 ? statusGlyph(columns, ticket.status, lookup.doneStatus, lookup.canceledStatus).step : 'unknown'
   return (
-    <Card
-      aria-label={interactive ? `${ticket.key}: ${ticket.title}` : undefined}
-      className="kanban-chat-card"
+    <ShadcnCard
+      className="kb-chat kb-chat-card"
       data-deleted={deleted ? 'true' : undefined}
-      interactive={interactive}
-      onClick={interactive ? open : undefined}
-      onKeyDown={
-        interactive
-          ? (event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault()
-                open()
-              }
-            }
-          : undefined
-      }
-      role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
+      size="sm"
+      {...cardProps(interactive, open, `${ticket.key}: ${ticket.title}`)}
     >
-      {facets.length > 0 ? (
-        <MetaRow aria-label={`${ticket.key} facets`} className="kanban-chat-meta" items={facets} role="group" />
-      ) : null}
-      <div className="kanban-chat-card__top">
-        {verb ? <span className="kanban-chat-card__verb">{verb}</span> : null}
-        <span className="kanban-card__key">{ticket.key}</span>
-        <span className="kanban-chat-card__marks">
+      <div className="kb-chat-card__top">
+        {verb ? <span className="kb-chat-card__verb">{verb}</span> : null}
+        <span className="kb-chat-card__key">{ticket.key}</span>
+        <span className="kb-chat-card__marks">
           {deleted ? (
-            <Badge variant="alert">
-              <StatusDot tone="alert" />
+            <ShadcnBadge className="kb-chat-card__status" data-deleted="true" variant="outline">
+              <CircleX size={16} />
               Deleted
-            </Badge>
+            </ShadcnBadge>
           ) : (
-            <StatusBadge tone={statusTone(lookup, ticket.status)}>{columnLabel(columns, ticket.status)}</StatusBadge>
+            <ShadcnBadge className="kb-chat-card__status" variant="outline">
+              <StatusIcon step={step} />
+              {columnLabel(columns, ticket.status)}
+            </ShadcnBadge>
           )}
           <PriorityChip priorities={lookup?.priorities ?? []} priority={ticket.priority} />
         </span>
       </div>
-      <div className="kanban-chat-card__title" title={ticket.title}>
+      <p className="kb-chat-card__title" title={ticket.title}>
         {ticket.title}
-      </div>
-      {ticket.description ? <div className="kanban-chat-card__excerpt">{excerpt(ticket.description)}</div> : null}
-      <div className="kanban-chat-card__foot">
-        {ticket.assignee ? (
-          <span className="kanban-chat-card__assignee">
-            Assigned to <span className="kanban-mono">{ticket.assignee}</span>
-          </span>
-        ) : (
-          <span className="kanban-card__unassigned">Unassigned</span>
-        )}
+      </p>
+      {ticket.description ? <p className="kb-chat-card__excerpt">{excerpt(ticket.description)}</p> : null}
+      <Facts items={facets} label={`${ticket.key} facets`} />
+      <div className="kb-chat-card__foot">
+        <span className="kb-chat-card__person">
+          <AssigneeAvatar agents={[]} id={ticket.assignee} />
+          {ticket.assignee ?? 'Unassigned'}
+        </span>
         {comments > 0 ? (
-          <span className="kanban-chat-card__comments">
-            <MessageCircle size={16} />
+          <span aria-label={`${comments} comments`} className="kb-chat-card__stat" role="img">
+            <MessageSquare size={16} />
             {comments}
           </span>
         ) : null}
-        <span className="kanban-chat-card__time">updated {formatRelative(ticket.updated_at)}</span>
+        <span>updated {formatRelative(ticket.updated_at)}</span>
         {interactive ? (
-          <span className="kanban-chat-card__open">
+          <span className="kb-chat-card__open">
             Open ticket
             <ChevronRight size={16} />
           </span>
         ) : null}
       </div>
-    </Card>
+    </ShadcnCard>
   )
 }
 
@@ -298,30 +318,28 @@ function TicketTable({ host, tickets }: { host: Host; tickets: TicketSummary[] }
   const columns = useCardLookup(host)?.lookup?.columns ?? []
   const rows = tickets.slice(0, 25)
   return (
-    <TableViewport className="kanban-chat-table">
-      <TableFrame>
-        <Table density="compact">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Key</TableHead>
-              <TableHead>Title</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Priority</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((ticket) => (
-              <TableRow key={ticket.id}>
-                <TableCell className="kanban-mono">{ticket.key}</TableCell>
-                <TableCell>{ticket.title}</TableCell>
-                <TableCell>{columnLabel(columns, ticket.status)}</TableCell>
-                <TableCell>{priorityLabel(ticket.priority)}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableFrame>
-    </TableViewport>
+    <div className="kb-chat kb-chat-table">
+      <ShadcnTable>
+        <ShadcnTableHeader>
+          <ShadcnTableRow>
+            <ShadcnTableHead>Key</ShadcnTableHead>
+            <ShadcnTableHead>Title</ShadcnTableHead>
+            <ShadcnTableHead>Status</ShadcnTableHead>
+            <ShadcnTableHead>Priority</ShadcnTableHead>
+          </ShadcnTableRow>
+        </ShadcnTableHeader>
+        <ShadcnTableBody>
+          {rows.map((ticket) => (
+            <ShadcnTableRow key={ticket.id}>
+              <ShadcnTableCell className="kb-chat-mono">{ticket.key}</ShadcnTableCell>
+              <ShadcnTableCell>{ticket.title}</ShadcnTableCell>
+              <ShadcnTableCell>{columnLabel(columns, ticket.status)}</ShadcnTableCell>
+              <ShadcnTableCell>{priorityLabel(ticket.priority)}</ShadcnTableCell>
+            </ShadcnTableRow>
+          ))}
+        </ShadcnTableBody>
+      </ShadcnTable>
+    </div>
   )
 }
 
@@ -384,99 +402,86 @@ function PlanCard({
     host.panels?.open({ pageId: release ? RELEASES_PAGE_ID : PROJECTS_PAGE_ID, context: { id: entity.id } })
   const interactive = Boolean(host.panels?.open)
   const archived = entity.status === 'archived'
-  const facets: MetaRowItem[] = [
+  const facets: Fact[] = [
     release
       ? { label: 'Target', value: release.target_at ? formatTarget(release.target_at) : none() }
       : { label: 'Lead', value: project?.lead ?? none() },
     { label: 'Done', value: `${entity.done} of ${entity.total}` },
     { label: 'Label', value: entity.source_label ?? none() },
   ]
+  const percent = entity.total > 0 ? Math.round((entity.done / entity.total) * 100) : 0
   return (
-    <Card
-      aria-label={interactive ? `Open ${kind} ${entity.name}` : undefined}
-      className="kanban-chat-card"
-      interactive={interactive}
-      onClick={interactive ? open : undefined}
-      onKeyDown={
-        interactive
-          ? (event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault()
-                open()
-              }
-            }
-          : undefined
-      }
-      role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
-    >
-      <MetaRow aria-label={`${entity.name} facets`} className="kanban-chat-meta" items={facets} role="group" />
-      <div className="kanban-chat-card__head">
-        {verb ? <span className="kanban-chat-card__verb">{verb}</span> : null}
-        {project ? <ProjectGlyph color={project.color} /> : <Flag size={16} />}
-        <span className="kanban-chat-card__name" title={entity.name}>
+    <ShadcnCard className="kb-chat kb-chat-card" size="sm" {...cardProps(interactive, open, `Open ${kind} ${entity.name}`)}>
+      <div className="kb-chat-card__head">
+        {verb ? <span className="kb-chat-card__verb">{verb}</span> : null}
+        {project ? (
+          <span className="kb-project-dot" data-tone={project.color ?? undefined}>
+            <Folder size={16} />
+          </span>
+        ) : (
+          <Milestone size={16} />
+        )}
+        <span className="kb-chat-card__name" title={entity.name}>
           {entity.name}
         </span>
-        <StatusBadge
-          tone={
-            archived ? 'ghost' : entity.status === 'released' ? 'ok' : entity.status === 'planned' ? 'ghost' : 'ink'
-          }
+        <StateBadge
+          tone={archived ? 'ghost' : entity.status === 'released' ? 'ok' : entity.status === 'planned' ? 'ghost' : 'ink'}
         >
           {release ? releaseStatusText(release) : titleCase(entity.status)}
-        </StatusBadge>
+        </StateBadge>
       </div>
-      <div className="kanban-chat-card__foot">
+      <ShadcnProgress aria-label={`${entity.done} of ${entity.total} done`} className="kb-chat-card__progress" value={percent} />
+      <Facts items={facets} label={`${entity.name} facets`} />
+      <div className="kb-chat-card__foot">
         <span>
           {release ? `${entity.total - entity.done} not done` : `${plural(entity.total - entity.done, 'open ticket')}`}
         </span>
         {note ? <span>{note}</span> : null}
         {interactive ? (
-          <span className="kanban-chat-card__open">
+          <span className="kb-chat-card__open">
             Open {kind}
             <ChevronRight size={16} />
           </span>
         ) : null}
       </div>
-    </Card>
+    </ShadcnCard>
   )
 }
 
 function EntityTable({ kind, entities }: { kind: 'release' | 'project'; entities: Entity[] }) {
   const rows = entities.slice(0, 25)
   return (
-    <TableViewport className="kanban-chat-table">
-      <TableFrame>
-        <Table density="compact">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>{kind === 'release' ? 'Target' : 'Lead'}</TableHead>
-              <TableHead>Done</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((entity) => {
-              const day = kind === 'release' ? (entity as ReleaseView).target_at : null
-              return (
-                <TableRow key={entity.id}>
-                  <TableCell>{entity.name}</TableCell>
-                  <TableCell>
-                    {kind === 'release' ? releaseStatusText(entity as ReleaseView) : titleCase(entity.status)}
-                  </TableCell>
-                  <TableCell className="kanban-mono">
-                    {kind === 'release' ? (day ? formatTarget(day) : '—') : ((entity as ProjectView).lead ?? '—')}
-                  </TableCell>
-                  <TableCell className="kanban-mono">
-                    {entity.done}/{entity.total}
-                  </TableCell>
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      </TableFrame>
-    </TableViewport>
+    <div className="kb-chat kb-chat-table">
+      <ShadcnTable>
+        <ShadcnTableHeader>
+          <ShadcnTableRow>
+            <ShadcnTableHead>Name</ShadcnTableHead>
+            <ShadcnTableHead>Status</ShadcnTableHead>
+            <ShadcnTableHead>{kind === 'release' ? 'Target' : 'Lead'}</ShadcnTableHead>
+            <ShadcnTableHead>Done</ShadcnTableHead>
+          </ShadcnTableRow>
+        </ShadcnTableHeader>
+        <ShadcnTableBody>
+          {rows.map((entity) => {
+            const day = kind === 'release' ? (entity as ReleaseView).target_at : null
+            return (
+              <ShadcnTableRow key={entity.id}>
+                <ShadcnTableCell>{entity.name}</ShadcnTableCell>
+                <ShadcnTableCell>
+                  {kind === 'release' ? releaseStatusText(entity as ReleaseView) : titleCase(entity.status)}
+                </ShadcnTableCell>
+                <ShadcnTableCell className="kb-chat-mono">
+                  {kind === 'release' ? (day ? formatTarget(day) : '—') : ((entity as ProjectView).lead ?? '—')}
+                </ShadcnTableCell>
+                <ShadcnTableCell className="kb-chat-mono">
+                  {entity.done}/{entity.total}
+                </ShadcnTableCell>
+              </ShadcnTableRow>
+            )
+          })}
+        </ShadcnTableBody>
+      </ShadcnTable>
+    </div>
   )
 }
 
@@ -583,35 +588,35 @@ export function createKanbanTriggerRenderer(host: Host) {
     id: 'kanban/page.js#trigger-activity',
     isMatch: isKanbanType,
     tryRenderDisplay: (activity: TriggerActivityMessage) => (
-      <span className="kanban-chat-line">
-        <span className="kanban-chat-line__title">{describe(activity)}</span>
+      <span className="kb-chat kb-chat-line">
+        <span className="kb-chat-line__title">{describe(activity)}</span>
       </span>
     ),
     tryRender: (activity: TriggerActivityMessage) => {
       const payload = activity.payload as Record<string, unknown> | undefined
       const config = (activity.config ?? {}) as Record<string, unknown>
       return (
-        <div className="kanban-trigger-detail">
-          <div className="kanban-trigger-detail__row">
-            <span className="kanban-trigger-detail__label">Fires on</span>
-            <span className="kanban-mono">{triggerScope(activity.triggerType, config)}</span>
+        <div className="kb-chat kb-trigger-detail">
+          <div className="kb-trigger-detail__row">
+            <span className="kb-trigger-detail__label">Fires on</span>
+            <span className="kb-chat-mono">{triggerScope(activity.triggerType, config)}</span>
           </div>
           {typeof config.author === 'string' && config.author ? (
-            <div className="kanban-trigger-detail__row">
-              <span className="kanban-trigger-detail__label">Only author</span>
-              <span className="kanban-mono">{config.author}</span>
+            <div className="kb-trigger-detail__row">
+              <span className="kb-trigger-detail__label">Only author</span>
+              <span className="kb-chat-mono">{config.author}</span>
             </div>
           ) : null}
           {typeof config.exclude_author === 'string' && config.exclude_author ? (
-            <div className="kanban-trigger-detail__row">
-              <span className="kanban-trigger-detail__label">Except author</span>
-              <span className="kanban-mono">{config.exclude_author}</span>
+            <div className="kb-trigger-detail__row">
+              <span className="kb-trigger-detail__label">Except author</span>
+              <span className="kb-chat-mono">{config.exclude_author}</span>
             </div>
           ) : null}
           {payload ? (
-            <div className="kanban-trigger-detail__row">
-              <span className="kanban-trigger-detail__label">Last event</span>
-              <span className="kanban-mono">{describe(activity)}</span>
+            <div className="kb-trigger-detail__row">
+              <span className="kb-trigger-detail__label">Last event</span>
+              <span className="kb-chat-mono">{describe(activity)}</span>
             </div>
           ) : null}
         </div>
@@ -623,10 +628,10 @@ export function createKanbanTriggerRenderer(host: Host) {
       if (!ticket) return null
       const comment = payload?.comment as { body?: string; author?: string } | undefined
       return (
-        <div className="kanban-trigger-detail">
+        <div className="kb-chat kb-trigger-detail">
           <TicketCard host={host} ticket={ticket} />
           {comment && typeof comment.body === 'string' ? (
-            <div className="kanban-prose">
+            <div className="kb-chat-prose">
               <Markdown>{comment.body}</Markdown>
             </div>
           ) : null}

@@ -16,7 +16,7 @@ provider-command-code = ["dep:provider-command-code"]
 provider-deepseek = ["dep:provider-deepseek"]
 provider-kimi = ["dep:provider-kimi"]
 provider-openai = ["dep:provider-openai"]
-provider-openai-codex = ["dep:provider-openai-codex", "dep:secrets"]
+provider-openai-codex = ["dep:provider-openai-codex", "dep:secrets", "dep:secrets-iii-sdk"]
 provider-openrouter = ["dep:provider-openrouter"]
 provider-xai = ["dep:provider-xai"]
 provider-zai = ["dep:provider-zai"]
@@ -39,6 +39,9 @@ provider-zai = { path = "../../provider-zai", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 secrets = { path = "../../secrets", optional = true }
+# The secrets worker is on iii-sdk 0.25 and the router and providers on 0.24;
+# its connection is made with its own SDK.
+secrets-iii-sdk = { package = "iii-sdk", version = "=0.25.0", optional = true }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
 tokio-stream = "0.1"

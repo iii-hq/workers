@@ -249,7 +249,7 @@ export function ModelLibraryDialog({
                 data-pinned-slots
                 data-scrolled={scrolled || undefined}
                 className={cn(
-                  'sticky top-0 z-10 -mx-6 bg-popover px-6 pt-4 pb-4',
+                  'sticky top-0 z-10 -mx-6 bg-dialog-surface px-6 pt-4 pb-4',
                   scrolled && 'shadow-[0_1px_0_var(--color-edge)]',
                 )}
               >
@@ -309,8 +309,8 @@ export function ModelLibraryDialog({
                           className={cn(
                             'group absolute inset-0 flex flex-col items-center justify-center gap-1.5 rounded-xl p-3 text-center transition-colors',
                             slot
-                              ? 'cursor-grab bg-panel-raised border border-edge  active:cursor-grabbing'
-                              : 'border border-dashed border-edge',
+                              ? 'cursor-grab bg-panel-raised border border-neutral-200 active:cursor-grabbing dark:border-edge'
+                              : 'border border-dashed border-neutral-200 dark:border-edge',
                             over && 'bg-surface-hover ring-rule-focus',
                             slot && dragId === slot.id && 'opacity-50',
                           )}
@@ -424,7 +424,7 @@ export function ModelLibraryDialog({
                               }
                               onDragEnd={onDragEnd}
                               className={cn(
-                                'flex h-11 items-center gap-2 rounded-lg bg-panel-raised pr-1.5 pl-3 ring-1 ring-edge',
+                                'flex h-11 items-center gap-2 rounded-lg bg-panel-raised pr-1.5 pl-3 ring-1 ring-neutral-200 dark:ring-edge',
                                 canPin && 'cursor-grab active:cursor-grabbing',
                                 dragId === option.id && 'opacity-50',
                                 column.unavailable && 'opacity-50',
@@ -468,7 +468,7 @@ export function ModelLibraryDialog({
                         onClick={() =>
                           setView({ kind: 'provider', id: column.id })
                         }
-                        className="flex h-11 w-full items-center justify-center rounded-lg px-3 text-sm text-ink-faint border border-dashed border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+                        className="flex h-11 w-full items-center justify-center rounded-lg px-3 text-sm text-ink-faint border border-dashed border-neutral-200 dark:border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
                       >
                         {column.unavailable
                           ? `${column.label} not loaded`
@@ -486,7 +486,7 @@ export function ModelLibraryDialog({
                     aria-label="Add a provider"
                     disabled={disabled}
                     onClick={() => setView({ kind: 'add-provider' })}
-                    className="flex h-11 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm text-ink-faint border border-dashed border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+                    className="flex h-11 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm text-ink-faint border border-dashed border-neutral-200 dark:border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
                   >
                     <Plus className="size-4" aria-hidden />
                     Add a provider

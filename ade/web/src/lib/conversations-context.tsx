@@ -169,14 +169,14 @@ export function ConversationsProvider({
   const githubAvailable = isWorkerPresent(
     useWorkerPresence({
       workerName: 'github',
-      watchFnId: 'console::github-watch',
+      watchFnId: 'ade::github-watch',
       enabled: backend.id === 'real',
     }),
   )
   const kanbanAvailable = isWorkerPresent(
     useWorkerPresence({
       workerName: 'kanban',
-      watchFnId: 'console::kanban-watch',
+      watchFnId: 'ade::kanban-watch',
       enabled: backend.id === 'real',
     }),
   )

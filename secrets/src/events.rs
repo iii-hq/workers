@@ -133,6 +133,9 @@ impl TriggerHandler for BindingTable {
 }
 
 pub fn register_trigger_type(iii: &IIIClient, subscribers: &Subscribers) {
+    // `register_trigger_type` is deprecated in iii-sdk 0.25. Kept until the
+    // trigger type is retired; consumers bind it on 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             CHANGED_TRIGGER,

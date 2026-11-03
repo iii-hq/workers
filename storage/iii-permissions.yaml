@@ -21,5 +21,6 @@ rules:
   # Reads are safe to allow by default.
   - storage::listBuckets
   - storage::listObjects
+  - storage::multipartCapabilities
   - storage::headObject
   - storage::getObject

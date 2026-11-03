@@ -19,7 +19,7 @@
   --color-surface-hover: rgba(10, 10, 10, 0.08);
   --color-surface-selected: rgba(10, 10, 10, 0.1);
   --color-surface-active: rgba(10, 10, 10, 0.1);
-  --color-edge: #e5e5e5;
+  --color-edge: var(--color-neutral-100);
   --color-rule-focus: #737373;
   --background: var(--color-bg);
   --card: var(--color-panel);
@@ -307,7 +307,7 @@
 }
 
 .wk-surface [data-slot="badge"][class~="bg-secondary"] {
-  border-color: var(--color-neutral-200);
+  border-color: var(--color-neutral-100);
   background: var(--color-neutral-100);
   color: var(--color-neutral-700);
 }
@@ -1621,7 +1621,7 @@
 .wk-surface .iii-ui-segmented {
   gap: 2px;
   padding: 3px;
-  border: 1px solid var(--color-neutral-200);
+  border: 1px solid var(--color-neutral-100);
   border-radius: 0.5rem;
   background: var(--color-neutral-100);
   box-shadow: none;
@@ -1893,7 +1893,7 @@
 .wk-menu {
   min-width: 13rem;
   padding: 0.25rem;
-  border: 1px solid var(--color-neutral-200);
+  border: 1px solid var(--color-neutral-100);
   border-radius: 0.75rem;
   box-shadow: none;
   --tw-ring-shadow: 0 0 #0000;
@@ -1914,18 +1914,12 @@
 
 /* dialogs */
 .wk-dialog-box {
-  border: 1px solid var(--color-neutral-200);
+  border: 1px solid var(--color-dialog-edge);
   border-radius: 0.75rem;
-  background: var(--color-white);
+  background: var(--color-dialog-surface);
   box-shadow: none;
   --tw-ring-shadow: 0 0 #0000;
-  --color-panel: var(--color-white);
-}
-
-[data-theme="dark"] .wk-dialog-box {
-  --color-panel: #0f0f0f;
-  border-color: var(--color-neutral-800);
-  background: #0f0f0f;
+  --color-panel: var(--color-dialog-surface);
 }
 
 .wk-dialog-box [data-slot="dialog-close"] {
@@ -1937,7 +1931,7 @@
 /* popovers: the version select and the searchable pickers */
 .wk-popover,
 .iii-ui-panel.wk-popover {
-  border: 1px solid var(--color-neutral-200);
+  border: 1px solid var(--color-neutral-100);
   border-radius: 0.75rem;
   background: var(--color-white);
   box-shadow: none;
