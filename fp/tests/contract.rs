@@ -2,7 +2,7 @@
 //! tests/ suite for source-changed workers; the deep edge-case coverage
 //! lives in the unit tests under src/.
 
-use fp::{pipe, util};
+use fp::{batch, pipe, util};
 use serde_json::json;
 
 #[tokio::test]
@@ -149,4 +149,35 @@ fn pipe_contract_validates_and_refuses() {
             serde_json::from_value(json!({ "through": [{ "function": forbidden }] })).unwrap();
         assert!(pipe::validate(&req).is_err(), "{forbidden}");
     }
+}
+
+#[test]
+fn descriptions_publish_the_composition_rules() {
+    assert!(pipe::PIPE_DESC.contains("fp::batch"));
+    assert!(pipe::PIPE_DESC.contains("cannot be steps"));
+    assert!(batch::BATCH_DESC.contains("fp::pipe"));
+    assert!(batch::BATCH_DESC.contains("not a pipe step"));
+}
+
+#[test]
+fn refusals_list_every_problem_in_one_response() {
+    let pipe_req: pipe::PipeRequest = serde_json::from_value(json!({"through": [
+        {"function": "configuration::get"},
+        {"function": "harness::send"},
+    ]}))
+    .unwrap();
+    let err = pipe::validate(&pipe_req).unwrap_err();
+    assert!(err.starts_with("pipe refused, 2 problem(s)"), "{err}");
+    assert!(
+        err.contains("configuration::get") && err.contains("harness::send"),
+        "{err}"
+    );
+
+    let batch_req: batch::BatchRequest = serde_json::from_value(json!({"calls": [
+        {"function": "fp::pipe"},
+        {"function": "router::chat"},
+    ]}))
+    .unwrap();
+    let err = batch::validate(&batch_req).unwrap_err();
+    assert!(err.starts_with("batch refused, 2 problem(s)"), "{err}");
 }

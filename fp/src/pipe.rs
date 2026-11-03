@@ -21,11 +21,7 @@ use iii_sdk::IIIClient;
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str =
-    "Run a worker-side pipeline: each step triggers a function and its result lands in the \
-     next step's payload at `into` (default \"/value\"); fp::* steps thread the bare value and a \
-     failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step \
-     sizes and a preview, not the value.";
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step triggers a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::register_trigger, engine::unregister_trigger, configuration::, oauth::, router::, provider::, harness::, run::, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -238,7 +234,9 @@ pub(crate) fn forbidden_step(
     None
 }
 
-/// Static validation, separated from execution for testability.
+/// Static validation, separated from execution for testability. Every
+/// problem in the request is collected before anything is refused, so one
+/// corrected resend is enough.
 fn validate_with_approval_gate(
     req: &PipeRequest,
     approval_gate_running: bool,
@@ -246,35 +244,37 @@ fn validate_with_approval_gate(
     if req.through.is_empty() || req.through.len() > MAX_STEPS {
         return Err(format!("a pipe takes 1..={MAX_STEPS} steps"));
     }
+    let mut problems = Vec::new();
     for (i, step) in req.through.iter().enumerate() {
         if let Some(reason) = forbidden_step(&step.function, approval_gate_running) {
-            return Err(format!("step {} ({}): {reason}", i + 1, step.function));
+            problems.push(format!("step {} ({}): {reason}", i + 1, step.function));
         }
         if is_scoped_step(&step.function) {
             if req.fs_scope.is_none() {
-                return Err(format!(
+                problems.push(format!(
                     "step {} ({}): filesystem-scoped steps (shell::*/coder::*) run only under a \
                      harness-stamped filesystem scope, and this call carries none (no session \
                      working directory, or a non-harness caller) — call the function directly",
                     i + 1,
                     step.function
                 ));
-            }
-            // Loud static refusal beats a silent overwrite by the stamp in
-            // `bus_step_args` — the pointer can only be a mistake or an attack.
-            let first_token = step
-                .into
-                .as_deref()
-                .and_then(|p| p.strip_prefix('/'))
-                .and_then(|p| p.split('/').next())
-                .map(|t| t.replace("~1", "/").replace("~0", "~"));
-            if first_token.as_deref() == Some("fs_scope") {
-                return Err(format!(
-                    "step {} ({}): `into` must not target `fs_scope` — that field is \
-                     harness-stamped, never threaded",
-                    i + 1,
-                    step.function
-                ));
+            } else {
+                // Loud static refusal beats a silent overwrite by the stamp in
+                // `bus_step_args` — the pointer can only be a mistake or an attack.
+                let first_token = step
+                    .into
+                    .as_deref()
+                    .and_then(|p| p.strip_prefix('/'))
+                    .and_then(|p| p.split('/').next())
+                    .map(|t| t.replace("~1", "/").replace("~0", "~"));
+                if first_token.as_deref() == Some("fs_scope") {
+                    problems.push(format!(
+                        "step {} ({}): `into` must not target `fs_scope` — that field is \
+                         harness-stamped, never threaded",
+                        i + 1,
+                        step.function
+                    ));
+                }
             }
         }
     }
@@ -289,7 +289,7 @@ fn validate_with_approval_gate(
                 .and_then(|p| p.get("value"))
                 .is_none()
         {
-            return Err(format!(
+            problems.push(format!(
                 "step 1 ({}) receives no threaded input — seed it in the first step's payload \
                  ({{\"value\": …}}), or start the pipe with a producing function (a fetch, a \
                  state::get)",
@@ -297,7 +297,20 @@ fn validate_with_approval_gate(
             ));
         }
     }
-    Ok(())
+    refused("pipe", problems)
+}
+
+/// The one refusal for a request: the count first, then every problem, so
+/// the caller can fix them all in a single resend.
+pub(crate) fn refused(kind: &str, problems: Vec<String>) -> Result<(), String> {
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{kind} refused, {} problem(s): {}",
+        problems.len(),
+        problems.join("; ")
+    ))
 }
 
 pub fn validate(req: &PipeRequest) -> Result<(), String> {
@@ -459,7 +472,20 @@ pub async fn run(iii: &IIIClient, req: PipeRequest) -> Result<PipeResponse, Stri
         validate_with_approval_gate(&req, true),
     ) {
         (Ok(()), Ok(())) => {}
-        (Err(e), Err(_)) => return Err(e),
+        (Err(_), Err(_)) => {
+            // The gate only decides database writes, so the complete list
+            // needs its real state when the pipe holds one. Pipes without one
+            // stay off the bus, and an unknown state fails closed.
+            let gate =
+                if req.through.iter().any(|s| {
+                    s.function.starts_with("database::") && s.function != "database::query"
+                }) {
+                    approval_gate_running(iii).await.unwrap_or(true)
+                } else {
+                    false
+                };
+            validate_with_approval_gate(&req, gate)?;
+        }
         _ => validate_with_approval_gate(&req, approval_gate_running(iii).await?)?,
     }
     let preview_chars = preview_len(req.preview_chars);
@@ -937,5 +963,44 @@ mod tests {
         // composed `pick {paths:["value"]}` to unwrap between steps. The
         // published description must keep saying nothing threads wrapped.
         assert!(PIPE_DESC.contains("thread the bare value"));
+    }
+
+    #[test]
+    fn every_problem_is_reported_in_one_refusal() {
+        let req = parse(json!({ "through": [
+            { "function": "configuration::get" },
+            { "function": "harness::send" },
+            { "function": "fp::batch" },
+        ]}))
+        .unwrap();
+        let err = validate(&req).unwrap_err();
+        assert!(err.starts_with("pipe refused, 3 problem(s)"), "{err}");
+        for needle in [
+            "step 1 (configuration::get)",
+            "step 2 (harness::send)",
+            "step 3 (fp::batch)",
+        ] {
+            assert!(err.contains(needle), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_gate_adds_problems_that_the_refusal_must_name() {
+        let req = parse(json!({ "through": [
+            { "function": "configuration::get" },
+            { "function": "database::execute", "payload": { "db": "primary", "sql": "DELETE FROM t" } },
+        ]}))
+        .unwrap();
+        // Without the gate only the configuration step is refused...
+        let without = validate_with_approval_gate(&req, false).unwrap_err();
+        assert!(
+            without.starts_with("pipe refused, 1 problem(s)"),
+            "{without}"
+        );
+        // ...with it the database write is refused too, so the run path must
+        // consult the real gate state before reporting a complete list.
+        let with = validate_with_approval_gate(&req, true).unwrap_err();
+        assert!(with.starts_with("pipe refused, 2 problem(s)"), "{with}");
+        assert!(with.contains("database::execute"), "{with}");
     }
 }

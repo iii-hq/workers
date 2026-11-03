@@ -135,7 +135,9 @@ fp::batch { calls: [
   of its JSON text with `truncated: true` and the full `chars`), 12 calls
   per request (`max_calls`; more still runs, with a warning that the
   response may be too large to deliver; hard ceiling 64).
-- Same refusals as pipe steps, plus no nested batch and no pipe as a call.
+- Same refusals as pipe steps, plus no nested batch and no pipe as a call. A batch is not a pipe step, and a pipe is not a batch call.
+- Every refusal lists all the problems of the request, not only the first; fix them all in one resend.
+- `completed` and `failed` count the outcomes; `ok` is true only when `failed` is 0.
   Same approval surface: the batch runs with this worker's authority.
 
 ### Boundaries
@@ -153,7 +155,7 @@ fp::batch { calls: [
   directory, or a non-harness caller — cron, worker-to-worker) scoped steps
   are refused, fail-closed. A path-access rejection inside a pipe just fails
   the step; only a direct call offers the access-grant ladder.
-- Statically refused as steps: `engine::register_trigger`/`engine::unregister_trigger`
+- Statically refused as steps: `fp::batch` and `fp::pipe` (no nesting), `engine::register_trigger`/`engine::unregister_trigger`
   (need the harness trusted-session stamp), nested pipes, and every class the
   agent policy hard-denies — session writes and `session::store::*`,
   `approval::*`, `configuration::*`/`oauth::*` (credentials),
