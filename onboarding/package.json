@@ -19,7 +19,7 @@
     "start": "node dist/bundle/index.mjs"
   },
   "dependencies": {
-    "iii-sdk": "0.26.0-rc.4"
+    "iii-sdk": "0.26.0-rc.5"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
