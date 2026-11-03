@@ -69,6 +69,23 @@ const FRESH_FRAME_GRACE: std::time::Duration = std::time::Duration::from_millis(
 /// that frame while the page has not laid out its new size yet.
 const FRESH_FRAME_ATTEMPTS: u32 = 10;
 const FRESH_FRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How long `Session::capture_frame` waits for Chromium's screenshot: 2 s,
+/// plus 100 ms per megapixel of the JPEG it asks for, at most 30 s. Chromium
+/// encodes the picture while its screencast keeps encoding frames of the
+/// same size, so the time grows with the pixels: the largest frame the
+/// worker asks for (a 4000x2000 viewport at `frame_density` 3, 72
+/// megapixels) takes about 1 s alone and 3-4 s beside a running screencast,
+/// and a fixed 2 s timed out nearly every attempt, leaving the viewers with
+/// no frame at all (KAN-113).
+fn capture_timeout(pixels: f64) -> std::time::Duration {
+    let megapixels = if pixels.is_finite() {
+        (pixels / 1e6).max(0.0)
+    } else {
+        0.0
+    };
+    std::time::Duration::from_millis((2_000.0 + megapixels * 100.0).min(30_000.0).round() as u64)
+}
 /// Chromium's error text for a committed HTTP error status (a 4xx/5xx with
 /// an empty body). The tab shows the response like any browser does, so it is
 /// reported rather than treated as a failed navigation.
@@ -1271,11 +1288,19 @@ impl Session {
             .capture_beyond_viewport(false)
             .optimize_for_speed(true)
             .build();
-        let shot =
-            tokio::time::timeout(std::time::Duration::from_secs(2), self.page.execute(params))
-                .await
-                .map_err(|_| "capture timed out".to_string())?
-                .map_err(|e| format!("capture: {e}"))?;
+        // The JPEG comes out at the clip times its scale times the emulated
+        // device scale factor: `density` CSS-pixel multiples in the worker's
+        // own browser. The bigger it is, the longer Chromium takes.
+        let out_scale = match &self.backing {
+            Backing::Shared(_) => density * visual.scale,
+            Backing::Own(_) => visual.scale,
+        };
+        let limit =
+            capture_timeout(visual.client_width * out_scale * visual.client_height * out_scale);
+        let shot = tokio::time::timeout(limit, self.page.execute(params))
+            .await
+            .map_err(|_| format!("capture timed out after {limit:?}"))?
+            .map_err(|e| format!("capture: {e}"))?;
         let frame = ScreencastFrameEvent {
             data: shot.result.data.clone(),
             metadata: cdp_page::ScreencastFrameMetadata {
@@ -4352,6 +4377,9 @@ async fn spawn_event_pumps(
                             session_id = %s.id,
                             width = event.metadata.device_width,
                             height = event.metadata.device_height,
+                            jpeg = ?jpeg_size(&bytes),
+                            viewport = ?s.viewport(),
+                            cap = ?*s.cast_limits.lock().unwrap_or_else(|p| p.into_inner()),
                             "screencast frame of a stale size dropped"
                         );
                         continue;
@@ -4755,6 +4783,25 @@ fn log_level(l: &cdp_log::LogEntryLevel) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capture_waits_longer_for_a_bigger_picture() {
+        use std::time::Duration;
+        assert_eq!(capture_timeout(0.0), Duration::from_secs(2));
+        assert_eq!(capture_timeout(f64::NAN), Duration::from_secs(2));
+        assert_eq!(capture_timeout(-1.0), Duration::from_secs(2));
+        // 1280x800 at density 2: about 4 megapixels.
+        assert_eq!(
+            capture_timeout(2560.0 * 1600.0),
+            Duration::from_millis(2_410)
+        );
+        // The largest frame the worker asks for: 4000x2000 at density 3.
+        assert_eq!(
+            capture_timeout(12_000.0 * 6_000.0),
+            Duration::from_millis(9_200)
+        );
+        assert_eq!(capture_timeout(1e12), Duration::from_secs(30));
+    }
 
     #[test]
     fn ring_buffer_drops_oldest_and_counts() {
