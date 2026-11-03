@@ -43,8 +43,8 @@ struct Cli {
     #[arg(long)]
     http_port: Option<u16>,
 
-    /// Interface to bind (`0.0.0.0` by default; `127.0.0.1` limits the console
-    /// and its engine WebSocket proxy to local access). Overrides
+    /// Interface to bind (`127.0.0.1` by default; `0.0.0.0` exposes the console
+    /// and its engine WebSocket proxy on all IPv4 interfaces). Overrides
     /// `http_host` from the seed file. Boot-time only: it does not hot-reload.
     #[arg(long)]
     http_host: Option<String>,
@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
     cfg.data_dir = runtime_config.data_dir.clone();
     // The interface is a boot-time decision: `--http-host` wins, then the
     // stored `http_host` (compose's `config_override` lands there), then the
-    // local seed (`0.0.0.0` unless the seed file says otherwise).
+    // local seed (`127.0.0.1` unless the seed file says otherwise).
     let bind_host = bind_host_for(host_from_cli, seed_host, runtime_config.http_host);
     server::set_bind_host(bind_host);
 
@@ -319,6 +319,21 @@ mod tests {
         assert_eq!(bind_host_for(false, any, None), any);
         assert_eq!(bind_host_for(false, any, Some(local)), local);
         assert_eq!(bind_host_for(true, any, Some(local)), any);
+        assert_eq!(bind_host_for(false, local, Some(any)), any);
+        assert_eq!(bind_host_for(true, local, Some(any)), local);
+    }
+
+    #[tokio::test]
+    async fn default_listener_is_loopback_only() {
+        let cfg = ade::config::ConsoleConfig::default();
+        let host = bind_host_for(false, cfg.http_host.parse().unwrap(), None);
+        ade::server::set_bind_host(host);
+        let listener = ade::server::bind_listener(0).await.unwrap();
+
+        assert!(
+            listener.local_addr().unwrap().ip().is_loopback(),
+            "the default console listener must not bind every interface"
+        );
     }
 
     #[test]

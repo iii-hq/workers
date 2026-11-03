@@ -2,7 +2,7 @@
 //! `/ws` (WebSocket proxy), and — when injectable UI is enabled — `/ui`,
 //! `/ui/*`, and `/vendor/*`.
 //!
-//! Binds `<http_host>:<http_port>` — `0.0.0.0` by default. Set `http_host`
+//! Binds `<http_host>:<http_port>` — `127.0.0.1` by default. Set `http_host`
 //! in the seed config or `--http-host` to select an interface. Front it
 //! with a reverse proxy when exposing it beyond the host.
 
