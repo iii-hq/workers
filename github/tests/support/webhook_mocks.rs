@@ -112,7 +112,7 @@ impl Queue {
         // metadata.subscriber, matched by key; the deliver hook hands it to
         // that observer's target, whose result acks it and whose error leaves
         // it queued. A subscriber whose filters reject it acks it with null.
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             ON_MESSAGE,
             Match::keys(
                 |obs| obs.id().into(),
@@ -125,7 +125,7 @@ impl Queue {
             ),
         );
         let engine = iii.clone();
-        iii.on_observer_deliver_for(ON_MESSAGE, move |call: Call, observers: Vec<Observer>| {
+        iii.on_observation_deliver_for(ON_MESSAGE, move |call: Call, observers: Vec<Observer>| {
             let engine = engine.clone();
             async move {
                 let Some(obs) = observers.first() else {

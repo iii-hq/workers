@@ -71,8 +71,8 @@ async fn main() -> Result<()> {
             boot.shutdown().await;
             iii.shutdown_async().await;
             Err(anyhow::Error::new(err).context(
-                "the engine refused this worker's registration; a second cron instance \
-                 (a standby) connects under its own worker name: set III_WORKER_NAME",
+                "the engine refused this worker's registration: another cron instance \
+                 holds this worker name",
             ))
         }
     }

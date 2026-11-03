@@ -62,7 +62,7 @@ export type FakeIii = {
  * metadata), `registerFunction` captured so tests can invoke handlers at the
  * same unknown boundary the engine uses, and observers of the worker's own
  * functions modelled as iii does: `onObserverAdded` runs before an observer is
- * active, `onObserverMatch` picks the observers of each call, and iii's
+ * active, `onObservationMatch` picks the observers of each call, and iii's
  * delivery hands the handler's return value to each matched target
  * (`deliver: 'output'`).
  */
@@ -108,11 +108,11 @@ export function fakeIii(): FakeIii {
         hooksOf(functionId).removed = hook ?? undefined;
         return fn;
       },
-      onObserverMatch: (hook: MatchHook | null) => {
+      onObservationMatch: (hook: MatchHook | null) => {
         hooksOf(functionId).match = hook ?? undefined;
         return fn;
       },
-      onObserverDeliver: () => fn,
+      onObservationDeliver: () => fn,
       observers: () => observersOf(functionId),
       isObserved: (call?: Partial<Call>) =>
         call === undefined
@@ -209,7 +209,7 @@ export function fakeIii(): FakeIii {
       hooksOf(functionId).removed = hook ?? undefined;
       return iii;
     },
-    onObserverMatch: (functionId: string, hook: MatchHook | null) => {
+    onObservationMatch: (functionId: string, hook: MatchHook | null) => {
       hooksOf(functionId).match = hook ?? undefined;
       return iii;
     },

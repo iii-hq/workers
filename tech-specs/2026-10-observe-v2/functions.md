@@ -1,9 +1,9 @@
 # observe v2 in iii-hq/workers: the function contract
 
-> **Amendment (spec commit a93643b29).** `onObserverMatch` replaces `keyed`
+> **Amendment (spec commit a93643b29).** `onObservationMatch` replaces `keyed`
 > and `next`: an observer is chosen for a call by a predicate
 > `(obs, call) => boolean` or by keys `{ observer, call }` that iii indexes, and
-> iii delivers to the matched observers. `onObserverDeliver` takes no `next`;
+> iii delivers to the matched observers. `onObservationDeliver` takes no `next`;
 > it receives the matched observers, delivers itself, and returns what the
 > caller gets back. Wherever this file says `keyed`, read match by keys.
 
@@ -152,14 +152,14 @@ its row (`publish` is public; the guest rows describe an API).
           Ok(())
       }
   });
-  iii.on_observer_match_for(ON_CHANGED_FN, Match::predicate(|obs, call| {
+  iii.on_observation_match_for(ON_CHANGED_FN, Match::predicate(|obs, call| {
       let for_observer = call.metadata.as_ref().and_then(|m| m["for_observer"].as_str());
       for_observer.is_none_or(|id| id == obs.id())
   }));
   ```
 
   A call through an observer (`CallRequest::observer(&obs, payload)`,
-  `iii.call({ observer, payload })`) belongs in an `onObserverDeliver` hook,
+  `iii.call({ observer, payload })`) belongs in an `onObservationDeliver` hook,
   whose function documents what its targets receive (custom delivery,
   below).
 - **Custom delivery.** A deliver hook that calls targets itself applies each
@@ -182,10 +182,10 @@ its row (`publish` is public; the guest rows describe an API).
   `code-runner::teardown`, `sandbox-code-runner::run` and
   `sandbox-code-runner::teardown` (a `runtime_id` is a capability), and any
   function a worker documents as carrying a credential.
-- **One host.** A function id has one host per namespace. A worker that runs
-  more than one instance registers its sources with `standby: true`; fire
-  locks that existed to stop instances from firing twice go away (cron's
-  per-observer redis lock).
+- **One host.** A function id has one host per namespace. A second instance
+  is refused the function and does not retry, so a worker that hosts sources
+  runs one instance and the platform restarts it; fire locks that existed to
+  stop instances from firing twice go away (cron's per-observer redis lock).
 
 ### 1.3 Args or filters (decision 28)
 
@@ -201,7 +201,7 @@ only when the provider needs a per-observer value:
    stories narrowing, github notification policy), a per-observer delivery
    slot or timeout.
 3. **High-volume per-key streams that must skip unwatched keys:** frame
-   streams and agent feeds, matched by keys (`onObserverMatch`) and gated with
+   streams and agent feeds, matched by keys (`onObservationMatch`) and gated with
    `is_observed_for(call)`, so a call for a key nobody watches costs one hash
    lookup per key.
 
@@ -338,10 +338,10 @@ READMEs, `InvokePanel` command strings). Workers never use the aliases.
 | | Rust | Node / browser | Python | Go |
 |---|---|---|---|---|
 | Register a source | `iii.register_function(ID, RegisterFunction::new(\|e: E\| Ok::<_, Error>(e)).args_format::<A>().private())` | `iii.registerFunction(ID, (e: E) => e, { args_format, private: true })` | `iii.register_function(ID, lambda e: e, args_format=A, private=True)` | `client.RegisterFunction(ID, iii.Identity, iii.FunctionOptions{ArgsFormat: a, Private: true})` |
-| Hooks for one function | `iii.on_observer_added_for(ID, h)`, `on_observer_removed_for`, `on_observer_match_for`, `on_observer_deliver_for` | `iii.onObserverAdded(ID, h)` or `ref.onObserverAdded(h)`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | `@ref.on_observer_added`, `iii.on_observer_added(ID)(h)`, `on_observer_match`, `on_observer_deliver` | `client.OnObserverAddedFor(ID, h)`, `ref.OnObserverMatch(m)`, `ref.OnObserverDeliver(h)` |
+| Hooks for one function | `iii.on_observer_added_for(ID, h)`, `on_observer_removed_for`, `on_observation_match_for`, `on_observation_deliver_for` | `iii.onObserverAdded(ID, h)` or `ref.onObserverAdded(h)`, `onObserverRemoved`, `onObservationMatch`, `onObservationDeliver` | `@ref.on_observer_added`, `iii.on_observer_added(ID)(h)`, `on_observation_match`, `on_observation_deliver` | `client.OnObserverAddedFor(ID, h)`, `ref.OnObservationMatch(m)`, `ref.OnObservationDeliver(h)` |
 | Hooks for every function | `iii.on_observer_added(h)`, `iii.on_observer_removed(h)` | `iii.onObserverAdded(h)` | `@iii.on_observer_added` | `client.OnObserverAdded(h)` |
-| Match by predicate | `iii.on_observer_match_for(ID, Match::predicate(\|o, c\| …))` | `ref.onObserverMatch((obs, call) => …)` | `ref.on_observer_match(lambda obs, call: …)` | `ref.OnObserverMatch(iii.MatchFunc(func(o *iii.Observer, c *iii.Call) bool { … }))` |
-| Match by keys (indexed) | `Match::keys(\|o\| keys, \|c\| keys)` | `ref.onObserverMatch({ observer, call })` | `ref.on_observer_match(observer=..., call=...)` | `iii.MatchKeys(obsKeys, callKeys)` |
+| Match by predicate | `iii.on_observation_match_for(ID, Match::predicate(\|o, c\| …))` | `ref.onObservationMatch((obs, call) => …)` | `ref.on_observation_match(lambda obs, call: …)` | `ref.OnObservationMatch(iii.MatchFunc(func(o *iii.Observer, c *iii.Call) bool { … }))` |
+| Match by keys (indexed) | `Match::keys(\|o\| keys, \|c\| keys)` | `ref.onObservationMatch({ observer, call })` | `ref.on_observation_match(observer=..., call=...)` | `iii.MatchKeys(obsKeys, callKeys)` |
 | Is anyone watching | `iii.is_observed(ID)`, `iii.is_observed_for(ID, &call)` | `iii.isObserved(ID, call?)` | `iii.is_observed(ID, call)` | `client.IsObserved(ID)`, `client.IsObservedFor(ID, call)` |
 | Emit | `iii.call(CallRequest::new(ID, json!(e)).action(CallAction::Void))` | `iii.call({ function_id: ID, payload: e, action: CallAction.Void() })` | `await iii.call_async({"function_id": ID, "payload": e, "action": CallAction.Void()})` | `client.Call(ctx, iii.CallRequest{FunctionID: ID, Payload: e, Action: iii.VoidAction()})` |
 | Call for one observer (§1.2) | `iii.call(CallRequest::new(ID, json!(e)).metadata(json!({ "for_observer": obs.id() })).action(CallAction::Void))` after `obs.accepted().await` | `obs.accepted().then(() => iii.call({ function_id: ID, payload: e, metadata: { for_observer: obs.id }, action: CallAction.Void() })).catch(() => undefined)` | `await obs.accepted_async()`, then `await iii.call_async({"function_id": ID, "payload": e, "metadata": {"for_observer": obs.id}, "action": CallAction.Void()})` | `obs.Accepted(ctx)`, then `client.Call(ctx, iii.CallRequest{FunctionID: ID, Payload: e, Metadata: meta, Action: iii.VoidAction()})` |
@@ -363,12 +363,12 @@ fields where the name does not say them), and the consumers in this repo
 (`worker:path`). Delivery is one of:
 
 - **default**: iii delivers every call to each observer whose filters match.
-- **match(o: …, c: …)**: `onObserverMatch` by keys, with the observer key and
+- **match(o: …, c: …)**: `onObservationMatch` by keys, with the observer key and
   the call key; `*` lists a wildcard key. iii delivers to the matched
   observers. (Rows written `match(o: …, c: …)` mean exactly this.)
-- **match((obs, call) => …)**: `onObserverMatch` by predicate. iii delivers
+- **match((obs, call) => …)**: `onObservationMatch` by predicate. iii delivers
   to the observers it accepts, and the emitter gates on `is_observed(id)`.
-- **custom**: an `onObserverDeliver` hook described in the cell. It receives
+- **custom**: an `onObservationDeliver` hook described in the cell. It receives
   the observers that matched (all of them, unless the row also names a match
   hook) and has no `next`: it calls through observers itself and returns what
   the caller gets back.
@@ -379,7 +379,7 @@ fields where the name does not say them), and the consumers in this repo
 
 | # | Worker | Old type | Function | Args | Delivery | Event | Consumers |
 |---|---|---|---|---|---|---|---|
-| 1 | cron | `cron` | `cron::on-tick` | `{ expression }` | match(`(obs, call) => obs.args.expression === call.input.expression`) (spec §10.2); added: retain the expression's job (`INVALID_CRON_EXPRESSION`); removed: release it; one job per distinct expression calls the function once per fire, gated on `is_observed()`; registered with `standby: true` | `CronTick { expression, scheduled_time, actual_time }` | memory-consolidate:src/main.rs, sentinel:src/observers.rs, eval:src/functions.rs, github:src/webhooks/wiring.rs, openwiki:src/index.mjs (args `{ expression }`), security-scan:src/schedule.rs (`{ repository }` as observe metadata), workflow:src/configuration.rs, worktree:src/configuration.rs, harness:src/configuration.rs, cron:tests/e2e_schedule.rs, cron:tests/e2e_on_tick.rs |
+| 1 | cron | `cron` | `cron::on-tick` | `{ expression }` | match(`(obs, call) => obs.args.expression === call.input.expression`) (spec §10.2); added: retain the expression's job (`INVALID_CRON_EXPRESSION`); removed: release it; one job per distinct expression calls the function once per fire, gated on `is_observed()` | `CronTick { expression, scheduled_time, actual_time }` | memory-consolidate:src/main.rs, sentinel:src/observers.rs, eval:src/functions.rs, github:src/webhooks/wiring.rs, openwiki:src/index.mjs (args `{ expression }`), security-scan:src/schedule.rs (`{ repository }` as observe metadata), workflow:src/configuration.rs, worktree:src/configuration.rs, harness:src/configuration.rs, cron:tests/e2e_schedule.rs, cron:tests/e2e_on_tick.rs |
 | 2 | http | `http` | `http::on-request` | `{ method, path, middleware_function_ids?, public_webhook? }` | custom (spec §10.3): the server calls the function for every request (its CORS layer answers `OPTIONS`, and the restricted listener refuses a request no public route matches before reading its body); added: `routes.add` (`HTTP_ROUTE_CONFLICT`); removed: `routes.remove`; deliver: match method and path, `{ status_code: 404 }` on a miss (`405` with `Allow` when the path has routes on other methods), `413` for a body over the server's limit, `422` when `!obs.matches(call)`, run the global then the route's middleware, open the request-body and response channels, then `call({ observer, payload: { ...request, params } })`; its result is the response | `InboundRequest { method, path, query_params, headers, body }`, the request as the server received it (target receives `HttpRequest`: the route's template as `path`, `path_params`, and the `request_body` and `response` channels; returns `HttpResponse`) | hermes:src/hooks.py, memory-consolidate:src/main.rs (paths gain the leading `/`), memory:src/main.rs, slack:src/ingress.rs, telegram-bot:src/functions/mod.rs, whatsapp:cloud_webhook.go, whatsapp:cloud_flow_endpoint.go, github:src/webhooks/wiring.rs, image-resize:example/src/hooks.ts, image-resize:example/src/index.ts, mcp:src/main.rs, mcp:tests/common/engine.rs, openwiki:src/index.mjs, worktree:src/main.rs, github:tests/webhooks_integration.rs, http:tests/common/backend.rs, http:tests/webhook_listener.rs, http:tests/on_request.rs, http:tests/e2e_request_body.rs, http:tests/e2e_streaming.rs, http:tests/e2e_consumer_restart.rs |
 | 3 | queue | `durable:subscriber` | `queue::on-message` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` | custom (spec §10.4): added: `consumers.start(obs.id, args)` (`OBSERVER_ID_CONFLICT`); the members of a `group` share one consumer (`@<group>`) that delivers into one member; removed: `consumers.stop(obs.id)`, at once (an observer whose worker disconnects is removed, decision 47), while the subscriber's queue keeps receiving the topic for `subscriber_retention_ms` (30 s), so a worker back under its name and the id within both that retention and the engine's grace period gets everything published meanwhile (decision 51); on RabbitMQ that queue stays bound and is never deleted, so a consumer outside a group observes under a stable `id` (known gap: an unpinned consumer leaves a queue per restart); a group's consumer stops with its last member, and one that delivered into the removed member moves to a member that stays; consumer loops call the function with `metadata: { subscriber: obs.id }`; deliver: that observer, or `OBSERVER_NOT_ACTIVE` (retried, then dead-lettered); a filter miss acks with `null`; else `call({ observer, payload: input })`, whose result acks, retries or dead-letters | `QueueMessage` (the published data) | memory:src/main.rs, github:src/webhooks/wiring.rs (both under a stable observer id, §1.4), github:tests/queue_restart.rs, queue:tests/e2e_durability.rs, queue:tests/e2e_scaled_out.rs, queue:tests/e2e_observe.rs, queue:tests/e2e_observer_timeout.rs, queue:tests/e2e_consumer_restart.rs |
 | 4 | database | `database::row-changed` | `database::on-row-changed` | `{ db, table?, ops? }` (table canonical) | as row 5 | `RowChangedEvent` | database:ui/src/page/useRowChanges.ts, database:tests/observe.rs, database:tests/e2e/workers/harness/src/cases-native-capture.ts, database:tests/e2e/workers/harness/src/cases-row-changed.ts, database:tests/e2e/workers/harness/src/cases-pg-routing.ts |
@@ -648,13 +648,9 @@ iii.observe(
   alone, and no other call reaches an observer. Its deliver hook calls the
   content function through that observer with `{ path }` and answers with
   what it returns (row 118).
-- `register` registers the content function as a standby
-  (`RegisterFunction::standby()`): while another instance of the worker
-  hosts it, the SDK registers it again every second, and this instance
-  serves its own assets once the other leaves.
+- `register` registers the content function.
 - `register_configuration_identity(iii: &IIIClient, worker: &str, id: &'static str)`
-  registers `<worker>::configuration-id` as a standby
-  (`RegisterFunction::standby()`); consumers call it with `iii.call`.
+  registers `<worker>::configuration-id`; consumers call it with `iii.call`.
 - Boot tests that asserted `registertrigger` frames for `console:*` assert
   `observe` frames for `console::ui::asset` with `{ kind, path }` args.
 

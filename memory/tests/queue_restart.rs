@@ -200,7 +200,7 @@ impl Queue {
                     .retain(|o| o.id() != obs.id());
             }
         })
-        .on_observer_match_for(
+        .on_observation_match_for(
             ON_MESSAGE,
             Match::keys(
                 |obs| obs.id().into(),
@@ -212,7 +212,7 @@ impl Queue {
                 },
             ),
         )
-        .on_observer_deliver_for(
+        .on_observation_deliver_for(
             ON_MESSAGE,
             move |call: Call, observers: Vec<Observer>| {
                 let engine = engine.clone();

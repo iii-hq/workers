@@ -169,7 +169,7 @@ impl Events {
         // Set before registering, so it files every observer. The engine
         // validated the args against `FrameArgs`; args that do not parse
         // file the observer under no key.
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             ON_FRAME_EVENT_FN,
             Match::keys(
                 |obs| {

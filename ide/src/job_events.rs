@@ -320,7 +320,7 @@ pub fn register_job_finished(iii: &IIIClient) {
     let _ = CLIENT.set(iii.clone());
     iii.on_observer_added_for(ON_JOB_FINISHED_FN, JobFinishedSource)
         .on_observer_removed_for(ON_JOB_FINISHED_FN, JobFinishedSource)
-        .on_observer_match_for(
+        .on_observation_match_for(
             ON_JOB_FINISHED_FN,
             Match::predicate(|obs, call| wants(obs.id(), obs.args_value(), call)),
         );

@@ -3309,7 +3309,7 @@ async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
     );
     {
         let iii_for_deliver = iii.clone();
-        iii.on_observer_deliver_for(
+        iii.on_observation_deliver_for(
             SECRETS_ON_CHANGED,
             move |call: Call, observers: Vec<Observer>| {
                 let iii = iii_for_deliver.clone();

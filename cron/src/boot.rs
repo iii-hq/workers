@@ -21,7 +21,7 @@ pub struct BootHandle {
 impl BootHandle {
     /// Unregisters `cron::on-tick`, clears its hooks and stops every job.
     /// The engine holds the function's observers until it is registered
-    /// again, by a restarted worker or a standby instance.
+    /// again, by a restarted worker.
     pub async fn shutdown(&self) {
         self.on_tick.unregister();
         on_tick::clear_hooks(&self.iii);
@@ -32,9 +32,8 @@ impl BootHandle {
 /// Resolves with the error that stopped `iii` for good: the engine refused
 /// this worker's registration. The engine admits one live worker per worker
 /// name and namespace, so a second instance under the same name gets
-/// `WORKER_NAMESPACE_CONFLICT` and never registers `cron::on-tick`; a standby
-/// instance connects under its own name (`III_WORKER_NAME`). The SDK does not
-/// reconnect after this error, so the process should exit.
+/// `WORKER_NAMESPACE_CONFLICT` and never registers `cron::on-tick`. The SDK
+/// does not reconnect after this error, so the process should exit.
 pub async fn refused(iii: &IIIClient) -> iii_sdk::Error {
     loop {
         if let Some(err) = iii.fatal_error() {

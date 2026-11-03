@@ -70,7 +70,7 @@ export const consumerFor = (functionId: string) => `consumer::${functionId}`;
  * Map keyed `${scope}/${key}`, `registerFunction` captured so tests can invoke
  * handlers at the same unknown boundary the engine uses, and observers of the
  * worker's own functions modelled as iii does: `onObserverAdded` runs before an
- * observer is active, `onObserverMatch` picks the observers of each call, and
+ * observer is active, `onObservationMatch` picks the observers of each call, and
  * iii's delivery hands the handler's return value to each matched target
  * (`deliver: 'output'`). Every call (incl. Void feed calls) is recorded.
  */
@@ -115,11 +115,11 @@ export function fakeIii(): FakeIii {
         hooksOf(functionId).removed = hook ?? undefined;
         return fn;
       },
-      onObserverMatch: (hook: MatchHook | null) => {
+      onObservationMatch: (hook: MatchHook | null) => {
         hooksOf(functionId).match = hook ?? undefined;
         return fn;
       },
-      onObserverDeliver: () => fn,
+      onObservationDeliver: () => fn,
       observers: () => observersOf(functionId),
       isObserved: (call?: Partial<Call>) => isObserved(functionId, call),
       unregister: () => {

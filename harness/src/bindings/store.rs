@@ -1,8 +1,8 @@
 //! Durable binding storage, in the state worker under `harness_binding`.
 //!
 //! No in-memory cache, deliberately. A function id has one host per
-//! namespace, so a second harness instance is a standby that takes over the
-//! delivery hop when the host leaves; a cached "still live" binding in the
+//! namespace, so a restarted harness instance takes over the delivery hop
+//! once the host left; a cached "still live" binding in the
 //! new host after the old one retired it would double-fire a `once`. The
 //! store IS the authority, and every fire pays one private state read for it
 //! — the same round trip the fire already makes to read the owner's turn

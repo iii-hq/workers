@@ -3,7 +3,7 @@
 `state::get/set/list` are backed by a dict keyed `scope/key`, and every call is
 recorded (with its action, namespace and metadata, so the Void calls of the
 owned event feeds can be asserted). `register_function` and the observer hooks
-(`on_observer_added` / `on_observer_removed` / `on_observer_match`, by function
+(`on_observer_added` / `on_observer_removed` / `on_observation_match`, by function
 id) are captured so tests drive them at the same boundary the SDK does:
 `observe_feed` adds an observer the way the engine announces one (the added
 hook runs, then the match hook's observer keys file it), and a call of a
@@ -57,8 +57,8 @@ class FakeFunctionRef:
     def on_observer_removed(self, hook: Any) -> Any:
         return self._fake.on_observer_removed(self.id, hook)
 
-    def on_observer_match(self, hook: Any = None, *, observer: Any = None, call: Any = None) -> Any:
-        return self._fake.on_observer_match(self.id, hook, observer=observer, call=call)
+    def on_observation_match(self, hook: Any = None, *, observer: Any = None, call: Any = None) -> Any:
+        return self._fake.on_observation_match(self.id, hook, observer=observer, call=call)
 
 
 class FakeIii:
@@ -148,7 +148,7 @@ class FakeIii:
         self.removed_hooks[fid] = hook
         return hook
 
-    def on_observer_match(self, fid: str, hook: Any = None, *, observer: Any = None, call: Any = None) -> Any:
+    def on_observation_match(self, fid: str, hook: Any = None, *, observer: Any = None, call: Any = None) -> Any:
         assert hook is None, "the feeds match by keys"
         self.match_keys[fid] = (observer, call)
         return self.match_keys[fid]

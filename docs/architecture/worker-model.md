@@ -39,7 +39,7 @@ carries metadata `{ for_observer: <observer id> }`, made once
 observer alone, and iii delivers it like every call, so the observer's target
 receives every event of the function in one shape. A call through an observer
 (`iii.call({ observer, payload })`) belongs in the function's
-`onObserverDeliver` hook.
+`onObservationDeliver` hook.
 
 An observer created under a stable id (`{ id }` in the observe options) keeps
 its identity across a restart of the worker that created it: the restarted

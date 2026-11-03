@@ -157,7 +157,7 @@ pub const INVALID_ARGS: &str = "INVALID_ARGS";
 /// Rejection code of an observer the webhook store could not persist.
 pub const STORAGE_FAILURE: &str = "STORAGE_FAILURE";
 
-/// `onObserverDeliver` of `github::pr::on-event`. Each call carries one
+/// `onObservationDeliver` of `github::pr::on-event`. Each call carries one
 /// subscriber's notification (its id in `metadata.subscriber`, matched by
 /// key), and that subscriber's target answers it: the target's result, or
 /// error, is the call's, so the durable job retries a failed delivery. A
@@ -230,7 +230,7 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
     iii.on_observer_removed_for(ON_EVENT_FN, move |obs: Observer| {
         hooks.clone().remove_subscriber(obs)
     });
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_EVENT_FN,
         Match::keys(
             |obs| obs.id().into(),
@@ -243,7 +243,7 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         ),
     );
     let engine = iii.as_ref().clone();
-    iii.on_observer_deliver_for(ON_EVENT_FN, move |call: Call, observers: Vec<Observer>| {
+    iii.on_observation_deliver_for(ON_EVENT_FN, move |call: Call, observers: Vec<Observer>| {
         let engine = engine.clone();
         async move { deliver_notification(&engine, call, observers).await }
     });

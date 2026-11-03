@@ -171,7 +171,7 @@ pub fn register(iii: &IIIClient, monitor: Arc<Monitor>) {
             Ok(())
         }
     });
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_CHANGED_FN,
         Match::predicate(|observer, call| wants(observer.id(), call)),
     );

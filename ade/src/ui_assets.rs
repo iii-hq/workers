@@ -824,15 +824,15 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
 
     // A content fetch is a call for one asset observer; nothing else calls
     // the function.
-    iii.on_observer_match_for(ASSET_FN, for_observer::own_calls_only());
+    iii.on_observation_match_for(ASSET_FN, for_observer::own_calls_only());
     {
         let iii_for_hook = iii.clone();
-        iii.on_observer_deliver_for(ASSET_FN, move |call: Call, observers: Vec<Observer>| {
+        iii.on_observation_deliver_for(ASSET_FN, move |call: Call, observers: Vec<Observer>| {
             let iii = iii_for_hook.clone();
             async move { deliver_content(&iii, call, observers).await }
         });
     }
-    iii.on_observer_match_for(ON_ASSETS_CHANGED_FN, for_observer::every_call());
+    iii.on_observation_match_for(ON_ASSETS_CHANGED_FN, for_observer::every_call());
 
     iii.register_function(
         ASSET_FN,

@@ -344,7 +344,7 @@ iii.observe(
 
 **Observer metadata stays with the observer.** The engine hands it to the target as the handler's **second argument** on every delivery; the worker that hosts the event function never sees it and never forwards it. Never merge metadata into the event.
 
-**Args only for per-observer work.** An event that happens anyway takes no args: consumers select with filters. Give the function `args_format` only when the worker must do something per observer — start a watch or a timer, enforce a cap, shape a different payload — and read `obs.args` in its hooks (`.onObserverAdded`, `.onObserverRemoved`, `.onObserverMatch`). Reject a bad observer by throwing `new ObserveRejection(code, message)` from `onObserverAdded`, and list the codes in the README.
+**Args only for per-observer work.** An event that happens anyway takes no args: consumers select with filters. Give the function `args_format` only when the worker must do something per observer — start a watch or a timer, enforce a cap, shape a different payload — and read `obs.args` in its hooks (`.onObserverAdded`, `.onObserverRemoved`, `.onObservationMatch`). Reject a bad observer by throwing `new ObserveRejection(code, message)` from `onObserverAdded`, and list the codes in the README.
 
 ## Injectable UI builder
 

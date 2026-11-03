@@ -77,11 +77,11 @@ export class MockIII {
         hooks.removed = hook ?? undefined;
         return ref;
       },
-      onObserverMatch: (hook: MatchHook | null) => {
+      onObservationMatch: (hook: MatchHook | null) => {
         hooks.match = hook ?? undefined;
         return ref;
       },
-      onObserverDeliver: () => ref,
+      onObservationDeliver: () => ref,
       observers: () => this.observers(id),
       isObserved: (call?: Partial<Call>) => this.isObserved(id, call),
       unregister: () => {
