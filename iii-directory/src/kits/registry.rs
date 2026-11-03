@@ -327,6 +327,10 @@ pub trait KitRegistry: Send + Sync {
     /// `None` when the kit (or that version) does not exist.
     async fn detail(&self, kit: &str, version: &str) -> Result<Option<KitDetail>, String>;
     async fn versions(&self, kit: &str) -> Result<Option<KitVersions>, String>;
+    /// Every version, including those this engine cannot run, which `versions` leaves out.
+    async fn all_versions(&self, kit: &str) -> Result<Option<KitVersions>, String> {
+        self.versions(kit).await
+    }
     /// File contents of a version, NOT counted as a download.
     async fn files(&self, kit: &str, version: &str) -> Result<KitFiles, String>;
     /// The counted download (`ci` counts it as CI).
@@ -391,7 +395,9 @@ impl HttpKitRegistry {
     ) -> Result<Option<reqwest::Response>, String> {
         let client = build_http_client(self.timeout_ms)?;
         let mut req = client.get(self.url(path)).query(query);
-        if let Some(v) = &self.iii_version {
+        // A caller's own `iii_version` (`any`) wins over the engine's.
+        let explicit = query.iter().any(|(key, _)| *key == "iii_version");
+        if let (Some(v), false) = (&self.iii_version, explicit) {
             req = req.query(&[("iii_version", v.as_str())]);
         }
         let response = req.send().await.map_err(|_| unreachable_registry())?;
@@ -477,6 +483,14 @@ impl KitRegistry for HttpKitRegistry {
     async fn versions(&self, kit: &str) -> Result<Option<KitVersions>, String> {
         self.get_json(&format!("{}/versions", kit_path(kit)), &[])
             .await
+    }
+
+    async fn all_versions(&self, kit: &str) -> Result<Option<KitVersions>, String> {
+        self.get_json(
+            &format!("{}/versions", kit_path(kit)),
+            &[("iii_version", "any")],
+        )
+        .await
     }
 
     async fn files(&self, kit: &str, version: &str) -> Result<KitFiles, String> {
@@ -769,6 +783,54 @@ mod tests {
         assert!(err.starts_with(want), "{err}");
         assert!(reg.take_incompatible());
         assert!(!reg.take_incompatible());
+    }
+
+    #[tokio::test]
+    async fn range_matching_only_versions_for_another_engine_reports_d521() {
+        use crate::kits::kitref::VersionRef;
+        use crate::kits::service::resolve_version;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let versions = |v: &str| serde_json::json!({"versions": [{"version": v}]});
+        Mock::given(method("GET"))
+            .and(path("/k/acme/k/versions"))
+            .and(query_param("iii_version", "0.25.1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(versions("0.9.0")))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/k/acme/k/versions"))
+            .and(query_param("iii_version", "any"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(versions("1.2.0")))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/k/acme/k"))
+            .and(query_param("version", "1.2.0"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "error": "acme/k 1.2.0 requires iii >=0.26.0, running 0.25.1; run: iii update",
+                "code": "incompatible_engine",
+            })))
+            .mount(&server)
+            .await;
+        let reg = HttpKitRegistry::new(&server.uri(), 5_000, Some("0.25.1".into()));
+
+        let err = resolve_version(&reg, "acme/k", &VersionRef::parse("^1.0.0").unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "D521 incompatible_engine: acme/k 1.2.0 requires iii >=0.26.0, running 0.25.1; run: iii update"
+        );
+        let err = resolve_version(&reg, "acme/k", &VersionRef::parse("^2.0.0").unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("D510 not_found: no version of acme/k"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

@@ -710,8 +710,9 @@ Errors: `D510` unknown kit or version, `D511` malformed kit ref, `D512`
 expired or unknown plan, `D513` missing or invalid decisions, `D514` blocked
 plan (Compose not running, deprecated kit), `D515` Compose operation failed,
 `D516` the registry served different content than the plan reviewed, `D520`
-registry unreachable, `D521` the kit (or the explicitly requested version) needs a newer iii
-than the one running; the message names the required version (run `iii update`).
+registry unreachable, `D521` the kit (the requested version, or every version a range
+matches) does not run on the iii that is running; the registry's message names the required
+range and says whether to run `iii update` or install another version of the kit.
 
 ### Engine introspection (native, plus one wrapper)
 
