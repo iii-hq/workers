@@ -152,7 +152,6 @@ const RENAMED_TRIGGER_TYPES = {
   cron: 'cron::on-tick',
   http: 'http::on-request',
   'durable:subscriber': 'queue::on-message',
-  'database::row-changed': 'database::on-row-changed',
   state: 'state::on-changed',
   'compose-operation': 'compose::on-operation-progress',
   'console:script': 'ade::ui::asset',
