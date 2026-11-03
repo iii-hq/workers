@@ -300,16 +300,24 @@ fn validate_with_approval_gate(
     refused("pipe", problems)
 }
 
-/// The one refusal for a request: the count first, then every problem, so
-/// the caller can fix them all in a single resend.
+const MAX_LISTED_PROBLEMS: usize = 32;
+
+/// The one refusal for a request: the count first, then the first problems, so
+/// the caller can fix them in a single resend. The count covers every problem;
+/// the listing stops at `MAX_LISTED_PROBLEMS` so an oversized request cannot
+/// produce an unbounded refusal.
 pub(crate) fn refused(kind: &str, problems: Vec<String>) -> Result<(), String> {
     if problems.is_empty() {
         return Ok(());
     }
+    let total = problems.len();
+    let mut listed: Vec<String> = problems.into_iter().take(MAX_LISTED_PROBLEMS).collect();
+    if total > MAX_LISTED_PROBLEMS {
+        listed.push(format!("and {} more", total - MAX_LISTED_PROBLEMS));
+    }
     Err(format!(
-        "{kind} refused, {} problem(s): {}",
-        problems.len(),
-        problems.join("; ")
+        "{kind} refused, {total} problem(s): {}",
+        listed.join("; ")
     ))
 }
 
@@ -993,6 +1001,18 @@ mod tests {
         assert!(err.starts_with("pipe refused, 2 problem(s)"), "{err}");
         assert!(err.contains("a pipe takes 1..=12 steps"), "{err}");
         assert!(err.contains("step 1 (configuration::get)"), "{err}");
+    }
+
+    #[test]
+    fn an_oversized_refusal_stays_bounded_and_counts_everything() {
+        let through: Vec<Value> = (0..200)
+            .map(|_| json!({ "function": "shell::exec" }))
+            .collect();
+        let req: PipeRequest = serde_json::from_value(json!({ "through": through })).unwrap();
+        let err = validate(&req).unwrap_err();
+        assert!(err.starts_with("pipe refused, 201 problem(s)"), "{err}");
+        assert!(err.contains("and 169 more"), "{err}");
+        assert!(err.len() < 12_000, "{}", err.len());
     }
 
     #[test]
