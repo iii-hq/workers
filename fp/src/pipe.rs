@@ -302,6 +302,10 @@ fn validate_with_approval_gate(
 
 const MAX_LISTED_PROBLEMS: usize = 32;
 
+/// Longest text echoed for one listed problem. Problems carry caller-chosen
+/// function ids, so each item is cut to this length to keep a refusal bounded.
+const MAX_PROBLEM_CHARS: usize = 240;
+
 /// The one refusal for a request: the count first, then the first problems, so
 /// the caller can fix them in a single resend. The count covers every problem;
 /// the listing stops at `MAX_LISTED_PROBLEMS` so an oversized request cannot
@@ -311,7 +315,11 @@ pub(crate) fn refused(kind: &str, problems: Vec<String>) -> Result<(), String> {
         return Ok(());
     }
     let total = problems.len();
-    let mut listed: Vec<String> = problems.into_iter().take(MAX_LISTED_PROBLEMS).collect();
+    let mut listed: Vec<String> = problems
+        .into_iter()
+        .take(MAX_LISTED_PROBLEMS)
+        .map(bounded_problem)
+        .collect();
     if total > MAX_LISTED_PROBLEMS {
         listed.push(format!("and {} more", total - MAX_LISTED_PROBLEMS));
     }
@@ -319,6 +327,16 @@ pub(crate) fn refused(kind: &str, problems: Vec<String>) -> Result<(), String> {
         "{kind} refused, {total} problem(s): {}",
         listed.join("; ")
     ))
+}
+
+/// Cuts one listed problem to `MAX_PROBLEM_CHARS` characters, marking the cut.
+fn bounded_problem(problem: String) -> String {
+    if problem.chars().count() <= MAX_PROBLEM_CHARS {
+        return problem;
+    }
+    let mut cut: String = problem.chars().take(MAX_PROBLEM_CHARS).collect();
+    cut.push_str("...");
+    cut
 }
 
 pub fn validate(req: &PipeRequest) -> Result<(), String> {
@@ -1012,6 +1030,19 @@ mod tests {
         let err = validate(&req).unwrap_err();
         assert!(err.starts_with("pipe refused, 201 problem(s)"), "{err}");
         assert!(err.contains("and 169 more"), "{err}");
+        assert!(err.len() < 12_000, "{}", err.len());
+    }
+
+    #[test]
+    fn a_long_function_id_cannot_inflate_a_refusal() {
+        let long_name = format!("configuration::{}", "x".repeat(100_000));
+        let req: PipeRequest = serde_json::from_value(json!({
+            "through": [{ "function": long_name }, { "function": "configuration::get" }]
+        }))
+        .unwrap();
+        let err = validate(&req).unwrap_err();
+        assert!(err.starts_with("pipe refused, 2 problem(s)"), "{err}");
+        assert!(err.contains("step 1"), "{err}");
         assert!(err.len() < 12_000, "{}", err.len());
     }
 
