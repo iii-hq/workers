@@ -2,7 +2,7 @@
  * Lazy loaders for the two vendor bundles (`canvas/mermaid.js`,
  * `canvas/freeform.js`).
  *
- * The console serves every injected asset at `GET <base>/ui/<path>` and its
+ * The ADE worker serves every injected asset at `GET <base>/ui/<path>` and its
  * own loader resolves that URL against `document.baseURI` (the console
  * supports arbitrary subpath mounting) — these loaders do the same. `host` is
  * accepted for future host-provided resolution, but the current Host contract

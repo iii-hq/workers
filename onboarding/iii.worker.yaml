@@ -36,7 +36,7 @@ scripts:
   start: node ./dist/bundle/index.mjs
 
 dependencies:
-  # The console worker is published as `ade`; `console` is still an alias.
+  # The ADE worker is published as `ade`; `console` is still an alias.
   # The page calls the ADE worker through its `ade::*` bus surface.
   ade: "latest"
   state: "latest"

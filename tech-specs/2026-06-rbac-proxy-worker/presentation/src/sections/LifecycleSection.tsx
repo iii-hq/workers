@@ -14,7 +14,7 @@ export function LifecycleSection() {
       index="02"
       eyebrow="request lifecycle"
       title="every frame is intercepted on its way through."
-      lede="press play, or step it yourself. one upstream websocket per downstream connection, with the interceptor spliced into the middle: the console proxy pattern, plus rbac."
+      lede="press play, or step it yourself. one upstream websocket per downstream connection, with the interceptor spliced into the middle: the ade proxy pattern, plus rbac."
     >
       <SequencePlayer
         title="one connection, upgrade to rewritten result"

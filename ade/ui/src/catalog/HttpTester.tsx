@@ -137,7 +137,7 @@ export function HttpTester({
       setOutcome(null)
       return
     }
-    // The request runs server-side via `POST /probe`: the console process
+    // The request runs server-side via `POST /probe`: the ADE worker process
     // reads a redirect's real status and target, which a browser `fetch`
     // cannot, and there is no cross-origin CORS wall between the tab and the
     // http worker. `path` is everything after the base URL; the server

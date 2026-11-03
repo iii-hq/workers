@@ -7,7 +7,7 @@ test.skip(
     !process.env.CONTEXT_ENGINE_BIN ||
     !process.env.CONTEXT_SESSION_BIN ||
     !process.env.CONTEXT_CONSOLE_BIN,
-  'Adversarial stack requires CONTEXT_ADVERSARIAL=1 and real engine, session-manager and Console binaries',
+  'Adversarial stack requires CONTEXT_ADVERSARIAL=1 and real engine, session-manager and ADE binaries',
 )
 
 test('rejects malformed snapshots without changing stored bytes', async ({

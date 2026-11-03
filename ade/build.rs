@@ -1,4 +1,4 @@
-//! Build script for the `console` worker.
+//! Build script for the `ade` worker.
 //!
 //! 1. Forwards the build-time target triple to the binary as `env!("TARGET")`
 //!    (used by `manifest.rs` for the registry `supported_targets` field).
@@ -6,7 +6,7 @@
 //!    `web/dist/` at compile time; if it's missing or stale we run
 //!    `pnpm install --frozen-lockfile && pnpm build` inside `web/`
 //!    before the rest of the crate compiles.
-//! 3. Ensures the console's *own* injected UI assets exist: `src/ui.rs`
+//! 3. Ensures the ADE worker's *own* injected UI assets exist: `src/ui.rs`
 //!    embeds `ui/dist/config-form.js`, `ui/dist/catalog-page.js`,
 //!    `ui/dist/workspace-proposal.js`, and `ui/dist/styles.css` via
 //!    `include_str!` (the state worker precedent).

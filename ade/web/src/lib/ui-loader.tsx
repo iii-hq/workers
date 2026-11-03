@@ -3,7 +3,7 @@
  * (iii/tech-specs/2026-07-17-injectable-ui/hot-reload.md).
  *
  * Boot is one step: register a `console:assets` trigger whose function_id
- * is this tab's own handler. The console worker answers with a `sync` push
+ * is this tab's own handler. The ADE worker answers with a `sync` push
  * (the subscription IS the seed) and follows with incremental `set`/`delete`
  * pushes. The loader diffs every event against loaded state — new/changed
  * hash ⇒ cache-busted import + `setup(host)` + atomic swap; missing path ⇒
@@ -679,7 +679,7 @@ export function startUiLoader(
     config: {},
   })
 
-  // With injectable UI disabled, the console intentionally does not own the
+  // With injectable UI disabled, the ADE worker intentionally does not own the
   // `console:assets` trigger type, so no initial sync will arrive. The
   // manifest remains registered specifically to expose that kill switch and
   // lets built-in forms fall back instead of waiting forever.

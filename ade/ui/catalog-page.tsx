@@ -1,5 +1,5 @@
 /**
- * Entry for the console worker's engine-catalogue pages — compiled by
+ * Entry for the ADE worker's engine-catalogue pages — compiled by
  * esbuild (react + @iii-dev/console-ui external) into dist/catalog-page.js
  * and served over the `console:script` trigger (see src/ui.rs). The
  * stylesheet is its own asset: styles.css ships over `console:style` as

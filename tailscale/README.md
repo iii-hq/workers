@@ -59,14 +59,14 @@ command_timeout_ms: 20000            # per CLI invocation
 
 ## Run from source with compose
 
-Workers in this repository run locally through [`iii compose`](https://github.com/iii-hq/workers/blob/main/harness/DEVELOPMENT.md). Add a container after the console:
+Workers in this repository run locally through [`iii compose`](https://github.com/iii-hq/workers/blob/main/harness/DEVELOPMENT.md). Add a container after the ADE worker:
 
 ```yaml
 containers:
   tailscale:
     worker: path://../tailscale
     start_after:
-      - console
+      - ade
     environment:
       RUST_LOG: info
     scripts:

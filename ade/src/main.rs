@@ -1,4 +1,4 @@
-//! `console` worker entry point.
+//! `ade` worker entry point.
 //!
 //! Boot sequence:
 //!   1. Parse CLI / load the optional YAML seed (with fallback to defaults).
@@ -43,7 +43,7 @@ struct Cli {
     #[arg(long)]
     http_port: Option<u16>,
 
-    /// Interface to bind (`127.0.0.1` by default; `0.0.0.0` exposes the console
+    /// Interface to bind (`127.0.0.1` by default; `0.0.0.0` exposes the ADE worker
     /// and its engine WebSocket proxy on all IPv4 interfaces). Overrides
     /// `http_host` from the seed file. Boot-time only: it does not hot-reload.
     #[arg(long)]
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
 
     // Ephemeral per-instance state (the workspace tabs/panes layout) lives
     // under `data_dir`, never in the committed configuration YAML. Entries
-    // written by older Console versions still carry it: move it over once.
+    // written by older ADE versions still carry it: move it over once.
     let workspace = Arc::new(WorkspaceStore::new(runtime_config.resolved_data_dir()));
     if let Err(error) = configuration::migrate_legacy_workspace(&iii, &workspace).await {
         tracing::warn!(
@@ -188,7 +188,7 @@ async fn main() -> Result<()> {
         workspace.clone(),
     );
 
-    // The console's own injected UI — live port + injectable-UI controls for
+    // The ADE worker's own injected UI — live port + injectable-UI controls for
     // the `console` configuration entry. Same mechanism as any worker's.
     if cfg.injectable_ui {
         ui::register(&iii);
@@ -243,13 +243,13 @@ async fn main() -> Result<()> {
     // Print the address actually bound: a `0.0.0.0` listener is reachable
     // from other hosts, and a reader tailing this log deserves to know.
     tracing::info!(
-        "console ready — UI on http://{}/, /ws proxies to {}",
+        "ade ready — UI on http://{}/, /ws proxies to {}",
         ready_addr,
         engine_url_redacted,
     );
 
     wait_for_shutdown_signal().await?;
-    tracing::info!("console shutting down");
+    tracing::info!("ade shutting down");
 
     // Serialize shutdown with any in-flight rebind. `rebind` also refuses to
     // install a replacement after the control slot becomes `None`.
@@ -332,7 +332,7 @@ mod tests {
 
         assert!(
             listener.local_addr().unwrap().ip().is_loopback(),
-            "the default console listener must not bind every interface"
+            "the default ADE listener must not bind every interface"
         );
     }
 

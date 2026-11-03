@@ -7,7 +7,7 @@ the dev-loop hot-reload watcher — the whole registration discipline from the
 authoring SOP (`workers/docs/sops/injectable-console-ui.md`), implemented
 once.
 
-**Linked by path, never published.** The crate versions with the console
+**Linked by path, never published.** The crate versions with the ADE
 worker in this repo; a worker adopts it with a direct link:
 
 ```toml
@@ -58,7 +58,7 @@ What `register` does:
   zero-trigger flash in tabs, the trailing unregister keeps the SDK's
   replay map at one entry per path.
 
-The builder panics on paths the console would reject (wrong extension,
+The builder panics on paths the ADE worker would reject (wrong extension,
 uppercase, `..` segments, duplicates) — an authoring error should fail the
 first unit test, not warn-log on a running engine.
 

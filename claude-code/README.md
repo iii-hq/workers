@@ -17,7 +17,7 @@ The terminal half adds three companions:
 | Worker | Why |
 |---|---|
 | [`shell`](https://github.com/iii-hq/workers/tree/main/ide) ≥ 0.12 | Owns the terminal. `shell::pty::open` runs the CLI, `shell::exec` installs it and equips the workspace, `coder::read-file` reads the files back. The workspace must be inside shell's jail (`fs.host_roots`). |
-| [`console`](https://github.com/iii-hq/workers/tree/main/ade) | Renders the injected **claude** page. |
+| [`ade`](https://github.com/iii-hq/workers/tree/main/ade) | Renders the injected **claude** page. |
 | `configuration` (built in) | Holds the settings below. |
 
 ## Skills

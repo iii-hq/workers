@@ -9,7 +9,7 @@ license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
 # Deliberately unpublished: workers in this repo link it by path
 # (iii-console-ui = { path = "../crates/console-ui" }) so it versions with
-# the console worker here, not with the SDK's crates.io release train.
+# the ADE worker here, not with the SDK's crates.io release train.
 publish = false
 
 [dependencies]

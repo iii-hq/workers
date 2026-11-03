@@ -18,7 +18,7 @@ no harness change:
   full item. It may also write the token in replies; the console renders it.
 
 The contract is `crates/mention-contract` (Rust types, token grammar, shared
-fixtures). The kanban (`@kanban`), session-manager (`@session`) and console
+fixtures). The kanban (`@kanban`), session-manager (`@session`) and ADE
 (`@trace`) workers are reference providers.
 
 ## When to Use

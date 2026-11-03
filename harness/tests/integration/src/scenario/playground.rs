@@ -1,4 +1,4 @@
-//! Playground driver: the integration owns the stack and production Console;
+//! Playground driver: the integration owns the stack and production ADE worker;
 //! a person or Playwright owns the turn stimulus.
 
 use std::collections::BTreeMap;
@@ -204,7 +204,7 @@ async fn run_playground_phases(
 
     let console_url = stack
         .spawn_console(console_bin)
-        .map_err(|error| RunError::setup(RunPhase::Arm, "spawn production Console", error))?;
+        .map_err(|error| RunError::setup(RunPhase::Arm, "spawn production ADE worker", error))?;
     wait_for_console(stack, &console_url, prepared.setup_deadline).await?;
 
     // Capture the trace baseline before publishing readiness: once the ready
@@ -318,7 +318,7 @@ async fn wait_for_console(
             return Err(RunError::new(
                 RunPhase::Arm,
                 RunErrorKind::Setup,
-                "Console HTTP port did not become ready",
+                "ADE HTTP port did not become ready",
             ));
         }
         tokio::time::sleep(CONSOLE_CONNECT_INTERVAL).await;

@@ -89,7 +89,7 @@ hash of every input's content, so a component unchanged between two lines
 shares the same render cache.
 
 Story documents are served to the console through `stories::ui-file` behind
-the console's `/ui-files/stories/<workspace>/<line>/<path>` route; the page
+the ADE worker's `/ui-files/stories/<workspace>/<line>/<path>` route; the page
 embeds them in a same-origin iframe.
 
 ## Development

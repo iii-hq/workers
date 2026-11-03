@@ -8,9 +8,9 @@ description: >-
   working directory).
 ---
 
-# console
+# ade
 
-The console is a single Rust binary that serves the React SPA and proxies the
+The ADE worker is a single Rust binary that serves the React SPA and proxies the
 engine WebSocket on one port (`http_port`, 3113 by default; `ade::status`
 returns the actual `url`). It renders the
 chat (on the `harness` turn loop), the OpenTelemetry trace explorer, the worker
@@ -28,7 +28,7 @@ markup. Second, when an agent should change what the operator is looking at:
 open a worker page beside the conversation, pin a chat, close a screen, or
 propose that the session follow a project created elsewhere.
 
-Prerequisites: the `configuration` worker (the console stores its own settings
+Prerequisites: the `configuration` worker (the ADE worker stores its own settings
 and every worker's configuration entry there). Chat needs `harness` and its
 stack; traces need the engine's OpenTelemetry export.
 
@@ -98,19 +98,19 @@ Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
 
 ## Functions
 
-- `ade::status` — runtime knobs: `url`, `http_port`, `engine_url`, `version`; use for liveness and readiness, and open ADE pages on this machine (browser sessions, curl) at `url` (`<url>/#/worker/<scope>/<page-id>`) instead of assuming port 3113. `url` is loopback when the console listens on every interface: to show the operator a page, use `ade::workspace::open`, not a pasted link.
+- `ade::status` — runtime knobs: `url`, `http_port`, `engine_url`, `version`; use for liveness and readiness, and open ADE pages on this machine (browser sessions, curl) at `url` (`<url>/#/worker/<scope>/<page-id>`) instead of assuming port 3113. `url` is loopback when the ADE worker listens on every interface: to show the operator a page, use `ade::workspace::open`, not a pasted link.
 - `ade::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
 - `ade::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
 - `ade::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
 - `ade::workspace::close` — remove a screen wherever it is shown; idempotent.
 - `ade::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
-- `ade::ui-content` — the console's own content function for its injected catalog pages; internal.
+- `ade::ui-content` — the ADE worker's own content function for its injected catalog pages; internal.
 - `ade::on-config-change`, `ade::working-directory::inject-guidance`, `ade::working-directory::stamp-session` — internal wiring; never call directly.
 - `ade::mentions::trace::search`, `ade::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
 
 ## Reactive triggers
 
-The console owns four trigger types. Two are the injectable-UI contract a
+The ADE worker owns four trigger types. Two are the injectable-UI contract a
 worker binds to ship UI; the third is tab-internal; the fourth reports layout
 changes.
 
