@@ -241,10 +241,10 @@ fn validate_with_approval_gate(
     req: &PipeRequest,
     approval_gate_running: bool,
 ) -> Result<(), String> {
-    if req.through.is_empty() || req.through.len() > MAX_STEPS {
-        return Err(format!("a pipe takes 1..={MAX_STEPS} steps"));
-    }
     let mut problems = Vec::new();
+    if req.through.is_empty() || req.through.len() > MAX_STEPS {
+        problems.push(format!("a pipe takes 1..={MAX_STEPS} steps"));
+    }
     for (i, step) in req.through.iter().enumerate() {
         if let Some(reason) = forbidden_step(&step.function, approval_gate_running) {
             problems.push(format!("step {} ({}): {reason}", i + 1, step.function));
@@ -982,6 +982,17 @@ mod tests {
         ] {
             assert!(err.contains(needle), "{err}");
         }
+    }
+
+    #[test]
+    fn an_oversized_pipe_still_reports_every_other_problem() {
+        let mut through = vec![json!({ "function": "configuration::get" })];
+        through.extend((0..12).map(|_| json!({ "function": "browser::fetch" })));
+        let req: PipeRequest = serde_json::from_value(json!({ "through": through })).unwrap();
+        let err = validate(&req).unwrap_err();
+        assert!(err.starts_with("pipe refused, 2 problem(s)"), "{err}");
+        assert!(err.contains("a pipe takes 1..=12 steps"), "{err}");
+        assert!(err.contains("step 1 (configuration::get)"), "{err}");
     }
 
     #[test]

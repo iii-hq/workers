@@ -131,10 +131,10 @@ fn validate_with_approval_gate(
     req: &BatchRequest,
     approval_gate_running: bool,
 ) -> Result<Vec<String>, String> {
-    if req.calls.is_empty() || req.calls.len() > HARD_MAX_CALLS {
-        return Err(format!("a batch takes 1..={HARD_MAX_CALLS} calls"));
-    }
     let mut problems = Vec::new();
+    if req.calls.is_empty() || req.calls.len() > HARD_MAX_CALLS {
+        problems.push(format!("a batch takes 1..={HARD_MAX_CALLS} calls"));
+    }
     for (i, call) in req.calls.iter().enumerate() {
         if let Some(reason) = forbidden_call(&call.function, approval_gate_running) {
             problems.push(format!("call {} ({}): {reason}", i + 1, call.function));
@@ -478,6 +478,20 @@ mod tests {
             }
             other => panic!("expected an error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_oversized_batch_still_reports_every_other_problem() {
+        let mut calls = vec![json!({ "function": "fp::pipe" })];
+        calls.extend(
+            (0..HARD_MAX_CALLS)
+                .map(|_| json!({ "function": "fp::size", "payload": { "value": [] } })),
+        );
+        let req = parse(json!({ "calls": calls }));
+        let err = validate(&req).unwrap_err();
+        assert!(err.starts_with("batch refused, 2 problem(s)"), "{err}");
+        assert!(err.contains("a batch takes 1..=64 calls"), "{err}");
+        assert!(err.contains("call 1 (fp::pipe)"), "{err}");
     }
 
     #[test]
