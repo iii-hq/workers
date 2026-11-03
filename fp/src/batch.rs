@@ -26,13 +26,7 @@ use crate::pipe;
 use crate::util;
 
 pub const BATCH_ID: &str = "fp::batch";
-pub const BATCH_DESC: &str =
-    "Run several INDEPENDENT calls in one request and get every answer in place: \
-     { calls: [{ id?, function, payload?, namespace?, timeout_ms? }], concurrency?, \
-     stop_on_error?, timeout_ms? (default 10000 per call), max_entry_bytes? (default 16384), \
-     max_calls? (default 12; more only warns) } → { ok, results: [{ id, function, status: \
-     \"ok\", result, chars, truncated? } | { id, function, status: \"error\", code, message }], \
-     warnings }. Nothing is threaded between calls; for that use fp::pipe.";
+pub const BATCH_DESC: &str = r#"Run several INDEPENDENT calls in one request and get every answer in place: { calls: [{ id?, function, payload?, namespace?, timeout_ms? }], concurrency?, stop_on_error?, timeout_ms? (default 10000 per call), max_entry_bytes? (default 16384), max_calls? (default 12; more only warns) } → { ok, completed, failed, results: [{ id, function, status: "ok", result, chars, truncated? } | { id, function, status: "error", code, message }], warnings }. Nothing is threaded between calls; for that use fp::pipe. A batch is not a pipe step and a pipe is not a batch call: fp::batch and fp::pipe cannot be calls, and the same refusals as pipe steps apply. ok is true only when every call answered; completed and failed count the outcomes. A refusal lists every problem in the request."#;
 
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_MAX_ENTRY_BYTES: usize = 16 * 1024;
@@ -115,6 +109,10 @@ pub enum BatchResult {
 pub struct BatchResponse {
     /// True when every call answered `ok`.
     pub ok: bool,
+    /// Calls that answered with a result.
+    pub completed: usize,
+    /// Calls that answered with an error, including `SKIPPED`.
+    pub failed: usize,
     pub results: Vec<BatchResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -133,15 +131,16 @@ fn validate_with_approval_gate(
     req: &BatchRequest,
     approval_gate_running: bool,
 ) -> Result<Vec<String>, String> {
+    let mut problems = Vec::new();
     if req.calls.is_empty() || req.calls.len() > HARD_MAX_CALLS {
-        return Err(format!("a batch takes 1..={HARD_MAX_CALLS} calls"));
+        problems.push(format!("a batch takes 1..={HARD_MAX_CALLS} calls"));
     }
     for (i, call) in req.calls.iter().enumerate() {
         if let Some(reason) = forbidden_call(&call.function, approval_gate_running) {
-            return Err(format!("call {} ({}): {reason}", i + 1, call.function));
+            problems.push(format!("call {} ({}): {reason}", i + 1, call.function));
         }
         if pipe::is_scoped_step(&call.function) && req.fs_scope.is_none() {
-            return Err(format!(
+            problems.push(format!(
                 "call {} ({}): filesystem-scoped calls (shell::*/coder::*) run only under a \
                  harness-stamped filesystem scope, and this request carries none — call the \
                  function directly",
@@ -150,6 +149,7 @@ fn validate_with_approval_gate(
             ));
         }
     }
+    pipe::refused("batch", problems)?;
     let mut warnings = Vec::new();
     let max_calls = req
         .max_calls
@@ -251,7 +251,20 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
         validate_with_approval_gate(&req, true),
     ) {
         (Ok(w), Ok(_)) => w,
-        (Err(e), Err(_)) => return Err(e),
+        (Err(_), Err(_)) => {
+            // The gate only decides database writes, so the complete list
+            // needs its real state when the batch holds one. Batches without
+            // one stay off the bus, and an unknown state fails closed.
+            let gate =
+                if req.calls.iter().any(|c| {
+                    c.function.starts_with("database::") && c.function != "database::query"
+                }) {
+                    pipe::approval_gate_running(&iii).await.unwrap_or(true)
+                } else {
+                    false
+                };
+            validate_with_approval_gate(&req, gate)?
+        }
         _ => validate_with_approval_gate(&req, pipe::approval_gate_running(&iii).await?)?,
     };
     let default_timeout = req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
@@ -336,9 +349,15 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
             })
         })
         .collect();
-    let ok = results.iter().all(|r| matches!(r, BatchResult::Ok { .. }));
+    let completed = results
+        .iter()
+        .filter(|r| matches!(r, BatchResult::Ok { .. }))
+        .count();
+    let failed = results.len() - completed;
     Ok(BatchResponse {
-        ok,
+        ok: failed == 0,
+        completed,
+        failed,
         results,
         warnings,
     })
@@ -441,6 +460,7 @@ mod tests {
         ]}));
         let response = run(iii, req).await.unwrap();
         assert!(!response.ok);
+        assert_eq!((response.completed, response.failed), (1, 1));
         assert_eq!(
             response.results[0],
             BatchResult::Ok {
@@ -458,5 +478,34 @@ mod tests {
             }
             other => panic!("expected an error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_oversized_batch_still_reports_every_other_problem() {
+        let mut calls = vec![json!({ "function": "fp::pipe" })];
+        calls.extend(
+            (0..HARD_MAX_CALLS)
+                .map(|_| json!({ "function": "fp::size", "payload": { "value": [] } })),
+        );
+        let req = parse(json!({ "calls": calls }));
+        let err = validate(&req).unwrap_err();
+        assert!(err.starts_with("batch refused, 2 problem(s)"), "{err}");
+        assert!(err.contains("a batch takes 1..=64 calls"), "{err}");
+        assert!(err.contains("call 1 (fp::pipe)"), "{err}");
+    }
+
+    #[test]
+    fn refusals_name_every_bad_call_at_once() {
+        let req = parse(json!({ "calls": [
+            { "function": "fp::pipe" },
+            { "function": "fp::size", "payload": { "value": [] } },
+            { "function": "configuration::get" },
+        ]}));
+        let err = validate(&req).unwrap_err();
+        assert!(err.starts_with("batch refused, 2 problem(s)"), "{err}");
+        assert!(
+            err.contains("call 1 (fp::pipe)") && err.contains("call 3 (configuration::get)"),
+            "{err}"
+        );
     }
 }
