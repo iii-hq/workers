@@ -223,7 +223,12 @@ export function PageMain({
   )
 }
 
-/** The header's ⋯ menu: the page's rows, then Settings. */
+/** The header's ⋯ menu: the page's rows, then Settings. Roomier than a
+    context menu (36px rows, a 10px icon gap, shortcuts set apart) because
+    it is read, not just aimed at. */
+const MENU_ROW = 'min-h-9 gap-2.5 rounded-lg pl-2.5 text-sm'
+const MENU_SHORTCUT = 'pl-6 tracking-normal text-ink-faint'
+
 function PageHeaderMenu({
   items,
   onOpenSettings,
@@ -244,18 +249,25 @@ function PageHeaderMenu({
           </IconButton>
         }
       />
-      <DropdownMenuContent align="end" className="min-w-[14rem]">
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className="min-w-[15rem] p-1.5"
+      >
         {items.map((item) =>
           item.checked === undefined ? (
             <DropdownMenuItem
               key={item.id}
               disabled={item.disabled}
               onClick={item.onSelect}
+              className={cn(MENU_ROW, 'pr-2.5')}
             >
               {item.icon}
               {item.label}
               {item.shortcut ? (
-                <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>
+                <DropdownMenuShortcut className={MENU_SHORTCUT}>
+                  {item.shortcut}
+                </DropdownMenuShortcut>
               ) : null}
             </DropdownMenuItem>
           ) : (
@@ -264,19 +276,28 @@ function PageHeaderMenu({
               checked={item.checked}
               disabled={item.disabled}
               onCheckedChange={item.onSelect}
+              className={cn(
+                MENU_ROW,
+                'pr-9 [&>[data-slot$=indicator]]:right-2.5',
+              )}
             >
               {item.icon}
               {item.label}
               {item.shortcut ? (
-                <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>
+                <DropdownMenuShortcut className={MENU_SHORTCUT}>
+                  {item.shortcut}
+                </DropdownMenuShortcut>
               ) : null}
             </DropdownMenuCheckboxItem>
           ),
         )}
         {onOpenSettings ? (
           <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onOpenSettings}>
+            <DropdownMenuSeparator className="-mx-1.5 my-1.5" />
+            <DropdownMenuItem
+              onClick={onOpenSettings}
+              className={cn(MENU_ROW, 'pr-2.5')}
+            >
               <Settings aria-hidden />
               Settings
             </DropdownMenuItem>

@@ -107,9 +107,16 @@ impl Engine {
     #[cfg(feature = "provider-openai-codex")]
     async fn start_secrets(&mut self) -> anyhow::Result<()> {
         use std::sync::Arc;
-        let mut options = test_init_options();
-        options.metadata.as_mut().context("worker metadata")?.name = "secrets".into();
-        let iii = Arc::new(register_worker(&self.url, options));
+        let iii = Arc::new(secrets_iii_sdk::register_worker(
+            &self.url,
+            secrets_iii_sdk::InitOptions {
+                metadata: Some(secrets_iii_sdk::runtime::WorkerMetadata {
+                    name: "secrets".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ));
         let ctx = Arc::new(secrets::Ctx {
             iii: iii.clone(),
             store: Arc::new(secrets::Store::new(
@@ -140,7 +147,13 @@ impl Engine {
         self.secrets = Some(ctx);
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if call(&iii, "secrets::status", json!({})).await.is_ok() {
+                let status = iii.trigger(secrets_iii_sdk::protocol::TriggerRequest {
+                    function_id: "secrets::status".into(),
+                    payload: json!({}),
+                    action: None,
+                    timeout_ms: Some(30_000),
+                });
+                if status.await.is_ok() {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;

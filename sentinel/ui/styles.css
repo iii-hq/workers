@@ -1,3 +1,27 @@
+/* Local profile options stay within the dialog: shared Select has no public
+   content/option styling hook and its portal's intrinsic width can overflow. */
+[data-iii-ui="sentinel"].sentinel-ui-profile-picker { min-width: 0; width: min(100%, 480px); max-width: 100%; }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-trigger { width: 100%; min-height: 48px; max-height: 96px; height: auto; overflow: auto; white-space: normal; overflow-wrap: anywhere; text-align: left; justify-content: flex-start; }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-options { box-sizing: border-box; width: 100%; max-width: min(100%, 480px); max-height: min(240px, 35dvh); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 4px; border-radius: var(--radius-md); background: var(--color-surface); }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-option { display: block; box-sizing: border-box; width: 100%; max-width: 100%; min-height: 48px; max-height: 200px; overflow: auto; white-space: normal; overflow-wrap: anywhere; padding: 12px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--color-ink); font: inherit; text-align: left; cursor: pointer; }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-option:hover { background: var(--color-surface-hover); }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-option[aria-selected="true"] { background: var(--color-surface-selected); }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-option:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-option:disabled { color: var(--color-ink-disabled); cursor: not-allowed; }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-name { display: block; font-weight: 600; overflow-wrap: anywhere; }
+[data-iii-ui="sentinel"] .sentinel-ui-profile-description { display: block; margin-top: 4px; color: var(--color-ink-faint); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-group-dialog { display: flex; flex-direction: column; gap: 12px; }
+[data-iii-ui="sentinel"] .sentinel-ui-group-review { margin: 0; padding-left: 20px; max-height: 200px; overflow: auto; overflow-wrap: anywhere; }
+[data-iii-ui="sentinel"] .sentinel-ui-group-review li { padding: 4px; }
+[data-iii-ui="sentinel"] .sentinel-ui-group-review span { display: block; color: var(--color-ink-faint); font-size: 12px; }
+[data-iii-ui="sentinel"] .sentinel-ui-group-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+@container (max-width: 480px) {
+  [data-iii-ui="sentinel"] .sentinel-ui-bulk button,
+  [data-iii-ui="sentinel"] .sentinel-ui-dialog-actions button { min-height: 48px; }
+  [data-iii-ui="sentinel"] .sentinel-ui-dialog-actions { flex-wrap: wrap; }
+}
+
 /* sentinel console page. Every selector is scoped to the host wrapper, and
    every colour, radius and duration comes from a token — the page has to sit
    inside the console without announcing that it came from somewhere else. */

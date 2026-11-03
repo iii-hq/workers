@@ -49,7 +49,7 @@ export function FactCard({
     <div
       data-slot="fact-card"
       className={cn(
-        'flex min-w-0 flex-col gap-2 rounded-xl bg-popover px-3 py-2.5 font-inter text-sm text-ink shadow-md ring-1 ring-foreground/10',
+        'flex min-w-0 flex-col gap-2 rounded-xl bg-popover px-3 py-2.5 font-inter text-sm text-ink shadow-md ring-1 ring-card-edge',
         className,
       )}
       style={{ ...accentStyle(accent), ...style }}

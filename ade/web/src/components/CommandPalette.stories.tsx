@@ -63,7 +63,7 @@ const LOCAL_ENTRIES: PaletteEntry[] = [
     id: 'action:new-chat',
     kind: 'action',
     title: 'New chat',
-    detail: 'Start a conversation',
+    detail: 'Start a chat',
     run: () => {},
   },
   {

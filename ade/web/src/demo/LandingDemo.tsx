@@ -189,7 +189,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="hidden lg:flex">
           <PageSidebar
-            label="Conversations"
+            label="Chats"
             width={260}
             header={
               <Button

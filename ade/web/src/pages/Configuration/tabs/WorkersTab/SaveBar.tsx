@@ -59,7 +59,7 @@ export function SaveBar({
           initial={hidden}
           animate={{ ...shown, transition: settingsEnter }}
           exit={{ opacity: 0, transition: settingsFade }}
-          className="sticky inset-x-0 bottom-0 flex min-h-12 items-center justify-between gap-4 border-t border-neutral-200 bg-white/95 px-5 py-2 backdrop-blur-sm @3xl:px-14 dark:border-neutral-800 dark:bg-black/95"
+          className="sticky inset-x-0 bottom-0 flex min-h-12 items-center justify-between gap-4 border-t border-neutral-100 bg-white/95 px-5 py-2 backdrop-blur-sm @3xl:px-14 dark:border-neutral-800 dark:bg-black/95"
         >
           <SaveStatusText status={status} dirty={dirty} />
           <div className="flex shrink-0 items-center gap-2">

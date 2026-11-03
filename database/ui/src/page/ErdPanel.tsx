@@ -156,8 +156,24 @@ export function ErdPanel({
     })
   }, [diagram, setViewNow])
 
+  // The panel stays mounted behind the other modes (`hidden`), so the first
+  // fit can land on a 0×0 frame and clamp to the minimum zoom. Wait until
+  // the frame has a size, then fit once.
   useEffect(() => {
-    fitToFrame()
+    const frame = frameRef.current
+    if (!frame) return
+    if (frame.clientWidth > 0 && frame.clientHeight > 0) {
+      fitToFrame()
+      return
+    }
+    const observer = new ResizeObserver(() => {
+      if (frame.clientWidth > 0 && frame.clientHeight > 0) {
+        observer.disconnect()
+        fitToFrame()
+      }
+    })
+    observer.observe(frame)
+    return () => observer.disconnect()
   }, [fitToFrame])
 
   // A new layout invalidates hand-placed offsets: they were relative to

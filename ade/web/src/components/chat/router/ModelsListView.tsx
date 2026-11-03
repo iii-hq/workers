@@ -20,7 +20,7 @@ interface ModelsListViewProps {
 const CAPABILITIES: Array<{ key: keyof RouterModel; label: string }> = [
   { key: 'supports_thinking', label: 'thinking' },
   { key: 'supports_xhigh', label: 'xhigh' },
-  { key: 'supports_tools', label: 'tools' },
+  { key: 'supports_tools', label: 'functions' },
   { key: 'supports_vision', label: 'vision' },
   { key: 'supports_cache', label: 'cache' },
   { key: 'supports_structured_output', label: 'json' },

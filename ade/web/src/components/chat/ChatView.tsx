@@ -187,6 +187,7 @@ import {
 } from './system-prompt-selection'
 import { deriveTurnVisualState } from './turn-visual-state'
 import { useModelSwitch } from './use-model-switch'
+import { WelcomeHandoff } from './WelcomeHandoff'
 
 /**
  * Order the header's injected chips deterministically. The registry appends
@@ -3050,6 +3051,7 @@ export function ChatView({
     conversation.agentProfile?.name,
   ])
 
+  const conversationBodyRef = useRef<HTMLDivElement>(null)
   const welcome =
     !side &&
     !readOnly &&
@@ -3175,11 +3177,11 @@ export function ChatView({
         >
           <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-sm text-ink-faint">
             {onBack ? (
-              <Hint label="Back to conversations">
+              <Hint label="Back to chats">
                 <button
                   type="button"
                   onClick={onBack}
-                  aria-label="back to conversations"
+                  aria-label="back to chats"
                   className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
                 >
                   <span
@@ -3214,9 +3216,16 @@ export function ChatView({
         />
       ) : null}
       <div
+        ref={conversationBodyRef}
         className="chat-conversation-body flex min-h-0 flex-1 flex-col"
         data-welcome={welcome || undefined}
       >
+        <WelcomeHandoff
+          bodyRef={conversationBodyRef}
+          welcome={welcome}
+          sent={shownMessages.length > 0 || isThinking}
+          conversationId={conversation.id}
+        />
         <ChatFileNavigation
           messages={conversation.messages}
           historyComplete={
@@ -3380,7 +3389,7 @@ export function ChatView({
               ) : null}
               {checkingImportedTurn && !importTurnError && (
                 <p role="status" className="mb-2 px-1 text-sm text-ink-faint">
-                  Checking conversation state…
+                  Checking chat state…
                 </p>
               )}
               {importTurnError && (

@@ -56,7 +56,6 @@ import {
   RefreshCw,
   SquareTerminal,
   Terminal,
-  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
@@ -2337,21 +2336,18 @@ export function ShellExplorerPage({
                 checked: showHidden,
                 onSelect: () => setShowHidden(!showHidden),
               },
-              ...(onRequestClose
-                ? [
-                    {
-                      id: 'close',
-                      label: 'Close IDE',
-                      icon: <X aria-hidden />,
-                      onSelect: () => {
-                        void confirmDiscardAllEdits().then((ok) => {
-                          if (ok) onRequestClose()
-                        })
-                      },
-                    },
-                  ]
-                : []),
             ]
+          : undefined
+      }
+      // Close is the header's own ✕ beside the ⋯, not a menu row; unsaved
+      // edits still ask first.
+      onClose={
+        onRequestClose
+          ? () => {
+              void confirmDiscardAllEdits().then((ok) => {
+                if (ok) onRequestClose()
+              })
+            }
           : undefined
       }
     >

@@ -530,7 +530,7 @@ export function TicketView(props: { ticketKey: string }) {
     items.push(
       t.deleted_at
         ? [{ label: 'Restore ticket…', icon: 'rotate-ccw' }, toggleDeleted]
-        : [{ label: 'Delete ticket…', icon: 'trash', destructive: true }, toggleDeleted],
+        : [{ label: 'Delete ticket', icon: 'trash', destructive: true }, toggleDeleted],
     )
     const choice = await iii.ui.actionMenu(menuButton ?? null, {
       title: t.key,

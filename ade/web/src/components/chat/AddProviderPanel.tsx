@@ -24,7 +24,7 @@ import { ProviderIcon } from './ProviderIcon'
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 /** Base id for the browser-local handler bound to the `worker` add trigger. */
-const PROVIDER_ADD_WATCH_FN = 'console::provider-add-watch'
+const PROVIDER_ADD_WATCH_FN = 'ade::provider-add-watch'
 
 type AddStatus =
   | { kind: 'adding'; progress?: number }
@@ -237,7 +237,7 @@ export function AddProviderPanel({
             role="status"
             aria-busy="true"
             aria-label="loading providers"
-            className="divide-y divide-edge overflow-hidden rounded-xl bg-surface ring-1 ring-inset ring-foreground/10"
+            className="divide-y divide-edge overflow-hidden rounded-xl bg-surface ring-1 ring-inset ring-card-edge"
           >
             {[0, 1, 2, 3].map((row) => (
               <div key={row} className="flex items-center gap-3 px-3 py-3">
@@ -275,7 +275,7 @@ export function AddProviderPanel({
             // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.
             role="list"
             aria-label="providers in the workers registry"
-            className="divide-y divide-edge overflow-hidden rounded-xl bg-surface ring-1 ring-inset ring-foreground/10"
+            className="divide-y divide-edge overflow-hidden rounded-xl bg-surface ring-1 ring-inset ring-card-edge"
           >
             {rows.map(({ worker, present, installed, add, label }) => {
               const adding = add?.kind === 'adding'

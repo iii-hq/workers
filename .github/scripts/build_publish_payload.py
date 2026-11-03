@@ -332,7 +332,10 @@ def build_payload(
         "worker_name", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme",
     }
-    if not isinstance(registry_projection, dict) or set(registry_projection) != required:
+    optional = {"iii_engine_version", "skills"}
+    if not isinstance(registry_projection, dict) or not (
+        required <= set(registry_projection) <= required | optional
+    ):
         raise ValueError("registry_projection differs from the current Registry metadata contract")
     config = registry_projection["config"]
     if config is not None and not isinstance(config, dict):
@@ -360,7 +363,8 @@ def build_payload(
     if (kind not in expected_kind) if isinstance(expected_kind, set) else (kind != expected_kind):
         raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
-        **registry_projection,
+        # Release Control strips skills; the Registry publish schema has no such field.
+        **{k: v for k, v in registry_projection.items() if k != "skills"},
         # The Registry nullable-config rollout requires an explicit key while
         # treating an empty public default as absent.
         "config": config or None,

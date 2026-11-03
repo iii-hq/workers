@@ -122,7 +122,7 @@ async fn exercise_delivery() {
             let frame: Value = serde_json::from_str(&text).unwrap();
             captured.lock().unwrap().push(frame.clone());
             match frame["type"].as_str() {
-                Some("registerfunction") if frame["id"] == "console::configuration-id" => {
+                Some("registerfunction") if frame["id"] == "ade::configuration-id" => {
                     assert_eq!(frame["metadata"]["internal"], true);
                     assert_eq!(frame["request_format"]["type"], "object");
                     assert_eq!(
@@ -131,7 +131,7 @@ async fn exercise_delivery() {
                     );
                     ws.send(Message::Text(
                         json!({
-                            "type":"invokefunction", "function_id":"console::configuration-id",
+                            "type":"invokefunction", "function_id":"ade::configuration-id",
                             "invocation_id":invocation,
                             "data":{"_caller_worker_id":"00000000-0000-4000-8000-000000000002"},
                             "namespace":"project"

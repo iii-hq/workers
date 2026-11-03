@@ -195,6 +195,8 @@ impl BindingTarget {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct ConditionSpec {
     pub function_id: String,
+    /// Passed to the condition function AS its `condition_config`: give its
+    /// fields (e.g. `id`, `expect`) directly, not wrapped in `condition_config`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<Value>,
 }

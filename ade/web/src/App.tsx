@@ -418,7 +418,7 @@ export function App({
   // ── Deep links ──
   // `#/workers` (and `#/chat` / `#/traces-v2`, legacy aliases of traces) are
   // one-shot commands, never state: open the screen with the same placement
-  // as an agent's console::workspace::open and a worker's panel-open (reuse
+  // as an agent's ade::workspace::open and a worker's panel-open (reuse
   // the tab showing it, else beside chat, else a fresh tab), then drop the
   // hash so a reload trusts the workspace store — the active tab — instead
   // of replaying the link. Waits for the layout to hydrate so the link lands

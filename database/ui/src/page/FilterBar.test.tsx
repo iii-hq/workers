@@ -15,17 +15,11 @@ vi.mock('@iii-dev/console-ui', () => ({
       {children}
     </button>
   ),
-  DropdownMenu: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  DropdownMenuTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  DropdownMenuContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  DropdownMenuItem: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  Input: ({
-    onChange: _onChange,
-    preserveCase: _p,
-    ...props
-  }: { onChange?: (next: string) => void; preserveCase?: boolean } & Omit<ComponentProps<'input'>, 'onChange'>) => (
-    <input readOnly {...props} />
-  ),
+  ShadcnDropdownMenu: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  ShadcnDropdownMenuTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  ShadcnDropdownMenuContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  ShadcnDropdownMenuItem: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  ShadcnInput: ({ onChange: _onChange, ...props }: ComponentProps<'input'>) => <input readOnly {...props} />,
 }))
 
 const columns = [

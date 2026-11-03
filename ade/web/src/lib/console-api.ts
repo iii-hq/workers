@@ -16,12 +16,95 @@ import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { SecretKeyField } from '@/components/secrets/SecretKeyField'
 import {
+  Avatar as ShadcnAvatar,
+  AvatarFallback as ShadcnAvatarFallback,
+  AvatarGroup as ShadcnAvatarGroup,
+  AvatarGroupCount as ShadcnAvatarGroupCount,
+  AvatarImage as ShadcnAvatarImage,
+} from '@/components/shadcn/avatar'
+import { Badge as ShadcnBadge } from '@/components/shadcn/badge'
+import { Button as ShadcnButton } from '@/components/shadcn/button'
+import {
+  Card as ShadcnCard,
+  CardAction as ShadcnCardAction,
+  CardContent as ShadcnCardContent,
+  CardDescription as ShadcnCardDescription,
+  CardFooter as ShadcnCardFooter,
+  CardHeader as ShadcnCardHeader,
+  CardTitle as ShadcnCardTitle,
+} from '@/components/shadcn/card'
+import { Checkbox as ShadcnCheckbox } from '@/components/shadcn/checkbox'
+import {
+  Dialog as ShadcnDialog,
+  DialogClose as ShadcnDialogClose,
+  DialogContent as ShadcnDialogContent,
+  DialogDescription as ShadcnDialogDescription,
+  DialogFooter as ShadcnDialogFooter,
+  DialogHeader as ShadcnDialogHeader,
+  DialogTitle as ShadcnDialogTitle,
+  DialogTrigger as ShadcnDialogTrigger,
+} from '@/components/shadcn/dialog'
+import {
+  DropdownMenu as ShadcnDropdownMenu,
+  DropdownMenuCheckboxItem as ShadcnDropdownMenuCheckboxItem,
+  DropdownMenuContent as ShadcnDropdownMenuContent,
+  DropdownMenuGroup as ShadcnDropdownMenuGroup,
+  DropdownMenuItem as ShadcnDropdownMenuItem,
+  DropdownMenuLabel as ShadcnDropdownMenuLabel,
+  DropdownMenuRadioGroup as ShadcnDropdownMenuRadioGroup,
+  DropdownMenuRadioItem as ShadcnDropdownMenuRadioItem,
+  DropdownMenuSeparator as ShadcnDropdownMenuSeparator,
+  DropdownMenuShortcut as ShadcnDropdownMenuShortcut,
+  DropdownMenuSub as ShadcnDropdownMenuSub,
+  DropdownMenuSubContent as ShadcnDropdownMenuSubContent,
+  DropdownMenuSubTrigger as ShadcnDropdownMenuSubTrigger,
+  DropdownMenuTrigger as ShadcnDropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
+import { Input as ShadcnInput } from '@/components/shadcn/input'
+import {
+  Kbd as ShadcnKbd,
+  KbdGroup as ShadcnKbdGroup,
+} from '@/components/shadcn/kbd'
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/shadcn/popover'
+import { Progress as ShadcnProgress } from '@/components/shadcn/progress'
+import {
+  Select as ShadcnSelect,
+  SelectContent as ShadcnSelectContent,
+  SelectGroup as ShadcnSelectGroup,
+  SelectItem as ShadcnSelectItem,
+  SelectLabel as ShadcnSelectLabel,
+  SelectSeparator as ShadcnSelectSeparator,
+  SelectTrigger as ShadcnSelectTrigger,
+  SelectValue as ShadcnSelectValue,
+} from '@/components/shadcn/select'
 import { Separator } from '@/components/shadcn/separator'
+import { Skeleton as ShadcnSkeleton } from '@/components/shadcn/skeleton'
+import { Switch as ShadcnSwitch } from '@/components/shadcn/switch'
+import {
+  Table as ShadcnTable,
+  TableBody as ShadcnTableBody,
+  TableCell as ShadcnTableCell,
+  TableHead as ShadcnTableHead,
+  TableHeader as ShadcnTableHeader,
+  TableRow as ShadcnTableRow,
+} from '@/components/shadcn/table'
+import {
+  Tabs as ShadcnTabs,
+  TabsContent as ShadcnTabsContent,
+  TabsList as ShadcnTabsList,
+  TabsTrigger as ShadcnTabsTrigger,
+} from '@/components/shadcn/tabs'
+import { Textarea as ShadcnTextarea } from '@/components/shadcn/textarea'
 import { Toggle } from '@/components/shadcn/toggle'
+import {
+  Tooltip as ShadcnTooltip,
+  TooltipContent as ShadcnTooltipContent,
+  TooltipTrigger as ShadcnTooltipTrigger,
+} from '@/components/shadcn/tooltip'
 import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -231,6 +314,71 @@ export const components: ConsoleApi['components'] = {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  ShadcnAvatar,
+  ShadcnAvatarFallback,
+  ShadcnAvatarGroup,
+  ShadcnAvatarGroupCount,
+  ShadcnAvatarImage,
+  ShadcnButton,
+  ShadcnCard,
+  ShadcnCardAction,
+  ShadcnCardContent,
+  ShadcnCardDescription,
+  ShadcnCardFooter,
+  ShadcnCardHeader,
+  ShadcnCardTitle,
+  ShadcnCheckbox,
+  ShadcnDialog,
+  ShadcnDialogClose,
+  ShadcnDialogContent,
+  ShadcnDialogDescription,
+  ShadcnDialogFooter,
+  ShadcnDialogHeader,
+  ShadcnDialogTitle,
+  ShadcnDialogTrigger,
+  ShadcnDropdownMenuSub,
+  ShadcnDropdownMenuSubContent,
+  ShadcnDropdownMenuSubTrigger,
+  ShadcnKbd,
+  ShadcnKbdGroup,
+  ShadcnProgress,
+  ShadcnSkeleton,
+  ShadcnSwitch,
+  ShadcnTextarea,
+  ShadcnTooltip,
+  ShadcnTooltipContent,
+  ShadcnTooltipTrigger,
+  ShadcnBadge,
+  ShadcnDropdownMenu,
+  ShadcnDropdownMenuCheckboxItem,
+  ShadcnDropdownMenuContent,
+  ShadcnDropdownMenuGroup,
+  ShadcnDropdownMenuItem,
+  ShadcnDropdownMenuLabel,
+  ShadcnDropdownMenuRadioGroup,
+  ShadcnDropdownMenuRadioItem,
+  ShadcnDropdownMenuSeparator,
+  ShadcnDropdownMenuShortcut,
+  ShadcnDropdownMenuTrigger,
+  ShadcnInput,
+  ShadcnSelect,
+  ShadcnSelectContent,
+  ShadcnSelectGroup,
+  ShadcnSelectItem,
+  ShadcnSelectLabel,
+  ShadcnSelectSeparator,
+  ShadcnSelectTrigger,
+  ShadcnSelectValue,
+  ShadcnTable,
+  ShadcnTableBody,
+  ShadcnTableCell,
+  ShadcnTableHead,
+  ShadcnTableHeader,
+  ShadcnTableRow,
+  ShadcnTabs,
+  ShadcnTabsContent,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
   Skeleton,
   StatusDot,
   StatusPanel,

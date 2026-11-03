@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::RegisterFunction;
+use iii_sdk::{RegisterFunction, Source};
 use secrets::access::CallerDirectory;
 use secrets::api::ids;
 use secrets::crypto::MasterKey;
@@ -83,6 +83,7 @@ async fn console_stores_router_resolves_others_are_refused() {
             }
         }),
     );
+    #[allow(deprecated)]
     router
         .register_trigger(RegisterTriggerInput {
             trigger_type: ids::CHANGED_TRIGGER.into(),
@@ -148,6 +149,22 @@ async fn console_stores_router_resolves_others_are_refused() {
         .await
         .unwrap_err();
     assert_eq!(remote_code(missing), "SECRET_NOT_FOUND");
+
+    // An observer would get a copy of every input and output: a value, or a
+    // key pasted into any other field. No secrets::* function admits one.
+    intruder.register_function(
+        "intruder::sink",
+        RegisterFunction::new_async(|_: Value| async { Ok::<Value, Error>(json!({})) }),
+    );
+    wait_for(&console, "intruder::sink").await;
+    for id in ids::ALL_FUNCTIONS {
+        let observer = intruder.observe(Source::function(id), "intruder::sink");
+        let refused = tokio::time::timeout(Duration::from_secs(5), observer.ready())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(remote_code(refused), "NOT_OBSERVABLE", "{id}");
+    }
 
     // Rotation reaches the subscriber and the next resolve.
     invoke(
@@ -297,6 +314,7 @@ async fn env_variables_are_shared_written_and_followed() {
             }
         }),
     );
+    #[allow(deprecated)]
     router
         .register_trigger(RegisterTriggerInput {
             trigger_type: ids::CHANGED_TRIGGER.into(),

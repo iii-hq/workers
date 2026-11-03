@@ -31,7 +31,7 @@ export function DropdownMenuContent({
           sideOffset={sideOffset}
           collisionPadding={8}
           className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-inter text-sm text-ink shadow-floating',
+            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-popover p-1 font-inter text-sm text-ink shadow-floating ring-1 ring-popover-edge',
             className,
           )}
           {...props}
@@ -193,7 +193,7 @@ export function DropdownMenuSubContent({
           alignOffset={alignOffset}
           collisionPadding={8}
           className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-inter text-sm text-ink shadow-floating',
+            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-popover p-1 font-inter text-sm text-ink shadow-floating ring-1 ring-popover-edge',
             className,
           )}
           {...props}

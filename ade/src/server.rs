@@ -2,7 +2,7 @@
 //! `/ws` (WebSocket proxy), and — when injectable UI is enabled — `/ui`,
 //! `/ui/*`, and `/vendor/*`.
 //!
-//! Binds `<http_host>:<http_port>` — `0.0.0.0` by default. Set `http_host`
+//! Binds `<http_host>:<http_port>` — `127.0.0.1` by default. Set `http_host`
 //! in the seed config or `--http-host` to select an interface. Front it
 //! with a reverse proxy when exposing it beyond the host.
 
@@ -186,7 +186,7 @@ async fn runtime_handler(State(state): State<AppState>) -> Response {
 /// busts the browser's module map.
 const NO_CACHE: &str = "no-cache";
 
-/// `GET /ui` — the manifest JSON (same shape as `console::ui-manifest`),
+/// `GET /ui` — the manifest JSON (same shape as `ade::ui-manifest`),
 /// curl-friendly debugging.
 async fn ui_manifest_handler(State(state): State<AppState>) -> Response {
     let Some(ui) = &state.ui else {

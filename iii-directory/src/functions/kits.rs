@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -162,22 +163,90 @@ pub struct IgnoreOutput {
     pub ignored_versions: Vec<String>,
 }
 
-/// The registry client, rebuilt only when `registry_url` changes so its blob
+/// The registry client, rebuilt only when `registry_url` or the engine version change so its blob
 /// cache survives across calls.
 #[derive(Default)]
-struct RegistryCell(Mutex<Option<(String, Arc<HttpKitRegistry>)>>);
+struct RegistryCell {
+    state: Mutex<CellState>,
+}
+
+#[derive(Default)]
+struct CellState {
+    client: Option<(String, Option<String>, Arc<HttpKitRegistry>)>,
+    /// The live engine version; only a successful read is kept.
+    version: Option<String>,
+    /// When the last read failed; the engine is not asked again for a while.
+    failed_at: Option<std::time::Instant>,
+}
+
+/// How long a failed engine-version read is remembered before retrying.
+const VERSION_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 impl RegistryCell {
-    fn get(&self, cfg: &SkillsConfig) -> Arc<HttpKitRegistry> {
-        let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        match &*slot {
-            Some((base, reg)) if base == cfg.registry_base() => reg.clone(),
+    async fn get(&self, iii: &IIIClient, cfg: &SkillsConfig) -> Arc<HttpKitRegistry> {
+        self.get_with(cfg, || async {
+            let res = iii
+                .trigger(TriggerRequest {
+                    function_id: "engine::health::check".into(),
+                    payload: json!({}),
+                    action: None,
+                    timeout_ms: Some(5_000),
+                })
+                .await;
+            match res {
+                Ok(v) => v.get("version").and_then(Value::as_str).map(String::from),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the engine version; the registry will treat this iii as older than 0.26");
+                    None
+                }
+            }
+        })
+        .await
+    }
+
+    async fn get_with<F, Fut>(&self, cfg: &SkillsConfig, fetch: F) -> Arc<HttpKitRegistry>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Option<String>>,
+    {
+        let need_fetch = {
+            let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            // A D521 means the engine may have been upgraded since the read.
+            if st
+                .client
+                .as_ref()
+                .is_some_and(|(_, _, r)| r.take_incompatible())
+            {
+                st.version = None;
+                st.failed_at = None;
+            }
+            st.version.is_none()
+                && st
+                    .failed_at
+                    .is_none_or(|t| t.elapsed() >= VERSION_RETRY_AFTER)
+        };
+        if need_fetch {
+            let fetched = fetch().await;
+            let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            match fetched {
+                Some(v) => {
+                    st.version = Some(v);
+                    st.failed_at = None;
+                }
+                None => st.failed_at = Some(std::time::Instant::now()),
+            }
+        }
+        let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let version = st.version.clone();
+        match &st.client {
+            Some((base, v, reg)) if base == cfg.registry_base() && *v == version => reg.clone(),
             _ => {
                 let reg = Arc::new(HttpKitRegistry::new(
                     cfg.registry_base(),
                     cfg.download_timeout_ms,
+                    version.clone(),
                 ));
-                *slot = Some((cfg.registry_base().to_string(), reg.clone()));
+                st.client = Some((cfg.registry_base().to_string(), version, reg.clone()));
                 reg
             }
         }
@@ -196,11 +265,16 @@ struct Ctx {
 }
 
 impl Ctx {
-    fn env(&self) -> (Arc<SkillsConfig>, KitsEnv, Arc<HttpKitRegistry>) {
+    fn env(&self) -> (Arc<SkillsConfig>, KitsEnv) {
         let cfg = self.cfg.load_full();
         let env = KitsEnv::from_config(&cfg);
-        let reg = self.registry.get(&cfg);
-        (cfg, env, reg)
+        (cfg, env)
+    }
+
+    /// The registry client; reads the engine version on first use, so only
+    /// functions that talk to the registry wait for it.
+    async fn registry(&self, cfg: &SkillsConfig) -> Arc<HttpKitRegistry> {
+        self.registry.get(&self.iii, cfg).await
     }
 
     async fn emit(&self, payload: Value) {
@@ -289,7 +363,8 @@ impl Ctx {
     fn check_kit_updates(&self, kit: String) {
         let ctx = self.clone();
         tokio::spawn(async move {
-            let (_cfg, env, reg) = ctx.env();
+            let (cfg, env) = ctx.env();
+            let reg = ctx.registry(&cfg).await;
             match service::check_updates(&env, reg.as_ref(), Some(&kit)).await {
                 Ok((_, true)) => ctx.emit(json!({ "op": "updates", "kit": kit })).await,
                 Ok(_) => {}
@@ -346,7 +421,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: DownloadKitInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, reg) = ctx.env();
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let _guard = if req.apply.unwrap_or(false) {
                     Some(ctx.apply_lock.clone().lock_owned().await)
@@ -387,7 +463,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: ApplyInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, reg) = ctx.env();
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let _guard = ctx.apply_lock.clone().lock_owned().await;
                 let kit = store::load(&env.plans_dir, &req.plan_id)
@@ -429,7 +506,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: PlanUpdateInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, reg) = ctx.env();
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let out = service::plan_update(
                     &env,
@@ -458,7 +536,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: CheckUpdatesInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, reg) = ctx.env();
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 let (cache, changed) =
                     service::check_updates(&env, reg.as_ref(), req.kit.as_deref())
                         .await
@@ -483,7 +562,7 @@ pub fn register(
         RegisterFunction::new_async(move |_req: ListInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env) = ctx.env();
                 service::list(&env).map_err(Error::Handler)
             }
         })
@@ -499,7 +578,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: GetInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, reg) = ctx.env();
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 service::get(&env, reg.as_ref(), &req.kit, req.registry.unwrap_or(false))
                     .await
                     .map_err(Error::Handler)
@@ -518,7 +598,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: KitInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, _reg) = ctx.env();
+                let (cfg, env) = ctx.env();
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let out = service::plan_remove(&env, &compose, &req.kit)
                     .await
@@ -541,7 +621,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: PlanIdInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env) = ctx.env();
                 let kit = store::load(&env.plans_dir, &req.plan_id)
                     .ok()
                     .flatten()
@@ -566,7 +646,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: PlanGetInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env) = ctx.env();
                 let record = store::load(&env.plans_dir, &req.plan_id)
                     .map_err(Error::Handler)?
                     .ok_or_else(|| {
@@ -595,7 +675,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: IgnoreInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env) = ctx.env();
                 let mut lock = env.read_lock().map_err(Error::Handler)?;
                 crate::kits::apply::set_ignored(
                     &mut lock,
@@ -652,7 +732,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: DiffInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, reg) = ctx.env();
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 service::file_sides(&env, reg.as_ref(), &req.kit, &req.path)
                     .await
                     .map_err(Error::Handler)
@@ -669,7 +750,8 @@ pub fn register(
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(15)).await;
         loop {
-            let (_cfg, env, reg) = c.env();
+            let (cfg, env) = c.env();
+            let reg = c.registry(&cfg).await;
             if env.read_lock().map(|l| !l.kits.is_empty()).unwrap_or(false) {
                 match service::check_updates(&env, reg.as_ref(), None).await {
                     Ok((_, true)) => c.emit(json!({ "op": "updates" })).await,
@@ -705,7 +787,59 @@ fn updates_output(cache: &service::UpdatesCache) -> CheckUpdatesOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kits::registry::KitRegistry;
     use crate::kits::service::{FileSides, KitInfo, KitsListing};
+
+    #[tokio::test]
+    async fn registry_cell_retries_a_failed_version_read() {
+        let cell = RegistryCell::default();
+        let cfg = SkillsConfig::default();
+        let first = cell.get_with(&cfg, || async { None }).await;
+        // inside the retry window the engine is not asked again
+        let again = cell
+            .get_with(&cfg, || async { panic!("must not refetch") })
+            .await;
+        assert!(Arc::ptr_eq(&first, &again));
+        cell.state.lock().unwrap().failed_at =
+            Some(std::time::Instant::now() - VERSION_RETRY_AFTER - Duration::from_secs(1));
+        let ok = cell
+            .get_with(&cfg, || async { Some("0.26.0".to_string()) })
+            .await;
+        assert!(!Arc::ptr_eq(&first, &ok), "client rebuilt with the version");
+        assert_eq!(ok.iii_version(), Some("0.26.0"));
+        assert_eq!(first.iii_version(), None);
+    }
+
+    #[tokio::test]
+    async fn registry_cell_rereads_the_version_after_d521() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "error": "needs 0.26.0", "code": "incompatible_engine"
+            })))
+            .mount(&server)
+            .await;
+        let cell = RegistryCell::default();
+        let cfg = SkillsConfig {
+            registry_url: server.uri(),
+            ..Default::default()
+        };
+        let old = cell
+            .get_with(&cfg, || async { Some("0.25.1".to_string()) })
+            .await;
+        assert!(old
+            .detail("a/k", "latest")
+            .await
+            .unwrap_err()
+            .starts_with("D521"));
+        let new = cell
+            .get_with(&cfg, || async { Some("0.26.0".to_string()) })
+            .await;
+        assert_eq!(new.iii_version(), Some("0.26.0"));
+    }
 
     /// The interface boot smoke rejects the permissive `AnyValue` schema an
     /// untyped `serde_json::Value` response produces, so every kit function

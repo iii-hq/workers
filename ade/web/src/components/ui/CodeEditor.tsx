@@ -3,8 +3,8 @@ import * as React from 'react'
 import { createPortal } from 'react-dom'
 import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
 import { matchesKeybinding } from '@/lib/keybindings/registry'
-import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
+import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { centeredScrollTop, clampLine, scrollParentOf } from '@/lib/reveal-line'
 import { cn } from '@/lib/utils'
 import {
@@ -240,7 +240,9 @@ function monacoKeybinding(
   const parts = binding.split('+')
   const key = parts.at(-1) ?? ''
   const code = /^[a-z]$/i.test(key)
-    ? (monaco.KeyCode as unknown as Record<string, number>)[`Key${key.toUpperCase()}`]
+    ? (monaco.KeyCode as unknown as Record<string, number>)[
+        `Key${key.toUpperCase()}`
+      ]
     : /^\d$/.test(key)
       ? (monaco.KeyCode as unknown as Record<string, number>)[`Digit${key}`]
       : undefined
@@ -811,41 +813,46 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             return
           // The text moved while the model worked: the answer no longer fits.
           if (model.getValue() !== value) {
-            setQuickEditState((current) =>
-              current && {
-                ...current,
-                phase: 'prompt',
-                error: 'The file changed while the edit was written. Send it again.',
-              },
+            setQuickEditState(
+              (current) =>
+                current && {
+                  ...current,
+                  phase: 'prompt',
+                  error:
+                    'The file changed while the edit was written. Send it again.',
+                },
             )
             return
           }
-          const range =
-            scope === 'file' ? model.getFullModelRange() : target
+          const range = scope === 'file' ? model.getFullModelRange() : target
           const before = model.getValueInRange(range)
           if (answer === before) {
-            setQuickEditState((current) =>
-              current && {
-                ...current,
-                phase: 'prompt',
-                error: 'The model left the code as it was.',
-              },
+            setQuickEditState(
+              (current) =>
+                current && {
+                  ...current,
+                  phase: 'prompt',
+                  error: 'The model left the code as it was.',
+                },
             )
             return
           }
           session.apply(range, before, answer, changedLineSpan(before, answer))
-          setQuickEditState((current) => current && { ...current, phase: 'review' })
+          setQuickEditState(
+            (current) => current && { ...current, phase: 'review' },
+          )
           requestAnimationFrame(() => quickEditRootRef.current?.focus())
         })
         .catch((err: unknown) => {
           if (abort.signal.aborted || quickEditSessionRef.current !== session)
             return
-          setQuickEditState((current) =>
-            current && {
-              ...current,
-              phase: 'prompt',
-              error: err instanceof Error ? err.message : String(err),
-            },
+          setQuickEditState(
+            (current) =>
+              current && {
+                ...current,
+                phase: 'prompt',
+                error: err instanceof Error ? err.message : String(err),
+              },
           )
           requestAnimationFrame(() => quickEditInputRef.current?.focus())
         })
@@ -857,7 +864,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       requestAnimationFrame(() => quickEditInputRef.current?.focus())
     }, [])
 
-    const acceptQuickEdit = React.useCallback(() => closeQuickEdit(), [closeQuickEdit])
+    const acceptQuickEdit = React.useCallback(
+      () => closeQuickEdit(),
+      [closeQuickEdit],
+    )
 
     const rejectQuickEdit = React.useCallback(() => {
       quickEditSessionRef.current?.revert()
@@ -1096,7 +1106,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     // keybinding registered here is what puts "⌘L" beside the row.
     const menuActionsKey = contextMenu
       ? (selectionActions ?? [])
-          .map((action) => `${action.id}\u0000${action.label}\u0000${action.shortcut ?? ''}`)
+          .map(
+            (action) =>
+              `${action.id}\u0000${action.label}\u0000${action.shortcut ?? ''}`,
+          )
           .join('\n')
       : ''
     React.useEffect(() => {
@@ -1267,7 +1280,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
               instruction={quickEditState.instruction}
               onInstructionChange={(instruction) =>
                 setQuickEditState(
-                  (current) => current && { ...current, instruction, error: null },
+                  (current) =>
+                    current && { ...current, instruction, error: null },
                 )
               }
               error={quickEditState.error}
@@ -1577,7 +1591,7 @@ function SelectionActionBar({
       aria-label="selection actions"
       className={cn(
         NEUTRAL_SURFACE,
-        'my-1 flex items-center gap-0.5 rounded-lg bg-popover p-1 font-inter text-popover-foreground shadow-md ring-1 ring-foreground/10',
+        'my-1 flex items-center gap-0.5 rounded-lg bg-popover p-1 font-inter text-popover-foreground shadow-md ring-1 ring-popover-edge',
       )}
       onMouseDown={(event) => event.preventDefault()}
     >
@@ -1585,7 +1599,9 @@ function SelectionActionBar({
         <button
           key={action.id}
           type="button"
-          aria-keyshortcuts={action.shortcut ? ariaShortcut(action.shortcut) : undefined}
+          aria-keyshortcuts={
+            action.shortcut ? ariaShortcut(action.shortcut) : undefined
+          }
           onClick={() => {
             action.run(selection)
             onRun()
@@ -1607,9 +1623,19 @@ function SelectionActionBar({
 
 /** `Mod+L` in ARIA's spelling: `Meta+L` on a Mac, `Control+L` elsewhere. */
 function ariaShortcut(binding: string): string {
-  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
+  const mac =
+    typeof navigator !== 'undefined' &&
+    /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
   return binding
     .split('+')
-    .map((part) => (part === 'Mod' ? (mac ? 'Meta' : 'Control') : part === 'Ctrl' ? 'Control' : part))
+    .map((part) =>
+      part === 'Mod'
+        ? mac
+          ? 'Meta'
+          : 'Control'
+        : part === 'Ctrl'
+          ? 'Control'
+          : part,
+    )
     .join('+')
 }

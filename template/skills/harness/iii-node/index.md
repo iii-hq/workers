@@ -736,7 +736,7 @@ Before declaring the worker complete:
 - `dist/ui/page.js` and `dist/ui/styles.css` are non-empty and React remains external.
 - The UI content function serves both registered paths and rejects unknown ones.
 - Asset paths, CSS scope, worker name, function prefix, and configuration id are internally consistent.
-- The Console manifest (`GET http://127.0.0.1:<console port>/ui`, or `console::ui-manifest`) contains both assets, reports no CSS warnings, and changes hashes after a UI edit.
+- The Console manifest (`GET http://127.0.0.1:<console port>/ui`, or `ade::ui-manifest`) contains both assets, reports no CSS warnings, and changes hashes after a UI edit.
 - A real harness call to the worker (e.g. the agent fetching one record) renders through the worker's chat renderer — the result arrives as a `{ content, details }` envelope and must be unwrapped (see the designer's `console-injectable-ui`); confirm a `[data-iii-ui="<worker-name>"]` wrapper exists inside the chat DOM.
 - Live updates reach an open page without a reload: mutate through a function from outside the UI and watch the page change.
 - A record opens as its own pane in the same workspace tab through `host.panels.open`, and the collection page adapts when the tab splits (narrow mode).

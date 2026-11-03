@@ -185,7 +185,7 @@ function Block({ block }: { block: LlmContentBlock }) {
     case 'tool_call':
       return (
         <PayloadPane
-          label={`call ${block.name ?? 'tool'}`}
+          label={`call ${block.name ?? 'function'}`}
           hint={block.id}
           value={block.input ?? {}}
         />
@@ -322,7 +322,7 @@ export function LlmCallView({
   return (
     <div className="flex flex-col gap-4" data-llm-call-view>
       {/* facts */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl bg-card ring-1 ring-foreground/10 px-3 py-2.5 @md:grid-cols-3 @xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl bg-card ring-1 ring-card-edge px-3 py-2.5 @md:grid-cols-3 @xl:grid-cols-4">
         <div className="col-span-2 flex min-w-0 flex-col gap-0.5 @md:col-span-3 @xl:col-span-4">
           <span className="text-[11px] text-muted-foreground">Model</span>
           <span className="flex min-w-0 items-center gap-2">
@@ -430,7 +430,7 @@ export function LlmCallView({
 
           {call.messages.length > 0 ? (
             <Section title="Messages" count={call.messages.length}>
-              <div className="divide-y divide-border rounded-xl bg-card ring-1 ring-foreground/10 px-3">
+              <div className="divide-y divide-border rounded-xl bg-card ring-1 ring-card-edge px-3">
                 {call.messages.map((message, i) => (
                   <Message key={messageKeys[i]} message={message} index={i} />
                 ))}
@@ -447,7 +447,7 @@ export function LlmCallView({
             }
           >
             {call.responseBlocks.length > 0 ? (
-              <div className="rounded-xl bg-card ring-1 ring-foreground/10 px-3">
+              <div className="rounded-xl bg-card ring-1 ring-card-edge px-3">
                 <Message
                   message={{ role: 'assistant', blocks: call.responseBlocks }}
                   index={-1}
@@ -470,11 +470,11 @@ export function LlmCallView({
 
           {call.tools.length > 0 ? (
             <Section
-              title="Tools"
+              title="Functions"
               count={call.tools.length}
               defaultOpen={false}
             >
-              <div className="divide-y divide-border rounded-xl bg-card ring-1 ring-foreground/10">
+              <div className="divide-y divide-border rounded-xl bg-card ring-1 ring-card-edge">
                 {call.tools.map((tool) => (
                   <ToolRow key={tool.name} tool={tool} />
                 ))}

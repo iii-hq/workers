@@ -55,7 +55,7 @@ describe('EmptyPane', () => {
           {
             value: 'chat',
             label: 'chat',
-            description: 'Conversations and tools.',
+            description: 'Conversations and functions.',
             icon: Blocks,
           },
           ...pages,

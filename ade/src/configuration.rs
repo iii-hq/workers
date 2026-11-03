@@ -33,7 +33,7 @@ use crate::server::{self, AppState, ServerControlCell};
 use crate::ui_assets::UiControl;
 use crate::workspace_store::{default_data_dir, WorkspaceStore};
 
-/// Live port snapshot used by `console::status` and the rebind path.
+/// Live port snapshot used by `ade::status` and the rebind path.
 pub type PortCell = Arc<RwLock<u16>>;
 
 /// Serializes fetch → validate → bind → swap across overlapping update events.
@@ -115,8 +115,8 @@ fn schema() -> Value {
             "http_host": {
                 "type": "string",
                 "minLength": 1,
-                "default": "0.0.0.0",
-                "description": "Interface the ADE listens on: 0.0.0.0 (the default) for every interface, so other machines on the network can open it; 127.0.0.1 for this machine only. Applies at the next start."
+                "default": "127.0.0.1",
+                "description": "Interface the ADE listens on: 127.0.0.1 (the default) for this machine only; set 0.0.0.0 explicitly for remote access. This exposes the unauthenticated engine WebSocket proxy to reachable network clients. For remote access, use an authenticated TLS reverse proxy and restrict direct access to the ADE listener to that proxy. Applies at the next start."
             },
             "data_dir": {
                 "type": "string",
@@ -252,7 +252,7 @@ pub async fn register_console_config(
     seed_http_port: u16,
     seed_data_dir: &str,
 ) -> Result<(), String> {
-    iii_console_ui::register_configuration_identity(iii, "console", config_id());
+    iii_console_ui::register_configuration_identity(iii, "ade", config_id());
     let existing = existing_value(iii)
         .await
         .map_err(|error| format!("console configuration lookup failed: {error}"))?;
@@ -310,7 +310,7 @@ async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Re
 #[path = "../../crates/config-client/src/initialization.rs"]
 mod initialization;
 
-const CONFIG_CHANGE_FN_ID: &str = "console::on-config-change";
+const CONFIG_CHANGE_FN_ID: &str = "ade::on-config-change";
 
 /// Fetch the runtime-owned fields from the authoritative entry. A missing
 /// `http_port` or `data_dir` (including entries created by older Console
@@ -717,7 +717,7 @@ mod tests {
             runtime_config_from(Some(&json!({ "http_host": "localhost" })), 3113, "data/ade")
                 .is_err()
         );
-        assert_eq!(schema()["properties"]["http_host"]["default"], "0.0.0.0");
+        assert_eq!(schema()["properties"]["http_host"]["default"], "127.0.0.1");
     }
 
     #[test]

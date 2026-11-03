@@ -290,7 +290,7 @@ export function QuickEditCard({
       data-quick-edit=""
       className={cn(
         NEUTRAL_SURFACE,
-        'w-full rounded-xl bg-popover font-inter text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none',
+        'w-full rounded-xl bg-popover font-inter text-sm text-popover-foreground shadow-md ring-1 ring-card-edge outline-none',
       )}
     >
       <div className="flex items-start gap-2 px-3 pt-2.5">

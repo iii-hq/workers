@@ -359,7 +359,7 @@ wait_for_functions() {
     "router::models::get",
     "router::provider::list",
     "shell::exec",
-    "console::status"
+    "ade::status"
   ]'
 
   log "Waiting for the harness and Console function surface (up to ${wait_seconds}s)"
@@ -789,12 +789,12 @@ wait_for_model anthropic claude-sonnet-5-5 "$artifact_dir/model-anthropic.json"
 wait_for_model openai gpt-5.6-luna "$artifact_dir/model-openai.json"
 
 log "Step 7/9: Verify the Console HTTP surface"
-log_command "iii trigger console::status --port $engine_port --json '{}'"
-console_status=$("$iii_bin" trigger console::status --port "$engine_port" \
+log_command "iii trigger ade::status --port $engine_port --json '{}'"
+console_status=$("$iii_bin" trigger ade::status --port "$engine_port" \
   --json '{}' 2>"$log_dir/console-status.log")
 printf '%s\n' "$console_status" >"$artifact_dir/console-status.json"
 console_port=$(jq -er '.http_port | select(type == "number")' <<<"$console_status") \
-  || die "console::status did not return a numeric http_port"
+  || die "ade::status did not return a numeric http_port"
 log_command "curl -fsS http://127.0.0.1:$console_port/"
 curl -fsS --retry 10 --retry-all-errors --retry-delay 1 \
   "http://127.0.0.1:$console_port/" -o "$artifact_dir/console.html"
