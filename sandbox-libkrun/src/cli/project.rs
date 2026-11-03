@@ -274,7 +274,7 @@ pub fn validate_manifest_keys(
     Err(format!(
         "unknown key(s) in {}: [{}]. Supported fields are: name, description, \
          runtime.base_image, scripts.(setup|install|start), env, dependencies, \
-         resources.(cpus|memory), plus the registry publish metadata keys \
+         resources.(cpus|memory), iii_engine_version, plus the registry publish metadata keys \
          (iii, deploy, manifest, tags, license) which the engine accepts and \
          ignores.",
         manifest_path.display(),
@@ -821,6 +821,23 @@ resources:
         let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
         let unknown = m.unknown_keys();
         assert!(unknown.is_empty(), "got: {unknown:?}");
+    }
+
+    #[test]
+    fn validate_keys_accepts_iii_engine_version() {
+        // Compose reads the range and refuses an engine outside it; the
+        // adapter only has to let the key through.
+        let d = doc("name: w\niii_engine_version: \">=0.26.0\"\nruntime:\n  base_image: node\n");
+        assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
+        let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
+        let unknown = m.unknown_keys();
+        assert!(unknown.is_empty(), "got: {unknown:?}");
+    }
+
+    #[test]
+    fn validate_keys_rejects_a_non_string_iii_engine_version() {
+        let d = doc("name: w\niii_engine_version: 0.26\n");
+        assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_err());
     }
 
     #[test]

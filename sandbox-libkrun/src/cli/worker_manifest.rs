@@ -82,6 +82,11 @@ pub struct WorkerManifest {
 
     pub language: Option<String>,
 
+    // The iii versions the worker runs on, as a semver range such as
+    // `">=0.26.0"`. Compose checks it before it boots the worker; the adapter
+    // only accepts it and never reads it.
+    pub iii_engine_version: Option<String>,
+
     #[serde(flatten)]
     pub unknown: BTreeMap<String, YamlValue>,
 }
