@@ -29,14 +29,8 @@ it('uses read discovery/preview functions and imports only explicitly selected i
       'ade::conversations::discover',
       { source: 'codex', query: 'project', cursor: 'next' },
     ],
-    [
-      'ade::conversations::preview',
-      { source: 'claude-code', id: 'history-1' },
-    ],
-    [
-      'ade::conversations::import',
-      { source: 'claude-code', id: 'history-1' },
-    ],
+    ['ade::conversations::preview', { source: 'claude-code', id: 'history-1' }],
+    ['ade::conversations::import', { source: 'claude-code', id: 'history-1' }],
   ])
 })
 

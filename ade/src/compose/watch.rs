@@ -219,14 +219,12 @@ impl StateWatcher {
     }
 }
 
-#[async_trait]
 impl AddedHook for StateWatcher {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         Ok(self.observer_added(obs.id()).await?)
     }
 }
 
-#[async_trait]
 impl RemovedHook for StateWatcher {
     async fn on_removed(&self, obs: Observer) {
         self.observer_removed(obs.id()).await;

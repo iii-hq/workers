@@ -133,7 +133,6 @@ rm -f \
   "$artifact_dir/first-capability-browser-evidence.json" \
   "$artifact_dir/first-capability-evidence.json" \
   "$artifact_dir/config.yaml" \
-  "$artifact_dir/iii.lock" \
   "$artifact_dir/worker-compose.yaml" \
   "$artifact_dir/commands.log" \
   "$log_dir"/*.log

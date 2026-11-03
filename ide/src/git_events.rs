@@ -32,7 +32,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer,
@@ -583,7 +582,6 @@ impl GitChangedSource {
     }
 }
 
-#[async_trait]
 impl AddedHook for GitChangedSource {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         let args: GitChangedArgs = obs.args()?;
@@ -591,7 +589,6 @@ impl AddedHook for GitChangedSource {
     }
 }
 
-#[async_trait]
 impl RemovedHook for GitChangedSource {
     async fn on_removed(&self, obs: Observer) {
         tracing::info!(function_id = ON_GIT_CHANGED_FN, observer_id = %obs.id(), "git watch released");

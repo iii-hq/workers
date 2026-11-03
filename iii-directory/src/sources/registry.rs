@@ -99,12 +99,15 @@ pub fn validate_worker_name(name: &str) -> Result<(), String> {
 
 /// Outcome of a registry download attempt. Distinguishes between a
 /// successful download, a 404 (worker has no skills bundle — benign),
-/// and a real error (5xx, timeout, malformed response).
+/// a registry that could not answer now, and (as `Err`) any other error.
 pub enum RegistryDownloadOutcome {
     /// Skills successfully downloaded and written.
     Ok(DownloadResult),
     /// HTTP 404 — the worker has no skills bundle. Benign no-op.
     NotFound,
+    /// Unreachable, a 5xx or a 429: worth asking again later. Carries the
+    /// error to report.
+    Unavailable(String),
 }
 
 /// HTTP GET the worker's directory bundle, parse the response, and route
@@ -139,12 +142,14 @@ pub async fn download(
             "D310 not_found: registry worker {worker:?} has no published skills bundle. \
              Next: call directory::registry::workers::list to browse worker names."
         )),
+        RegistryDownloadOutcome::Unavailable(error) => Err(error),
     }
 }
 
 /// Like [`download`] but returns a typed outcome distinguishing 404
-/// (benign) from real errors (5xx, timeout, malformed). Used by
-/// auto-download paths that need to treat 404 as a no-op.
+/// (benign) and an unavailable registry (unreachable, 5xx, 429) from other
+/// errors. Used by auto-download paths that treat 404 as a no-op and retry
+/// an unavailable registry.
 pub async fn download_typed(
     registry_base: &str,
     worker: &str,
@@ -165,14 +170,11 @@ pub async fn download_typed(
 
     let client = build_http_client(timeout_ms)?;
 
-    let response = client
-        .get(&url)
-        .query(&[(key, value)])
-        .send()
-        .await
-        .map_err(|_| {
-            "D320 registry_error: could not reach the registry. Next: retry shortly.".to_string()
-        })?;
+    let Ok(response) = client.get(&url).query(&[(key, value)]).send().await else {
+        return Ok(RegistryDownloadOutcome::Unavailable(
+            "D320 registry_error: could not reach the registry. Next: retry shortly.".to_string(),
+        ));
+    };
 
     let status = response.status();
 
@@ -184,10 +186,14 @@ pub async fn download_typed(
     if !status.is_success() {
         // Clean error only — never leak the internal registry URL or the
         // raw response body into a handler error an agent has to read.
-        return Err(format!(
+        let error = format!(
             "D320 registry_error: registry returned HTTP {}. Next: retry shortly.",
             status.as_u16()
-        ));
+        );
+        if status.is_server_error() || status.as_u16() == 429 {
+            return Ok(RegistryDownloadOutcome::Unavailable(error));
+        }
+        return Err(error);
     }
     let parsed: WorkerSkillsResponse = response
         .json()

@@ -822,9 +822,8 @@ describe('ChatContextPanel', () => {
   it('asks for a folder when the chat has none', async () => {
     const view = await render(chat('main'))
     expect(view.textContent).toContain('No project folder')
-    expect(mocks.call).toHaveBeenCalledExactlyOnceWith(
-      'ade::context::list',
-      { session_id: 'main' },
-    )
+    expect(mocks.call).toHaveBeenCalledExactlyOnceWith('ade::context::list', {
+      session_id: 'main',
+    })
   })
 })

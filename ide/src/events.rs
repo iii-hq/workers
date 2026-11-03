@@ -30,7 +30,6 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer,
@@ -756,7 +755,6 @@ fn start_watch(
     }
 }
 
-#[async_trait]
 impl AddedHook for ChangedSource {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         let args: ChangedArgs = obs.args()?;
@@ -768,7 +766,6 @@ impl AddedHook for ChangedSource {
     }
 }
 
-#[async_trait]
 impl RemovedHook for ChangedSource {
     async fn on_removed(&self, obs: Observer) {
         tracing::info!(function_id = ON_CHANGED_FN, observer_id = %obs.id(), "watch released");

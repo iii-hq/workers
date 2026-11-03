@@ -153,7 +153,6 @@ ENGINE_BUILTIN_WORKERS = frozenset(
         "iii-state",
         "iii-stream",
         "iii-worker-manager",
-        "iii-worker-ops",
     }
 )
 

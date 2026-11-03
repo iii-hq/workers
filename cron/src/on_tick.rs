@@ -19,7 +19,6 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::{FunctionRef, IIIConnectionState};
 use iii_sdk::{
@@ -118,7 +117,6 @@ pub struct OnTickHooks {
     scheduler: Arc<Scheduler>,
 }
 
-#[async_trait]
 impl AddedHook for OnTickHooks {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         // Checked by the engine against args_format.
@@ -131,7 +129,6 @@ impl AddedHook for OnTickHooks {
     }
 }
 
-#[async_trait]
 impl RemovedHook for OnTickHooks {
     async fn on_removed(&self, obs: Observer) {
         self.scheduler.release(obs.id()).await;

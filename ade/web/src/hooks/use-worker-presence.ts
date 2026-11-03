@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { useWorkersChanged } from './use-workers-changed'
 
@@ -8,13 +8,13 @@ import { useWorkersChanged } from './use-workers-changed'
  * can gate worker-specific UI + RPC on it and never call a function that is
  * not registered.
  *
- * Presence is read from `engine::workers::list`: once on mount, and again on
- * every join or leave `engine::on-workers-changed` announces, so the UI
- * reacts the instant the worker is added or removed — whether from the CLI
- * (`iii call compose::add`) or another surface.
+ * Presence is an `engine::workers::list` read on mount, read again on every
+ * `engine::on-workers-changed` event, so the UI reacts the instant the worker
+ * is added or removed — whether from the CLI (`iii call compose::add`) or
+ * another surface.
  *
- * Each consumer MUST pass a unique `watchFnId` so its browser-local handler
- * does not collide with another presence probe's.
+ * Each consumer MUST pass a unique `watchFnId` for its browser-local
+ * `engine::on-workers-changed` handler.
  */
 
 export interface WorkerPresence {
@@ -62,29 +62,31 @@ export function useWorkerPresence({
   const [present, setPresent] = useState<boolean>(!enabled)
   const [loading, setLoading] = useState<boolean>(enabled)
 
-  // Live joins and leaves, so installing or dropping the worker mid-session
-  // flips the UI without a reload: each one re-reads the list. `workerName`
-  // is a stable literal per consumer, so this callback's identity does not
-  // churn the observer.
-  const handleChange = useCallback(() => {
+  // Overlapping reads can resolve out of order: a reply older than one
+  // already applied is dropped so it never overwrites newer presence.
+  const reads = useRef({ issued: 0, applied: 0 })
+  const applyPresence = useCallback((seq: number, found: boolean) => {
+    if (seq <= reads.current.applied) return
+    reads.current.applied = seq
+    setPresent(found)
+  }, [])
+
+  // A re-read after a worker change keeps the last answer when it fails.
+  const recheck = useCallback(() => {
+    const seq = ++reads.current.issued
     void (async () => {
       try {
         const client = await getIiiClient()
-        setPresent(await checkWorkerPresent(client, workerName))
+        applyPresence(seq, await checkWorkerPresent(client, workerName))
       } catch {
-        // Keep the last answer; the next event reads again.
+        // keep the last known presence
       }
     })()
-  }, [workerName])
+  }, [workerName, applyPresence])
 
-  useWorkersChanged({
-    enabled,
-    fnId: watchFnId,
-    onChange: handleChange,
-  })
+  useWorkersChanged({ enabled, fnId: watchFnId, onChange: recheck })
 
-  // One-time presence probe on mount. Live changes arrive through the
-  // workers-changed observer above; no polling.
+  // Presence probe on mount; later changes arrive through the observer above.
   useEffect(() => {
     if (!enabled) {
       setLoading(false)
@@ -92,13 +94,14 @@ export function useWorkerPresence({
       return
     }
     let cancelled = false
+    const seq = ++reads.current.issued
     void (async () => {
       try {
         const client = await getIiiClient()
         const found = await checkWorkerPresent(client, workerName)
-        if (!cancelled) setPresent(found)
+        if (!cancelled) applyPresence(seq, found)
       } catch {
-        if (!cancelled) setPresent(false)
+        if (!cancelled) applyPresence(seq, false)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -106,7 +109,7 @@ export function useWorkerPresence({
     return () => {
       cancelled = true
     }
-  }, [enabled, workerName])
+  }, [enabled, workerName, applyPresence])
 
   return useMemo(() => ({ present, loading }), [present, loading])
 }

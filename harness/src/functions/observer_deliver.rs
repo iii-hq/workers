@@ -895,8 +895,7 @@ fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
     // Only a wake that parks the session must be dropped once its writes landed.
     let parked = if crate::bindings::is_armed_wake(binding, AgentMessage::now_ms()) {
         " If that read shows every write the condition awaits has already landed, unobserve \
-         the new observer before answering: an armed one-shot wake keeps this session \
-         parked."
+         the new observer before answering: an armed one-shot wake keeps this session parked."
     } else {
         ""
     };
@@ -1257,9 +1256,9 @@ mod tests {
             reason: "boom".into(),
             retire: false,
         };
-        let mut recurring = wake_binding("state");
+        let mut recurring = wake_binding("state::on-changed");
         recurring.lifecycle.once = false;
-        let mut call = wake_binding("state");
+        let mut call = wake_binding("state::on-changed");
         call.target = crate::bindings::BindingTarget::new("fp::pipe");
         for b in [recurring, call] {
             let text = condition_failure_text(&b, &skip);

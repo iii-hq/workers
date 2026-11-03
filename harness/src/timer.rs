@@ -24,7 +24,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer,
@@ -323,7 +322,6 @@ impl TimerBus {
     }
 }
 
-#[async_trait]
 impl AddedHook for TimerBus {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         let args: TimerArgs = obs.args()?;
@@ -349,7 +347,6 @@ impl AddedHook for TimerBus {
     }
 }
 
-#[async_trait]
 impl RemovedHook for TimerBus {
     async fn on_removed(&self, obs: Observer) {
         let Ok(args) = obs.args::<TimerArgs>() else {

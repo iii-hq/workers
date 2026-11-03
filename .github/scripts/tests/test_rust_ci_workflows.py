@@ -224,11 +224,11 @@ def test_other_engine_installers_use_the_observe_v2_release() -> None:
                     # A matrix over engines runs the first engine that
                     # advertises observe.v2; its other legs are extra.
                     engines = job.get("strategy", {}).get("matrix", {}).get("engine", [])
-                    assert "iii/v0.26.0-rc.4" in engines, (
+                    assert "iii/v0.26.0-rc.5" in engines, (
                         path.name, job_name, step.get("name"), engines
                     )
                 else:
-                    assert tag == "iii/v0.26.0-rc.4", (
+                    assert tag == "iii/v0.26.0-rc.5", (
                         path.name, job_name, step.get("name"), tag
                     )
                 covered.add(path.name)
@@ -243,6 +243,16 @@ def test_other_engine_installers_use_the_observe_v2_release() -> None:
         "database-e2e.yml", "rbac-proxy-e2e.yml", "ide-e2e.yml",
         "storage-e2e.yml", "browser-scrapling-e2e.yml", "judge-e2e.yml",
     }
+
+
+def test_engine_installs_require_only_iii() -> None:
+    steps = workflow("_worker-e2e.yml")["jobs"]["build"]["steps"]
+    run_ci = (REPOSITORY / "harness/tests/e2e/run-ci.sh").read_text().splitlines()
+    texts = [named_step(steps, "Install published iii release")["run"],
+             named_step(steps, "Package E2E binaries")["run"],
+             "\n".join(line for line in run_ci if not line.lstrip().startswith("#"))]
+    for text in texts:
+        assert not re.search(r"iii-(init|worker)(?![-\w])", text), text[:120]
 
 
 def test_harness_integration_cache_key_ignores_preinstalled_toolchains() -> None:

@@ -278,7 +278,7 @@ cache), `browser::clear-browser-data` (the whole profile), `browser::resize`
 `browser::styles::read` / `browser::styles::write` (computed styles + live
 inline edits, the design panel backing), and `browser::sessions::list` /
 `browser::sessions::stop`. Function ids and schemas live in the code and
-`iii worker info browser`.
+`iii call engine::workers::info name=browser`.
 
 `browser::cookies::list` returns cookie values and `browser::cookies::set`
 takes them. Cookie values are credentials (a logged-in session, an attached

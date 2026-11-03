@@ -219,8 +219,9 @@ pub struct SkillGetOutput {
 // doesn't hit `compose::status` on every read.  The cache is:
 //
 //   1. Populated lazily on first read.
-//   2. Invalidated when a worker connects with missing skills and they
-//      download, and after a kit apply moves workers.
+//   2. Invalidated on every `engine::on-workers-changed` event (with
+//      auto_download on), after an auto-download writes skills, and after
+//      a kit apply moves workers.
 //   3. On error / daemon-down, falls back to the last-known set.
 //      If no cached set exists yet, returns `None` (meaning: unfiltered).
 
@@ -290,7 +291,7 @@ impl RegisteredWorkersCache {
     /// cache, and return the current registered set (falling back to the
     /// last-known set on error). Used by `directory::skills::index` so a
     /// just-registered worker shows up immediately instead of waiting on
-    /// the TTL or a worker-add cache invalidation.
+    /// the TTL or a worker-change cache invalidation.
     pub async fn get_fresh(&self, iii: &IIIClient) -> Option<HashSet<String>> {
         self.fetch_and_store(iii).await
     }

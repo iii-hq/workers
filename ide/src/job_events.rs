@@ -32,7 +32,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, IIIClient, Match, ObserveRejection, Observer,
@@ -280,7 +279,6 @@ async fn replay(observer_id: &str, job_id: &str) {
 #[derive(Clone)]
 struct JobFinishedSource;
 
-#[async_trait]
 impl AddedHook for JobFinishedSource {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         let args: JobFinishedArgs = obs.args()?;
@@ -306,7 +304,6 @@ impl AddedHook for JobFinishedSource {
     }
 }
 
-#[async_trait]
 impl RemovedHook for JobFinishedSource {
     async fn on_removed(&self, obs: Observer) {
         tracing::info!(function_id = ON_JOB_FINISHED_FN, observer_id = %obs.id(), "job watch released");
@@ -353,6 +350,7 @@ pub fn register_job_finished(iii: &IIIClient) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use std::collections::HashMap;
 
     static TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

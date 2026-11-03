@@ -30,7 +30,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
 use iii_sdk::helpers::create_channel;
@@ -233,7 +232,6 @@ impl RouteHooks {
     }
 }
 
-#[async_trait]
 impl AddedHook for RouteHooks {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         let route = Self::route_for(&obs)?;
@@ -247,7 +245,6 @@ impl AddedHook for RouteHooks {
     }
 }
 
-#[async_trait]
 impl RemovedHook for RouteHooks {
     async fn on_removed(&self, obs: Observer) {
         if let Some(route) = self.routes.write().await.remove(obs.id()) {
@@ -256,7 +253,6 @@ impl RemovedHook for RouteHooks {
     }
 }
 
-#[async_trait]
 impl DeliverHook for RouteHooks {
     async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
         let in_flight = request_id(&call).and_then(|id| self.requests.get(id));

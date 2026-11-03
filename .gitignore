@@ -37,8 +37,6 @@ data/
 worktree/worktrees/
 *.pid
 *.zip
-iii.lock
-.iii-worker.lock
 engine.pid
 
 # Secrets / env

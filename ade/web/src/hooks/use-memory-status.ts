@@ -14,7 +14,7 @@ import {
 
 /** Engine worker name for the memory worker. */
 const MEMORY_WORKER_NAME = 'memory'
-/** Base id for the browser-local handler observing worker joins and leaves. */
+/** Base id for the browser-local `engine::on-workers-changed` handler. */
 const MEMORY_WATCH_FN = 'ade::memory-watch'
 
 export type MemoryStatus = WorkerPresence

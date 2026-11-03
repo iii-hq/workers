@@ -22,11 +22,11 @@ import { ProviderIcon } from './ProviderIcon'
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-/** Base id for the browser-local handler observing worker joins. */
+/** Base id for the browser-local `engine::on-workers-changed` handler. */
 const PROVIDER_ADD_WATCH_FN = 'ade::provider-add-watch'
 
 type AddStatus =
-  | { kind: 'adding'; progress?: number }
+  | { kind: 'adding' }
   | { kind: 'done' }
   | { kind: 'failed'; error: string }
 
@@ -46,9 +46,9 @@ export interface AddProviderPanelProps {
 /**
  * Every provider worker the public registry publishes, with a one-tap add.
  * Adding runs `compose::add` — exactly what `iii call compose::add` does in
- * a terminal — and the row turns done the moment the worker connects, even
- * when the add was started from a terminal. Once the worker registers with
- * the router the
+ * a terminal — and the row shows it adding until
+ * the add settles. A worker added from a terminal shows as installed once it
+ * connects. Once the worker registers with the router the
  * picker's provider list updates on its own; this panel only has to offer
  * the configuration shortcut.
  */
@@ -95,53 +95,31 @@ export function AddProviderPanel({
     return () => controller.abort()
   }, [registryWorkers, loadRegistry])
 
+  // Workers already connected, read again whenever one connects or leaves,
+  // so a worker added from a terminal drops out of the list too.
+  const refreshInstalled = useCallback(() => {
+    void fetchEngineWorkersList()
+      .then((list) => {
+        const names = list.workers
+          .map((worker) => worker.name)
+          .filter((name): name is string => typeof name === 'string')
+        setInstalled((current) => new Set([...current, ...names]))
+      })
+      .catch(() => undefined)
+  }, [])
+
   useEffect(() => {
     if (installedWorkerNames !== undefined) {
       setInstalled(new Set(installedWorkerNames))
       return
     }
-    if (!live) return
-    let cancelled = false
-    void fetchEngineWorkersList()
-      .then((list) => {
-        if (cancelled) return
-        const names = list.workers
-          .map((worker) => worker.name)
-          .filter((name): name is string => typeof name === 'string')
-        setInstalled((current) => new Set([...current, ...names]))
-      })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [installedWorkerNames, live])
-
-  // A worker joined: read the list again, and finish every add it settles.
-  const handleWorkerJoined = useCallback(() => {
-    void fetchEngineWorkersList()
-      .then((list) => {
-        const names = list.workers
-          .map((worker) => worker.name)
-          .filter((name): name is string => typeof name === 'string')
-        setInstalled((current) => new Set([...current, ...names]))
-        setAdds((current) => {
-          const joined = names.filter(
-            (name) => current.get(name)?.kind === 'adding',
-          )
-          if (joined.length === 0) return current
-          const next = new Map(current)
-          for (const name of joined) next.set(name, { kind: 'done' })
-          return next
-        })
-      })
-      .catch(() => undefined)
-  }, [])
+    if (live) refreshInstalled()
+  }, [installedWorkerNames, live, refreshInstalled])
 
   useWorkersChanged({
     enabled: live && installedWorkerNames === undefined,
     fnId: PROVIDER_ADD_WATCH_FN,
-    events: ['worker_connected'],
-    onChange: handleWorkerJoined,
+    onChange: refreshInstalled,
   })
 
   const addWorker = useCallback(
@@ -320,9 +298,7 @@ export function AddProviderPanel({
                           className="size-4 shrink-0 animate-spin"
                           aria-hidden
                         />
-                        {typeof add.progress === 'number'
-                          ? `${Math.round(add.progress * 100)}%`
-                          : 'Adding…'}
+                        Adding…
                       </span>
                     ) : (
                       <Button

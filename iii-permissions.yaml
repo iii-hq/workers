@@ -451,9 +451,8 @@ rules:
   # any session's.
   - harness::observe
   - harness::unobserve
-  - worker::list
   # Public worker-registry catalogue reads — the system prompt's
-  # search-before-build ladder starts here. worker::add stays approval-gated.
+  # search-before-build ladder starts here. compose::add stays approval-gated.
   - directory::registry::workers::list
   - directory::registry::workers::info
   # Read-only worktree registry surface; mutating worktree ops stay

@@ -1,5 +1,4 @@
 import type { WorkerSummary } from '@/components/chat/engine/parsers'
-import type { WorkerEntry } from '@/components/chat/worker/parsers'
 import {
   type ComposeContainer,
   isEngineLive,
@@ -11,21 +10,6 @@ import {
   type WorkerManagementKind,
   type WorkerRow,
 } from '../types'
-
-const STOP_REASON = {
-  internal: 'internal engine workers cannot be stopped from the ADE',
-  standalone:
-    'standalone workers must be stopped from the process that started them',
-  notRunning: 'worker is not running',
-} as const
-
-function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
-  const map = new Map<string, WorkerEntry>()
-  for (const entry of entries) {
-    map.set(entry.name, entry)
-  }
-  return map
-}
 
 function composeMap(
   compose: RawWorkersSnapshot['compose'],
@@ -39,18 +23,15 @@ function composeMap(
 
 function deriveManagementKind(
   internal: boolean,
-  supervisor?: WorkerEntry,
   compose?: ComposeContainer,
 ): WorkerManagementKind {
   if (internal) return 'internal'
   if (compose) return 'compose'
-  if (supervisor) return 'supervisor'
   return 'standalone'
 }
 
 function deriveConnectionStatus(
   engineStatus: string | undefined,
-  supervisor: WorkerEntry | undefined,
   compose: ComposeContainer | undefined,
 ): WorkerConnectionStatus {
   if (isEngineLive(engineStatus)) return 'connected'
@@ -60,29 +41,7 @@ function deriveConnectionStatus(
     if (compose.state === 'failed') return 'failed'
     return 'stopped'
   }
-  if (supervisor?.running) return 'connected'
-  if (supervisor && !supervisor.running) return 'stopped'
   return 'disconnected'
-}
-
-function deriveStopState(
-  kind: WorkerManagementKind,
-  status: WorkerConnectionStatus,
-  supervisor: WorkerEntry | undefined,
-): Pick<WorkerRow, 'stopEnabled' | 'stopDisabledReason'> {
-  if (kind === 'compose') {
-    return { stopEnabled: false, stopDisabledReason: null }
-  }
-  if (kind === 'supervisor' && status === 'connected' && supervisor?.running) {
-    return { stopEnabled: true, stopDisabledReason: null }
-  }
-  if (kind === 'internal') {
-    return { stopEnabled: false, stopDisabledReason: STOP_REASON.internal }
-  }
-  if (kind === 'standalone') {
-    return { stopEnabled: false, stopDisabledReason: STOP_REASON.standalone }
-  }
-  return { stopEnabled: false, stopDisabledReason: STOP_REASON.notRunning }
 }
 
 function composeFields(
@@ -101,7 +60,6 @@ function composePid(compose: ComposeContainer | undefined): number | null {
 
 function engineRowToWorkerRow(
   summary: WorkerSummary,
-  supervisors: Map<string, WorkerEntry>,
   composes: Map<string, ComposeContainer>,
   infoByName: Map<
     string,
@@ -111,11 +69,7 @@ function engineRowToWorkerRow(
   const name = summary.name ?? summary.id
   const info = infoByName.get(name)
   const internal = info?.internal ?? false
-  const supervisor = supervisors.get(name)
   const compose = composes.get(name)
-  const managementKind = deriveManagementKind(internal, supervisor, compose)
-  const status = deriveConnectionStatus(summary.status, supervisor, compose)
-  const stop = deriveStopState(managementKind, status, supervisor)
 
   return {
     id: summary.id,
@@ -123,38 +77,16 @@ function engineRowToWorkerRow(
     runtime: summary.runtime ?? null,
     ipAddress: summary.ip_address ?? null,
     version: summary.version ?? null,
-    pid: info?.pid ?? composePid(compose) ?? supervisor?.pid ?? null,
+    pid: info?.pid ?? composePid(compose) ?? null,
     tag: info?.tag ?? summary.tag ?? null,
-    managementKind,
-    status,
-    ...stop,
+    managementKind: deriveManagementKind(internal, compose),
+    status: deriveConnectionStatus(summary.status, compose),
     ...composeFields(compose),
-  }
-}
-
-function syntheticSupervisorRow(entry: WorkerEntry): WorkerRow {
-  const managementKind = 'supervisor'
-  const status: WorkerConnectionStatus = entry.running ? 'connected' : 'stopped'
-  const stop = deriveStopState(managementKind, status, entry)
-
-  return {
-    id: `supervisor:${entry.name}`,
-    name: entry.name,
-    runtime: null,
-    ipAddress: null,
-    version: entry.version ?? null,
-    pid: entry.pid ?? null,
-    tag: null,
-    managementKind,
-    status,
-    ...stop,
-    ...composeFields(undefined),
   }
 }
 
 function syntheticComposeRow(container: ComposeContainer): WorkerRow {
   const name = container.container
-  const status = deriveConnectionStatus(undefined, undefined, container)
 
   return {
     id: `compose:${name}`,
@@ -165,16 +97,13 @@ function syntheticComposeRow(container: ComposeContainer): WorkerRow {
     pid: composePid(container),
     tag: null,
     managementKind: 'compose',
-    status,
-    stopEnabled: false,
-    stopDisabledReason: null,
+    status: deriveConnectionStatus(undefined, container),
     ...composeFields(container),
   }
 }
 
-/** Merge engine catalogue, supervisor list, and compose status into table rows. */
+/** Merge engine catalogue and compose status into table rows. */
 export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
-  const supervisors = supervisorMap(snapshot.supervisorWorkers)
   const composes = composeMap(snapshot.compose)
   const seen = new Set<string>()
   const rows: WorkerRow[] = []
@@ -182,25 +111,12 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
   for (const engineWorker of snapshot.engineWorkers) {
     const name = engineWorker.name ?? engineWorker.id
     seen.add(name)
-    rows.push(
-      engineRowToWorkerRow(
-        engineWorker,
-        supervisors,
-        composes,
-        snapshot.infoByName,
-      ),
-    )
+    rows.push(engineRowToWorkerRow(engineWorker, composes, snapshot.infoByName))
   }
 
   for (const [name, container] of composes) {
     if (seen.has(name)) continue
     rows.push(syntheticComposeRow(container))
-    seen.add(name)
-  }
-
-  for (const [name, entry] of supervisors) {
-    if (seen.has(name)) continue
-    rows.push(syntheticSupervisorRow(entry))
     seen.add(name)
   }
 

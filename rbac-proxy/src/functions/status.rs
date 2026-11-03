@@ -1,4 +1,4 @@
-//! `rbac-proxy::status` — health/identity probe for `iii worker info` smoke
+//! `rbac-proxy::status` — health/identity probe for `engine::workers::info` smoke
 //! tests and dashboards. Read-only operational metadata; sync invocation.
 //!
 //! The `engine_url` is passed through [`crate::redact_url`] before it leaves

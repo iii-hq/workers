@@ -109,12 +109,16 @@ fn lifecycle_filters() -> Value {
 /// created once at boot and stay `pending` while the gate is absent.
 pub fn start_watch(iii: Arc<IIIClient>, status: Arc<ApprovalGateStatus>) {
     let engine = iii.clone();
+    // One refresh at a time, so the last one applied saw the latest state.
+    let refreshing = Arc::new(tokio::sync::Mutex::new(()));
     iii.register_function(
         WATCH_FN_ID,
         RegisterFunction::new_async(move |_event: WorkersChangedEvent| {
             let status = status.clone();
             let engine = engine.clone();
+            let refreshing = refreshing.clone();
             async move {
+                let _one = refreshing.lock().await;
                 refresh_presence(&engine, &status).await;
                 Ok::<_, Error>(WorkerLifecycleAck { ok: true })
             }

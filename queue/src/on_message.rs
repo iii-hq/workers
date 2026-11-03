@@ -244,7 +244,6 @@ pub struct OnMessageDelivery {
     iii: IIIClient,
 }
 
-#[async_trait]
 impl DeliverHook for OnMessageDelivery {
     async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
         // Matched by keys on the observer id: at most one observer.
@@ -303,14 +302,12 @@ impl OnMessageObservers {
     }
 }
 
-#[async_trait]
 impl AddedHook for OnMessageObservers {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         self.add(obs.id(), obs.args_value()).await
     }
 }
 
-#[async_trait]
 impl RemovedHook for OnMessageObservers {
     async fn on_removed(&self, obs: Observer) {
         self.remove(obs.id()).await;

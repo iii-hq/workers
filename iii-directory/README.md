@@ -140,7 +140,7 @@ skills_folder: skills                  # under III_COMPOSE_DIR, or the process c
 local_skills_folder: skills/iii        # project-scoped overrides (whole-namespace local-wins)
 agents_folder: agents                  # direct <id>.md agent profiles
 agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
-auto_download: true                   # observe worker connections + run the boot reconcile
+auto_download: true                   # boot reconcile, rerun whenever a worker connects (observed)
 # function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle, also router::embed's local fallback (loads on first use in every mode); null disables both
 function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 
@@ -730,7 +730,7 @@ The native ids:
 | `engine::functions::info` | Single-function detail: schemas, owning worker, `args_format`, `observer_count`, `private`, `observable`. |
 | `engine::observers::list` | List observers: observed function, args, filters, target, observing worker, state. |
 | `engine::observers::get` | Single observer detail. |
-| `engine::workers::list` | List workers with an open engine WS connection. Daemon-managed providers (`http`, `cron`, `state`) won't appear — call `worker::list` from the supervisor to see those. |
+| `engine::workers::list` | List workers with an open engine WS connection. For the workers a compose project declares, connected or not, call `compose::status`. |
 | `engine::workers::info` | One worker's detail by `name`. |
 
 ### `directory::registry::*` (workers registry HTTP proxy)

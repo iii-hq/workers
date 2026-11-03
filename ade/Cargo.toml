@@ -14,7 +14,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0-rc.4"
+iii-sdk = "=0.26.0-rc.5"
 # Worker-side injectable console UI (content function + one ade::ui::asset
 # observer per asset + hot-reload watcher) — the ADE worker dogfoods its own
 # protocol to ship the injectable-UI toggle form. Direct link, never published.
