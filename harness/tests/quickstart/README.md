@@ -11,7 +11,7 @@ iii -c config.yaml
 iii compose --engine ws://127.0.0.1:49134 --namespace default \
   --file worker-compose.yaml --up
 iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"harness"}'
-iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"console"}'
+iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"ade"}'
 ```
 
 The `quickstart` project template seeds `worker-compose.yaml` with the
@@ -60,7 +60,7 @@ The CLI installer and Registry worker selectors are independent:
 `III_CLI_CHANNEL` chooses `latest` or `rc` for `iii` (default `rc`; the CLI's
 `next` channel is dead, and `iii compose` needs 0.23.0-rc or newer — the
 validator refuses a CLI without the `compose` command). `III_WORKER_TAG` is
-restricted to `latest`, so `harness`, `console`, and their Registry dependency
+restricted to `latest`, so `harness`, `ade`, and their Registry dependency
 graph always resolve from the stable channel before the generated compose file
 pins exact versions. Release-triggered validation can still replace the one
 worker under test with an explicit immutable candidate version. The old

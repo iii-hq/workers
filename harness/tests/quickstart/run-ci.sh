@@ -766,7 +766,7 @@ wait_for_compose
 
 log "Step 3/9: Add harness and ADE from worker tag $worker_tag via compose"
 run_compose_add "harness@$worker_tag" 2>&1 | tee "$log_dir/compose-add-harness.log"
-run_compose_add "console@$worker_tag" 2>&1 | tee "$log_dir/compose-add-console.log"
+run_compose_add "ade@$worker_tag" 2>&1 | tee "$log_dir/compose-add-ade.log"
 python3 "$script_dir/configure_compose_environment.py" "$compose_file"
 run_compose_restart 2>&1 | tee "$log_dir/compose-restart-provider-env.log"
 ok "compose declared harness + ADE from latest and applied provider credentials to llm-router"
@@ -808,8 +808,8 @@ verify_first_capability
 log "Step 9/9: Verify generated project files and secret-safe evidence"
 [[ -s "$project_dir/config.yaml" ]] || die "the engine config.yaml is missing"
 [[ -s "$compose_file" ]] || die "compose::add did not write worker-compose.yaml"
-for required in harness console; do
-  grep -Eiq "$required" "$compose_file" \
+for required in harness ade; do
+  grep -Eiwq "$required" "$compose_file" \
     || die "worker-compose.yaml does not contain $required"
 done
 grep -Eq '^[[:space:]]+version:' "$compose_file" \

@@ -64,7 +64,7 @@ would be written (typical of a first backfill), show the plan
 2. Label every verified issue: read the issue's current labels first and
    pass the union to `save_issue` — never drop existing labels.
 3. Worker labels: also apply flat `worker:<name>` team labels
-   (`worker:shell`, `worker:console`, ...) matching the worker commit
+   (`worker:shell`, `worker:ade`, ...) matching the worker commit
    ranges that referenced the issue — create missing ones lazily; same
    union rule. Flat, NOT a label group: Linear group children are
    mutually exclusive, and one issue often spans several workers.
