@@ -15,10 +15,8 @@ const client = vi.hoisted(() => {
       return () => handlers.delete(id)
     },
     observe: vi.fn(
-      (
-        _source: { function_id: string; filters?: unknown },
-        _target: string,
-      ) => vi.fn(),
+      (_source: { function_id: string; filters?: unknown }, _target: string) =>
+        vi.fn(),
     ),
   }
 })

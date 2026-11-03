@@ -497,9 +497,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "S301");
-        assert!(err
-            .message
-            .contains("compose::add iii-sandbox installs it"));
+        assert!(err.message.contains("compose::add iii-sandbox installs it"));
     }
 
     #[tokio::test]

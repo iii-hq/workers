@@ -48,7 +48,11 @@ describe('useWorkersChanged', () => {
     expect(source.function_id).toBe('engine::on-workers-changed')
     expect(source.filters).toEqual({
       'input.event': {
-        $in: ['worker_connected', 'worker_disconnected', 'worker_metadata_updated'],
+        $in: [
+          'worker_connected',
+          'worker_disconnected',
+          'worker_metadata_updated',
+        ],
       },
     })
     const handler = client.handlers.get(target.replace(/::tab$/, ''))

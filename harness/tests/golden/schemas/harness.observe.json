@@ -29,7 +29,9 @@
       "ConditionSpec": {
         "description": "One declared condition. Evaluated at fire time with the typed decision contract; ordinary iii functions, so a barrier or a claim is just a function someone wrote.",
         "properties": {
-          "config": true,
+          "config": {
+            "description": "Passed to the condition function AS its `condition_config`: give its fields (e.g. `id`, `expect`) directly, not wrapped in `condition_config`."
+          },
           "function_id": {
             "type": "string"
           }

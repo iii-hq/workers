@@ -696,11 +696,7 @@ export function startUiLoader(
   // to expose that kill switch and lets built-in forms fall back instead of
   // waiting forever.
   void client
-    .call<{ disabled?: boolean }>(
-      'ade::ui-manifest',
-      {},
-      { timeoutMs: 5_000 },
-    )
+    .call<{ disabled?: boolean }>('ade::ui-manifest', {}, { timeoutMs: 5_000 })
     .then((manifest) => {
       if (active && !receivedInitialSync && manifest.disabled) {
         setUiAssetsStatus('unavailable')
