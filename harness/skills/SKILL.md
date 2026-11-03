@@ -52,7 +52,8 @@ is optional; without it no call is held and every allowed call runs un-gated.
   recovery and guards (`harness::status`).
 - Chain turns or react to outcomes from a worker by observing
   `harness::on-turn-completed` with the SDK's `iii.observe`. An in-run agent
-  cannot observe turn events; see [Agent observers](#agent-observers).
+  cannot observe turn events other than `harness::on-turn-overdue`; see
+  [Agent observers](#agent-observers).
 - Drive a turn from an arbitrary inbound event (cron tick, webhook, sensor) by
   translating it into a `harness::send`.
 
@@ -142,6 +143,10 @@ them (see [Agent observers](#agent-observers)).
   (`completed` / `cancelled` / `failed`), carrying the result or error for
   chaining, failure toasts, auto-titling, and result delivery; `terminal` is
   `false` while the session still owns an armed wake.
+- `harness::on-turn-overdue` — a turn is still running at a check point
+  (`overdue_after_ms`, then every `overdue_every_ms`; 20 min each by
+  default). The one turn event an agent may observe; it never reports the
+  observer's own turn.
 - `harness::on-message-queued`, `harness::on-observers-changed`,
   `harness::on-compaction`, `harness::on-session-tree-deletion` and
   `harness::on-ready` — see the worker README for their events.
@@ -194,9 +199,9 @@ deadline.
 Agents cannot observe the turn events. `harness::observe` refuses
 `harness::on-turn-completed`, `harness::on-turn-started` and every other
 `harness::*` function with `harness/invalid_request: cannot observe harness
-function ...: turn events are not agent-observable`. The two exceptions are
-`harness::on-timer` and `harness::hook::on-post-turn` with a validator as the
-target, scoped to the calling session or the children it names under the
+function ...: turn events are not agent-observable`. The three exceptions are
+`harness::on-timer`, `harness::on-turn-overdue` (never the observer's own turn)
+and `harness::hook::on-post-turn` with a validator as the target, scoped to the calling session or the children it names under the
 `<session_id>-` prefix (see [Hooks](#hooks-policy-siblings-only)).
 
 Watch what the work writes instead. To wait for a sub-agent, name a state key

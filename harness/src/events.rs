@@ -4,7 +4,9 @@
 //! boundaries, `harness::on-message-queued` when a message parks in the
 //! mid-turn queue, `harness::on-observers-changed` when a session's observer
 //! set or fire count changes, and `harness::on-compaction` when an explicit
-//! compaction starts and finishes (harness.md § Events emitted). Consumers
+//! compaction starts and finishes, and `harness::on-turn-overdue` while a turn
+//! runs past its check points ([`crate::overdue`]) (harness.md § Events
+//! emitted). Consumers
 //! observe them to react without polling.
 //!
 //! The harness emits an event by calling its function with `CallAction::Void`,
@@ -36,6 +38,7 @@ pub const ON_MESSAGE_QUEUED_FN: &str = "harness::on-message-queued";
 pub const ON_OBSERVERS_CHANGED_FN: &str = "harness::on-observers-changed";
 pub const ON_READY_FN: &str = "harness::on-ready";
 pub const ON_COMPACTION_FN: &str = "harness::on-compaction";
+pub const ON_TURN_OVERDUE_FN: &str = "harness::on-turn-overdue";
 
 /// `harness::on-ready`: the harness completed boot and accepts turns.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -89,6 +92,47 @@ pub struct TurnCompletedEvent {
     /// The latest generation's context accounting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::context_snapshot::ContextSnapshotV1>,
+}
+
+/// `harness::on-turn-overdue`: a turn still running at a check point
+/// (`overdue_after_ms` after it started, then every `overdue_every_ms`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TurnOverdueEvent {
+    pub session_id: String,
+    pub turn_id: String,
+    /// `running` or `awaiting_functions`.
+    pub status: String,
+    /// 0 for a top-level turn.
+    pub depth: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    pub started_at: i64,
+    /// The turn record's last write.
+    pub updated_at: i64,
+    pub age_ms: i64,
+    pub step: u64,
+    pub turn_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_preview: Option<String>,
+    /// Calls the turn still waits on.
+    #[serde(default)]
+    pub pending_calls: Vec<OverdueCall>,
+    pub timestamp: i64,
+}
+
+/// One unfinished call of an overdue turn.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OverdueCall {
+    pub call_id: String,
+    /// `dispatched` or `pending`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    /// The hook holding the call, when a `pre_call` hook holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
 }
 
 /// `harness::on-message-queued`: a pointer to a message parked in the
@@ -193,6 +237,7 @@ impl TurnEvents {
         });
         iii.on_observer_added_for(ON_TURN_STARTED_FN, refuse_spawn_target);
         iii.on_observer_added_for(ON_TURN_COMPLETED_FN, refuse_spawn_target);
+        iii.on_observer_added_for(ON_TURN_OVERDUE_FN, refuse_spawn_target);
 
         register_event(
             iii,
@@ -215,6 +260,14 @@ impl TurnEvents {
             "A harness turn reached a terminal status (completed/cancelled/failed). Filter on \
              input.session_id, or on input.parent.session_id / input.parent_session_id.",
             schema_value::<TurnCompletedEvent>(),
+        );
+        register_event(
+            iii,
+            ON_TURN_OVERDUE_FN,
+            "A harness turn is still running at a check point: overdue_after_ms after it \
+             started, then every overdue_every_ms. Filter on input.depth (0 for top-level \
+             turns) or input.session_id. A session never receives its own turn's report.",
+            schema_value::<TurnOverdueEvent>(),
         );
         register_event(
             iii,
@@ -241,7 +294,8 @@ impl TurnEvents {
         );
         tracing::info!(
             "registered harness::on-ready / on-turn-started / on-turn-completed / \
-             on-message-queued / on-observers-changed / on-session-tree-deletion / on-compaction"
+             on-turn-overdue / on-message-queued / on-observers-changed / \
+             on-session-tree-deletion / on-compaction"
         );
 
         Self {
@@ -353,6 +407,7 @@ impl TurnEvents {
             terminal,
             "turn completed"
         );
+        crate::overdue::forget(session_id, turn_id);
         if !self.iii.is_observed(ON_TURN_COMPLETED_FN) {
             return;
         }
@@ -389,6 +444,21 @@ impl TurnEvents {
             payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
         self.emit(ON_TURN_COMPLETED_FN, payload).await;
+    }
+
+    pub fn observes_overdue(&self) -> bool {
+        self.iii.is_observed(ON_TURN_OVERDUE_FN)
+    }
+
+    pub async fn emit_overdue(&self, event: &TurnOverdueEvent) {
+        tracing::info!(
+            session_id = %event.session_id,
+            turn_id = %event.turn_id,
+            age_ms = event.age_ms,
+            "turn overdue"
+        );
+        let payload = serde_json::to_value(event).unwrap_or(Value::Null);
+        self.emit(ON_TURN_OVERDUE_FN, payload).await;
     }
 
     /// Call the event function, fire-and-forget: iii delivers the call to

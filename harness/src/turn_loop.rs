@@ -554,6 +554,7 @@ async fn generate_step(
                 record.depth,
             )
             .await;
+        crate::overdue::arm(&record.session_id, &record.turn_id, record.created_at);
         if let Err(reason) = deps.hooks.run_pre_turn(&record, payload.step).await {
             return finalize_failed(
                 deps,

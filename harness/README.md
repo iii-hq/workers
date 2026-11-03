@@ -217,6 +217,8 @@ co_author: true                  # tell agents to end git commit messages with "
 call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
+overdue_after_ms: 1200000        # first harness::on-turn-overdue check point (0 = off)
+overdue_every_ms: 1200000        # later check points while the turn runs (0 = once)
 ```
 
 Other keys (RPC timeouts, stream coalescing, idempotency TTL, validation
@@ -646,13 +648,15 @@ The harness hosts these functions. Every one is private: observers observe it,
 and only the harness calls it. Each handler returns the event it is called
 with, so observers receive the event as the call's output (`deliver: 'output'`
 gives the event itself). Observe them with `iii.observe` from a worker; an agent
-observes only `harness::on-timer` and its own post-turn validator.
+observes only `harness::on-timer`, `harness::on-turn-overdue` (never its own
+turn) and its own post-turn validator.
 
 | Function | Args | Filter on | Event |
 |---|---|---|---|
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
 | `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. |
+| `harness::on-turn-overdue` | none | `input.session_id`, `input.depth` | `{ session_id, turn_id, status, depth, parent_session_id?, started_at, updated_at, age_ms, step, turn_count, message_preview?, pending_calls, timestamp }`: a turn is still `running` / `awaiting_functions` at a check point, `overdue_after_ms` (20 min) after it started and then every `overdue_every_ms` (20 min). Agents may observe it; the harness adds `input.session_id: { $ne: <own session> }` so a session never hears about its own turn. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |

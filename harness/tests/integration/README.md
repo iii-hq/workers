@@ -48,6 +48,7 @@ No provider key or network access is required.
 | INT-038 | `ask-bypasses-approval-hook` | direct | a `harness::hook::on-pre-call` observer that holds every call (`*`) is added after turn 1; turn 2's `harness::ask` never reaches it (zero hook invocations), nothing parks, the result is `awaiting_answer`, and the turn completes without another model call |
 | INT-039 | `stop-held-call` | direct | `harness::stop` cancels a turn while its function call is still held, without waiting for the call to return; the call closes as a `cancelled` error |
 | INT-040 | `call-argument-contract` | direct | through `agent_call`, a malformed call whose contract the model never fetched gets the compacted request schema in its diagnosis (no `engine::functions::info` step needed); after the model fetches the contract, the next diagnosis only points at it |
+| INT-041 | `turn-overdue` | direct | a turn whose call is held past the seeded 1.5 s check points is reported by `harness::on-turn-overdue` at each one (`running`, depth 0, naming the held call as `dispatched`, growing `age_ms`), and never again once it completes |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |

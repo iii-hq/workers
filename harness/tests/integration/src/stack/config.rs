@@ -86,8 +86,12 @@ pub fn render_seed(worker: &str, layout: &RunLayout) -> Option<Value> {
             }
         })),
         // Avoid a run-path-dependent line in the expected system prompt.
+        // INT-041 needs check points it can wait for; no other scenario
+        // observes `harness::on-turn-overdue`, so it changes nothing there.
         "harness" => Some(json!({
-            "default_filesystem_root": "off"
+            "default_filesystem_root": "off",
+            "overdue_after_ms": 1500,
+            "overdue_every_ms": 1500
         })),
         _ => None,
     }

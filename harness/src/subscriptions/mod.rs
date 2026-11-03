@@ -25,13 +25,17 @@ pub const ON_SESSION_DELETED_DESC: &str =
 
 /// Functions the agent may NOT observe, in any shape: the harness's own
 /// functions (turn events, hook points, internal handlers) — all but
-/// `harness::on-timer`, the deadline agents arm for themselves. A session
+/// `harness::on-timer`, the deadline agents arm for themselves, and
+/// `harness::on-turn-overdue`, which never reports the observer's own turn
+/// (a watchdog's input). A session
 /// notified of its own turn ending would wake itself forever, and child
 /// outcomes belong in the medium the children write — never in an observer
 /// on their turns. The agent's post-turn validator is observed through its
 /// own path before this rule applies.
 pub fn is_forbidden_source(function_id: &str) -> bool {
-    function_id.starts_with("harness::") && function_id != crate::timer::ON_TIMER_FN
+    function_id.starts_with("harness::")
+        && function_id != crate::timer::ON_TIMER_FN
+        && function_id != crate::events::ON_TURN_OVERDUE_FN
 }
 
 #[cfg(test)]
@@ -44,6 +48,7 @@ mod tests {
         assert!(is_forbidden_source("harness::hook::on-pre-generate"));
         assert!(is_forbidden_source("harness::notify_agent"));
         assert!(!is_forbidden_source("harness::on-timer"));
+        assert!(!is_forbidden_source("harness::on-turn-overdue"));
         assert!(!is_forbidden_source("cron::on-tick"));
         assert!(!is_forbidden_source("publish"));
         assert!(!is_forbidden_source("approval::on-pending-resolved"));

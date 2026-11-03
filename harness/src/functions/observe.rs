@@ -790,6 +790,9 @@ async fn handle(
         return observe_post_turn(deps, req, session_id, policy).await;
     }
     reject_forbidden_source(&req.function_id)?;
+    if req.function_id == crate::events::ON_TURN_OVERDUE_FN {
+        exclude_own_turn(&mut req.filters, session_id);
+    }
     // An observer reads every call of its source, other sessions' included:
     // what no agent may call (credential and private state accessors), no
     // agent observes, and an agent observes only what its policy allows.
@@ -1041,8 +1044,8 @@ fn compose_note(notes: Vec<String>) -> Option<String> {
     ))
 }
 
-/// Turn events (and every other harness function but the timer; the post-turn
-/// validator is handled before this guard) are not agent-observable in ANY
+/// Turn events (and every other harness function but the timer and the overdue
+/// report; the post-turn validator is handled before this guard) are not agent-observable in ANY
 /// shape: child outcomes reach a parent through the medium the children
 /// write, never through an observer on their turns. Runs before target
 /// resolution, so wake, call, and would-be spawn shapes all hit it.
@@ -1052,13 +1055,27 @@ fn reject_forbidden_source(function_id: &str) -> Result<(), HarnessError> {
             "cannot observe harness function `{function_id}`: turn events are not \
              agent-observable. Watch what the work WRITES instead — observe the state keys or \
              database rows the tasks update (omit `target` for a wake). An agent observes only \
-             `{}`, and `{}` with a validator `target` scoped to its own session or to \
+             `{}`, `{}`, and `{}` with a validator `target` scoped to its own session or to \
              the children it names under the `<session_id>-` prefix.",
             crate::timer::ON_TIMER_FN,
+            crate::events::ON_TURN_OVERDUE_FN,
             crate::hooks::ON_POST_TURN_FN,
         )));
     }
     Ok(())
+}
+
+/// A session never hears about its own overdue turn: it is the one running,
+/// and the report would merge back into that turn at every check point. An
+/// explicit `input.session_id` filter is left as written.
+fn exclude_own_turn(filters: &mut Value, session_id: &str) {
+    if !filters.is_object() {
+        *filters = Value::Object(Default::default());
+    }
+    if let Some(map) = filters.as_object_mut() {
+        map.entry("input.session_id")
+            .or_insert_with(|| json!({ "$ne": session_id }));
+    }
 }
 
 /// The operation a Compose progress observer filters on, `input.operation_id`.
@@ -1916,6 +1933,26 @@ pub(crate) mod tests {
         assert!(reject_forbidden_source("database::on-row-changed").is_ok());
         assert!(reject_forbidden_source(CRON_ON_TICK_FN).is_ok());
         assert!(reject_forbidden_source(crate::timer::ON_TIMER_FN).is_ok());
+        assert!(reject_forbidden_source(crate::events::ON_TURN_OVERDUE_FN).is_ok());
+    }
+
+    #[test]
+    fn overdue_observers_never_hear_their_own_turn() {
+        let mut filters = Value::Null;
+        exclude_own_turn(&mut filters, "watchdog");
+        assert_eq!(
+            filters,
+            json!({ "input.session_id": { "$ne": "watchdog" } })
+        );
+
+        let mut filters = json!({ "input.depth": { "$eq": 0 } });
+        exclude_own_turn(&mut filters, "watchdog");
+        assert_eq!(filters["input.session_id"], json!({ "$ne": "watchdog" }));
+        assert_eq!(filters["input.depth"], json!({ "$eq": 0 }));
+
+        let mut filters = json!({ "input.session_id": { "$eq": "s1" } });
+        exclude_own_turn(&mut filters, "watchdog");
+        assert_eq!(filters["input.session_id"], json!({ "$eq": "s1" }));
     }
 
     #[test]

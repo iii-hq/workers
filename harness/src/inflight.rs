@@ -507,6 +507,9 @@ pub async fn run(deps: std::sync::Arc<Deps>) {
         .inspect_err(|e| tracing::warn!(error = %e, "boot read of the turn records failed"))
         .ok();
     event_pass(&deps).await;
+    if let Some(listing) = &boot_listing {
+        crate::overdue::arm_running(&listing.records, AgentMessage::now_ms());
+    }
     if let Some(listing) = boot_listing {
         let report = crate::turn_compaction::compact(&deps, &listing, AgentMessage::now_ms()).await;
         tracing::info!(

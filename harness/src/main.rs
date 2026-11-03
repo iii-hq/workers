@@ -216,6 +216,9 @@ async fn main() -> Result<()> {
     // or observes its stop instead of wedging the session. One pass after
     // boot, then one per engine worker change plus known-due follow-ups.
     tokio::spawn(harness::inflight::run(deps.clone()));
+    // `harness::on-turn-overdue`: a deadline per running turn, armed by its
+    // first step and by the boot read.
+    tokio::spawn(harness::overdue::serve(deps.clone()));
     // Compose wakes whose operation finished inside their activation window.
     harness::bindings::compose::observe_terminal_operations(&deps);
     // The engine's worker connect/disconnect/announce events: kick the
