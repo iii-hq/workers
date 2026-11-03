@@ -539,6 +539,8 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         # `SKILL.md`, `skills/<rel>.md` and `agents/<id>.md`, keyed exactly as that endpoint expects.
         "skills": skills,
     }
+    if "iii_engine_version" in manifest:
+        projection["iii_engine_version"] = manifest["iii_engine_version"]
     descriptor: dict[str, Any] = {
         "contract": "deployment-descriptor",
         "worker": worker,
