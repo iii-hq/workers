@@ -116,6 +116,19 @@ fn ctx_size_arg(row: &Value) -> Option<u64> {
         .filter(|&n| n > 0)
 }
 
+/// vLLM and SGLang publish the window they serve each model with per row, as
+/// `max_model_len` (`model_config.max_model_len` in `vllm/entrypoints/openai/
+/// models/serving.py`, `model_config.context_len` via SGLang's `/v1/models`
+/// handler). Neither implements llama.cpp's `/props`, so without this every
+/// model behind one of those servers lands on llama.cpp's 4096 default and the
+/// router budgets a 262k model as if it were 4k -- the overflow in
+/// iii-hq/iii#2201, where `context-manager` reports a 1639-token usable budget.
+fn max_model_len_arg(row: &Value) -> Option<u64> {
+    row.get("max_model_len")
+        .and_then(Value::as_u64)
+        .filter(|&n| n > 0)
+}
+
 fn parse_live_models(json: &Value, props: &Props) -> Vec<Model> {
     json.get("data")
         .and_then(Value::as_array)
@@ -126,9 +139,13 @@ fn parse_live_models(json: &Value, props: &Props) -> Vec<Model> {
                     // llama.cpp-compatible frontends (e.g. Unsloth Studio)
                     // have no /props but declare the configured window
                     // per model here; vanilla llama-server omits it.
+                    // A declared `context_length: 0` is not a window: filter
+                    // it so it cannot mask the two fallbacks below.
                     let context_length = raw
                         .get("context_length")
                         .and_then(Value::as_u64)
+                        .filter(|&n| n > 0)
+                        .or_else(|| max_model_len_arg(raw))
                         .or_else(|| ctx_size_arg(raw));
                     Some((id, context_length))
                 })
@@ -555,6 +572,35 @@ mod tests {
         let props = parse_props(&json);
         assert_eq!(props.context_window, Some(8192));
         assert_eq!(props.supports_vision, Some(true));
+    }
+
+    #[test]
+    fn vllm_and_sglang_row_max_model_len_fills_the_window() {
+        // Real row shape from the servers iii-hq/iii#2201 reports: no /props,
+        // no context_length, the served window in `max_model_len`. Before
+        // this, every row reached the 4096 default and the router budgeted a
+        // 262k model as 4k.
+        let json = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "qwen3.8-27b-sglang", "object": "model", "max_model_len": 262_144 },
+                { "id": "qwen3.8-27b-vllm", "object": "model", "max_model_len": 262_144 },
+                // A per-row declaration stays authoritative over the new fallback.
+                { "id": "declared-wins", "object": "model", "context_length": 131_072, "max_model_len": 262_144 },
+                // Zero is not a window, so it must not mask the fallback.
+                { "id": "zero-is-not-a-window", "object": "model", "context_length": 0, "max_model_len": 65_536 },
+                { "id": "absent", "object": "model" }
+            ]
+        });
+        let models = parse_live_models(&json, &Props::default());
+        assert_eq!(models[0].context_window, 262_144);
+        assert_eq!(models[1].context_window, 262_144);
+        assert_eq!(models[2].context_window, 131_072);
+        assert_eq!(models[3].context_window, 65_536);
+        // Nothing declared anywhere: still the llama.cpp default, not zero.
+        assert_eq!(models[4].context_window, DEFAULT_CONTEXT_WINDOW);
+        // 2048 was a quarter of 4096; the fallback does not cap the window.
+        assert_eq!(models[0].max_output_tokens, 8192);
     }
 
     #[test]
