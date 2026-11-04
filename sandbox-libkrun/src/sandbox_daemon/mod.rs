@@ -366,7 +366,9 @@ where
                 result.map_err(|e| SandboxErrorWire(e).into())
             }
         })
-        .description(description),
+        .description(description)
+        // `auth` is the project token, good for every worker::*: no observer may read it.
+        .observable(false),
     )
 }
 
@@ -652,6 +654,58 @@ mod registration_tests {
         .map(|s| format!("sandbox-libkrun::{s}"))
         .collect();
         assert_eq!(ids, want);
+    }
+
+    /// Their requests carry the project token, and `worker::start`'s the guest's
+    /// env. The SDK sends `observable: false` only to an engine with observe.v2.
+    #[tokio::test]
+    async fn worker_functions_refuse_observers() {
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let iii = iii_sdk::register_worker(
+            &format!("ws://{}", listener.local_addr().unwrap()),
+            InitOptions::default(),
+        );
+        register_all(
+            &iii,
+            Arc::new(SandboxConfig::default()),
+            Arc::new(SandboxRegistry::default()),
+        );
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let registered =
+            r#"{"type":"workerregistered","worker_id":"t","features":["observe.v1","observe.v2"]}"#;
+        ws.send(Message::Text(registered.into())).await.unwrap();
+
+        let ids = [
+            WORKER_PREPARE,
+            WORKER_START,
+            WORKER_STATUS,
+            WORKER_LOGS,
+            WORKER_STOP,
+            WORKER_DESTROY,
+        ]
+        .map(|op| format!("sandbox-libkrun::{op}"));
+        let mut frames = std::collections::BTreeMap::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !ids.iter().all(|id| frames.contains_key(id)) {
+                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
+                    continue;
+                };
+                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if frame["type"] == "registerfunction" {
+                    frames.insert(frame["id"].as_str().unwrap().to_string(), frame);
+                }
+            }
+        })
+        .await
+        .expect("every worker::* function registers");
+
+        for id in &ids {
+            assert_eq!(frames[id]["observable"], false, "{}", frames[id]);
+        }
     }
 
     #[test]

@@ -110,7 +110,8 @@ environment, two guards apply:
   two roots.
 
 Compose also sets `III_DISABLE_TRACE_PAYLOADS=1` on the adapter, so the token
-and guest env never land in the engine's trace store.
+and guest env never land in the engine's trace store. Every `worker::*` function
+is registered `observable: false`, so no observer reads them either.
 
 ## Known limits
 

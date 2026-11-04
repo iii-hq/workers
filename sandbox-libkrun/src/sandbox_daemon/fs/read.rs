@@ -8,8 +8,8 @@
 //! 3. Returns the channel's `reader_ref` (as `StreamChannelRef`) to the
 //!    caller in the response JSON, plus the file metadata.
 //! 4. Spawns a background task that pumps bytes from the `AsyncRead` into
-//!    `channel.writer`. On read error the task sends a JSON error message
-//!    on the channel before closing.
+//!    `channel.writer`. On a failure the task sends a JSON error message on
+//!    the channel and drops the writer unclosed, so readers get an error.
 
 use std::sync::Arc;
 
@@ -217,13 +217,14 @@ async fn stream_via_channel(
                                 .to_string(),
                             )
                             .await;
-                        let _ = writer.close().await;
+                        // Not closed: after a failed first dial the message
+                        // dials again, and a close there reads as an empty file.
                         break;
                     }
                 }
                 Err(e) => {
-                    // The channel closes as if whole whatever the writer
-                    // does, so this message is the only sign of the cut.
+                    // Not closed: a writer dropped unclosed reaches readers as
+                    // close 1011, so one that only takes bytes sees the cut too.
                     let _ = writer
                         .send_message(
                             &serde_json::json!({
@@ -233,7 +234,6 @@ async fn stream_via_channel(
                             .to_string(),
                         )
                         .await;
-                    let _ = writer.close().await;
                     break;
                 }
             }
