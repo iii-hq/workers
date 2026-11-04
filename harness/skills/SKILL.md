@@ -3,8 +3,9 @@ name: harness
 description: >-
   The durable agent turn loop — kick off a turn with `harness::send`, render
   it from session-manager transcript events, observe
-  `harness::on-turn-completed`, with deny-by-default tool dispatch and
-  synchronous hook points for policy siblings.
+  `harness::on-turn-completed` from a worker (agents watch state instead),
+  with deny-by-default tool dispatch and synchronous hook points for policy
+  siblings.
 ---
 
 # harness
@@ -49,7 +50,9 @@ is optional; without it no call is held and every allowed call runs un-gated.
 - Start or steer an agent turn and return immediately (`harness::send`).
 - Cancel an in-flight turn (`harness::stop`) or read coarse turn state for
   recovery and guards (`harness::status`).
-- Chain turns or react to outcomes by observing `harness::on-turn-completed`.
+- Chain turns or react to outcomes from a worker by observing
+  `harness::on-turn-completed` with the SDK's `iii.observe`. An in-run agent
+  cannot observe turn events; see [Agent observers](#agent-observers).
 - Drive a turn from an arbitrary inbound event (cron tick, webhook, sensor) by
   translating it into a `harness::send`.
 
@@ -128,9 +131,11 @@ the `ide` worker's `fs.exec_confinement` switch.
 
 ## Turn events
 
-The harness hosts private functions that consumers and siblings observe instead
-of polling `harness::status`. Each returns the event it is called with, so an
-observer with `deliver: 'output'` receives the event itself:
+The harness hosts private functions that consumers and sibling workers observe
+with the SDK's `iii.observe` instead of polling `harness::status`. Each returns
+the event it is called with, so an observer with `deliver: 'output'` receives
+the event itself. They are not agent-observable: `harness::observe` refuses
+them (see [Agent observers](#agent-observers)).
 
 - `harness::on-turn-started` — a turn began executing (first loop step).
 - `harness::on-turn-completed` — a turn reached a terminal status
@@ -152,6 +157,7 @@ unordered — treat each event as an edge. Re-seed with `harness::status` and
 transcript rendering — that is `session-manager`'s job.
 
 ```typescript
+// Worker code (iii-sdk), not an agent tool call.
 iii.registerFunction('myapp::on-turn-done', handler)
 iii.observe(
   {
@@ -183,12 +189,40 @@ harness::observe {
 Omit `target` to be woken in this session; name `target: { function_id,
 payload?, event_into? }` to have a plain function called with the event
 (never `harness::*`). `harness::on-timer { at | in_ms }` is the one-shot
-deadline. Agents cannot observe the turn events: watch what the work writes. A
-wake is once by default, a call observer is standing; bound standing observers
-with `lifecycle` and remove them with `harness::unobserve { id }`. Nothing
-throttles an observer, and a cycle routed through a state write re-enters at
-depth 0 and every lap is a paid turn: design reactions acyclically. See
-`architecture/reactive-observers.md` for the full payload.
+deadline.
+
+Agents cannot observe the turn events. `harness::observe` refuses
+`harness::on-turn-completed`, `harness::on-turn-started` and every other
+`harness::*` function with `harness/invalid_request: cannot observe harness
+function ...: turn events are not agent-observable`. The two exceptions are
+`harness::on-timer` and `harness::hook::on-post-turn` with a validator as the
+target, scoped to the calling session (see [Hooks](#hooks-policy-siblings-only)).
+
+Watch what the work writes instead. To wait for a sub-agent, name a state key
+in its brief, have it write its result there, and observe that key with a
+deadline before you `harness::spawn` it, so a fast child cannot finish
+unobserved and a failed one cannot park you forever:
+
+```json
+harness::observe {
+  "function_id": "state::on-changed",
+  "filters": { "input.scope": { "$eq": "run-x" }, "input.key": { "$eq": "child-a" } },
+  "label": "child-a-done",
+  "lifecycle": { "expires_in_ms": 600000 }
+}
+```
+
+Without `lifecycle.expires_in_ms` a one-shot wake waits indefinitely: `once`
+bounds deliveries, not time. When the deadline passes first, the session is
+woken with an expiry notice instead of the write; read the key with `state::get`
+(the child may have written it late) and otherwise treat the child as failed or
+slow: retry, report, or continue without it. For a fan-out, arm one wake per
+child key, each with a deadline, and read each result with `state::get` once
+woken. A wake is once by default, a call observer is standing; bound standing
+observers with `lifecycle` and remove them with `harness::unobserve { id }`.
+Nothing throttles an observer, and a cycle routed through a state write
+re-enters at depth 0 and every lap is a paid turn: design reactions acyclically.
+See `architecture/reactive-observers.md` for the full payload.
 
 ## Hooks (policy siblings only)
 
