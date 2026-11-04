@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "iii-bridge"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
