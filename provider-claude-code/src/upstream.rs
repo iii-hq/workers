@@ -138,7 +138,7 @@ async fn run_upstream(
                 let _ = tx
                     .send(synthetic_error_event_from_state(
                         &state,
-                        &format!("stream read failed: {e}"),
+                        &format!("stream read failed: {}", error_chain(&e)),
                         &args.model,
                         ErrorKind::Transient,
                     ))
@@ -319,6 +319,39 @@ mod tests {
             }
             other => panic!("want error, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrupted_body_read_names_its_source_and_stays_transient() {
+        // The server promises more bytes than it sends, then closes: hyper
+        // fails the body read mid-stream and reqwest wraps that as the opaque
+        // "error decoding response body". The frame must carry the cause.
+        let sent = TRUNCATED.split_once("\r\n\r\n").unwrap().1;
+        let response: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{sent}",
+                sent.len() + 4096
+            )
+            .into_boxed_str(),
+        );
+        let url = stub(response).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.starts_with("stream read failed: "), "{message}");
+        assert_ne!(
+            message, "stream read failed: error decoding response body",
+            "source dropped"
+        );
+        assert!(
+            message.matches(':').count() >= 2,
+            "no source segment: {message:?}"
+        );
+        assert!(matches!(
+            error.content.first(),
+            Some(llm_router::types::content::ContentBlock::Text { text }) if text == "partial"
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]
