@@ -76,6 +76,8 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".idea",
     ".vscode",
     ".DS_Store",
+    // iii: Compose's state holds the project's token, so it never syncs into a guest
+    ".iii",
 ];
 
 /// O(1) lookup set for ignore-path classification. Built once; hit on
@@ -321,6 +323,14 @@ mod tests {
     fn ignores_git_dir() {
         assert!(should_ignore_path(
             &PathBuf::from("/proj/.git/HEAD"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn ignores_compose_state() {
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/.iii/compose/default/state.json"),
             &root()
         ));
     }

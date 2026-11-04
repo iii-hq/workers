@@ -32,7 +32,8 @@ const RUN_SCRIPT_CMD: &str =
 /// $SRC, dep dirs included (a stale `old/node_modules`, or a `service/` that
 /// tar could not replace with the file the host now has), and re-extract the
 /// current source. On first boot /workspace is empty so this is a no-op.
-/// (All name lists MUST match the tar --exclude list.)
+/// (All name lists MUST match the tar --exclude list, except `.iii`: it is
+/// never copied, and this cleanup removes a copy left by an older adapter.)
 const WORKSPACE_RESYNC_CLEANUP: &str = r#"find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
   -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
   -o ! -type d -exec rm -f {} +
@@ -175,8 +176,9 @@ fi"#
             r#"# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
 # any depth) so VM-local installs persist across a re-copy and host clutter
 # isn't pulled in. Only /mnt/host-src is read; the host project is never
-# written, so no empty dep folders appear there.
-( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
+# written, so no empty dep folders appear there. .iii is Compose's state, which
+# holds the project's token: the guest must never get a copy.
+( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git --exclude=.iii . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
 # Enforce "host project untouched": detach the initial source share before
 # user code runs. Later edits arrive as file operations over iii.source-sync.
 cd /
@@ -884,10 +886,35 @@ mod tests {
         assert!(script.contains("touch /run/iii/source-ready"));
         assert!(!script.contains("mount --bind"));
         assert!(script.contains("node_modules"));
+        // Compose's state holds the project's token.
+        assert!(script.contains("--exclude=.iii "));
         // The guest receives real file operations over iii.source-sync.
         assert!(!script.contains("CHOKIDAR_USEPOLLING"));
         assert!(!script.contains("WATCHFILES_FORCE_POLLING"));
         assert!(!script.contains("TSC_WATCHFILE"));
+    }
+
+    /// A copy an older adapter made into a persistent /workspace must not
+    /// survive the next boot: the token in it stays valid.
+    #[test]
+    fn workspace_cleanup_removes_a_stale_compose_state_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let (ws, src) = (temp.path().join("ws"), temp.path().join("src"));
+        let stale = ws.join(".iii/compose/default/state.json");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, "{}").unwrap();
+        std::fs::create_dir_all(src.join(".iii/compose/default")).unwrap();
+
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
+            .env("SRC", &src)
+            .current_dir(&ws)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert!(!ws.join(".iii").exists());
     }
 
     #[test]
