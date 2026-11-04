@@ -1052,7 +1052,8 @@ fn reject_forbidden_source(function_id: &str) -> Result<(), HarnessError> {
             "cannot observe harness function `{function_id}`: turn events are not \
              agent-observable. Watch what the work WRITES instead — observe the state keys or \
              database rows the tasks update (omit `target` for a wake). An agent observes only \
-             `{}`, and `{}` with a validator `target` scoped to its own session.",
+             `{}`, and `{}` with a validator `target` scoped to its own session or to \
+             the children it names under the `<session_id>-` prefix.",
             crate::timer::ON_TIMER_FN,
             crate::hooks::ON_POST_TURN_FN,
         )));

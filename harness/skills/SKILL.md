@@ -240,5 +240,6 @@ which calls they gate. Each hook function's `request_format` and
 `response_format` (`engine::functions::info`) are the input its observers'
 targets receive; the harness gets back the chain's merged outcome. These are for operator-trusted policy siblings
 (`approval-gate` observes `on-pre-call`); ordinary consumers do not observe
-hooks. An agent may observe `on-post-turn` for its own session, with a
-validator as the target.
+hooks. An agent may observe `on-post-turn` for its own session or for the
+children it names under the `<session_id>-` prefix, with a validator as the
+target.
