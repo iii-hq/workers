@@ -1,6 +1,6 @@
 {
   "name": "opencode",
-  "version": "0.1.24",
+  "version": "0.2.0",
   "private": true,
   "description": "OpenCode as an iii worker: headless turns over the iii bus, raw events on the opencode::on-raw-event function, AgentEvent frames on opencode::on-agent-event.",
   "license": "Apache-2.0",
