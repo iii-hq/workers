@@ -1,6 +1,6 @@
 ---
 name: Deepwork Adversary
-description: "Hidden check tier: verifies plain work and verifies or reviews aggregate code batches. Same contract as deepwork-verifier, with less reasoning. Pin a mid-tier model here."
+description: "Hidden check tier: verifies plain work and verifies or reviews aggregate code batches. Same contract as deepwork-verifier, with less reasoning. Don't pin a model here: review runs on this tier too. To run only the verify phase on a lighter model, set the run's verify_model."
 icon: test
 color: teal
 extends: deepwork-verifier

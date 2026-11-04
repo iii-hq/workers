@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.7.0
+
+Lessons from one long dev run: 4 orchestrators, about 60 sessions and US$80. About 30% of the cost went to repairs and reruns, and an external review found as blockers defects the run's own critic had listed as loose ends.
+
+- **A defect in the run's diff is a card, never a report line.**
+  - A critic loose end at a `<file>:<line>` the run changed becomes a new item with a dev card, whatever its wording or severity ("minor", "needs a product decision"). One that needs a person's decision, or that is not proven, goes to Backlog as `pending`. A phase's loose ends are left alone: by contract they are what the goal doesn't need.
+  - The critic proves each defect with the failing output of a check it ran, or marks it `Not proven`.
+  - When the round that ran its findings verified new commits, a second critic pass reviews them. It gets `Pass: 2` with the keys pass 1 filed, and the passes are recorded in the round comments so a resume counts them.
+  - New items past `max_items` go to the Follow-ups ticket instead of a comment.
+  - In that run, three real defects in the diff (an ownership rule, a check during retention, a prune condition) went to the Follow-ups ticket, and the PR was opened with them.
+- **Check phases get their own deadline.** `verify_deadline_min` (default twice `deadline_min`) covers verify, review, judges, the critic and the baseline.
+  - The long-run recipe now measures the time left: its first call reads the clock, and the job's wake expires two minutes before the leaf's own Deadline. Before, it was a fixed 15 minutes, shorter than a 20-minute phase.
+  - A check starts the project's suite and linter early, chained in one job, and runs long jobs one at a time per worktree.
+  - A check whose job outlives its wake writes `unsure` with `not finished: <command>` instead of nothing.
+  - In that run, a verify started three build jobs on one build directory, its database suite's wake expired, and the batch had no verdict twice.
+- **Disk preflight.** `min_free_gb` (default 5, `0` turns it off) is checked before the baseline and before each batch.
+  - Under it the run finishes `blocked: disk` and keeps its worktree.
+  - A resume of a run stopped before its baseline runs Setup and the baseline first. A resume of a batch it stopped repairs that batch.
+  - Two runs had died on ENOSPC mid-phase.
+- **The run ticket's final lane says what is left.** It goes to Done only when every item but the Follow-ups ticket is done or canceled. Otherwise it goes to Backlog labelled `blocked`, `unverified`, `unfinished` or `pending` (only cards waiting for a person remain), and resume clears the label. Before, a run blocked on a full disk was shown as done.
+- **Cards quote their sources.** A dev card carries a `Source: <path>#<section>: "<quote>"` line for each spec or plan its behaviour comes from, and review judges against it. In that run, most batch reviews never read the spec, and the last one could not: the spec was outside the worktree its file access was limited to.
+- **Batch repairs commit as `fixup! <the batch's commit>`** when that batch committed, so they fold into it under `git rebase --autosquash` or a squash merge. A local `--no-ff` merge keeps them as they are.
+- **The batch worker may run the project's lint on the packages it changed.** The lead's batch task says so too. A lint error found only by the check had cost a full review and verify round, twice.
+- **`verify_model`** (default `same`) runs only the batch verify phase on a lighter model (`lead`) or a named one. Review, judges and the critic keep the child model. The adversary's description no longer says to pin a mid-tier model there: review runs on that tier too.
+- **No `harness::ask` card for a blocker the run cannot clear** (a full disk, a denied permission, a missing repository): it is a comment and a `blocked:` finish. A run started by another session may have no one attached to answer a card.
+- **Compatibility.**
+  - A lead from before this version reads no `Check deadline` and uses `Phase deadline`.
+  - A run in progress can be resumed after updating.
+  - This update changes the kit sources; an installed kit needs to be updated separately.
+
 ## 0.6.0
 
 - Every wake is an observer armed with `harness::observe`: a long run observes `shell::on-job-finished` with args `{ job_id }`, wave, phase and critic barriers observe `state::on-changed` filtered on `input.scope` with the `state::barrier` condition, and the kanban retry observes `harness::on-timer` with args `{ in_ms }`. A long run reads `shell::status` once after arming its observer, so a job that ended first is read at once. Wakes are removed with `harness::unobserve` and listed with `harness::observers::list`, and those three are what the profiles and the spawn allow lists name. The README's CLI lines use `iii call`. Requires the observe v2 releases of `harness`, `ide`, `state` and `kanban`.

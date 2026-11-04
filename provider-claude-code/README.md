@@ -115,8 +115,12 @@ whatever its size (Anthropic applies its per-model token minimum over the
 whole prefix and silently skips a short one), so the per-session tail no
 longer invalidates the shared entry. That boundary
 block and the tools marker use the 1-hour cache (`ttl: "1h"`); the messages
-anchor stays at 5 minutes. `PROVIDER_CLAUDE_CODE_CACHE_TTL=5m` restores the
-5-minute cache everywhere.
+anchor stays at 5 minutes unless `PROVIDER_CLAUDE_CODE_CACHE_MESSAGES_TTL=1h`
+asks for one hour there too (only on top of the 1-hour prefix), for agents that
+sleep between turns, such as an orchestrator waiting on its children: one that
+wakes after more than five minutes otherwise writes its whole conversation
+again. `PROVIDER_CLAUDE_CODE_CACHE_TTL=5m` restores the 5-minute cache
+everywhere.
 
 ## Tests
 

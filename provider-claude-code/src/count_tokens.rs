@@ -109,6 +109,7 @@ fn build_count_body(
             effort: thinking.effort,
             cache_enabled: false,
             cache_ttl: None,
+            messages_cache_ttl: None,
         },
         // The stream reports these on the turn; a count has no channel for them.
         &mut Vec::new(),
@@ -450,6 +451,7 @@ mod tests {
                         effort: thinking.effort,
                         cache_enabled: false,
                         cache_ttl: None,
+                        messages_cache_ttl: None,
                     },
                     &mut Vec::new(),
                 );
