@@ -38,6 +38,10 @@ mod tests {
                 panic!("{} contract failed: {error:#}", case.id);
             }
         }
+        #[cfg(feature = "provider-claude-code")]
+        if let Err(error) = crate::contract::claude_code_first_boot_registration().await {
+            panic!("claude-code first-boot registration failed: {error:#}");
+        }
     }
 
     #[test]
