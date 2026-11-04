@@ -138,7 +138,7 @@ async fn run_upstream(
                 let _ = tx
                     .send(synthetic_error_event_from_state(
                         &state,
-                        &format!("stream read failed: {e}"),
+                        &format!("stream read failed: {}", error_chain(&e)),
                         &args.model,
                         ErrorKind::Transient,
                     ))
