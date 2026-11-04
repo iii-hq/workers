@@ -201,6 +201,36 @@ const MONACO_OPTIONS: monacoNs.editor.IStandaloneEditorConstructionOptions = {
   contextmenu: false,
 }
 
+/**
+ * The find widget's buttons (✕, match case, regex, …) get the browser's own
+ * tooltip from their labels. Monaco's in-page tooltip for them opens inside
+ * the editor's clipped box: above a find bar at the top it is cut off, and
+ * it covered ✕ so a click closed nothing (the in-page one is hidden in
+ * index.css). A native title is never clipped and never takes the click.
+ */
+function titleFindButtons(root: HTMLElement): () => void {
+  const apply = () => {
+    for (const el of root.querySelectorAll<HTMLElement>(
+      '.find-widget [aria-label]:not([title])',
+    )) {
+      // Buttons and toggles only: a tooltip over the search field itself
+      // would sit on what is being typed.
+      if (el.matches('input, textarea, [role="textbox"]')) continue
+      const label = el.getAttribute('aria-label')
+      if (label) el.title = label
+    }
+  }
+  const observer = new MutationObserver(apply)
+  observer.observe(root, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['aria-label'],
+  })
+  apply()
+  return () => observer.disconnect()
+}
+
 /** Keyboard selections settle for this long before the bar shows. */
 const SELECTION_BAR_DELAY_MS = 160
 
@@ -493,6 +523,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     const editorValueRef = React.useRef<string | null>(null)
     const pendingRevealRef = React.useRef<PendingReveal | null>(null)
     const reportViewStateOnDisposeRef = React.useRef<(() => void) | null>(null)
+    const untitleFindButtonsRef = React.useRef<(() => void) | null>(null)
     const touchStartRef = React.useRef<{
       pointerId: number
       x: number
@@ -905,6 +936,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             fontFamily,
           })
           editorRef.current = editor
+          if (hostRef.current)
+            untitleFindButtonsRef.current = titleFindButtons(hostRef.current)
           // Monaco measures glyphs once, at creation: a webfont that lands
           // later leaves the cursor and selection off by a fraction per
           // column until the editor measures again.
@@ -1052,6 +1085,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         selectionWidgetRef.current = null
         reportViewStateOnDisposeRef.current?.()
         reportViewStateOnDisposeRef.current = null
+        untitleFindButtonsRef.current?.()
+        untitleFindButtonsRef.current = null
         editorRef.current?.dispose()
         editorRef.current = null
       }

@@ -2054,3 +2054,14 @@
   --sidebar-border: var(--color-edge);
   --sidebar-ring: var(--color-rule-focus);
 }
+
+/* Monaco's in-page button tooltips (the find widget's "Close (Escape)",
+   match case, regex) open inside the editor's clipped box: above a find
+   bar at the top of an editor they were cut down to a sliver and covered
+   ✕, so a click there closed nothing. The buttons carry native titles
+   instead (CodeEditor `titleFindButtons`). Editor content hovers (types,
+   docs) are not `workbench-hover` and are untouched. Unlayered, so
+   Monaco's own (unlayered) stylesheet cannot win. */
+.context-view:has(.monaco-hover.workbench-hover) {
+  display: none !important;
+}
