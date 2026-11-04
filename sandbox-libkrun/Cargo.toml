@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "sandbox-libkrun"
-# 0.2.x implements sandbox contract 1; iii-compose's ADAPTER_RANGE ("^0.2") must match.
+# 0.3.x implements sandbox contract 1.2; iii-compose's ADAPTER_RANGE must be "^0.3" to install it.
 version = "0.3.0"
 edition = "2024"
 license = "Elastic-2.0"
@@ -52,6 +52,8 @@ async-trait = "0.1.89"
 nix = { version = "0.31.3", features = ["fs", "signal", "process"] }
 dirs = "7"
 sha2 = "0.11"
+# Scoped worker auth (contract 1.2); the release that shares sha2 0.11's digest.
+hmac = "0.13"
 hex = "0.4"
 flate2 = "1"
 tar = "0.4"

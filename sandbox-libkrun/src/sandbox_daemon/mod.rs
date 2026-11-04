@@ -113,8 +113,9 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
 use crate::sandbox_daemon::errors::{Payload, SandboxErrorWire};
 use crate::wire::{
-    AdapterInfo, AdapterInfoRequest, ContractVersion, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE,
-    WORKER_START, WORKER_STATUS, WORKER_STOP,
+    AdapterInfo, AdapterInfoRequest, ContractVersion, FEATURE_LEASE, FEATURE_LOGS_FROM_END,
+    FEATURE_SCOPED_AUTH, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STATUS,
+    WORKER_STOP,
 };
 use crate::worker_vm::WorkerVms;
 
@@ -335,6 +336,9 @@ pub fn adapter_info() -> AdapterInfo {
         adapter: ADAPTER_NAME.to_string(),
         adapter_version: env!("CARGO_PKG_VERSION").to_string(),
         contract: ContractVersion::CURRENT,
+        features: [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END]
+            .map(String::from)
+            .to_vec(),
     }
 }
 
@@ -367,7 +371,7 @@ where
             }
         })
         .description(description)
-        // `auth` is the project token, good for every worker::*: no observer may read it.
+        // `auth` can be the project token, good for every worker::*: no observer may read it.
         .observable(false),
     )
 }
@@ -721,13 +725,18 @@ mod registration_tests {
             ),
             ("sandbox-libkrun", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
-        // iii-compose installs ADAPTER_RANGE "^0.2" for contract 1, so releases stay 0.2.x.
+        // iii-compose installs ADAPTER_RANGE "^0.3" for contract 1.2, so releases stay 0.3.x.
         assert_eq!(
             (
                 env!("CARGO_PKG_VERSION_MAJOR"),
                 env!("CARGO_PKG_VERSION_MINOR")
             ),
-            ("0", "2")
+            ("0", "3")
+        );
+        // What `iii sandbox run` refuses an adapter without.
+        assert_eq!(
+            i.features,
+            ["worker.scoped_auth", "worker.lease", "worker.logs_from_end"]
         );
     }
 

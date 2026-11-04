@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use sandbox_libkrun::wire::{
     State, WorkerDestroyRequest, WorkerPrepareRequest, WorkerSource, WorkerStartRequest,
-    WorkerStatusRequest, WorkerStopRequest,
+    WorkerStatusRequest, WorkerStopRequest, scoped_auth_token,
 };
 use sandbox_libkrun::worker_vm::WorkerVms;
 
@@ -51,7 +51,9 @@ async fn cycle() {
         "name: e2e\nruntime:\n  base_image: docker.io/iiidev/python:latest\nscripts:\n  install: ''\n",
     )
     .unwrap();
-    let vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    let mut vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    let lease_grace = Duration::from_secs(3);
+    vms.lease_grace = lease_grace;
     let source = WorkerSource::Local {
         host_path: src.display().to_string(),
         run_override: Some(RUN.into()),
@@ -84,6 +86,7 @@ async fn cycle() {
     vms.prepare(WorkerPrepareRequest {
         auth: "t".into(),
         source: source.clone(),
+        state_key: None,
     })
     .await
     .unwrap();
@@ -104,6 +107,8 @@ async fn cycle() {
         (second.vm_id.as_str(), second.instance),
         (first.vm_id.as_str(), 2)
     );
+    // A project-token boot has no lease: nothing follows it, past the grace.
+    tokio::time::sleep(lease_grace + Duration::from_secs(2)).await;
     assert!(matches!(status(&second.vm_id, 2).state, State::Running));
     stop(&second.vm_id, 2).await.unwrap();
 
@@ -111,6 +116,66 @@ async fn cycle() {
         .destroy(WorkerDestroyRequest {
             auth: "t".into(),
             state_key: "e2e".into(),
+        })
+        .unwrap();
+    assert!(destroyed.destroyed);
+
+    scoped_boot(&vms, &source, lease_grace).await;
+}
+
+/// `iii sandbox run`'s calls with its scoped token. A boot nothing follows ends
+/// with its lease, and the token opens only this VM.
+async fn scoped_boot(vms: &WorkerVms, source: &WorkerSource, lease_grace: Duration) {
+    let state_key = "e2e-scoped";
+    let token = scoped_auth_token("t", state_key);
+    vms.prepare(WorkerPrepareRequest {
+        auth: token.clone(),
+        source: source.clone(),
+        state_key: Some(state_key.into()),
+    })
+    .await
+    .unwrap();
+    let started = vms
+        .start(WorkerStartRequest {
+            auth: token.clone(),
+            state_key: state_key.into(),
+            worker_name: "e2e-scoped".into(),
+            source: source.clone(),
+            env: Default::default(),
+            engine_url: "ws://127.0.0.1:49134".into(),
+        })
+        .await
+        .unwrap();
+    let status = |auth: &str, vm_id: &str| {
+        vms.status(WorkerStatusRequest {
+            auth: auth.into(),
+            vm_id: vm_id.into(),
+            instance: started.instance,
+        })
+    };
+    assert!(matches!(
+        status(&token, &started.vm_id).unwrap().state,
+        State::Running
+    ));
+    let other = scoped_auth_token("t", "another-vm");
+    let refused = status(&other, &started.vm_id).unwrap_err();
+    assert_eq!(refused.code().as_str(), "S505", "{refused}");
+
+    let deadline = Instant::now() + lease_grace + Duration::from_secs(15);
+    let ended = loop {
+        let now = status(&token, &started.vm_id).unwrap();
+        if now.ended_at_ms.is_some() {
+            break now;
+        }
+        assert!(Instant::now() < deadline, "the lease did not stop {now:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert!(matches!(ended.state, State::Stopped), "{ended:?}");
+
+    let destroyed = vms
+        .destroy(WorkerDestroyRequest {
+            auth: token,
+            state_key: state_key.into(),
         })
         .unwrap();
     assert!(destroyed.destroyed);

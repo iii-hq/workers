@@ -164,7 +164,9 @@ pub enum SandboxError {
     #[error("no VM {0} on this adapter")]
     VmNotFound(String),
 
-    #[error("worker::* needs the project token this adapter was started with")]
+    #[error(
+        "worker::* needs the project token this adapter was started with, or the token scoped to that VM"
+    )]
     Unauthorized,
 
     #[error("worker prepare failed: {0}")]
@@ -806,7 +808,7 @@ mod tests {
             ),
             (
                 SandboxError::Unauthorized,
-                "worker::* needs the project token this adapter was started with",
+                "worker::* needs the project token this adapter was started with, or the token scoped to that VM",
                 Some("call worker::* through Compose, which passes the token"),
             ),
             (
