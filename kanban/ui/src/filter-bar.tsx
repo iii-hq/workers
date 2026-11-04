@@ -34,7 +34,7 @@ import {
   SlidersHorizontal,
   Clock,
   Columns3,
-  Folder,
+  FolderOpen,
   Layers,
   ListTree,
   List as ListIcon,
@@ -172,7 +172,7 @@ export function FilterBar({
   const projectNames = new Map(projects.map((project) => [project.id, project.name]))
   const projectLead = (color: ProjectView['color']) => (
     <span aria-hidden="true" className="kb-project-dot" data-tone={color ?? undefined}>
-      <Folder size={16} />
+      <FolderOpen size={16} />
     </span>
   )
   const projectOpts = selectedFirst(
@@ -293,7 +293,7 @@ export function FilterBar({
       id: 'projects',
       name: 'Project',
       heading: 'Filter by project',
-      Icon: Folder,
+      Icon: FolderOpen,
       value: summary(filters.projects, (id) =>
         id === '' ? 'No project' : (projectNames.get(id) ?? 'Unknown project'),
       ),
@@ -635,7 +635,7 @@ function FacetPicker({ f, trigger: custom }: { f: Facet; trigger?: ReactElement 
 
 /** The glyph each grouping wears elsewhere: release milestone, project folder, parent tree. */
 function GroupIcon({ id }: { id: GroupBy }) {
-  const Icon = id === 'release' ? Milestone : id === 'project' ? Folder : id === 'parent' ? ListTree : Columns3
+  const Icon = id === 'release' ? Milestone : id === 'project' ? FolderOpen : id === 'parent' ? ListTree : Columns3
   return <Icon className="kb-menu__icon" size={16} />
 }
 

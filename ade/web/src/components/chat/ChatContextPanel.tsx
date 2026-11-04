@@ -14,7 +14,7 @@ import {
   FileIcon,
   FileSpreadsheet,
   FileText,
-  Folder,
+  FolderOpen,
   GitBranch,
   GitPullRequest,
   GitPullRequestCreate,
@@ -538,7 +538,7 @@ export function ChatContextPanel({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Row
-                  icon={<Folder aria-hidden />}
+                  icon={<FolderOpen aria-hidden />}
                   label={basename(workingDir)}
                   suffix={parentDir(workingDir)}
                   title={workingDir}
@@ -687,7 +687,7 @@ export function ChatContextPanel({
         ) : (
           <EmptyState
             compact
-            icon={Folder}
+            icon={FolderOpen}
             title="No project folder"
             description="Pick a folder in the composer to see its branch and changes here."
           />

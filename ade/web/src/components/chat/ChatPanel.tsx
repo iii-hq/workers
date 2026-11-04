@@ -22,6 +22,14 @@ import {
   sideChatsLeftByClosedTabs,
   sideChatsMadeHere,
 } from '@/lib/chat-aside'
+import {
+  claimChatPaneLead,
+  isChatPaneLead,
+  loadPaneChat,
+  mountChatPane,
+  pendingShownChat,
+  savePaneChat,
+} from '@/lib/chat-pane-selection'
 import { onChatDialogRequest, onChatShownRequest } from '@/lib/chat-requests'
 import { sendDraftWhenReady } from '@/lib/composer-insert'
 import { useConversationsCtx } from '@/lib/conversations-context'
@@ -58,6 +66,13 @@ interface ChatPanelProps {
   density?: ChatPanelDensity
   /** Session pinned to this workspace pane; leaves the global chat untouched. */
   conversationId?: string
+  /**
+   * The hosting workspace pane (`chatPaneKey(tab, pane)`): an unpinned pane
+   * keeps its own chat under it instead of mirroring the one picked last
+   * anywhere (`lib/chat-pane-selection`). Absent, the panel shows the
+   * active chat.
+   */
+  paneKey?: string
   /** Outer edge occupied by this pane in a split workspace. */
   panelSide?: PanelSide
   /** Close the hosting pane — the header's standard ✕ when present. */
@@ -92,6 +107,7 @@ const MOBILE_VIEWPORT_QUERY = '(max-width: 639px)'
 export function ChatPanel({
   density = 'route',
   conversationId,
+  paneKey,
   panelSide = 'left',
   onRequestClose,
   commands,
@@ -126,25 +142,112 @@ export function ChatPanel({
   } = useConversationsCtx()
   const [importOpen, setImportOpen] = useState(false)
   const pinned = conversationId !== undefined
+  // An unpinned workspace pane keeps its own chat: picking another chat in
+  // another tab or pane leaves this one where it was. Its first chat is one
+  // an outside request opened it for, else the one it showed last, else the
+  // active chat.
+  const ownKey = pinned ? undefined : paneKey
+  const [ownId, setOwnId] = useState<string | null>(() =>
+    ownKey === undefined
+      ? null
+      : (pendingShownChat() ?? loadPaneChat(ownKey) ?? activeId),
+  )
+  const ownConversation =
+    ownKey !== undefined && ownId
+      ? conversations.find((conversation) => conversation.id === ownId)
+      : undefined
   const displayedConversation = pinned
     ? (conversations.find(
         (conversation) => conversation.id === conversationId,
       ) ?? null)
-    : active
-  const displayedId = pinned ? conversationId : activeId
+    : (ownConversation ?? active)
+  const displayedId = pinned
+    ? conversationId
+    : (displayedConversation?.id ?? activeId)
 
   useEffect(() => {
     if (!displayedId) return
     return watchConversation(displayedId)
   }, [displayedId, watchConversation])
+  // A remembered chat outside the loaded list resolves through a watch, the
+  // way a pinned pane's does.
+  const unresolvedOwnId =
+    ownKey !== undefined && !ownConversation ? ownId : null
+  useEffect(() => {
+    if (!unresolvedOwnId) return
+    return watchConversation(unresolvedOwnId)
+  }, [unresolvedOwnId, watchConversation])
+
+  // A remembered chat that no longer exists (an unsent draft from before a
+  // reload, a deleted chat, another stack's chat) is let go: the pane falls
+  // back to the active chat instead of holding an id nothing will show.
+  const ownGone =
+    ownKey !== undefined &&
+    ownId !== null &&
+    !ownConversation &&
+    missingConversationIds.has(ownId)
+  useEffect(() => {
+    if (ownGone) setOwnId(null)
+  }, [ownGone])
+
+  useEffect(() => {
+    if (ownKey !== undefined && ownId) savePaneChat(ownKey, ownId)
+  }, [ownKey, ownId])
+  // The lead pane (the one used last) follows the active chat; on mount, a
+  // pane that takes the lead (a workspace tab switched to) hands its own
+  // chat back to the store instead, so the active chat is the one in front
+  // of the person.
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
+  const ownIdRef = useRef(ownId)
+  ownIdRef.current = ownId
+  const handedBackRef = useRef(false)
+  useEffect(() => (ownKey ? mountChatPane(ownKey) : undefined), [ownKey])
+  useEffect(() => {
+    if (ownKey === undefined || !isChatPaneLead(ownKey)) return
+    const own = ownIdRef.current
+    if (!handedBackRef.current) {
+      // Only a chat the store knows is handed back: `select` holds an
+      // unknown id until it loads, and one that never will (gone since)
+      // would leave the pane on "No chat selected". While the remembered
+      // chat is still resolving the pane waits, showing the active chat.
+      if (own && own !== activeId) {
+        if (conversations.some((c) => c.id === own)) {
+          handedBackRef.current = true
+          select(own)
+          return
+        }
+        if (!missingConversationIds.has(own)) return
+      }
+      handedBackRef.current = true
+    }
+    if (activeId && activeId !== own) setOwnId(activeId)
+  }, [ownKey, activeId, select, conversations, missingConversationIds])
+  // Pressing or focusing the pane makes it the lead and its chat active.
+  const claimLead = useCallback(() => {
+    if (ownKey === undefined || isChatPaneLead(ownKey)) return
+    claimChatPaneLead(ownKey)
+    handedBackRef.current = true
+    const own = ownIdRef.current
+    if (own && conversationsRef.current.some((c) => c.id === own)) select(own)
+  }, [ownKey, select])
+  /** Show `id` in this pane (and make it the active chat). */
+  const showInPane = useCallback(
+    (id: string) => {
+      if (ownKey !== undefined) {
+        claimChatPaneLead(ownKey)
+        handedBackRef.current = true
+        setOwnId(id)
+      }
+    },
+    [ownKey],
+  )
 
   // Side chats end, besides Discard: two hours untouched, with their main
   // chat (deleted here, in another tab or elsewhere: the list marks it
   // missing), and when every ADE tab of this browser is closed. Leaving a
   // conversation keeps them. One whose conversation a panel of this tab
   // shows is never idle.
-  const conversationsRef = useRef(conversations)
-  conversationsRef.current = conversations
   useEffect(
     () => (displayedId ? markDisplayed(displayedId) : undefined),
     [displayedId],
@@ -253,10 +356,11 @@ export function ChatPanel({
 
   const handleSelect = useCallback(
     (id: string) => {
+      showInPane(id)
       select(id)
       setNarrowView('chat')
     },
-    [select],
+    [select, showInPane],
   )
 
   // The header's open-chat tabs (an unpinned, wide pane only): the chat on
@@ -264,11 +368,11 @@ export function ChatPanel({
   const [chatTabs, setChatTabs] = useState<OpenChatTabs>(loadOpenChatTabs)
   useEffect(() => saveOpenChatTabs(chatTabs), [chatTabs])
   useEffect(() => {
-    if (pinned || !activeId) return
-    const shown = conversations.find((c) => c.id === activeId)
+    if (pinned || !displayedId) return
+    const shown = conversations.find((c) => c.id === displayedId)
     if (shown && isSideChat(shown)) return
-    setChatTabs((current) => openChatTab(current, activeId))
-  }, [pinned, activeId, conversations])
+    setChatTabs((current) => openChatTab(current, displayedId))
+  }, [pinned, displayedId, conversations])
   useEffect(() => {
     if (!listed) return
     const tabbable = new Set(
@@ -294,9 +398,9 @@ export function ChatPanel({
     (id: string) => {
       const { state, next } = closeChatTab(chatTabs, id)
       setChatTabs(state)
-      if (id === activeId && next) select(next)
+      if (id === displayedId && next) handleSelect(next)
     },
-    [chatTabs, activeId, select],
+    [chatTabs, displayedId, handleSelect],
   )
 
   // New chat opens what the person chose in Settings: a blank chat (the
@@ -310,9 +414,9 @@ export function ChatPanel({
       setNewChatOpen(true)
       return
     }
-    createNew()
+    showInPane(createNew())
     setNarrowView('chat')
-  }, [newChatMode, createNew])
+  }, [newChatMode, createNew, showInPane])
   const openNewChatRef = useRef(openNewChat)
   openNewChatRef.current = openNewChat
 
@@ -335,6 +439,7 @@ export function ChatPanel({
   const handleNewChat = useCallback(
     (draft: NewChatDraft, { send = true }: { send?: boolean } = {}) => {
       const id = createNew({ text: draft.text })
+      showInPane(id)
       setSystemPrompt(id, draft.systemPrompt)
       // The profile first: it sets its own model and effort, and the
       // dialog's pickers (which may have overridden them) apply after.
@@ -352,6 +457,7 @@ export function ChatPanel({
     },
     [
       createNew,
+      showInPane,
       setSystemPrompt,
       setAgentProfile,
       setModel,
@@ -367,23 +473,26 @@ export function ChatPanel({
   const handleProjectAdded = useCallback(
     (path: string) => {
       const id = createNew()
+      showInPane(id)
       setWorkingDir(id, path)
       setNarrowView('chat')
     },
-    [createNew, setWorkingDir],
+    [createNew, setWorkingDir, showInPane],
   )
 
   // The shortcuts reach the pane through the request bus (App dispatches
-  // them); a pinned pane leaves the global chat's dialogs alone.
+  // them); a pinned pane leaves the global chat's dialogs alone, and of two
+  // unpinned ones only the lead (the one used last) answers.
   useEffect(
     () =>
       pinned
         ? undefined
         : onChatDialogRequest((dialog) => {
+            if (ownKey !== undefined && !isChatPaneLead(ownKey)) return
             if (dialog === 'new-chat') openNewChatRef.current()
             else setAddProjectOpen(true)
           }),
-    [pinned],
+    [pinned, ownKey],
   )
 
   const handleBack = useCallback(() => {
@@ -506,6 +615,8 @@ export function ChatPanel({
         'chat-surface flex min-h-0 min-w-0 flex-1 flex-col font-inter',
         NEUTRAL_SURFACE,
       )}
+      onPointerDownCapture={claimLead}
+      onFocusCapture={claimLead}
     >
       <ImportConversationsDialog
         open={importOpen}
@@ -540,7 +651,7 @@ export function ChatPanel({
           <PageSidebar
             // learn-iii-conversations: tour anchor (workers/learn-iii). Do not remove.
             className={cn(
-              'learn-iii-conversations bg-white dark:bg-neutral-950',
+              'learn-iii-conversations bg-white dark:bg-black',
               /* An edge where the list meets the chat: neutral-200 in
                  light, neutral-900 in dark. */
               'border-neutral-200 dark:border-neutral-900',
@@ -579,7 +690,7 @@ export function ChatPanel({
           >
             <ConversationSidebar
               conversations={conversations}
-              activeId={activeId}
+              activeId={displayedId ?? null}
               narrow={narrow}
               onCreate={openNewChat}
               onAddProject={() => setAddProjectOpen(true)}
@@ -605,7 +716,7 @@ export function ChatPanel({
               pinned || narrow ? undefined : (
                 <ChatTabs
                   tabs={tabConversations}
-                  activeId={activeId}
+                  activeId={displayedId ?? null}
                   recent={recentConversations}
                   onSelect={handleSelect}
                   onClose={handleCloseTab}
@@ -637,7 +748,7 @@ export function ChatPanel({
                 <ConversationSkeleton />
               </div>
             ) : (
-              <div className="flex-1 flex items-center justify-center">
+              <div className="flex-1 flex flex-col items-center justify-center gap-4">
                 <div className="font-sans text-base text-ink-faint">
                   {pinned
                     ? connectionState === 'connected'
@@ -645,6 +756,11 @@ export function ChatPanel({
                       : 'Waiting for the session connection…'
                     : 'No chat selected.'}
                 </div>
+                {pinned ? null : (
+                  <Button variant="primary" onClick={openNewChat}>
+                    New chat
+                  </Button>
+                )}
               </div>
             )}
           </section>

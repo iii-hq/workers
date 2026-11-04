@@ -23,13 +23,21 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::types::turn::{TurnRecord, TurnStatus};
 
+/// The `done` reason of a turn that ended on an accepted `harness::ask`: the
+/// session waits on the user's answer, and the console marks it so in the
+/// sidebar and the tab row.
+pub const AWAITING_ANSWER_REASON: &str = "awaiting answer";
+
 /// The session status a turn status projects to, or `None` while the turn is
-/// live (the loop owns those phases).
+/// live (the loop owns those phases). `ended_on_ask` is a completed turn whose
+/// last step showed a `harness::ask` card.
 pub fn projection_for(
     status: TurnStatus,
     result_error: Option<&str>,
+    ended_on_ask: bool,
 ) -> Option<(&'static str, Option<&str>)> {
     match status {
+        TurnStatus::Completed if ended_on_ask => Some(("done", Some(AWAITING_ANSWER_REASON))),
         TurnStatus::Completed => Some(("done", None)),
         TurnStatus::Cancelled => Some(("done", Some("stopped"))),
         TurnStatus::Failed => Some(("error", result_error)),
@@ -38,7 +46,10 @@ pub fn projection_for(
 }
 
 pub fn projection(record: &TurnRecord) -> Option<(&'static str, Option<&str>)> {
-    projection_for(record.status, record.result_error.as_deref())
+    // The ask step is the last step only when the turn ended on its card; a
+    // turn that went on (steering, parked calls) stepped past it.
+    let ended_on_ask = record.ask_step == Some(record.step);
+    projection_for(record.status, record.result_error.as_deref(), ended_on_ask)
 }
 
 const WRITE_ATTEMPTS: u32 = 2;
@@ -210,18 +221,45 @@ mod tests {
     #[test]
     fn terminal_statuses_project_and_live_ones_do_not() {
         assert_eq!(
-            projection_for(TurnStatus::Completed, Some("ignored")),
+            projection_for(TurnStatus::Completed, Some("ignored"), false),
             Some(("done", None))
         );
         assert_eq!(
-            projection_for(TurnStatus::Cancelled, None),
+            projection_for(TurnStatus::Cancelled, None, false),
             Some(("done", Some("stopped")))
         );
         assert_eq!(
-            projection_for(TurnStatus::Failed, Some("boom")),
+            projection_for(TurnStatus::Failed, Some("boom"), false),
             Some(("error", Some("boom")))
         );
-        assert_eq!(projection_for(TurnStatus::Running, None), None);
-        assert_eq!(projection_for(TurnStatus::AwaitingFunctions, None), None);
+        assert_eq!(projection_for(TurnStatus::Running, None, false), None);
+        assert_eq!(
+            projection_for(TurnStatus::AwaitingFunctions, None, false),
+            None
+        );
+    }
+
+    #[test]
+    fn a_turn_that_ended_on_an_ask_projects_awaiting_answer() {
+        let mut record = crate::types::turn::tests::record();
+        record.status = TurnStatus::Completed;
+        assert_eq!(projection(&record), Some(("done", None)));
+
+        record.ask_step = Some(record.step);
+        assert_eq!(
+            projection(&record),
+            Some(("done", Some(AWAITING_ANSWER_REASON)))
+        );
+
+        // A stop or a failure outranks the open question.
+        record.status = TurnStatus::Cancelled;
+        assert_eq!(projection(&record), Some(("done", Some("stopped"))));
+        record.status = TurnStatus::Failed;
+        assert_eq!(projection(&record), Some(("error", None)));
+
+        // A turn that stepped past its ask (steering) ended on an answer.
+        record.status = TurnStatus::Completed;
+        record.step += 1;
+        assert_eq!(projection(&record), Some(("done", None)));
     }
 }

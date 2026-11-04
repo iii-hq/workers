@@ -21,7 +21,7 @@ import {
   Check,
   ChevronRight,
   Crosshair,
-  Folder,
+  FolderOpen,
   FolderGit2,
   GitBranch,
   Tag,
@@ -201,7 +201,7 @@ export const GitBranchTree = memo(function GitBranchTree({
             node.kind === 'head'
               ? Crosshair
               : node.kind === 'folder'
-                ? Folder
+                ? FolderOpen
                 : ref?.kind === 'tag'
                   ? Tag
                   : ref?.worktree

@@ -599,6 +599,11 @@ that:
 The accepted step is recorded on the turn record (`ask_step`), so a
 redelivered step still ends on the question and still refuses a second ask.
 
+A turn that ended on the question projects the session status `done` with the
+reason `awaiting answer`, so a client can mark the session as waiting on its
+user (the ADE puts an amber dot on the sidebar row and the chat tab). The next
+turn sets `working` again.
+
 Refusals come back as an `is_error` result, and the turn continues so the model
 can react:
 

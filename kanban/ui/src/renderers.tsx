@@ -16,7 +16,7 @@ import {
   type ObserverActivityMessage,
 } from '@iii-dev/console-ui'
 import { formatRelative, unwrapEnvelope } from '@iii-dev/console-ui/format'
-import { ChevronRight, CircleX, Folder, MessageSquare, Milestone } from 'lucide-react'
+import { ChevronRight, CircleX, FolderOpen, MessageSquare, Milestone } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 import { formatTarget, observerScope, plural, releaseStatusText } from './plan-rules'
 import {
@@ -418,7 +418,7 @@ function PlanCard({
         {verb ? <span className="kb-chat-card__verb">{verb}</span> : null}
         {project ? (
           <span className="kb-project-dot" data-tone={project.color ?? undefined}>
-            <Folder size={16} />
+            <FolderOpen size={16} />
           </span>
         ) : (
           <Milestone size={16} />

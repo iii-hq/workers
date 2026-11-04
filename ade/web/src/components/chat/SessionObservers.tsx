@@ -14,6 +14,10 @@ import { Hint } from '@/components/ui/Hint'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import {
+  loadDismissedTriggers,
+  saveDismissedTriggers,
+} from '@/lib/dismissed-triggers'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
@@ -170,6 +174,11 @@ function formatJson(value: unknown): string {
   }
 }
 
+/** A 48px touch row that settles to 32px under a fine pointer. */
+const touchRowHeight = 'h-12 sm:h-8'
+/** Row copy: 16px on a phone, 12px beside a pointer. */
+const rowTextClass = 'text-sm sm:text-[12px]'
+
 /**
  * A full-width text row that owns the click (expand, open detail). Quiet
  * until hovered, the composer toolbar's height on either breakpoint, and its
@@ -177,8 +186,9 @@ function formatJson(value: unknown): string {
  * hover shape nests concentrically inside the card (12px radius − 4px gutter).
  */
 const rowButtonClass = cn(
-  'flex h-12 min-w-0 flex-1 items-center gap-2 rounded-lg pr-2 pl-3 text-left font-sans',
-  'hover:bg-surface-hover sm:h-8',
+  'flex min-w-0 flex-1 items-center gap-2 rounded-lg pr-2 pl-3 text-left font-sans',
+  'hover:bg-surface-hover',
+  touchRowHeight,
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
 )
 
@@ -262,7 +272,7 @@ function ObserverRow({
         type="button"
         onClick={onOpen}
         title="show observer detail"
-        className={cn(rowButtonClass, 'text-sm sm:text-[12px]')}
+        className={cn(rowButtonClass, rowTextClass)}
       >
         <ObserverIcon
           size={16}
@@ -276,7 +286,7 @@ function ObserverRow({
           <span className={inactive ? 'text-ink-faint' : 'text-ink'}>
             {title}
           </span>
-          <span className={inactive ? 'text-ink-ghost' : 'text-ink-faint'}>
+          <span className="text-ink-faint">
             {meta.map((part) => ` · ${part}`).join('')}
           </span>
         </span>
@@ -428,10 +438,21 @@ export function SessionObservers({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [confirmingClear, setConfirmingClear] = useState(false)
   const [clearing, setClearing] = useState(false)
-  // Inactive ghost rows the user dismissed — local per-tab view state; they
-  // resurrect from the transcript on reload, so no persistence needed.
-  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
+  // Inactive ghost rows the user dismissed. The rows are rebuilt from the
+  // transcript on every load, so the dismissals are kept in localStorage.
+  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedTriggers)
+  const updateDismissed = (update: (next: Set<string>) => void) =>
+    setDismissed((prev) => {
+      const next = new Set(prev)
+      update(next)
+      saveDismissedTriggers(next)
+      return next
+    })
+  // The inactive rows fold into their own group under the live ones, closed
+  // by default: a long run of spent one-shots must not bury the live ones.
+  const [inactiveExpanded, setInactiveExpanded] = useState(false)
   const listId = useId()
+  const inactiveListId = useId()
 
   const visibleObservers = useMemo(
     () => observers.filter((t) => !dismissed.has(t.id)),
@@ -441,8 +462,12 @@ export function SessionObservers({
     () => visibleObservers.filter((t) => !t.fired),
     [visibleObservers],
   )
+  const inactiveObservers = useMemo(
+    () => visibleObservers.filter((t) => t.fired),
+    [visibleObservers],
+  )
   const activeCount = liveObservers.length
-  const inactiveCount = visibleObservers.length - activeCount
+  const inactiveCount = inactiveObservers.length
 
   // Whether each keyed state observer's watched key exists yet — the
   // row-level diagnosis for a wake armed on a key nothing ever writes.
@@ -487,8 +512,19 @@ export function SessionObservers({
   }
 
   const dismiss = (id: string) => {
-    setDismissed((prev) => new Set(prev).add(id))
+    updateDismissed((next) => next.add(id))
     setSelectedId((current) => (current === id ? null : current))
+  }
+
+  // Inactive rows have no live observer: clearing them only takes them out
+  // of view, so it needs no confirmation.
+  const clearInactive = () => {
+    updateDismissed((next) => {
+      for (const t of inactiveObservers) next.add(t.id)
+    })
+    setSelectedId((current) =>
+      inactiveObservers.some((t) => t.id === current) ? null : current,
+    )
   }
 
   // An inactive ghost row has no live observer — its ✕ dismisses locally; a
@@ -502,10 +538,8 @@ export function SessionObservers({
       await onClearAll?.()
       // Live observers are removed by onClearAll; inactive ghosts have no
       // live observer, so sweep them from view here too.
-      setDismissed((prev) => {
-        const next = new Set(prev)
-        for (const t of visibleObservers) if (t.fired) next.add(t.id)
-        return next
+      updateDismissed((next) => {
+        for (const t of inactiveObservers) next.add(t.id)
       })
       setSelectedId(null)
     } finally {
@@ -546,7 +580,7 @@ export function SessionObservers({
                 active
               </span>
               {inactiveCount > 0 ? (
-                <span className="text-ink-ghost">
+                <span className="text-ink-faint">
                   {' '}
                   · {inactiveCount} inactive
                 </span>
@@ -597,18 +631,95 @@ export function SessionObservers({
             className="min-h-0 overflow-hidden"
             inert={expanded ? undefined : true}
           >
-            <ul className="px-1 pb-1">
-              {visibleObservers.map((observer) => (
-                <ObserverRow
-                  key={observer.id}
-                  observer={observer}
-                  stateNote={stateNote(observer)}
-                  busy={busyId === observer.id}
-                  onOpen={() => setSelectedId(observer.id)}
-                  onDispose={() => rowAction(observer)}
-                />
-              ))}
-            </ul>
+            {liveObservers.length > 0 ? (
+              <ul className="px-1 pb-1">
+                {liveObservers.map((observer) => (
+                  <ObserverRow
+                    key={observer.id}
+                    observer={observer}
+                    stateNote={stateNote(observer)}
+                    busy={busyId === observer.id}
+                    onOpen={() => setSelectedId(observer.id)}
+                    onDispose={() => rowAction(observer)}
+                  />
+                ))}
+              </ul>
+            ) : null}
+            {inactiveCount > 0 ? (
+              <div
+                className={cn(
+                  'px-1 pb-1',
+                  liveObservers.length > 0 && 'border-t border-edge pt-1',
+                )}
+              >
+                {/* The spent rows' own disclosure, with Clear at the edge
+                    where the card keeps its trash. */}
+                <div className="flex min-w-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setInactiveExpanded((current) => !current)}
+                    aria-expanded={inactiveExpanded}
+                    aria-controls={inactiveListId}
+                    className={cn(
+                      rowButtonClass,
+                      rowTextClass,
+                      'text-ink-faint',
+                    )}
+                  >
+                    <ChevronRight
+                      aria-hidden
+                      className={cn(
+                        'size-4 shrink-0 transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard)',
+                        inactiveExpanded && 'rotate-90',
+                      )}
+                    />
+                    <span className="min-w-0 truncate">
+                      {inactiveCount} inactive
+                    </span>
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearInactive}
+                    aria-label={`clear ${inactiveCount} inactive ${inactiveCount === 1 ? 'observer' : 'observers'}`}
+                    className={cn(
+                      touchRowHeight,
+                      rowTextClass,
+                      'shrink-0 px-2.5',
+                    )}
+                  >
+                    Clear
+                  </Button>
+                </div>
+                <div
+                  id={inactiveListId}
+                  className={cn(
+                    'grid transition-[grid-template-rows] duration-(--motion-duration-panel) ease-(--motion-ease-standard)',
+                    inactiveExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+                  )}
+                >
+                  <div
+                    className="min-h-0 overflow-hidden"
+                    inert={inactiveExpanded ? undefined : true}
+                  >
+                    {/* A long run scrolls inside the card instead of
+                        pushing the composer down the pane. */}
+                    <ul className="max-h-64 overflow-y-auto">
+                      {inactiveObservers.map((observer) => (
+                        <ObserverRow
+                          key={observer.id}
+                          observer={observer}
+                          stateNote={stateNote(observer)}
+                          busy={busyId === observer.id}
+                          onOpen={() => setSelectedId(observer.id)}
+                          onDispose={() => rowAction(observer)}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </section>

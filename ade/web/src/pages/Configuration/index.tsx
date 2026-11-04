@@ -36,12 +36,19 @@ import {
   Workflow,
 } from 'lucide-react'
 import { MotionConfig } from 'motion/react'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
-import { useWorkersConfigurationRoute } from '@/hooks/use-hash-route'
+import {
+  hashForWorkersConfiguration,
+  replaceHash,
+  useWorkersConfigurationRoute,
+} from '@/hooks/use-hash-route'
 import type { ThemePreference } from '@/hooks/use-theme'
-import { configurationFormFamily } from '@/lib/configuration-family'
+import {
+  configurationFormFamily,
+  resolveConfigurationFamily,
+} from '@/lib/configuration-family'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { useExtConfigForms, useUiAssetsStatus } from '@/lib/ui-slots'
@@ -231,9 +238,28 @@ export function Configuration({
   )
   const settingsLoading =
     configurationsQuery.isLoading || uiAssetsStatus === 'loading'
-  const selectedEntry = route.configurationId
-    ? (entries.find((entry) => entry.id === route.configurationId) ?? null)
+  // A worker page asks for its settings by form family (`voice`), but a
+  // compose stack registers the entry under its own name (`hangzhou-voice`,
+  // `metadata.ui_form: "voice"`). Resolve a family to the one live entry
+  // that owns it, the way the pane header's settings action does; several
+  // instances stay unresolved rather than editing an arbitrary one.
+  const selectedId = useMemo(() => {
+    const requested = route.configurationId
+    if (!requested) return null
+    if (entries.some((entry) => entry.id === requested)) return requested
+    const resolution = resolveConfigurationFamily(requested, entries)
+    return resolution.kind === 'resolved' ? resolution.id : null
+  }, [route.configurationId, entries])
+  const selectedEntry = selectedId
+    ? (entries.find((entry) => entry.id === selectedId) ?? null)
     : null
+  // Then name the entry in the URL, in place: the sidebar marks it, and Back
+  // never lands on the family link only to be sent forward again.
+  useEffect(() => {
+    if (!selectedId || selectedId === route.configurationId) return
+    replaceHash(hashForWorkersConfiguration(selectedId, route.fieldPath))
+    navigateWorker(selectedId, route.fieldPath)
+  }, [selectedId, route.configurationId, route.fieldPath, navigateWorker])
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
 
   const workerMenuOpen = route.open && route.configurationId === null

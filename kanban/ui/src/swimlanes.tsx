@@ -1,5 +1,5 @@
 import { ShadcnBadge, ShadcnButton, ShadcnKbd, ShadcnProgress } from '@iii-dev/console-ui'
-import { Archive, Ban, ChevronDown, ChevronRight, Folder, Inbox, ListTree, Milestone, Move, Plus } from 'lucide-react'
+import { Archive, Ban, ChevronDown, ChevronRight, FolderOpen, Inbox, ListTree, Milestone, Move, Plus } from 'lucide-react'
 import { type CSSProperties, type DragEvent, memo, type ReactNode, useLayoutEffect, useRef } from 'react'
 import { DropSlot } from './board/board-column'
 import { cellWindow, type Swimlane, shortDay } from './board-state'
@@ -62,7 +62,7 @@ function LaneGlyph({ lane }: { lane: Swimlane }) {
   if (lane.facet === 'parent') return <ListTree size={16} />
   return (
     <span className="kb-project-dot" data-tone={lane.color ?? undefined}>
-      <Folder size={16} />
+      <FolderOpen size={16} />
     </span>
   )
 }

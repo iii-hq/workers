@@ -16,7 +16,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
-  Folder,
+  FolderOpen,
   Regex,
   RefreshCw,
   Replace,
@@ -529,7 +529,7 @@ function SearchTabView({
             onKeyDown={undefined}
           >
             {row.entry.kind === 'dir' ? (
-              <Folder aria-hidden className="file-icon folder" />
+              <FolderOpen aria-hidden className="file-icon folder" />
             ) : (
               <FileTypeIcon path={row.entry.rel} className="file-icon" />
             )}

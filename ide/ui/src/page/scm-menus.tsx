@@ -13,7 +13,7 @@ import {
   FileCode,
   FileDiff,
   FileDown,
-  Folder,
+  FolderOpen,
   GitBranch,
   GitCommitHorizontal,
   GitCompareArrows,
@@ -77,7 +77,7 @@ function changeHead(row: ChangeRow): ContextMenuItem {
     type: 'label',
     id: 'head',
     label: row.label,
-    icon: row.kind === 'folder' ? <Folder /> : undefined,
+    icon: row.kind === 'folder' ? <FolderOpen /> : undefined,
     detail: files(row.entries.length),
   }
 }

@@ -13,7 +13,6 @@ import {
   type ConfigFormProps,
   Input,
   type JsonValue,
-  Select,
   SettingsField,
   SettingsList,
   SettingsSection,
@@ -29,6 +28,7 @@ import { modelOptions } from '../lib/models'
 import { useModelProgress } from '../lib/progress'
 import { booleanAt, DEFAULTS, NONE, numberAt, setPath, stringAt } from '../lib/config'
 import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
+import { OptionSelect } from '../ui/option-select'
 import type { ModelInfo } from '../lib/types'
 
 function describeModel(m: ModelInfo): string {
@@ -133,7 +133,7 @@ export function createVoiceConfigForm(host: Host) {
               label="Engine"
               description="Bundled local models, a local whisper.cpp command, a speech provider registered with llm-router, or any server that speaks the OpenAI audio API."
               renderControl={(c) => (
-                <Select
+                <OptionSelect
                   id={c.id}
                   value={sttBackend}
                   onChange={(next) => set(['stt', 'backend'], next)}
@@ -152,7 +152,7 @@ export function createVoiceConfigForm(host: Host) {
                   label="Model"
                   description="A speech-to-text model the router lists; its provider's key lives in the router's own settings. Empty lets the router pick."
                   renderControl={(c) => (
-                    <Select
+                    <OptionSelect
                       id={c.id}
                       value={stringAt(value, ['stt', 'router', 'model'])}
                       onChange={(next) => set(['stt', 'router', 'model'], next)}
@@ -182,7 +182,7 @@ export function createVoiceConfigForm(host: Host) {
                   description="Re-decodes each sentence after you pause, adding punctuation and casing. This is the text you keep. None keeps only the live words. Downloads use the saved models directory; save directory changes first."
                   renderControl={(c) => (
                     <span className="voice-choice">
-                    <Select
+                    <OptionSelect
                       id={c.id}
                       value={finalModel === '' ? NONE : finalModel}
                       onChange={(next) => set(['stt', 'final_model'], next === NONE ? '' : next)}
@@ -204,7 +204,7 @@ export function createVoiceConfigForm(host: Host) {
                   description="Small streaming model that shows words as you speak and decides where a sentence ends."
                   renderControl={(c) => (
                     <span className="voice-choice">
-                    <Select
+                    <OptionSelect
                       id={c.id}
                       value={liveModel}
                       onChange={(next) => set(['stt', 'model'], next)}
@@ -295,7 +295,7 @@ export function createVoiceConfigForm(host: Host) {
                   description="Multilingual GGML weights. Larger models need more memory and processing time. Download uses the saved models directory; save directory changes first. whisper-cli is installed separately."
                   renderControl={(c) => (
                     <span className="voice-choice">
-                      <Select id={c.id} value={customWhisper ? '__custom__' : whisperModel}
+                      <OptionSelect id={c.id} value={customWhisper ? '__custom__' : whisperModel}
                         disabled={models === null || downloading !== null}
                         onChange={(next) => set(['stt', 'whisper_cpp', 'model'], next === '__custom__' ? '' : next)}
                         options={[
@@ -495,7 +495,7 @@ export function createVoiceConfigForm(host: Host) {
               label="Engine"
               description="All engines return audio to the requesting browser. Local synthesis uses say (macOS) or espeak-ng (Linux) on the worker without playing on the server."
               renderControl={(c) => (
-                <Select
+                <OptionSelect
                   id={c.id}
                   value={ttsBackend}
                   onChange={(next) => set(['tts', 'backend'], next)}
@@ -517,7 +517,7 @@ export function createVoiceConfigForm(host: Host) {
                     disabled={downloading !== null} busyId={downloading} progress={progress}
                     onSelect={(next) => set(['tts', 'piper', 'model'], next)} onDownload={downloadModel} />} />
                 <SettingsField label="Processing device" description="Auto requests NVIDIA CUDA first and falls back to CPU. GPU needs a compatible driver, CUDA/cuDNN and onnxruntime-gpu in Piper's environment; nothing is installed automatically. This does not change the voice or your listening models."
-                  renderControl={(c) => <Select id={c.id}
+                  renderControl={(c) => <OptionSelect id={c.id}
                     value={stringAt(value, ['tts', 'piper', 'device'], DEFAULTS.piperDevice)}
                     onChange={(next) => set(['tts', 'piper', 'device'], next)}
                     options={[
@@ -535,7 +535,7 @@ export function createVoiceConfigForm(host: Host) {
                   label="Model"
                   description="A text-to-speech model the router lists. Empty lets the router pick."
                   renderControl={(c) => (
-                    <Select
+                    <OptionSelect
                       id={c.id}
                       value={stringAt(value, ['tts', 'router', 'model'])}
                       onChange={(next) => set(['tts', 'router', 'model'], next)}
@@ -561,7 +561,7 @@ export function createVoiceConfigForm(host: Host) {
                   description="What the browser receives. mp3 works everywhere."
                   controlSize="compact"
                   renderControl={(c) => (
-                    <Select
+                    <OptionSelect
                       id={c.id}
                       value={stringAt(value, ['tts', 'router', 'format'], DEFAULTS.routerFormat)}
                       onChange={(next) => set(['tts', 'router', 'format'], next)}

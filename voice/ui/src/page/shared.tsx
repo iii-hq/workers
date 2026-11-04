@@ -1,46 +1,95 @@
 /**
- * Building blocks every voice section composes: the card with a titled
- * header row, the label/value facts grid, loading skeleton rows, and byte
- * formatting. All of it sits on the shared console components.
+ * Building blocks every voice section composes, settings-page style: a
+ * titled group (heading and actions above, never inside, the panel), the
+ * panel itself (one shadcn card, rows split by hairlines), the setting row
+ * (label and hint on the left, the control on the right), a compact empty
+ * row, loading skeleton rows and byte formatting.
  */
 
-import { Card, CardBody, CardHeader, Skeleton } from '@iii-dev/console-ui'
+import { ShadcnCard, Skeleton } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { type ReactNode, useState } from 'react'
 
 export function SectionCard({
   title,
+  description,
   actions,
   children,
   className,
 }: {
   title: ReactNode
+  description?: ReactNode
   actions?: ReactNode
   children: ReactNode
   className?: string
 }) {
   return (
-    <Card className={className ? `voice-card ${className}` : 'voice-card'}>
-      <CardHeader className="voice-card-header">
-        <span className="voice-card-title">{title}</span>
-        {actions ? <span className="voice-card-actions">{actions}</span> : null}
-      </CardHeader>
-      <CardBody className="voice-card-body">{children}</CardBody>
-    </Card>
+    <section className={className ? `voice-group ${className}` : 'voice-group'}>
+      <header className="voice-group-head">
+        <div className="voice-group-heading">
+          <h2 className="voice-group-title">{title}</h2>
+          {description ? <p className="voice-group-description">{description}</p> : null}
+        </div>
+        {actions ? <div className="voice-group-actions">{actions}</div> : null}
+      </header>
+      <ShadcnCard className="voice-panel">{children}</ShadcnCard>
+    </section>
   )
 }
 
-export function Facts({ children, wide }: { children: ReactNode; wide?: boolean }) {
-  return <dl className={wide ? 'voice-facts voice-facts-wide' : 'voice-facts'}>{children}</dl>
+/** Setting rows inside a panel. */
+export function Facts({ children }: { children: ReactNode }) {
+  return <dl className="voice-rows">{children}</dl>
 }
 
-export function Fact({ label, children }: { label: ReactNode; children: ReactNode }) {
+/** One setting: the name and what it does on the left, the control on the right. */
+export function Fact({
+  label,
+  hint,
+  children,
+  stack,
+}: {
+  label: ReactNode
+  hint?: ReactNode
+  children?: ReactNode
+  /** The control takes the full width under the label (a picker, a long value). */
+  stack?: boolean
+}) {
   return (
-    <div className="voice-fact">
-      <dt>{label}</dt>
-      <dd>{children}</dd>
+    <div className={stack ? 'voice-row voice-row-stack' : 'voice-row'}>
+      <dt className="voice-row-text">
+        <span className="voice-row-label">{label}</span>
+        {hint ? <span className="voice-row-hint">{hint}</span> : null}
+      </dt>
+      {children ? <dd className="voice-row-control">{children}</dd> : null}
     </div>
   )
+}
+
+/** A panel's one-line empty state: what is missing, and the way to fill it. */
+export function PanelEmpty({
+  title,
+  description,
+  action,
+}: {
+  title: ReactNode
+  description?: ReactNode
+  action?: ReactNode
+}) {
+  return (
+    <div className="voice-empty">
+      <div className="voice-row-text">
+        <span className="voice-row-label">{title}</span>
+        {description ? <span className="voice-row-hint">{description}</span> : null}
+      </div>
+      {action ? <div className="voice-row-control">{action}</div> : null}
+    </div>
+  )
+}
+
+/** Inner padding for free content (a transcript, a textarea) inside a panel. */
+export function PanelBody({ children }: { children: ReactNode }) {
+  return <div className="voice-panel-body">{children}</div>
 }
 
 const SKELETON_KEYS = ['one', 'two', 'three', 'four', 'five', 'six'] as const

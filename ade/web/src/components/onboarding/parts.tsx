@@ -153,7 +153,7 @@ export function StatusChip({
   return (
     <span
       data-tone={tone}
-      className="inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neutral-100 bg-neutral-50 px-2 font-sans text-[12px] font-medium leading-none text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300"
+      className="inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neutral-100 bg-neutral-50 px-2 font-sans text-[12px] font-medium leading-none text-neutral-600 dark:border-neutral-900 dark:bg-black dark:text-neutral-300"
     >
       {tone === 'ok' || tone === 'warn' ? (
         <span
@@ -722,7 +722,7 @@ export function Terminal({ children }: { children: React.ReactNode }) {
 
 /** The code surface: one neutral step off the dialog in either theme. */
 const TERMINAL_SURFACE =
-  'flex flex-col rounded-xl border border-neutral-100 bg-neutral-50 px-4 py-3 font-code text-ink dark:border-neutral-800 dark:bg-neutral-900'
+  'flex flex-col rounded-xl border border-neutral-100 bg-neutral-50 px-4 py-3 font-code text-ink dark:border-neutral-900 dark:bg-black'
 
 export function CommandLine({
   command,

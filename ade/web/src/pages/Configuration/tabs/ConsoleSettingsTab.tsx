@@ -103,7 +103,7 @@ const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
 /* A row's dropdown: the shadcn trigger at Linear's width, white on the
    card so it reads as a control and not a chip. */
 const ROW_SELECT_TRIGGER =
-  'h-9 min-w-40 border-neutral-200 bg-white text-[15px] hover:bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:bg-neutral-900'
+  'h-9 min-w-40 border-neutral-200 bg-white text-[15px] hover:bg-neutral-50 dark:border-neutral-900 dark:bg-black dark:hover:bg-neutral-900'
 
 interface ConsoleSettingsTabProps {
   theme: ThemePreference

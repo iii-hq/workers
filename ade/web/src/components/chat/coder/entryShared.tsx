@@ -6,7 +6,7 @@
 import {
   File,
   FileText,
-  Folder,
+  FolderOpen,
   Link as LinkIcon,
   TriangleAlert,
 } from 'lucide-react'
@@ -30,7 +30,7 @@ export function LockedBadge() {
     text/code extensions → FileText, everything else (incl. "other") → File. */
 export function iconForEntry(kind: EntryKind, name: string) {
   if (kind === 'symlink') return LinkIcon
-  if (kind === 'dir') return Folder
+  if (kind === 'dir') return FolderOpen
   const lower = name.toLowerCase()
   if (/\.(md|txt|json|yml|yaml|toml|csv|log)$/.test(lower)) return FileText
   if (/\.(js|jsx|ts|tsx|py|rs|go|rb|sh|bash)$/.test(lower)) return FileText

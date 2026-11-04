@@ -209,6 +209,21 @@ describe('pinned conversations', () => {
     }
   })
 
+  it('orders the pinned section by pin order, not activity', () => {
+    const roots = buildConversationTree([
+      conv('a'),
+      conv('b', { updatedAt: NOW - 2 * DAY }),
+      conv('c', { updatedAt: NOW - 40 * DAY }),
+    ])
+    const groups = groupConversationRoots(
+      roots,
+      'recent',
+      NOW,
+      new Set(['c', 'a', 'b']),
+    )
+    expect(ids(groups[0]?.roots ?? [])).toEqual(['c', 'a', 'b'])
+  })
+
   it('adds no section when nothing is pinned', () => {
     const groups = groupConversationRoots(
       buildConversationTree([conv('a')]),

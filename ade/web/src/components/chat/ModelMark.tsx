@@ -17,10 +17,11 @@ interface ModelMarkProps {
 }
 
 /**
- * A model's mark: its family's (the Claude Code mascot for Claude models,
- * the Codex cloud for GPT ones) whichever provider serves it, so one model
- * reads the same through an API key or a subscription. A model outside a
- * known family keeps its provider's mark.
+ * A model's mark: its serving provider's, so the same model through an API
+ * key (Anthropic's mark) and a subscription (the Claude Code mascot) reads
+ * as two. Only when the provider declared no mark (a bare model id on a
+ * message, a provider without `icon_svg`) does the family's mark stand in
+ * (the Claude Code mascot for Claude models, the Codex cloud for GPT ones).
  */
 export function ModelMark({
   modelId,
@@ -30,7 +31,7 @@ export function ModelMark({
   providerIconSvg,
   className,
 }: ModelMarkProps) {
-  const family = modelFamily(modelId, modelLabel)
+  const family = providerIconSvg ? null : modelFamily(modelId, modelLabel)
   if (family) return <FamilyMark family={family} className={className} />
   return (
     <ProviderIcon

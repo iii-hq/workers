@@ -1,4 +1,4 @@
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight, Folder, FolderOpen, Plus } from 'lucide-react'
 import { Hint } from '@/components/ui/Hint'
 import { cn } from '@/lib/utils'
 
@@ -57,8 +57,8 @@ export function ConversationGroupHeader({
       title={title}
       onClick={onToggle}
       className={cn(
-        'iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-sans font-medium text-ink-ghost transition-colors first:mt-0 hover:bg-surface-hover hover:text-ink-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55',
-        narrow ? 'min-h-11 text-[13px]' : 'min-h-7 text-xs',
+        'iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-inter font-medium text-ink-ghost transition-colors first:mt-0 hover:bg-surface-hover hover:text-ink-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55',
+        narrow ? 'min-h-11 text-sm' : 'min-h-8 text-sm',
       )}
     >
       <span className="truncate">{label}</span>
@@ -81,9 +81,8 @@ export function ConversationGroupHeader({
 
 /**
  * A project in the conversation tree, the way a workspace app lists repos:
- * the folder name in full ink (no folder glyph: the chats' own marks are the
- * only icons in the list), and a plus that starts a chat already scoped to
- * the folder. The
+ * a quiet outline folder (open while its chats show), the folder name in
+ * full ink, and a plus that starts a chat already scoped to the folder. The
  * chats sit indented under it (`.conversation-project-rows`).
  */
 function ProjectHeader({
@@ -95,6 +94,7 @@ function ProjectHeader({
   narrow,
   onCreate,
 }: Omit<ConversationGroupHeaderProps, 'project'>) {
+  const ProjectIcon = collapsed ? Folder : FolderOpen
   return (
     <div
       className={cn(
@@ -109,6 +109,11 @@ function ProjectHeader({
         onClick={onToggle}
         className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch rounded-xl border-0 bg-transparent pl-2.5 text-left font-inter focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55"
       >
+        <ProjectIcon
+          aria-hidden
+          className="size-4 shrink-0 text-ink-faint"
+          data-project-icon=""
+        />
         <span
           className={cn(
             'min-w-0 truncate font-medium text-ink',

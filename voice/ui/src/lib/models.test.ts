@@ -8,7 +8,7 @@ import { percent } from './progress'
 import { filterPiperVoices } from './piper-languages'
 import type { ExtensionIii, ModelInfo, ModelProgressEvent } from './types'
 
-vi.mock('@iii-dev/console-ui', () => ({ Button: 'button', Chip: 'span' }))
+vi.mock('@iii-dev/console-ui', () => ({ ShadcnButton: 'button', ShadcnBadge: 'span' }))
 
 const model: ModelInfo = {
   id: 'whisper-tiny', name: 'Whisper tiny', kind: 'whisper_ggml',
@@ -123,7 +123,7 @@ describe('missing-model download control', () => {
   it('shows size and starts a download only when clicked', () => {
     const onDownload = vi.fn()
     const view = ModelDownload({ model, onDownload })
-    expect(text(view)).toContain('not downloadedDownload 74.1 MiB')
+    expect(text(view)).toContain('Not downloadedDownload 74.1 MiB')
     expect(onDownload).not.toHaveBeenCalled()
     const button = nodes(view).find((node) => isValidElement(node) && node.type === 'button')
     if (!isValidElement<{ onClick: () => void; 'aria-label': string }>(button)) throw new Error('missing button')
@@ -143,16 +143,16 @@ describe('missing-model download control', () => {
     expect(status.props.className).toBe('voice-model-status')
     expect(status.props.role).toBe('status')
     expect(actions.props.className).toBe('voice-model-actions')
-    expect(text(status)).toBe('not downloaded')
+    expect(text(status)).toBe('Not downloaded')
     expect(text(actions)).toBe('Use modelDownload 74.1 MiB')
   })
   it('keeps related actions visible when the model is installed', () => {
     const view = ModelDownload({ model: { ...model, installed: true },
       actions: createElement('button', {}, 'Remove'), onDownload: vi.fn() })
-    expect(text(view)).toBe('installedRemove')
+    expect(text(view)).toBe('InstalledRemove')
   })
   it('hides the button when installed', () => {
-    expect(text(ModelDownload({ model: { ...model, installed: true }, onDownload: vi.fn() }))).toBe('installed')
+    expect(text(ModelDownload({ model: { ...model, installed: true }, onDownload: vi.fn() }))).toBe('Installed')
   })
   it('shows progress instead of a duplicate download action', () => {
     expect(text(ModelDownload({ model, progress: event, onDownload: vi.fn() }))).toBe('Downloading 50%')

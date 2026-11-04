@@ -13,3 +13,20 @@ export function hasWorkingConversation(
     connected && conversations.some((session) => session.status === 'working')
   )
 }
+
+/**
+ * The `done` reason the harness projects when a turn ended on a
+ * `harness::ask` card (`harness/src/session_status.rs`): the agent is
+ * waiting on the user's answer, which arrives as their next message.
+ */
+export const AWAITING_ANSWER_REASON = 'awaiting answer'
+
+/** Whether the session's last turn ended on a question the user has not answered. */
+export function isAwaitingAnswer(
+  conversation: Pick<Conversation, 'status' | 'statusReason'>,
+): boolean {
+  return (
+    conversation.status === 'done' &&
+    conversation.statusReason === AWAITING_ANSWER_REASON
+  )
+}

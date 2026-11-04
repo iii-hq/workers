@@ -7,32 +7,29 @@
  */
 
 import {
-  Button,
-  Chip,
-  EmptyState,
   type Host,
-  Select,
+  ShadcnButton,
+  ShadcnTable,
+  ShadcnTableBody,
+  ShadcnTableCell,
+  ShadcnTableHead,
+  ShadcnTableHeader,
+  ShadcnTableRow,
   StatusDot,
-  Table,
-  TableBody,
-  TableCell,
-  TableFrame,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TableViewport,
 } from '@iii-dev/console-ui'
-import { Mic } from 'lucide-react'
+import { Mic, Settings2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { modelsDownload } from '../lib/client'
 import { NONE, patchConfig, readConfig, setPath, stringAt } from '../lib/config'
 import { ModelDownload } from '../lib/ModelDownload'
-import { PiperVoicePicker } from '../lib/PiperVoicePicker'
 import { modelOptions } from '../lib/models'
+import { PiperVoicePicker } from '../lib/PiperVoicePicker'
 import type { ProgressById } from '../lib/progress'
 import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
 import type { DictationListEntry, DoctorResponse, ModelInfo, ModelsListResponse } from '../lib/types'
-import { Fact, Facts, formatBytes, formatDuration, SectionCard, useBusyAction } from './shared'
+import { OptionSelect } from '../ui/option-select'
+import { StatusBadge } from '../ui/status'
+import { Fact, Facts, formatDuration, PanelEmpty, SectionCard, useBusyAction } from './shared'
 
 export type Notice = { kind: 'error' | 'success'; text: string } | null
 
@@ -91,9 +88,12 @@ export function Overview({
   const download = (id: string) => run(id, modelsDownload(host.iii, { id }), `${id} is installed and ready.`)
 
   const liveWordsFact = (
-    <Fact label="Live words">
+    <Fact
+      label="Live words"
+      hint={<>Shows words as you speak and decides where a sentence ends; it always runs on this machine.</>}
+    >
       <span className="voice-choice">
-        <Select
+        <OptionSelect
           aria-label="live speech model"
           value={stt.live_model}
           disabled={busy !== null || models === null}
@@ -101,12 +101,16 @@ export function Overview({
           options={modelOptions(streaming, stt.live_model)}
         />
         {live ? (
-          <ModelDownload model={live} progress={progress[live.id]} busy={busy === live.id}
-            disabled={busy !== null} onDownload={() => download(live.id)} />
-        ) : models ? <Chip tone="warning">not in the catalog</Chip> : null}
-      </span>
-      <span className="voice-sub voice-block">
-        Shows words as you speak and decides where a sentence ends; it always runs on this machine.
+          <ModelDownload
+            model={live}
+            progress={progress[live.id]}
+            busy={busy === live.id}
+            disabled={busy !== null}
+            onDownload={() => download(live.id)}
+          />
+        ) : models ? (
+          <StatusBadge tone="warn">Not in the catalog</StatusBadge>
+        ) : null}
       </span>
     </Fact>
   )
@@ -115,24 +119,26 @@ export function Overview({
 
   const ttsAvailability = (() => {
     if (tts.backend !== 'host') return null
-    if (tts.available) return <Chip tone="success">{tts.command}</Chip>
-    return <Chip tone="warning">no speech command found</Chip>
+    if (tts.available) return <StatusBadge tone="ok">{tts.command}</StatusBadge>
+    return <StatusBadge tone="warn">No speech command found</StatusBadge>
   })()
 
   return (
     <>
       <SectionCard
         title="Speech to text"
+        description="How the mic and recordings become text."
         actions={
-          <Button variant="ghost" size="sm" onClick={onConfigure}>
+          <ShadcnButton variant="ghost" size="sm" className="voice-group-ghost" onClick={onConfigure}>
+            <Settings2 />
             All settings
-          </Button>
+          </ShadcnButton>
         }
       >
         <Facts>
           <Fact label="Engine">
             <span className="voice-choice">
-              <Select
+              <OptionSelect
                 aria-label="speech to text engine"
                 value={stt.backend}
                 disabled={busy !== null}
@@ -161,9 +167,17 @@ export function Overview({
         </Facts>
         {stt.backend === 'router' ? (
           <Facts>
-            <Fact label="Model">
+            <Fact
+              label="Model"
+              hint={
+                <>
+                  Audio goes to the provider that serves this model; its key lives in the router's Settings. While you
+                  dictate, live words stay local and each finished sentence is re-decoded by this model.
+                </>
+              }
+            >
               <span className="voice-choice">
-                <Select
+                <OptionSelect
                   aria-label="router speech to text model"
                   value={report.stt.model === 'router picks' ? '' : report.stt.model}
                   disabled={busy !== null || routerStt.models === null}
@@ -180,12 +194,8 @@ export function Overview({
                   )}
                 />
                 {routerStt.models !== null && routerStt.models.length === 0 ? (
-                  <Chip tone="warning">no speech provider registered</Chip>
+                  <StatusBadge tone="warn">No speech provider registered</StatusBadge>
                 ) : null}
-              </span>
-              <span className="voice-sub voice-block">
-                Audio goes to the provider that serves this model; its key lives in the router's Settings. While you
-                dictate, live words stay local and each finished sentence is re-decoded by this model.
               </span>
             </Fact>
             {liveWordsFact}
@@ -193,9 +203,16 @@ export function Overview({
         ) : null}
         {stt.backend === 'local' ? (
           <Facts>
-            <Fact label="Model">
+            <Fact
+              label="Model"
+              hint={
+                stt.final_model === ''
+                  ? 'Only the live model runs: words appear instantly but without punctuation.'
+                  : 'Each sentence is re-decoded by this model after you pause, so transcripts get punctuation, casing and its accuracy.'
+              }
+            >
               <span className="voice-choice">
-                <Select
+                <OptionSelect
                   aria-label="speech to text model"
                   value={stt.final_model === '' ? NONE : stt.final_model}
                   disabled={busy !== null || models === null}
@@ -212,72 +229,87 @@ export function Overview({
                   ]}
                 />
                 {accurate ? (
-                  <ModelDownload model={accurate} progress={progress[accurate.id]}
+                  <ModelDownload
+                    model={accurate}
+                    progress={progress[accurate.id]}
                     busy={busy === accurate.id || stt.final_state === 'downloading'}
-                    disabled={busy !== null} onDownload={() => download(accurate.id)} />
-                ) : stt.final_model && models ? <Chip tone="warning">not in the catalog</Chip> : null}
-              </span>
-              <span className="voice-sub voice-block">
-                {stt.final_model === ''
-                  ? 'Only the live model runs: words appear instantly but without punctuation.'
-                  : 'Each sentence is re-decoded by this model after you pause, so transcripts get punctuation, casing and its accuracy.'}
+                    disabled={busy !== null}
+                    onDownload={() => download(accurate.id)}
+                  />
+                ) : stt.final_model && models ? (
+                  <StatusBadge tone="warn">Not in the catalog</StatusBadge>
+                ) : null}
               </span>
             </Fact>
             {liveWordsFact}
-            <Fact label="Runs on">
-              <span>this machine, nothing leaves it</span>
+            <Fact label="Runs on" hint="Audio never leaves the worker's machine.">
+              <span className="voice-row-value">This machine</span>
             </Fact>
           </Facts>
         ) : null}
         {stt.backend === 'whisper_cpp' ? (
           <Facts>
-            <Fact label="Model">
+            <Fact
+              label="Model"
+              hint={
+                <>
+                  Choose a multilingual model and download it once. Larger models need more memory and processing time.
+                  whisper-cli must be installed separately; set its command, language, or a custom model path under All
+                  settings.
+                </>
+              }
+            >
               <span className="voice-choice">
-                <Select aria-label="whisper.cpp model" value={stt.model}
+                <OptionSelect
+                  aria-label="whisper.cpp model"
+                  value={stt.model}
                   disabled={busy !== null || models === null}
                   options={modelOptions(whisper, stt.model)}
-                  onChange={(next) => choose(['stt', 'whisper_cpp', 'model'], next, `Transcripts use ${next}.`)} />
+                  onChange={(next) => choose(['stt', 'whisper_cpp', 'model'], next, `Transcripts use ${next}.`)}
+                />
                 {whisperModel ? (
-                  <ModelDownload model={whisperModel} progress={progress[whisperModel.id]}
-                    busy={busy === whisperModel.id} disabled={busy !== null}
-                    onDownload={() => download(whisperModel.id)} />
-                ) : <Chip tone={stt.installed ? 'success' : 'warning'}>
-                  {stt.installed ? 'custom model installed' : 'custom model missing'}
-                </Chip>}
-              </span>
-              <span className="voice-sub voice-block">
-                Choose a multilingual model and download it once. Larger models need more memory and processing time.
-                whisper-cli must be installed separately; set its command, language, or a custom model path under All settings.
+                  <ModelDownload
+                    model={whisperModel}
+                    progress={progress[whisperModel.id]}
+                    busy={busy === whisperModel.id}
+                    disabled={busy !== null}
+                    onDownload={() => download(whisperModel.id)}
+                  />
+                ) : (
+                  <StatusBadge tone={stt.installed ? 'ok' : 'warn'}>
+                    {stt.installed ? 'Custom model installed' : 'Custom model missing'}
+                  </StatusBadge>
+                )}
               </span>
             </Fact>
             {liveWordsFact}
-            <Fact label="Runs on">
-              <span>this machine, nothing leaves it</span>
+            <Fact label="Runs on" hint="Audio never leaves the worker's machine.">
+              <span className="voice-row-value">This machine</span>
             </Fact>
           </Facts>
         ) : null}
         {stt.backend === 'openai' ? (
           <Facts>
-            <Fact label="Endpoint model">
-              <span className="voice-fact-line">
-                <Chip tone="neutral">OpenAI-compatible</Chip>
+            <Fact
+              label="Endpoint model"
+              hint={<>Audio is sent to the configured endpoint; its address and key are under All settings.</>}
+            >
+              <span className="voice-choice">
                 <span className="voice-mono">{stt.model}</span>
-              </span>
-              <span className="voice-sub voice-block">
-                Audio is sent to the configured endpoint; its address and key are under All settings.
+                <StatusBadge tone="ok">OpenAI-compatible</StatusBadge>
               </span>
             </Fact>
             {liveWordsFact}
           </Facts>
         ) : null}
-        {stt.problem ? <p className="voice-note voice-warn">{stt.problem}</p> : null}
+        {stt.problem ? <p className="voice-panel-note voice-warn">{stt.problem}</p> : null}
       </SectionCard>
 
-      <SectionCard title="Read aloud">
+      <SectionCard title="Read aloud" description="The voice that reads replies and selected text.">
         <Facts>
           <Fact label="Engine">
             <span className="voice-choice">
-              <Select
+              <OptionSelect
                 aria-label="read aloud engine"
                 value={tts.backend}
                 disabled={busy !== null}
@@ -285,7 +317,11 @@ export function Overview({
                   choose(['tts', 'backend'], next, `Read aloud uses ${next === 'off' ? 'nothing' : next}.`)
                 }
                 options={[
-                  { value: 'piper', label: 'Piper · natural local voice', description: 'Neural voice on the worker, audio in this browser' },
+                  {
+                    value: 'piper',
+                    label: 'Piper · natural local voice',
+                    description: 'Neural voice on the worker, audio in this browser',
+                  },
                   {
                     value: 'host',
                     label: 'System voice · basic / robotic',
@@ -304,22 +340,33 @@ export function Overview({
             </span>
           </Fact>
           {tts.backend === 'piper' ? (
-            <Fact label="Neural voice">
-              <PiperVoicePicker models={models?.models ?? null} selected={tts.model ?? ''}
-                disabled={busy !== null} progress={progress} busyId={busy}
+            <Fact
+              stack
+              label="Neural voice"
+              hint={
+                <>
+                  Processing preference:{' '}
+                  {tts.device === 'cpu' ? 'CPU only' : 'Automatic · prefer GPU, fall back to CPU'}. Change under All
+                  settings. Automatic is a preference, not confirmation of GPU use.
+                </>
+              }
+            >
+              <PiperVoicePicker
+                models={models?.models ?? null}
+                selected={tts.model ?? ''}
+                disabled={busy !== null}
+                progress={progress}
+                busyId={busy}
                 onSelect={(next) => choose(['tts', 'piper', 'model'], next, 'Neural voice selected.')}
-                onDownload={download} />
-              <span className="voice-sub voice-block">
-                Processing preference: {tts.device === 'cpu' ? 'CPU only' : 'Automatic · prefer GPU, fall back to CPU'}.
-                {' '}Change under All settings. Automatic is a preference, not confirmation of GPU use.
-              </span>
-              {tts.problem ? <p className="voice-note voice-warn">{tts.problem}</p> : null}
+                onDownload={download}
+              />
+              {tts.problem ? <p className="voice-row-hint voice-warn">{tts.problem}</p> : null}
             </Fact>
           ) : null}
           {tts.backend === 'router' ? (
-            <Fact label="Model">
+            <Fact label="Model" hint={tts.command ?? 'The voice name and audio format are under All settings.'}>
               <span className="voice-choice">
-                <Select
+                <OptionSelect
                   aria-label="router text to speech model"
                   value={routerTtsModel}
                   disabled={busy !== null || routerTts.models === null}
@@ -340,61 +387,59 @@ export function Overview({
                   options={routerModelOptions(routerTts.models, routerTtsModel)}
                 />
                 {routerTts.models !== null && routerTts.models.length === 0 ? (
-                  <Chip tone="warning">no speech provider registered</Chip>
+                  <StatusBadge tone="warn">No speech provider registered</StatusBadge>
                 ) : null}
-              </span>
-              <span className="voice-sub voice-block">
-                {tts.command ?? 'The voice name and audio format are under All settings.'}
               </span>
             </Fact>
           ) : null}
-          <Fact label="Playback">
-            <span>Only in the requesting browser</span>
+          <Fact label="Playback" hint="Audio is returned to the browser that asked for it.">
+            <span className="voice-row-value">This browser only</span>
           </Fact>
         </Facts>
       </SectionCard>
 
       <SectionCard
         title="Dictation sessions"
-        actions={<Chip tone={sessions.length > 0 ? 'accent' : 'neutral'}>{sessions.length}</Chip>}
+        description="Live recognizer sessions on the worker, from any browser."
+        actions={sessions.length > 0 ? <StatusBadge tone="busy">{sessions.length} running</StatusBadge> : null}
       >
         {sessions.length === 0 ? (
-          <EmptyState
-            icon={Mic}
+          <PanelEmpty
             title="No dictation running"
-            description="Hold the mic in the chat composer to talk, or start a session here to watch the recognizer work."
-            action={{ label: 'Start dictation', onClick: onDictate }}
+            description="Hold the mic in the chat composer to talk, or start a session to watch the recognizer work."
+            action={
+              <ShadcnButton variant="secondary" size="sm" onClick={onDictate}>
+                <Mic />
+                Start dictation
+              </ShadcnButton>
+            }
           />
         ) : (
-          <TableViewport>
-            <TableFrame>
-              <Table density="compact">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>session</TableHead>
-                    <TableHead>audio</TableHead>
-                    <TableHead>sentences</TableHead>
-                    <TableHead>idle</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {sessions.map((s) => (
-                    <TableRow key={s.session_id}>
-                      <TableCell>
-                        <span className="voice-fact-line">
-                          <StatusDot tone="accent" pulse={s.idle_secs < 2} />
-                          <span className="voice-mono">{s.session_id.slice(0, 10)}</span>
-                        </span>
-                      </TableCell>
-                      <TableCell>{formatDuration(s.duration_secs)}</TableCell>
-                      <TableCell>{s.segments}</TableCell>
-                      <TableCell>{formatDuration(s.idle_secs)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableFrame>
-          </TableViewport>
+          <ShadcnTable className="voice-table">
+            <ShadcnTableHeader>
+              <ShadcnTableRow>
+                <ShadcnTableHead>Session</ShadcnTableHead>
+                <ShadcnTableHead>Audio</ShadcnTableHead>
+                <ShadcnTableHead>Sentences</ShadcnTableHead>
+                <ShadcnTableHead>Idle</ShadcnTableHead>
+              </ShadcnTableRow>
+            </ShadcnTableHeader>
+            <ShadcnTableBody>
+              {sessions.map((s) => (
+                <ShadcnTableRow key={s.session_id}>
+                  <ShadcnTableCell>
+                    <span className="voice-choice">
+                      <StatusDot tone="accent" pulse={s.idle_secs < 2} />
+                      <span className="voice-mono">{s.session_id.slice(0, 10)}</span>
+                    </span>
+                  </ShadcnTableCell>
+                  <ShadcnTableCell>{formatDuration(s.duration_secs)}</ShadcnTableCell>
+                  <ShadcnTableCell>{s.segments}</ShadcnTableCell>
+                  <ShadcnTableCell>{formatDuration(s.idle_secs)}</ShadcnTableCell>
+                </ShadcnTableRow>
+              ))}
+            </ShadcnTableBody>
+          </ShadcnTable>
         )}
       </SectionCard>
     </>

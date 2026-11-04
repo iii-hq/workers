@@ -67,24 +67,6 @@
   opacity: 1;
 }
 
-@media (hover: hover) {
-  .iii-ui-tree.conversation-tree:not([data-narrow])
-    .iii-ui-tree-item[data-menu-open]
-    .iii-ui-tree-item__actions {
-    position: static;
-    transform: none;
-  }
-
-  .iii-ui-tree.conversation-tree:not([data-narrow])
-    .iii-ui-tree-item[data-menu-open]
-    .iii-ui-tree-item__trailing
-    > :not(.iii-ui-tree-item__actions) {
-    position: absolute;
-    opacity: 0;
-  }
-}
-
-/* A pinned chat shows its pin at rest, in the quiet metadata tone. */
 /* the working / error dot ahead of the title */
 .conversation-tree .conversation-row__status {
   display: inline-flex;
@@ -94,8 +76,109 @@
   width: 8px;
   margin-right: 6px;
 }
+
+/* A finished sub-agent reads quieter than the live ones above it, until it
+   is pointed at or open. */
+.conversation-tree .iii-ui-tree-item[data-finished]:not(
+    :hover,
+    [aria-current="page"]
+  )
+  .iii-ui-tree-item__label {
+  color: var(--color-ink-ghost);
+}
+
+/* "Show N finished": a quiet row at the sub-agents' indent. */
+.conversation-tree .conversation-finished-toggle {
+  width: 100%;
+  color: var(--color-ink-ghost);
+}
+
+.conversation-tree .conversation-finished-toggle:hover {
+  color: var(--color-ink);
+}
+
+/* ── the trailing edge ────────────────────────────────────────────── */
+
+/* Kind tag, pin, then one cell at the far right that the time and the ⋯
+   share: the ⋯ takes the time's place on hover, so the pin beside it never
+   moves and a click aimed at the pin lands on it. */
+.conversation-tree .conversation-row__trailing {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 0.5rem;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+/* Where actions are always on show (touch, the narrow drill-in) the time
+   and the ⋯ sit side by side. */
+.conversation-tree .conversation-row__slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.conversation-tree .conversation-row__slot > .iii-ui-tree-item__meta {
+  transition: opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+/* A pinned chat's pin is on show at rest, in the quiet metadata tone. */
+.conversation-tree .conversation-row__pin[data-pinned-mark] {
+  opacity: 1;
+}
+
 .conversation-tree .conversation-row__pinned {
   color: var(--color-ink-ghost);
+}
+
+@media (hover: hover) {
+  .iii-ui-tree.conversation-tree:not([data-narrow]) .conversation-row__slot {
+    display: inline-grid;
+    justify-items: end;
+  }
+
+  .iii-ui-tree.conversation-tree:not([data-narrow])
+    .conversation-row__slot
+    > * {
+    grid-area: 1 / 1;
+  }
+
+  .iii-ui-tree.conversation-tree:not([data-narrow])
+    .iii-ui-tree-item:is(:hover, :focus-within, [data-menu-open])
+    .conversation-row__slot
+    > .iii-ui-tree-item__meta {
+    opacity: 0;
+  }
+
+  /* An unpinned chat's pin shortcut costs the title no width at rest. */
+  .iii-ui-tree.conversation-tree:not([data-narrow]) .iii-ui-tree-item:not(
+      :hover,
+      :focus-within,
+      [data-menu-open]
+    )
+    .conversation-row__pin:not([data-pinned-mark]) {
+    display: none;
+  }
+}
+
+/* ── rearranging pinned chats ─────────────────────────────────────── */
+
+.conversation-tree .iii-ui-tree-item[draggable="true"] {
+  cursor: grab;
+}
+
+.conversation-tree .iii-ui-tree-item[data-dragging] {
+  opacity: 0.5;
+}
+
+/* Where the dragged chat would land: a 2px line on that edge of the row. */
+.conversation-tree .iii-ui-tree-item[data-drop="before"] {
+  box-shadow: inset 0 2px 0 var(--color-ink-faint);
+}
+
+.conversation-tree .iii-ui-tree-item[data-drop="after"] {
+  box-shadow: inset 0 -2px 0 var(--color-ink-faint);
 }
 
 /* The open menu's rows: 14px Inter with an icon column, on the popover

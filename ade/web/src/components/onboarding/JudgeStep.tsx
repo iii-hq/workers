@@ -165,7 +165,7 @@ export function JudgeStep({
 
       <section
         aria-label="What Judge does"
-        className="rounded-xl border border-neutral-100 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
+        className="rounded-xl border border-neutral-100 bg-neutral-50 dark:border-neutral-900 dark:bg-black"
       >
         <ul className="grid divide-y divide-neutral-100 @md:grid-cols-3 @md:divide-x @md:divide-y-0 dark:divide-neutral-800">
           {JUDGE_USES.map((use) => {

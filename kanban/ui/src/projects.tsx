@@ -24,7 +24,7 @@ import {
   ArrowUpRight,
   ChevronRight,
   Columns3,
-  Folder,
+  FolderOpen,
   ListFilter,
   Milestone,
   MoreHorizontal,
@@ -151,7 +151,7 @@ export function ProjectsPage({
         )
       }
       description={data ? `${plural(projects.length, 'project')} · ${data.id_prefix}` : undefined}
-      icon={<Folder size={16} />}
+      icon={<FolderOpen size={16} />}
       onClose={onRequestClose}
       title="Projects"
     />
@@ -184,7 +184,7 @@ export function ProjectsPage({
           </div>
         }
         description="Group tickets by what they belong to. You can start from a label like iii-cloud."
-        icon={Folder}
+        icon={FolderOpen}
         title="No projects yet"
       />
     )

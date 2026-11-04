@@ -1,4 +1,4 @@
-import { Folder, X } from 'lucide-react'
+import { FolderOpen, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 import {
@@ -81,7 +81,7 @@ export function FilesystemAccessDialog({
           <FolderGroup title="workspace">
             {workingDir ? (
               <div className="flex items-start gap-2 px-2 py-1.5">
-                <Folder
+                <FolderOpen
                   size={16}
                   className="mt-0.5 shrink-0 text-ink-faint"
                   aria-hidden
@@ -127,7 +127,7 @@ export function FilesystemAccessDialog({
                       key={dir}
                       className="group flex items-center gap-2 px-2 py-1.5 hover:bg-panel"
                     >
-                      <Folder
+                      <FolderOpen
                         size={16}
                         className="shrink-0 text-ink-faint"
                         aria-hidden
@@ -172,7 +172,7 @@ export function FilesystemAccessDialog({
                     key={dir}
                     className="flex items-center gap-2 px-2 py-1.5"
                   >
-                    <Folder
+                    <FolderOpen
                       size={16}
                       className="shrink-0 text-ink-faint"
                       aria-hidden

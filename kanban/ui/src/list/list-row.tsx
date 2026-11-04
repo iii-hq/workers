@@ -1,6 +1,6 @@
 import { ShadcnCheckbox } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
-import { CornerDownRight, Folder, ListTree, Milestone } from 'lucide-react'
+import { CornerDownRight, FolderOpen, ListTree, Milestone } from 'lucide-react'
 import { memo } from 'react'
 import { type AgentProfile, type Column, Pills, type TicketSummary } from '../shared'
 import { LabelList } from '../ui/label-badge'
@@ -128,7 +128,7 @@ export const ListRow = memo(function ListRow({
         {plan.project ? (
           <span className="kb-lrow__chip" title={`Project: ${plan.project.name}`}>
             <span className="kb-project-dot" data-tone={plan.project.color ?? undefined}>
-              <Folder size={16} />
+              <FolderOpen size={16} />
             </span>
             <span className="kb-lrow__chip-text">{plan.project.name}</span>
           </span>

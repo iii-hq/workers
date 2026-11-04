@@ -3,7 +3,7 @@ import {
   Check,
   ChevronDown,
   CornerDownLeft,
-  Folder,
+  FolderOpen,
   GitBranch,
   Pencil,
   Plus,
@@ -165,7 +165,7 @@ function ProjectRow({
           onSaveRename()
         }}
       >
-        <Folder className="size-4 shrink-0 text-ink-faint" aria-hidden />
+        <FolderOpen className="size-4 shrink-0 text-ink-faint" aria-hidden />
         <input
           // biome-ignore lint/a11y/noAutofocus: rename starts from an explicit pointer/keyboard action
           autoFocus
@@ -218,7 +218,7 @@ function ProjectRow({
         className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-8 md:gap-2 md:px-2 md:py-1"
         title={project.path}
       >
-        <Folder
+        <FolderOpen
           className={cn(
             'size-4 shrink-0',
             selected ? 'text-ink' : 'text-ink-faint',
@@ -544,7 +544,7 @@ export function DirectoryPicker({
         )}
         title={value ?? 'no working directory'}
       >
-        <Folder size={16} aria-hidden />
+        <FolderOpen size={16} aria-hidden />
         <span className="max-w-[160px] truncate">{label}</span>
       </span>
     )
@@ -599,7 +599,7 @@ export function DirectoryPicker({
             )}
           >
             {triggerAppearance !== 'inline' ? (
-              <Folder
+              <FolderOpen
                 aria-hidden
                 className={cn(
                   'size-4 shrink-0',

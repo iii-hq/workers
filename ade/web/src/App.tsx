@@ -61,6 +61,7 @@ import {
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
 } from '@/hooks/use-workspace-tabs'
+import { chatPaneKey } from '@/lib/chat-pane-selection'
 import { requestChatDialog } from '@/lib/chat-requests'
 import { armCompletionBell } from '@/lib/completion-bell'
 import {
@@ -1750,6 +1751,7 @@ function ScreenBody({
         panelSide={panelSide}
         onRequestClose={onClose}
         conversationId={conversationId ?? undefined}
+        paneKey={chatPaneKey(tabId, paneId)}
         commands={commands}
       />
     )

@@ -1,6 +1,5 @@
-import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
-import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
+import { CommandCard } from '@/components/ui/CommandCard'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { cn } from '@/lib/utils'
 import type { WorktreePickerOptions } from './DirectoryPicker'
@@ -171,14 +170,11 @@ function NoHarnessBody({
             Add harness
           </Button>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <span className="font-mono text-[12px] text-ink-ghost">
+        <div className="flex flex-col gap-2">
+          <span className="font-inter text-sm text-ink-faint">
             Prefer the terminal? Run:
           </span>
-          <Terminal
-            command={HARNESS_INSTALL_COMMAND}
-            chips={<CopyCommandButton text={HARNESS_INSTALL_COMMAND} />}
-          />
+          <CommandCard command={HARNESS_INSTALL_COMMAND} />
         </div>
       </div>
     </>
@@ -226,13 +222,13 @@ function InstallingBody({
 }
 
 /**
- * Install console — `Terminal` chrome framed as the equivalent
+ * Install console — a `CommandCard` framed as the equivalent
  * `iii call compose::add worker=harness` run.
  */
 function InstallConsole({ running }: { running: boolean }) {
   return (
-    <Terminal command={HARNESS_INSTALL_COMMAND}>
-      <div className="bg-bg px-3 py-3 font-mono text-[12.5px] leading-[1.6] flex flex-col gap-0.5">
+    <CommandCard command={HARNESS_INSTALL_COMMAND}>
+      <div className="flex flex-col gap-0.5 text-[12.5px]">
         {running ? (
           <div className="text-ink-faint italic animate-pulse">
             · adding harness to the compose project…
@@ -241,6 +237,6 @@ function InstallConsole({ running }: { running: boolean }) {
           <div className="text-alert">× compose::add did not finish</div>
         )}
       </div>
-    </Terminal>
+    </CommandCard>
   )
 }
