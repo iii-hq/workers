@@ -144,6 +144,11 @@ directory, so a VM also misses anything else a project keeps there, such as
 directory contains it can read the traced payloads, and the token too when an older
 engine logs at `debug`.
 
+A VM that ran on an adapter before 0.3.1 with `.iii` in its directory keeps the
+bytes of the token on its disk: the boot deletes the copy but does not scrub the
+blocks. Compose keeps the token across `compose::update` and `compose::restart`,
+so stop Compose and run `iii compose --up` after the upgrade, which replaces it.
+
 ## Errors
 
 Errors carry an S-code with a `docs_url`. The full list is at
