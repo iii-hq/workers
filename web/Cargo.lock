@@ -2305,7 +2305,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "1.2.20"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
