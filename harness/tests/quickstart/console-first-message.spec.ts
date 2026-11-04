@@ -7,14 +7,11 @@ const ANTHROPIC_MODEL_LABEL = /^sonnet[\s-]+5\.5(?:\s+default)?$/i
 const OPENAI_MODEL_ID = 'gpt-5.6-luna'
 const OPENAI_MODEL_LABEL = /^gpt[\s-]*5\.6[\s-]*luna(?:\s+default)?$/i
 
-const ANTHROPIC_PROMPT =
-  'Reply with exactly QUICKSTART_ANTHROPIC_OK and nothing else.'
+const ANTHROPIC_PROMPT = 'Reply with exactly QUICKSTART_ANTHROPIC_OK and nothing else.'
 const ANTHROPIC_MARKER = 'QUICKSTART_ANTHROPIC_OK'
-const OPENAI_SWITCH_PROMPT =
-  'Reply with exactly QUICKSTART_OPENAI_SWITCH_OK and nothing else.'
+const OPENAI_SWITCH_PROMPT = 'Reply with exactly QUICKSTART_OPENAI_SWITCH_OK and nothing else.'
 const OPENAI_SWITCH_MARKER = 'QUICKSTART_OPENAI_SWITCH_OK'
-const OPENAI_NEW_CHAT_PROMPT =
-  'Reply with exactly QUICKSTART_OPENAI_NEW_CHAT_OK and nothing else.'
+const OPENAI_NEW_CHAT_PROMPT = 'Reply with exactly QUICKSTART_OPENAI_NEW_CHAT_OK and nothing else.'
 const OPENAI_NEW_CHAT_MARKER = 'QUICKSTART_OPENAI_NEW_CHAT_OK'
 
 function required(name: string): string {
@@ -23,12 +20,7 @@ function required(name: string): string {
   return value
 }
 
-async function selectModel(
-  page: Page,
-  filter: string,
-  modelLabel: RegExp,
-  pickerLabel: RegExp,
-) {
+async function selectModel(page: Page, filter: string, modelLabel: RegExp, pickerLabel: RegExp) {
   const modelPicker = page.getByRole('button', { name: /^model(?::|\s|$)/i })
   await expect(modelPicker).toBeEnabled()
   await modelPicker.click()
@@ -41,21 +33,13 @@ async function selectModel(
   await expect(modelPicker).toHaveAccessibleName(pickerLabel)
 }
 
-async function sendExactMessage(
-  page: Page,
-  chat: Locator,
-  prompt: string,
-  marker: string,
-  modelId: string,
-) {
+async function sendExactMessage(page: Page, chat: Locator, prompt: string, marker: string, modelId: string) {
   const composer = page.getByLabel('message composer')
   await composer.pressSequentially(prompt)
   await expect(composer).toHaveText(prompt)
   await page.getByRole('button', { name: 'send message' }).click()
 
-  await expect(
-    chat.locator('[data-message-role="user"]', { hasText: prompt }),
-  ).toHaveCount(1)
+  await expect(chat.locator('[data-message-role="user"]', { hasText: prompt })).toHaveCount(1)
   const assistant = chat.locator('[data-message-role="assistant"]', {
     hasText: marker,
   })
@@ -64,20 +48,14 @@ async function sendExactMessage(
   await expect(assistant).toContainText(modelId)
 }
 
-async function persistedChat(
-  page: Page,
-  titlePrefix: RegExp,
-  sessionId: string,
-) {
+async function persistedChat(page: Page, titlePrefix: RegExp, sessionId: string) {
   await page.getByRole('button', { name: titlePrefix }).first().click()
   const chat = page.locator(`[data-chat-session-id="${sessionId}"]`)
   await expect(chat).toHaveAttribute('data-chat-session-hydrated', 'true')
   return chat
 }
 
-test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({
-  page,
-}) => {
+test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({ page }) => {
   const consoleUrl = required('HARNESS_QUICKSTART_CONSOLE_URL')
   const artifactsRoot = required('HARNESS_QUICKSTART_ARTIFACTS_DIR')
 
@@ -91,77 +69,47 @@ test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({
     page,
     'Sonnet 5.5',
     ANTHROPIC_MODEL_LABEL,
-    /^model:\s*claude[\s-]+sonnet[\s-]+5\.5,/i,
+    /^model:\s*claude[\s-]+sonnet[\s-]+5\.5\s+via\s+anthropic,\s*reasoning effort:/i,
   )
 
   const firstChat = page.locator('[data-chat-session-id]').first()
   const firstSessionId = await firstChat.getAttribute('data-chat-session-id')
-  if (!firstSessionId)
-    throw new Error('Console did not expose the persisted session id')
-  await sendExactMessage(
-    page,
-    firstChat,
-    ANTHROPIC_PROMPT,
-    ANTHROPIC_MARKER,
-    ANTHROPIC_MODEL_ID,
-  )
+  if (!firstSessionId) throw new Error('Console did not expose the persisted session id')
+  await sendExactMessage(page, firstChat, ANTHROPIC_PROMPT, ANTHROPIC_MARKER, ANTHROPIC_MODEL_ID)
   await expect(firstChat).toHaveAttribute('data-chat-session-hydrated', 'true')
 
   await selectModel(
     page,
     'GPT-5.6 Luna',
     OPENAI_MODEL_LABEL,
-    /^model:\s*gpt[\s-]*5\.6[\s-]*luna,/i,
+    /^model:\s*gpt[\s-]*5\.6[\s-]*luna\s+via\s+openai,\s*reasoning effort:/i,
   )
-  await sendExactMessage(
-    page,
-    firstChat,
-    OPENAI_SWITCH_PROMPT,
-    OPENAI_SWITCH_MARKER,
-    OPENAI_MODEL_ID,
-  )
-  await expect(firstChat).toHaveAttribute(
-    'data-chat-session-id',
-    firstSessionId,
-  )
+  await sendExactMessage(page, firstChat, OPENAI_SWITCH_PROMPT, OPENAI_SWITCH_MARKER, OPENAI_MODEL_ID)
+  await expect(firstChat).toHaveAttribute('data-chat-session-id', firstSessionId)
 
   await page.getByRole('button', { name: /^new chat$/i }).click()
   const secondChat = page.locator('[data-chat-session-id]').first()
   const secondSessionId = await secondChat.getAttribute('data-chat-session-id')
-  if (!secondSessionId)
-    throw new Error('Console did not expose the new persisted session id')
+  if (!secondSessionId) throw new Error('Console did not expose the new persisted session id')
   expect(secondSessionId).not.toBe(firstSessionId)
 
   await selectModel(
     page,
     'GPT-5.6 Luna',
     OPENAI_MODEL_LABEL,
-    /^model:\s*gpt[\s-]*5\.6[\s-]*luna,/i,
+    /^model:\s*gpt[\s-]*5\.6[\s-]*luna\s+via\s+openai,\s*reasoning effort:/i,
   )
-  await sendExactMessage(
-    page,
-    secondChat,
-    OPENAI_NEW_CHAT_PROMPT,
-    OPENAI_NEW_CHAT_MARKER,
-    OPENAI_MODEL_ID,
-  )
+  await sendExactMessage(page, secondChat, OPENAI_NEW_CHAT_PROMPT, OPENAI_NEW_CHAT_MARKER, OPENAI_MODEL_ID)
   await expect(secondChat).toHaveAttribute('data-chat-session-hydrated', 'true')
 
   await page.reload()
-  const reloadedFirst = await persistedChat(
-    page,
-    /^open reply with exactly quickstart_an/i,
-    firstSessionId,
-  )
+  const reloadedFirst = await persistedChat(page, /^open reply with exactly quickstart_an/i, firstSessionId)
   await expect(
     reloadedFirst.locator('[data-message-role="user"]', {
       hasText: ANTHROPIC_PROMPT,
     }),
   ).toHaveCount(1)
-  const reloadedAnthropic = reloadedFirst.locator(
-    '[data-message-role="assistant"]',
-    { hasText: ANTHROPIC_MARKER },
-  )
+  const reloadedAnthropic = reloadedFirst.locator('[data-message-role="assistant"]', { hasText: ANTHROPIC_MARKER })
   await expect(reloadedAnthropic).toHaveCount(1)
   await expect(reloadedAnthropic).toContainText(ANTHROPIC_MODEL_ID)
   await expect(
@@ -169,27 +117,17 @@ test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({
       hasText: OPENAI_SWITCH_PROMPT,
     }),
   ).toHaveCount(1)
-  const reloadedSwitch = reloadedFirst.locator(
-    '[data-message-role="assistant"]',
-    { hasText: OPENAI_SWITCH_MARKER },
-  )
+  const reloadedSwitch = reloadedFirst.locator('[data-message-role="assistant"]', { hasText: OPENAI_SWITCH_MARKER })
   await expect(reloadedSwitch).toHaveCount(1)
   await expect(reloadedSwitch).toContainText(OPENAI_MODEL_ID)
 
-  const reloadedSecond = await persistedChat(
-    page,
-    /^open reply with exactly quickstart_op/i,
-    secondSessionId,
-  )
+  const reloadedSecond = await persistedChat(page, /^open reply with exactly quickstart_op/i, secondSessionId)
   await expect(
     reloadedSecond.locator('[data-message-role="user"]', {
       hasText: OPENAI_NEW_CHAT_PROMPT,
     }),
   ).toHaveCount(1)
-  const reloadedNewChat = reloadedSecond.locator(
-    '[data-message-role="assistant"]',
-    { hasText: OPENAI_NEW_CHAT_MARKER },
-  )
+  const reloadedNewChat = reloadedSecond.locator('[data-message-role="assistant"]', { hasText: OPENAI_NEW_CHAT_MARKER })
   await expect(reloadedNewChat).toHaveCount(1)
   await expect(reloadedNewChat).toContainText(OPENAI_MODEL_ID)
 
