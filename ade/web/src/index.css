@@ -2065,3 +2065,17 @@
 .context-view:has(.monaco-hover.workbench-hover) {
   display: none !important;
 }
+
+/* The find widget's ✕ is absolutely placed at Monaco's `top: 5px`, which
+   sits it 2.5px above the row it closes (the field, the count and the
+   arrows all centre 15.5px down). Centre it on that row; it stays on the
+   first row when the replace row opens beneath. `.visible` outranks
+   Monaco's own rule, which is injected after this sheet. */
+.monaco-editor .find-widget.visible .button.codicon-widget-close {
+  top: 7.5px;
+}
+
+/* Its replace toggle (›, far left) sits 1px low on the same row. */
+.monaco-editor .find-widget.visible > .button.toggle {
+  margin-top: 3px;
+}
