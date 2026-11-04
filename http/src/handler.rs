@@ -154,11 +154,23 @@ fn apply_control(
 /// The engine records the same pair wherever the status becomes known
 /// (`views.rs`). The counter attributes mirror the span tags: method + route +
 /// status.
-fn record_status(response: Response, method: &str, route: &str, started: Instant) -> Response {
+fn record_status(
+    response: Response,
+    method: &str,
+    matched: Option<&str>,
+    actual_path: &str,
+    started: Instant,
+) -> Response {
     let code = response.status().as_u16();
     let span = tracing::Span::current();
-    span.record("otel.name", format!("{method} {route}").as_str());
-    span.record("http.route", route);
+    // A matched route named the span when it matched (`InFlight::set_route`).
+    let route = match matched {
+        Some(route) => route,
+        None => {
+            crate::inflight::name_request_span(&span, method, actual_path);
+            actual_path
+        }
+    };
     span.record("otel.status_code", otel_status_for(code));
     span.record("http.response.status_code", code);
     request_counter().add(
@@ -243,9 +255,13 @@ pub async fn dynamic_handler(
 
     // Per-request OTEL/tracing HTTP span, mirroring the engine's iii-http
     // (`views.rs`). Trace-context parent propagation is applied just below
-    // (after the span is built). `otel.name` and `http.route` start from the
-    // actual request path; `record_status` records the matched route's
-    // template (e.g. `/users/:id`) once the deliver hook matched one.
+    // (after the span is built). `otel.name` starts from the actual request
+    // path. The deliver hook names the span after the matched route's template
+    // (e.g. `/users/:id`) when it matches (`InFlight::set_route`), so a
+    // matched request that times out still carries its route; `record_status`
+    // names it after the actual path when no route matched. `http.route` starts
+    // empty: a late record on the started OTel span is appended, not replaced,
+    // so a value here would export twice.
     //
     // W3C trace-context parent propagation: read the inbound headers before the
     // span is built. `tracestate` is read for completeness but NOT propagated --
@@ -267,7 +283,7 @@ pub async fn dynamic_handler(
         otel.kind = "server",
         otel.status_code = tracing::field::Empty,
         "http.request.method" = %method,
-        "http.route" = %actual_path,
+        "http.route" = tracing::field::Empty,
         "url.path" = %actual_path,
         "http.response.status_code" = tracing::field::Empty,
     );
@@ -352,8 +368,13 @@ pub async fn dynamic_handler(
 
         let (ticket, opened) = state.requests.open(state.public_webhooks_only, body_bytes);
         let response = respond(&state, request, ticket.id(), opened, default_timeout).await;
-        let route = ticket.request().route().unwrap_or(&actual_path);
-        record_status(response, method.as_str(), route, started)
+        record_status(
+            response,
+            method.as_str(),
+            ticket.request().route(),
+            &actual_path,
+            started,
+        )
     }
     .instrument(span)
     .await
