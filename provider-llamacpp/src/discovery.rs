@@ -6,6 +6,15 @@
 //! whether a credential is configured** — most local llama.cpp servers run
 //! with no `--api-key` at all — and the catalog is only pruned on an actual
 //! 401/403 from the server (an operator-configured key we don't have).
+//!
+//! Not every `api_url` an operator points this provider at is actually a
+//! llama.cpp server: Ollama's hosted OpenAI-compatible endpoint has no
+//! `/props` (404) but adds a sibling `models` array next to the standard
+//! `data` array in its own `/v1/models` response, carrying real per-model
+//! `context_window`/`max_context_window` values keyed by `slug`. Treated at
+//! the same trust tier as the existing per-row `context_length` fallback
+//! (Unsloth Studio's shape) — a declared, model-specific value beats both
+//! `/props` (server-wide, and absent here) and the global default.
 use crate::config::{
     credential_parts, remember_probed_api_url, DEFAULT_API_URL_CANDIDATES, DEFAULT_MAX_TOKENS,
 };
@@ -117,6 +126,7 @@ fn ctx_size_arg(row: &Value) -> Option<u64> {
 }
 
 fn parse_live_models(json: &Value, props: &Props) -> Vec<Model> {
+    let sibling_windows = parse_sibling_models(json);
     json.get("data")
         .and_then(Value::as_array)
         .map(|rows| {
@@ -129,11 +139,38 @@ fn parse_live_models(json: &Value, props: &Props) -> Vec<Model> {
                     let context_length = raw
                         .get("context_length")
                         .and_then(Value::as_u64)
-                        .or_else(|| ctx_size_arg(raw));
+                        .or_else(|| ctx_size_arg(raw))
+                        // Not an actual llama.cpp server (e.g. Ollama's /v1
+                        // endpoint): see module docs for the sibling `models`
+                        // array this falls back to.
+                        .or_else(|| sibling_windows.get(id).copied());
                     Some((id, context_length))
                 })
                 .filter(|(id, _)| !id.is_empty())
                 .map(|(id, context_length)| enrich(id, context_length, props))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Ollama's `/v1/models` response adds this sibling array (keyed by `slug`,
+/// matching `data[].id`) with real per-model context windows -- see the
+/// module doc comment. Absent on a real llama.cpp server, so this is a
+/// no-op there.
+fn parse_sibling_models(json: &Value) -> std::collections::HashMap<String, u64> {
+    json.get("models")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let slug = row.get("slug").and_then(Value::as_str)?.to_string();
+                    let window = row
+                        .get("context_window")
+                        .and_then(Value::as_u64)
+                        .or_else(|| row.get("max_context_window").and_then(Value::as_u64))
+                        .filter(|&n| n > 0)?;
+                    Some((slug, window))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -555,6 +592,45 @@ mod tests {
         let props = parse_props(&json);
         assert_eq!(props.context_window, Some(8192));
         assert_eq!(props.supports_vision, Some(true));
+    }
+
+    #[test]
+    fn ollama_sibling_models_array_beats_default_with_no_props() {
+        // Real shape from https://ollama.com/v1/models: no /props (404,
+        // it's not a llama.cpp server), but a sibling `models` array next
+        // to the standard `data` array carries real per-model windows.
+        // Regression: this used to fall straight to the 4096 llama.cpp
+        // default for every model, regardless of its real size.
+        let json = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "deepseek-v4.1-flash", "object": "model", "owned_by": "ollama" },
+                { "id": "gpt-oss:120b", "object": "model", "owned_by": "ollama" },
+                { "id": "no-sibling-entry", "object": "model", "owned_by": "ollama" },
+            ],
+            "models": [
+                { "slug": "deepseek-v4.1-flash", "context_window": 1_048_576, "max_context_window": 1_048_576 },
+                { "slug": "gpt-oss:120b", "context_window": 131_072, "max_context_window": 131_072 },
+            ]
+        });
+        let models = parse_live_models(&json, &Props::default());
+        assert_eq!(models[0].context_window, 1_048_576);
+        assert_eq!(models[1].context_window, 131_072);
+        // No matching slug: still falls back to the llama.cpp default, not 0.
+        assert_eq!(models[2].context_window, DEFAULT_CONTEXT_WINDOW);
+    }
+
+    #[test]
+    fn ollama_sibling_models_loses_to_an_explicit_per_row_context_length() {
+        // A real llama.cpp-compatible frontend's own per-row context_length
+        // (Unsloth Studio's shape) is more specific than a same-named
+        // sibling array would be; it must keep winning.
+        let json = serde_json::json!({
+            "data": [{ "id": "m", "context_length": 128_000 }],
+            "models": [{ "slug": "m", "context_window": 4_096 }]
+        });
+        let models = parse_live_models(&json, &Props::default());
+        assert_eq!(models[0].context_window, 128_000);
     }
 
     #[test]
