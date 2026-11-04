@@ -59,6 +59,15 @@
   }
 }
 
+/* A settled row far outside the viewport skips layout and paint until it
+   scrolls near: a long transcript opens without laying out every turn.
+   `auto` keeps a row's last measured height once it has rendered, so
+   scrolling back over it does not jump. */
+.chat-live-row[data-presence="present"] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
 .chat-live-row[data-presence="entering"] {
   opacity: 0;
   transform: translateY(var(--chat-entry-distance));
