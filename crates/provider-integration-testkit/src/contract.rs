@@ -580,3 +580,142 @@ fn assert_request(
     );
     Ok(())
 }
+
+/// First-boot registration of provider-claude-code against a fresh engine,
+/// where no registration token exists yet. Two concurrent first declares (as
+/// boot and `router::on-ready` issue them) must both be accepted; then, in
+/// each boot order, every `router::provider::register` the provider makes
+/// must succeed, its token must be persisted and the stub's catalog served.
+#[cfg(all(test, feature = "provider-claude-code"))]
+pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> {
+    use iii_sdk::{Capture, InvocationStatus, Observed, On, Source};
+    use provider_claude_code::register::declare_once;
+
+    let case = crate::case::enabled_cases()
+        .into_iter()
+        .find(|case| case.id == provider_claude_code::PROVIDER_ID)
+        .context("claude-code case")?;
+    let isolated_home = tempfile::tempdir()?;
+    std::env::set_var("HOME", isolated_home.path());
+    std::env::set_var("CLAUDE_CONFIG_DIR", isolated_home.path().join("claude"));
+
+    {
+        let engine = Engine::start().await?;
+        let router = register_worker(&engine.url, test_init_options());
+        register_router(router.clone())
+            .await
+            .context("register router")?;
+        let provider = register_worker(&engine.url, provider_init_options(case.id));
+        let (first, second) = tokio::join!(declare_once(&provider), declare_once(&provider));
+        first.context("first of two concurrent first declares")?;
+        second.context("second of two concurrent first declares")?;
+        wait_for_registration_token(&provider, case.id).await?;
+        provider.shutdown();
+        router.shutdown();
+    }
+
+    for provider_first in [true, false] {
+        let order = if provider_first {
+            "provider before router"
+        } else {
+            "provider after router"
+        };
+        let engine = Engine::start().await?;
+        let stub = StubUpstream::start(case).await?;
+
+        // Every completed register of this provider, successful or refused.
+        // Only the outcome is captured: never the input, output or token.
+        let outcomes = Arc::new(Mutex::new(Vec::<InvocationStatus>::new()));
+        let probe = register_worker(&engine.url, test_init_options());
+        let sink = outcomes.clone();
+        probe.register_function(
+            "provider-contract::on-register",
+            RegisterFunction::new(move |observed: Observed| {
+                sink.lock().unwrap().push(observed.status);
+                Ok::<Value, IiiError>(json!({}))
+            }),
+        );
+        let observer = probe.observe(
+            Source::function("router::provider::register")
+                .filters(json!({ "input.declaration.id": { "$eq": case.id } }))
+                .capture([Capture::Error])
+                .on(On::Complete),
+            "provider-contract::on-register",
+        );
+
+        let router = register_worker(&engine.url, test_init_options());
+        let provider = register_worker(&engine.url, provider_init_options(case.id));
+        if provider_first {
+            (case.register)(provider.clone()).await?;
+        }
+        register_router(router.clone())
+            .await
+            .context("register router")?;
+        tokio::time::timeout(Duration::from_secs(10), observer.ready())
+            .await
+            .with_context(|| format!("{order}: register observer active in time"))?
+            .with_context(|| format!("{order}: register observer accepted"))?;
+        configure(&router, case, &stub.endpoint(case.generation_path)).await?;
+        if !provider_first {
+            (case.register)(provider.clone()).await?;
+        }
+        wait_for_provider(&router, case.id).await?;
+        wait_for_registration_token(&provider, case.id).await?;
+
+        // Registration needs no credential. Until the synthetic vault exists
+        // a refresh finds none and lists nothing, without any HTTP; then the
+        // ordinary refresh serves the stub's catalog.
+        let vault = register_fake_vault(&engine.url, case.credential).await;
+        call(
+            &router,
+            &format!("provider::{}::refresh_models", case.id),
+            json!({}),
+        )
+        .await
+        .with_context(|| format!("{order}: refresh_models"))?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let list = call(
+                &router,
+                "router::models::list",
+                json!({ "provider": case.id }),
+            )
+            .await?;
+            if list["models"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|model| model["id"] == case.model))
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                bail!("{order}: catalog not served: {list}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // The boot declare and the `router::on-ready` declare, then a quiet
+        // period for any retry a refused declare would make.
+        while outcomes.lock().unwrap().len() < 2 {
+            if Instant::now() >= deadline {
+                bail!(
+                    "{order}: {:?} registers completed",
+                    outcomes.lock().unwrap()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let completed = outcomes.lock().unwrap().clone();
+        anyhow::ensure!(
+            !completed.contains(&InvocationStatus::Error),
+            "{order}: a first-boot register was refused: {completed:?}"
+        );
+
+        provider.shutdown();
+        router.shutdown();
+        probe.shutdown();
+        if let Some(vault) = vault {
+            vault.shutdown();
+        }
+    }
+    Ok(())
+}
