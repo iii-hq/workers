@@ -25,6 +25,7 @@ Lessons from one long dev run: 4 orchestrators, about 60 sessions and US$80. Abo
 - **The batch worker may run the project's lint on the packages it changed.** The lead's batch task says so too. A lint error found only by the check had cost a full review and verify round, twice.
 - **`verify_model`** (default `same`) runs only the batch verify phase on a lighter model (`lead`) or a named one. Review, judges and the critic keep the child model. The adversary's description no longer says to pin a mid-tier model there: review runs on that tier too.
 - **No `harness::ask` card for a blocker the run cannot clear** (a full disk, a denied permission, a missing repository): it is a comment and a `blocked:` finish. A run started by another session may have no one attached to answer a card.
+- **Check phases can wait on their long runs again.** The lead's verify shapes spell out the long-run functions, `shell::on-job-finished` included: since a session may observe only functions its policy allows, a verify spawned with `harness::observe` but not the observed function ended its turn "waiting on <job>" and never woke, and the batch barrier expired with no verdict. The long-run recipe also says to print each command's own exit code: `cmd | tail; echo $?` prints `tail`'s and hid a failing database suite.
 - **Compatibility.**
   - A lead from before this version reads no `Check deadline` and uses `Phase deadline`.
   - A run in progress can be resumed after updating.
