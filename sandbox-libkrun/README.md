@@ -109,9 +109,17 @@ environment, two guards apply:
   directory and the Compose package cache. Anything else gets S501 naming the
   two roots.
 
-Compose also sets `III_DISABLE_TRACE_PAYLOADS=1` on the adapter, so the token
-and guest env never land in the engine's trace store. Every `worker::*` function
-is registered `observable: false`, so no observer reads them either.
+Compose also sets `III_DISABLE_TRACE_PAYLOADS=1` on the adapter, and every
+`worker::*` function is registered `observable: false`, so at the engine's default
+log level the token and guest env reach neither its trace store nor an observer.
+At `debug` that holds only on an engine that keeps the payload out of its debug
+log: an older one logs each request with its `auth`, which reaches the trace store
+and any observer of `observability::on-log`.
+
+The project token stays out of the guest. It lives in Compose's state (`.iii`),
+which the copy into `/workspace` and source sync skip, and the source share answers
+ENOENT for that name at any depth and in any case, including to guest root mounting
+the share again after the copy.
 
 `iii sandbox run` presents a token scoped to its VM instead of the project token
 (HMAC-SHA256 keyed by the project token over `iii-sandbox/worker-scope/v1\0`
@@ -126,6 +134,9 @@ The guards assume bus clients are trusted. A client that registers the
 adapter's function ids or its worker name first, while the adapter is down,
 receives the `auth` token and the guest `env` that Compose sends. The router
 has the same limit for `sandbox::*` forwards.
+
+`.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
+inside a worker's directory puts the token in that guest.
 
 ## Errors
 

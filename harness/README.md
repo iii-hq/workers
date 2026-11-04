@@ -78,7 +78,9 @@ with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/
 A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's own
 `<adapter>::<op>` (`sandbox-libkrun`, or the adapter `sandbox::adapter::info` reports). A
 `functions.deny` glob or a hook's `functions` glob matching either id covers both;
-`functions.allow` stays literal.
+`functions.allow` stays literal. `sandbox-libkrun` is always covered, a custom adapter's prefix
+only once `sandbox::adapter::info` has answered, so an adapter whose info hangs keeps its ids
+callable until a later reload reads it.
 Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
 schema rejects is parsed. When the optional
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles
