@@ -65,9 +65,15 @@ pub fn declaration() -> ProviderDeclaration {
     }
 }
 
+/// Serializes registration attempts in this process. Boot and
+/// `router::on-ready` both declare; on a first boot, unserialized, both carry
+/// no token and the router rejects whichever binds second.
+static DECLARE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// One registration attempt: declare (with the persisted token when present)
 /// and persist the token the router returns.
 pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
+    let _serialized = DECLARE.lock().await;
     let token = state::load_token(iii).await;
     let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
     if let Some(t) = &token {
