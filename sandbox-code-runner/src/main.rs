@@ -124,8 +124,9 @@ async fn main() -> Result<()> {
     match probe_sandbox(engine.as_ref()).await {
         SandboxProbe::Ready => tracing::info!("sandbox adapter detected"),
         SandboxProbe::Missing => tracing::warn!(
-            "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
-             call will fail until an operator runs `iii call compose::add worker=iii-sandbox`"
+            "no sandbox adapter answered this engine's router (not installed, not running, or \
+             hung): sandbox-code-runner calls can fail until one does; to install one, run \
+             `iii call compose::add worker=iii-sandbox`"
         ),
         SandboxProbe::Incompatible(reason) => tracing::warn!(
             "{reason}: every sandbox-code-runner call will fail with S302 until a \

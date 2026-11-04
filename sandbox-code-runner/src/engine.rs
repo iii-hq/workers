@@ -115,7 +115,8 @@ impl Engine for IIIEngine {
 pub enum SandboxProbe {
     /// An adapter is connected to the router.
     Ready,
-    /// The engine answered and there is no adapter.
+    /// The engine answered and no adapter reported in time: not installed, not
+    /// running, or hung. The router's reply does not tell these apart.
     Missing,
     /// An adapter is connected but implements another contract major, so the
     /// router refuses every call with S302; carries why.
