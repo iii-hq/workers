@@ -60,7 +60,7 @@ const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// only when no stored value exists; live configuration always takes precedence.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     discard_legacy_harness_config_if_needed(iii).await?;
-    drop_stored_provider_identity_prompt_if_needed(iii).await?;
+    migrate_stored_harness_config_if_needed(iii).await?;
 
     let mut payload = json!({
         "id": config_id(),
@@ -181,7 +181,9 @@ fn legacy_harness_keys(value: &Value) -> Vec<&'static str> {
 /// replace the value with built-in defaults, then let the caller register the
 /// real schema.
 async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), String> {
-    let Some(value) = try_get_config_value(iii, false).await? else {
+    // The current schema may already be registered after a failed upgrade.
+    // Inspect raw data so validation cannot block the migrations below.
+    let Some(value) = try_get_config_value(iii, true).await? else {
         return Ok(());
     };
     if value.is_null() || !is_legacy_harness_value(&value) {
@@ -224,18 +226,19 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
     Ok(())
 }
 
-/// Remove the retired provider-owned prompt setting before re-registering the
-/// strict schema. All other stored settings remain intact.
-async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Result<(), String> {
+/// Migrate stored settings before re-registering the strict schema. Raw reads
+/// keep placeholders intact and let an entry rejected by the current schema
+/// recover: Serde's `agent_trigger` alias is not accepted by that schema.
+async fn migrate_stored_harness_config_if_needed(iii: &IIIClient) -> Result<(), String> {
     let Some(value) = try_get_config_value(iii, true).await? else {
         return Ok(());
     };
     let mut migrated = value.clone();
-    if !drop_provider_identity_prompt(&mut migrated) {
+    if !migrate_stored_config(&mut migrated) {
         return Ok(());
     }
 
-    tracing::info!("removing retired provider_identity_prompt from harness configuration");
+    tracing::info!("migrating stored harness configuration to the current schema");
     call_configuration_with_retry(
         iii,
         "configuration::register",
@@ -262,9 +265,7 @@ async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Resu
         let overwritten = response.get("old_value").cloned().ok_or_else(|| {
             "configuration::set response missing old_value during harness migration".to_string()
         })?;
-        let Some(rebased) =
-            reconcile_provider_identity_prompt_write(&mut expected, &migrated, overwritten)
-        else {
+        let Some(rebased) = reconcile_migration_write(&mut expected, &migrated, overwritten) else {
             return Ok(());
         };
         tracing::warn!(
@@ -274,24 +275,35 @@ async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Resu
     }
 }
 
-fn drop_provider_identity_prompt(value: &mut Value) -> bool {
-    value
-        .as_object_mut()
-        .is_some_and(|settings| settings.remove("provider_identity_prompt").is_some())
+fn migrate_stored_config(value: &mut Value) -> bool {
+    let Some(settings) = value.as_object_mut() else {
+        return false;
+    };
+    let mut changed = settings.remove("provider_identity_prompt").is_some();
+    if let Some(expose) = settings
+        .get_mut("default_functions")
+        .and_then(|policy| policy.get_mut("expose"))
+    {
+        if expose.as_str() == Some("agent_trigger") {
+            *expose = json!("agent_call");
+            changed = true;
+        }
+    }
+    changed
 }
 
-fn reconcile_provider_identity_prompt_write(
+fn reconcile_migration_write(
     expected: &mut Value,
     written: &Value,
     mut overwritten: Value,
 ) -> Option<Value> {
     // `old_value` is atomic with the set. A mismatch means this write replaced
-    // a newer snapshot, so restore that snapshot with only the retired key gone.
+    // a newer snapshot, so restore that snapshot with only its migrations applied.
     if overwritten == *expected {
         return None;
     }
     *expected = written.clone();
-    drop_provider_identity_prompt(&mut overwritten);
+    migrate_stored_config(&mut overwritten);
     Some(overwritten)
 }
 
@@ -555,7 +567,7 @@ mod tests {
             "nested": { "provider_identity_prompt": true }
         });
 
-        assert!(drop_provider_identity_prompt(&mut stored));
+        assert!(migrate_stored_config(&mut stored));
         assert_eq!(
             stored,
             json!({
@@ -570,7 +582,7 @@ mod tests {
         let mut expected = json!({ "provider_identity_prompt": true, "turns": 1 });
         let first_write = json!({ "turns": 1 });
 
-        let rebased = reconcile_provider_identity_prompt_write(
+        let rebased = reconcile_migration_write(
             &mut expected,
             &first_write,
             json!({ "provider_identity_prompt": false, "turns": 2 }),
@@ -578,9 +590,79 @@ mod tests {
         .expect("the intervening value needs a compensating write");
 
         assert_eq!(rebased, json!({ "turns": 2 }));
+        assert!(reconcile_migration_write(&mut expected, &rebased, first_write).is_none());
+    }
+
+    #[test]
+    fn exposure_migration_preserves_permissions_and_raw_placeholders() {
+        let mut stored = json!({
+            "default_functions": {
+                "allow": ["state::get", "${EXTRA_FUNCTION:session::list}"],
+                "deny": ["state::set"],
+                "expose": "agent_trigger"
+            },
+            "default_max_turns": "${MAX_TURNS:37}"
+        });
+        let mut expected = stored.clone();
+        expected["default_functions"]["expose"] = json!("agent_call");
+
+        assert!(migrate_stored_config(&mut stored));
+        assert_eq!(stored, expected);
         assert!(
-            reconcile_provider_identity_prompt_write(&mut expected, &rebased, first_write,)
-                .is_none()
+            !migrate_stored_config(&mut stored),
+            "migration is idempotent"
+        );
+    }
+
+    #[test]
+    fn exposure_migration_leaves_other_values_untouched() {
+        for mut stored in [
+            json!(null),
+            json!({}),
+            json!({"default_functions": null}),
+            json!({"default_functions": {"allow": []}}),
+            json!({"default_functions": {"expose": "native"}}),
+            json!({"default_functions": {"expose": "agent_call"}}),
+            json!({"default_functions": {"expose": "${EXPOSE:agent_call}"}}),
+            json!({"default_functions": {"expose": "invalid"}}),
+        ] {
+            let original = stored.clone();
+            assert!(!migrate_stored_config(&mut stored));
+            assert_eq!(stored, original);
+        }
+    }
+
+    #[test]
+    fn exposure_migration_rebases_an_intervening_permission_change() {
+        let mut expected = json!({"default_functions": {"expose": "agent_trigger"}});
+        let first_write = json!({"default_functions": {"expose": "agent_call"}});
+        let rebased = reconcile_migration_write(
+            &mut expected,
+            &first_write,
+            json!({"default_functions": {
+                "expose": "agent_trigger", "allow": ["state::get"], "deny": ["state::set"]
+            }}),
+        )
+        .expect("preserve the intervening permissions");
+
+        assert_eq!(
+            rebased,
+            json!({"default_functions": {
+                "expose": "agent_call", "allow": ["state::get"], "deny": ["state::set"]
+            }})
+        );
+        assert!(reconcile_migration_write(&mut expected, &rebased, first_write).is_none());
+    }
+
+    #[test]
+    fn exposure_migration_preserves_an_intervening_native_mode() {
+        let mut expected = json!({"default_functions": {"expose": "agent_trigger"}});
+        let first_write = json!({"default_functions": {"expose": "agent_call"}});
+        let native = json!({"default_functions": {"expose": "native", "allow": []}});
+
+        assert_eq!(
+            reconcile_migration_write(&mut expected, &first_write, native.clone()),
+            Some(native)
         );
     }
 
