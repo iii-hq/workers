@@ -386,3 +386,67 @@ async fn otel_span_propagates_outbound_traceparent_to_function() {
 
     boot.shutdown().await;
 }
+
+/// The *exported* OTel span, not just the `tracing` fields: once a route
+/// matches, the span is named after the route template and carries exactly one
+/// `http.route`. The HTTP span is already started (entered by `instrument`)
+/// when `record_status` runs, and `tracing_opentelemetry` drops a late
+/// `otel.name` on a started span and appends late attributes, so the fields
+/// the tests above read can be right while the exported span keeps the actual
+/// path as its name and two `http.route` values.
+#[tokio::test]
+#[serial]
+async fn otel_exported_span_is_named_after_the_route() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_echo_backend(&iii, "/otel/named/:id", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/otel/named/:id").await;
+
+    let url = format!("http://{}/otel/named/7", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/named/7").await;
+    assert_eq!(span.name, "GET /otel/named/:id");
+    let routes: Vec<String> = span
+        .attributes
+        .iter()
+        .filter(|kv| kv.key.as_str() == "http.route")
+        .map(|kv| kv.value.as_str().into_owned())
+        .collect();
+    assert_eq!(routes, vec!["/otel/named/:id".to_string()]);
+
+    boot.shutdown().await;
+}
+
+/// Without a matching route the exported span keeps the actual path, once.
+#[tokio::test]
+#[serial]
+async fn otel_exported_span_without_a_route_keeps_the_path() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+
+    let url = format!("http://{}/otel/unrouted", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/unrouted").await;
+    assert_eq!(span.name, "GET /otel/unrouted");
+    let routes: Vec<String> = span
+        .attributes
+        .iter()
+        .filter(|kv| kv.key.as_str() == "http.route")
+        .map(|kv| kv.value.as_str().into_owned())
+        .collect();
+    assert_eq!(routes, vec!["/otel/unrouted".to_string()]);
+
+    boot.shutdown().await;
+}

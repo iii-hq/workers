@@ -155,9 +155,17 @@ fn apply_control(
 /// (`views.rs`). The counter attributes mirror the span tags: method + route +
 /// status.
 fn record_status(response: Response, method: &str, route: &str, started: Instant) -> Response {
+    use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
     let code = response.status().as_u16();
     let span = tracing::Span::current();
-    span.record("otel.name", format!("{method} {route}").as_str());
+    let name = format!("{method} {route}");
+    span.record("otel.name", name.as_str());
+    // The span was entered by `instrument` before the route matched, so its
+    // OpenTelemetry span has already started. `tracing_opentelemetry` drops a
+    // late `otel.name` on a started span; rename the exported span directly.
+    span.context().span().update_name(name);
     span.record("http.route", route);
     span.record("otel.status_code", otel_status_for(code));
     span.record("http.response.status_code", code);
@@ -243,9 +251,12 @@ pub async fn dynamic_handler(
 
     // Per-request OTEL/tracing HTTP span, mirroring the engine's iii-http
     // (`views.rs`). Trace-context parent propagation is applied just below
-    // (after the span is built). `otel.name` and `http.route` start from the
-    // actual request path; `record_status` records the matched route's
-    // template (e.g. `/users/:id`) once the deliver hook matched one.
+    // (after the span is built). `otel.name` starts from the actual request
+    // path; `record_status` renames the span after the matched route's
+    // template (e.g. `/users/:id`) once the deliver hook matched one, and
+    // records `http.route` then. `http.route` starts empty: a late record on
+    // the started OTel span is appended, not replaced, so a value here would
+    // export twice.
     //
     // W3C trace-context parent propagation: read the inbound headers before the
     // span is built. `tracestate` is read for completeness but NOT propagated --
@@ -267,7 +278,7 @@ pub async fn dynamic_handler(
         otel.kind = "server",
         otel.status_code = tracing::field::Empty,
         "http.request.method" = %method,
-        "http.route" = %actual_path,
+        "http.route" = tracing::field::Empty,
         "url.path" = %actual_path,
         "http.response.status_code" = tracing::field::Empty,
     );
