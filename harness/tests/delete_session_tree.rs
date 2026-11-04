@@ -10,8 +10,10 @@ use harness::deps::Deps;
 use harness::functions::delete_session_tree::{
     self as deletion, DeleteRequest, DeletionStatus, StatusRequest,
 };
+use harness::functions::on_session_deleted::{self, SessionDeletedEvent};
+use harness::functions::teardown::{self, TeardownRequestV1};
 use harness::types::turn::TurnRecord;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, InitOptions, Source};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Notify, RwLock};
 
@@ -230,6 +232,15 @@ impl Stack {
                         }
                     }
                     drop(store);
+                    notice.notify_waiters();
+                    continue;
+                }
+                if message["type"] == "unobserve" {
+                    state
+                        .lock()
+                        .unwrap()
+                        .calls
+                        .push(("unobserve".into(), message.clone()));
                     notice.notify_waiters();
                     continue;
                 }
@@ -2476,4 +2487,70 @@ async fn status_reports_a_session_without_its_prompt_body() {
     .unwrap()
     .expect("a report");
     assert_eq!(report.turn_id.as_deref(), Some("t_parent"));
+}
+
+/// A post-turn validator its session's agent observed, held as the
+/// `harness::observe` intercept holds it: only in the hook registry.
+fn validator(stack: &Stack, owner: &str) -> String {
+    let handle = stack.deps.iii.observe(
+        Source::function(harness::hooks::ON_POST_TURN_FN).args(json!({ "sessions": [owner] })),
+        "e2etest::auditor",
+    );
+    stack.deps.hooks.record_owned(owner, handle)
+}
+
+fn unobserved(store: &Store) -> Vec<String> {
+    store
+        .calls
+        .iter()
+        .filter(|(kind, _)| kind == "unobserve")
+        .filter_map(|(_, frame)| frame["id"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn teardown_disposes_the_post_turn_validators_its_sessions_own() {
+    let stack = Stack::new("completed").await;
+    let inside = validator(&stack, "child1");
+    let outside = validator(&stack, "outsider");
+    let tree = || TeardownRequestV1 {
+        root_session_id: "parent".into(),
+    };
+
+    let first = teardown::handle(&stack.deps, tree()).await.unwrap();
+    assert_eq!(first.removed, 1);
+    stack
+        .wait_for(|store| unobserved(store).contains(&inside))
+        .await;
+    assert_eq!(
+        stack.deps.hooks.dispose_owned(&inside, "child1").await,
+        None
+    );
+
+    // Idempotent, and a session outside the tree keeps its validator.
+    let again = teardown::handle(&stack.deps, tree()).await.unwrap();
+    assert_eq!(again.removed, 0);
+    assert_eq!(unobserved(&stack.store.lock().unwrap()), [inside]);
+    assert_eq!(
+        stack.deps.hooks.dispose_owned(&outside, "outsider").await,
+        Some(true)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_session_disposes_its_post_turn_validators() {
+    let stack = Stack::new("completed").await;
+    let owned = validator(&stack, "child2");
+    let event = SessionDeletedEvent {
+        session_id: "child2".into(),
+    };
+
+    let ack = on_session_deleted::handle(&stack.deps, event)
+        .await
+        .unwrap();
+    assert_eq!(ack.removed, 1);
+    stack
+        .wait_for(|store| unobserved(store).contains(&owned))
+        .await;
+    assert_eq!(stack.deps.hooks.dispose_owned(&owned, "child2").await, None);
 }
