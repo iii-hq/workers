@@ -471,8 +471,8 @@ impl HookRegistry {
         Some(true)
     }
 
-    /// Dispose the validators still owned by a deleting session.
-    pub async fn dispose_session(&self, session_id: &str) {
+    /// Dispose the validators a session still owns; returns how many.
+    pub async fn dispose_session(&self, session_id: &str) -> usize {
         let handles: Vec<ObserverHandle> = {
             let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
             let ids: Vec<String> = owned
@@ -484,11 +484,13 @@ impl HookRegistry {
                 .filter_map(|id| owned.remove(id).map(|(_, handle)| handle))
                 .collect()
         };
+        let count = handles.len();
         for handle in handles {
             if let Err(error) = handle.dispose().await {
                 tracing::warn!(observer = %handle.id(), %error, "post-turn validator dispose failed");
             }
         }
+        count
     }
 
     pub fn filesystem_boundary(

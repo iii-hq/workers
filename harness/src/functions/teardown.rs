@@ -32,9 +32,13 @@ pub async fn handle(
 }
 
 pub(crate) async fn cleanup_session(deps: &Deps, session_id: &str) -> u64 {
-    // The binding store is the single authority: one durable sweep tears the
-    // session's bindings down engine-side and deletes their records.
-    let removed = crate::bindings::gc::sweep_owner(deps, session_id).await as u64;
+    // The post-turn validators the session's agent observed live only in the
+    // hook registry, never in the binding store.
+    let validators = deps.hooks.dispose_session(session_id).await as u64;
+    // The binding store is the single authority for every other observer: one
+    // durable sweep tears the session's bindings down engine-side and deletes
+    // their records.
+    let removed = validators + crate::bindings::gc::sweep_owner(deps, session_id).await as u64;
     if removed > 0 {
         tracing::info!(
             session_id,
