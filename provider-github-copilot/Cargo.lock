@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "provider-github-copilot"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "clap",
  "futures",
