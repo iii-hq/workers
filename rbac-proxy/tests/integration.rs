@@ -3,7 +3,7 @@
 //! worker **through the proxy port** and assert the RBAC contract.
 //!
 //! The engine is the `iii` on `PATH`, or `III_BIN`. It runs from its own
-//! temporary directory on its own port ([`ENGINE_PORT`], not the default
+//! temporary directory on its own port ([`engine_port`], not the default
 //! 49134), so the test never reaches an engine a developer has running.
 //!
 //! Self-skips (printing why) when:
@@ -34,9 +34,31 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
-const ENGINE_PORT: u16 = 49381;
-const ENGINE_WS: &str = "ws://127.0.0.1:49381";
-const PROXY_PORT: u16 = 49382;
+/// The engine's port: `RBAC_PROXY_ITEST_ENGINE_PORT`, else 49381.
+fn engine_port() -> u16 {
+    port_from_env("RBAC_PROXY_ITEST_ENGINE_PORT", 49381)
+}
+
+/// The proxy's public port: `RBAC_PROXY_ITEST_PROXY_PORT`, else 49382.
+fn proxy_port() -> u16 {
+    port_from_env("RBAC_PROXY_ITEST_PROXY_PORT", 49382)
+}
+
+fn engine_ws() -> String {
+    format!("ws://127.0.0.1:{}", engine_port())
+}
+
+/// `name` from the environment, so a run can use the ports its machine
+/// reserves for it; a value that is not a port fails the test rather than
+/// falling back to the default.
+fn port_from_env(name: &str, default: u16) -> u16 {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse()
+            .unwrap_or_else(|_| panic!("{name}={value:?} is not a port")),
+        Err(_) => default,
+    }
+}
 
 /// A call of `function_id` with a 5 s timeout.
 fn call(function_id: &str, payload: Value) -> CallRequest {
@@ -93,7 +115,7 @@ async fn wait_for_listen(port: u16, max: Duration) -> bool {
 /// listener (the proxy fronts these from its own port).
 fn register_support() -> IIIClient {
     let support = register_worker(
-        ENGINE_WS,
+        &engine_ws(),
         InitOptions {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
@@ -137,12 +159,14 @@ fn register_support() -> IIIClient {
 }
 
 async fn boot(seed_path: &str) -> Option<Harness> {
+    let (engine_port, proxy_port) = (engine_port(), proxy_port());
+    let engine_ws = engine_ws();
     let Some(iii_bin) = iii_bin() else {
         eprintln!("skipping: no `iii` binary (set III_BIN or put iii on PATH)");
         return None;
     };
 
-    for port in [ENGINE_PORT, PROXY_PORT] {
+    for port in [engine_port, proxy_port] {
         if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
             eprintln!("skipping: port {port} already in use on 127.0.0.1");
             return None;
@@ -156,7 +180,7 @@ async fn boot(seed_path: &str) -> Option<Harness> {
     std::fs::write(
         dir.join("config.yaml"),
         format!(
-            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {ENGINE_PORT}\n"
+            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {engine_port}\n"
         ),
     )
     .ok()?;
@@ -177,8 +201,8 @@ async fn boot(seed_path: &str) -> Option<Harness> {
         }
     };
 
-    if !wait_for_listen(ENGINE_PORT, Duration::from_secs(15)).await {
-        eprintln!("skipping: engine did not come up on :{ENGINE_PORT}");
+    if !wait_for_listen(engine_port, Duration::from_secs(15)).await {
+        eprintln!("skipping: engine did not come up on :{engine_port}");
         kill_tree(&mut iii);
         let _ = std::fs::remove_dir_all(&dir);
         return None;
@@ -193,7 +217,7 @@ async fn boot(seed_path: &str) -> Option<Harness> {
     std::fs::write(
         seed_path,
         format!(
-            "host: 127.0.0.1\nport: {PROXY_PORT}\nengine_url: {ENGINE_WS}\n\
+            "host: 127.0.0.1\nport: {proxy_port}\nengine_url: {engine_ws}\n\
              rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
         ),
     )
@@ -201,16 +225,16 @@ async fn boot(seed_path: &str) -> Option<Harness> {
 
     let proxy_bin = env!("CARGO_BIN_EXE_rbac-proxy");
     let proxy = Command::new(proxy_bin)
-        .args(["--url", ENGINE_WS, "--config", seed_path])
+        .args(["--url", engine_ws.as_str(), "--config", seed_path])
         .env_remove("III_URL")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
 
-    if !wait_for_listen(PROXY_PORT, Duration::from_secs(10)).await {
+    if !wait_for_listen(proxy_port, Duration::from_secs(10)).await {
         eprintln!(
-            "skipping: rbac-proxy did not come up on :{PROXY_PORT} \
+            "skipping: rbac-proxy did not come up on :{proxy_port} \
              (is the `configuration` worker deployed in this engine?)"
         );
         let mut h = Harness {
@@ -237,7 +261,7 @@ fn downstream() -> IIIClient {
     let mut headers = HashMap::new();
     headers.insert("authorization".to_string(), "Bearer test-token".to_string());
     register_worker(
-        &format!("ws://127.0.0.1:{PROXY_PORT}"),
+        &format!("ws://127.0.0.1:{}", proxy_port()),
         InitOptions {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
@@ -321,8 +345,9 @@ async fn end_to_end_rbac_through_proxy() {
     let wkey = ch["writer"]["access_key"].as_str().expect("writer key");
     let rkey = ch["reader"]["access_key"].as_str().expect("reader key");
 
-    let read_url = format!("ws://127.0.0.1:{PROXY_PORT}/ws/channels/{cid}?key={rkey}&dir=read");
-    let write_url = format!("ws://127.0.0.1:{PROXY_PORT}/ws/channels/{cid}?key={wkey}&dir=write");
+    let proxy_port = proxy_port();
+    let read_url = format!("ws://127.0.0.1:{proxy_port}/ws/channels/{cid}?key={rkey}&dir=read");
+    let write_url = format!("ws://127.0.0.1:{proxy_port}/ws/channels/{cid}?key={wkey}&dir=write");
     let (mut reader, _) = tokio_tungstenite::connect_async(&read_url)
         .await
         .expect("dial reader channel via proxy");
@@ -564,7 +589,7 @@ async fn raw_client() -> RawClient {
 }
 
 async fn raw_client_with(authorization: &str) -> RawClient {
-    let url = format!("ws://127.0.0.1:{PROXY_PORT}/");
+    let url = format!("ws://127.0.0.1:{}/", proxy_port());
     let mut request =
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
             url.as_str(),

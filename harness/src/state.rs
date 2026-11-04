@@ -806,6 +806,21 @@ async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(),
     .map_err(|e| HarnessError::State(format!("{CLAIM_NAMESPACE_ID}: {e}")))
 }
 
+/// Claim the private namespace once at boot, before the first private read
+/// (`delete_session_tree::recover`). Without it that read targets a
+/// `harness::state::*` accessor the state worker has not registered yet: the
+/// engine logs the miss as a `Function not found` ERROR before
+/// [`with_private_namespace`] claims and retries. Best-effort: on failure the
+/// miss-then-claim path still covers it (and a later state restart).
+pub async fn claim_private_namespace_at_boot(iii: &IIIClient, timeout_ms: u64) {
+    if let Err(error) = claim_private_namespace(iii, timeout_ms).await {
+        tracing::warn!(
+            %error,
+            "could not claim the private state namespace at boot; the first private call claims it"
+        );
+    }
+}
+
 /// The state worker only registers `harness::state::*` once we have claimed
 /// our namespace, and a state restart with a volatile adapter forgets the
 /// claim. So a MISSING accessor is not fatal: claim (idempotent) and retry
