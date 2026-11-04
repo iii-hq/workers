@@ -23,6 +23,8 @@ pub const REQUEST_ID_KEY: &str = "request_id";
 
 /// One request in flight.
 pub struct InFlight {
+    /// The request's HTTP span, named after the route once one matches.
+    span: tracing::Span,
     public_webhooks_only: bool,
     body: Option<Bytes>,
     route: OnceLock<String>,
@@ -41,9 +43,14 @@ impl InFlight {
         self.body.as_ref()
     }
 
-    /// Records the template of the route the request matched.
-    pub fn set_route(&self, template: &str) {
-        let _ = self.route.set(template.to_string());
+    /// Records the template of the route the request matched, and names the
+    /// request's HTTP span after it right away, so the span carries the route
+    /// even when the server never gets to record the response (the request
+    /// timed out or the client went away). The first route wins.
+    pub fn set_route(&self, method: &str, template: &str) {
+        if self.route.set(template.to_string()).is_ok() {
+            name_request_span(&self.span, method, template);
+        }
     }
 
     /// The template of the route the request matched, once the hook matched
@@ -64,6 +71,22 @@ impl InFlight {
     }
 }
 
+/// Names an HTTP request span `<method> <route>` and records `http.route`.
+///
+/// The span is already entered (and its OpenTelemetry span started) when the
+/// route is known: `tracing_opentelemetry` drops a late `otel.name` on a
+/// started span, so the exported span is renamed directly, and it appends late
+/// attributes, so `http.route` starts empty and is recorded here once.
+pub(crate) fn name_request_span(span: &tracing::Span, method: &str, route: &str) {
+    use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    let name = format!("{method} {route}");
+    span.record("otel.name", name.as_str());
+    span.context().span().update_name(name);
+    span.record("http.route", route);
+}
+
 /// The requests in flight, by id. Shared by the server and the hook.
 #[derive(Clone, Default)]
 pub struct InFlightRequests(Arc<DashMap<String, Arc<InFlight>>>);
@@ -79,6 +102,8 @@ impl InFlightRequests {
     ) -> (Ticket, oneshot::Receiver<ChannelReader>) {
         let (sender, receiver) = oneshot::channel();
         let request = Arc::new(InFlight {
+            // `open` runs inside the request's instrumented HTTP span.
+            span: tracing::Span::current(),
             public_webhooks_only,
             body,
             route: OnceLock::new(),
@@ -155,8 +180,8 @@ mod tests {
         let (ticket, _receiver) = requests.open(false, None);
         assert_eq!(ticket.request().route(), None);
         let request = requests.get(ticket.id()).unwrap();
-        request.set_route("/orders/:id");
-        request.set_route("/other");
+        request.set_route("GET", "/orders/:id");
+        request.set_route("GET", "/other");
         assert_eq!(ticket.request().route(), Some("/orders/:id"));
         assert!(ticket.request().body().is_none());
     }

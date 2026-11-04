@@ -274,7 +274,7 @@ impl DeliverHook for RouteHooks {
                 "{ON_REQUEST_FN}: no request in flight for this call"
             )));
         };
-        in_flight.set_route(&route.http_path);
+        in_flight.set_route(field("method"), &route.http_path);
         if in_flight.body().is_none() {
             return Ok(payload_too_large());
         }
