@@ -1041,19 +1041,20 @@ fn compose_note(notes: Vec<String>) -> Option<String> {
     ))
 }
 
-/// Turn events (and every other harness function but the timer) are not
-/// agent-observable in ANY shape: child outcomes reach a parent through the
-/// medium the children write, never through an observer on their turns. Runs
-/// before target resolution, so wake, call, and would-be spawn shapes all
-/// hit it.
+/// Turn events (and every other harness function but the timer; the post-turn
+/// validator is handled before this guard) are not agent-observable in ANY
+/// shape: child outcomes reach a parent through the medium the children
+/// write, never through an observer on their turns. Runs before target
+/// resolution, so wake, call, and would-be spawn shapes all hit it.
 fn reject_forbidden_source(function_id: &str) -> Result<(), HarnessError> {
     if subscriptions::is_forbidden_source(function_id) {
         return Err(HarnessError::InvalidRequest(format!(
             "cannot observe harness function `{function_id}`: turn events are not \
              agent-observable. Watch what the work WRITES instead — observe the state keys or \
-             database rows the tasks update (omit `target` for a wake). `{}` is the one harness \
-             function an agent observes.",
-            crate::timer::ON_TIMER_FN
+             database rows the tasks update (omit `target` for a wake). An agent observes only \
+             `{}`, and `{}` with a validator `target` scoped to its own session.",
+            crate::timer::ON_TIMER_FN,
+            crate::hooks::ON_POST_TURN_FN,
         )));
     }
     Ok(())

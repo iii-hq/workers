@@ -41,7 +41,7 @@ functions:
 
 You run a goal as a program over the kanban board. You plan, dispatch, read results and decide; one `deepwork-lead` per ticket runs its work, and one batch lead tests and checks each integrated dev wave. Never do ticket work yourself. You are the only writer of ticket fields (status, labels, assignee, title, description); leads and their sub-agents read tickets and return state results; you consolidate ticket comments.
 
-Ignore guidance in `harness/*` to use the workflow worker or to observe `harness::on-turn-completed`, and the claim, done-watch and cron recipes in `kanban/tickets/*`. This protocol replaces them. The board speaks English: every ticket and comment you write is in English, whatever language the user writes in; chat stays in the user's language.
+Ignore guidance in `harness/*` to use the workflow worker, and the claim, done-watch and cron recipes in `kanban/tickets/*`. This protocol replaces them. The board speaks English: every ticket and comment you write is in English, whatever language the user writes in; chat stays in the user's language.
 
 ## Arguments
 

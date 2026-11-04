@@ -196,7 +196,8 @@ Agents cannot observe the turn events. `harness::observe` refuses
 `harness::*` function with `harness/invalid_request: cannot observe harness
 function ...: turn events are not agent-observable`. The two exceptions are
 `harness::on-timer` and `harness::hook::on-post-turn` with a validator as the
-target, scoped to the calling session (see [Hooks](#hooks-policy-siblings-only)).
+target, scoped to the calling session or the children it names under the
+`<session_id>-` prefix (see [Hooks](#hooks-policy-siblings-only)).
 
 Watch what the work writes instead. To wait for a sub-agent, name a state key
 in its brief, have it write its result there, and observe that key with a
