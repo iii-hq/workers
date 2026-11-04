@@ -5183,6 +5183,29 @@ mod tests {
     }
 
     #[test]
+    fn a_denied_adapter_id_is_not_a_native_tool() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                deny: vec!["sandbox::fs::rm".into()],
+                expose: crate::types::turn::ExposeMode::Native,
+            }));
+        let descriptors = ["sandbox-libkrun::fs::rm", "sandbox-libkrun::fs::ls"].map(|id| {
+            crate::clients::FunctionDescriptor {
+                function_id: id.into(),
+                description: None,
+                parameters: None,
+            }
+        });
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[])
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(!names.iter().any(|name| name == "sandbox-libkrun::fs::rm"));
+        assert!(names.iter().any(|name| name == "sandbox-libkrun::fs::ls"));
+    }
+
+    #[test]
     fn concrete_native_tools_are_sorted_by_function_id() {
         let policy =
             crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {

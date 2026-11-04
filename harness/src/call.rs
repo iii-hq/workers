@@ -2847,6 +2847,34 @@ mod tests {
     }
 
     #[test]
+    fn a_denied_adapter_id_is_neither_suggested_nor_listed() {
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            deny: vec!["sandbox::fs::rm".into()],
+            ..Default::default()
+        }));
+        let snapshot = crate::discovery::snapshot_of(vec![crate::clients::FunctionDescriptor {
+            function_id: "sandbox-libkrun::fs::rm".into(),
+            description: None,
+            parameters: None,
+        }]);
+        assert_eq!(
+            closest_permitted("sandbox-libkrun::fs::rn", &policy, &snapshot),
+            None
+        );
+
+        let mut list = json!({ "functions": [
+            { "function_id": "sandbox-libkrun::fs::rm" },
+            { "function_id": "sandbox-libkrun::fs::ls" }
+        ]});
+        post_filter_discovery(&mut list, &policy);
+        assert_eq!(
+            list["functions"],
+            json!([{ "function_id": "sandbox-libkrun::fs::ls" }])
+        );
+    }
+
+    #[test]
     fn a_mistyped_id_is_denied_with_the_permitted_id_it_resembles() {
         let exec =
             "kanban_eval_598997058842fdedec266aaf02880d80b532995d651db57f24d800b6a42eac97::exec";

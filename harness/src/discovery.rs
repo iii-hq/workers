@@ -178,6 +178,13 @@ pub async fn apply_with_internal(
                 .collect()
         }
     };
+    // Before the swap, so no snapshot offers a new adapter's ids before its denies apply.
+    crate::policy::learn_sandbox_adapters(
+        functions
+            .iter()
+            .map(|d| d.function_id.as_str())
+            .chain(internal_ids.iter().map(String::as_str)),
+    );
     if fingerprint == guard.fingerprint && internal_ids == guard.internal_ids {
         return;
     }

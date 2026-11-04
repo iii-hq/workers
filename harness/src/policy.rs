@@ -2,6 +2,9 @@
 //! (harness.md § Functions). The allow/deny globs are structural and final —
 //! hooks run only after they pass.
 
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde_json::{json, Value};
 
@@ -87,6 +90,36 @@ pub const CHILD_DISCOVERY_ALLOW: [&str; 2] = ["engine::functions::list", "engine
 /// joins the child's native toolset.
 pub const CHILD_SKILLS_ALLOW: [&str; 1] = ["directory::skills::get"];
 
+/// The adapter a Compose-managed engine binds when `engine.sandbox.adapter`
+/// names no other.
+const DEFAULT_SANDBOX_ADAPTER: &str = "sandbox-libkrun";
+
+/// Every adapter the catalog has shown. Never forgotten: a restarting adapter
+/// leaves the catalog for a moment, and its deny must hold when it returns.
+// shortcut: a custom adapter's ids pass a router deny until the first catalog
+// refresh after it registers (about 100 ms), read the registry at dispatch if
+// that window ever matters.
+static LEARNED_SANDBOX_ADAPTERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Remember the `<adapter>` of every `<adapter>::adapter::info` among `ids`.
+pub(crate) fn learn_sandbox_adapters<'a>(ids: impl Iterator<Item = &'a str>) {
+    LEARNED_SANDBOX_ADAPTERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(
+            ids.filter_map(|id| id.strip_suffix("::adapter::info"))
+                .map(str::to_owned),
+        );
+}
+
+fn is_sandbox_adapter(name: &str) -> bool {
+    name == DEFAULT_SANDBOX_ADAPTER
+        || LEARNED_SANDBOX_ADAPTERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(name)
+}
+
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
 /// matches an `allow` glob and no `deny` glob; an absent or empty allow-list
 /// denies everything.
@@ -125,7 +158,18 @@ impl CompiledPolicy {
         if self.allow_empty {
             return false;
         }
-        self.allow.is_match(function_id) && !self.deny.is_match(function_id)
+        self.allow.is_match(function_id)
+            && !self.deny.is_match(function_id)
+            && !self.denied_on_the_router(function_id)
+    }
+
+    /// `<adapter>::<op>` runs the same operation as the router's `sandbox::<op>`,
+    /// so a deny on the router id holds on the adapter id. Only deny crosses
+    /// over: an allow on `sandbox::*` grants no adapter id.
+    fn denied_on_the_router(&self, function_id: &str) -> bool {
+        function_id.split_once("::").is_some_and(|(prefix, op)| {
+            is_sandbox_adapter(prefix) && self.deny.is_match(format!("sandbox::{op}"))
+        })
     }
 }
 
@@ -504,6 +548,94 @@ mod tests {
 
         let malformed_deny = CompiledPolicy::from(Some(&policy(&["*"], &["["])));
         assert!(!malformed_deny.allows("shell::run"));
+    }
+
+    // Every router op has a second callable id on the adapter; a deny names the
+    // op, so it has to hold on both.
+    #[test]
+    fn a_router_deny_also_denies_the_default_adapter_id() {
+        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox::fs::rm"])));
+        assert!(!p.allows("sandbox::fs::rm"));
+        assert!(!p.allows("sandbox-libkrun::fs::rm"));
+        assert!(p.allows("sandbox::fs::ls"));
+        assert!(p.allows("sandbox-libkrun::fs::ls"));
+    }
+
+    #[tokio::test]
+    async fn a_router_deny_also_denies_an_adapter_the_catalog_shows() {
+        use crate::discovery::{apply, apply_with_internal, new_cell};
+        let descriptor = |id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: None,
+            parameters: None,
+        };
+        // Names only this test uses: what the catalog teaches is process-wide.
+        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox::fs::rm"])));
+        assert!(
+            p.allows("custom-adapter::fs::rm"),
+            "no adapter info seen yet"
+        );
+
+        let cell = new_cell();
+        apply(&cell, vec![descriptor("custom-adapter::adapter::info")]).await;
+        assert!(!p.allows("custom-adapter::fs::rm"));
+        assert!(p.allows("custom-adapter::fs::ls"));
+
+        // An adapter may tag its info internal: the public list then hides it.
+        apply_with_internal(
+            &cell,
+            Vec::new(),
+            Some(["hidden-adapter::adapter::info".to_string()].into()),
+        )
+        .await;
+        assert!(!p.allows("hidden-adapter::fs::rm"));
+
+        // A restarting adapter drops out of the catalog; its deny must not.
+        apply_with_internal(&cell, Vec::new(), None).await;
+        assert!(!p.allows("custom-adapter::fs::rm"));
+    }
+
+    #[test]
+    fn allow_stays_literal_on_adapter_ids() {
+        let p = CompiledPolicy::from(Some(&policy(&["sandbox::*"], &[])));
+        assert!(p.allows("sandbox::fs::rm"));
+        assert!(!p.allows("sandbox-libkrun::fs::rm"));
+    }
+
+    #[test]
+    fn a_router_wildcard_deny_covers_the_whole_adapter() {
+        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox::*"])));
+        for id in [
+            "sandbox-libkrun::create",
+            "sandbox-libkrun::fs::rm",
+            "sandbox-libkrun::worker::add",
+            "sandbox-libkrun::adapter::info",
+        ] {
+            assert!(!p.allows(id), "{id}");
+        }
+        assert!(p.allows("shell::fs::rm"));
+    }
+
+    #[test]
+    fn a_router_deny_leaves_other_workers_alone() {
+        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox::fs::rm"])));
+        for id in [
+            "shell::fs::rm",
+            "other::fs::rm",
+            "sandbox-libkrun-extra::fs::rm",
+            "fs::rm",
+            "sandbox-libkrun",
+        ] {
+            assert!(p.allows(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn adapter_ids_stay_fail_closed() {
+        let id = "sandbox-libkrun::fs::ls";
+        assert!(!CompiledPolicy::from(None).allows(id));
+        assert!(!CompiledPolicy::from(Some(&policy(&[], &["sandbox::fs::rm"]))).allows(id));
+        assert!(!CompiledPolicy::from(Some(&policy(&["*"], &["["]))).allows(id));
     }
 
     use crate::types::content::ContentBlock;
