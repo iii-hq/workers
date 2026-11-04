@@ -94,30 +94,42 @@ pub const CHILD_SKILLS_ALLOW: [&str; 1] = ["directory::skills::get"];
 /// names no other.
 const DEFAULT_SANDBOX_ADAPTER: &str = "sandbox-libkrun";
 
-/// Every adapter the catalog has shown. Never forgotten: a restarting adapter
-/// leaves the catalog for a moment, and its deny must hold when it returns.
-// shortcut: a custom adapter's ids pass a router deny until the first catalog
-// refresh after it registers (about 100 ms), read the registry at dispatch if
-// that window ever matters.
+/// Every adapter the engine's sandbox router has reported, the only source no
+/// worker can write to. Never forgotten: a harness outlives an engine restart
+/// that rebinds the router, and the old adapter may still be connected.
+// shortcut: a custom adapter's ids pass a router deny until a read of the router
+// succeeds (rbac or a hung adapter can fail it), read at dispatch if that window
+// ever matters.
 static LEARNED_SANDBOX_ADAPTERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
-/// Remember the `<adapter>` of every `<adapter>::adapter::info` among `ids`.
-pub(crate) fn learn_sandbox_adapters<'a>(ids: impl Iterator<Item = &'a str>) {
+pub(crate) fn learn_sandbox_adapter(adapter: Option<String>) {
     LEARNED_SANDBOX_ADAPTERS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .extend(
-            ids.filter_map(|id| id.strip_suffix("::adapter::info"))
-                .map(str::to_owned),
-        );
+        .extend(adapter);
 }
 
-fn is_sandbox_adapter(name: &str) -> bool {
-    name == DEFAULT_SANDBOX_ADAPTER
-        || LEARNED_SANDBOX_ADAPTERS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(name)
+/// The other ids of the operation `function_id` names: a sandbox operation
+/// answers as the router's `sandbox::<op>` and as the adapter's `<adapter>::<op>`.
+/// Which adapter the router forwards to is not known here, so a router id
+/// aliases every known adapter. Empty for any other function.
+pub(crate) fn sandbox_op_aliases(function_id: &str) -> Vec<String> {
+    let Some((prefix, op)) = function_id.split_once("::") else {
+        return Vec::new();
+    };
+    let learned = LEARNED_SANDBOX_ADAPTERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if prefix == "sandbox" {
+        std::iter::once(DEFAULT_SANDBOX_ADAPTER)
+            .chain(learned.iter().map(String::as_str))
+            .map(|adapter| format!("{adapter}::{op}"))
+            .collect()
+    } else if prefix == DEFAULT_SANDBOX_ADAPTER || learned.contains(prefix) {
+        vec![format!("sandbox::{op}")]
+    } else {
+        Vec::new()
+    }
 }
 
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
@@ -158,18 +170,12 @@ impl CompiledPolicy {
         if self.allow_empty {
             return false;
         }
+        // Only deny crosses over: an allow on `sandbox::*` grants no adapter id.
         self.allow.is_match(function_id)
             && !self.deny.is_match(function_id)
-            && !self.denied_on_the_router(function_id)
-    }
-
-    /// `<adapter>::<op>` runs the same operation as the router's `sandbox::<op>`,
-    /// so a deny on the router id holds on the adapter id. Only deny crosses
-    /// over: an allow on `sandbox::*` grants no adapter id.
-    fn denied_on_the_router(&self, function_id: &str) -> bool {
-        function_id.split_once("::").is_some_and(|(prefix, op)| {
-            is_sandbox_adapter(prefix) && self.deny.is_match(format!("sandbox::{op}"))
-        })
+            && !sandbox_op_aliases(function_id)
+                .iter()
+                .any(|alias| self.deny.is_match(alias))
     }
 }
 
@@ -561,38 +567,65 @@ mod tests {
         assert!(p.allows("sandbox-libkrun::fs::ls"));
     }
 
+    #[test]
+    fn a_deny_holds_across_the_adapter_the_router_reports() {
+        // A name only this test uses: what is learned is process-wide.
+        let on_router = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox::fs::rm"])));
+        let on_adapter = CompiledPolicy::from(Some(&policy(&["*"], &["custom-adapter::exec"])));
+        assert!(on_router.allows("custom-adapter::fs::rm"), "not reported");
+        assert!(on_adapter.allows("sandbox::exec"), "not reported");
+
+        learn_sandbox_adapter(Some("custom-adapter".into()));
+        assert!(!on_router.allows("custom-adapter::fs::rm"));
+        assert!(on_router.allows("custom-adapter::fs::ls"));
+        assert!(!on_adapter.allows("sandbox::exec"));
+
+        // A failed read forgets nothing.
+        learn_sandbox_adapter(None);
+        assert!(!on_router.allows("custom-adapter::fs::rm"));
+    }
+
+    #[test]
+    fn an_adapter_deny_also_denies_the_router_id() {
+        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox-libkrun::fs::rm"])));
+        assert!(!p.allows("sandbox-libkrun::fs::rm"));
+        assert!(!p.allows("sandbox::fs::rm"));
+        assert!(p.allows("sandbox::fs::ls"));
+
+        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox-libkrun::*"])));
+        assert!(!p.allows("sandbox::create"));
+        assert!(p.allows("shell::fs::rm"));
+
+        // An allow on the router still lets a deny on the adapter win.
+        let p = CompiledPolicy::from(Some(&policy(&["sandbox::*"], &["sandbox-libkrun::fs::rm"])));
+        assert!(!p.allows("sandbox::fs::rm"));
+        assert!(p.allows("sandbox::fs::ls"));
+    }
+
+    // Any worker can register `<name>::adapter::info`; that must not put its
+    // name, or a live worker's, under a router deny.
     #[tokio::test]
-    async fn a_router_deny_also_denies_an_adapter_the_catalog_shows() {
+    async fn the_catalog_teaches_no_adapter() {
         use crate::discovery::{apply, apply_with_internal, new_cell};
-        let descriptor = |id: &str| crate::clients::FunctionDescriptor {
-            function_id: id.into(),
-            description: None,
-            parameters: None,
-        };
-        // Names only this test uses: what the catalog teaches is process-wide.
-        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox::fs::rm"])));
-        assert!(
-            p.allows("custom-adapter::fs::rm"),
-            "no adapter info seen yet"
-        );
-
         let cell = new_cell();
-        apply(&cell, vec![descriptor("custom-adapter::adapter::info")]).await;
-        assert!(!p.allows("custom-adapter::fs::rm"));
-        assert!(p.allows("custom-adapter::fs::ls"));
-
-        // An adapter may tag its info internal: the public list then hides it.
+        apply(
+            &cell,
+            vec![crate::clients::FunctionDescriptor {
+                function_id: "listed-spoof::adapter::info".into(),
+                description: None,
+                parameters: None,
+            }],
+        )
+        .await;
         apply_with_internal(
             &cell,
             Vec::new(),
-            Some(["hidden-adapter::adapter::info".to_string()].into()),
+            Some(["hidden-spoof::adapter::info".to_string()].into()),
         )
         .await;
-        assert!(!p.allows("hidden-adapter::fs::rm"));
-
-        // A restarting adapter drops out of the catalog; its deny must not.
-        apply_with_internal(&cell, Vec::new(), None).await;
-        assert!(!p.allows("custom-adapter::fs::rm"));
+        let p = CompiledPolicy::from(Some(&policy(&["*"], &["sandbox::*"])));
+        assert!(p.allows("listed-spoof::exec"));
+        assert!(p.allows("hidden-spoof::exec"));
     }
 
     #[test]

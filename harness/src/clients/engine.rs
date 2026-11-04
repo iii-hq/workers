@@ -204,6 +204,26 @@ impl EngineClient {
         )
     }
 
+    /// The adapter the engine's sandbox router is bound to (`None`: no router,
+    /// no binding, or a failed read).
+    pub async fn sandbox_router_adapter(&self) -> Option<String> {
+        let request: CallRequestWithMetadata = CallRequest {
+            function_id: "sandbox::adapter::info".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(SANDBOX_ROUTER_READ_TIMEOUT_MS),
+        }
+        .into();
+        // Only the engine can register `sandbox::*` in `default`, so no worker can answer.
+        let reply = self
+            .iii
+            .call(request.namespace("default"))
+            .await
+            .map_err(|e| tracing::debug!(error = %e, "sandbox::adapter::info failed"))
+            .ok()?;
+        reply.get("adapter")?.as_str().map(str::to_owned)
+    }
+
     /// Read one function's descriptor (`None` when unknown).
     pub async fn functions_info(&self, function_id: &str) -> Option<FunctionDescriptor> {
         let resp = self
@@ -334,6 +354,10 @@ fn nonempty_env(name: &str) -> Option<String> {
 
 /// How long one engine-epoch sample may take.
 const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
+
+/// How long reading the router's binding may hold up a catalog reload: the
+/// router also asks the adapter, which may hang.
+const SANDBOX_ROUTER_READ_TIMEOUT_MS: u64 = 3_000;
 
 /// The engine's boot identity: the earliest `connected_at_ms` among its
 /// in-process (`runtime == "engine"`) workers, which attach once at engine

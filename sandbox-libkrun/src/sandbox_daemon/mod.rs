@@ -733,6 +733,8 @@ mod registration_tests {
             ),
             ("0", "3")
         );
+        // 0.3.0 is published on contract 1.1: this build must not report that version.
+        assert_ne!(env!("CARGO_PKG_VERSION"), "0.3.0");
         // What `iii sandbox run` refuses an adapter without.
         assert_eq!(
             i.features,

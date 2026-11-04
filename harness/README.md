@@ -75,8 +75,9 @@ The agent-facing function surface is deny-by-default: with no `functions.allow`
 globs, every model-requested call is refused and the harness is a plain chat
 loop. Allow functions in per-send (`options.functions.allow`) and gate them
 with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) sibling.
-A `functions.deny` glob matching a sandbox router id `sandbox::<op>` also denies the adapter's
-own `<adapter>::<op>` (`sandbox-libkrun`, or any worker registering `<adapter>::adapter::info`);
+A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's own
+`<adapter>::<op>` (`sandbox-libkrun`, or the adapter `sandbox::adapter::info` reports). A
+`functions.deny` glob or a hook's `functions` glob matching either id covers both;
 `functions.allow` stays literal.
 Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
 schema rejects is parsed. When the optional

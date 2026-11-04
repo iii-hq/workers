@@ -114,8 +114,8 @@ and guest env never land in the engine's trace store. Every `worker::*` function
 is registered `observable: false`, so no observer reads them either.
 
 `iii sandbox run` presents a token scoped to its VM instead of the project token
-(HMAC-SHA256 of the project token over the VM's `state_key`), which gets S505 on
-any other VM. A VM started with a scoped token also has a lease: when its last
+(HMAC-SHA256 keyed by the project token over `iii-sandbox/worker-scope/v1\0`
+followed by the VM's `state_key`, in lowercase hex), which gets S505 on any other VM. A VM started with a scoped token also has a lease: when its last
 log follower is gone and no client reattaches within 45 s, the adapter stops it
 (SIGTERM, then SIGKILL after 10 s). VMs started with the project token have no
 lease, because Compose supervises them itself.
