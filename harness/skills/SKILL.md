@@ -135,8 +135,7 @@ The harness hosts private functions that consumers and sibling workers observe
 with the SDK's `iii.observe` instead of polling `harness::status`. Each returns
 the event it is called with, so an observer with `deliver: 'output'` receives
 the event itself. They are not agent-observable: `harness::observe` refuses
-every `harness::*` function except `harness::on-timer` (see
-[Agent observers](#agent-observers)).
+them (see [Agent observers](#agent-observers)).
 
 - `harness::on-turn-started` — a turn began executing (first loop step).
 - `harness::on-turn-completed` — a turn reached a terminal status
@@ -194,27 +193,35 @@ deadline.
 
 Agents cannot observe the turn events. `harness::observe` refuses
 `harness::on-turn-completed`, `harness::on-turn-started` and every other
-`harness::*` function except `harness::on-timer`, with
-`harness/invalid_request: cannot observe harness function ...: turn events are
-not agent-observable`. Watch what the work writes instead. To wait for a
-sub-agent, name a state key in its brief, have it write its result there, and
-observe that key before you `harness::spawn` it, so a fast child cannot
-finish unobserved:
+`harness::*` function with `harness/invalid_request: cannot observe harness
+function ...: turn events are not agent-observable`. The two exceptions are
+`harness::on-timer` and `harness::hook::on-post-turn` with a validator as the
+target, scoped to the calling session (see [Hooks](#hooks-policy-siblings-only)).
+
+Watch what the work writes instead. To wait for a sub-agent, name a state key
+in its brief, have it write its result there, and observe that key with a
+deadline before you `harness::spawn` it, so a fast child cannot finish
+unobserved and a failed one cannot park you forever:
 
 ```json
 harness::observe {
   "function_id": "state::on-changed",
   "filters": { "input.scope": { "$eq": "run-x" }, "input.key": { "$eq": "child-a" } },
-  "label": "child-a-done"
+  "label": "child-a-done",
+  "lifecycle": { "expires_in_ms": 600000 }
 }
 ```
 
-For a fan-out, arm one wake per child key and read each result with `state::get`
-once woken. A wake is once by default, a call observer is standing; bound
-standing observers with `lifecycle` and remove them with
-`harness::unobserve { id }`. Nothing throttles an observer, and a cycle routed
-through a state write re-enters at depth 0 and every lap is a paid turn: design
-reactions acyclically.
+Without `lifecycle.expires_in_ms` a one-shot wake waits indefinitely: `once`
+bounds deliveries, not time. When the deadline passes first, the session is
+woken with an expiry notice instead of the write; read the key with `state::get`
+(the child may have written it late) and otherwise treat the child as failed or
+slow: retry, report, or continue without it. For a fan-out, arm one wake per
+child key, each with a deadline, and read each result with `state::get` once
+woken. A wake is once by default, a call observer is standing; bound standing
+observers with `lifecycle` and remove them with `harness::unobserve { id }`.
+Nothing throttles an observer, and a cycle routed through a state write
+re-enters at depth 0 and every lap is a paid turn: design reactions acyclically.
 See `architecture/reactive-observers.md` for the full payload.
 
 ## Hooks (policy siblings only)
