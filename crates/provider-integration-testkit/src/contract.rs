@@ -592,7 +592,7 @@ fn assert_request(
 /// zero-refusal proof.
 #[cfg(all(test, feature = "provider-claude-code"))]
 pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> {
-    use provider_claude_code::register::declare_once;
+    use provider_claude_code::register::{declare_once, DeclareLock};
 
     let case = crate::case::enabled_cases()
         .into_iter()
@@ -609,7 +609,13 @@ pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> 
             .await
             .context("register router")?;
         let provider = register_worker(&engine.url, provider_init_options(case.id));
-        let (first, second) = tokio::join!(declare_once(&provider), declare_once(&provider));
+        // One provider's lock, as register_provider shares it between its
+        // boot declare and its `router::on-ready` declare.
+        let lock = DeclareLock::default();
+        let (first, second) = tokio::join!(
+            declare_once(&provider, &lock),
+            declare_once(&provider, &lock)
+        );
         first.context("first of two concurrent first declares")?;
         second.context("second of two concurrent first declares")?;
         wait_for_registration_token(&provider, case.id).await?;
@@ -646,7 +652,7 @@ pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> 
             );
         }
         wait_for_registration_token(&provider, case.id).await?;
-        declare_once(&provider)
+        declare_once(&provider, &DeclareLock::default())
             .await
             .with_context(|| format!("{order}: declare with the persisted token"))?;
 
