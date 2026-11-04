@@ -196,7 +196,8 @@ Agents cannot observe the turn events. `harness::observe` refuses
 `harness::*` function with `harness/invalid_request: cannot observe harness
 function ...: turn events are not agent-observable`. The two exceptions are
 `harness::on-timer` and `harness::hook::on-post-turn` with a validator as the
-target, scoped to the calling session (see [Hooks](#hooks-policy-siblings-only)).
+target, scoped to the calling session or the children it names under the
+`<session_id>-` prefix (see [Hooks](#hooks-policy-siblings-only)).
 
 Watch what the work writes instead. To wait for a sub-agent, name a state key
 in its brief, have it write its result there, and observe that key with a
@@ -239,5 +240,6 @@ which calls they gate. Each hook function's `request_format` and
 `response_format` (`engine::functions::info`) are the input its observers'
 targets receive; the harness gets back the chain's merged outcome. These are for operator-trusted policy siblings
 (`approval-gate` observes `on-pre-call`); ordinary consumers do not observe
-hooks. An agent may observe `on-post-turn` for its own session, with a
-validator as the target.
+hooks. An agent may observe `on-post-turn` for its own session or for the
+children it names under the `<session_id>-` prefix, with a validator as the
+target.
