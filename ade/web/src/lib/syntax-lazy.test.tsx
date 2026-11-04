@@ -7,15 +7,21 @@ import { CodeHighlight, JsonHighlight } from './syntax'
 let root: Root | null = null
 let host: HTMLDivElement
 let observed: Array<(entries: { isIntersecting: boolean }[]) => void> = []
+let roots: Array<Element | null | undefined> = []
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   observed = []
+  roots = []
   vi.stubGlobal(
     'IntersectionObserver',
     class {
-      constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+      constructor(
+        cb: (entries: { isIntersecting: boolean }[]) => void,
+        options?: { root?: Element | null },
+      ) {
         observed.push(cb)
+        roots.push(options?.root)
       }
       observe() {}
       disconnect() {}
@@ -55,5 +61,17 @@ describe('lazy highlighting', () => {
     expect(host.querySelector('[data-highlight-pending]')).not.toBeNull()
     await act(async () => observed[0]?.([{ isIntersecting: true }]))
     expect(host.querySelectorAll('.token').length).toBeGreaterThan(0)
+  })
+
+  it('measures the margin from the pane that scrolls, not the viewport', async () => {
+    const pane = document.createElement('div')
+    pane.style.overflowY = 'auto'
+    host.appendChild(pane)
+    const paneRoot = createRoot(pane)
+    await act(async () =>
+      paneRoot.render(<CodeHighlight code={SOURCE} language="javascript" />),
+    )
+    expect(roots.at(-1)).toBe(pane)
+    await act(async () => paneRoot.unmount())
   })
 })

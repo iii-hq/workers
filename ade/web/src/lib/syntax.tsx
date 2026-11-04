@@ -29,12 +29,24 @@ function useHighlightWhenNear(): [RefObject<HTMLPreElement | null>, boolean] {
           setNear(true)
         }
       },
-      { rootMargin: HIGHLIGHT_MARGIN },
+      // The margin must be measured from the pane that scrolls (the chat
+      // transcript), not the viewport: a scrolling ancestor clips the block
+      // before a viewport margin could ever count.
+      { root: scrollParent(el), rootMargin: HIGHLIGHT_MARGIN },
     )
     observer.observe(el)
     return () => observer.disconnect()
   }, [near])
   return [ref, near]
+}
+
+/** The nearest ancestor that scrolls vertically, or the viewport (`null`). */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node)
+    if (overflowY === 'auto' || overflowY === 'scroll') return node
+  }
+  return null
 }
 
 /** The not-yet-highlighted stand-in: the same chrome, the source as text. */
