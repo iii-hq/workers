@@ -509,6 +509,36 @@ mod tests {
         assert_eq!(receiver.join().unwrap(), vec!["locked".to_string()]);
     }
 
+    /// A case-insensitive host resolves Compose's `.iii` to a `.III` already on
+    /// disk and reports that name, so its state.json, with the project's token,
+    /// must not cross in any case.
+    #[test]
+    fn a_directory_resend_skips_compose_state_in_any_case() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("sub");
+        for state in [".iii", ".III"] {
+            std::fs::create_dir_all(dir.join(state)).unwrap();
+            std::fs::write(dir.join(state).join("state.json"), "token").unwrap();
+        }
+        std::fs::write(dir.join(".iiirc"), "").unwrap();
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let receiver = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            while let Ok(header) = source_sync::read_header(&mut guest) {
+                let mut payload = vec![0u8; header.payload_len as usize];
+                guest.read_exact(&mut payload).unwrap();
+                source_sync::write_ack(&mut guest, Ok(())).unwrap();
+                paths.push(header.path);
+            }
+            paths
+        });
+
+        send_current_entry(&mut host, temp.path(), &dir).unwrap();
+        drop(host);
+
+        assert_eq!(receiver.join().unwrap(), ["sub", "sub/.iiirc"]);
+    }
+
     #[test]
     fn oversized_file_is_rejected_before_a_frame_is_sent() {
         let temp = tempfile::tempdir().unwrap();

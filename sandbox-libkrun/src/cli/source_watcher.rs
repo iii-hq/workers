@@ -17,6 +17,7 @@
 //! guest.
 
 use std::collections::{BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -76,8 +77,6 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".idea",
     ".vscode",
     ".DS_Store",
-    // iii: Compose's state holds the project's token, so it never syncs into a guest
-    ".iii",
 ];
 
 /// O(1) lookup set for ignore-path classification. Built once; hit on
@@ -86,10 +85,23 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
 static IGNORED_DIR_SET: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| IGNORED_DIR_NAMES.iter().copied().collect());
 
+/// `.iii` holds the project's token, so it never reaches a guest. In any case:
+/// macOS's default filesystem resolves `.III` to it.
+// shortcut: ASCII case only, so a filesystem that folds more (HFS+ ignores U+200C
+// in a name) still resolves a variant; compare the host inode if one ever matters.
+pub(crate) fn is_compose_state(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(b".iii")
+}
+
+fn is_ignored_name(name: &OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|s| IGNORED_DIR_SET.contains(s) || is_compose_state(s.as_bytes()))
+}
+
 /// Returns true if a notify event on this path should be ignored.
 ///
 /// A path is ignored when any of its components (after stripping the
-/// project root prefix) matches [`IGNORED_DIR_NAMES`]. This correctly
+/// project root prefix) matches [`IGNORED_DIR_NAMES`] or is Compose's state. This correctly
 /// ignores writes deep inside `node_modules/.cache/...` as well as the
 /// directory itself.
 ///
@@ -100,8 +112,7 @@ pub fn should_ignore_path(path: &Path, project_root: &Path) -> bool {
     let rel = path.strip_prefix(project_root).unwrap_or(path);
     for component in rel.components() {
         if let std::path::Component::Normal(os) = component
-            && let Some(s) = os.to_str()
-            && IGNORED_DIR_SET.contains(s)
+            && is_ignored_name(os)
         {
             return true;
         }
@@ -192,10 +203,7 @@ pub(crate) fn watch_pruned(
             if !ft.is_dir() || ft.is_symlink() {
                 continue;
             }
-            let name = entry.file_name();
-            if let Some(s) = name.to_str()
-                && IGNORED_DIR_SET.contains(s)
-            {
+            if is_ignored_name(&entry.file_name()) {
                 continue;
             }
             queue.push_back(entry.path());
@@ -328,11 +336,40 @@ mod tests {
     }
 
     #[test]
-    fn ignores_compose_state() {
-        assert!(should_ignore_path(
-            &PathBuf::from("/proj/.iii/compose/default/state.json"),
-            &root()
-        ));
+    fn ignores_compose_state_in_any_case() {
+        for path in [
+            "/proj/.iii/compose/default/state.json",
+            "/proj/.III/compose/default/state.json",
+            "/proj/sub/.iIi/compose/default/state.json",
+        ] {
+            assert!(should_ignore_path(&PathBuf::from(path), &root()), "{path}");
+        }
+    }
+
+    #[test]
+    fn does_not_ignore_a_name_that_only_starts_like_compose_state() {
+        for path in [
+            "/proj/.iiirc",
+            "/proj/.iii-prepared",
+            "/proj/sub/.iii.bak/a",
+        ] {
+            assert!(!should_ignore_path(&PathBuf::from(path), &root()), "{path}");
+        }
+    }
+
+    #[test]
+    fn compose_state_is_never_watched() {
+        let proj = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        std::fs::create_dir_all(root.join(".III/compose")).unwrap();
+        std::fs::create_dir(root.join(".iiirc")).unwrap();
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let mut registered: HashSet<PathBuf> = HashSet::new();
+        watch_pruned(&mut watcher, &root, &mut registered).unwrap();
+        assert_eq!(
+            registered,
+            HashSet::from([root.clone(), root.join(".iiirc")])
+        );
     }
 
     #[test]

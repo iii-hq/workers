@@ -11,6 +11,7 @@
 //!
 //! Uses msb_krun VmBuilder for type-safe VM configuration.
 
+use super::source_watcher::is_compose_state;
 use iii_filesystem::{
     Context, DirEntry, DynFileSystem, Entry, FsOptions, OpenOptions, ZeroCopyWriter, stat64,
     statvfs64,
@@ -292,15 +293,6 @@ fn is_listed_init(dir: u64, name: &[u8]) -> bool {
     dir == 1 && iii_filesystem::init::has_init() && name == b"init.krun"
 }
 
-/// `.iii` holds the project's token, and guest root can mount this share again
-/// after dev-run.sh's copy-in. At any depth: a compose file can sit below the
-/// worker's dir. In any case: macOS's default filesystem resolves `.III` to it.
-// shortcut: ASCII case only, so a filesystem that folds more (HFS+ ignores U+200C
-// in a name) still resolves a variant; compare the host inode if one ever matters.
-fn is_compose_state(name: &[u8]) -> bool {
-    name.eq_ignore_ascii_case(b".iii")
-}
-
 impl DynFileSystem for SourceShareFs {
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         self.0.init(capable)
@@ -311,6 +303,8 @@ impl DynFileSystem for SourceShareFs {
     }
 
     fn lookup(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
+        // Guest root can mount this share again after dev-run.sh's copy-in. At any
+        // depth: a compose file can sit below the worker's dir.
         if is_compose_state(name.to_bytes()) {
             return Err(io::Error::from_raw_os_error(libc::ENOENT));
         }

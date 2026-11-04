@@ -116,10 +116,10 @@ At `debug` that holds only on an engine that keeps the payload out of its debug
 log: an older one logs each request with its `auth`, which reaches the trace store
 and any observer of `observability::on-log`.
 
-The project token stays out of the guest. It lives in Compose's state (`.iii`),
-which the copy into `/workspace` and source sync skip, and the source share answers
-ENOENT for that name at any depth and in any case, including to guest root mounting
-the share again after the copy.
+The project token stays out of the guest, except in the cases under Known limits.
+It lives in Compose's state (`.iii`), which the copy into `/workspace` and source
+sync skip in any case, and the source share answers ENOENT for that name at any depth
+and in any case, including to guest root mounting the share again after the copy.
 
 `iii sandbox run` presents a token scoped to its VM instead of the project token
 (HMAC-SHA256 keyed by the project token over `iii-sandbox/worker-scope/v1\0`
@@ -136,7 +136,13 @@ receives the `auth` token and the guest `env` that Compose sends. The router
 has the same limit for `sandbox::*` forwards.
 
 `.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
-inside a worker's directory puts the token in that guest.
+inside a worker's directory puts the token in that guest. The name hides the whole
+directory, so a VM also misses anything else a project keeps there, such as
+`.iii/project.ini`.
+
+`data/` is not hidden. A managed engine keeps its trace store there, so a VM whose
+directory contains it can read the traced payloads, and the token too when an older
+engine logs at `debug`.
 
 ## Errors
 
