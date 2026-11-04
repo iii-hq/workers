@@ -3,6 +3,7 @@
 //! exposure, and generic function dispatch (`iii.call`) for the target of
 //! an `agent_call` call.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
@@ -215,12 +216,22 @@ impl EngineClient {
         }
         .into();
         // Only the engine can register `sandbox::*` in `default`, so no worker can answer.
-        let reply = self
-            .iii
-            .call(request.namespace("default"))
-            .await
-            .map_err(|e| tracing::debug!(error = %e, "sandbox::adapter::info failed"))
-            .ok()?;
+        let reply = match self.iii.call(request.namespace("default")).await {
+            Ok(reply) => {
+                ROUTER_READ_FAILING.store(false, Ordering::Relaxed);
+                reply
+            }
+            Err(e) => {
+                if !ROUTER_READ_FAILING.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        error = %e,
+                        "sandbox::adapter::info failed: until a read succeeds, a deny on a \
+                         sandbox::* id does not cover a custom adapter's own ids"
+                    );
+                }
+                return None;
+            }
+        };
         reply.get("adapter")?.as_str().map(str::to_owned)
     }
 
@@ -358,6 +369,9 @@ const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
 /// How long reading the router's binding may hold up a catalog reload: the
 /// router also asks the adapter, which may hang.
 const SANDBOX_ROUTER_READ_TIMEOUT_MS: u64 = 3_000;
+/// Set while reads of the sandbox router fail: every registry change reads it, so an
+/// outage warns once rather than on each.
+static ROUTER_READ_FAILING: AtomicBool = AtomicBool::new(false);
 
 /// The engine's boot identity: the earliest `connected_at_ms` among its
 /// in-process (`runtime == "engine"`) workers, which attach once at engine

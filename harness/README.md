@@ -79,8 +79,9 @@ A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's
 `<adapter>::<op>` (`sandbox-libkrun`, or the adapter `sandbox::adapter::info` reports). A
 `functions.deny` glob or a hook's `functions` glob matching either id covers both;
 `functions.allow` stays literal. `sandbox-libkrun` is always covered, a custom adapter's prefix
-only once `sandbox::adapter::info` has answered, so an adapter whose info hangs keeps its ids
-callable until a later reload reads it.
+once a read of `sandbox::adapter::info` succeeds, at startup and on each registry change. If it
+fails, for example because RBAC refuses it, the harness logs a warning and the adapter's ids stay
+callable until a later read succeeds.
 Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
 schema rejects is parsed. When the optional
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles

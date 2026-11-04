@@ -98,7 +98,7 @@ const DEFAULT_SANDBOX_ADAPTER: &str = "sandbox-libkrun";
 /// worker can write to. Never forgotten: a harness outlives an engine restart
 /// that rebinds the router, and the old adapter may still be connected.
 // shortcut: a custom adapter's ids pass a router deny until a read of the router
-// succeeds (rbac or a hung adapter can fail it), read at dispatch if that window
+// succeeds (rbac or a stalled engine can fail it), read at dispatch if that window
 // ever matters.
 static LEARNED_SANDBOX_ADAPTERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
