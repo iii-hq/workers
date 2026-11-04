@@ -645,12 +645,9 @@ pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> 
         if !provider_first {
             (case.register)(provider.clone()).await?;
         }
-        if let Err(error) = wait_for_provider(&router, case.id).await {
-            bail!(
-                "{order}: {error:#}; diagnostics: {}",
-                registration_diagnostics(&router, &provider, case.id).await
-            );
-        }
+        wait_for_provider(&router, case.id)
+            .await
+            .with_context(|| format!("{order}: provider listed"))?;
         wait_for_registration_token(&provider, case.id).await?;
         declare_once(&provider, &DeclareLock::default())
             .await
@@ -693,88 +690,4 @@ pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> 
         }
     }
     Ok(())
-}
-
-/// What the engine and the router hold when a registered provider is not
-/// listed: the engine URL's workers, which workers own the
-/// `router::provider::*` functions, the provider ids in the router's
-/// persisted registry and whether the provider persisted a token. Ids,
-/// names and booleans only, never a token or its hash.
-#[cfg(all(test, feature = "provider-claude-code"))]
-async fn registration_diagnostics(router: &IIIClient, provider: &IIIClient, id: &str) -> Value {
-    fn keep(item: &Value, wanted: &[&str]) -> Value {
-        let mut kept = serde_json::Map::new();
-        if let Some(object) = item.as_object() {
-            for (key, value) in object {
-                if wanted.iter().any(|w| key.contains(w)) && !value.is_object() {
-                    kept.insert(key.clone(), value.clone());
-                }
-            }
-        }
-        Value::Object(kept)
-    }
-    let workers = call(router, "engine::workers::list", json!({}))
-        .await
-        .map(|listed| {
-            listed["workers"]
-                .as_array()
-                .map(|workers| {
-                    workers
-                        .iter()
-                        .map(|worker| keep(worker, &["id", "name", "pid", "status"]))
-                        .collect::<Vec<_>>()
-                })
-                .map_or(Value::Null, Value::from)
-        })
-        .unwrap_or_else(|error| json!({ "error": error.to_string() }));
-    let owners = call(
-        router,
-        "engine::functions::list",
-        json!({ "include_internal": true }),
-    )
-    .await
-    .map(|listed| {
-        listed["functions"]
-            .as_array()
-            .map(|functions| {
-                functions
-                    .iter()
-                    .filter(|function| {
-                        function["function_id"]
-                            .as_str()
-                            .is_some_and(|f| f.starts_with("router::provider::"))
-                    })
-                    .map(|function| keep(function, &["function_id", "worker"]))
-                    .collect::<Vec<_>>()
-            })
-            .map_or(Value::Null, Value::from)
-    })
-    .unwrap_or_else(|error| json!({ "error": error.to_string() }));
-    let persisted = call(
-        router,
-        "state::get",
-        json!({ "scope": "llm-router", "key": "registry" }),
-    )
-    .await
-    .map(|registry| {
-        registry
-            .as_object()
-            .map(|records| records.keys().cloned().collect::<Vec<_>>())
-            .map_or(Value::Null, Value::from)
-    })
-    .unwrap_or_else(|error| json!({ "error": error.to_string() }));
-    let token_persisted = call(
-        provider,
-        "state::get",
-        json!({ "scope": format!("provider-{id}"), "key": "registration_token" }),
-    )
-    .await
-    .map(|token| token.as_str().is_some_and(|value| !value.is_empty()))
-    .unwrap_or(false);
-    json!({
-        "workers": workers,
-        "router_provider_function_owners": owners,
-        "router_registry_ids": persisted,
-        "provider_token_persisted": token_persisted,
-    })
 }
