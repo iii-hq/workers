@@ -20,7 +20,7 @@ stored in state; a browser UI and JSON API are served under `/openwiki`.
 ## Boundaries
 
 - Reads and clones public git repositories; it does not modify them.
-- Generation quality depends on the routed model. It calls `router::complete`;
+- Generation quality depends on the routed model. It calls `llm-router::complete`;
   the provider and credential live in the `llm-router` config, not here.
 - Not a chatbot. It maintains structured pages rather than answering free-form
   questions.

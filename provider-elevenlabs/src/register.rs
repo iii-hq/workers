@@ -1,4 +1,4 @@
-//! Boot wiring: function surface, the router::ready rebind, and the
+//! Boot wiring: function surface, the llm-router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::discovery::{make_refresh_models, refresh_models, static_models};
 use crate::speech::{Voices, DEFAULT_API_URL};
@@ -114,7 +114,7 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
-    // router::ready and on upstream auth errors.
+    // llm-router::ready and on upstream auth errors.
     let cache = ScaffoldCache::new();
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -159,7 +159,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
     );
 
-    // Re-declare when the router restarts: bind to the router::ready trigger type.
+    // Re-declare when the router restarts: bind to the llm-router::ready trigger type.
     {
         let (iii_ready, http_ready, cache_ready) = (iii.clone(), http.clone(), cache.clone());
         iii.register_function(
@@ -177,7 +177,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
+        "llm-router::ready",
         surface::ON_ROUTER_READY_ID,
         json!({}),
     ));

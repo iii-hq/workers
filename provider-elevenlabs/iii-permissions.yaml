@@ -4,7 +4,7 @@ version: 1
 
 rules:
   # Direct provider calls bypass the router's accounting and credential
-  # handling; agents go through router::transcribe / router::speak.
+  # handling; agents go through llm-router::transcribe / llm-router::speak.
   - '!provider::elevenlabs::transcribe'
   - '!provider::elevenlabs::speak'
   - '!provider::elevenlabs::refresh_models'

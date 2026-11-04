@@ -12,7 +12,7 @@ pub struct RouterScriptV1 {
     pub schema_version: SchemaVersion1,
     pub scenario_id: String,
     pub model: ModelFixtureV1,
-    /// How `router::chat` selects an unused generation. Existing fixtures use
+    /// How `llm-router::chat` selects an unused generation. Existing fixtures use
     /// strict ordinal dispatch; concurrent tree fixtures opt into matching the
     /// first unused generation whose request contract passes.
     #[serde(default)]

@@ -1,53 +1,34 @@
 {
-  "description": "List catalog models, optionally filtered by provider, a capability flag, and modality (chat by default; stt, tts, or any).",
-  "function_id": "router::models::list",
+  "description": "Read one catalog model by {provider, id}; null when the model is not registered.",
+  "function_id": "llm-router::models::get",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "definitions": {
-      "ModalityFilter": {
-        "description": "Model family selector for `router::models::list`. `chat` is the default so pickers built before speech models existed keep listing only what `router::chat` can run.",
-        "enum": [
-          "chat",
-          "stt",
-          "tts",
-          "any"
-        ],
+    "description": "Input of `llm-router::models::get`.",
+    "properties": {
+      "id": {
+        "default": "",
+        "description": "Model id to look up.",
+        "type": "string"
+      },
+      "provider": {
+        "default": "",
+        "description": "Provider id that owns the model.",
         "type": "string"
       }
     },
-    "description": "Input of `router::models::list`.",
-    "properties": {
-      "capability": {
-        "description": "Keep only models that support this capability flag (optional).",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "modality": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/ModalityFilter"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "description": "Model family: `chat` (default), `stt`, `tts`, or `any`."
-      },
-      "provider": {
-        "description": "Filter to a single provider id (optional).",
-        "type": [
-          "string",
-          "null"
-        ]
-      }
-    },
-    "title": "ModelsListRequest",
+    "title": "ModelGetRequest",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/ModelGetResponse"
+      },
+      {
+        "type": "null"
+      }
+    ],
     "definitions": {
       "Model": {
         "description": "The capability record (README § Model descriptor).",
@@ -175,6 +156,18 @@
         ],
         "type": "object"
       },
+      "ModelGetResponse": {
+        "description": "Output of `llm-router::models::get` (the function returns `null` when the model is not registered — the cold-window signal).",
+        "properties": {
+          "model": {
+            "$ref": "#/definitions/Model"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "type": "object"
+      },
       "Pricing": {
         "properties": {
           "cache_read": {
@@ -230,14 +223,14 @@
         "description": "What a speech model does. Chat models carry no `speech` block.",
         "oneOf": [
           {
-            "description": "Speech to text, served through `router::transcribe`.",
+            "description": "Speech to text, served through `llm-router::transcribe`.",
             "enum": [
               "stt"
             ],
             "type": "string"
           },
           {
-            "description": "Text to speech, served through `router::speak`.",
+            "description": "Text to speech, served through `llm-router::speak`.",
             "enum": [
               "tts"
             ],
@@ -246,7 +239,7 @@
         ]
       },
       "SpeechModel": {
-        "description": "Facts about a speech model. Present only on models served through `router::transcribe` / `router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
+        "description": "Facts about a speech model. Present only on models served through `llm-router::transcribe` / `llm-router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
         "properties": {
           "languages": {
             "description": "BCP-47 tags of the languages the model handles; empty when the provider does not say.",
@@ -270,19 +263,6 @@
         "type": "object"
       }
     },
-    "description": "Output of `router::models::list`.",
-    "properties": {
-      "models": {
-        "items": {
-          "$ref": "#/definitions/Model"
-        },
-        "type": "array"
-      }
-    },
-    "required": [
-      "models"
-    ],
-    "title": "ModelsListResponse",
-    "type": "object"
+    "title": "Nullable_ModelGetResponse"
   }
 }

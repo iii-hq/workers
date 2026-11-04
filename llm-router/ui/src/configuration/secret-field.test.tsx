@@ -145,7 +145,7 @@ describe('provider keys in the router form', () => {
     expect(html).toContain('signs in on its own')
   })
 
-  it('reads each provider key variable and status from router::provider::list', () => {
+  it('reads each provider key variable and status from llm-router::provider::list', () => {
     const credentials = credentialsFromProviderList({
       providers: [
         {

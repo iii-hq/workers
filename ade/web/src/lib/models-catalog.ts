@@ -2,7 +2,7 @@ import { makeCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ModelOption, ReasoningEffortOption } from '@/types/chat'
 
-/** Wire shape returned by `router::models::list` over the iii bus. */
+/** Wire shape returned by `llm-router::models::list` over the iii bus. */
 export interface CatalogModelRow {
   id: string
   provider: string
@@ -39,7 +39,7 @@ function parseReasoningEfforts(
 export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
   const client = await getIiiClient()
   const res = await client.trigger<{ models?: unknown }>(
-    'router::models::list',
+    'llm-router::models::list',
     {},
   )
   const rows = res?.models
@@ -81,7 +81,7 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
 }
 
 /**
- * Catalog keys in the order `router::models::list` returned them. The router
+ * Catalog keys in the order `llm-router::models::list` returned them. The router
  * keeps each provider's own order (claude-code lists Sonnet 5.5 first), a
  * better starting model than the alphabetically first one.
  */
@@ -116,7 +116,7 @@ export function catalogRowsToModelOptions(
  * Ask each provider to re-pull its upstream model list into the catalog via
  * `provider::<id>::refresh_models`. Best-effort and parallel — a provider
  * that's offline or has no credential simply registers nothing. Callers
- * re-read `router::models::list` afterwards to pick up the refreshed catalog.
+ * re-read `llm-router::models::list` afterwards to pick up the refreshed catalog.
  */
 export async function refreshProviderModels(
   providers: readonly string[],
@@ -140,10 +140,10 @@ export async function retryXaiModels(): Promise<void> {
 /** iii:: prefix → engine-internal → delivery spans stay out of the Traces view. */
 const MODELS_CHANGED_FN = 'iii::console::models_changed'
 /** llm-router custom trigger type (worker-owned fan-out, not pubsub). */
-const MODELS_CHANGED_TRIGGER = 'router::models::changed'
+const MODELS_CHANGED_TRIGGER = 'llm-router::models::changed'
 const PROVIDERS_CHANGED_FN = 'iii::console::providers_changed'
 /** Fired on provider availability flips (worker registered / dispatch found it gone). */
-const PROVIDERS_CHANGED_TRIGGER = 'router::provider::changed'
+const PROVIDERS_CHANGED_TRIGGER = 'llm-router::provider::changed'
 
 async function subscribeRouterTrigger(
   fnId: string,
@@ -182,7 +182,7 @@ async function subscribeRouterTrigger(
 }
 
 /**
- * Subscribe to the llm-router `router::models::changed` trigger so the picker
+ * Subscribe to the llm-router `llm-router::models::changed` trigger so the picker
  * re-pulls the catalog when a provider reconciles — credential added/removed,
  * `refresh_models`, or a provider worker added/removed.
  *
@@ -205,7 +205,7 @@ export interface ProviderChangedEvent {
 }
 
 /**
- * Subscribe to `router::provider::changed` — availability flips (a provider
+ * Subscribe to `llm-router::provider::changed` — availability flips (a provider
  * worker (re)registered, or a dispatch discovered it gone). Model catalogs
  * survive a provider going down, so this trigger updates the existing
  * provider snapshot and greys/un-greys the group without another list request.
@@ -319,7 +319,7 @@ export function discoveryBlocksModels(
   )
 }
 
-/** A provider declared to the router, from `router::provider::list`. */
+/** A provider declared to the router, from `llm-router::provider::list`. */
 export interface ProviderListEntry {
   discovery?: DiscoveryStatus
   id: string
@@ -395,7 +395,7 @@ const CREDENTIAL_SOURCES = new Set(['config', 'env', 'secret', 'none'])
 export async function fetchProviderList(): Promise<ProviderListEntry[]> {
   const client = await getIiiClient()
   const res = await client.trigger<{ providers?: unknown }>(
-    'router::provider::list',
+    'llm-router::provider::list',
     {},
   )
   const out = parseProviderList(res?.providers)
@@ -403,7 +403,7 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
   return out
 }
 
-/** The `providers` rows of a `router::provider::list` reply, tolerant of older routers. */
+/** The `providers` rows of an `llm-router::provider::list` reply, tolerant of older routers. */
 export function parseProviderList(rows: unknown): ProviderListEntry[] {
   if (!Array.isArray(rows)) return []
   const out: ProviderListEntry[] = []

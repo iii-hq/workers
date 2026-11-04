@@ -12,7 +12,7 @@ pub const REFRESH_MODELS_DESC: &str =
     "Refresh the namespaced Command Code catalog from its live public model listing.";
 pub const ON_ROUTER_READY_ID: &str = "provider::command-code::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal router::ready subscriber that re-declares Command Code and refreshes its catalog.";
+    "Internal llm-router::ready subscriber that re-declares Command Code and refreshes its catalog.";
 
 pub struct FunctionSpec {
     pub function_id: &'static str,

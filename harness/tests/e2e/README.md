@@ -24,7 +24,7 @@ persuasive response cannot override a missing durable result and a low score
 does not hide a mechanically correct execution.
 
 Before execution, the runner resolves the exact subject and judge records with
-`router::models::get`. Each scenario declares its own turn, token, and timeout
+`llm-router::models::get`. Each scenario declares its own turn, token, and timeout
 budget. Model incompatibilities are test failures because every configured
 deployment is expected to execute every scenario. The timeout covers the
 complete root-and-descendant session tree. After the root turn finishes, the
@@ -193,7 +193,7 @@ The runner writes `results.json` with:
 - median score, pass rate, and aggregate status.
 
 Subject usage comes from `harness::metrics`; judge usage comes from
-`router::complete`. When evaluation succeeds, judge usage includes the initial
+`llm-router::complete`. When evaluation succeeds, judge usage includes the initial
 response and every repair attempt. Costs are `null` when a provider or model has
 no catalog pricing or complete usage data. Unknown costs are not treated as
 zero.

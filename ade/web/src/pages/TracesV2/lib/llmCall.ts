@@ -310,7 +310,10 @@ export function isLlmCall(
     Object.keys(attributes).some((k) => k.startsWith('gen_ai.'))
   )
     return true
-  if (functionId && /^router::(chat|count_tokens|stream)$/.test(functionId))
+  if (
+    functionId &&
+    /^(llm-)?router::(chat|count_tokens|stream)$/.test(functionId)
+  )
     return true
   if (
     functionId &&

@@ -10,7 +10,7 @@
 //!      `configuration` is a required boot dependency: a failed
 //!      register/fetch aborts startup.
 //!   4. Wire production adapters behind the ports: model limits via
-//!      `router::models::budget` and the summariser via `router::chat`
+//!      `llm-router::models::budget` and the summariser via `llm-router::chat`
 //!      (both soft — only compaction degrades without `llm-router`), plus
 //!      compaction leases on the local filesystem (`lease_dir`). The
 //!      summariser reads `summarizer_timeout_ms` from the live snapshot per
@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("opening the compaction lease directory: {e}"))?,
     ));
 
-    // Budget lookups are TTL-cached and flushed on router::models::changed;
+    // Budget lookups are TTL-cached and flushed on llm-router::models::changed;
     // the decorator drops into Deps.resolver with no handler changes.
     let clock: Arc<SystemClock> = Arc::new(SystemClock);
     let resolver = Arc::new(CachingModelResolver::new(

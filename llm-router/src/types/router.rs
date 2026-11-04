@@ -39,13 +39,13 @@ pub struct PromptCacheIntent {
     pub surface_digest: String,
 }
 
-/// Input of the `router::chat` iii function.
+/// Input of the `llm-router::chat` iii function.
 /// (No `PartialEq`: `iii_sdk::StreamChannelRef` doesn't implement it.)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChatRequest {
     pub writer_ref: StreamChannelRef, // direction "write"; the caller's channel
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>, // router::abort correlation; generated when omitted
+    pub request_id: Option<String>, // llm-router::abort correlation; generated when omitted
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>, // stable conversation identity for provider affinity
     pub model: String,
@@ -105,7 +105,7 @@ pub struct ChatResponse {
     pub error: Option<ErrorShape>,
 }
 
-/// Output of the `router::complete` iii function (non-streaming convenience).
+/// Output of the `llm-router::complete` iii function (non-streaming convenience).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CompleteResponse {
     pub message: AssistantMessage,
@@ -115,7 +115,7 @@ pub struct CompleteResponse {
     pub model: String,
 }
 
-/// Input of the `router::abort` iii function.
+/// Input of the `llm-router::abort` iii function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AbortRequest {
     pub request_id: String,
@@ -125,7 +125,7 @@ pub struct AbortResponse {
     pub aborted: bool,
 }
 
-/// One `router::provider::list` entry.
+/// One `llm-router::provider::list` entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderInfo {
     pub id: String,
@@ -166,7 +166,7 @@ pub struct ProviderInfo {
     #[serde(flatten)]
     pub credential: CredentialStatus,
 }
-/// Input of `router::provider::list` — takes no arguments. A struct (rather
+/// Input of `llm-router::provider::list` — takes no arguments. A struct (rather
 /// than `Value`) keeps the request schema concrete; unknown fields (e.g. the
 /// engine-injected `_caller_worker_id`) are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -189,7 +189,7 @@ pub struct ProviderDefaults {
     pub extra: BTreeMap<String, Value>,
 }
 
-/// Input of the `router::provider::register` iii function — a provider
+/// Input of the `llm-router::provider::register` iii function — a provider
 /// worker's self-declaration at attach time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderDeclaration {
@@ -217,7 +217,7 @@ pub struct ProviderDeclaration {
     pub icon_svg: Option<String>,
     /// Chat model ids the provider recommends as a starting point. The order
     /// in which the list first names each variant sets the variant rank.
-    /// `router::provider::list` reports the newest catalog model of the
+    /// `llm-router::provider::list` reports the newest catalog model of the
     /// best-ranked variant as `default_model` (see
     /// `registry::availability::resolve_default_model`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,7 +230,7 @@ pub struct ProviderDeclaration {
     /// this provider's models, for causes the console cannot fix by
     /// compacting (a self-hosted server started with a small window, say).
     /// One or two plain sentences, optionally with a link to the provider's
-    /// docs. `router::provider::list` carries it verbatim.
+    /// docs. `llm-router::provider::list` carries it verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_overflow_hint: Option<String>,
     /// `true` when the provider works without a credential (a local server
@@ -288,8 +288,8 @@ pub enum CredentialOrigin {
     None,
 }
 
-/// Credential diagnostics carried by `router::provider::list` entries and the
-/// `router::provider::resolve` response. Every field is optional on the wire,
+/// Credential diagnostics carried by `llm-router::provider::list` entries and the
+/// `llm-router::provider::resolve` response. Every field is optional on the wire,
 /// so older consumers and older routers interoperate. Never carries a value.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CredentialStatus {
@@ -305,7 +305,7 @@ pub struct CredentialStatus {
     pub credential_error: Option<String>,
 }
 
-/// The provider-facing part of `router::provider::resolve`'s output
+/// The provider-facing part of `llm-router::provider::resolve`'s output
 /// ([`ProviderResolveOutput`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderResolveResponse {
@@ -318,7 +318,7 @@ pub struct ProviderResolveResponse {
     pub max_tokens: Option<u64>,
 }
 
-/// Output of the `router::provider::resolve` iii function: the effective
+/// Output of the `llm-router::provider::resolve` iii function: the effective
 /// credential and settings plus the credential diagnostics.
 // A flattening wrapper rather than new `ProviderResolveResponse` fields: the
 // provider crates build that struct as literals and deserialize it, ignoring
@@ -334,7 +334,7 @@ pub struct ProviderResolveOutput {
     pub discovery_attempt: Option<String>,
 }
 
-/// Output of the `router::models::reconcile` iii function.
+/// Output of the `llm-router::models::reconcile` iii function.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsReconcileResponse {
     pub provider: String,
@@ -489,7 +489,7 @@ pub struct ProviderAbortResponse {
 }
 
 /// Event delivered to a provider's `provider::<id>::on_router_ready` (the
-/// `router::ready` trigger payload, currently `{}`). Unknown fields are ignored.
+/// `llm-router::ready` trigger payload, currently `{}`). Unknown fields are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouterReadyEvent {}
 
@@ -501,14 +501,14 @@ pub struct ProviderReadyAck {
 
 // ── event payloads ──────────────────────────────────────────────────────────
 
-/// Payload emitted on the `router::models::changed` trigger type.
+/// Payload emitted on the `llm-router::models::changed` trigger type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsChangedPayload {
     pub provider: String,
     pub count: usize,
 }
 
-/// Payload emitted on the `router::provider::changed` trigger type.
+/// Payload emitted on the `llm-router::provider::changed` trigger type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderChangedPayload {
     pub provider: String,
@@ -521,7 +521,7 @@ pub struct ProviderChangedPayload {
 // to structs (with `JsonSchema`) is what lets the SDK emit real request/response
 // schemas instead of the permissive `AnyValue` schema a `Value` handler yields.
 
-/// Input of `router::models::list`.
+/// Input of `llm-router::models::list`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsListRequest {
     /// Filter to a single provider id (optional).
@@ -535,13 +535,13 @@ pub struct ModelsListRequest {
     pub modality: Option<ModalityFilter>,
 }
 
-/// Output of `router::models::list`.
+/// Output of `llm-router::models::list`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsListResponse {
     pub models: Vec<Model>,
 }
 
-/// Input of `router::models::get`.
+/// Input of `llm-router::models::get`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelGetRequest {
     /// Provider id that owns the model.
@@ -552,14 +552,14 @@ pub struct ModelGetRequest {
     pub id: String,
 }
 
-/// Output of `router::models::get` (the function returns `null` when the model
+/// Output of `llm-router::models::get` (the function returns `null` when the model
 /// is not registered — the cold-window signal).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelGetResponse {
     pub model: Model,
 }
 
-/// Input of `router::models::budget`.
+/// Input of `llm-router::models::budget`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelBudgetRequest {
     /// Provider id that owns the model. Empty resolves an unambiguous model id.
@@ -569,19 +569,19 @@ pub struct ModelBudgetRequest {
     #[serde(default)]
     pub id: String,
     /// Optional caller-requested output budget. When absent, the same provider
-    /// and router defaults used by `router::chat` apply.
+    /// and router defaults used by `llm-router::chat` apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
 }
 
-/// Effective limits `router::chat` will use for this model and request.
+/// Effective limits `llm-router::chat` will use for this model and request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelBudgetResponse {
     pub model: Model,
     pub effective_max_output_tokens: u64,
 }
 
-/// Input of `router::models::supports`.
+/// Input of `llm-router::models::supports`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsSupportsRequest {
     /// Provider id that owns the model.
@@ -595,13 +595,13 @@ pub struct ModelsSupportsRequest {
     pub capability: String,
 }
 
-/// Output of `router::models::supports`.
+/// Output of `llm-router::models::supports`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsSupportsResponse {
     pub supported: bool,
 }
 
-/// Input of `router::route` — the read-only routing preview.
+/// Input of `llm-router::route` — the read-only routing preview.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouteRequest {
     /// Model id to route.
@@ -612,14 +612,14 @@ pub struct RouteRequest {
     pub provider: Option<String>,
 }
 
-/// Output of `router::route`.
+/// Output of `llm-router::route`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouteResponse {
     pub provider: String,
     pub candidates: Vec<String>,
 }
 
-/// Input of `router::provider::register` — a provider worker's declaration plus
+/// Input of `llm-router::provider::register` — a provider worker's declaration plus
 /// the optional re-registration token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderRegisterRequest {
@@ -630,7 +630,7 @@ pub struct ProviderRegisterRequest {
     pub token: Option<String>,
 }
 
-/// Input of `router::provider::resolve`.
+/// Input of `llm-router::provider::resolve`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderResolveRequest {
     /// Begin a latest-wins discovery attempt. Older providers omit this.
@@ -644,7 +644,7 @@ pub struct ProviderResolveRequest {
     pub token: Option<String>,
 }
 
-/// Input of `router::provider::update_credential` (OAuth write-back).
+/// Input of `llm-router::provider::update_credential` (OAuth write-back).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateCredentialRequest {
     /// Provider id whose credential slice is being written.
@@ -658,13 +658,13 @@ pub struct UpdateCredentialRequest {
     pub credential: Value,
 }
 
-/// Output of `router::provider::update_credential`.
+/// Output of `llm-router::provider::update_credential`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateCredentialResponse {
     pub ok: bool,
 }
 
-/// Input of `router::models::reconcile` — the only catalog write path.
+/// Input of `llm-router::models::reconcile` — the only catalog write path.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsReconcileRequest {
     /// Optional token-gated discovery completion. Failures preserve the slice.
@@ -682,7 +682,7 @@ pub struct ModelsReconcileRequest {
 }
 
 /// Advisory configuration-change event delivered to
-/// `router::on_config_changed`. The handler ignores event values and re-fetches
+/// `llm-router::on_config_changed`. The handler ignores event values and re-fetches
 /// the authoritative entry before replacing its in-memory snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigChangedEvent {
@@ -692,7 +692,7 @@ pub struct ConfigChangedEvent {
 }
 
 /// Advisory `engine::functions-available` event delivered to
-/// `router::on_functions_changed`. The engine sends
+/// `llm-router::on_functions_changed`. The engine sends
 /// `{ event: "functions_changed", functions: [...] }` with the full current
 /// function list; it does not say which worker or function changed. The
 /// handler ignores event values (the `functions` list is not deserialized) and
@@ -704,7 +704,7 @@ pub struct FunctionsChangedEvent {
     pub event: Option<String>,
 }
 
-/// Advisory `secrets::changed` event delivered to `router::on_secret_changed`.
+/// Advisory `secrets::changed` event delivered to `llm-router::on_secret_changed`.
 /// It never carries a value; the handler re-reads the reference through
 /// `secrets::resolve`. Other payload fields (`fingerprint`, `updated_at`) are
 /// ignored.

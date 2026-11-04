@@ -25,13 +25,13 @@ describe('Cursor LLM Router provider', () => {
 
     provider.register();
     await vi.waitFor(() => {
-      expect(routerCalls.some((call) => call.function_id === 'router::models::reconcile')).toBe(
+      expect(routerCalls.some((call) => call.function_id === 'llm-router::models::reconcile')).toBe(
         true,
       );
     });
 
     const declaration = routerCalls.find(
-      (call) => call.function_id === 'router::provider::register',
+      (call) => call.function_id === 'llm-router::provider::register',
     )?.payload as Record<string, unknown>;
     expect(declaration).toMatchObject({
       id: 'cursor',
@@ -43,7 +43,7 @@ describe('Cursor LLM Router provider', () => {
     expect(String(declaration.icon_svg)).toMatch(/^<svg [^>]*viewBox="0 0 24 24"[\s\S]*<\/svg>$/);
     expect(declaration).not.toHaveProperty('system_prompt');
     const reconciliation = routerCalls.find(
-      (call) => call.function_id === 'router::models::reconcile',
+      (call) => call.function_id === 'llm-router::models::reconcile',
     )?.payload as { provider: string; models: Array<Record<string, unknown>>; token?: string };
     expect(reconciliation.provider).toBe('cursor');
     expect(reconciliation.token).toBe('cursor-registration-token');
@@ -99,7 +99,7 @@ describe('Cursor LLM Router provider', () => {
 
     await vi.waitFor(() => {
       expect(
-        routerCalls.filter((call) => call.function_id === 'router::provider::register'),
+        routerCalls.filter((call) => call.function_id === 'llm-router::provider::register'),
       ).toHaveLength(2);
       expect(listCalls).toBe(2);
     });
@@ -129,14 +129,14 @@ describe('Cursor LLM Router provider', () => {
     await vi.waitFor(
       () => {
         expect(
-          routerCalls.filter((call) => call.function_id === 'router::models::reconcile'),
+          routerCalls.filter((call) => call.function_id === 'llm-router::models::reconcile'),
         ).toHaveLength(1);
       },
       { timeout: 2_000 },
     );
 
     expect(
-      routerCalls.filter((call) => call.function_id === 'router::provider::register'),
+      routerCalls.filter((call) => call.function_id === 'llm-router::provider::register'),
     ).toHaveLength(1);
     expect(stateSetAttempts).toBe(2);
     await provider.close();
@@ -166,14 +166,14 @@ describe('Cursor LLM Router provider', () => {
           releaseStaleRead = () => resolve(null);
         });
       }
-      if (request.function_id === 'router::provider::register') {
+      if (request.function_id === 'llm-router::provider::register') {
         markRegistrationStarted?.();
         await new Promise<void>((resolve) => {
           releaseRegistration = resolve;
         });
         return { registration_token: 'concurrent-registration-token' };
       }
-      if (request.function_id === 'router::models::reconcile') {
+      if (request.function_id === 'llm-router::models::reconcile') {
         reconciliations.push(structuredClone(request.payload as Record<string, unknown>));
         return { provider: 'cursor', count: 2 };
       }
@@ -226,14 +226,14 @@ describe('Cursor LLM Router provider', () => {
       () => {
         expect(iii.state.get('registration_token')).toBe('cursor-registration-token');
         expect(
-          routerCalls.filter((call) => call.function_id === 'router::models::reconcile'),
+          routerCalls.filter((call) => call.function_id === 'llm-router::models::reconcile'),
         ).toHaveLength(1);
       },
       { timeout: 10_000 },
     );
 
     expect(
-      routerCalls.filter((call) => call.function_id === 'router::provider::register'),
+      routerCalls.filter((call) => call.function_id === 'llm-router::provider::register'),
     ).toHaveLength(2);
     expect(stateSetAttempts).toBe(7);
     await provider.close();
@@ -245,7 +245,7 @@ describe('Cursor LLM Router provider', () => {
     const declarations: Array<Record<string, unknown>> = [];
     let reconciled = false;
     iii.trigger = async (request: Record<string, unknown>) => {
-      if (request.function_id === 'router::provider::register') {
+      if (request.function_id === 'llm-router::provider::register') {
         declarations.push(structuredClone(request.payload as Record<string, unknown>));
         if (declarations.length === 1) {
           iii.state.set('registration_token', 'winner-registration-token');
@@ -253,7 +253,7 @@ describe('Cursor LLM Router provider', () => {
         }
         return { registration_token: 'winner-registration-token' };
       }
-      if (request.function_id === 'router::models::reconcile') {
+      if (request.function_id === 'llm-router::models::reconcile') {
         reconciled = true;
         return { provider: 'cursor', count: 2 };
       }
@@ -284,7 +284,7 @@ describe('Cursor LLM Router provider', () => {
       markRegistrationStarted = resolve;
     });
     iii.trigger = async (request: Record<string, unknown>) => {
-      if (request.function_id === 'router::provider::register') {
+      if (request.function_id === 'llm-router::provider::register') {
         markRegistrationStarted?.();
         return new Promise((resolve) => {
           completeRegistration = resolve;
@@ -397,7 +397,7 @@ describe('Cursor LLM Router provider', () => {
       expect(
         routerCalls.some(
           (call) =>
-            call.function_id === 'router::models::reconcile' &&
+            call.function_id === 'llm-router::models::reconcile' &&
             Array.isArray((call.payload as { models?: unknown }).models) &&
             (call.payload as { models: unknown[] }).models.length === 0,
         ),
@@ -665,7 +665,7 @@ describe('Cursor LLM Router provider', () => {
     await Promise.all([first, second]);
 
     const reconciliations = routerCalls.filter(
-      (call) => call.function_id === 'router::models::reconcile',
+      (call) => call.function_id === 'llm-router::models::reconcile',
     );
     expect((reconciliations.at(-1)?.payload as { models: unknown[] }).models).toEqual([]);
     await provider.close();
@@ -882,12 +882,12 @@ function fakeWorkspace() {
 function installRouter(iii: MockIII, calls: Array<Record<string, unknown>>): void {
   const originalTrigger = iii.trigger.bind(iii);
   iii.trigger = async (request: Record<string, unknown>) => {
-    if (String(request.function_id).startsWith('router::')) {
+    if (String(request.function_id).startsWith('llm-router::')) {
       calls.push(structuredClone(request));
-      if (request.function_id === 'router::provider::register') {
+      if (request.function_id === 'llm-router::provider::register') {
         return { ok: true, id: 'cursor', registration_token: 'cursor-registration-token' };
       }
-      if (request.function_id === 'router::models::reconcile') {
+      if (request.function_id === 'llm-router::models::reconcile') {
         return {
           provider: 'cursor',
           count: ((request.payload as { models?: unknown[] }).models ?? []).length,

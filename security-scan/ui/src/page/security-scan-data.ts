@@ -625,8 +625,8 @@ const MODELS_CHANGED_FN = 'security-scan-ui::models-changed'
 export async function loadModelCatalog(host: Host): Promise<CatalogModel[]> {
   try {
     const response = await withRpcTimeout(
-      host.iii.trigger<{ models?: unknown }>('router::models::list', {}),
-      'router::models::list',
+      host.iii.trigger<{ models?: unknown }>('llm-router::models::list', {}),
+      'llm-router::models::list',
     )
     const rows = response?.models
     if (!Array.isArray(rows)) return []
@@ -664,7 +664,7 @@ export function subscribeModelCatalog(host: Host, onChange: () => void): () => v
   try {
     offHandler = host.iii.on(MODELS_CHANGED_FN, () => onChange())
     offTrigger = host.iii.registerTrigger({
-      type: 'router::models::changed',
+      type: 'llm-router::models::changed',
       function_id: `${MODELS_CHANGED_FN}::${host.iii.browserId}`,
       config: {},
     })

@@ -151,14 +151,14 @@ O procedimento abaixo é o usado nos experimentos. Desde o append-only window (#
    - a exposição `native` fica fora da v1 e cai em "não reproduzível".
 5. Aplicar as edições de `change`.
 6. Chamar `context::assemble` com os mesmos parâmetros do Harness, incluindo `allow_prune: false` para modelos que vinculam o raciocínio ao prefixo. Se a montagem podar ou compactar, a reprodução é marcada como aproximada.
-7. **Conferir a fidelidade.** Chamar `router::count_tokens` no ponto de decisão e no primeiro passo do turno, e comparar com o uso gravado (`input + cache_read + cache_write`).
+7. **Conferir a fidelidade.** Chamar `llm-router::count_tokens` no ponto de decisão e no primeiro passo do turno, e comparar com o uso gravado (`input + cache_read + cache_write`).
    - Mesma diferença nos dois pontos: reconstrução **idêntica**.
    - Caso contrário: **aproximada**, com a diferença percentual exibida.
    - Sem contagem do provider: aproximada pela estimativa local.
 
 ### 6.4 Amostragem
 
-- Uma chamada de aquecimento (para o cache do provider) e depois até 4 em paralelo, via `router::complete`.
+- Uma chamada de aquecimento (para o cache do provider) e depois até 4 em paralelo, via `llm-router::complete`.
 - Nenhuma ferramenta é executada. As amostras nunca são gravadas na sessão observada.
 - Por reprodução: de 1 a 50 amostras; por variante, no máximo 100 somadas as extensões.
 - Timeout de 120 s por chamada.
@@ -252,7 +252,7 @@ Cada passo pode ser revisado e entregue sozinho.
 
 1. **Captura** (§6.2) nos assets da análise. Teste: `flow.rs` confere que a captura existe e é a do turno analisado, mesmo depois de outro turno na mesma sessão.
 2. **Reconstrução** como função pura: entradas + captura + mudança → pedido. Testes unitários com as duas sessões dos experimentos exportadas como fixture: ordem das mensagens, avisos convertidos, composição do system prompt e edições aplicadas ou recusadas.
-3. **`eval::reproduce`**: fila, armazenamento em `reproductions[]`, conferência de fidelidade, amostragem e custo. Teste: `flow.rs` com `router::complete` e `router::count_tokens` simulados; teste unitário do Fisher e da frase do resultado.
+3. **`eval::reproduce`**: fila, armazenamento em `reproductions[]`, conferência de fidelidade, amostragem e custo. Teste: `flow.rs` com `llm-router::complete` e `llm-router::count_tokens` simulados; teste unitário do Fisher e da frase do resultado.
 4. **Classificação:** as duas regras e a pergunta via Jev. Testes com respostas gravadas dos experimentos (a armadilha do ADE; aviso mencionado e não mencionado no kanban).
 5. **Contrato da LLM:** o objeto `check`, o prompt e a validação no backend (`decision_point` entre as referências, `find` presente no texto); `scenario_id` vindo do metadata em sessões do E2E.
 6. **Interface:** a seção Validation com os estados da §4.1, o diálogo da §4.2 e o E2E recolhido. Testes do modelo de estados e conferência visual nas três larguras (skill `design-diff`).

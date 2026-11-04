@@ -310,7 +310,7 @@ smoke:
 	echo '== sessions =='; \
 	iii trigger session::list --port "$(ENGINE_PORT)" --json '{}'; \
 	echo '== providers =='; \
-	iii trigger router::provider::list --port "$(ENGINE_PORT)" --json '{}'
+	iii trigger llm-router::provider::list --port "$(ENGINE_PORT)" --json '{}'
 
 logs attach:
 	@tmux attach -t "$(TMUX_SESSION)"

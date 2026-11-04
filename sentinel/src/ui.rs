@@ -71,7 +71,7 @@ mod tests {
         // One deliberate exception to "this worker's functions": the model
         // picker is fed by the router's catalog and re-read when the router
         // says it changed, the same way `security-scan` feeds its own.
-        for function_id in ["router::models::list", "router::models::changed"] {
+        for function_id in ["llm-router::models::list", "llm-router::models::changed"] {
             assert!(
                 PAGE_JS.contains(function_id),
                 "the model picker needs {function_id}"

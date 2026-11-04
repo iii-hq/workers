@@ -1,6 +1,6 @@
 {
   "description": "Speech to text through provider::<id>::transcribe: {model?, provider?, audio_base64, mime?, language?} to {provider, model, text, segments?}. Resolves the provider from the catalog's stt models when none is named.",
-  "function_id": "router::transcribe",
+  "function_id": "llm-router::transcribe",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
@@ -26,7 +26,7 @@
       },
       "model": {
         "default": null,
-        "description": "Speech-to-text model id (an `stt` model from `router::models::list`); the provider's default when omitted.",
+        "description": "Speech-to-text model id (an `stt` model from `llm-router::models::list`); the provider's default when omitted.",
         "type": [
           "string",
           "null"

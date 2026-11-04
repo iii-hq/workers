@@ -11,7 +11,7 @@ Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`
 into a router-owned channel), `provider::openai-codex::refresh_models`
 (fetches and reconciles the authenticated Codex model catalog), and
 `provider::openai-codex::count_tokens` (local prompt token estimation with
-the tiktoken tokenizers behind `router::count_tokens`, over the Responses
+the tiktoken tokenizers behind `llm-router::count_tokens`, over the Responses
 items the stream sends, with each image costed from its dimensions; never
 runs the model, costs nothing, and needs no network).
 
@@ -103,8 +103,8 @@ provider id `openai`.
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with backoff,
-  and re-declares on the `router::ready` trigger. It advertises dynamic model
+- **Registration:** self-declares via `llm-router::provider::register` with backoff,
+  and re-declares on the `llm-router::ready` trigger. It advertises dynamic model
   listing and `credential_env_var: None`; identity binds via the
   `registration_token` persisted in state (scope `provider-openai-codex`).
 - **Models:** fetches the account-scoped Codex catalog from authenticated

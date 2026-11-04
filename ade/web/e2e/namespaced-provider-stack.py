@@ -390,10 +390,10 @@ try {
   if (!entries.some((entry) => entry.id === id)) throw new Error(`configuration ${id} missing`)
   const raw = await sdk.trigger({ function_id: 'configuration::get', payload: { id, raw: true } })
   if (raw?.id !== id) throw new Error(`configuration::get returned ${raw?.id ?? 'no id'}`)
-  const providersResponse = await sdk.trigger({ function_id: 'router::provider::list', payload: {} })
+  const providersResponse = await sdk.trigger({ function_id: 'llm-router::provider::list', payload: {} })
   const providers = Array.isArray(providersResponse) ? providersResponse : providersResponse.providers ?? []
   if (!providers.some((entry) => entry.id === provider)) throw new Error(`provider ${provider} missing`)
-  const modelsResponse = await sdk.trigger({ function_id: 'router::models::list', payload: {} })
+  const modelsResponse = await sdk.trigger({ function_id: 'llm-router::models::list', payload: {} })
   const models = Array.isArray(modelsResponse) ? modelsResponse : modelsResponse.models ?? []
   if (!models.some((model) => model.provider === provider)) throw new Error(`model for ${provider} missing`)
   await sdk.trigger({

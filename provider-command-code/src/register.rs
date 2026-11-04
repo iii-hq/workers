@@ -40,7 +40,7 @@ pub fn declaration() -> ProviderDeclaration {
         models: None,
         worker_id: Some("provider-command-code".into()),
         // The mark the console paints beside this provider's models; the
-        // router carries it verbatim in `router::provider::list`.
+        // router carries it verbatim in `llm-router::provider::list`.
         icon_svg: Some(
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg")).into(),
         ),
@@ -159,7 +159,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
+        "llm-router::ready",
         surface::ON_ROUTER_READY_ID,
         json!({}),
     ));

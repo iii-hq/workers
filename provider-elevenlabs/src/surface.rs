@@ -16,22 +16,22 @@ use crate::speech::{SpeakRequest, SpeakResponse, TranscribeRequest, TranscribeRe
 
 pub const TRANSCRIBE_ID: &str = "provider::elevenlabs::transcribe";
 pub const TRANSCRIBE_DESC: &str =
-    "Speech to text on ElevenLabs Scribe behind router::transcribe: base64 audio in, text with \
+    "Speech to text on ElevenLabs Scribe behind llm-router::transcribe: base64 audio in, text with \
      timed segments and the detected language out.";
 
 pub const SPEAK_ID: &str = "provider::elevenlabs::speak";
 pub const SPEAK_DESC: &str =
-    "Text to speech on the ElevenLabs voices behind router::speak: text and a voice id or name \
+    "Text to speech on the ElevenLabs voices behind llm-router::speak: text and a voice id or name \
      in, base64 audio out (mp3, wav, pcm16, opus).";
 
 pub const REFRESH_MODELS_ID: &str = "provider::elevenlabs::refresh_models";
 pub const REFRESH_MODELS_DESC: &str =
     "Refresh the ElevenLabs catalog slice from GET /v1/models (text-to-speech models with their \
-     languages) plus the Scribe speech-to-text models, through router::models::reconcile.";
+     languages) plus the Scribe speech-to-text models, through llm-router::models::reconcile.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::elevenlabs::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declare with llm-router after it restarts (bound to the router::ready trigger).";
+    "Internal: re-declare with llm-router after it restarts (bound to the llm-router::ready trigger).";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

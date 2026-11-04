@@ -58,7 +58,7 @@ pub struct FunctionCallArgumentsPreview {
 }
 
 /// The frozen streaming vocabulary relayed by `llm-router`. The harness
-/// reads these frames off the `router::chat` channel to build the
+/// reads these frames off the `llm-router::chat` channel to build the
 /// assistant message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]

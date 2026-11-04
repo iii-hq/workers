@@ -771,7 +771,7 @@ pub const INVESTIGATION_ALLOW: [&str; 13] = [
 
 /// Denied outright. Deny wins over allow in the harness policy, so a function
 /// added to this worker later is refused until somebody decides otherwise.
-pub const INVESTIGATION_DENY: [&str; 20] = [
+pub const INVESTIGATION_DENY: [&str; 21] = [
     "shell::*",
     "state::*",
     "queue::*",
@@ -783,6 +783,8 @@ pub const INVESTIGATION_DENY: [&str; 20] = [
     "engine::traces::*",
     "engine::logs::*",
     "session::*",
+    "llm-router::*",
+    // Deprecated aliases of llm-router::*, still registered.
     "router::*",
     "sentinel::groups::*",
     "sentinel::investigate",

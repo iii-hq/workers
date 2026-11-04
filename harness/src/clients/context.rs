@@ -84,7 +84,7 @@ pub struct AssembleParams {
     pub previous_summary: Option<String>,
     pub lease_key: String,
     pub thinking_level: Option<ThinkingLevel>,
-    /// The `response_format` the turn sends on `router::chat`, so the
+    /// The `response_format` the turn sends on `llm-router::chat`, so the
     /// provider's count renders it where its template does.
     pub response_format: Option<Value>,
     pub tools: Vec<AgentFunction>,

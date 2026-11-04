@@ -1,7 +1,7 @@
 //! provider-elevenlabs: ElevenLabs speech behind llm-router. Speech to text
 //! with Scribe and text to speech with the Eleven voices, served as
 //! `provider::elevenlabs::transcribe` / `provider::elevenlabs::speak`
-//! behind `router::transcribe` / `router::speak`. No chat surface: the
+//! behind `llm-router::transcribe` / `llm-router::speak`. No chat surface: the
 //! provider declares only speech models, so chat routing never lands here.
 
 pub mod discovery;

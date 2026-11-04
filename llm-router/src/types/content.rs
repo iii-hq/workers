@@ -13,7 +13,7 @@ pub enum ContentBlock {
         data: String, // base64
         /// Optional link to the stored original in the session-manager
         /// attachment store. Transcript bookkeeping for lazy readers only:
-        /// the harness clears it before `router::chat`, and no provider
+        /// the harness clears it before `llm-router::chat`, and no provider
         /// mapping reads it. Tolerated here so a block that still carries it
         /// deserializes instead of failing the request; omitted on the wire
         /// when absent.
@@ -22,7 +22,7 @@ pub enum ContentBlock {
     },
     /// Reference to an original upload in the session-manager attachment
     /// store. A REFERENCE ONLY (never inline bytes); the harness strips it
-    /// before `router::chat`. Tolerated here so a stray block deserializes
+    /// before `llm-router::chat`. Tolerated here so a stray block deserializes
     /// instead of failing the request; every counter/mapping emits nothing for it.
     File {
         attachment_id: String,

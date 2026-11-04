@@ -80,7 +80,9 @@ describe('read-only model switch preview', () => {
     )
     expect(
       trigger.mock.calls.some(([id]) =>
-        ['context::compact', 'session::append', 'router::chat'].includes(id),
+        ['context::compact', 'session::append', 'llm-router::chat'].includes(
+          id,
+        ),
       ),
     ).toBe(false)
   })

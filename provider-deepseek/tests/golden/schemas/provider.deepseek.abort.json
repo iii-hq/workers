@@ -1,5 +1,5 @@
 {
-  "description": "Cancel the in-flight upstream stream for a request_id (router::abort fan-out), stopping billed generation immediately.",
+  "description": "Cancel the in-flight upstream stream for a request_id (llm-router::abort fan-out), stopping billed generation immediately.",
   "function_id": "provider::deepseek::abort",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

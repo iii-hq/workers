@@ -150,7 +150,7 @@ impl Store {
             "session::set-status" | "approval::on-session-deleted" => Ok(json!({"ok":true})),
             "approval::list-pending" => Ok(json!({"pending":[]})),
             "approval::get-settings" => Ok(json!({"source":"defaults"})),
-            "router::abort" => Ok(json!({"aborted":true})),
+            "llm-router::abort" => Ok(json!({"aborted":true})),
             "shell::kill-session-jobs" => Ok(json!({"killed":[]})),
             "context::assemble" => {
                 Err("intentional boundary stop after observing LLM input".into())
@@ -531,12 +531,12 @@ async fn cancellation_error_is_visible_retains_data_and_retry_keeps_identity() {
         let mut turn = store.state("harness_turn", "grandchild1");
         turn["stream_request_id"] = json!("stream");
         store.put("harness_turn", "grandchild1", turn);
-        store.fail.insert("router::abort".into());
+        store.fail.insert("llm-router::abort".into());
     }
     let accepted = stack.request("child2").await;
     let failed = stack.run(&accepted.operation_id).await;
     assert_eq!(failed.status, DeletionStatus::Failed);
-    assert!(failed.error.unwrap().contains("router::abort"));
+    assert!(failed.error.unwrap().contains("llm-router::abort"));
     assert_eq!(stack.store.lock().unwrap().sessions.len(), 4);
     stack.store.lock().unwrap().fail.clear();
     stack.set_status("grandchild1", "cancelled");
@@ -1572,7 +1572,7 @@ async fn ordinary_stop_persists_abort_on_router_failure_but_deletion_fails_close
             let mut row = store.state("harness_turn", "grandchild1");
             row["stream_request_id"] = json!("stream");
             store.put("harness_turn", "grandchild1", row);
-            store.codes.insert("router::abort".into(), code.into());
+            store.codes.insert("llm-router::abort".into(), code.into());
         }
         assert!(
             ordinary_stop(&stack, "grandchild1").await.stopping,
@@ -1587,7 +1587,7 @@ async fn ordinary_stop_persists_abort_on_router_failure_but_deletion_fails_close
             failed
                 .error
                 .as_deref()
-                .is_some_and(|e| e.contains("router::abort")),
+                .is_some_and(|e| e.contains("llm-router::abort")),
             "{code}: {failed:?}"
         );
         assert_eq!(stack.store.lock().unwrap().sessions.len(), 4, "{code}");

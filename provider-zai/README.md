@@ -5,7 +5,7 @@ Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::zai::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
 `provider::zai::refresh_models` (curated catalog →
-`router::models::reconcile` — Z.AI exposes no models-listing endpoint).
+`llm-router::models::reconcile` — Z.AI exposes no models-listing endpoint).
 
 Default upstream: `https://api.z.ai/api/coding/paas/v4/chat/completions` —
 the GLM Coding Plan endpoint (subscription keys, the common case). The
@@ -17,7 +17,7 @@ Override `api_url`
 to `https://api.z.ai/api/paas/v4/chat/completions` (pay-as-you-go) for the
 full GLM lineup.
 
-`provider::zai::count_tokens` counts a prompt behind `router::count_tokens`:
+`provider::zai::count_tokens` counts a prompt behind `llm-router::count_tokens`:
 the prompt GLM's chat template builds from the body `provider::zai::stream`
 sends (tool block, schemas, call markup, the effort line on glm-5.2+), encoded
 with GLM's own published vocabulary rather than a borrowed one, which matters
@@ -33,8 +33,8 @@ tokens per tool round).
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The declaration carries no models and
   `credential_env_var: ZAI_API_KEY`; the post-register refresh reconciles
   the curated catalog, gated on a configured credential (no key → empty
@@ -44,7 +44,7 @@ tokens per tool round).
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `ZAI_API_KEY` env on the router → none). Both
   `api_key` and `oauth` credential shapes are sent as `Authorization:
   Bearer`; v1 performs no OAuth refresh. Keys are endpoint-bound on Z.AI's
@@ -57,7 +57,7 @@ tokens per tool round).
   to discover them from. `refresh_models` reconciles the slice matching the
   resolved endpoint (Coding Plan subset vs full table).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** 401/403 → `auth_expired`, 429 → `rate_limited` (except
   `insufficient_quota`/code `1113`, billing walls → `permanent`),

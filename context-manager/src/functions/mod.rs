@@ -48,7 +48,7 @@ pub const COUNT_TOKENS_DESC: &str =
      prompt) vs a model.";
 
 /// Resolve model limits per the spec order: inline `limits` ->
-/// `router::models::budget` -> conservative fallback (when allowed).
+/// `llm-router::models::budget` -> conservative fallback (when allowed).
 pub(crate) async fn resolve_model(
     deps: &Deps,
     input: &ModelInput,

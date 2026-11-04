@@ -140,7 +140,7 @@ fn pipe_contract_validates_and_refuses() {
     for forbidden in [
         "configuration::get",
         "harness::send",
-        "router::chat",
+        "llm-router::chat",
         "session::append",
         "fp::pipe",
         "fp::batch",

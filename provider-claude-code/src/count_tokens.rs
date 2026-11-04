@@ -6,7 +6,7 @@
 //! Claude Code identity block first in `system`. The request is assembled with
 //! the SAME wire mappers the stream path uses, so the count matches what a
 //! real turn would send; the endpoint meters without generating, so it never
-//! runs the model and costs nothing. Exposed behind `router::count_tokens`.
+//! runs the model and costs nothing. Exposed behind `llm-router::count_tokens`.
 
 use std::time::Duration;
 

@@ -13,7 +13,7 @@ Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`
 into a router-owned channel), `provider::claude-code::refresh_models` (fetches
 and reconciles the model catalog, with a curated fallback), and
 `provider::claude-code::count_tokens` (exact prompt token counts behind
-`router::count_tokens`). For **API-key**
+`llm-router::count_tokens`). For **API-key**
 billing (teams/CI/production), use [`provider-anthropic`](../provider-anthropic/)
 instead — that provider speaks the same API with `ANTHROPIC_API_KEY`.
 
@@ -56,8 +56,8 @@ provider id `anthropic`.
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with backoff,
-  and re-declares on the `router::ready` trigger. It advertises dynamic model
+- **Registration:** self-declares via `llm-router::provider::register` with backoff,
+  and re-declares on the `llm-router::ready` trigger. It advertises dynamic model
   listing and `credential_env_var: None` (OAuth-only); identity binds via the
   `registration_token` persisted in state (scope `provider-claude-code`).
 - **Models:** attempts the authenticated `GET /v1/models` at startup, on
@@ -78,7 +78,7 @@ provider id `anthropic`.
   `authorization: Bearer`, `anthropic-version: 2023-06-01`,
   `anthropic-beta: oauth-2025-04-20`.
 - **Token counting:** `provider::claude-code::count_tokens` (behind
-  `router::count_tokens`) posts the stream body (identity block, the
+  `llm-router::count_tokens`) posts the stream body (identity block, the
   `thinking` / `output_config.effort` mapped from an optional `thinking_level`,
   the trailing-assistant drop; no `max_tokens`, `stream` or cache markers) to
   the messages endpoint's

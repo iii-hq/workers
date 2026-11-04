@@ -5,14 +5,14 @@ Sarvam model family:
 
 - **Chat**: `provider::sarvam::stream` runs `sarvam-105b`, `sarvam-30b` and
   `sarvam-m` on Sarvam's OpenAI-compatible Chat Completions API (SSE
-  streaming, tool calling, `reasoning_effort`), so `router::chat` and the
+  streaming, tool calling, `reasoning_effort`), so `llm-router::chat` and the
   harness use them like any other provider's models.
 - **Speech to text**: `provider::sarvam::transcribe` runs Saaras
   (`saaras:v3` default, `saaras:v4`, `saarika:v2.5`) behind
-  `router::transcribe`: 22 Indian languages and English, detected when no
+  `llm-router::transcribe`: 22 Indian languages and English, detected when no
   hint is given, word timings folded into sentence segments.
 - **Text to speech**: `provider::sarvam::speak` runs Bulbul (`bulbul:v3`
-  default, `bulbul:v2`) behind `router::speak`: 11 languages, 35+ speakers,
+  default, `bulbul:v2`) behind `llm-router::speak`: 11 languages, 35+ speakers,
   mp3, wav, pcm16 or opus back.
 - `provider::sarvam::count_tokens` counts prompt tokens locally: the prompt
   Sarvam's published chat template renders from the wire request, encoded
@@ -73,7 +73,7 @@ the shared `ErrorKind` taxonomy on their error frames.
 ## Configuration
 
 Nothing in this worker's own config file. The credential, `api_url` and
-`max_tokens` resolve per request through `router::provider::resolve`.
+`max_tokens` resolve per request through `llm-router::provider::resolve`.
 
 ## Tests
 

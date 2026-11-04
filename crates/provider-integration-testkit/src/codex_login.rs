@@ -580,7 +580,7 @@ async fn codex_login_persists_discovers_streams_and_logs_out() -> anyhow::Result
         loop {
             let catalog = fixture
                 .rpc(
-                    "router::models::list",
+                    "llm-router::models::list",
                     json!({ "provider": "openai-codex" }),
                 )
                 .await?;

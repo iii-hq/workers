@@ -1,5 +1,5 @@
 {
-  "description": "Speech to text on Sarvam Saaras behind router::transcribe: base64 audio in, text with timed segments and the detected language out; 22 Indian languages and English.",
+  "description": "Speech to text on Sarvam Saaras behind llm-router::transcribe: base64 audio in, text with timed segments and the detected language out; 22 Indian languages and English.",
   "function_id": "provider::sarvam::transcribe",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

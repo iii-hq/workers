@@ -11,7 +11,9 @@ describe('isRouterFunction', () => {
   it('matches the known set and rejects others', () => {
     for (const id of ROUTER_FUNCTION_IDS)
       expect(isRouterFunction(id)).toBe(true)
-    expect(isRouterFunction('router::route')).toBe(false)
+    // Calls recorded before the rename still render.
+    expect(isRouterFunction('router::models::list')).toBe(true)
+    expect(isRouterFunction('llm-router::route')).toBe(false)
     expect(isRouterFunction('workflow::status')).toBe(false)
   })
 })

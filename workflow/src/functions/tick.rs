@@ -61,17 +61,17 @@ fn normalize_functions(functions: Option<Value>) -> Option<Value> {
         Some(other) => other,
     };
     // Hard-deny the LLM-router GENERATE calls for every node. A node IS already an
-    // LLM turn (the harness runs it via router::chat internally); it must never
-    // call router::chat / router::complete AS A TOOL — a confused agent does that to
+    // LLM turn (the harness runs it via llm-router::chat internally); it must never
+    // call llm-router::chat / llm-router::complete AS A TOOL — a confused agent does that to
     // "generate" its output, guessing unregistered model ids and burning turns. The
     // harness evaluates `allow && !deny`, so this wins even over `allow:["*"]`. (We
-    // only deny the generate calls, not read-only router::models::* discovery.)
+    // only deny the generate calls, not read-only llm-router::models::* discovery.)
     if let Some(obj) = policy.as_object_mut() {
         let deny = obj
             .entry("deny")
             .or_insert_with(|| Value::Array(Vec::new()));
         if let Some(arr) = deny.as_array_mut() {
-            for id in ["router::chat", "router::complete"] {
+            for id in ["llm-router::chat", "llm-router::complete"] {
                 if !arr.iter().any(|v| v.as_str() == Some(id)) {
                     arr.push(json!(id));
                 }
@@ -707,7 +707,7 @@ mod tests {
             got,
             Some(json!({
                 "allow": ["web::fetch", "coder::read-file"],
-                "deny": ["router::chat", "router::complete"]
+                "deny": ["llm-router::chat", "llm-router::complete"]
             }))
         );
     }
@@ -717,7 +717,9 @@ mod tests {
         let got = normalize_functions(Some(json!("web::fetch")));
         assert_eq!(
             got,
-            Some(json!({ "allow": ["web::fetch"], "deny": ["router::chat", "router::complete"] }))
+            Some(
+                json!({ "allow": ["web::fetch"], "deny": ["llm-router::chat", "llm-router::complete"] })
+            )
         );
     }
 
@@ -731,7 +733,7 @@ mod tests {
             got,
             Some(json!({
                 "allow": ["web::fetch"],
-                "deny": ["router::chat", "router::complete"],
+                "deny": ["llm-router::chat", "llm-router::complete"],
                 "expose": "agent_trigger"
             }))
         );
@@ -745,8 +747,8 @@ mod tests {
         // deny wins over allow in the harness, so a node can't call it as a tool.
         let got = normalize_functions(Some(json!(["*"]))).unwrap();
         let deny = got["deny"].as_array().unwrap();
-        assert!(deny.iter().any(|v| v == "router::chat"));
-        assert!(deny.iter().any(|v| v == "router::complete"));
+        assert!(deny.iter().any(|v| v == "llm-router::chat"));
+        assert!(deny.iter().any(|v| v == "llm-router::complete"));
         assert_eq!(got["allow"], json!(["*"]));
     }
 
@@ -756,8 +758,8 @@ mod tests {
             normalize_functions(Some(json!({ "allow": ["*"], "deny": ["approval::*"] }))).unwrap();
         let deny = got["deny"].as_array().unwrap();
         assert!(deny.iter().any(|v| v == "approval::*"));
-        assert!(deny.iter().any(|v| v == "router::chat"));
-        assert!(deny.iter().any(|v| v == "router::complete"));
+        assert!(deny.iter().any(|v| v == "llm-router::chat"));
+        assert!(deny.iter().any(|v| v == "llm-router::complete"));
     }
 
     // -----------------------------------------------------------------------
@@ -873,7 +875,7 @@ mod tests {
         assert_eq!(node_functions(&node, &def), json!({ "allow": [] }));
         assert_eq!(
             normalize_functions(Some(node_functions(&node, &def))),
-            Some(json!({ "allow": [], "deny": ["router::chat", "router::complete"] }))
+            Some(json!({ "allow": [], "deny": ["llm-router::chat", "llm-router::complete"] }))
         );
     }
 

@@ -68,7 +68,7 @@ fn canonical(id: &str) -> &str {
 }
 
 /// The wire vocabulary `reasoning_effort` takes, published so
-/// `router::models::get` shows what a `thinking_level` lands on
+/// `llm-router::models::get` shows what a `thinking_level` lands on
 /// (`reasoning::reasoning_effort_for`) instead of a bare `supports_thinking`.
 fn efforts() -> Vec<ReasoningEffort> {
     [

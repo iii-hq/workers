@@ -1,4 +1,4 @@
-//! `router::provider::list` — registered providers with configured/available
+//! `llm-router::provider::list` — registered providers with configured/available
 //! status and credential diagnostics (`credential_source`, `credential_ref`,
 //! `credential_error`).
 use std::sync::Arc;

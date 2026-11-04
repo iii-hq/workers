@@ -1,5 +1,5 @@
 //! `provider::openai::count_tokens` — prompt token counting behind
-//! `router::count_tokens`. On the Responses API the count comes from OpenAI's
+//! `llm-router::count_tokens`. On the Responses API the count comes from OpenAI's
 //! own metering route, `POST …/responses/input_tokens`, fed the same body the
 //! stream sends, so images, per-item call framing, the tool preamble and the
 //! `text.format` schema are counted the way they are billed. That route never
@@ -61,7 +61,7 @@ pub struct CountTokensResponse {
     pub estimator: String,
 }
 
-/// The harness gives `router::count_tokens` 10 s
+/// The harness gives `llm-router::count_tokens` 10 s
 /// (`harness/src/clients/router.rs`), less than `post_count`'s own 20 s, so
 /// the metering call gives up first and the local estimate still arrives.
 const METERING_TIMEOUT: Duration = Duration::from_secs(5);
@@ -427,7 +427,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_hung_metering_route_falls_back_inside_the_harness_budget() {
-        // Accepts and never answers. The harness gives router::count_tokens
+        // Accepts and never answers. The harness gives llm-router::count_tokens
         // 10 s; the fallback is worthless if it lands after that.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1/responses", listener.local_addr().unwrap());

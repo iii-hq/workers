@@ -1,4 +1,4 @@
-//! Boot wiring: function surface, the router::ready rebind, and the
+//! Boot wiring: function surface, the llm-router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models};
@@ -56,7 +56,7 @@ pub fn declaration() -> ProviderDeclaration {
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-openrouter".into()),
         // The mark the console paints beside this provider's models; the
-        // router carries it verbatim in `router::provider::list`.
+        // router carries it verbatim in `llm-router::provider::list`.
         icon_svg: Some(
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg")).into(),
         ),
@@ -153,7 +153,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         surface::ABORT_ID,
         typed_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
             .description(surface::ABORT_DESC)
-            // Control-plane callback (router::abort fan-out) — hide from the
+            // Control-plane callback (llm-router::abort fan-out) — hide from the
             // agent-facing catalog like the other providers' abort functions.
             .metadata(serde_json::json!({ "internal": true })),
     );
@@ -163,7 +163,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .description(surface::REFRESH_MODELS_DESC),
     );
 
-    // Re-declare when the router restarts: bind to the router::ready trigger type.
+    // Re-declare when the router restarts: bind to the llm-router::ready trigger type.
     {
         let iii_ready = iii.clone();
         let http_ready = http.clone();
@@ -183,7 +183,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
+        "llm-router::ready",
         surface::ON_ROUTER_READY_ID,
         json!({}),
     ));

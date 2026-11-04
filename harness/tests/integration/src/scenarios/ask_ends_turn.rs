@@ -4,7 +4,7 @@
 //! call itself (the card data lands as the function result, `details.status:
 //! "awaiting_answer"`) and completes the turn WITHOUT a second model call: the
 //! user's answer arrives later as their next message. The script has exactly
-//! one generation, so a second `router::chat` is an `unexpected_call` that
+//! one generation, so a second `llm-router::chat` is an `unexpected_call` that
 //! fails the turn.
 
 use serde_json::json;

@@ -166,7 +166,7 @@ describe('namespaced browser connection', () => {
     const { sdk, triggers } = fakeSdk()
     const client = wrapSdk(sdk, BROWSER_ID)
 
-    await client.trigger('router::models::list', {})
+    await client.trigger('llm-router::models::list', {})
     await client.trigger('engine::functions::list', {})
     await client.trigger('configuration::get', {})
     await client.trigger('worker::list', {})

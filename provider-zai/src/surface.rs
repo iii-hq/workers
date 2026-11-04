@@ -19,7 +19,7 @@ pub const STREAM_DESC: &str = "Stream a Z.AI chat completion: resolve credential
 
 pub const ABORT_ID: &str = "provider::zai::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::zai::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Reconcile the curated Z.AI catalog slice through the \
@@ -31,7 +31,7 @@ pub const COUNT_TOKENS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::zai::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

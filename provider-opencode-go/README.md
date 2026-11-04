@@ -5,10 +5,10 @@ Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::opencode_go::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel),
 `provider::opencode_go::refresh_models` (live `GET /v1/models` id list
-enriched from a hardcoded curated metadata table → `router::models::reconcile`),
+enriched from a hardcoded curated metadata table → `llm-router::models::reconcile`),
 `provider::opencode_go::count_tokens` (local prompt-token count with each
 model family's own vocabulary,
-the same surface the other providers expose behind `router::count_tokens`),
+the same surface the other providers expose behind `llm-router::count_tokens`),
 and `provider::opencode_go::abort` (cancels an in-flight upstream request).
 There is no embedding surface — the OpenCode Go API is Chat Completions only.
 
@@ -20,8 +20,8 @@ configuration entry (`providers.opencode_go.api_key`, default endpoint
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The model slice is populated from live discovery and the declaration
   carries `credential_env_var: OPENCODE_GO_API_KEY`.
 - **Transport:** the upstream endpoint is
@@ -32,11 +32,11 @@ configuration entry (`providers.opencode_go.api_key`, default endpoint
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `OPENCODE_GO_API_KEY` env on the router → none). The key
   is sent as `Authorization: Bearer`.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** 401/403 → `auth_expired`, 429 → `rate_limited`,
   `context_length_exceeded` → `context_overflow`, 5xx/network → `transient`,

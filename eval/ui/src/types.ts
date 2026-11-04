@@ -855,7 +855,7 @@ export interface CompletedEvent {
   timestamp: number
 }
 
-/** One `router::models::list` row. */
+/** One `llm-router::models::list` row. */
 export interface CatalogModel {
   id: string
   provider: string

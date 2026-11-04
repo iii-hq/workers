@@ -132,9 +132,9 @@ async fn models(args: ModelsArgs) -> Result<()> {
             "connected iii stack does not expose harness::send; verify --url points to the Harness stack"
         );
     }
-    if !context.function_exists("router::models::list").await? {
+    if !context.function_exists("llm-router::models::list").await? {
         bail!(
-            "connected Harness stack does not expose router::models::list; start its llm-router before loading models"
+            "connected Harness stack does not expose llm-router::models::list; start its llm-router before loading models"
         );
     }
     let result = catalog::list(&context, args.provider.as_deref()).await;

@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the `router::*` functions.
+//! Wire-schema snapshots for the `llm-router::*` functions.
 //!
 //! `llm_router::surface::catalog()` is the single source of truth for each
 //! function's id, registration description, and schemars-derived
@@ -40,26 +40,26 @@ fn catalog_lists_all_functions_in_registration_order() {
     assert_eq!(
         ids,
         vec![
-            "router::chat",
-            "router::complete",
-            "router::abort",
-            "router::embed",
-            "router::transcribe",
-            "router::speak",
-            "router::count_tokens",
-            "router::models::list",
-            "router::models::get",
-            "router::models::budget",
-            "router::models::supports",
-            "router::provider::list",
-            "router::route",
-            "router::provider::register",
-            "router::provider::resolve",
-            "router::provider::update_credential",
-            "router::models::reconcile",
-            "router::on_config_changed",
-            "router::on_functions_changed",
-            "router::on_secret_changed",
+            "llm-router::chat",
+            "llm-router::complete",
+            "llm-router::abort",
+            "llm-router::embed",
+            "llm-router::transcribe",
+            "llm-router::speak",
+            "llm-router::count_tokens",
+            "llm-router::models::list",
+            "llm-router::models::get",
+            "llm-router::models::budget",
+            "llm-router::models::supports",
+            "llm-router::provider::list",
+            "llm-router::route",
+            "llm-router::provider::register",
+            "llm-router::provider::resolve",
+            "llm-router::provider::update_credential",
+            "llm-router::models::reconcile",
+            "llm-router::on_config_changed",
+            "llm-router::on_functions_changed",
+            "llm-router::on_secret_changed",
         ]
     );
 }

@@ -67,18 +67,18 @@ const catalog = {
   ],
 }
 
-/* ---------------- router::models::list ---------------- */
+/* ---------------- llm-router::models::list ---------------- */
 
 export const routerModelsList = base(
   'router-models-ok',
-  'router::models::list',
+  'llm-router::models::list',
   {},
   wrapHarness(catalog),
 )
 
 export const routerModelsListFiltered = base(
   'router-models-filtered',
-  'router::models::list',
+  'llm-router::models::list',
   { provider: 'anthropic', capability: 'vision' },
   wrapHarness({
     models: catalog.models.filter((m) => m.provider === 'anthropic'),
@@ -87,7 +87,7 @@ export const routerModelsListFiltered = base(
 
 export const routerModelsListRunning = base(
   'router-models-running',
-  'router::models::list',
+  'llm-router::models::list',
   {},
   undefined,
   { running: true },
@@ -95,7 +95,7 @@ export const routerModelsListRunning = base(
 
 export const routerModelsListEmpty = base(
   'router-models-empty',
-  'router::models::list',
+  'llm-router::models::list',
   { provider: 'cohere' },
   wrapHarness({ models: [] }),
 )

@@ -205,7 +205,7 @@ value calls `secrets::resolve`.
 secret's consumers. The router caches the value, binds `secrets::changed` to
 refetch it and refresh that provider's model list (an edit to `.env` included),
 and reports `credential_source: "secret"` with `credential_ref` (and
-`credential_error` when it cannot resolve) in `router::provider::list`.
+`credential_error` when it cannot resolve) in `llm-router::provider::list`.
 Other workers can adopt the same pattern, for example `judge-typesafe` with
 `secret://TYPESAFE_API_KEY` (it reads `secret://` references only for now).
 

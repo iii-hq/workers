@@ -295,7 +295,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         })
         .description(
             "Internal: harness turn-completed handler — enqueues one durable extraction job \
-             (a single router::complete call) for the finished turn; inline fallback without \
+             (a single llm-router::complete call) for the finished turn; inline fallback without \
              a queue.",
         )
         .metadata(json!({ "internal": true })),

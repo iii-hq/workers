@@ -168,7 +168,7 @@ fn validate_config(config: &SuiteRunConfig) -> Result<()> {
 async fn resolve_model(context: &E2eContext, model: &str, provider: &str) -> Result<Model> {
     let response = context
         .trigger_value(
-            "router::models::get",
+            "llm-router::models::get",
             json!({ "id": model, "provider": provider }),
         )
         .await
@@ -180,7 +180,7 @@ async fn resolve_model(context: &E2eContext, model: &str, provider: &str) -> Res
         response
             .get("model")
             .cloned()
-            .context("router::models::get response is missing model")?,
+            .context("llm-router::models::get response is missing model")?,
     )
     .context("decode router catalog model")?;
     if resolved.id != model || resolved.provider != provider {

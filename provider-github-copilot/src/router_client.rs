@@ -18,7 +18,7 @@ async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Valu
     .await
 }
 
-/// `router::provider::resolve` — credential + effective settings.
+/// `llm-router::provider::resolve` — credential + effective settings.
 pub async fn resolve(
     iii: &IIIClient,
     token: Option<&str>,
@@ -27,7 +27,7 @@ pub async fn resolve(
     if let Some(t) = token {
         payload["token"] = json!(t);
     }
-    let raw = call(iii, "router::provider::resolve", payload).await?;
+    let raw = call(iii, "llm-router::provider::resolve", payload).await?;
     let resp: ProviderResolveResponse = serde_json::from_value(raw).map_err(|e| Error::Remote {
         code: "provider/bad_resolve_response".into(),
         message: e.to_string(),
@@ -46,7 +46,7 @@ pub async fn resolve(
 /// refresh) would drop one of the two results.
 static CATALOG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// `router::models::reconcile` under the catalog lock — use this for every
+/// `llm-router::models::reconcile` under the catalog lock — use this for every
 /// caller that computes a slice and then writes it.
 pub async fn reconcile_exclusive(
     iii: &IIIClient,
@@ -57,7 +57,7 @@ pub async fn reconcile_exclusive(
     reconcile(iii, models, token).await
 }
 
-/// `router::models::reconcile` — replace this provider's catalog slice.
+/// `llm-router::models::reconcile` — replace this provider's catalog slice.
 pub async fn reconcile(
     iii: &IIIClient,
     models: Vec<Model>,
@@ -70,7 +70,7 @@ pub async fn reconcile(
     if let Some(t) = token {
         payload["token"] = json!(t);
     }
-    call(iii, "router::models::reconcile", payload).await?;
+    call(iii, "llm-router::models::reconcile", payload).await?;
     Ok(())
 }
 
@@ -88,7 +88,7 @@ pub async fn prune_model(iii: &IIIClient, model_id: &str, token: Option<&str>) {
     let _guard = CATALOG_LOCK.lock().await;
     let Ok(raw) = call(
         iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": PROVIDER_ID }),
     )
     .await
@@ -111,11 +111,11 @@ pub async fn prune_model(iii: &IIIClient, model_id: &str, token: Option<&str>) {
     }
 }
 
-/// `router::models::get` — authoritative catalog record (None when absent).
+/// `llm-router::models::get` — authoritative catalog record (None when absent).
 pub async fn models_get(iii: &IIIClient, model_id: &str) -> Option<Model> {
     let raw = call(
         iii,
-        "router::models::get",
+        "llm-router::models::get",
         json!({ "provider": PROVIDER_ID, "id": model_id }),
     )
     .await
@@ -123,7 +123,7 @@ pub async fn models_get(iii: &IIIClient, model_id: &str) -> Option<Model> {
     serde_json::from_value(raw.get("model")?.clone()).ok()
 }
 
-/// `router::provider::register` — returns the registration token to persist.
+/// `llm-router::provider::register` — returns the registration token to persist.
 pub async fn register(iii: &IIIClient, declaration: Value) -> Result<Value, Error> {
-    call(iii, "router::provider::register", declaration).await
+    call(iii, "llm-router::provider::register", declaration).await
 }

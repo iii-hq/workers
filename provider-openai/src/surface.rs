@@ -20,7 +20,7 @@ pub const STREAM_DESC: &str =
 
 pub const ABORT_ID: &str = "provider::openai::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::openai::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Refresh the OpenAI catalog slice from GET /v1/models and \
@@ -28,7 +28,7 @@ pub const REFRESH_MODELS_DESC: &str = "Refresh the OpenAI catalog slice from GET
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openai::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 pub const EMBED_ID: &str = "provider::openai::embed";
 pub const EMBED_DESC: &str =

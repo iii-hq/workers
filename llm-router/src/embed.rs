@@ -1,4 +1,4 @@
-//! `router::embed` — one front door for text embeddings, mirroring the
+//! `llm-router::embed` — one front door for text embeddings, mirroring the
 //! chat surface's shape: callers name a provider or let the router pick
 //! one from its own provider registry. Providers implement
 //! `provider::<id>::embed` (batch in, one vector per input, order
@@ -176,7 +176,7 @@ pub fn make_embed(
 
 /// Embed-only providers: a live `provider::<id>::embed` whose id never
 /// declared itself to the router. A worker that serves embeddings and no
-/// chat (iii-directory's local MiniLM) stays out of `router::provider::list`
+/// chat (iii-directory's local MiniLM) stays out of `llm-router::provider::list`
 /// this way, so model pickers never show it as a provider without models.
 /// Alphabetical; empty when the engine cannot list functions. An error
 /// when a provider whose vectors callers may hold is not serving right

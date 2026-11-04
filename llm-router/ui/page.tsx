@@ -12,7 +12,7 @@ import type { ConfigFormProps, Host, SecretKeyFieldProps } from '@iii-dev/consol
 import { type ComponentType, useEffect, useState } from 'react'
 import { LlmRouterConfigForm, type ProviderCredential } from './src/configuration'
 
-/** `router::provider::list` as the form needs it: each provider's key variable and status. */
+/** `llm-router::provider::list` as the form needs it: each provider's key variable and status. */
 export function credentialsFromProviderList(response: unknown): Map<string, ProviderCredential> {
   const rows = (response as { providers?: unknown } | null)?.providers
   const out = new Map<string, ProviderCredential>()
@@ -40,7 +40,7 @@ function RouterConfigForm({
   useEffect(() => {
     let cancelled = false
     void host.iii
-      .trigger('router::provider::list', {})
+      .trigger('llm-router::provider::list', {})
       .then((response) => {
         if (!cancelled) setCredentials(credentialsFromProviderList(response))
       })

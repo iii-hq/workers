@@ -2,21 +2,24 @@ import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionTriggerMessage } from '@/types/chat'
 import { ModelsListView } from './ModelsListView'
-import { isRouterFunction, unwrapEnvelope } from './parsers'
+import { canonicalRouterId, isRouterFunction, unwrapEnvelope } from './parsers'
 
-/* The known router::* set lives in parsers.ts (ROUTER_FUNCTION_IDS) so the
+/* The known llm-router::* set lives in parsers.ts (ROUTER_FUNCTION_IDS) so the
    dispatcher and schemas share one source of truth. */
 export { isRouterFunction, ROUTER_FUNCTION_IDS } from './parsers'
 
 /** Branded function-id label, mirroring the other namespace modules. */
 export function RouterFunctionIdLabel({ functionId }: { functionId: string }) {
-  if (!functionId.startsWith('router::')) {
+  const prefix = ['llm-router::', 'router::'].find((p) =>
+    functionId.startsWith(p),
+  )
+  if (!prefix) {
     return <span className="text-ink">{functionId}</span>
   }
-  const tail = functionId.slice('router::'.length)
+  const tail = functionId.slice(prefix.length)
   return (
     <>
-      <span className="text-ink-faint">router::</span>
+      <span className="text-ink-faint">{prefix}</span>
       <span className="text-ink font-medium">{tail}</span>
     </>
   )
@@ -39,8 +42,8 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
     return <SandboxErrorView display={errorDisplay} />
   }
 
-  switch (message.functionId) {
-    case 'router::models::list':
+  switch (canonicalRouterId(message.functionId)) {
+    case 'llm-router::models::list':
       return <ModelsListView input={input} output={output} running={running} />
     default:
       return null

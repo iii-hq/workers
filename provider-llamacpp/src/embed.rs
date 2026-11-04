@@ -1,7 +1,7 @@
 //! `provider::llamacpp::embed` — batch text embeddings against the
 //! configured llama-server, which exposes an OpenAI-compatible
 //! `/v1/embeddings` when started with `--embeddings` and an
-//! embedding-capable GGUF. Consumers (llm-router's `router::embed`, and
+//! embedding-capable GGUF. Consumers (llm-router's `llm-router::embed`, and
 //! through it the memory worker's semantic recall) treat this as the
 //! provider protocol's embedding surface. Fully local: no cloud, no
 //! credential unless the server was started with `--api-key`.

@@ -1,4 +1,4 @@
-//! The `router::models::list` / `get` / `supports` iii functions.
+//! The `llm-router::models::list` / `get` / `supports` iii functions.
 //!
 //! Engine-backed coverage: tests/integration.rs (reconcile, restart restore).
 use std::sync::Arc;
@@ -79,7 +79,7 @@ pub fn make_models_budget(
             };
             let config = snapshot(&config);
             // The model is known here, so an uncapped router resolves to the
-            // model's own ceiling: that is both what `router::chat` forwards
+            // model's own ceiling: that is both what `llm-router::chat` forwards
             // and what context assembly must reserve for output.
             let effective_max_output_tokens = resolve_max_output_tokens(
                 req.max_output_tokens,

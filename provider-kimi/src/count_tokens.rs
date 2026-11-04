@@ -7,7 +7,7 @@
 //! route, not a child, so it is derived by replacing the last path segment of
 //! the configured `api_url` — which keeps proxies and gateways serving both.
 //!
-//! Exposed behind `router::count_tokens`.
+//! Exposed behind `llm-router::count_tokens`.
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
@@ -83,7 +83,7 @@ pub async fn handle(
     let token = state::load_token(iii).await;
     let resolved = router_client::resolve(iii, token.as_deref())
         .await
-        .map_err(|e| Error::Handler(format!("router::provider::resolve failed: {e}")))?;
+        .map_err(|e| Error::Handler(format!("llm-router::provider::resolve failed: {e}")))?;
     let cfg = config_from_resolve(&req.model, None, &resolved)
         .map_err(|_| Error::Handler("provider/not_configured: no usable credential".into()))?;
 

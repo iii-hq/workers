@@ -16,7 +16,7 @@
 //! billed as prompt tokens too. Counting the text alone left a request with
 //! one small tool at 35 tokens for a bill of 145.
 //!
-//! Exposed behind `router::count_tokens`.
+//! Exposed behind `llm-router::count_tokens`.
 
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::vocabulary_count::{

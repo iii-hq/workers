@@ -1,4 +1,4 @@
-//! Post-turn memory extraction: one `router::complete` call per completed
+//! Post-turn memory extraction: one `llm-router::complete` call per completed
 //! turn (one per run of a long span, [`chunks`]), off the hot path (spawned
 //! from the `harness::turn-completed` handler, never inside a turn).
 //!
@@ -1923,13 +1923,13 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     }
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "router::models::list".into(),
+            function_id: "llm-router::models::list".into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(5_000),
         })
         .await
-        .map_err(|e| format!("router::models::list: {e}"))?;
+        .map_err(|e| format!("llm-router::models::list: {e}"))?;
     let first = reply
         .get("models")
         .and_then(Value::as_array)
@@ -2022,7 +2022,7 @@ async fn extract_items(
 ) -> Result<Vec<ExtractedItem>, String> {
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "router::complete".into(),
+            function_id: "llm-router::complete".into(),
             payload: json!({
                 "model": model,
                 "system_prompt": system_prompt(repository, agents, instructions, max_memories),
@@ -2037,7 +2037,7 @@ async fn extract_items(
             timeout_ms: Some(timeout_ms),
         })
         .await
-        .map_err(|e| format!("router::complete: {e}"))?;
+        .map_err(|e| format!("llm-router::complete: {e}"))?;
     reply_items(&reply, session_id)
 }
 
@@ -2063,7 +2063,7 @@ fn system_prompt(
     )
 }
 
-/// The items of a `router::complete` reply. A provider failure (rate limit,
+/// The items of an `llm-router::complete` reply. A provider failure (rate limit,
 /// expired auth, overload) comes back as Ok with the error text as content:
 /// read as "nothing to save", it would advance the cursor past the turn, so
 /// it is an error and the queue retries. So is a reply cut before any whole
@@ -2072,7 +2072,7 @@ fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, St
     let message = &reply["message"];
     if message["stop_reason"] == "error" {
         return Err(format!(
-            "router::complete: provider error {}: {}",
+            "llm-router::complete: provider error {}: {}",
             message["error_kind"].as_str().unwrap_or("unknown"),
             message["error_message"].as_str().unwrap_or("")
         ));
@@ -2080,7 +2080,7 @@ fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, St
     let items = parse_items(&content_text(message.get("content")))?;
     if message["stop_reason"] == "length" {
         if items.is_empty() {
-            return Err("router::complete: reply hit max_output_tokens before any item".into());
+            return Err("llm-router::complete: reply hit max_output_tokens before any item".into());
         }
         tracing::warn!(
             session_id,
@@ -3807,12 +3807,12 @@ mod tests {
     #[test]
     fn a_success_ends_the_failure_streak() {
         let mut health = PassHealth::default();
-        health.record(&Err("router::complete: timeout".into()));
-        health.record(&Err("router::complete: timeout".into()));
+        health.record(&Err("llm-router::complete: timeout".into()));
+        health.record(&Err("llm-router::complete: timeout".into()));
         assert_eq!(health.failed_in_a_row, 2);
         assert_eq!(
             health.last_error.as_deref(),
-            Some("router::complete: timeout")
+            Some("llm-router::complete: timeout")
         );
         health.record(&Ok(true));
         assert_eq!(
@@ -3828,7 +3828,7 @@ mod tests {
     #[test]
     fn a_pass_that_never_asks_the_model_keeps_the_failure_streak() {
         let mut health = PassHealth::default();
-        health.record(&Err("router::complete: no provider".into()));
+        health.record(&Err("llm-router::complete: no provider".into()));
         // An automation session's turn, or a span under 20 characters.
         health.record(&Ok(false));
         assert_eq!(
@@ -3836,7 +3836,7 @@ mod tests {
             PassHealth {
                 passes: 1,
                 failed_in_a_row: 1,
-                last_error: Some("router::complete: no provider".into()),
+                last_error: Some("llm-router::complete: no provider".into()),
             }
         );
     }

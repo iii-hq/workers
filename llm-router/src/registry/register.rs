@@ -1,4 +1,4 @@
-//! The `router::provider::register` iii function (spec § register,
+//! The `llm-router::provider::register` iii function (spec § register,
 //! § Registration lifecycle): validate → token-gated prepare → entry-schema
 //! re-compose → durable static models → registry commit → publish + emits.
 //! The entry write lock spans that transaction so concurrent provider boots

@@ -356,8 +356,8 @@ wait_for_functions() {
     "queue::define",
     "session::messages",
     "context::assemble",
-    "router::models::get",
-    "router::provider::list",
+    "llm-router::models::get",
+    "llm-router::provider::list",
     "shell::exec",
     "console::status"
   ]'
@@ -387,9 +387,9 @@ wait_for_functions() {
 wait_for_providers() {
   local response attempt
   log "Waiting for Anthropic and OpenAI provider configuration (up to ${wait_seconds}s)"
-  log_command "iii trigger router::provider::list --port $engine_port --json '{}'"
+  log_command "iii trigger llm-router::provider::list --port $engine_port --json '{}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger router::provider::list --port "$engine_port" \
+    response=$("$iii_bin" trigger llm-router::provider::list --port "$engine_port" \
       --json '{}' 2>>"$log_dir/provider-discovery.log" || true)
     if jq -e '.providers | type == "array"' <<<"$response" >/dev/null 2>&1; then
       printf '%s\n' "$response" >"$artifact_dir/provider-status.json"
@@ -416,9 +416,9 @@ wait_for_model() {
   local provider_id=$1 model_id=$2 output_path=$3
   local response attempt
   log "Waiting for $provider_id/$model_id in the router catalog (up to ${wait_seconds}s)"
-  log_command "iii trigger router::models::get --port $engine_port --json '{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}'"
+  log_command "iii trigger llm-router::models::get --port $engine_port --json '{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger router::models::get --port "$engine_port" \
+    response=$("$iii_bin" trigger llm-router::models::get --port "$engine_port" \
       --json "{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}" \
       2>>"$log_dir/model-discovery.log" || true)
     if jq -e --arg provider "$provider_id" --arg model "$model_id" \
@@ -432,7 +432,7 @@ wait_for_model() {
     fi
     sleep 1
   done
-  "$iii_bin" trigger router::models::list --port "$engine_port" --json '{}' \
+  "$iii_bin" trigger llm-router::models::list --port "$engine_port" --json '{}' \
     >"$artifact_dir/model-catalog.json" 2>>"$log_dir/model-discovery.log" || true
   die "$provider_id/$model_id did not appear in the router catalog"
 }

@@ -89,7 +89,7 @@ interface ProviderList {
 export async function resolveQuickEditModel(host: Host, conversationId: string | null | undefined): Promise<string> {
   const chosen = host.chat?.composerModel?.(conversationId ?? null)
   if (chosen) return chosen
-  const list = await host.iii.trigger<ProviderList>('router::provider::list', {}, { timeoutMs: PROVIDER_LIST_TIMEOUT_MS })
+  const list = await host.iii.trigger<ProviderList>('llm-router::provider::list', {}, { timeoutMs: PROVIDER_LIST_TIMEOUT_MS })
   const provider = list.providers?.find((p) => p.configured && p.available && p.id && p.default_model)
   if (!provider?.id || !provider.default_model) {
     throw new Error('No model is configured. Add a provider key in Settings, or pick a model in chat.')
@@ -105,7 +105,7 @@ interface CompleteReply {
   }
 }
 
-/** The text blocks of a `router::complete` answer, joined. */
+/** The text blocks of an `llm-router::complete` answer, joined. */
 export function replyText(reply: CompleteReply): string {
   const content = reply.message?.content
   if (typeof content === 'string') return content
@@ -132,7 +132,7 @@ export async function runQuickEdit(
   const original = request.scope === 'file' ? request.value : request.selection.text
   const { provider, model: modelId } = splitModel(model)
   const call = host.iii.trigger<CompleteReply>(
-    'router::complete',
+    'llm-router::complete',
     {
       model: modelId,
       ...(provider ? { provider } : {}),

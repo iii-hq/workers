@@ -73,7 +73,7 @@ async fn run_stream(
                 sink,
                 &synthetic_error(
                     &model,
-                    format!("router::provider::resolve failed: {error}"),
+                    format!("llm-router::provider::resolve failed: {error}"),
                     kind,
                 ),
             );

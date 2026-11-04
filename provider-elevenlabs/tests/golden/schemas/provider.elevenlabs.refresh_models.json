@@ -1,5 +1,5 @@
 {
-  "description": "Refresh the ElevenLabs catalog slice from GET /v1/models (text-to-speech models with their languages) plus the Scribe speech-to-text models, through router::models::reconcile.",
+  "description": "Refresh the ElevenLabs catalog slice from GET /v1/models (text-to-speech models with their languages) plus the Scribe speech-to-text models, through llm-router::models::reconcile.",
   "function_id": "provider::elevenlabs::refresh_models",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

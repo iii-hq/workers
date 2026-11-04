@@ -9,7 +9,7 @@
  * and re-attach to the hidden span's parent (the nearest visible ancestor),
  * so the hierarchy stays connected: hiding the `harness::turn` dispatch
  * wrappers leaves the turn's step span parented under `harness::send`;
- * hiding `context::assemble` leaves its `router::models::get` child in
+ * hiding `context::assemble` leaves its `llm-router::models::get` child in
  * place. Work caused by a hidden span is still real work — a hide is a
  * de-noise, not a subtree collapse. Chains of plumbing hide together
  * anyway when each span matches on its own (baggage smears `iii.tag.hidden`

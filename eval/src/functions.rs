@@ -45,7 +45,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         .description(
             "Choose the Harness model/provider the session monitor uses for investigations and \
              enable or pause automatic observation. A new selection is checked against \
-             router::models::list; credentials stay in the providers and are never accepted \
+             llm-router::models::list; credentials stay in the providers and are never accepted \
              here. An optional code_repository (an absolute directory on this host, normally \
              the iii workers repository) lets the investigation read that code like a chat \
              with the directory selected, with only read-only functions allowed (coder::search, \

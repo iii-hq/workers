@@ -101,7 +101,7 @@ pub fn effective_model_ref<'a>(
 async fn lookup(store: &CatalogStore, provider: Option<&str>, id: &str) -> Option<Model> {
     match provider {
         Some(p) => store.get(p, id).await,
-        // Provider-less lookup: `router::chat` resolves these via routing, but
+        // Provider-less lookup: `llm-router::chat` resolves these via routing, but
         // metadata consumers (context-manager budgets a turn's context window
         // through models::get) often only know the model id — e.g. a react
         // spec carries no provider. Without this they silently fell to the

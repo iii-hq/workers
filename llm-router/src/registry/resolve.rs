@@ -1,4 +1,4 @@
-//! The `router::provider::resolve` and `router::provider::update_credential`
+//! The `llm-router::provider::resolve` and `llm-router::provider::update_credential`
 //! iii functions. Credential precedence: stored slice (`credential` object →
 //! literal `api_key` → `secret://NAME` or `env://NAME` reference, resolved
 //! through the `secrets` worker) → declared env var → none. A reference that does not
@@ -100,7 +100,7 @@ pub async fn ensure_provider_secret(
 }
 
 /// `Some(reason)` when `provider`'s slice holds a reference that does not
-/// resolve — what `router::chat` reports instead of dispatching to
+/// resolve — what `llm-router::chat` reports instead of dispatching to
 /// a provider that would only say "not configured".
 pub async fn unresolved_reference(
     config: &ConfigSnapshot,

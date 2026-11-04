@@ -21,9 +21,9 @@ pub struct ModelBudget {
     pub effective_max_output_tokens: u64,
 }
 
-/// The turn's `router::chat` knobs that change the prompt a provider bills
+/// The turn's `llm-router::chat` knobs that change the prompt a provider bills
 /// (a reasoning-effort line, a chat vs thinking template, a rendered
-/// response format), forwarded to `router::count_tokens` as sent.
+/// response format), forwarded to `llm-router::count_tokens` as sent.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TurnKnobs<'a> {
     pub thinking_level: Option<ThinkingLevel>,
@@ -43,7 +43,7 @@ pub trait ModelResolver: Send + Sync {
     ) -> Result<Option<ModelBudget>, String>;
 
     /// The prompt tokens the model's provider counts for this request
-    /// (`router::count_tokens`). `Err` when nothing can count it; callers
+    /// (`llm-router::count_tokens`). `Err` when nothing can count it; callers
     /// keep their own estimate. No default: a decorator that forgot to
     /// forward it silently kept the estimate in production.
     async fn count_prompt_tokens(
@@ -77,7 +77,7 @@ pub struct SummarizeRequest {
 /// Why a summariser call produced no summary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SummarizeError {
-    /// `llm-router` is not installed / `router::chat` is not routable.
+    /// `llm-router` is not installed / `llm-router::chat` is not routable.
     /// Compaction is unavailable; `context::compact` maps this to
     /// `status: "overflow"` with a permanent error_kind in the log.
     #[error("summariser unavailable: {0}")]

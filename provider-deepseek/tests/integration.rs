@@ -127,7 +127,7 @@ async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router_iii, "router::provider::list", json!({}))
+        let list = call(&router_iii, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let registered = list["providers"]
@@ -174,7 +174,7 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
     loop {
         let list = call(
             router_iii,
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "provider": "deepseek" }),
         )
         .await
@@ -217,7 +217,7 @@ async fn provider_registers_with_persisted_token_and_credential_gated_catalog() 
     assert_eq!(res["count"], 0, "no key → empty reconcile: {res}");
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "deepseek" }),
     )
     .await
@@ -267,7 +267,7 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "deepseek-v4-pro",
@@ -317,7 +317,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "deepseek-v4-pro",
@@ -352,7 +352,7 @@ async fn refresh_models_discovers_the_live_catalog() {
 
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "deepseek" }),
     )
     .await
@@ -419,7 +419,7 @@ async fn provider_redeclares_on_router_ready() {
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
 
     // simulate a router restart that LOST its registry: wipe the persisted
-    // record so only a real re-declare (router::ready → on_router_ready →
+    // record so only a real re-declare (llm-router::ready → on_router_ready →
     // declare_and_refresh) can bring the provider back — a durable-registry
     // restore alone must not satisfy this test.
     router_iii.shutdown();
@@ -436,10 +436,10 @@ async fn provider_redeclares_on_router_ready() {
         .await
         .expect("router reboots");
 
-    // router::ready trigger → provider re-declares with its persisted token
+    // llm-router::ready trigger → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router2, "router::provider::list", json!({}))
+        let list = call(&router2, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let listed = list["providers"]

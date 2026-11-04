@@ -1,6 +1,6 @@
 //! `harness::stop` — request cancellation of an in-flight turn (harness.md §
 //! `harness::stop`). Sets the abort flag the next step observes and aborts an
-//! in-flight stream via `router::abort`. The cascade to spawned children
+//! in-flight stream via `llm-router::abort`. The cascade to spawned children
 //! layers on with sub-agents.
 
 use schemars::JsonSchema;
@@ -82,7 +82,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
 /// Background jobs (`shell::exec_bg`) outlive the turn that started them, and
 /// idle or parked members are exactly the ones waiting on one, so reap the
 /// whole tree's jobs here rather than in `stop_one`. Best effort, like
-/// `router::abort`: the stop is already persisted, and the shell worker may
+/// `llm-router::abort`: the stop is already persisted, and the shell worker may
 /// not be deployed.
 // ponytail: an exec_bg dispatch already in flight when the stop lands can
 // register its job after this sweep (MOT-3682 territory); wait on the
@@ -125,7 +125,7 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
 
     // Lock-free pre-read: discover the in-flight stream + spawned children and
     // fast-out for a missing/mismatched/terminal turn. This drives the prompt,
-    // lock-free part of cancellation (child cascade + router::abort) so
+    // lock-free part of cancellation (child cascade + llm-router::abort) so
     // generation is interrupted immediately, even while the running step holds
     // the per-session lock across in-flight tool execution. The authoritative
     // abort write happens under the lock below.
@@ -156,7 +156,7 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     let target_turn = record.turn_id.clone();
 
     // In-process cancel signal, fired lock-free BEFORE anything that awaits:
-    // it cuts the in-flight `router.chat` await (backstop when router::abort
+    // it cuts the in-flight `router.chat` await (backstop when llm-router::abort
     // is a no-op) and is observed between tool executions, where the durable
     // flag write below is blocked on the session lock.
     deps.cancels.fire(&target_turn);
@@ -171,17 +171,17 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         if let Err(error) = deps
             .iii
             .trigger(iii_sdk::protocol::TriggerRequest {
-                function_id: "router::abort".into(),
+                function_id: "llm-router::abort".into(),
                 payload: serde_json::json!({"request_id": request_id}),
                 action: None,
                 timeout_ms: Some(cfg.session_timeout_ms),
             })
             .await
         {
-            tracing::warn!(request_id, %error, "router::abort failed");
+            tracing::warn!(request_id, %error, "llm-router::abort failed");
             outcome
                 .unconfirmed
-                .push(format!("router::abort {request_id}: {error}"));
+                .push(format!("llm-router::abort {request_id}: {error}"));
         }
     }
 

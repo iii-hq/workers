@@ -67,7 +67,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_result_bytes")]
     pub max_result_bytes: usize,
 
-    /// Send the system prompt to `router::chat` as `system_sections` (the
+    /// Send the system prompt to `llm-router::chat` as `system_sections` (the
     /// frozen profile/identity prefix, then the per-session context) plus a
     /// `cache_intent` digest, so cache-aware providers can route every session
     /// on the same profile to one prefix entry — where the provider supports it
@@ -105,7 +105,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_context_timeout_ms")]
     pub context_timeout_ms: u64,
 
-    /// Outer budget for one `router::chat` stream. Milliseconds.
+    /// Outer budget for one `llm-router::chat` stream. Milliseconds.
     #[serde(default = "default_router_timeout_ms")]
     pub router_timeout_ms: u64,
 
@@ -323,7 +323,7 @@ fn default_context_timeout_ms() -> u64 {
 }
 fn default_router_timeout_ms() -> u64 {
     // ≥ llm-router's 600s stream budget plus its ack margin: the held-open
-    // router::chat trigger must outlive the longest single provider stream.
+    // llm-router::chat trigger must outlive the longest single provider stream.
     620_000
 }
 fn default_dispatch_timeout_ms() -> u64 {

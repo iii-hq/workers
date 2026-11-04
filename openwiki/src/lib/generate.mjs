@@ -106,7 +106,7 @@ async function planWikiLLM(worker, { inventory, repoName, repoUrl, repoDir, mode
     keyDocs;
 
   const res = await worker.trigger({
-    function_id: 'router::complete',
+    function_id: 'llm-router::complete',
     payload: {
       model,
       system_prompt: PLAN_SYSTEM,
@@ -202,7 +202,7 @@ async function generatePageLLM(
     sourceBlocks;
 
   const res = await worker.trigger({
-    function_id: 'router::complete',
+    function_id: 'llm-router::complete',
     payload: {
       model,
       system_prompt: PAGE_SYSTEM,

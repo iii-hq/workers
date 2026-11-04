@@ -56,7 +56,7 @@ flowchart LR
     ports["ports: ModelResolver · Summarizer · LeaseStore · Clock"]
   end
   subgraph deps [Soft dependency]
-    router["llm-router: router::models::budget, router::chat"]
+    router["llm-router: llm-router::models::budget, llm-router::chat"]
   end
   leases[("lease_dir: one file per lease")]
   cfg["configuration worker: schema + value"]
@@ -73,7 +73,7 @@ flowchart LR
 
 | Term | Meaning |
 |---|---|
-| **Model-ready context** | The output of `context::assemble`: a `system_prompt` string plus an ordered `AgentMessage[]` that fits the model's `usable` budget, ready to hand to `router::chat`. |
+| **Model-ready context** | The output of `context::assemble`: a `system_prompt` string plus an ordered `AgentMessage[]` that fits the model's `usable` budget, ready to hand to `llm-router::chat`. |
 | **`usable` budget** | The token ceiling one call may fill: `max(0, (input_limit ?? context_window - max_output_tokens) - reserved - thinking_budget)`. Model-adaptive, not a flat constant. |
 | **`reserved`** | Headroom held back from the input budget for response framing; defaults to `min(20000, 10% of context_window)`, overridable per call. |
 | **Cap** | The unconditional safety ceiling: any message-level or inline function result over `max_result_tokens` tokens, including the fixed image allowance (default 20000; 0 disables it), is rewritten to a `[…result capped: was ~N tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted middle is needed]` head+marker+tail view. No exemptions except a `details` payload carrying `"status": "denied"`, which keeps its details. |
@@ -84,6 +84,6 @@ flowchart LR
 | **Summary anchor / round trip** | A prior summary passed back as `previous_summary`. The summariser *updates* it in place instead of starting over, so summaries converge instead of growing. The caller persists the summary; the worker never does. |
 | **`tail_start_index`** | Index into the **request** `messages` array where the verbatim tail begins (`null` = everything was summarised). The worker never sees storage ids; the caller maps this onto its own ids. |
 | **Compaction lease** | A `{ nonce, ts }` claim stored as a file under `lease_dir` (scope `context_lease`), keyed by `lease_key` (e.g. a session id) or a hash of the message set. Mutual exclusion so one logical history is summarised by one caller at a time; TTL-expiring so a crash never deadlocks it. |
-| **`model_resolved`** | How limits were obtained: `inline` (caller supplied), `router` (`router::models::budget`), or `fallback` (conservative 8192/1024 default). Echoed so a silent fallback is detectable. |
+| **`model_resolved`** | How limits were obtained: `inline` (caller supplied), `router` (`llm-router::models::budget`), or `fallback` (conservative 8192/1024 default). Echoed so a silent fallback is detectable. |
 | **Estimator** | The token counter behind a trait. v1 ships the serialized non-image `chars/4` heuristic plus 4,096 tokens per image for every model; responses report `estimator: "heuristic"` so a future per-model tokenizer is a visible swap. |
 | **`custom` message** | A `role: "custom"` transcript item (app-facing: UI markers, notices). It has no provider wire mapping, so `assemble` excludes it from the model-facing list and its token count — but `count-tokens` still counts what it is given. |

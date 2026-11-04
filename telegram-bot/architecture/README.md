@@ -60,7 +60,7 @@ event delivery.
    │                                              │                            │
    │   render pipeline ◄── bindings ◄── engine ◄──┤ harness::send (drive turn) │
    │   (draft / edit, chunk,                       │ harness::stop / status     │
-   │    verbosity, ordering)                       │ router::models::list       │
+   │    verbosity, ordering)                       │ llm-router::models::list       │
    │        │                                      │ approval::resolve / …      │
    └────────┼──────────────────────────────────────┼───────────────────────────┘
             │                                       │

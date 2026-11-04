@@ -20,7 +20,7 @@ import type { ModelOption } from '@/types/chat'
  * shows present-but-unconfigured providers as setup rows). When the engine is
  * unreachable (catalog fetch throws) the list stays empty.
  *
- * `presentProviders` is seeded by `router::provider::list`, then kept current
+ * `presentProviders` is seeded by `llm-router::provider::list`, then kept current
  * by provider/model/configuration events. There is no polling.
  *
  * `harnessAvailable` gates harness-owned RPCs until the worker is connected.

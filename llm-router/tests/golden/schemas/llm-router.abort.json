@@ -1,9 +1,9 @@
 {
-  "description": "Abort an in-flight router::chat/complete by request_id; reports whether a live request was cancelled.",
-  "function_id": "router::abort",
+  "description": "Abort an in-flight llm-router::chat/complete by request_id; reports whether a live request was cancelled.",
+  "function_id": "llm-router::abort",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Input of the `router::abort` iii function.",
+    "description": "Input of the `llm-router::abort` iii function.",
     "properties": {
       "request_id": {
         "type": "string"

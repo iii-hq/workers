@@ -6,7 +6,7 @@ Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::llamacpp::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
 `provider::llamacpp::refresh_models` (live `GET /v1/models` + `GET /props` →
-`router::models::reconcile`).
+`llm-router::models::reconcile`).
 
 Default upstream: `http://127.0.0.1:8080/v1/chat/completions`, `llama-server`'s
 own default bind address and port. With no `api_url` configured, discovery
@@ -23,10 +23,10 @@ start on the first of those the router finds in the catalog.
 
 ## Embeddings
 
-`provider::llamacpp::embed` serves batch text embeddings from the same configured server when llama-server runs with `--embeddings` and an embedding-capable model (e.g. a nomic-embed GGUF). One vector per input, order preserved; behind `router::embed`, this gives the memory worker fully local semantic recall with no cloud call.
+`provider::llamacpp::embed` serves batch text embeddings from the same configured server when llama-server runs with `--embeddings` and an embedding-capable model (e.g. a nomic-embed GGUF). One vector per input, order preserved; behind `llm-router::embed`, this gives the memory worker fully local semantic recall with no cloud call.
 
 `provider::llamacpp::count_tokens` counts a prompt through the server's
-`/v1/chat/completions/input_tokens` route behind `router::count_tokens`,
+`/v1/chat/completions/input_tokens` route behind `llm-router::count_tokens`,
 with the same body the chat request sends (tools, images and
 `chat_template_kwargs` included). A llama-server older than that route
 (June 2026) answers 404 and is counted through the Anthropic-compatible
@@ -37,8 +37,8 @@ chose. Counting is local and never runs the model.
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The declaration carries no models and `credential_env_var:
   LLAMACPP_API_KEY`; the post-register refresh discovers the live catalog
   from the resolved server.
@@ -50,7 +50,7 @@ chose. Counting is local and never runs the model.
 - **Credentials are optional** — the main difference from every other
   provider here. `llama-server` only requires `Authorization: Bearer` when
   started with `--api-key`; most local setups run with none at all. Streaming
-  and discovery both resolve credentials via `router::provider::resolve` as
+  and discovery both resolve credentials via `llm-router::provider::resolve` as
   usual, but a missing/blank credential is treated as "no key configured",
   not a configuration error: requests simply go out with no `Authorization`
   header. If the server *does* have `--api-key` set and ours is missing or
@@ -69,13 +69,13 @@ chose. Counting is local and never runs the model.
   server rejects any prompt over that window, so a console cannot work
   around a small one by compacting; the declaration carries a
   `context_overflow_hint` (`register.rs`) that the router reports on
-  `router::provider::list` and the ADE shows under its context-overflow
+  `llm-router::provider::list` and the ADE shows under its context-overflow
   card, pointing at the server's `--ctx-size`, the desktop app's per-model
   options, the llama.cpp server docs and the provider restart that picks the
   new size up (`iii trigger compose::restart` or the Workers page). No
   pricing (self-hosted).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** 401/403 → `auth_expired` (only reachable when `--api-key` is
   set), `context_length_exceeded`/message-sniffed prompt-overflow phrasing →

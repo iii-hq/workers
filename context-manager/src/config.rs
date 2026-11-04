@@ -72,7 +72,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_allow_fallback_limits")]
     pub allow_fallback_limits: bool,
 
-    /// Outer budget for one summariser call through `router::chat` (ms).
+    /// Outer budget for one summariser call through `llm-router::chat` (ms).
     #[serde(default = "default_summarizer_timeout_ms")]
     pub summarizer_timeout_ms: u64,
 

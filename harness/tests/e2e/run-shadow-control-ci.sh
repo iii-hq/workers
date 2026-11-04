@@ -301,7 +301,7 @@ fi
 
 wait_for_functions \
   e2e::scenarios-list e2e::run e2e::status e2e::results-get e2e::archive e2e::archive-head \
-  harness::send harness::status router::models::get \
+  harness::send harness::status llm-router::models::get \
   state::list state::get state::set \
   storage::putObject storage::getObject database::execute database::query
 capture_workers

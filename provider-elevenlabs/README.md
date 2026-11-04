@@ -3,8 +3,8 @@
 ElevenLabs speech behind [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router): speech to text with
 Scribe and text to speech with the Eleven voices. The worker implements the
 speech half of the provider protocol, `provider::elevenlabs::transcribe`
-and `provider::elevenlabs::speak`, so `router::transcribe` and
-`router::speak` reach ElevenLabs without any caller knowing its API. The
+and `provider::elevenlabs::speak`, so `llm-router::transcribe` and
+`llm-router::speak` reach ElevenLabs without any caller knowing its API. The
 voice worker uses them with `stt.backend: router` / `tts.backend: router`.
 
 There is no chat surface: the provider declares only speech models, so
@@ -28,8 +28,8 @@ key lands.
 | Speech to text | `scribe_v1`, `scribe_v1_experimental` | 99 languages, detected automatically; word timings become sentence segments. |
 | Text to speech | every model `GET /v1/models` marks `can_do_text_to_speech` (`eleven_multilingual_v2`, `eleven_flash_v2_5`, `eleven_v3`, ...) | Each carries the language ids it speaks. `eleven_multilingual_v2` is the default. |
 
-`router::models::list` with `modality: "stt"` or `"tts"` lists them;
-`router::models::supports` answers `stt`, `tts` and `streaming` (no: this
+`llm-router::models::list` with `modality: "stt"` or `"tts"` lists them;
+`llm-router::models::supports` answers `stt`, `tts` and `streaming` (no: this
 worker serves batch requests only).
 
 ## Surfaces
@@ -55,7 +55,7 @@ worker serves batch requests only).
 Nothing in this worker's own config file. The credential and `api_url`
 (default `https://api.elevenlabs.io/v1`; the EU, India and Singapore
 residency hosts work too) resolve per request through
-`router::provider::resolve`.
+`llm-router::provider::resolve`.
 
 ## Tests
 

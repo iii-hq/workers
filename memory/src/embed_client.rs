@@ -1,4 +1,4 @@
-//! Fail-soft client for `router::embed` plus the vector backfill task.
+//! Fail-soft client for `llm-router::embed` plus the vector backfill task.
 //! Embeddings are derived data: every failure here degrades recall to
 //! BM25 + entities (and recall responses say so), never blocks a turn,
 //! and never touches memory integrity.
@@ -25,7 +25,7 @@ const BACKFILL_BATCH: usize = 64;
 /// legacy bank fills over several passes instead of one giant burst.
 const BACKFILL_ROUNDS: usize = 10;
 
-/// One `router::embed` reply: the model the provider REPORTS (what the
+/// One `llm-router::embed` reply: the model the provider REPORTS (what the
 /// vectors' space actually is, whatever was requested) and one vector per
 /// input, in input order.
 pub type Embedded = (String, Vec<Vec<f32>>);
@@ -42,13 +42,13 @@ pub async fn embed_texts(
     }
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "router::embed".into(),
+            function_id: "llm-router::embed".into(),
             payload,
             action: None,
             timeout_ms: Some(timeout_ms),
         })
         .await
-        .inspect_err(|e| tracing::debug!(error = %e, "router::embed failed"))
+        .inspect_err(|e| tracing::debug!(error = %e, "llm-router::embed failed"))
         .ok()?;
     // The router always names the model; a reply without one cannot be
     // placed in a space, so it is not used.
@@ -228,7 +228,7 @@ async fn store(bank: &Bank, model: &str, memory: &Memory, v: Vec<f32>) -> Result
         .map_err(|e| tracing::warn!(bank = %bank.name, error = %e, "vector write failed"))
 }
 
-/// The backfill loop with the embedder injected (`router::embed` in
+/// The backfill loop with the embedder injected (`llm-router::embed` in
 /// production). `known` is the model the provider last reported (`None`
 /// before any reply): vectors stored under any other model are in another
 /// space and get re-embedded. Returns how many vectors it stored.
@@ -318,7 +318,7 @@ where
 /// goes quiet, a provider up late, the per-pass cap, a newly pinned
 /// `embedding_model`, a reload. With nothing pending it is one RAM scan per
 /// bank and no router call; with no embed provider installed, two
-/// fast-failing `router::embed` calls (batch and canary) per bank per minute.
+/// fast-failing `llm-router::embed` calls (batch and canary) per bank per minute.
 pub fn backfill_all(deps: Arc<Deps>) {
     tokio::spawn(async move {
         let mut wait = std::time::Duration::from_secs(20);

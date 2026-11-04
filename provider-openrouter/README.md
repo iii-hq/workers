@@ -14,7 +14,7 @@ Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::openrouter::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
 `provider::openrouter::refresh_models` (live `GET /api/v1/models`, admitted
-rows mapped to full catalog records → `router::models::reconcile`).
+rows mapped to full catalog records → `llm-router::models::reconcile`).
 
 ## Behavior
 
@@ -28,8 +28,8 @@ rows mapped to full catalog records → `router::models::reconcile`).
   batch-endpoint-only `:batch` variants (chat calls to them 404) would be
   dead rows in the picker. Everything else in the listing (several hundred
   models) lands in the catalog with live metadata.
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The declaration carries no static `models` slice — the live listing is the
   source of truth and a refresh fires right after registration. Defaults:
   `api_url: https://openrouter.ai/api/v1/chat/completions`,
@@ -39,7 +39,7 @@ rows mapped to full catalog records → `router::models::reconcile`).
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `OPENROUTER_API_KEY` env on the router → none). Both
   `api_key` and `oauth` credential shapes are sent as `Authorization:
   Bearer`; v1 performs no OAuth refresh.
@@ -62,11 +62,11 @@ rows mapped to full catalog records → `router::models::reconcile`).
   catalog-pricing fill keeps a provider-supplied value.
 - **Token counting:** none. OpenRouter exposes no pre-request tokenizer
   endpoint, and one local tokenizer cannot honestly meter models spanning
-  every vendor's vocabulary — `router::count_tokens` reports
+  every vendor's vocabulary — `llm-router::count_tokens` reports
   `no_token_counter` for this provider and the harness falls back to its own
   estimate.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** OpenRouter's gateway-level status semantics map to the shared
   taxonomy: 401 → `auth_expired`; 402 (insufficient credits) and 403

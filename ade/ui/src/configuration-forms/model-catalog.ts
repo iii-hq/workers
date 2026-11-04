@@ -31,7 +31,7 @@ function reasoningEfforts(value: unknown): ModelOption['reasoningEfforts'] {
 }
 
 /**
- * `router::models::list` rows as picker options: the id is
+ * `llm-router::models::list` rows as picker options: the id is
  * `${provider}::${id}` unless the router already qualified it.
  */
 export function modelOptionsFromCatalog(response: unknown): ModelOption[] {
@@ -90,7 +90,7 @@ export function useModelCatalog(host: Host | null): { options: ModelOption[]; lo
       const request = ++latest
       // `resolve().then` turns a synchronous throw (no connection yet) into the same empty list.
       Promise.resolve()
-        .then(() => host.iii.trigger('router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS }))
+        .then(() => host.iii.trigger('llm-router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS }))
         .then(modelOptionsFromCatalog, () => [])
         .then((options) => {
           // A slower, older response must not overwrite a newer one.
@@ -105,7 +105,7 @@ export function useModelCatalog(host: Host | null): { options: ModelOption[]; lo
     try {
       offHandler = host.iii.on(handlerId, load)
       offTrigger = host.iii.registerTrigger({
-        type: 'router::models::changed',
+        type: 'llm-router::models::changed',
         function_id: `${handlerId}::${host.iii.browserId}`,
         config: {},
       })

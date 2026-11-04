@@ -53,7 +53,7 @@ fn rules_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema
             "oneOf": [
                 {
                     "type": "string",
-                    "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\"."
+                    "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!llm-router::chat\"."
                 },
                 {
                     "type": "object",

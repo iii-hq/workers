@@ -48,14 +48,14 @@ pub struct Pricing {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SpeechModality {
-    /// Speech to text, served through `router::transcribe`.
+    /// Speech to text, served through `llm-router::transcribe`.
     Stt,
-    /// Text to speech, served through `router::speak`.
+    /// Text to speech, served through `llm-router::speak`.
     Tts,
 }
 
 /// Facts about a speech model. Present only on models served through
-/// `router::transcribe` / `router::speak`; such models report
+/// `llm-router::transcribe` / `llm-router::speak`; such models report
 /// `context_window` and `max_output_tokens` as 0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SpeechModel {
@@ -69,9 +69,9 @@ pub struct SpeechModel {
     pub streaming: bool,
 }
 
-/// Model family selector for `router::models::list`. `chat` is the default
+/// Model family selector for `llm-router::models::list`. `chat` is the default
 /// so pickers built before speech models existed keep listing only what
-/// `router::chat` can run.
+/// `llm-router::chat` can run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ModalityFilter {

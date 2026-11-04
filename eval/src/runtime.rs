@@ -270,7 +270,7 @@ pub async fn configure(
 async fn validate_against_catalog(deps: &Deps, model: &MonitorModelV1) -> Result<(), EvalError> {
     let catalog: Value = call(
         deps,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": model.provider }),
         BUS_TIMEOUT_MS,
     )
@@ -289,7 +289,7 @@ async fn validate_against_catalog(deps: &Deps, model: &MonitorModelV1) -> Result
         })
         .ok_or_else(|| {
             EvalError::InvalidRequest(format!(
-                "{}/{} is not in router::models::list",
+                "{}/{} is not in llm-router::models::list",
                 model.provider, model.model
             ))
         })?;

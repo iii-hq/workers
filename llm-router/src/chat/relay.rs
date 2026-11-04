@@ -19,7 +19,7 @@ pub enum ReadEvent {
 #[async_trait::async_trait]
 pub trait RelayRead: Send {
     async fn next(&mut self, timeout: Duration) -> ReadEvent;
-    /// Shared close handle — router::abort closes the provider channel from
+    /// Shared close handle — llm-router::abort closes the provider channel from
     /// another task while the relay loop is blocked in next().
     fn closer(&self) -> Arc<dyn Fn() + Send + Sync>;
     fn close(&self);
@@ -30,7 +30,7 @@ pub trait RelayRead: Send {
 pub struct CallerGone;
 
 /// What the relay loop writes (the caller's channel, or an internal one for
-/// router::complete). send() fails once the peer reader dropped.
+/// llm-router::complete). send() fails once the peer reader dropped.
 pub trait FrameSink: Send + Sync {
     fn send(&self, msg: &str) -> Result<(), CallerGone>;
     fn close(&self);
@@ -43,7 +43,7 @@ pub trait FrameSink: Send + Sync {
 pub struct RouterChannel {
     pub writer_ref: StreamChannelRef,
     pub reader: Box<dyn RelayRead>,
-    pub writer: Arc<dyn FrameSink>, // used by router::complete's internal channel
+    pub writer: Arc<dyn FrameSink>, // used by llm-router::complete's internal channel
 }
 
 use crate::types::events::{AssistantMessageEvent, Usage};

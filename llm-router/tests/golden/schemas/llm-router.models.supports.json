@@ -1,9 +1,9 @@
 {
   "description": "Check whether a model supports a capability flag (fails open for unknown models).",
-  "function_id": "router::models::supports",
+  "function_id": "llm-router::models::supports",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Input of `router::models::supports`.",
+    "description": "Input of `llm-router::models::supports`.",
     "properties": {
       "capability": {
         "default": "",
@@ -26,7 +26,7 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Output of `router::models::supports`.",
+    "description": "Output of `llm-router::models::supports`.",
     "properties": {
       "supported": {
         "type": "boolean"

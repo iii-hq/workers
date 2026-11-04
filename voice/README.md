@@ -364,14 +364,14 @@ endpointing change reloads the recognizer on next use.
 | `stt.max_utterance_secs` | `20` | Longest utterance before a forced commit. |
 | `stt.openai.base_url`, `api_key`, `model`, `language` | OpenAI defaults | The remote transcription endpoint. `api_key` accepts `${OPENAI_API_KEY}`. |
 | `stt.router.model`, `language` | empty | Router model (`provider::model`) for `voice::transcribe` and for the second pass of every dictated sentence; empty lets the router pick. Keys live in the router's Settings, not here. |
-| `stt.cleanup.enabled` | `true` | Rewrite a finished dictation through a chat model (`router::complete`) before `voice::dictation::stop` returns it: grammar, punctuation, misheard words, fillers, self-corrections. Off returns the recognizer's text. |
+| `stt.cleanup.enabled` | `true` | Rewrite a finished dictation through a chat model (`llm-router::complete`) before `voice::dictation::stop` returns it: grammar, punctuation, misheard words, fillers, self-corrections. Off returns the recognizer's text. |
 | `stt.cleanup.model` | empty | Chat model as llm-router lists it (`provider::model`). Empty uses the default model of the first configured provider. |
 | `stt.cleanup.timeout_ms` | `12000` | Longest the clean-up may take; past it the raw transcript is returned. |
 | `stt.cleanup.instructions` | empty | Extra guidance for the clean-up: names, product terms, spellings, style. |
 | `stt.whisper_cpp.command` | `whisper-cli` | Command on `PATH`, or an explicit executable path. |
 | `stt.whisper_cpp.model` | `whisper-large-v3-turbo` | Catalog id (`whisper-tiny`, `whisper-base`, `whisper-small`, `whisper-medium`, `whisper-large-v3-turbo`) or a custom GGML file path. Download catalog models from the Voice page or `voice::models::download`; custom paths remain user-managed. |
 | `stt.whisper_cpp.language`, `timeout_secs` | `auto`, `300` | ISO 639-1 language hint (`pt`) or detection, and the per-process timeout. |
-| `tts.backend` | `host` | `piper` (natural local neural voice), `host` (local WAV synthesis with `say` on macOS or `espeak-ng` on Linux, returned to the browser), `openai` (`/v1/audio/speech`, audio returned to the caller), `router` (llm-router's `router::speak`, any registered speech provider, audio returned to the caller), or `off`. |
+| `tts.backend` | `host` | `piper` (natural local neural voice), `host` (local WAV synthesis with `say` on macOS or `espeak-ng` on Linux, returned to the browser), `openai` (`/v1/audio/speech`, audio returned to the caller), `router` (llm-router's `llm-router::speak`, any registered speech provider, audio returned to the caller), or `off`. |
 | `tts.piper.device` | `auto` | Prefer NVIDIA CUDA, with CPU fallback; `cpu` forces CPU. Requires GPU dependencies in the Piper environment to accelerate. |
 | `tts.piper.command`, `tts.piper.model` | `piper`, `piper-pt-br-faber-medium` | Local neural TTS executable and downloaded voice catalog id. Audio plays in the browser. |
 | `tts.voice`, `tts.rate_wpm` | system default | Host voice and speaking rate. |

@@ -12,7 +12,7 @@ description: >-
 # Delegating a task to another agent
 
 Another agent on this engine is **not a model and not a provider**. Asking
-`router::provider::list` for `claude` or `pi` returns nothing, and that answer
+`llm-router::provider::list` for `claude` or `pi` returns nothing, and that answer
 is correct: those are workers, and you reach them the way you reach every
 worker — by calling a function.
 

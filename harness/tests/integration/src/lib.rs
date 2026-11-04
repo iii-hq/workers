@@ -2,7 +2,7 @@
 //! spec lives in the iii repo's harness-evaluation tech spec).
 //!
 //! Deterministic regression track: each scenario boots a fresh isolated iii
-//! stack, replaces only the `router::*` boundary with a strict scripted
+//! stack, replaces only the `llm-router::*` boundary with a strict scripted
 //! worker, and verifies structured public evidence.
 
 pub mod canonical;

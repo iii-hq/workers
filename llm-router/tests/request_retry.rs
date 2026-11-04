@@ -89,7 +89,7 @@ async fn failing_provider(
     );
     call(
         &provider,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({
             "id": "retry-fixture",
             "models": [{
@@ -108,7 +108,7 @@ async fn failing_turn(consumer: &IIIClient, streaming: bool, retry_max: Option<u
         payload["retry_max"] = json!(limit);
     }
     if !streaming {
-        let response = call(consumer, "router::complete", payload).await;
+        let response = call(consumer, "llm-router::complete", payload).await;
         assert_eq!(response["message"]["stop_reason"], "error", "{response}");
         return;
     }
@@ -128,7 +128,7 @@ async fn failing_turn(consumer: &IIIClient, streaming: bool, retry_max: Option<u
         })
         .await;
     let pump = tokio::spawn(async move { channel.reader.read_all().await });
-    let response = call(consumer, "router::chat", payload).await;
+    let response = call(consumer, "llm-router::chat", payload).await;
     assert_eq!(response["ok"], false, "{response}");
     tokio::time::timeout(Duration::from_secs(3), pump)
         .await
@@ -203,7 +203,7 @@ async fn retry_ceiling_is_frozen_for_an_inflight_turn() {
     write_entry_value(&router, json!({ "settings": { "retry_max": 2 } }))
         .await
         .unwrap();
-    call(&router, "router::on_config_changed", json!({})).await;
+    call(&router, "llm-router::on_config_changed", json!({})).await;
     release.add_permits(1);
     turn.await.unwrap();
     assert_eq!(

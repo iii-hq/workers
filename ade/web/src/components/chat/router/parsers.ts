@@ -1,5 +1,5 @@
 /**
- * Zod schemas for the `router::*` namespace (the llm-router model catalog).
+ * Zod schemas for the `llm-router::*` namespace (the llm-router model catalog).
  *
  * Wire source: `iii/workers/llm-router/src/types/router.rs` + `types/model.rs`
  *   - ModelsListRequest { provider?, capability? }   (router.rs)
@@ -15,15 +15,20 @@ import { unwrapEnvelope } from '@/components/chat/sandbox/parsers'
 
 export { unwrapEnvelope }
 
-export const ROUTER_FUNCTION_IDS = ['router::models::list'] as const
+export const ROUTER_FUNCTION_IDS = ['llm-router::models::list'] as const
 export type RouterFunctionId = (typeof ROUTER_FUNCTION_IDS)[number]
 
 const ROUTER_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(
   ROUTER_FUNCTION_IDS,
 )
 
-export function isRouterFunction(id: string): id is RouterFunctionId {
-  return ROUTER_FUNCTION_ID_SET.has(id)
+/** The current id of a call recorded under its deprecated `router::` name. */
+export function canonicalRouterId(id: string): string {
+  return id.startsWith('router::') ? `llm-${id}` : id
+}
+
+export function isRouterFunction(id: string): boolean {
+  return ROUTER_FUNCTION_ID_SET.has(canonicalRouterId(id))
 }
 
 /* ---------------- model descriptor ---------------- */
@@ -58,7 +63,7 @@ export const modelSchema = z
   .passthrough()
 export type RouterModel = z.infer<typeof modelSchema>
 
-/* ---------------- router::models::list ---------------- */
+/* ---------------- llm-router::models::list ---------------- */
 
 export const modelsListRequestSchema = z
   .object({

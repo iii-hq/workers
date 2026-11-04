@@ -1,29 +1,38 @@
 {
-  "description": "Read one catalog model by {provider, id}; null when the model is not registered.",
-  "function_id": "router::models::get",
+  "description": "Resolve the effective model output budget using the same precedence as llm-router::chat.",
+  "function_id": "llm-router::models::budget",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Input of `router::models::get`.",
+    "description": "Input of `llm-router::models::budget`.",
     "properties": {
       "id": {
         "default": "",
-        "description": "Model id to look up.",
+        "description": "Model id to budget.",
         "type": "string"
+      },
+      "max_output_tokens": {
+        "description": "Optional caller-requested output budget. When absent, the same provider and router defaults used by `llm-router::chat` apply.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "provider": {
         "default": "",
-        "description": "Provider id that owns the model.",
+        "description": "Provider id that owns the model. Empty resolves an unambiguous model id.",
         "type": "string"
       }
     },
-    "title": "ModelGetRequest",
+    "title": "ModelBudgetRequest",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "anyOf": [
       {
-        "$ref": "#/definitions/ModelGetResponse"
+        "$ref": "#/definitions/ModelBudgetResponse"
       },
       {
         "type": "null"
@@ -156,14 +165,20 @@
         ],
         "type": "object"
       },
-      "ModelGetResponse": {
-        "description": "Output of `router::models::get` (the function returns `null` when the model is not registered — the cold-window signal).",
+      "ModelBudgetResponse": {
+        "description": "Effective limits `llm-router::chat` will use for this model and request.",
         "properties": {
+          "effective_max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "model": {
             "$ref": "#/definitions/Model"
           }
         },
         "required": [
+          "effective_max_output_tokens",
           "model"
         ],
         "type": "object"
@@ -223,14 +238,14 @@
         "description": "What a speech model does. Chat models carry no `speech` block.",
         "oneOf": [
           {
-            "description": "Speech to text, served through `router::transcribe`.",
+            "description": "Speech to text, served through `llm-router::transcribe`.",
             "enum": [
               "stt"
             ],
             "type": "string"
           },
           {
-            "description": "Text to speech, served through `router::speak`.",
+            "description": "Text to speech, served through `llm-router::speak`.",
             "enum": [
               "tts"
             ],
@@ -239,7 +254,7 @@
         ]
       },
       "SpeechModel": {
-        "description": "Facts about a speech model. Present only on models served through `router::transcribe` / `router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
+        "description": "Facts about a speech model. Present only on models served through `llm-router::transcribe` / `llm-router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
         "properties": {
           "languages": {
             "description": "BCP-47 tags of the languages the model handles; empty when the provider does not say.",
@@ -263,6 +278,6 @@
         "type": "object"
       }
     },
-    "title": "Nullable_ModelGetResponse"
+    "title": "Nullable_ModelBudgetResponse"
   }
 }

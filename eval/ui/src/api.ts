@@ -232,7 +232,7 @@ export function createEvalApi(host: Host): EvalApi {
       return scenarios
     },
     async models() {
-      const response = await trigger<{ models: CatalogModel[] }>('router::models::list', {})
+      const response = await trigger<{ models: CatalogModel[] }>('llm-router::models::list', {})
       return response.models
     },
   }

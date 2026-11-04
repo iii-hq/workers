@@ -1,9 +1,9 @@
 //! decide(): ordered candidate list (spec § Routing). MVP consumes
 //! candidates[0]; the list shape is the future fallback seam.
-//! `router::route` exposes the same decision as a read-only preview so
+//! `llm-router::route` exposes the same decision as a read-only preview so
 //! consumers that need the provider before streaming (prompt selection,
 //! provisioning metadata) can pin it as the explicit `provider` on
-//! `router::chat` — preview and execution can never diverge.
+//! `llm-router::chat` — preview and execution can never diverge.
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -151,7 +151,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
     ))
 }
 
-/// The `router::route` iii function: `{model, provider?}` →
+/// The `llm-router::route` iii function: `{model, provider?}` →
 /// `{provider, candidates}`. Same inputs, same `decide()`, same error codes
 /// as the chat pipeline's routing step — just without the stream.
 pub fn make_route(

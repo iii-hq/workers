@@ -41,7 +41,7 @@ pub async fn register_all(iii: &Arc<IIIClient>) {
             let deps = Arc::new(Deps {
                 resolver: Arc::new(RouterModelResolver::new(iii.clone())),
                 // The summariser reads its timeout from the live snapshot per
-                // call; router::chat is absent on the test engine, so only the
+                // call; llm-router::chat is absent on the test engine, so only the
                 // trigger error path runs anyway.
                 summarizer: Arc::new(RouterSummarizer::new(iii.clone(), cell.clone())),
                 leases,

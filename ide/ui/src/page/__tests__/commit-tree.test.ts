@@ -131,7 +131,7 @@ describe('Generate and History helpers', () => {
     expect(modelLabel('gpt-5')).toBe('gpt-5')
     expect(isNoModelError('NO_MODEL', 'x')).toBe(true)
     expect(isNoModelError(undefined, 'no model for commit messages: …')).toBe(true)
-    expect(isNoModelError('ROUTER_FAILED', 'router::complete failed')).toBe(false)
+    expect(isNoModelError('ROUTER_FAILED', 'llm-router::complete failed')).toBe(false)
   })
 
   it('filters commits by subject, author or hash', () => {

@@ -19,7 +19,7 @@ pub async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<
     .await
 }
 
-/// `router::provider::resolve` — credential + effective settings.
+/// `llm-router::provider::resolve` — credential + effective settings.
 pub async fn resolve(
     iii: &IIIClient,
     provider_id: &str,
@@ -30,7 +30,7 @@ pub async fn resolve(
     if let Some(t) = token {
         payload["token"] = json!(t);
     }
-    let raw = call(iii, "router::provider::resolve", payload).await?;
+    let raw = call(iii, "llm-router::provider::resolve", payload).await?;
     let explicit_reference = names_a_secret_reference(&raw);
     let resp: ProviderResolveResponse = serde_json::from_value(raw).map_err(|e| Error::Remote {
         code: "provider/bad_resolve_response".into(),
@@ -53,7 +53,7 @@ fn names_a_secret_reference(raw: &Value) -> bool {
     raw.get("credential_source").and_then(Value::as_str) == Some("secret")
 }
 
-/// `router::models::reconcile` — replace this provider's catalog slice.
+/// `llm-router::models::reconcile` — replace this provider's catalog slice.
 pub async fn reconcile(
     iii: &IIIClient,
     provider_id: &str,
@@ -67,15 +67,15 @@ pub async fn reconcile(
     if let Some(t) = token {
         payload["token"] = json!(t);
     }
-    call(iii, "router::models::reconcile", payload).await?;
+    call(iii, "llm-router::models::reconcile", payload).await?;
     Ok(())
 }
 
-/// `router::models::get` — authoritative catalog record (None when absent).
+/// `llm-router::models::get` — authoritative catalog record (None when absent).
 pub async fn models_get(iii: &IIIClient, provider_id: &str, model_id: &str) -> Option<Model> {
     let raw = call(
         iii,
-        "router::models::get",
+        "llm-router::models::get",
         json!({ "provider": provider_id, "id": model_id }),
     )
     .await
@@ -83,9 +83,9 @@ pub async fn models_get(iii: &IIIClient, provider_id: &str, model_id: &str) -> O
     serde_json::from_value(raw.get("model")?.clone()).ok()
 }
 
-/// `router::provider::register` — returns the registration token to persist.
+/// `llm-router::provider::register` — returns the registration token to persist.
 pub async fn register(iii: &IIIClient, declaration: Value) -> Result<Value, Error> {
-    call(iii, "router::provider::register", declaration).await
+    call(iii, "llm-router::provider::register", declaration).await
 }
 
 /// Inject an env-sourced ApiKey only when the router resolved nothing.

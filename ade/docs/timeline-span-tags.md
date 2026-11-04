@@ -120,7 +120,7 @@ rule must be read as *nearest ancestor carrying the attribute*: a worker on
 an SDK whose span processor drops `iii.tag.*` baggage leaves tag-less spans
 in the middle of a scope, while its downstream callees re-materialize the
 tags (in real traces, `execute context::assemble` carries nothing while its
-`router::models::get` child repeats the sub-agent's tags). A consumer that
+`llm-router::models::get` child repeats the sub-agent's tags). A consumer that
 compares only the immediate parent misreads such echoes as fresh tag roots.
 The console's implementation is `inheritedTags` in
 `workers/ade/web/src/pages/TracesV2/lib/spanLabel.ts`.

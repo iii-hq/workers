@@ -2,7 +2,7 @@
 Feature: model resolution and the usable token budget
 
   Contract (context-manager.md § Model input, § Token budget model):
-  limits resolve inline -> router::models::get -> conservative fallback
+  limits resolve inline -> llm-router::models::get -> conservative fallback
   (8192/1024), echoed in `model_resolved`. The usable budget is
     usable = max(0, (input_limit ?? context_window - max_output_tokens)
                     - reserved - thinking_budget)

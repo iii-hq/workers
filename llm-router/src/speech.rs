@@ -1,5 +1,5 @@
-//! `router::transcribe` and `router::speak` — the speech front doors, shaped
-//! like `router::embed`: the router resolves a provider, forwards to
+//! `llm-router::transcribe` and `llm-router::speak` — the speech front doors, shaped
+//! like `llm-router::embed`: the router resolves a provider, forwards to
 //! `provider::<id>::transcribe` or `provider::<id>::speak`, and stamps the
 //! provider on the reply. Providers declare speech models with a `speech`
 //! block on the model record, so a caller can name a model and the router
@@ -31,7 +31,7 @@ const SPEAK_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RouterTranscribeRequest {
-    /// Speech-to-text model id (an `stt` model from `router::models::list`);
+    /// Speech-to-text model id (an `stt` model from `llm-router::models::list`);
     /// the provider's default when omitted.
     #[serde(default)]
     pub model: Option<String>,
@@ -82,7 +82,7 @@ pub struct RouterTranscribeResponse {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RouterSpeakRequest {
-    /// Text-to-speech model id (a `tts` model from `router::models::list`);
+    /// Text-to-speech model id (a `tts` model from `llm-router::models::list`);
     /// the provider's default when omitted.
     #[serde(default)]
     pub model: Option<String>,
@@ -222,7 +222,7 @@ pub fn resolve_speech_target(
                     return Err(RouterError::new(
                         RouterCode::InvalidRequest,
                         format!(
-                            "Model \"{model}\" is a {kind} model; router::{surface} needs a {surface} model."
+                            "Model \"{model}\" is a {kind} model; llm-router::{surface} needs a {surface} model."
                         ),
                     ));
                 }
@@ -230,7 +230,7 @@ pub fn resolve_speech_target(
                     RouterCode::NoProviderForModel,
                     format!(
                         "No registered provider serves the {surface} model \"{model}\". \
-                         router::models::list with modality \"{}\" names the choices.",
+                         llm-router::models::list with modality \"{}\" names the choices.",
                         match modality {
                             SpeechModality::Stt => "stt",
                             SpeechModality::Tts => "tts",

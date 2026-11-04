@@ -1,7 +1,7 @@
 //! INT-012 — edit one queued message in place and remove another before the
 //! first streamed turn is released.
 //!
-//! The scripted router holds the first `router::chat` call before its first
+//! The scripted router holds the first `llm-router::chat` call before its first
 //! frame. The runner then uses only the public harness surface to enqueue four
 //! messages, captures their client-visible `entry_id`s from `harness::status`,
 //! edits one row, removes another, and releases the generation. The second

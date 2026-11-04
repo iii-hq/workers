@@ -377,7 +377,7 @@ describe('display-name echo suppression', () => {
       }),
       storedSpan({
         span_id: 'llm-1',
-        name: 'execute router::chat',
+        name: 'execute llm-router::chat',
         parent_span_id: 'step-1',
         attributes: Object.entries(SUBAGENT_TAGS),
       }),
@@ -393,7 +393,7 @@ describe('display-name echo suppression', () => {
       'Sub-agent · List all installed and running',
       'session::update-message',
       'worker::list',
-      'router::chat',
+      'llm-router::chat',
       'provider::anthropic::stream',
     ])
   })
@@ -434,7 +434,7 @@ describe('display-name echo suppression', () => {
     // The real shape from trace f6292958dfe97afbd87e323d4f4541b6: the
     // context-manager builds against an SDK whose span processor drops
     // `iii.tag.*` baggage, so `execute context::assemble` carries no tags
-    // while its `router::models::get` child re-materializes them. The
+    // while its `llm-router::models::get` child re-materializes them. The
     // echo test must walk PAST the gap, not compare against it.
     const bars = storedSpansToTimelineSpans([
       storedSpan({
@@ -451,7 +451,7 @@ describe('display-name echo suppression', () => {
       }),
       storedSpan({
         span_id: 'models-1',
-        name: 'execute router::models::get',
+        name: 'execute llm-router::models::get',
         parent_span_id: 'assemble-1',
         service_name: 'llm-router',
         attributes: Object.entries(SUBAGENT_TAGS),
@@ -460,11 +460,11 @@ describe('display-name echo suppression', () => {
     expect(bars.map((b) => b.label)).toEqual([
       'Sub-agent · List all installed and running',
       'context::assemble',
-      'router::models::get',
+      'llm-router::models::get',
     ])
     // Grouping must agree: the echo is NOT a tag root, so it stays with
     // its own function family instead of becoming its own menu entry.
-    expect(bars[2].groupKey).toBe('router::models::get')
+    expect(bars[2].groupKey).toBe('llm-router::models::get')
   })
 
   it('suppresses echoes even when the child row precedes its parent in the feed', () => {

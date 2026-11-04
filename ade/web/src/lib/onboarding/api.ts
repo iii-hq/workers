@@ -81,8 +81,8 @@ const FUNCTIONS_AVAILABLE_TRIGGER = 'engine::functions-available'
 /** Worker-manager lifecycle, where an engine still publishes it. */
 const WORKER_LIFECYCLE_TRIGGER = 'worker'
 const CONFIGURATION_TRIGGER = 'configuration'
-const ROUTER_MODELS_CHANGED = 'router::models::changed'
-const ROUTER_PROVIDER_CHANGED = 'router::provider::changed'
+const ROUTER_MODELS_CHANGED = 'llm-router::models::changed'
+const ROUTER_PROVIDER_CHANGED = 'llm-router::provider::changed'
 
 /**
  * An error as the wizard shows it: its own messages keep their sentence
@@ -157,12 +157,12 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
 }
 
-/** `router::provider::list` joined with each provider's chat model count. */
+/** `llm-router::provider::list` joined with each provider's chat model count. */
 export async function readProviderStates(): Promise<ProviderState[]> {
   const client = await getIiiClient()
   const [providers, models] = await Promise.all([
-    client.trigger<{ providers?: unknown }>('router::provider::list', {}),
-    client.trigger<{ models?: unknown }>('router::models::list', {}),
+    client.trigger<{ providers?: unknown }>('llm-router::provider::list', {}),
+    client.trigger<{ models?: unknown }>('llm-router::models::list', {}),
   ])
   const counts = new Map<string, number>()
   for (const raw of Array.isArray(models?.models) ? models.models : []) {
@@ -686,7 +686,7 @@ async function setConfigurationValue(
   return {}
 }
 
-/** The provider a `router::models::changed` / `router::provider::changed` event is about. */
+/** The provider an `llm-router::models::changed` / `llm-router::provider::changed` event is about. */
 function eventProvider(payload: unknown): string | undefined {
   return asString(asRecord(payload)?.provider)
 }
@@ -706,7 +706,7 @@ function providerEvents(providerId: string) {
 async function countProviderModels(providerId: string): Promise<number> {
   const client = await getIiiClient()
   const result = await client.trigger<{ models?: unknown[] }>(
-    'router::models::list',
+    'llm-router::models::list',
     { provider: providerId },
   )
   return Array.isArray(result?.models) ? result.models.length : 0
@@ -737,7 +737,7 @@ function needsSignIn(error: unknown): boolean {
 
 /**
  * Wait for the provider's chat models to reach the router: re-read once per
- * `router::models::changed` / `router::provider::changed` event about it (a
+ * `llm-router::models::changed` / `llm-router::provider::changed` event about it (a
  * catalog reconciled, the provider registered or came back).
  */
 async function waitForModels(
@@ -774,7 +774,7 @@ async function waitForModels(
       // Once the router holds a credential, ask the provider for its
       // catalog: a rejected key comes back as an empty list, and saying so
       // now beats a timeout a minute and a half later. The answer also
-      // arrives as a `router::models::changed` event, which asks once more.
+      // arrives as an `llm-router::models::changed` event, which asks once more.
       report({ note: `Waiting on response from ${title}` })
       const signsIn = state?.ownsAuthentication === true
       let refreshed: { count?: number } | null = null
@@ -989,7 +989,7 @@ export async function checkProviderKey(
   let state = await read()
   if (!settled(state)) {
     // The router resolves the new key, then has the provider re-list its
-    // models: the `router::*::changed` events about it are the moments to
+    // models: the `llm-router::*::changed` events about it are the moments to
     // look again; at `settleMs` look one last time and take what is there.
     state = await waitForEvents<ProviderState | undefined>({
       handler: 'iii::console::provider-key',
@@ -1013,7 +1013,7 @@ export async function checkProviderKey(
     )
     .catch(() => null)
   const listed = await client
-    .trigger<{ models?: unknown[] }>('router::models::list', {
+    .trigger<{ models?: unknown[] }>('llm-router::models::list', {
       provider: providerId,
     })
     .catch(() => null)

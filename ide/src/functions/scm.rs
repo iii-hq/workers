@@ -5,7 +5,7 @@
 //! unified diff and passes the text in. This module owns the prompt and the
 //! model call, so the model, reasoning effort and house rules come from the
 //! worker's LIVE configuration (`commit_messages`) instead of being baked into
-//! the page. The call goes worker-to-worker to `router::complete`, like
+//! the page. The call goes worker-to-worker to `llm-router::complete`, like
 //! `document::ocr` does, so it needs no permission entry of its own.
 
 use async_trait::async_trait;
@@ -32,7 +32,7 @@ const COMPLETE_TIMEOUT_MS: u64 = 120_000;
 pub const CODE_NO_MODEL: &str = "NO_MODEL";
 /// `changes` was empty or whitespace.
 pub const CODE_EMPTY_CHANGES: &str = "EMPTY_CHANGES";
-/// `router::complete` failed, or the model's turn ended in an error.
+/// `llm-router::complete` failed, or the model's turn ended in an error.
 pub const CODE_ROUTER_FAILED: &str = "ROUTER_FAILED";
 /// The model answered with no usable text.
 pub const CODE_EMPTY_MESSAGE: &str = "EMPTY_MESSAGE";
@@ -81,7 +81,7 @@ pub struct CommitMessageResponse {
     pub model: String,
 }
 
-/// `router::complete`, behind a seam so tests run without an engine.
+/// `llm-router::complete`, behind a seam so tests run without an engine.
 #[async_trait]
 pub trait Router: Send + Sync {
     async fn complete(&self, payload: Value) -> Result<Value, Error>;
@@ -94,7 +94,7 @@ impl Router for IiiRouter {
     async fn complete(&self, payload: Value) -> Result<Value, Error> {
         self.0
             .trigger(TriggerRequest {
-                function_id: "router::complete".to_string(),
+                function_id: "llm-router::complete".to_string(),
                 payload,
                 action: None,
                 timeout_ms: Some(COMPLETE_TIMEOUT_MS),
@@ -188,7 +188,7 @@ pub fn user_text(recent_subjects: &[String], changes: &str) -> String {
     text
 }
 
-/// The `router::complete` request. `thinking_level` is omitted for
+/// The `llm-router::complete` request. `thinking_level` is omitted for
 /// `CommitThinking::Default`, so the model's own default applies.
 pub fn build_payload(
     model_id: &str,
@@ -217,7 +217,7 @@ pub fn build_payload(
     payload
 }
 
-/// The `text` blocks of a `router::complete` answer, concatenated.
+/// The `text` blocks of an `llm-router::complete` answer, concatenated.
 pub fn extract_text(answer: &Value) -> String {
     answer
         .get("message")
@@ -322,13 +322,13 @@ pub async fn commit_message(
         };
         fail(
             CODE_ROUTER_FAILED,
-            format!("router::complete failed for model {model}: {detail}"),
+            format!("llm-router::complete failed for model {model}: {detail}"),
         )
     })?;
     if let Some(detail) = router_error_message(&answer) {
         return Err(fail(
             CODE_ROUTER_FAILED,
-            format!("router::complete failed for model {model}: {detail}"),
+            format!("llm-router::complete failed for model {model}: {detail}"),
         ));
     }
 
@@ -738,7 +738,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(code(&err), CODE_ROUTER_FAILED);
-        assert!(message_of(&err).contains("router::complete"));
+        assert!(message_of(&err).contains("llm-router::complete"));
         assert!(message_of(&err).contains("provider a is not configured"));
 
         let timed_out = StubRouter::new(Err(Error::Timeout));

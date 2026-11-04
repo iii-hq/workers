@@ -27,7 +27,7 @@ const CAPABILITIES: Array<{ key: keyof RouterModel; label: string }> = [
 ]
 
 /**
- * `router::models::list` — the model catalog. Read-only, so it leads with a
+ * `llm-router::models::list` — the model catalog. Read-only, so it leads with a
  * count, then groups models by provider with per-model context window, output
  * cap, capability flags, and pricing. Far more scannable than the raw
  * `{ models: [ … ] }` array.

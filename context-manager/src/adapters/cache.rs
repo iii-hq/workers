@@ -1,9 +1,9 @@
 //! TTL cache over a [`ModelResolver`]. Model budgets change only when a
 //! provider reconciles its catalog slice or an operator edits limits, yet
-//! the resolver was hitting `router::models::budget` on every non-inline
+//! the resolver was hitting `llm-router::models::budget` on every non-inline
 //! assemble/compact/count call. The decorator bounds that to one bus round
 //! trip per (provider, id) per TTL window, and [`CachingModelResolver::flush`]
-//! empties it eagerly when the router announces `router::models::changed`.
+//! empties it eagerly when the router announces `llm-router::models::changed`.
 //!
 //! TTLs: known budgets are safe to hold for a minute (staleness only skews
 //! an estimate reserve); an unknown model (`Ok(None)`) is held briefly so a
@@ -47,7 +47,7 @@ impl CachingModelResolver {
         }
     }
 
-    /// Drop every cached budget (bound to `router::models::changed`).
+    /// Drop every cached budget (bound to `llm-router::models::changed`).
     pub fn flush(&self) {
         self.entries
             .write()
@@ -114,7 +114,7 @@ impl ModelResolver for CachingModelResolver {
     }
 }
 
-/// `router::models::changed` payload — `{ provider, count }`. The handler
+/// `llm-router::models::changed` payload — `{ provider, count }`. The handler
 /// flushes everything regardless, so the fields are advisory only.
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct OnModelsChangedEvent {
@@ -130,7 +130,7 @@ struct OnModelsChangedResponse {
 }
 
 /// Best-effort flush binding: when the router announces a catalog change
-/// (`router::models::changed`), drop every cached budget so the next call
+/// (`llm-router::models::changed`), drop every cached budget so the next call
 /// re-resolves. A failed registration (router absent at boot, older router
 /// without the trigger type) only costs TTL-bounded staleness — never boot.
 pub fn register_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelResolver>) {
@@ -150,13 +150,13 @@ pub fn register_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelRes
     );
 
     if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-        "router::models::changed".to_string(),
+        "llm-router::models::changed".to_string(),
         MODELS_CHANGED_FN_ID.to_string(),
         json!({}),
     )) {
         tracing::warn!(
             error = %e,
-            "could not bind router::models::changed; model-budget cache degrades to TTL-only invalidation"
+            "could not bind llm-router::models::changed; model-budget cache degrades to TTL-only invalidation"
         );
     }
 }

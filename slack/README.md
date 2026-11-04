@@ -44,7 +44,7 @@ signing_secret: "${SLACK_SIGNING_SECRET}"      # required for the bridge
 public_base_url: "https://your-engine.example" # Slack posts events here
 require_mention: true        # channels fire only on @bot mention (DMs always)
 backfill_thread: true        # pull prior thread replies into the session on first mention
-default_model: null          # optional; else the first model from router::models::list
+default_model: null          # optional; else the first model from llm-router::models::list
 functions_allow: ["slack::*"]
 ```
 

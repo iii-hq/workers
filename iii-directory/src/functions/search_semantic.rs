@@ -31,7 +31,7 @@ const MINILM_MAX_LENGTH: usize = 512;
 /// Texts encoded per hold of the model lock, so a query waiting on a
 /// catalog rebuild or an embed batch waits for one chunk, not the whole
 /// call. Catalog documents and queries are short (~220 ms per 32);
-/// `router::embed` callers send memories of up to ~2000 B, so the embed
+/// `llm-router::embed` callers send memories of up to ~2000 B, so the embed
 /// surface takes 8 (~370 ms), well inside memory's 2 s recall budget.
 const ENCODE_CHUNK: usize = 32;
 const EMBED_CHUNK: usize = 8;

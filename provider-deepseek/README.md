@@ -5,9 +5,9 @@ Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::deepseek::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
 `provider::deepseek::refresh_models` (upstream `GET /models`, enriched with
-local metadata → `router::models::reconcile`), plus
+local metadata → `llm-router::models::reconcile`), plus
 `provider::deepseek::count_tokens` (prompt token counting behind
-`router::count_tokens`: the prompt DeepSeek-V4.1's published encoder builds
+`llm-router::count_tokens`: the prompt DeepSeek-V4.1's published encoder builds
 from the wire, counted with DeepSeek's own vocabulary rather than a borrowed
 one; never runs the model and costs nothing).
 
@@ -18,8 +18,8 @@ models listing is always read from that endpoint's `/models` sibling.
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The declaration carries no models and
   `credential_env_var: DEEPSEEK_API_KEY`; the post-register refresh
   discovers the catalog, gated on a configured credential (no key → empty
@@ -29,7 +29,7 @@ models listing is always read from that endpoint's `/models` sibling.
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `DEEPSEEK_API_KEY` env on the router → none). Both
   `api_key` and `oauth` credential shapes are sent as `Authorization:
   Bearer`; v1 performs no OAuth refresh.
@@ -50,7 +50,7 @@ models listing is always read from that endpoint's `/models` sibling.
   then `deepseek-v4-pro` requests are answered by V4.1 Flash and billed at
   the Flash price until V4.1 Pro ships; the row stays while the id is listed.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request. DeepSeek holds an overloaded request
   open with `: keep-alive` SSE comments, which the decoder ignores.
   Generation must start within **120s** of the upstream request, including
@@ -97,7 +97,7 @@ models listing is always read from that endpoint's `/models` sibling.
   and any value other than `enabled`/`disabled` fails the turn instead of
   silently running at full effort. Each documented catalog row advertises the
   effort vocabulary as `reasoning_efforts` (`low`, `high`, `max`) so
-  `router::models::get` shows what a level lands on.
+  `llm-router::models::get` shows what a level lands on.
   Reasoning models stream their chain of thought as `reasoning_content`
   deltas, which the worker surfaces as `thinking` blocks (`src/sse.rs`), and
   `completion_tokens_details.reasoning_tokens` lands on `usage.reasoning`.

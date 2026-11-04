@@ -1,5 +1,5 @@
 // Heuristic fallback for OpenWiki: produces a serviceable, source-grounded wiki
-// without an LLM. Used when router::complete is unavailable or errors.
+// without an LLM. Used when llm-router::complete is unavailable or errors.
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 

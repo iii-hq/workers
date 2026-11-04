@@ -64,7 +64,7 @@ sdk.registerFunction(
 )
 
 const registrationPayload = {
-  function_id: 'router::provider::register',
+  function_id: 'llm-router::provider::register',
   payload: {
     id: providerId,
     display_name: 'OpenAI Codex (provider fixture)',

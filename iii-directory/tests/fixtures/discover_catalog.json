@@ -6958,7 +6958,7 @@
           "type": "string"
         },
         "ModelInput": {
-          "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::budget`.",
+          "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `llm-router::models::budget`.",
           "properties": {
             "id": {
               "description": "Model id, e.g. `claude-sonnet-4`.",
@@ -7487,7 +7487,7 @@
           "type": "string"
         },
         "ModelInput": {
-          "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::budget`.",
+          "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `llm-router::models::budget`.",
           "properties": {
             "id": {
               "description": "Model id, e.g. `claude-sonnet-4`.",
@@ -21297,10 +21297,10 @@
   },
   {
     "description": "Read one catalog model by {provider, id}; null when the model is not registered.",
-    "name": "router::models::get",
+    "name": "llm-router::models::get",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Input of `router::models::get`.",
+      "description": "Input of `llm-router::models::get`.",
       "properties": {
         "id": {
           "default": "",
@@ -21319,10 +21319,10 @@
   },
   {
     "description": "List catalog models, optionally filtered by provider and/or a capability flag.",
-    "name": "router::models::list",
+    "name": "llm-router::models::list",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Input of `router::models::list`.",
+      "description": "Input of `llm-router::models::list`.",
       "properties": {
         "capability": {
           "description": "Keep only models that support this capability flag (optional).",
@@ -21345,10 +21345,10 @@
   },
   {
     "description": "Check whether a model supports a capability flag (fails open for unknown models).",
-    "name": "router::models::supports",
+    "name": "llm-router::models::supports",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Input of `router::models::supports`.",
+      "description": "Input of `llm-router::models::supports`.",
       "properties": {
         "capability": {
           "default": "",
@@ -21372,10 +21372,10 @@
   },
   {
     "description": "List registered providers with their configured/available status.",
-    "name": "router::provider::list",
+    "name": "llm-router::provider::list",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Input of `router::provider::list` — takes no arguments. A struct (rather than `Value`) keeps the request schema concrete; unknown fields (e.g. the engine-injected `_caller_worker_id`) are ignored.",
+      "description": "Input of `llm-router::provider::list` — takes no arguments. A struct (rather than `Value`) keeps the request schema concrete; unknown fields (e.g. the engine-injected `_caller_worker_id`) are ignored.",
       "title": "ProviderListRequest",
       "type": "object"
     }
@@ -25090,7 +25090,7 @@
               "description": "Allow-list of function ids the child may call, e.g. `[\"web::fetch\"]`. A bare array is the shorthand and is wrapped into the harness `{ \"allow\": [...] }` policy; a single string and a full FunctionPolicy object (`{ \"allow\": [...], \"deny\": [...] }`) are also accepted. INHERITS BY DEFAULT: omit this and the node inherits the run's default reach — the def-level `default_functions`, or `[\"*\"]` (everything) when that is also unset. So a node can call anything the main agent could without listing it. Set this to NARROW one node (e.g. `[\"web::fetch\"]`), or to an empty allow-list (`{ \"allow\": [] }`) to lock the node down to nothing. Use the narrow form for least-privilege nodes; omit for the common case."
             },
             "model": {
-              "description": "Model id, e.g. `\"claude-sonnet-4-6\"`. Required and non-empty. MUST be a model registered on this engine — discover the valid ids with `router::models::list`; an unregistered id is rejected up front by `workflow::start`. Do not guess model ids from memory.",
+              "description": "Model id, e.g. `\"claude-sonnet-4-6\"`. Required and non-empty. MUST be a model registered on this engine — discover the valid ids with `llm-router::models::list`; an unregistered id is rejected up front by `workflow::start`. Do not guess model ids from memory.",
               "type": "string"
             },
             "output": {

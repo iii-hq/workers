@@ -74,7 +74,7 @@ struct StartRequestRaw {
 
 /// Compact copy-pasteable skeleton appended to every shape error.
 const SHAPE_HINT: &str = "Expected shape: \
-    {\"definition\":{\"nodes\":{\"<id>\":{\"agent\":{\"model\":\"<id from router::models::list>\"},\
+    {\"definition\":{\"nodes\":{\"<id>\":{\"agent\":{\"model\":\"<id from llm-router::models::list>\"},\
     \"input\":{\"from\":\"run_input\"}}},\"output\":{\"from\":\"node:<id>\"}}}. `version` defaults to 1. \
     Each node is {agent, input, depends_on?, fanout?}; a pure source node may omit `input` (defaults to \
     run_input). Full field docs are inline in this function's request schema.";
@@ -246,7 +246,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
     }
     match n.get("agent") {
         None => p.push(format!(
-            "node `{id}`: missing `agent` — {{\"model\":\"<id from router::models::list>\"}}"
+            "node `{id}`: missing `agent` — {{\"model\":\"<id from llm-router::models::list>\"}}"
         )),
         Some(Value::Object(agent)) => {
             for k in agent.keys() {
@@ -266,7 +266,7 @@ fn collect_node_problems(id: &str, node: &Value, p: &mut Vec<String>) {
                 .unwrap_or(false);
             if !has_model {
                 p.push(format!(
-                    "node `{id}`.agent: missing `model` — an id from router::models::list"
+                    "node `{id}`.agent: missing `model` — an id from llm-router::models::list"
                 ));
             }
         }
@@ -746,7 +746,7 @@ pub fn unknown_models(def: &WorkflowDef, registered: &BTreeSet<(String, String)>
 }
 
 /// Read the set of registered `(provider, model-id)` pairs from
-/// `router::models::list`. Returns None if the catalog can't be read (router down
+/// `llm-router::models::list`. Returns None if the catalog can't be read (router down
 /// / unexpected shape / empty) — the caller then SKIPS model validation rather
 /// than blocking a legitimate run; the node-level failure surfaced via
 /// `result_error` remains the backstop.
@@ -755,7 +755,7 @@ async fn fetch_registered_models(deps: &Deps) -> Option<BTreeSet<(String, String
     let resp = deps
         .iii
         .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "router::models::list".into(),
+            function_id: "llm-router::models::list".into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -787,7 +787,7 @@ async fn fetch_registered_models(deps: &Deps) -> Option<BTreeSet<(String, String
 /// catalog is unreadable (router not up): skip rather than block.
 async fn validate_models(deps: &Deps, def: &WorkflowDef) -> Result<(), WorkflowError> {
     let Some(registered) = fetch_registered_models(deps).await else {
-        tracing::warn!("router::models::list unavailable; skipping model validation");
+        tracing::warn!("llm-router::models::list unavailable; skipping model validation");
         return Ok(());
     };
 
@@ -797,7 +797,7 @@ async fn validate_models(deps: &Deps, def: &WorkflowDef) -> Result<(), WorkflowE
         let available: Vec<&str> = available.into_iter().collect();
         return Err(WorkflowError::InvalidDef(format!(
             "unknown model(s) {:?}: not registered on this engine. Available: {}. \
-             Discover with router::models::list.",
+             Discover with llm-router::models::list.",
             unknown,
             available.join(", ")
         )));

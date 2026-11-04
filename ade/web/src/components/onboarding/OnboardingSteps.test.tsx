@@ -175,7 +175,7 @@ describe('ModelsStep', () => {
     expect(html).toContain('Engine log')
     expect(html).toContain('2 queued')
     expect(html).toContain('Add the provider-claude-code worker')
-    expect(html).toContain('router::models::list provider=claude-code')
+    expect(html).toContain('llm-router::models::list provider=claude-code')
   })
 
   it('holds the choices behind a skeleton until the machine is scanned', () => {

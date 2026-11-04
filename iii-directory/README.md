@@ -143,7 +143,7 @@ local_skills_folder: skills/iii        # project-scoped overrides (whole-namespa
 agents_folder: agents                  # direct <id>.md agent profiles
 agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
-# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle, also router::embed's local fallback (loads on first use in every mode); null disables both
+# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle, also llm-router::embed's local fallback (loads on first use in every mode); null disables both
 function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 
 # TUNABLE — hot-reload live on `configuration:updated`.
@@ -752,7 +752,7 @@ in [On-disk layout](#on-disk-layout).
 ### Local embeddings — `provider::minilm::embed`
 
 The MiniLM model that ranks `directory::search_functions` candidates also
-serves `router::embed` on a stack where no registered provider has an embed
+serves `llm-router::embed` on a stack where no registered provider has an embed
 surface (Anthropic only, for example), with no key and no extra process. The
 memory worker's semantic recall is one caller.
 
@@ -769,7 +769,7 @@ memory worker's semantic recall is one caller.
 
   The router then moves on.
 - **Not a declared provider.** It never declares itself to the router, so it
-  lists no models and no model picker shows it. `router::embed` tries it only
+  lists no models and no model picker shows it. `llm-router::embed` tries it only
   when every registered provider either has no embed surface or is not
   configured for good (no API key). Configuring such a provider later moves
   callers to its vector space (memory re-embeds into the model the reply

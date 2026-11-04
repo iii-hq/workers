@@ -12,7 +12,7 @@
 //! what DeepSeek bills: in the mode the effort `stream` sends puts it in,
 //! with the response format `stream` sends rendered into the system message.
 //!
-//! Exposed behind `router::count_tokens`.
+//! Exposed behind `llm-router::count_tokens`.
 
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::chat_framing::Framed;

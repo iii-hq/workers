@@ -27,7 +27,7 @@ each case lists the grant it needs.
 ```bash
 $III trigger harness::send --json '{
   "message": "<the prompt>",
-  "model": "<a live id from router::models::list>",
+  "model": "<a live id from llm-router::models::list>",
   "options": { "functions": { "allow": ["engine::register_trigger", "engine::unregister_trigger", "state::set", "state::get"] } }
 }'
 ```

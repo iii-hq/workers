@@ -9,16 +9,16 @@
 //!
 //! 1. The engine drops a trigger binding when the type's owner — this worker —
 //!    disconnects, so a provider that outlived a router restart never hears the
-//!    `router::ready` fan-out. `register.rs` already compensates by nudging
+//!    `llm-router::ready` fan-out. `register.rs` already compensates by nudging
 //!    `registry.ids()` directly, but that list comes from the persisted
 //!    registry: on a stack whose state worker runs in-memory it is EMPTY after
 //!    a restart, so the nudge reaches nobody.
-//! 2. `router::ready` is a one-shot broadcast. A provider that re-binds its
+//! 2. `llm-router::ready` is a one-shot broadcast. A provider that re-binds its
 //!    subscription after the router fired it simply misses it.
 //!
 //! In both cases the provider recovers only on its own periodic catalog timer
 //! (three minutes for openai-codex), and until then every model it serves is
-//! unresolvable — `router::models::budget` returns null, context-manager takes
+//! unresolvable — `llm-router::models::budget` returns null, context-manager takes
 //! its conservative 8k fallback, and healthy sessions die with a bewildering
 //! `context/overflow`.
 //!
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(provider_id_of("provider::anthropic::chat"), None);
         assert_eq!(provider_id_of("provider::anthropic::models::refresh"), None);
         // Not a provider function at all.
-        assert_eq!(provider_id_of("router::models::get"), None);
+        assert_eq!(provider_id_of("llm-router::models::get"), None);
         assert_eq!(provider_id_of("harness::send"), None);
         // Degenerate shapes resolve to nothing rather than a bogus id.
         assert_eq!(provider_id_of("provider::::on_router_ready"), None);

@@ -1,4 +1,4 @@
-//! llm-router entry schema composition (spec § router::provider::register).
+//! llm-router entry schema composition (spec § llm-router::provider::register).
 use std::collections::BTreeMap;
 
 use crate::settings::MAX_RETRY_MAX;

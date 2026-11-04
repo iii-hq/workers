@@ -1,6 +1,6 @@
 //! Model descriptor and function-invocation schema (README § Model
 //! descriptor / § Function invocation schema). Wire-aligned with
-//! `llm-router`'s catalog so `router::models::get` parses back into `Model`.
+//! `llm-router`'s catalog so `llm-router::models::get` parses back into `Model`.
 
 use std::collections::BTreeMap;
 
@@ -77,7 +77,7 @@ pub struct Model {
     pub pricing: Option<Pricing>,
 }
 
-/// A provider's declared starting point, from `router::provider::list`.
+/// A provider's declared starting point, from `llm-router::provider::list`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderDefaults {
     /// The model to start on when a send names none; already checked

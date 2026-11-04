@@ -1,9 +1,9 @@
 {
-  "description": "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.",
+  "description": "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.",
   "function_id": "provider::kimi::on_router_ready",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Event delivered to a provider's `provider::<id>::on_router_ready` (the `router::ready` trigger payload, currently `{}`). Unknown fields are ignored.",
+    "description": "Event delivered to a provider's `provider::<id>::on_router_ready` (the `llm-router::ready` trigger payload, currently `{}`). Unknown fields are ignored.",
     "title": "RouterReadyEvent",
     "type": "object"
   },

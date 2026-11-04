@@ -9,7 +9,7 @@ use llm_router::types::model::Model;
 use llm_router::types::router::{DiscoveryReport, ProviderResolveResponse};
 use serde_json::Value;
 
-/// `router::provider::resolve` — credential + effective settings.
+/// `llm-router::provider::resolve` — credential + effective settings.
 pub async fn resolve(
     iii: &IIIClient,
     token: Option<&str>,
@@ -23,7 +23,7 @@ pub async fn resolve(
     .await
 }
 
-/// `router::models::reconcile` — replace this provider's catalog slice.
+/// `llm-router::models::reconcile` — replace this provider's catalog slice.
 pub async fn reconcile(
     iii: &IIIClient,
     models: Vec<Model>,
@@ -39,7 +39,7 @@ pub async fn begin_discovery(
 ) -> Result<(ProviderResolveResponse, Option<String>), Error> {
     let raw = scaffold::call(
         iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         serde_json::json!({
             "id": PROVIDER_ID, "token": token, "begin_discovery": true,
         }),
@@ -68,7 +68,7 @@ pub async fn complete_discovery(
 ) -> Result<usize, Error> {
     let raw = scaffold::call(
         iii,
-        "router::models::reconcile",
+        "llm-router::models::reconcile",
         serde_json::json!({
             "provider": PROVIDER_ID, "models": models, "token": token, "discovery": report,
         }),
@@ -77,12 +77,12 @@ pub async fn complete_discovery(
     Ok(raw.get("count").and_then(Value::as_u64).unwrap_or(0) as usize)
 }
 
-/// `router::models::get` — authoritative catalog record (None when absent).
+/// `llm-router::models::get` — authoritative catalog record (None when absent).
 pub async fn models_get(iii: &IIIClient, model_id: &str) -> Option<Model> {
     scaffold::models_get(iii, PROVIDER_ID, model_id).await
 }
 
-/// `router::provider::register` — returns the registration token to persist.
+/// `llm-router::provider::register` — returns the registration token to persist.
 pub async fn register(iii: &IIIClient, declaration: Value) -> Result<Value, Error> {
     scaffold::register(iii, declaration).await
 }

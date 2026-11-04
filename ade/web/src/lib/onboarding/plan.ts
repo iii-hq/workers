@@ -657,7 +657,7 @@ export function stepDetail(step: PlanStep): string {
     case 'set-config':
       return `configuration::set ${step.configuration} ${step.path.join('.')}`
     case 'wait-models':
-      return `router::models::list provider=${step.providerId}`
+      return `llm-router::models::list provider=${step.providerId}`
     case 'check-judge':
       return 'judge::models::list'
   }

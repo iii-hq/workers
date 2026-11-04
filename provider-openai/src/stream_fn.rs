@@ -120,7 +120,7 @@ async fn run_stream_call(
             let _ = send_event(
                 sink,
                 &synthetic_error_event(
-                    &format!("router::provider::resolve failed: {e}"),
+                    &format!("llm-router::provider::resolve failed: {e}"),
                     &model,
                     kind,
                 ),

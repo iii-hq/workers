@@ -1,4 +1,4 @@
-//! Boot wiring: function surface, the router::ready rebind, and the
+//! Boot wiring: function surface, the llm-router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{
@@ -63,7 +63,7 @@ pub fn declaration() -> ProviderDeclaration {
         models: None,
         worker_id: Some("provider-openai-codex".into()),
         // The mark the console paints beside this provider's models; the
-        // router carries it verbatim in `router::provider::list`.
+        // router carries it verbatim in `llm-router::provider::list`.
         icon_svg: Some(
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg")).into(),
         ),
@@ -170,7 +170,7 @@ pub async fn register_provider_with_auth(
 ) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
-    // router::ready — a restarted router may carry new config and reissues
+    // llm-router::ready — a restarted router may carry new config and reissues
     // declare/refresh anyway — and on upstream auth errors (stream_fn).
     let cache = ScaffoldCache::new();
     // Reads are silence-bounded: a stalled upstream otherwise pings the router
@@ -281,7 +281,7 @@ pub async fn register_provider_with_auth(
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
+        "llm-router::ready",
         surface::ON_ROUTER_READY_ID,
         json!({}),
     ));

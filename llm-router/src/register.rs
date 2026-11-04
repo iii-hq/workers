@@ -1,6 +1,6 @@
 //! Wiring: restore stores → register and fetch configuration → build the live
 //! in-memory snapshot and the secret-reference cache → register functions →
-//! bind and reconcile the configuration trigger → emit `router::ready` → bind
+//! bind and reconcile the configuration trigger → emit `llm-router::ready` → bind
 //! the (optional) `secrets::changed` trigger.
 //!
 //! Function registrations use `iii_sdk` directly, with the shared typed
@@ -55,6 +55,20 @@ fn internal_meta() -> Value {
     json!({ "internal": true })
 }
 
+/// Register a public function under its `llm-router::` id and under the
+/// deprecated `router::` id it replaced, so callers built before the rename
+/// keep working. The alias is hidden from discovery and says what to call
+/// instead. `build` runs once per id; every handler factory is stateless.
+fn register_with_alias(iii: &IIIClient, id: &'static str, build: impl Fn() -> RegisterFunction) {
+    iii.register_function(id, build());
+    iii.register_function(
+        surface::legacy_id(id),
+        build()
+            .description(format!("Deprecated alias of {id}; call {id} instead."))
+            .metadata(json!({ "internal": true, "deprecated": true, "replaced_by": id })),
+    );
+}
+
 pub struct RouterRefs {
     pub registry: Arc<RegistryStore>,
     pub catalog: Arc<CatalogStore>,
@@ -107,43 +121,37 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     });
 
     // 5. Function surface.
-    {
+    register_with_alias(&iii, surface::CHAT_ID, || {
         let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
-        iii.register_function(
-            surface::CHAT_ID,
-            typed_async_with_bad_request(
-                move |input: ChatFnInput| {
-                    let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
-                    async move {
-                        let sink = open_sink(&iii, &input.writer_ref).await?;
-                        let result = pipeline.run(input.call, sink.clone()).await;
-                        sink.close(); // the handler owns closing the caller's channel
-                        result
-                    }
-                },
-                invalid_request_from_serde,
-            )
-            .description(surface::CHAT_DESC)
-            .metadata(internal_meta()),
-        );
-    }
-    iii.register_function(
-        surface::COMPLETE_ID,
+        typed_async_with_bad_request(
+            move |input: ChatFnInput| {
+                let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
+                async move {
+                    let sink = open_sink(&iii, &input.writer_ref).await?;
+                    let result = pipeline.run(input.call, sink.clone()).await;
+                    sink.close(); // the handler owns closing the caller's channel
+                    result
+                }
+            },
+            invalid_request_from_serde,
+        )
+        .description(surface::CHAT_DESC)
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::COMPLETE_ID, || {
         typed_async_with_bad_request(
             make_complete(iii.clone(), pipeline.clone()),
             invalid_request_from_serde,
         )
         .description(surface::COMPLETE_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::ABORT_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::ABORT_ID, || {
         RegisterFunction::new_async(make_abort(inflight.clone()))
             .description(surface::ABORT_DESC)
-            .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::EMBED_ID,
+            .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::EMBED_ID, || {
         RegisterFunction::new_async(crate::embed::make_embed(
             iii.clone(),
             registry.clone(),
@@ -151,30 +159,27 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             secrets.clone(),
         ))
         .description(surface::EMBED_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::TRANSCRIBE_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::TRANSCRIBE_ID, || {
         RegisterFunction::new_async(crate::speech::make_transcribe(
             iii.clone(),
             registry.clone(),
             catalog.clone(),
         ))
         .description(surface::TRANSCRIBE_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::SPEAK_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::SPEAK_ID, || {
         RegisterFunction::new_async(crate::speech::make_speak(
             iii.clone(),
             registry.clone(),
             catalog.clone(),
         ))
         .description(surface::SPEAK_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::COUNT_TOKENS_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::COUNT_TOKENS_ID, || {
         RegisterFunction::new_async(crate::count_tokens::make_count_tokens(
             iii.clone(),
             registry.clone(),
@@ -182,55 +187,48 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             config.clone(),
         ))
         .description(surface::COUNT_TOKENS_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::MODELS_LIST_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::MODELS_LIST_ID, || {
         RegisterFunction::new_async(make_models_list(catalog.clone()))
-            .description(surface::MODELS_LIST_DESC),
-    );
-    iii.register_function(
-        surface::MODELS_GET_ID,
+            .description(surface::MODELS_LIST_DESC)
+    });
+    register_with_alias(&iii, surface::MODELS_GET_ID, || {
         RegisterFunction::new_async(make_models_get(catalog.clone()))
-            .description(surface::MODELS_GET_DESC),
-    );
-    iii.register_function(
-        surface::MODELS_BUDGET_ID,
+            .description(surface::MODELS_GET_DESC)
+    });
+    register_with_alias(&iii, surface::MODELS_BUDGET_ID, || {
         RegisterFunction::new_async(make_models_budget(
             catalog.clone(),
             registry.clone(),
             config.clone(),
         ))
         .description(surface::MODELS_BUDGET_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::MODELS_SUPPORTS_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::MODELS_SUPPORTS_ID, || {
         RegisterFunction::new_async(make_models_supports(catalog.clone()))
-            .description(surface::MODELS_SUPPORTS_DESC),
-    );
-    iii.register_function(
-        surface::PROVIDER_LIST_ID,
+            .description(surface::MODELS_SUPPORTS_DESC)
+    });
+    register_with_alias(&iii, surface::PROVIDER_LIST_ID, || {
         RegisterFunction::new_async(make_provider_list(
             config.clone(),
             registry.clone(),
             secrets.clone(),
             catalog.clone(),
         ))
-        .description(surface::PROVIDER_LIST_DESC),
-    );
-    iii.register_function(
-        surface::ROUTE_ID,
+        .description(surface::PROVIDER_LIST_DESC)
+    });
+    register_with_alias(&iii, surface::ROUTE_ID, || {
         RegisterFunction::new_async(crate::routing::make_route(
             registry.clone(),
             catalog.clone(),
             config.clone(),
         ))
         .description(surface::ROUTE_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::PROVIDER_REGISTER_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::PROVIDER_REGISTER_ID, || {
         typed_async_with_bad_request(
             make_provider_register(
                 iii.clone(),
@@ -242,10 +240,9 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             invalid_request_from_serde,
         )
         .description(surface::PROVIDER_REGISTER_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::PROVIDER_RESOLVE_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::PROVIDER_RESOLVE_ID, || {
         RegisterFunction::new_async(make_provider_resolve(
             config.clone(),
             entry_lock.clone(),
@@ -253,10 +250,9 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             secrets.clone(),
         ))
         .description(surface::PROVIDER_RESOLVE_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::UPDATE_CREDENTIAL_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::UPDATE_CREDENTIAL_ID, || {
         RegisterFunction::new_async(make_update_credential(
             iii.clone(),
             registry.clone(),
@@ -264,10 +260,9 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             entry_lock.clone(),
         ))
         .description(surface::UPDATE_CREDENTIAL_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
-        surface::MODELS_RECONCILE_ID,
+        .metadata(internal_meta())
+    });
+    register_with_alias(&iii, surface::MODELS_RECONCILE_ID, || {
         typed_async_with_bad_request(
             make_models_reconcile(
                 registry.clone(),
@@ -280,8 +275,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             invalid_request_from_serde,
         )
         .description(surface::MODELS_RECONCILE_DESC)
-        .metadata(internal_meta()),
-    );
+        .metadata(internal_meta())
+    });
 
     // 6. Bind configuration changes only after every consumer of the live
     // snapshot has been built.
@@ -334,7 +329,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // 7. ready — providers re-declare on this
     events.emit(crate::triggers::READY, json!({})).await;
 
-    // The ready fan-out only reaches providers whose `router::ready` binding
+    // The ready fan-out only reaches providers whose `llm-router::ready` binding
     // still exists — and the engine drops those bindings when THIS worker
     // (the trigger type's owner) disconnects, so providers that outlived a
     // router restart never hear it. Nudge every provider directly:

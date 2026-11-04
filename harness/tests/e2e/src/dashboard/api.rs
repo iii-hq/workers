@@ -121,13 +121,13 @@ async fn catalog(
         ));
     }
     if !context
-        .function_exists("router::models::list")
+        .function_exists("llm-router::models::list")
         .await
         .map_err(ApiError::internal)?
     {
         context.shutdown().await;
         return Err(ApiError::bad_request(
-            "connected Harness stack does not expose router::models::list; start its llm-router",
+            "connected Harness stack does not expose llm-router::models::list; start its llm-router",
         ));
     }
     let models = crate::catalog::list(&context, None)

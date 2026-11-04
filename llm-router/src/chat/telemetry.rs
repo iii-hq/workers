@@ -1,6 +1,6 @@
 //! gen_ai span attributes for LLM calls.
 //!
-//! The iii SDK opens an `execute router::chat` span around the handler; this
+//! The iii SDK opens an `execute llm-router::chat` span around the handler; this
 //! module stamps token usage, cost, and response metadata onto that active
 //! span so the traces UI can show what each LLM call consumed. Attribute
 //! names follow the OTel GenAI semantic conventions (`gen_ai.*`);

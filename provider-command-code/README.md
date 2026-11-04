@@ -3,7 +3,7 @@
 Command Code models behind
 [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router). Install
 this worker next to the router, provide one Command Code API key, and its live
-model catalog appears behind `router::chat` and `router::complete`. Models are
+model catalog appears behind `llm-router::chat` and `llm-router::complete`. Models are
 namespaced as `command-code/<upstream-id>` so they cannot collide with direct
 vendor providers.
 
@@ -36,7 +36,7 @@ The provider discovers the live catalog after registration. Then call the
 router with a namespaced model id:
 
 ```ts
-const result = await iii.trigger('router::complete', {
+const result = await iii.trigger('llm-router::complete', {
   model: 'command-code/gpt-5.4',
   messages: [
     {
@@ -48,7 +48,7 @@ const result = await iii.trigger('router::complete', {
 }, { timeout_ms: 320_000 });
 ```
 
-For token-by-token output, call `router::chat` with an iii channel as described
+For token-by-token output, call `llm-router::chat` with an iii channel as described
 in [llm-router's Quickstart](https://github.com/iii-hq/workers/blob/main/llm-router/README.md).
 
 ## Configuration

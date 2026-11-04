@@ -10,10 +10,10 @@ Implements the provider protocol from
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
 `provider::kimi::refresh_models` (live `GET /v1/models` filtered to Kimi /
 Moonshot chat families, enriched with a curated capability snapshot →
-`router::models::reconcile`).
+`llm-router::models::reconcile`).
 
 `provider::kimi::count_tokens` counts a prompt through Moonshot's own
-estimator endpoint behind `router::count_tokens`, so the number is the
+estimator endpoint behind `llm-router::count_tokens`, so the number is the
 upstream's rather than a local reconstruction of it. Counting never runs the
 model. The count body is the chat body's `messages` and `tools` without the
 generation knobs; `response_format` is left out, since Moonshot documents the
@@ -25,8 +25,8 @@ to compare it with what chat bills.
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The declaration carries no static `models` slice — `GET /v1/models` is the
   source of truth and a refresh fires right after registration. Defaults:
   `api_url: https://api.moonshot.ai/v1/chat/completions`,
@@ -36,12 +36,12 @@ to compare it with what chat bills.
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `MOONSHOT_API_KEY` env on the router → none). Both
   `api_key` and `oauth` credential shapes are sent as `Authorization:
   Bearer`; v1 performs no OAuth refresh.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** 401/403 → `auth_expired`, 429 → `rate_limited` (except a quota
   wall, `exceeded_current_quota_error` → `permanent`),

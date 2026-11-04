@@ -1,4 +1,4 @@
-//! Boot wiring: function surface, the router::ready rebind, and the
+//! Boot wiring: function surface, the llm-router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models};
@@ -206,7 +206,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
+        "llm-router::ready",
         surface::ON_ROUTER_READY_ID,
         json!({}),
     ));

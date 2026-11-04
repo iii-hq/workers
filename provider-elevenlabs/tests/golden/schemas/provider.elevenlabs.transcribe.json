@@ -1,5 +1,5 @@
 {
-  "description": "Speech to text on ElevenLabs Scribe behind router::transcribe: base64 audio in, text with timed segments and the detected language out.",
+  "description": "Speech to text on ElevenLabs Scribe behind llm-router::transcribe: base64 audio in, text with timed segments and the detected language out.",
   "function_id": "provider::elevenlabs::transcribe",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

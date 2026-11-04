@@ -92,7 +92,7 @@ pub struct NodeDef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpec {
-    /// Model id registered on this engine (discover them with `router::models::list`);
+    /// Model id registered on this engine (discover them with `llm-router::models::list`);
     /// an unregistered id is rejected at start.
     pub model: String,
     /// Provider override; defaults to the routed provider for the model.
@@ -310,7 +310,7 @@ mod tests {
             "crash-resumable",                       // WorkflowDef top-level behavior
             "must not contain",                      // node-id constraint
             "fans out over must be",                 // AgentSpec.output JSON-output rule
-            "router::models::list",                  // AgentSpec.model discovery hint
+            "llm-router::models::list",              // AgentSpec.model discovery hint
             "one child runs per element",            // FanoutSpec.over expansion semantics
             "declaring every field read downstream", // AgentSpec.output: schema must declare consumed fields
         ] {

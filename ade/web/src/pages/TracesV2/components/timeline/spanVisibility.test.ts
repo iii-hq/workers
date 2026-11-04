@@ -337,11 +337,11 @@ describe('applyHiddenSpanFilters + the harness::turn shape', () => {
     }),
     vis({
       span_id: 'llm',
-      name: 'execute router::chat',
+      name: 'execute llm-router::chat',
       parent_span_id: 'step',
       depth: 4,
       attributes: {
-        'iii.function.id': 'router::chat',
+        'iii.function.id': 'llm-router::chat',
         'iii.tag.kind': 'harness.turn',
       },
     }),
@@ -428,7 +428,7 @@ describe('applyHiddenSpanFilters + the harness::turn shape', () => {
       }),
       vis({
         span_id: 'work',
-        name: 'execute router::chat',
+        name: 'execute llm-router::chat',
         parent_span_id: 'step',
       }),
     ])

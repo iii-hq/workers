@@ -175,7 +175,7 @@ export function useModellessProviders(
       try {
         const client = await getIiiClient()
         const result = await client.trigger<{ models?: unknown }>(
-          'router::models::list',
+          'llm-router::models::list',
           { modality: 'any' },
         )
         const listed = new Set(

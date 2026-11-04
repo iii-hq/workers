@@ -1,44 +1,69 @@
 {
-  "description": "Resolve the effective model output budget using the same precedence as router::chat.",
-  "function_id": "router::models::budget",
+  "description": "Replace a provider's catalog slice — the only catalog write path (token-gated).",
+  "function_id": "llm-router::models::reconcile",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Input of `router::models::budget`.",
-    "properties": {
-      "id": {
-        "default": "",
-        "description": "Model id to budget.",
-        "type": "string"
-      },
-      "max_output_tokens": {
-        "description": "Optional caller-requested output budget. When absent, the same provider and router defaults used by `router::chat` apply.",
-        "format": "uint64",
-        "minimum": 0.0,
-        "type": [
-          "integer",
-          "null"
-        ]
-      },
-      "provider": {
-        "default": "",
-        "description": "Provider id that owns the model. Empty resolves an unambiguous model id.",
-        "type": "string"
-      }
-    },
-    "title": "ModelBudgetRequest",
-    "type": "object"
-  },
-  "response_schema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "anyOf": [
-      {
-        "$ref": "#/definitions/ModelBudgetResponse"
-      },
-      {
-        "type": "null"
-      }
-    ],
     "definitions": {
+      "DiscoveryCode": {
+        "description": "Explicit allowlist: arbitrary error strings cannot cross the router boundary.",
+        "enum": [
+          "permission-denied",
+          "invalid-api-key",
+          "insufficient-credits",
+          "spending-limit-exceeded",
+          "rate-limit-exceeded"
+        ],
+        "type": "string"
+      },
+      "DiscoveryOutcome": {
+        "description": "Safe discovery categories. No upstream message, team id or URL is retained.",
+        "enum": [
+          "success",
+          "empty",
+          "not_configured",
+          "billing",
+          "authentication",
+          "permission",
+          "rate_limit",
+          "unavailable",
+          "invalid_response"
+        ],
+        "type": "string"
+      },
+      "DiscoveryReport": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiscoveryCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "http_status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/definitions/DiscoveryOutcome"
+          }
+        },
+        "required": [
+          "attempt",
+          "outcome"
+        ],
+        "type": "object"
+      },
       "Model": {
         "description": "The capability record (README § Model descriptor).",
         "properties": {
@@ -165,24 +190,6 @@
         ],
         "type": "object"
       },
-      "ModelBudgetResponse": {
-        "description": "Effective limits `router::chat` will use for this model and request.",
-        "properties": {
-          "effective_max_output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "model": {
-            "$ref": "#/definitions/Model"
-          }
-        },
-        "required": [
-          "effective_max_output_tokens",
-          "model"
-        ],
-        "type": "object"
-      },
       "Pricing": {
         "properties": {
           "cache_read": {
@@ -238,14 +245,14 @@
         "description": "What a speech model does. Chat models carry no `speech` block.",
         "oneOf": [
           {
-            "description": "Speech to text, served through `router::transcribe`.",
+            "description": "Speech to text, served through `llm-router::transcribe`.",
             "enum": [
               "stt"
             ],
             "type": "string"
           },
           {
-            "description": "Text to speech, served through `router::speak`.",
+            "description": "Text to speech, served through `llm-router::speak`.",
             "enum": [
               "tts"
             ],
@@ -254,7 +261,7 @@
         ]
       },
       "SpeechModel": {
-        "description": "Facts about a speech model. Present only on models served through `router::transcribe` / `router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
+        "description": "Facts about a speech model. Present only on models served through `llm-router::transcribe` / `llm-router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
         "properties": {
           "languages": {
             "description": "BCP-47 tags of the languages the model handles; empty when the provider does not say.",
@@ -278,6 +285,61 @@
         "type": "object"
       }
     },
-    "title": "Nullable_ModelBudgetResponse"
+    "description": "Input of `llm-router::models::reconcile` — the only catalog write path.",
+    "properties": {
+      "discovery": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/DiscoveryReport"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional token-gated discovery completion. Failures preserve the slice."
+      },
+      "models": {
+        "default": [],
+        "description": "The full replacement set of models for this provider.",
+        "items": {
+          "$ref": "#/definitions/Model"
+        },
+        "type": "array"
+      },
+      "provider": {
+        "default": "",
+        "description": "Provider whose catalog slice is being replaced.",
+        "type": "string"
+      },
+      "token": {
+        "description": "Registration token gating the write (optional).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ModelsReconcileRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Output of the `llm-router::models::reconcile` iii function.",
+    "properties": {
+      "count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "provider": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "count",
+      "provider"
+    ],
+    "title": "ModelsReconcileResponse",
+    "type": "object"
   }
 }

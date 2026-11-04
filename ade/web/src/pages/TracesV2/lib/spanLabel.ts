@@ -127,7 +127,7 @@ const MAX_TAG_WALK = 1000
  * it. The immediate parent is NOT enough — a worker on an older SDK whose
  * span processor drops `iii.tag.*` baggage leaves gap spans in the middle
  * of a scope (e.g. `execute context::assemble` carries no tags while its
- * `router::models::get` child re-materializes them), and comparing against
+ * `llm-router::models::get` child re-materializes them), and comparing against
  * such a gap would misread a smear echo as a fresh scope.
  */
 export function inheritedTags(

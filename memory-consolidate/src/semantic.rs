@@ -282,7 +282,7 @@ pub fn parse_actions(text: &str) -> Result<Vec<RawAction>, String> {
         .map_err(|e| format!("unparseable judge reply: {e}"))
 }
 
-/// How one `router::complete` attempt ended.
+/// How one `llm-router::complete` attempt ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     Reply(String),
@@ -943,7 +943,7 @@ mod tests {
     fn classify_separates_transport_from_input_shaped() {
         let reply = |stop: &str, kind: &str| json!({"message": {"stop_reason": stop, "error_kind": kind, "content": [{"type": "text", "text": "{\"actions\": []}"}]}});
         assert!(matches!(
-            classify(&Err("router::complete: function_not_found".into())),
+            classify(&Err("llm-router::complete: function_not_found".into())),
             Outcome::Transport(_)
         ));
         assert!(matches!(

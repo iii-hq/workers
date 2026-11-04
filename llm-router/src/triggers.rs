@@ -23,11 +23,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Fires when a provider reconciles its catalog slice.
-pub const MODELS_CHANGED: &str = "router::models::changed";
+pub const MODELS_CHANGED: &str = "llm-router::models::changed";
 /// Fires when the provider registry changes (declare / availability flip).
-pub const PROVIDER_CHANGED: &str = "router::provider::changed";
+pub const PROVIDER_CHANGED: &str = "llm-router::provider::changed";
 /// Fires once when the router finishes booting; providers re-declare on it.
-pub const READY: &str = "router::ready";
+pub const READY: &str = "llm-router::ready";
 
 const READY_DESC: &str =
     "The router finished booting; providers bind here and re-declare after a restart.";
@@ -129,41 +129,38 @@ pub struct RouterEvents {
 
 impl RouterEvents {
     /// Register the three custom trigger types. Must run before emitting
-    /// `router::ready` so the engine can replay existing bindings first.
+    /// `llm-router::ready` so the engine can replay existing bindings first.
     pub fn register(iii: &IIIClient) -> Arc<Self> {
         let ready = SubscriberSet::default();
         let models_changed = SubscriberSet::default();
         let provider_changed = SubscriberSet::default();
 
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                READY,
-                READY_DESC,
-                RouterEventTriggerHandler::new(READY, ready.clone()),
-            )
-            .trigger_request_format::<EventBindingConfig>(),
-        );
-        tracing::info!(trigger_type = READY, "registered trigger type");
-
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                MODELS_CHANGED,
-                MODELS_CHANGED_DESC,
-                RouterEventTriggerHandler::new(MODELS_CHANGED, models_changed.clone()),
-            )
-            .trigger_request_format::<EventBindingConfig>(),
-        );
-        tracing::info!(trigger_type = MODELS_CHANGED, "registered trigger type");
-
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                PROVIDER_CHANGED,
-                PROVIDER_CHANGED_DESC,
-                RouterEventTriggerHandler::new(PROVIDER_CHANGED, provider_changed.clone()),
-            )
-            .trigger_request_format::<EventBindingConfig>(),
-        );
-        tracing::info!(trigger_type = PROVIDER_CHANGED, "registered trigger type");
+        // Each type is also registered under its deprecated `router::` name,
+        // sharing one subscriber set, so bindings made before the rename keep
+        // receiving every emit.
+        for (name, desc, set) in [
+            (READY, READY_DESC, &ready),
+            (MODELS_CHANGED, MODELS_CHANGED_DESC, &models_changed),
+            (PROVIDER_CHANGED, PROVIDER_CHANGED_DESC, &provider_changed),
+        ] {
+            for (id, desc) in [
+                (name.to_string(), desc.to_string()),
+                (
+                    crate::surface::legacy_id(name),
+                    format!("Deprecated alias of {name}; bind {name} instead."),
+                ),
+            ] {
+                let _ = iii.register_trigger_type(
+                    RegisterTriggerType::new(
+                        &id,
+                        &desc,
+                        RouterEventTriggerHandler::new(&id, set.clone()),
+                    )
+                    .trigger_request_format::<EventBindingConfig>(),
+                );
+                tracing::info!(trigger_type = %id, "registered trigger type");
+            }
+        }
 
         Arc::new(Self {
             iii: iii.clone(),

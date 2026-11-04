@@ -283,7 +283,7 @@ export interface ComposerCapableChat {
   registerComposerAction?(action: ComposerActionRegistration): () => void
 }
 
-/* ── llm-router speech models, as `router::models::list` returns them ─── */
+/* ── llm-router speech models, as `llm-router::models::list` returns them ─── */
 
 export interface RouterSpeechModel {
   id: string

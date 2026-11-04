@@ -26,7 +26,7 @@ src/
 │   ├── telegram.rs    Telegram Bot API client
 │   ├── harness.rs     harness::send / stop / status
 │   ├── approval.rs    approval::resolve / approve-always / list-pending
-│   ├── router.rs      router::models::list
+│   ├── router.rs      llm-router::models::list
 │   └── state.rs       state::get / set / delete (typed wrappers)
 ├── functions/
 │   ├── mod.rs         function registration; trigger binding; webhook-route helpers
@@ -114,7 +114,7 @@ approvals that have no keyboard message yet (e.g. created while the bot was down
 | `harness::send` | `harness::send` | Drive a turn; returns `{session_id, turn_id}`. Carries model, thinking level, functions policy, system prompt, session seed, idempotency key, trace metadata. |
 | `harness::stop` | `harness::stop` | Cancel the active turn (`/stop`, `/start` reset). |
 | `harness::status_active` | `harness::status` | Is a turn running? (FIFO steering gate.) |
-| `router::list_models` | `router::models::list` | Populate the `/model` picker. |
+| `router::list_models` | `llm-router::models::list` | Populate the `/model` picker. |
 | `approval::resolve` / `approve_always` / `list_pending` | `approval::*` | Resolve approvals; whitelist a tool; reconcile pending. |
 | `state::get` / `set` / `delete` | `state::*` | All durable KV (see [§6](#6-durable-state-the-kv-schema)). |
 

@@ -24,7 +24,7 @@ pub enum OutputStrategy {
 }
 
 impl OutputStrategy {
-    /// Pick the strategy: provider-native when `router::models::supports(model,
+    /// Pick the strategy: provider-native when `llm-router::models::supports(model,
     /// "structured_output")`, else the `submit_result` fallback.
     pub async fn resolve(deps: &Deps, record: &TurnRecord) -> OutputStrategy {
         match &record.options.output {
@@ -52,7 +52,7 @@ impl OutputStrategy {
         }
     }
 
-    /// The `response_format` to send on `router::chat` (provider-native only).
+    /// The `response_format` to send on `llm-router::chat` (provider-native only).
     pub fn response_format(&self) -> Option<Value> {
         match self {
             OutputStrategy::ProviderNativeJson { schema } => {

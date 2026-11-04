@@ -157,7 +157,7 @@ fp::batch { calls: [
   (need the harness trusted-session stamp), nested pipes, and every class the
   agent policy hard-denies — session writes and `session::store::*`,
   `approval::*`, `configuration::*`/`oauth::*` (credentials),
-  `router::*`/`provider::*` (model spend), `harness::*`/`run::*` (turn
+  `llm-router::*`/`provider::*` (model spend), `harness::*`/`run::*` (turn
   control), `stream::*` (the deprecated iii-stream surface) and bus internals, `*::on-config-change` — because
   steps run with worker authority and must not ride past those denies.
   Session READS (`session::get`/`list`/`messages*`/`get-message`/

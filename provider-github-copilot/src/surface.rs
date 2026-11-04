@@ -27,7 +27,7 @@ pub const STREAM_DESC: &str =
 
 pub const ABORT_ID: &str = "provider::github-copilot::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::github-copilot::refresh_models";
 pub const REFRESH_MODELS_DESC: &str =
@@ -37,7 +37,7 @@ pub const REFRESH_MODELS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::github-copilot::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 pub const LOGIN_START_ID: &str = "provider::github-copilot::login::start";
 pub const LOGIN_START_DESC: &str =

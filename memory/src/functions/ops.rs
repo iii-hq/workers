@@ -48,7 +48,7 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
         sibling_check(
             deps,
             "router-reachable",
-            "router::models::list",
+            "llm-router::models::list",
             json!({}),
             "extraction degrades to manual saves without llm-router",
         )
@@ -95,21 +95,22 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
 }
 
 async fn embeddings_check(deps: &Deps, enabled: bool) -> DoctorCheck {
-    let (ok, detail) = if !enabled {
-        (
-            true,
-            "embeddings disabled by config; recall is lexical-only".into(),
-        )
-    } else {
-        match crate::embed_client::query_vector(deps, "doctor probe").await {
-            Some(q) => (true, format!("router::embed answered (model {})", q.model)),
+    let (ok, detail) =
+        if !enabled {
+            (
+                true,
+                "embeddings disabled by config; recall is lexical-only".into(),
+            )
+        } else {
+            match crate::embed_client::query_vector(deps, "doctor probe").await {
+            Some(q) => (true, format!("llm-router::embed answered (model {})", q.model)),
             None => (
                 false,
-                "router::embed returned no vector; recall runs lexical-only (BM25 + entities)"
+                "llm-router::embed returned no vector; recall runs lexical-only (BM25 + entities)"
                     .into(),
             ),
         }
-    };
+        };
     DoctorCheck {
         name: "embeddings-available".into(),
         ok,
@@ -291,7 +292,7 @@ mod tests {
         let failing = PassHealth {
             passes: 4,
             failed_in_a_row: 3,
-            last_error: Some("router::complete: no provider".into()),
+            last_error: Some("llm-router::complete: no provider".into()),
         };
         let check = extraction_check(true, &failing);
         assert!(!check.ok);

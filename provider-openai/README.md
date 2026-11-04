@@ -7,12 +7,12 @@ Implements the provider protocol from
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel),
 `provider::openai::refresh_models` (live `GET /v1/models` filtered to
 chat/reasoning families ∪ curated capability snapshot →
-`router::models::reconcile`), `provider::openai::embed` (batch text
-embeddings behind `router::embed`; the endpoint derives from the configured
+`llm-router::models::reconcile`), `provider::openai::embed` (batch text
+embeddings behind `llm-router::embed`; the endpoint derives from the configured
 `api_url`, so OpenAI-compatible local servers — llama.cpp `--embeddings`,
 Ollama, vLLM, LM Studio — and gateways work through the same surface), and
 `provider::openai::count_tokens` (prompt token counting behind
-`router::count_tokens`: on the Responses API through OpenAI's own
+`llm-router::count_tokens`: on the Responses API through OpenAI's own
 `POST …/responses/input_tokens` metering route with the body the stream
 sends, estimator `metered`; on Chat Completions endpoints, or when that route
 fails, a local tiktoken estimate, estimator `tiktoken`. Never runs the model
@@ -20,8 +20,8 @@ and costs nothing).
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The model slice is populated from live discovery and the declaration carries
   `credential_env_var: OPENAI_API_KEY`.
 - **Transport:** the default `https://api.openai.com/v1/responses` endpoint
@@ -33,12 +33,12 @@ and costs nothing).
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `OPENAI_API_KEY` env on the router → none). Both
   `api_key` and `oauth` credential shapes are sent as `Authorization:
   Bearer`; v1 performs no OAuth refresh.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** 401/403 → `auth_expired`, 429 → `rate_limited` (except
   `insufficient_quota`, a billing wall → `permanent`),

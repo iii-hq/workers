@@ -1,9 +1,9 @@
 {
   "description": "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a secret://NAME or env://NAME api_key resolves through the secrets worker.",
-  "function_id": "router::provider::resolve",
+  "function_id": "llm-router::provider::resolve",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Input of `router::provider::resolve`.",
+    "description": "Input of `llm-router::provider::resolve`.",
     "properties": {
       "begin_discovery": {
         "default": false,
@@ -112,7 +112,7 @@
         "type": "string"
       }
     },
-    "description": "Output of the `router::provider::resolve` iii function: the effective credential and settings plus the credential diagnostics.",
+    "description": "Output of the `llm-router::provider::resolve` iii function: the effective credential and settings plus the credential diagnostics.",
     "properties": {
       "api_url": {
         "type": [

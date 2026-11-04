@@ -1,4 +1,4 @@
-//! The `router::complete` iii function: internal iii channel, drain, return
+//! The `llm-router::complete` iii function: internal iii channel, drain, return
 //! the final message. A mid-stream failure returns the synthesized error
 //! message, not a throw.
 //!

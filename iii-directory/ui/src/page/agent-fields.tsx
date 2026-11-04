@@ -163,7 +163,7 @@ function parseReasoningEfforts(value: unknown) {
 }
 
 const fetchModels = (host: Host): Promise<ModelOption[]> =>
-  host.iii.trigger<{ models?: CatalogModelRow[] }>('router::models::list', {}).then((out) =>
+  host.iii.trigger<{ models?: CatalogModelRow[] }>('llm-router::models::list', {}).then((out) =>
     (out.models ?? []).flatMap((row) => {
       const id = typeof row.id === 'string' ? row.id.trim() : ''
       const provider = typeof row.provider === 'string' ? row.provider.trim() : ''

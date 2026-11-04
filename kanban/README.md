@@ -462,7 +462,7 @@ assigns from.
 The profiles ship without a `model`, so each session takes the model of the
 send (the console's model picker or `harness::send { options: { model } }`).
 To pin one, add `model` and optionally `reasoning_effort` to the
-frontmatter as `provider::model`. `router::models::list` prints the catalog
+frontmatter as `provider::model`. `llm-router::models::list` prints the catalog
 for the providers you installed (its ids read `provider/model`; the profile
 spells the same key with `::`). The examples below use the `claude-code`
 provider; with the API-key provider the same models are `anthropic::…`.

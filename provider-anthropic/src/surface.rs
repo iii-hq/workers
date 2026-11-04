@@ -19,7 +19,7 @@ pub const STREAM_DESC: &str = "Stream an Anthropic chat completion: resolve cred
 
 pub const ABORT_ID: &str = "provider::anthropic::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::anthropic::refresh_models";
 pub const REFRESH_MODELS_DESC: &str =
@@ -28,7 +28,7 @@ pub const REFRESH_MODELS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::anthropic::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::anthropic::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =

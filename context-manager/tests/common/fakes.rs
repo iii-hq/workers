@@ -112,7 +112,7 @@ impl ModelResolver for FakeModelResolver {
             .unwrap_or_else(|poison| poison.into_inner())
             .push((provider.map(str::to_string), id.to_string()));
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err("router::models::get is not routable".to_string());
+            return Err("llm-router::models::get is not routable".to_string());
         }
         Ok(self
             .models
@@ -213,7 +213,7 @@ impl Summarizer for FakeSummarizer {
         match script {
             SummarizerScript::Return(summary) => Ok(summary),
             SummarizerScript::Unavailable => Err(SummarizeError::Unavailable(
-                "router::chat is not routable".to_string(),
+                "llm-router::chat is not routable".to_string(),
             )),
             SummarizerScript::Fail(reason) => Err(SummarizeError::Failed(reason)),
             SummarizerScript::Empty => Err(SummarizeError::Empty),

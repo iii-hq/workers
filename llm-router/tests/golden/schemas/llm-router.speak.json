@@ -1,6 +1,6 @@
 {
   "description": "Text to speech through provider::<id>::speak: {model?, provider?, text, voice?, format?} to {provider, model, audio_base64, mime}. Resolves the provider from the catalog's tts models when none is named.",
-  "function_id": "router::speak",
+  "function_id": "llm-router::speak",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
@@ -22,7 +22,7 @@
       },
       "model": {
         "default": null,
-        "description": "Text-to-speech model id (a `tts` model from `router::models::list`); the provider's default when omitted.",
+        "description": "Text-to-speech model id (a `tts` model from `llm-router::models::list`); the provider's default when omitted.",
         "type": [
           "string",
           "null"

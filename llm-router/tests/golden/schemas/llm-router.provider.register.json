@@ -1,69 +1,9 @@
 {
-  "description": "Replace a provider's catalog slice — the only catalog write path (token-gated).",
-  "function_id": "router::models::reconcile",
+  "description": "Provider self-declaration at attach time (token-gated upsert); composes the configuration entry schema and reconciles static models.",
+  "function_id": "llm-router::provider::register",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
-      "DiscoveryCode": {
-        "description": "Explicit allowlist: arbitrary error strings cannot cross the router boundary.",
-        "enum": [
-          "permission-denied",
-          "invalid-api-key",
-          "insufficient-credits",
-          "spending-limit-exceeded",
-          "rate-limit-exceeded"
-        ],
-        "type": "string"
-      },
-      "DiscoveryOutcome": {
-        "description": "Safe discovery categories. No upstream message, team id or URL is retained.",
-        "enum": [
-          "success",
-          "empty",
-          "not_configured",
-          "billing",
-          "authentication",
-          "permission",
-          "rate_limit",
-          "unavailable",
-          "invalid_response"
-        ],
-        "type": "string"
-      },
-      "DiscoveryReport": {
-        "additionalProperties": false,
-        "properties": {
-          "attempt": {
-            "type": "string"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/DiscoveryCode"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "http_status": {
-            "format": "uint16",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "outcome": {
-            "$ref": "#/definitions/DiscoveryOutcome"
-          }
-        },
-        "required": [
-          "attempt",
-          "outcome"
-        ],
-        "type": "object"
-      },
       "Model": {
         "description": "The capability record (README § Model descriptor).",
         "properties": {
@@ -223,6 +163,26 @@
         },
         "type": "object"
       },
+      "ProviderDefaults": {
+        "additionalProperties": true,
+        "properties": {
+          "api_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "ReasoningEffort": {
         "description": "One provider-native reasoning effort advertised for a specific model.\n\nValues intentionally remain strings: provider catalogs can add efforts without requiring a router-wide enum release first.",
         "properties": {
@@ -245,14 +205,14 @@
         "description": "What a speech model does. Chat models carry no `speech` block.",
         "oneOf": [
           {
-            "description": "Speech to text, served through `router::transcribe`.",
+            "description": "Speech to text, served through `llm-router::transcribe`.",
             "enum": [
               "stt"
             ],
             "type": "string"
           },
           {
-            "description": "Text to speech, served through `router::speak`.",
+            "description": "Text to speech, served through `llm-router::speak`.",
             "enum": [
               "tts"
             ],
@@ -261,7 +221,7 @@
         ]
       },
       "SpeechModel": {
-        "description": "Facts about a speech model. Present only on models served through `router::transcribe` / `router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
+        "description": "Facts about a speech model. Present only on models served through `llm-router::transcribe` / `llm-router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
         "properties": {
           "languages": {
             "description": "BCP-47 tags of the languages the model handles; empty when the provider does not say.",
@@ -283,63 +243,145 @@
           "modality"
         ],
         "type": "object"
+      },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
       }
     },
-    "description": "Input of `router::models::reconcile` — the only catalog write path.",
+    "description": "Input of `llm-router::provider::register` — a provider worker's declaration plus the optional re-registration token.",
     "properties": {
-      "discovery": {
+      "config_schema": true,
+      "context_overflow_hint": {
+        "description": "Guidance a console shows under a context-overflow failure on one of this provider's models, for causes the console cannot fix by compacting (a self-hosted server started with a small window, say). One or two plain sentences, optionally with a link to the provider's docs. `llm-router::provider::list` carries it verbatim.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "credential_env_var": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "credential_optional": {
+        "description": "`true` when the provider works without a credential (a local server started without a key): the router then reports it `configured` with no key. A key that is set is still resolved and sent. Absent means a key is required.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "default_models": {
+        "description": "Chat model ids the provider recommends as a starting point. The order in which the list first names each variant sets the variant rank. `llm-router::provider::list` reports the newest catalog model of the best-ranked variant as `default_model` (see `registry::availability::resolve_default_model`).",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "default_thinking_level": {
         "anyOf": [
           {
-            "$ref": "#/definitions/DiscoveryReport"
+            "$ref": "#/definitions/ThinkingLevel"
           },
           {
             "type": "null"
           }
         ],
-        "description": "Optional token-gated discovery completion. Failures preserve the slice."
+        "description": "The thinking level to use with the default model when a caller names none. Absent means omit the level."
+      },
+      "defaults": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ProviderDefaults"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "display_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "icon_svg": {
+        "description": "The provider's mark: one self-contained `<svg>` document, monochrome, drawn with a square `viewBox` and no fixed size. Consoles paint it as a `currentColor` mask next to the provider's models, so colour and scripts are ignored. Keep it under [`PROVIDER_ICON_SVG_MAX_BYTES`]; the router drops anything larger or not starting with `<svg`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "id": {
+        "type": "string"
       },
       "models": {
-        "default": [],
-        "description": "The full replacement set of models for this provider.",
         "items": {
           "$ref": "#/definitions/Model"
         },
-        "type": "array"
+        "type": [
+          "array",
+          "null"
+        ]
       },
-      "provider": {
-        "default": "",
-        "description": "Provider whose catalog slice is being replaced.",
-        "type": "string"
+      "supports_model_listing": {
+        "type": [
+          "boolean",
+          "null"
+        ]
       },
       "token": {
-        "description": "Registration token gating the write (optional).",
+        "description": "Registration token proving ownership on re-register (omit on first declare).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "worker_id": {
         "type": [
           "string",
           "null"
         ]
       }
     },
-    "title": "ModelsReconcileRequest",
+    "required": [
+      "id"
+    ],
+    "title": "ProviderRegisterRequest",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Output of the `router::models::reconcile` iii function.",
+    "description": "`registration_token` is the provider ownership credential; only its sha256 hash is persisted. Engine caller metadata is not an authorization identity because worker names are self-reported.",
     "properties": {
-      "count": {
-        "format": "uint",
-        "minimum": 0.0,
-        "type": "integer"
+      "id": {
+        "type": "string"
       },
-      "provider": {
+      "ok": {
+        "type": "boolean"
+      },
+      "registration_token": {
         "type": "string"
       }
     },
     "required": [
-      "count",
-      "provider"
+      "id",
+      "ok",
+      "registration_token"
     ],
-    "title": "ModelsReconcileResponse",
+    "title": "ProviderRegisterResponse",
     "type": "object"
   }
 }

@@ -231,7 +231,7 @@ export class CursorProvider {
       },
     );
     this.iii.registerTrigger({
-      type: 'router::ready',
+      type: 'llm-router::ready',
       function_id: 'provider::cursor::on_router_ready',
       config: {},
     });
@@ -253,7 +253,7 @@ export class CursorProvider {
       .passthrough()
       .parse(
         await this.iii.trigger({
-          function_id: 'router::provider::register',
+          function_id: 'llm-router::provider::register',
           payload,
           timeoutMs: 15_000,
         }),
@@ -501,7 +501,7 @@ export class CursorProvider {
 
   private async reconcile(models: JsonObject[], token: string | null): Promise<void> {
     await this.iii.trigger({
-      function_id: 'router::models::reconcile',
+      function_id: 'llm-router::models::reconcile',
       payload: {
         provider: CURSOR_PROVIDER_ID,
         models,

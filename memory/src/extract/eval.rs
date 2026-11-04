@@ -17,7 +17,7 @@
 //!
 //! Live, so ignored: `III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns>
 //! EXTRACTION_MODEL=<id> cargo test -p memory --lib extract::eval --
-//! --ignored --nocapture`. Needs an engine with `router::complete` (a
+//! --ignored --nocapture`. Needs an engine with `llm-router::complete` (a
 //! router and a provider); no memory worker, no embeddings. The prompt
 //! carries [`REPOSITORY_RULE`], as directory-bank sessions get it;
 //! `EXTRACTION_REPOSITORY=0` measures it without, as `default_bank` and
@@ -1302,7 +1302,7 @@ fn line(item: &ExtractedItem, bank: &str, retires: bool) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a live engine with router::complete"]
+#[ignore = "needs a live engine with llm-router::complete"]
 async fn extraction_eval() {
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".into());
     let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());

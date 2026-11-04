@@ -199,7 +199,10 @@ pub(crate) fn forbidden_step(
              authority, which would bypass the agent-level deny on them",
         );
     }
-    if function_id.starts_with("router::") || function_id.starts_with("provider::") {
+    if function_id.starts_with("llm-router::")
+        || function_id.starts_with("router::") // deprecated aliases of llm-router::*
+        || function_id.starts_with("provider::")
+    {
         return Some(
             "LLM routing/provider functions are not supported in a pipe — model spend must \
              stay under the harness loop's accounting",
@@ -666,7 +669,7 @@ mod tests {
             ("approval::resolve", "worker"),
             ("configuration::get", "credential"),
             ("oauth::anthropic::login", "credential"),
-            ("router::chat", "routing"),
+            ("llm-router::chat", "routing"),
             ("provider::anthropic::chat", "routing"),
             ("harness::send", "turn-control"),
             ("run::start", "turn-control"),

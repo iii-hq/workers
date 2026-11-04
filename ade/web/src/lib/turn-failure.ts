@@ -48,7 +48,7 @@ export interface TurnFailurePresentation {
   actions: string[]
   /**
    * Provider-declared guidance for a context overflow (`context_overflow_hint`
-   * on `router::provider::list`), shown under the steps. Only set for the
+   * on `llm-router::provider::list`), shown under the steps. Only set for the
    * `context` category.
    */
   providerNote?: string

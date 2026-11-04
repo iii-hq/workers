@@ -47,7 +47,7 @@ Integration is always some subset of four moves:
 - **Model input**: functions that need limits take a `ModelInput`. Supply
   inline `limits` to stay fully standalone (no `llm-router` needed); supply
   only `id`/`provider` to have the worker resolve limits via
-  `router::models::budget`. Resolution order: inline → router → conservative
+  `llm-router::models::budget`. Resolution order: inline → router → conservative
   fallback (`8192`/`1024`); the response's `model_resolved` tells you which ran.
 - **Tokens are estimates.** v1 uses serialized non-image `chars/4` plus 4,096
   tokens per image for every model (`estimator: "heuristic"`). Treat
@@ -138,14 +138,14 @@ overflow if nothing fits.
     max_result_tokens?: number;    // per-call cap override (default 20000); 0 disables the cap pass
     protected_functions?: string[];   // function_ids whose outputs are never pruned
     thinking_level?: ThinkingLevel;   // reserve the model's thinking budget for this tier; also sent to the provider count
-    response_format?: unknown;        // the turn's router::chat format, for the provider count
+    response_format?: unknown;        // the turn's llm-router::chat format, for the provider count
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id)
     previous_summary?: string;     // persisted summary from a prior compaction (round trip)
   };
 }
 -> {
   system_prompt: string;           // base + "# Conversation summary" section when applicable
-  messages: AgentMessage[];        // budgeted, ready for router::chat (no custom roles)
+  messages: AgentMessage[];        // budgeted, ready for llm-router::chat (no custom roles)
   token_count: number;             // estimated tokens of the returned context
   usable: number;                  // the budget it was fit into
   model_resolved: "inline" | "router" | "fallback";
@@ -364,7 +364,7 @@ sequenceDiagram
   alt applied.compacted
     D->>D: persist applied.summary + boundary at tail_start_index
   end
-  D->>R: router::chat(system_prompt, messages)
+  D->>R: llm-router::chat(system_prompt, messages)
 ```
 
 Pass `options.lease_key` = your session id so concurrent turns of the *same*
@@ -397,7 +397,7 @@ overflow` union, and persists `summary` + `tail_start_index` itself.
 |---|---|---|
 | `configuration` (required) | the worker's own runtime config: schema registration + the authoritative value, hot-reloaded on change | the worker **cannot boot** — `register`/`get` run at startup and a failure aborts it. Not a per-request dependency: once booted, `context::*` calls never touch it. |
 | local filesystem (`lease_dir`) | compaction leases only | a filesystem error makes `compact`/`assemble` treat the lease as busy → compaction is skipped (best effort); `count-tokens`/`prune` unaffected. |
-| `llm-router` (soft) | effective model-budget resolution (`router::models::budget`) + the summariser (`router::chat`) | Limits fall back to `8192`/`1024` (`model_resolved: "fallback"`) unless you pass inline `limits`; `compact` returns `overflow`; `assemble` can prune but not summarise. |
+| `llm-router` (soft) | effective model-budget resolution (`llm-router::models::budget`) + the summariser (`llm-router::chat`) | Limits fall back to `8192`/`1024` (`model_resolved: "fallback"`) unless you pass inline `limits`; `compact` returns `overflow`; `assemble` can prune but not summarise. |
 
 The fully standalone *request* path — inline `limits` + `count-tokens`/`prune`,
 or `assemble` with compaction off — needs no `llm-router` and writes no lease
@@ -422,7 +422,7 @@ context-manager does **not**:
 The integration the spec was designed around — context-manager replaces a
 bespoke in-harness compaction side-car with a reusable worker.
 
-- **Hot-path pre-flight.** On each turn, before calling `router::chat`, call
+- **Hot-path pre-flight.** On each turn, before calling `llm-router::chat`, call
   `context::assemble` with the session's candidate history, the target model
   (id + provider so limits resolve through the router; or inline limits), the
   base `system_prompt`, `options.lease_key` = the session id, and

@@ -1,5 +1,5 @@
 /**
- * Provider marks travel as inline SVG in `router::provider::list`
+ * Provider marks travel as inline SVG in `llm-router::provider::list`
  * (`icon_svg`, declared by each provider worker at registration). The console
  * never injects that markup into the document: it paints the SVG as a CSS
  * mask filled with `currentColor`, so a mark can carry no script or style,

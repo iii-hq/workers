@@ -1,6 +1,6 @@
-//! `llm-router` client: stream a completion (`router::chat`), abort one
-//! (`router::abort`), and read model capabilities (`router::models::get` /
-//! `router::models::supports`).
+//! `llm-router` client: stream a completion (`llm-router::chat`), abort one
+//! (`llm-router::abort`), and read model capabilities (`llm-router::models::get` /
+//! `llm-router::models::supports`).
 //!
 //! `chat` opens a harness-owned channel, hands the router its write end, and
 //! reads `AssistantMessageEvent` frames off the read end while the call is
@@ -82,7 +82,7 @@ pub trait StreamSink: Send + Sync {
     async fn on_update(&self, message: &AssistantMessage);
 }
 
-/// Inputs for one `router::chat` turn.
+/// Inputs for one `llm-router::chat` turn.
 pub struct ChatParams {
     pub request_id: String,
     pub session_id: String,
@@ -103,7 +103,7 @@ pub struct ChatParams {
     pub cache_intent: Option<Value>,
 }
 
-/// Structured failure returned by `router::chat`.
+/// Structured failure returned by `llm-router::chat`.
 ///
 /// `message` is safe public copy. `detail` retains provider/transport context
 /// for the durable operator record without making it the user-facing summary.
@@ -207,7 +207,7 @@ const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 /// whole generation timeout. Past it the answer is unknown.
 const MODEL_LISTED_TIMEOUT_MS: u64 = 5_000;
 
-/// Whether a `router::models::list` page holds `id`, bare or as
+/// Whether an `llm-router::models::list` page holds `id`, bare or as
 /// `provider/model`.
 fn catalog_lists(models: &[Value], id: &str) -> bool {
     models.iter().any(|m| {
@@ -238,7 +238,7 @@ impl RouterClient {
 
     /// Stream one assistant turn, forwarding coalesced partials to `sink`.
     ///
-    /// `abort_rx` is the harness-local cancel backstop: `router::abort` is the
+    /// `abort_rx` is the harness-local cancel backstop: `llm-router::abort` is the
     /// happy path (the router closes the stream → EOF), but it's a no-op when
     /// it races ahead of the router's stream registration or after a router
     /// restart — then only this local signal cuts the await (which otherwise
@@ -329,7 +329,7 @@ impl RouterClient {
         // Run the held-open trigger concurrently with frame consumption.
         //
         // Carry the caller's OTel context into the spawned task so the SDK
-        // injects the turn's traceparent and `router::chat` nests under
+        // injects the turn's traceparent and `llm-router::chat` nests under
         // `harness::turn` instead of rooting a detached trace. `with_context`
         // (not `cx.attach()`) because the `ContextGuard` is `!Send` and can't
         // be held across the `.await` inside `tokio::spawn` — the same idiom
@@ -340,7 +340,7 @@ impl RouterClient {
         let mut trigger = tokio::spawn(
             async move {
                 iii.trigger(TriggerRequest {
-                    function_id: "router::chat".into(),
+                    function_id: "llm-router::chat".into(),
                     payload,
                     action: None,
                     timeout_ms: Some(timeout_ms),
@@ -417,10 +417,10 @@ impl RouterClient {
                         // pump.await can't hang on next_binary().
                         cancel.notify_one();
                         let _ = pump.await;
-                        // Kill the held-open router::chat task; the router's
-                        // own teardown was already requested via router::abort.
+                        // Kill the held-open llm-router::chat task; the router's
+                        // own teardown was already requested via llm-router::abort.
                         trigger.abort();
-                        // Re-request the router abort: stop.rs's router::abort
+                        // Re-request the router abort: stop.rs's llm-router::abort
                         // can race ahead of the router's stream registration
                         // and no-op — by now the stream is certainly
                         // registered, so this lands and the provider stops
@@ -454,7 +454,7 @@ impl RouterClient {
                     }
                     r = &mut trigger => {
                         response = Some(r.map_err(|e| {
-                            HarnessError::Internal(format!("router::chat task: {e}"))
+                            HarnessError::Internal(format!("llm-router::chat task: {e}"))
                         })?);
                         drain_deadline = Instant::now() + Duration::from_secs(10);
                         continue;
@@ -532,7 +532,7 @@ impl RouterClient {
             Some(r) => r,
             None => trigger
                 .await
-                .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?,
+                .map_err(|e| HarnessError::Internal(format!("llm-router::chat task: {e}")))?,
         };
 
         let terminal_kind = final_message
@@ -614,7 +614,7 @@ impl RouterClient {
         let res = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::abort".into(),
+                function_id: "llm-router::abort".into(),
                 payload: json!({ "request_id": request_id }),
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
@@ -623,7 +623,7 @@ impl RouterClient {
         match res {
             Ok(v) => v.get("aborted").and_then(Value::as_bool).unwrap_or(false),
             Err(e) => {
-                tracing::warn!(request_id, error = %e, "router::abort failed");
+                tracing::warn!(request_id, error = %e, "llm-router::abort failed");
                 false
             }
         }
@@ -655,7 +655,7 @@ impl RouterClient {
         let resp = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::count_tokens".into(),
+                function_id: "llm-router::count_tokens".into(),
                 payload,
                 action: None,
                 timeout_ms: Some(self.timeout_ms.min(COUNT_TOKENS_TIMEOUT_MS)),
@@ -681,7 +681,7 @@ impl RouterClient {
         let resp = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::models::get".into(),
+                function_id: "llm-router::models::get".into(),
                 payload,
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
@@ -706,7 +706,9 @@ impl RouterClient {
         if let Some(p) = provider {
             payload["provider"] = json!(p);
         }
-        let resp = self.catalog_call("router::models::get", payload).await?;
+        let resp = self
+            .catalog_call("llm-router::models::get", payload)
+            .await?;
         if resp.get("model").is_some_and(|m| !m.is_null()) {
             return Some(true);
         }
@@ -716,7 +718,7 @@ impl RouterClient {
         // Without a provider, `models::get` is also `null` for an id two
         // providers serve: only the whole catalog says the id is absent.
         let resp = self
-            .catalog_call("router::models::list", json!({ "modality": "any" }))
+            .catalog_call("llm-router::models::list", json!({ "modality": "any" }))
             .await?;
         Some(catalog_lists(resp.get("models")?.as_array()?, id))
     }
@@ -740,7 +742,7 @@ impl RouterClient {
         let resp = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::provider::list".into(),
+                function_id: "llm-router::provider::list".into(),
                 payload: json!({}),
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
@@ -761,7 +763,7 @@ impl RouterClient {
         let resp = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::models::supports".into(),
+                function_id: "llm-router::models::supports".into(),
                 payload: json!({ "provider": provider, "id": id, "capability": capability }),
                 action: None,
                 timeout_ms: Some(self.timeout_ms),

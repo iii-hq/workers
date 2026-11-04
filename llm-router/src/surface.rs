@@ -1,4 +1,4 @@
-//! Wire-surface catalog for the `router::*` functions — the single source of
+//! Wire-surface catalog for the `llm-router::*` functions — the single source of
 //! truth for each function's id, registration description, and
 //! schemars-derived request/response schemas.
 //!
@@ -24,61 +24,62 @@ use crate::types::router::{
 // ── function id + description constants — consumed by both register_router and
 //    catalog() so the registered surface and the golden stay in lockstep. ──────
 
-pub const CHAT_ID: &str = "router::chat";
+pub const CHAT_ID: &str = "llm-router::chat";
 pub const CHAT_DESC: &str =
     "Stream a chat completion: route {model, provider?} to a provider, relay \
      assistant frames to writer_ref, and return the terminal response.";
 
-pub const COMPLETE_ID: &str = "router::complete";
-pub const COMPLETE_DESC: &str = "Non-streaming convenience over router::chat: run the turn on an \
+pub const COMPLETE_ID: &str = "llm-router::complete";
+pub const COMPLETE_DESC: &str =
+    "Non-streaming convenience over llm-router::chat: run the turn on an \
      internal channel and return the final assistant message + usage.";
 
-pub const ABORT_ID: &str = "router::abort";
+pub const ABORT_ID: &str = "llm-router::abort";
 pub const ABORT_DESC: &str =
-    "Abort an in-flight router::chat/complete by request_id; reports whether a live request was cancelled.";
+    "Abort an in-flight llm-router::chat/complete by request_id; reports whether a live request was cancelled.";
 
-pub const EMBED_ID: &str = "router::embed";
+pub const EMBED_ID: &str = "llm-router::embed";
 pub const EMBED_DESC: &str =
     "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider \
      or discovers the first embed-capable one from the live registry, then from embed-only \
      workers; one vector per input, order preserved.";
 
-pub const TRANSCRIBE_ID: &str = "router::transcribe";
+pub const TRANSCRIBE_ID: &str = "llm-router::transcribe";
 pub const TRANSCRIBE_DESC: &str =
     "Speech to text through provider::<id>::transcribe: {model?, provider?, audio_base64, \
      mime?, language?} to {provider, model, text, segments?}. Resolves the provider from the \
      catalog's stt models when none is named.";
 
-pub const SPEAK_ID: &str = "router::speak";
+pub const SPEAK_ID: &str = "llm-router::speak";
 pub const SPEAK_DESC: &str =
     "Text to speech through provider::<id>::speak: {model?, provider?, text, voice?, format?} \
      to {provider, model, audio_base64, mime}. Resolves the provider from the catalog's tts \
      models when none is named.";
 
-pub const COUNT_TOKENS_ID: &str = "router::count_tokens";
+pub const COUNT_TOKENS_ID: &str = "llm-router::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
     "Count prompt tokens for {model, provider?, system_prompt?, tools?, messages, \
      thinking_level?, response_format?} through the resolved provider's \
      provider::<id>::count_tokens surface; never runs the model and costs nothing.";
 
-pub const MODELS_LIST_ID: &str = "router::models::list";
+pub const MODELS_LIST_ID: &str = "llm-router::models::list";
 pub const MODELS_LIST_DESC: &str =
     "List catalog models, optionally filtered by provider, a capability flag, and modality \
      (chat by default; stt, tts, or any).";
 
-pub const MODELS_GET_ID: &str = "router::models::get";
+pub const MODELS_GET_ID: &str = "llm-router::models::get";
 pub const MODELS_GET_DESC: &str =
     "Read one catalog model by {provider, id}; null when the model is not registered.";
 
-pub const MODELS_BUDGET_ID: &str = "router::models::budget";
+pub const MODELS_BUDGET_ID: &str = "llm-router::models::budget";
 pub const MODELS_BUDGET_DESC: &str =
-    "Resolve the effective model output budget using the same precedence as router::chat.";
+    "Resolve the effective model output budget using the same precedence as llm-router::chat.";
 
-pub const MODELS_SUPPORTS_ID: &str = "router::models::supports";
+pub const MODELS_SUPPORTS_ID: &str = "llm-router::models::supports";
 pub const MODELS_SUPPORTS_DESC: &str =
     "Check whether a model supports a capability flag (fails open for unknown models).";
 
-pub const PROVIDER_LIST_ID: &str = "router::provider::list";
+pub const PROVIDER_LIST_ID: &str = "llm-router::provider::list";
 pub const PROVIDER_LIST_DESC: &str =
     "List registered providers with their configured/available status, where each \
      credential comes from (credential_source, credential_ref, credential_error; never a value), \
@@ -86,42 +87,48 @@ pub const PROVIDER_LIST_DESC: &str =
      its preferences name, else its first declared preference present in the catalog, else the \
      closest same-family model; default_thinking_level).";
 
-pub const ROUTE_ID: &str = "router::route";
+pub const ROUTE_ID: &str = "llm-router::route";
 pub const ROUTE_DESC: &str = "Read-only routing preview: resolve {model, provider?} to the chosen \
      provider + ordered candidates without streaming.";
 
-pub const PROVIDER_REGISTER_ID: &str = "router::provider::register";
+pub const PROVIDER_REGISTER_ID: &str = "llm-router::provider::register";
 pub const PROVIDER_REGISTER_DESC: &str = "Provider self-declaration at attach time (token-gated \
      upsert); composes the configuration entry schema and reconciles static models.";
 
-pub const PROVIDER_RESOLVE_ID: &str = "router::provider::resolve";
+pub const PROVIDER_RESOLVE_ID: &str = "llm-router::provider::resolve";
 pub const PROVIDER_RESOLVE_DESC: &str =
     "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a \
      secret://NAME or env://NAME api_key resolves through the secrets worker.";
 
-pub const UPDATE_CREDENTIAL_ID: &str = "router::provider::update_credential";
+pub const UPDATE_CREDENTIAL_ID: &str = "llm-router::provider::update_credential";
 pub const UPDATE_CREDENTIAL_DESC: &str = "OAuth write-back: store a provider credential in the \
      configuration entry under the entry write lock (token-gated).";
 
-pub const MODELS_RECONCILE_ID: &str = "router::models::reconcile";
+pub const MODELS_RECONCILE_ID: &str = "llm-router::models::reconcile";
 pub const MODELS_RECONCILE_DESC: &str =
     "Replace a provider's catalog slice — the only catalog write path (token-gated).";
 
-pub const ON_FUNCTIONS_CHANGED_ID: &str = "router::on_functions_changed";
+pub const ON_FUNCTIONS_CHANGED_ID: &str = "llm-router::on_functions_changed";
 pub const ON_FUNCTIONS_CHANGED_DESC: &str =
     "Internal: a worker's function registrations changed — re-discover live \
      providers and nudge them to re-declare, so a provider that reconnected \
      is resolvable again without waiting for its own catalog timer.";
 
-pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
+pub const ON_CONFIG_CHANGED_ID: &str = "llm-router::on_config_changed";
 pub const ON_CONFIG_CHANGED_DESC: &str =
     "Internal: reactively reload the in-memory configuration snapshot and \
      fan out provider model discovery after configuration changes.";
 
-pub const ON_SECRET_CHANGED_ID: &str = "router::on_secret_changed";
+pub const ON_SECRET_CHANGED_ID: &str = "llm-router::on_secret_changed";
 pub const ON_SECRET_CHANGED_DESC: &str =
     "Internal: a secret changed in the secrets worker — re-resolve the secret:// or \
      env:// credential reference and refresh the providers that use it.";
+
+/// The deprecated `router::` id an `llm-router::` id replaced. Every public
+/// function is registered under both until callers move (`register.rs`).
+pub fn legacy_id(id: &str) -> String {
+    id.replacen("llm-router::", "router::", 1)
+}
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

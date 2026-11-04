@@ -64,7 +64,7 @@ pub struct RecallResponse {
     pub memories: Vec<ScoredMemory>,
     /// Retrieval mode actually used — degradation is explicit, never
     /// silent. `hybrid`: `bm25-entity`, or `bm25-entity-semantic` when the
-    /// query was embedded through `router::embed`. `lexical`: `lexical`.
+    /// query was embedded through `llm-router::embed`. `lexical`: `lexical`.
     /// `semantic`: `semantic`, or `semantic-unavailable` (empty result —
     /// NOT "no matches") when the query could not be embedded.
     pub retrieval: String,

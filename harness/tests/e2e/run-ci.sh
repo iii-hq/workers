@@ -122,7 +122,7 @@ wait_for_model() {
     '{provider:$provider,id:$id}')
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     response=$(
-      "$III_BIN" trigger router::models::get \
+      "$III_BIN" trigger llm-router::models::get \
         --port "$iii_port" \
         --json "$request" 2>/dev/null || true
     )
@@ -190,7 +190,7 @@ wait_for_function session::messages
 start_process llm-router \
   "$repo_root/llm-router/target/release/llm-router" \
   --url "$iii_url"
-wait_for_function router::models::get
+wait_for_function llm-router::models::get
 
 declare -A started_providers=()
 for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do

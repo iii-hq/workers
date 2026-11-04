@@ -121,7 +121,7 @@ Returns `{ http_port, engine_url, version }` — useful for liveness and readine
 A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives in [`web/src/components/chat/`](web/src/components/chat).
 
 - **Two modes** — `ask` and `agent` toggle right in the composer
-- **Live model picker** — provider-grouped from `router::models::list`; static fallback (OpenAI, Anthropic, Google) when the catalog is unreachable
+- **Live model picker** — provider-grouped from `llm-router::models::list`; static fallback (OpenAI, Anthropic, Google) when the catalog is unreachable
 - **`@`-mentions** — one paged menu over every function registered against the engine _and_ the files under the session's working directory (the shell worker's `.gitignore`-aware quick-open search); a file pill carries an optional line window (`#file(src/a.ts:12-40)`), opens the shell explorer on those lines when clicked, and is what the shell's "Reference in chat" selection action inserts. A whole-file or folder pill is a reference — the token reaches the model as-is and the agent reads the file or lists the folder on demand; only a line window is read at send time and attached inline as an `<attached-file …>` block
 - **`/compact` slash command** — sent to the harness like any message; `harness::send` runs it as a server-side compaction (summarising older history via the `context-manager` worker, keeping a recent tail verbatim) instead of a turn, so it means the same from every client and survives this tab disconnecting. Every device watching the session sees it start (a "compacting the conversation…" row and "compacting context" on the status line) and end (the compaction marker, or a notice saying why not), and the context meter updates. The durable transcript is untouched — the marker renders from the `compaction` session entry and the summary anchors future turns (and the next `/compact`, which updates it in place instead of re-summarising from scratch). Text after the command — `/compact keep the schema decisions, drop the CSS detour` — is one-shot guidance for the summariser on what to keep, drop, or emphasise
 - **Attachments** — multi-file picker with text/image previews
@@ -201,7 +201,7 @@ The composer's `@`-mentions and the model picker pull from the engine in real ti
 
 - `coder::search` (shell worker, path-only, fuzzy, `respect_gitignore`, no dot-entries) — the files half of the `@` menu, one call per settled keystroke → [`web/src/lib/file-search.ts`](web/src/lib/file-search.ts)
 - `engine::functions::list` — TTL-cached function list (`VITE_FUNCTIONS_LIST_CACHE_MS`, default 10s) → [`web/src/lib/functions-catalog.ts`](web/src/lib/functions-catalog.ts)
-- `router::models::list` — provider-grouped model catalog, refreshed live off the `router::models::changed` trigger type → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
+- `llm-router::models::list` — provider-grouped model catalog, refreshed live off the `llm-router::models::changed` trigger type → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
 
 ### Theming
 

@@ -16,7 +16,7 @@ pub const EVENTS_API_PATH: &str = "slack/events";
 pub const INTERACTIONS_API_PATH: &str = "slack/interactions";
 
 /// Provider + model id pair forwarded to `harness::send`. Provider-agnostic:
-/// validated against `router::models::list`, never a baked-in default.
+/// validated against `llm-router::models::list`, never a baked-in default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelRef {
     pub provider: String,
@@ -77,7 +77,7 @@ pub struct WorkerConfig {
     pub backfill_max_messages: u32,
 
     /// Bridge: model for harness sends. OPTIONAL and provider-agnostic — if unset
-    /// the first model from `router::models::list` is used; if set it is validated
+    /// the first model from `llm-router::models::list` is used; if set it is validated
     /// against that list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<ModelRef>,

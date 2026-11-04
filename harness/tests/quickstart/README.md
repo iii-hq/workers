@@ -72,7 +72,7 @@ After Registry resolution, the validator declares literal
 and restarts the compose project. The provider values remain in the process
 environment of the compose daemon and the `llm-router` it starts; the installer,
 engine, CLI calls, other workers, and Playwright do not inherit them. They are
-never written to the compose file or artifacts. A `router::provider::list`
+never written to the compose file or artifacts. An `llm-router::provider::list`
 preflight proves both providers received usable configuration before model
 discovery and browser validation begin.
 Set `HARNESS_QUICKSTART_TRACE=1` to print only the important external commands

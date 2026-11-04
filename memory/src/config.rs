@@ -62,7 +62,7 @@ pub struct WorkerConfig {
     pub recall_budget_tokens: u64,
 
     /// Extract new memories after each completed turn (up to 4
-    /// `router::complete` calls, one per 24,000 chars of new messages, off
+    /// `llm-router::complete` calls, one per 24,000 chars of new messages, off
     /// the hot path). Disable to run memory as a purely manual store: turns
     /// that finish while it is off are stepped past, never read once it is
     /// back on. Off, each finished turn still steps the extraction cursor
@@ -83,7 +83,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 
-    /// Outer budget for one extraction call through `router::complete` (ms).
+    /// Outer budget for one extraction call through `llm-router::complete` (ms).
     #[serde(default = "default_extraction_timeout_ms")]
     pub extraction_timeout_ms: u64,
 
@@ -114,14 +114,14 @@ pub struct WorkerConfig {
     #[serde(default = "default_decay_half_life_days")]
     pub decay_half_life_days: u64,
 
-    /// Add a semantic signal to recall via `router::embed` (memory vectors
+    /// Add a semantic signal to recall via `llm-router::embed` (memory vectors
     /// in a per-bank sidecar, query embedded per recall). Degrades to
     /// BM25 + entities when no embed-capable provider is configured;
     /// recall responses name the mode that actually ran.
     #[serde(default = "default_true")]
     pub embeddings_enabled: bool,
 
-    /// Embedding model id passed to `router::embed`. Empty uses the
+    /// Embedding model id passed to `llm-router::embed`. Empty uses the
     /// provider's default. Vectors are tagged with the model the provider
     /// reports, so changing this (or the provider's default changing)
     /// re-embeds them instead of mixing spaces.

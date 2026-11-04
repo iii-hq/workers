@@ -290,7 +290,7 @@ wait_for_model() {
   local provider=$1 model=$2 request response
   request=$(jq -cn --arg provider "$provider" --arg id "$model" '{provider: $provider, id: $id}')
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger router::models::get --port "$engine_port" \
+    response=$("$iii_bin" trigger llm-router::models::get --port "$engine_port" \
       --json "$request" 2>>"$log_dir/discovery.log" || true)
     jq -e --arg id "$model" '.model.id == $id' <<<"$response" >/dev/null 2>&1 && return 0
     sleep 1
@@ -367,7 +367,7 @@ lock_digest=$(sha256sum "$project_dir/iii.lock" | awk '{print $1}')
 failure_phase=e2e
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
-  queue::define session::messages context::assemble router::models::get \
+  queue::define session::messages context::assemble llm-router::models::get \
   directory::skills::list
 wait_for_triggers cron
 wait_for_model "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_MODEL"

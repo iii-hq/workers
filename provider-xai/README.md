@@ -6,9 +6,9 @@ Implements the provider protocol from
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel) and
 `provider::xai::refresh_models` (live `GET /v1/models` filtered to
 chat/reasoning families ∪ curated capability snapshot →
-`router::models::reconcile`).
+`llm-router::models::reconcile`).
 
-`provider::xai::count_tokens` counts a prompt behind `router::count_tokens`:
+`provider::xai::count_tokens` counts a prompt behind `llm-router::count_tokens`:
 the request is rendered from this worker's own wire rows and tool array
 (schemas in Python `json.dumps` form), tokenized in one `/tokenize-text`
 call, and xAI's measured overhead is added on top: the server-side preamble
@@ -21,13 +21,13 @@ calibrated against billed `prompt_tokens`, not published by xAI.
 A `response_format` schema, and the `thinking_level` that shifts grok-4.3's
 preamble (6 to 8 tokens shorter with reasoning off or high), count when the
 caller passes them to `provider::xai::count_tokens` directly.
-`router::count_tokens` does not forward either yet (MOT-5568), so counts
+`llm-router::count_tokens` does not forward either yet (MOT-5568), so counts
 through the router leave the schema out and assume the default effort.
 
 ## Behavior
 
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The declaration ships a static curated `models` slice (no cold-catalog
   hole) and `credential_env_var: XAI_API_KEY`.
 - **Identity binding:** the router returns a `registration_token` on first
@@ -35,12 +35,12 @@ through the router leave the schema out and assume the default effort.
   key `registration_token`) and presented on every later
   `register`/`resolve`/`reconcile`. If that state is lost the router rejects
   re-registration — the operator must clear the binding on the router side.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `XAI_API_KEY` env on the router → none). Both
   `api_key` and `oauth` credential shapes are sent as `Authorization:
   Bearer`; v1 performs no OAuth refresh.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** 401/403 → `auth_expired`, 429 → `rate_limited` (except
   `insufficient_quota`, a billing wall → `permanent`),

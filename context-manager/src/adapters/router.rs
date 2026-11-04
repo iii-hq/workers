@@ -1,6 +1,6 @@
 //! `llm-router` adapters: model-limit resolution via
-//! `router::models::budget`, the provider's prompt count via
-//! `router::count_tokens`, and the summariser via `router::chat`.
+//! `llm-router::models::budget`, the provider's prompt count via
+//! `llm-router::count_tokens`, and the summariser via `llm-router::chat`.
 //!
 //! Both are soft dependencies — when the router is absent the resolver
 //! errors (callers degrade to the conservative fallback) and the
@@ -27,7 +27,7 @@ const MODELS_GET_TIMEOUT_MS: u64 = 5_000;
 /// A local tokenizer answers in milliseconds; a provider's metering API is a
 /// network call. Past this the assembly keeps its own estimate.
 const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
-/// Grace period for the stream reader to drain after `router::chat`
+/// Grace period for the stream reader to drain after `llm-router::chat`
 /// returns; the terminal `done`/`error` event lands before or with the
 /// trigger response, so this only covers socket latency.
 const READER_DRAIN_MS: u64 = 2_000;
@@ -37,7 +37,7 @@ fn is_unroutable(err: &Error) -> bool {
     msg.contains("function_not_found") || msg.contains("not found") || msg.contains("no function")
 }
 
-/// `router::models::budget` — `{ model, effective_max_output_tokens } | null`.
+/// `llm-router::models::budget` — `{ model, effective_max_output_tokens } | null`.
 pub struct RouterModelResolver {
     iii: Arc<IIIClient>,
 }
@@ -62,7 +62,7 @@ impl ModelResolver for RouterModelResolver {
         let resp = match self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::models::budget".to_string(),
+                function_id: "llm-router::models::budget".to_string(),
                 payload: payload.clone(),
                 action: None,
                 timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
@@ -78,7 +78,7 @@ impl ModelResolver for RouterModelResolver {
                 let response = self
                     .iii
                     .trigger(TriggerRequest {
-                        function_id: "router::models::get".to_string(),
+                        function_id: "llm-router::models::get".to_string(),
                         payload,
                         action: None,
                         timeout_ms: Some(MODELS_GET_TIMEOUT_MS),
@@ -89,13 +89,13 @@ impl ModelResolver for RouterModelResolver {
                     return Ok(None);
                 }
                 let model = response.get("model").cloned().ok_or_else(|| {
-                    "router::models::get response has no `model` field".to_string()
+                    "llm-router::models::get response has no `model` field".to_string()
                 })?;
                 if model.is_null() {
                     return Ok(None);
                 }
                 let model = serde_json::from_value::<Model>(model).map_err(|e| {
-                    format!("router::models::get returned an unparseable model: {e}")
+                    format!("llm-router::models::get returned an unparseable model: {e}")
                 })?;
                 return Ok(Some(ModelBudget {
                     effective_max_output_tokens: model.max_output_tokens,
@@ -108,10 +108,9 @@ impl ModelResolver for RouterModelResolver {
         if resp.is_null() {
             return Ok(None);
         }
-        let model = resp
-            .get("model")
-            .cloned()
-            .ok_or_else(|| "router::models::budget response has no `model` field".to_string())?;
+        let model = resp.get("model").cloned().ok_or_else(|| {
+            "llm-router::models::budget response has no `model` field".to_string()
+        })?;
         if model.is_null() {
             return Ok(None);
         }
@@ -119,7 +118,7 @@ impl ModelResolver for RouterModelResolver {
             .get("effective_max_output_tokens")
             .and_then(Value::as_u64)
             .ok_or_else(|| {
-                "router::models::budget response has no `effective_max_output_tokens` field"
+                "llm-router::models::budget response has no `effective_max_output_tokens` field"
                     .to_string()
             })?;
         serde_json::from_value::<Model>(model)
@@ -129,7 +128,7 @@ impl ModelResolver for RouterModelResolver {
                     effective_max_output_tokens,
                 })
             })
-            .map_err(|e| format!("router::models::budget returned an unparseable model: {e}"))
+            .map_err(|e| format!("llm-router::models::budget returned an unparseable model: {e}"))
     }
 
     async fn count_prompt_tokens(
@@ -145,7 +144,7 @@ impl ModelResolver for RouterModelResolver {
         let resp = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::count_tokens".to_string(),
+                function_id: "llm-router::count_tokens".to_string(),
                 payload,
                 action: None,
                 timeout_ms: Some(COUNT_TOKENS_TIMEOUT_MS),
@@ -154,11 +153,11 @@ impl ModelResolver for RouterModelResolver {
             .map_err(|e| e.to_string())?;
         resp.get("tokens")
             .and_then(Value::as_u64)
-            .ok_or_else(|| "router::count_tokens response has no `tokens` field".to_string())
+            .ok_or_else(|| "llm-router::count_tokens response has no `tokens` field".to_string())
     }
 }
 
-/// The `router::count_tokens` request: the turn's knobs ride only when set.
+/// The `llm-router::count_tokens` request: the turn's knobs ride only when set.
 fn count_payload(
     provider: Option<&str>,
     id: &str,
@@ -185,7 +184,7 @@ fn count_payload(
     payload
 }
 
-/// `router::chat` — one summariser turn streamed over a channel the
+/// `llm-router::chat` — one summariser turn streamed over a channel the
 /// adapter creates; the summary text comes from the terminal `done`
 /// event (accumulated `text_delta`s as fallback).
 ///
@@ -260,7 +259,7 @@ impl Summarizer for RouterSummarizer {
         let trigger_result = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::chat".to_string(),
+                function_id: "llm-router::chat".to_string(),
                 payload,
                 action: None,
                 timeout_ms: Some(timeout_ms),

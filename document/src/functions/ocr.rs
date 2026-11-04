@@ -123,7 +123,7 @@ pub async fn handle(
         .or_else(|| cfg.ocr_model.clone())
         .ok_or_else(|| {
             "no vision model chosen: pass `model`, or set `ocr_model` in this worker's \
-             configuration. `router::models::list` reports which models support vision."
+             configuration. `llm-router::models::list` reports which models support vision."
                 .to_string()
         })?;
 
@@ -274,7 +274,7 @@ pub fn image_mime(bytes: &[u8], file_name: Option<&str>) -> Option<String> {
 /// Refuse a model that cannot see, before anything is rendered.
 ///
 /// The catalog is asked for its vision models rather than asked about this one:
-/// `router::models::supports` needs the owning provider as well as the id, and
+/// `llm-router::models::supports` needs the owning provider as well as the id, and
 /// a caller naming a model rarely knows which provider serves it. The filtered
 /// list answers without that.
 ///
@@ -285,12 +285,12 @@ pub fn image_mime(bytes: &[u8], file_name: Option<&str>) -> Option<String> {
 async fn ensure_vision(bus: &dyn Bus, model: &str, timeout_ms: u64) -> Result<(), String> {
     let seeing = bus
         .trigger(
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "capability": "vision" }),
             timeout_ms,
         )
         .await
-        .map_err(|e| describe_bus_failure("router::models::list", &e))?;
+        .map_err(|e| describe_bus_failure("llm-router::models::list", &e))?;
 
     if catalog_has(&seeing, model) {
         return Ok(());
@@ -299,21 +299,21 @@ async fn ensure_vision(bus: &dyn Bus, model: &str, timeout_ms: u64) -> Result<()
     // Not among the models that see. Either it cannot, or the catalog does not
     // know it — and those deserve different answers.
     let everything = bus
-        .trigger("router::models::list", json!({}), timeout_ms)
+        .trigger("llm-router::models::list", json!({}), timeout_ms)
         .await
-        .map_err(|e| describe_bus_failure("router::models::list", &e))?;
+        .map_err(|e| describe_bus_failure("llm-router::models::list", &e))?;
 
     if catalog_has(&everything, model) {
         Err(format!(
             "{model} cannot read images, so it cannot transcribe anything. Pick a model whose \
-             `supports_vision` is true in router::models::list."
+             `supports_vision` is true in llm-router::models::list."
         ))
     } else {
         Ok(())
     }
 }
 
-/// Whether a `router::models::list` answer carries this model.
+/// Whether an `llm-router::models::list` answer carries this model.
 ///
 /// A model id reaches this worker in more than one shape: bare
 /// (`claude-haiku-4-5`), or carrying the provider the console composes onto it
@@ -510,7 +510,7 @@ async fn transcribe(
 ) -> Result<String, String> {
     let answer = bus
         .trigger(
-            "router::complete",
+            "llm-router::complete",
             json!({
                 "model": model,
                 "messages": [{
@@ -525,12 +525,12 @@ async fn transcribe(
             cfg.ocr_timeout_ms,
         )
         .await
-        .map_err(|e| describe_bus_failure("router::complete", &e))?;
+        .map_err(|e| describe_bus_failure("llm-router::complete", &e))?;
 
     Ok(text_of(&answer))
 }
 
-/// The text blocks of a `router::complete` answer, joined.
+/// The text blocks of an `llm-router::complete` answer, joined.
 pub fn text_of(answer: &Value) -> String {
     let Some(content) = answer
         .get("message")
@@ -654,7 +654,7 @@ mod tests {
 
     fn vision_ok(bus: RecordedBus) -> RecordedBus {
         bus.on(
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "models": [{ "id": "test-vision", "supports_vision": true }] }),
         )
     }
@@ -671,7 +671,7 @@ mod tests {
     async fn an_image_goes_straight_to_the_model_with_no_browser() {
         let bus = Arc::new(
             vision_ok(RecordedBus::new())
-                .on("router::complete", transcription("INVOICE 42"))
+                .on("llm-router::complete", transcription("INVOICE 42"))
                 .on("state::set", json!({ "ok": true })),
         );
         let response = handle(request(PNG, "receipt.png"), cfg(), bus.clone())
@@ -693,14 +693,14 @@ mod tests {
     async fn the_page_reaches_the_model_as_pixels() {
         let bus = Arc::new(
             vision_ok(RecordedBus::new())
-                .on("router::complete", transcription("text"))
+                .on("llm-router::complete", transcription("text"))
                 .on("state::set", json!({ "ok": true })),
         );
         handle(request(PNG, "page.png"), cfg(), bus.clone())
             .await
             .expect("transcribes");
 
-        let payload = &bus.payloads("router::complete")[0];
+        let payload = &bus.payloads("llm-router::complete")[0];
         let content = payload["messages"][0]["content"]
             .as_array()
             .expect("content");
@@ -716,9 +716,9 @@ mod tests {
         // Present in the catalog, absent from the models that see.
         let bus = Arc::new(
             RecordedBus::new()
-                .on("router::models::list", json!({ "models": [] }))
+                .on("llm-router::models::list", json!({ "models": [] }))
                 .on(
-                    "router::models::list",
+                    "llm-router::models::list",
                     json!({ "models": [{ "id": "test-vision" }] }),
                 ),
         );
@@ -728,7 +728,7 @@ mod tests {
 
         assert!(err.contains("cannot read images"), "{err}");
         assert!(
-            !bus.called().iter().any(|id| id == "router::complete"),
+            !bus.called().iter().any(|id| id == "llm-router::complete"),
             "nothing may be read: {:?}",
             bus.called()
         );
@@ -741,8 +741,8 @@ mod tests {
     async fn a_model_the_catalog_does_not_know_still_transcribes() {
         let bus = Arc::new(
             RecordedBus::new()
-                .on("router::models::list", json!({ "models": [] }))
-                .on("router::complete", transcription("readable"))
+                .on("llm-router::models::list", json!({ "models": [] }))
+                .on("llm-router::complete", transcription("readable"))
                 .on("state::set", json!({ "ok": true })),
         );
         let response = handle(request(PNG, "page.png"), cfg(), bus)
@@ -758,7 +758,7 @@ mod tests {
         let err = handle(request(PNG, "page.png"), bare, bus)
             .await
             .expect_err("no model");
-        assert!(err.contains("router::models::list"), "{err}");
+        assert!(err.contains("llm-router::models::list"), "{err}");
     }
 
     /// The cache is keyed by content, so the same page never gets paid for
@@ -775,7 +775,7 @@ mod tests {
         assert_eq!(response.pages_transcribed, 0);
         assert_eq!(response.body.text, "cached transcription");
         assert!(
-            !bus.called().iter().any(|id| id == "router::complete"),
+            !bus.called().iter().any(|id| id == "llm-router::complete"),
             "a cache hit must not call the model: {:?}",
             bus.called()
         );
@@ -786,7 +786,7 @@ mod tests {
     async fn only_the_text_is_cached() {
         let bus = Arc::new(
             vision_ok(RecordedBus::new())
-                .on("router::complete", transcription("page one"))
+                .on("llm-router::complete", transcription("page one"))
                 .on("state::set", json!({ "ok": true })),
         );
         handle(request(PNG, "page.png"), cfg(), bus.clone())
@@ -848,7 +848,7 @@ mod tests {
                     "browser::screenshot",
                     json!({ "content": [{ "type": "image", "mime": "image/jpeg", "data": "AAAA" }] }),
                 )
-                .on("router::complete", transcription("PAGE ONE"))
+                .on("llm-router::complete", transcription("PAGE ONE"))
                 .on("state::set", json!({ "ok": true }))
                 .on("browser::sessions::stop", json!({ "ok": true })),
         );
@@ -868,7 +868,7 @@ mod tests {
         assert_eq!(response.body.text, "PAGE ONE");
         let order = bus.called();
         let navigate = order.iter().position(|id| id == "browser::navigate");
-        let complete = order.iter().position(|id| id == "router::complete");
+        let complete = order.iter().position(|id| id == "llm-router::complete");
         assert!(navigate < complete, "render before read: {order:?}");
         assert!(
             order.contains(&"browser::sessions::stop".to_string()),

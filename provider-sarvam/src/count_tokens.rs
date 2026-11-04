@@ -15,7 +15,7 @@
 //! keep the tiktoken estimate, as does a cold fetch slower than
 //! [`COLD_FETCH_BUDGET`].
 //!
-//! Exposed behind `router::count_tokens`.
+//! Exposed behind `llm-router::count_tokens`.
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::tiktoken_count::{count_chat_tokens, ESTIMATOR_TIKTOKEN};
 use llm_router::provider_scaffold::vocabulary_count::{

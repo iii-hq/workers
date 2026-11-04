@@ -57,7 +57,7 @@ async function llmMermaid(worker, { meta, pages, kind, model }) {
     .map((p) => `- ${p.title || p.slug} [${p.category || ''}]: ${(p.source_paths || []).slice(0, 4).join(', ')}`)
     .join('\n');
   const res = await worker.trigger({
-    function_id: 'router::complete',
+    function_id: 'llm-router::complete',
     payload: {
       model,
       system_prompt:

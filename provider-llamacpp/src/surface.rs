@@ -20,7 +20,7 @@ pub const STREAM_DESC: &str = "Stream a llama.cpp server chat completion: resolv
 
 pub const ABORT_ID: &str = "provider::llamacpp::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::llamacpp::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Discover the resolved llama.cpp server's live model \
@@ -33,7 +33,7 @@ pub const COUNT_TOKENS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::llamacpp::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 pub const EMBED_ID: &str = "provider::llamacpp::embed";
 pub const EMBED_DESC: &str =

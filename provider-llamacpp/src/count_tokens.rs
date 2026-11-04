@@ -17,7 +17,7 @@
 //! definitions, call-only turns and images, so that count runs low. Counting
 //! is local to the operator's machine and costs nothing.
 //!
-//! Exposed behind `router::count_tokens`.
+//! Exposed behind `llm-router::count_tokens`.
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
@@ -183,7 +183,7 @@ pub async fn handle(
         messages: req.messages,
         tools: req.tools.unwrap_or_default(),
         response_format: req.response_format,
-        // router::count_tokens does not forward the level yet (MOT-5568), so
+        // llm-router::count_tokens does not forward the level yet (MOT-5568), so
         // this counts the no-level turn: llamacpp declares no default level,
         // and the stream then sends enable_thinking=false too.
         enable_thinking: enable_thinking(req.thinking_level),

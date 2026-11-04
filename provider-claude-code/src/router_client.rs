@@ -68,7 +68,7 @@ pub async fn auth_get_token_available(iii: &IIIClient) -> bool {
     function_available(iii, AUTH_GET_TOKEN_FN).await
 }
 
-/// `router::provider::resolve` — effective settings (api_url / max_tokens).
+/// `llm-router::provider::resolve` — effective settings (api_url / max_tokens).
 /// The `credential` field is unused here; the vault is the credential source
 /// (this provider is OAuth-only, so no env-var fallback slot — API keys belong
 /// on provider-anthropic).
@@ -79,7 +79,7 @@ pub async fn resolve(
     scaffold::resolve(iii, PROVIDER_ID, token, None).await
 }
 
-/// `router::models::reconcile` — replace this provider's catalog slice.
+/// `llm-router::models::reconcile` — replace this provider's catalog slice.
 pub async fn reconcile(
     iii: &IIIClient,
     models: Vec<Model>,
@@ -88,12 +88,12 @@ pub async fn reconcile(
     scaffold::reconcile(iii, PROVIDER_ID, models, token).await
 }
 
-/// `router::models::get` — authoritative catalog record (None when absent).
+/// `llm-router::models::get` — authoritative catalog record (None when absent).
 pub async fn models_get(iii: &IIIClient, model_id: &str) -> Option<Model> {
     scaffold::models_get(iii, PROVIDER_ID, model_id).await
 }
 
-/// `router::provider::register` — returns the registration token to persist.
+/// `llm-router::provider::register` — returns the registration token to persist.
 pub async fn register(iii: &IIIClient, declaration: Value) -> Result<Value, Error> {
     scaffold::register(iii, declaration).await
 }

@@ -321,7 +321,7 @@
           },
           "response_format": {
             "default": null,
-            "description": "The `response_format` the turn sends on `router::chat`, forwarded to the provider's count for providers that render it into the prompt."
+            "description": "The `response_format` the turn sends on `llm-router::chat`, forwarded to the provider's count for providers that render it into the prompt."
           },
           "tail_turns": {
             "default": null,
@@ -537,7 +537,7 @@
         "type": "string"
       },
       "ModelInput": {
-        "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `router::models::budget`.",
+        "description": "How callers identify the target model (context-manager.md § Model input). Inline `limits` keep the call standalone; `id`/`provider` alone defer limit resolution to `llm-router::models::budget`.",
         "properties": {
           "id": {
             "description": "Model id, e.g. `claude-sonnet-4`.",

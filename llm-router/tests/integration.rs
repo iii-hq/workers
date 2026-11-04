@@ -358,7 +358,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                     .collect();
                 async move {
                     iii.trigger(TriggerRequest {
-                        function_id: "router::models::reconcile".into(),
+                        function_id: "llm-router::models::reconcile".into(),
                         payload: json!({ "provider": "real", "token": token, "models": models }),
                         action: None,
                         timeout_ms: Some(5000),
@@ -390,7 +390,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                     Error::Handler("provider ready handler has no registration token".into())
                 })?;
                 iii.trigger(TriggerRequest {
-                    function_id: "router::provider::register".into(),
+                    function_id: "llm-router::provider::register".into(),
                     payload: live_provider_declaration(&opts, Some(token)),
                     action: None,
                     timeout_ms: Some(5_000),
@@ -401,7 +401,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
         }),
     );
     let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
+        "llm-router::ready",
         "provider::real::on_router_ready",
         json!({}),
     ));
@@ -411,7 +411,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     for _ in 0..50 {
         let res = call(
             &iii,
-            "router::provider::register",
+            "llm-router::provider::register",
             live_provider_declaration(&opts, None),
         )
         .await;
@@ -477,7 +477,7 @@ async fn end_to_end_relay_over_a_live_engine() {
 
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
             action: None,
             timeout_ms: Some(30_000),
@@ -511,7 +511,7 @@ async fn end_to_end_relay_over_a_live_engine() {
 
     let completed = call(
         &consumer,
-        "router::complete",
+        "llm-router::complete",
         json!({ "model": "live-1", "messages": [] }),
     )
     .await
@@ -522,7 +522,7 @@ async fn end_to_end_relay_over_a_live_engine() {
     router_iii.shutdown();
 }
 
-/// `router::route` must preview exactly the provider `router::chat` would
+/// `llm-router::route` must preview exactly the provider `llm-router::chat` would
 /// execute on, and throw the same typed codes when nothing routes — consumers
 /// pin the preview as the explicit `provider` on the chat call.
 #[tokio::test(flavor = "multi_thread")]
@@ -538,7 +538,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     let consumer = register_worker(&engine.url, test_init_options());
 
     // catalog-owner routing: live-1 sits in provider "real"'s static slice.
-    let route = call(&consumer, "router::route", json!({ "model": "live-1" }))
+    let route = call(&consumer, "llm-router::route", json!({ "model": "live-1" }))
         .await
         .expect("route succeeds");
     assert_eq!(route["provider"], "real");
@@ -548,7 +548,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "live-1",
@@ -565,7 +565,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
 
     // an unrouteable model throws the same typed code the chat path throws.
-    let err = call(&consumer, "router::route", json!({ "model": "ghost" }))
+    let err = call(&consumer, "llm-router::route", json!({ "model": "ghost" }))
         .await
         .expect_err("ghost model cannot route");
     assert_eq!(remote_code(&err), "router/no_provider_for_model");
@@ -575,7 +575,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     // dispatch agrees with the models surface about what the id means.
     let route = call(
         &consumer,
-        "router::route",
+        "llm-router::route",
         json!({ "model": "real::live-1" }),
     )
     .await
@@ -584,7 +584,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "real::live-1", "messages": [] }),
             action: None,
             timeout_ms: Some(30_000),
@@ -638,7 +638,7 @@ async fn consumer_cancellation_propagates_to_the_provider() {
         tokio::spawn(async move {
             consumer
                 .trigger(TriggerRequest {
-                    function_id: "router::chat".into(),
+                    function_id: "llm-router::chat".into(),
                     payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
                     action: None,
                     timeout_ms: Some(30_000),
@@ -662,7 +662,7 @@ async fn consumer_cancellation_propagates_to_the_provider() {
         provider.fail_at_ms.load(Ordering::SeqCst)
     );
 
-    // router::chat resolves (does not hang)
+    // llm-router::chat resolves (does not hang)
     let res = tokio::time::timeout(Duration::from_secs(10), chat)
         .await
         .expect("chat resolved")
@@ -689,8 +689,8 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
 
     // Availability is pessimistically reset on load. The router must recover
     // this still-live provider itself through its direct engine-function nudge;
-    // relying only on the one-shot router::ready replay has a boot race.
-    let list = call_until(&second, "router::provider::list", json!({}), |value| {
+    // relying only on the one-shot llm-router::ready replay has a boot race.
+    let list = call_until(&second, "llm-router::provider::list", json!({}), |value| {
         value["providers"].as_array().is_some_and(|providers| {
             providers
                 .iter()
@@ -704,7 +704,7 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
     // accepted for an explicit idempotent declaration too.
     let again = call(
         &provider.iii,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({ "id": "real", "token": provider.token }),
     )
     .await
@@ -728,7 +728,7 @@ async fn registration_token_gates_takeover_resolve_and_reconcile() {
     // takeover without / with a wrong token is rejected
     let err = call(
         &provider.iii,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({ "id": "real", "worker_id": "evil" }),
     )
     .await
@@ -737,7 +737,7 @@ async fn registration_token_gates_takeover_resolve_and_reconcile() {
 
     let err = call(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         json!({ "id": "real", "token": "wrong" }),
     )
     .await
@@ -746,7 +746,7 @@ async fn registration_token_gates_takeover_resolve_and_reconcile() {
 
     let err = call(
         &provider.iii,
-        "router::models::reconcile",
+        "llm-router::models::reconcile",
         json!({ "provider": "real", "token": "wrong", "models": [] }),
     )
     .await
@@ -755,7 +755,7 @@ async fn registration_token_gates_takeover_resolve_and_reconcile() {
 
     let err = call(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         json!({ "id": "missing", "token": "x" }),
     )
     .await
@@ -787,7 +787,7 @@ async fn resolve_precedence_config_over_env_over_none() {
     // none + declared defaults
     let res = call(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         json!({ "id": "real", "token": provider.token }),
     )
     .await
@@ -801,7 +801,7 @@ async fn resolve_precedence_config_over_env_over_none() {
     std::env::set_var(env_var, "sk-env");
     let res = call(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         json!({ "id": "real", "token": provider.token }),
     )
     .await
@@ -819,7 +819,7 @@ async fn resolve_precedence_config_over_env_over_none() {
     .unwrap();
     let res = call_until(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         json!({ "id": "real", "token": provider.token }),
         |value| value["source"] == json!("config"),
     )
@@ -863,7 +863,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     loop {
         let list = call(
             &router_iii,
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "provider": "real" }),
         )
         .await
@@ -885,7 +885,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     // models surface: get + supports
     let got = call(
         &router_iii,
-        "router::models::get",
+        "llm-router::models::get",
         json!({ "provider": "real", "id": "disc-1" }),
     )
     .await
@@ -893,7 +893,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     assert_eq!(got["model"]["id"], "disc-1");
     let budget = call(
         &router_iii,
-        "router::models::budget",
+        "llm-router::models::budget",
         json!({ "provider": "real", "id": "disc-1" }),
     )
     .await
@@ -902,7 +902,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     assert_eq!(budget["effective_max_output_tokens"], 8192);
     let sup = call(
         &router_iii,
-        "router::models::supports",
+        "llm-router::models::supports",
         json!({ "provider": "real", "id": "disc-1", "capability": "tools" }),
     )
     .await
@@ -914,7 +914,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     // resolve in get/budget yet read as unsupported or list nothing.
     let got = call(
         &router_iii,
-        "router::models::get",
+        "llm-router::models::get",
         json!({ "id": "real::disc-1" }),
     )
     .await
@@ -922,7 +922,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     assert_eq!(got["model"]["id"], "disc-1");
     let budget = call(
         &router_iii,
-        "router::models::budget",
+        "llm-router::models::budget",
         json!({ "provider": "real", "id": "real::disc-1" }),
     )
     .await
@@ -930,7 +930,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     assert_eq!(budget["model"]["id"], "disc-1");
     let sup = call(
         &router_iii,
-        "router::models::supports",
+        "llm-router::models::supports",
         json!({ "provider": "real", "id": "real::disc-1", "capability": "vision" }),
     )
     .await
@@ -938,7 +938,7 @@ async fn paste_a_key_kicks_debounced_discovery_and_models_land() {
     assert_eq!(sup["supported"], true); // discovered flag — proves resolution
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "real::disc-1" }),
     )
     .await
@@ -979,7 +979,7 @@ async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
         tokio::spawn(async move {
             consumer
                 .trigger(TriggerRequest {
-                    function_id: "router::chat".into(),
+                    function_id: "llm-router::chat".into(),
                     payload: json!({ "writer_ref": writer_ref, "request_id": "abort-me", "model": "live-1", "messages": [] }),
                     action: None,
                     timeout_ms: Some(30_000),
@@ -995,7 +995,7 @@ async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
     }
     let aborted = call(
         &consumer,
-        "router::abort",
+        "llm-router::abort",
         json!({ "request_id": "abort-me" }),
     )
     .await
@@ -1047,7 +1047,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
         tokio::spawn(async move {
             consumer
                 .trigger(TriggerRequest {
-                    function_id: "router::chat".into(),
+                    function_id: "llm-router::chat".into(),
                     payload: json!({
                         "writer_ref": first_ref,
                         "request_id": "same-request",
@@ -1071,7 +1071,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
     let (second_ref, second_frames, second_pump) = consumer_channel(&second_consumer).await;
     let duplicate = second_consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": second_ref,
                 "request_id": "same-request",
@@ -1113,7 +1113,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
 
     let aborted = call(
         &router,
-        "router::abort",
+        "llm-router::abort",
         json!({ "request_id": "same-request" }),
     )
     .await
@@ -1148,7 +1148,7 @@ async fn update_credential_persists_and_resolves_back() {
 
     let res = call(
         &provider.iii,
-        "router::provider::update_credential",
+        "llm-router::provider::update_credential",
         json!({
             "id": "real", "token": provider.token,
             "credential": { "type": "oauth", "access_token": "at-1", "expires_at": 999 }
@@ -1160,7 +1160,7 @@ async fn update_credential_persists_and_resolves_back() {
 
     let resolved = call(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         json!({ "id": "real", "token": provider.token }),
     )
     .await
@@ -1168,6 +1168,46 @@ async fn update_credential_persists_and_resolves_back() {
     assert_eq!(resolved["source"], "config");
     assert_eq!(resolved["credential"]["access_token"], "at-1");
 
+    router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deprecated_router_ids_answer_like_their_llm_router_twins() {
+    let engine = engine_or_skip!();
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+    let caller = register_worker(&engine.url, test_init_options());
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+
+    for (current, deprecated, payload) in [
+        (
+            "llm-router::models::list",
+            "router::models::list",
+            json!({}),
+        ),
+        (
+            "llm-router::provider::list",
+            "router::provider::list",
+            json!({}),
+        ),
+        (
+            "llm-router::provider::resolve",
+            "router::provider::resolve",
+            json!({ "id": "real", "token": provider.token }),
+        ),
+    ] {
+        let want = call(&caller, current, payload.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{current}: {e}"));
+        let got = call(&caller, deprecated, payload)
+            .await
+            .unwrap_or_else(|e| panic!("{deprecated}: {e}"));
+        assert_eq!(got, want, "{deprecated} must answer like {current}");
+    }
+
+    caller.shutdown();
     router_iii.shutdown();
 }
 
@@ -1197,18 +1237,27 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
     );
     probe
         .register_trigger(RegisterTriggerInput::new(
+            "llm-router::models::changed",
+            "probe::on_models_changed",
+            json!({}),
+        ))
+        .expect("llm-router::models::changed trigger registered");
+    // A binding made before the rename, on the deprecated name, must keep
+    // receiving the same emits.
+    probe
+        .register_trigger(RegisterTriggerInput::new(
             "router::models::changed",
             "probe::on_models_changed",
             json!({}),
         ))
-        .expect("router::models::changed trigger registered");
+        .expect("deprecated router::models::changed trigger registered");
 
     // Declare already emits count=1 from the static model; reconcile two
     // models so the explicit-reconcile emission is unambiguous.
     let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
     call(
         &provider.iii,
-        "router::models::reconcile",
+        "llm-router::models::reconcile",
         json!({ "provider": "real", "token": provider.token, "models": [
             { "id": "m-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 },
             { "id": "m-2", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }
@@ -1221,16 +1270,22 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
     let want_count = 2;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let matched = received.lock().unwrap().iter().any(|p| {
-            p.get("provider").and_then(Value::as_str) == Some(want_provider)
-                && p.get("count").and_then(Value::as_u64) == Some(want_count)
-        });
-        if matched {
+        // One delivery per binding: the current name and the deprecated one.
+        let matched = received
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p.get("provider").and_then(Value::as_str) == Some(want_provider)
+                    && p.get("count").and_then(Value::as_u64) == Some(want_count)
+            })
+            .count();
+        if matched >= 2 {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "router::models::changed never reached the trigger subscriber; got {:?}",
+            "llm-router::models::changed never reached the trigger subscriber; got {:?}",
             received.lock().unwrap()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1254,7 +1309,7 @@ async fn router_boots_its_interface_against_a_bare_engine() {
         .await
         .expect("router boots without iii-state");
 
-    let list = call(&router_iii, "router::models::list", json!({}))
+    let list = call(&router_iii, "llm-router::models::list", json!({}))
         .await
         .expect("interface answers");
     assert_eq!(list["models"], json!([]));
@@ -1270,7 +1325,7 @@ async fn router_boots_its_interface_against_a_bare_engine() {
         .as_array()
         .and_then(|rows| {
             rows.iter()
-                .find(|row| row["function_id"] == "router::on_config_changed")
+                .find(|row| row["function_id"] == "llm-router::on_config_changed")
         })
         .expect("reactive configuration handler is registered");
     assert_eq!(
@@ -1333,14 +1388,14 @@ async fn failed_registry_write_rolls_back_and_retry_can_bind_without_a_token() {
 
     let first = call(
         &router,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({ "id": "recoverable" }),
     )
     .await
     .expect_err("the injected first state write must fail");
     assert_eq!(remote_code(&first), "router/invalid_request", "{first:?}");
 
-    let after_failure = call(&router, "router::provider::list", json!({}))
+    let after_failure = call(&router, "llm-router::provider::list", json!({}))
         .await
         .expect("provider list");
     assert_eq!(
@@ -1351,7 +1406,7 @@ async fn failed_registry_write_rolls_back_and_retry_can_bind_without_a_token() {
 
     let retry = call(
         &router,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({ "id": "recoverable" }),
     )
     .await
@@ -1389,11 +1444,15 @@ async fn assert_static_registration_failure_is_atomic(
             "max_output_tokens": 100
         }]
     });
-    call(&router, "router::provider::register", declaration.clone())
-        .await
-        .expect_err("the selected state write must fail registration");
+    call(
+        &router,
+        "llm-router::provider::register",
+        declaration.clone(),
+    )
+    .await
+    .expect_err("the selected state write must fail registration");
 
-    let providers = call(&router, "router::provider::list", json!({}))
+    let providers = call(&router, "llm-router::provider::list", json!({}))
         .await
         .expect("provider list after failure");
     assert!(
@@ -1404,7 +1463,7 @@ async fn assert_static_registration_failure_is_atomic(
     );
     let models = call(
         &router,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": provider_id }),
     )
     .await
@@ -1423,7 +1482,7 @@ async fn assert_static_registration_failure_is_atomic(
     register_router(router.clone())
         .await
         .expect("router reboots");
-    let providers = call(&router, "router::provider::list", json!({}))
+    let providers = call(&router, "llm-router::provider::list", json!({}))
         .await
         .expect("provider list after restart");
     assert!(
@@ -1434,7 +1493,7 @@ async fn assert_static_registration_failure_is_atomic(
     );
     let models = call(
         &router,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": provider_id }),
     )
     .await
@@ -1445,7 +1504,7 @@ async fn assert_static_registration_failure_is_atomic(
         "failed registration survived restart as a catalog ghost: {models}"
     );
 
-    let retry = call(&router, "router::provider::register", declaration)
+    let retry = call(&router, "llm-router::provider::register", declaration)
         .await
         .expect("retry without an undelivered token must bind cleanly");
     assert_eq!(retry["ok"], true, "{retry}");
@@ -1457,7 +1516,7 @@ async fn assert_static_registration_failure_is_atomic(
     );
     let models = call(
         &router,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": provider_id }),
     )
     .await
@@ -1527,9 +1586,13 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
             "max_output_tokens": 100
         }]
     });
-    let first = call(&provider, "router::provider::register", declaration.clone())
-        .await
-        .expect("first registration");
+    let first = call(
+        &provider,
+        "llm-router::provider::register",
+        declaration.clone(),
+    )
+    .await
+    .expect("first registration");
     let token = first["registration_token"]
         .as_str()
         .expect("registration token")
@@ -1542,7 +1605,7 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
         tokio::spawn(async move {
             consumer
                 .trigger(TriggerRequest {
-                    function_id: "router::chat".into(),
+                    function_id: "llm-router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
                         "model": "generation-race-model",
@@ -1562,7 +1625,7 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
 
     let mut redeclaration = declaration;
     redeclaration["token"] = json!(token);
-    call(&provider, "router::provider::register", redeclaration)
+    call(&provider, "llm-router::provider::register", redeclaration)
         .await
         .expect("new generation registers before the old failure lands");
     release.add_permits(1);
@@ -1590,7 +1653,7 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
         .count();
     assert_eq!(terminal_count, 1, "frames: {:?}", frames.lock().unwrap());
 
-    let providers = call(&router, "router::provider::list", json!({}))
+    let providers = call(&router, "llm-router::provider::list", json!({}))
         .await
         .expect("provider list");
     let current = providers["providers"]
@@ -1603,7 +1666,7 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
     );
     let route = call(
         &router,
-        "router::route",
+        "llm-router::route",
         json!({ "model": "generation-race-model" }),
     )
     .await
@@ -1650,7 +1713,7 @@ async fn provider_bad_request_is_permanent_and_is_not_retried() {
     );
     call(
         &provider,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({
             "id": "typed",
             "models": [{
@@ -1668,7 +1731,7 @@ async fn provider_bad_request_is_permanent_and_is_not_retried() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let error = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "request_id": "malformed-provider-input",
@@ -1807,7 +1870,7 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
     );
     call(
         &provider,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({
             "id": "retryable",
             "models": [{
@@ -1825,7 +1888,7 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let response = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "request_id": "stable-retry-id",
@@ -1921,7 +1984,7 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
     );
     call(
         &provider,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({
             "id": "backoff",
             "models": [{
@@ -1942,7 +2005,7 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
         tokio::spawn(async move {
             consumer
                 .trigger(TriggerRequest {
-                    function_id: "router::chat".into(),
+                    function_id: "llm-router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
                         "request_id": "abort-in-backoff",
@@ -1966,7 +2029,7 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
     let started = Instant::now();
     let aborted = call(
         &router,
-        "router::abort",
+        "llm-router::abort",
         json!({ "request_id": "abort-in-backoff" }),
     )
     .await
@@ -2027,7 +2090,7 @@ async fn extreme_retry_configuration_is_rejected_without_disrupting_chat() {
     let consumer = register_worker(&engine.url, test_init_options());
     let completed = call(
         &consumer,
-        "router::complete",
+        "llm-router::complete",
         json!({ "model": "live-1", "messages": [] }),
     )
     .await
@@ -2059,7 +2122,7 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     );
     call(
         &provider,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({
             "id": "coded-error",
             "models": [{
@@ -2077,7 +2140,7 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let error = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "coded-error-model",
@@ -2155,7 +2218,7 @@ async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
 
     let error = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "live-1",
@@ -2206,7 +2269,7 @@ async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
     register_router(router.clone()).await.expect("router boots");
     call(
         &router,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({
             "id": "ghost",
             "models": [{
@@ -2224,7 +2287,7 @@ async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let err = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "ghost-model",
@@ -2258,13 +2321,17 @@ async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
         "frames: {parsed:?}"
     );
 
-    let listed = call(&router, "router::provider::list", json!({}))
+    let listed = call(&router, "llm-router::provider::list", json!({}))
         .await
         .expect("provider list");
     assert_eq!(listed["providers"][0]["available"], false, "{listed}");
-    let route = call(&router, "router::route", json!({ "model": "ghost-model" }))
-        .await
-        .expect_err("an unavailable catalog owner must not remain routable");
+    let route = call(
+        &router,
+        "llm-router::route",
+        json!({ "model": "ghost-model" }),
+    )
+    .await
+    .expect_err("an unavailable catalog owner must not remain routable");
     assert_eq!(
         remote_code(&route),
         "router/provider_unavailable",
@@ -2311,7 +2378,7 @@ async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
     let started = Instant::now();
     let response = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
             action: None,
             timeout_ms: Some(2_000),
@@ -2356,7 +2423,7 @@ async fn complete_fails_fast_when_the_provider_worker_is_gone() {
     // Declaration only — no live worker serves provider::ghost::stream.
     call(
         &router_iii,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({ "id": "ghost" }),
     )
     .await
@@ -2366,7 +2433,7 @@ async fn complete_fails_fast_when_the_provider_worker_is_gone() {
     let started = Instant::now();
     let err = call(
         &consumer,
-        "router::complete",
+        "llm-router::complete",
         json!({
             "provider": "ghost",
             "model": "ghost-model",
@@ -2428,7 +2495,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     );
     let declared = call(
         &provider,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({
             "id": "speech",
             "models": [
@@ -2444,13 +2511,13 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     assert_eq!(declared["ok"], json!(true));
 
     // Default listing is chat only; the speech families list on request.
-    let chat = call(&router_iii, "router::models::list", json!({}))
+    let chat = call(&router_iii, "llm-router::models::list", json!({}))
         .await
         .expect("chat list");
     assert_eq!(chat["models"], json!([]));
     let stt = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "modality": "stt" }),
     )
     .await
@@ -2459,7 +2526,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     assert_eq!(stt["models"][0]["speech"]["modality"], json!("stt"));
     let any = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "modality": "any" }),
     )
     .await
@@ -2467,7 +2534,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     assert_eq!(any["models"].as_array().map(Vec::len), Some(2));
     let supports = call(
         &router_iii,
-        "router::models::supports",
+        "llm-router::models::supports",
         json!({ "id": "say-1", "capability": "tts" }),
     )
     .await
@@ -2477,7 +2544,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     // transcribe finds the provider from the model id and forwards the audio.
     let heard = call(
         &router_iii,
-        "router::transcribe",
+        "llm-router::transcribe",
         json!({ "model": "listen-1", "audio_base64": "UklGRg==", "language": "en" }),
     )
     .await
@@ -2491,7 +2558,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     // speak by provider alone picks that provider's tts model.
     let said = call(
         &router_iii,
-        "router::speak",
+        "llm-router::speak",
         json!({ "provider": "speech", "text": "hello", "voice": "v1", "format": "wav" }),
     )
     .await
@@ -2504,7 +2571,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     // The wrong family and an absent surface are typed errors, not silence.
     let wrong = call(
         &router_iii,
-        "router::transcribe",
+        "llm-router::transcribe",
         json!({ "model": "say-1", "audio_base64": "UklGRg==" }),
     )
     .await
@@ -2512,7 +2579,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     assert_eq!(remote_code(&wrong), "router/invalid_request");
     let empty = call(
         &router_iii,
-        "router::speak",
+        "llm-router::speak",
         json!({ "provider": "speech", "text": "  " }),
     )
     .await
@@ -2522,7 +2589,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     // A speech model is not a chat target.
     let refused = call(
         &router_iii,
-        "router::complete",
+        "llm-router::complete",
         json!({
             "model": "listen-1",
             "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]
@@ -2704,7 +2771,7 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
     // not take over from the explicit reference.
     let res = call_until(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         resolve.clone(),
         |v| v["credential_source"] == json!("secret"),
     )
@@ -2725,7 +2792,7 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
     secrets.set("REAL_KEY", Ok("sk-from-secrets"));
     let res = call_until(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         resolve.clone(),
         |v| v["configured"] == json!(true),
     )
@@ -2742,7 +2809,7 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
         "the engine stamps the caller the secrets worker authorizes"
     );
 
-    let list = call(&router_iii, "router::provider::list", json!({}))
+    let list = call(&router_iii, "llm-router::provider::list", json!({}))
         .await
         .unwrap();
     let real = list["providers"]
@@ -2764,9 +2831,13 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
     let ready_before = provider.ready_calls.load(Ordering::SeqCst);
     secrets.set("REAL_KEY", Ok("sk-rotated"));
     secrets.announce("REAL_KEY", "rotated").await;
-    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
-        .await
-        .unwrap();
+    let res = call(
+        &provider.iii,
+        "llm-router::provider::resolve",
+        resolve.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(res["credential"]["key"], "sk-rotated");
     wait_for_count(
         &provider.ready_calls,
@@ -2778,9 +2849,13 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
     // Access revoked, then deleted: actionable errors, never the old value.
     secrets.set("REAL_KEY", Err("SECRET_FORBIDDEN"));
     secrets.announce("REAL_KEY", "access_changed").await;
-    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
-        .await
-        .unwrap();
+    let res = call(
+        &provider.iii,
+        "llm-router::provider::resolve",
+        resolve.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(res["configured"], false);
     assert_eq!(res["credential"], Value::Null);
     assert_eq!(
@@ -2790,9 +2865,13 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
 
     secrets.set("REAL_KEY", Err("SECRET_NOT_FOUND"));
     secrets.announce("REAL_KEY", "deleted").await;
-    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
-        .await
-        .unwrap();
+    let res = call(
+        &provider.iii,
+        "llm-router::provider::resolve",
+        resolve.clone(),
+    )
+    .await
+    .unwrap();
     assert!(
         res["credential_error"]
             .as_str()
@@ -2805,7 +2884,7 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
     let consumer = register_worker(&engine.url, test_init_options());
     let err = call(
         &consumer,
-        "router::complete",
+        "llm-router::complete",
         json!({
             "provider": "real",
             "model": "live-1",
@@ -2862,7 +2941,7 @@ async fn env_reference_resolves_through_secrets_and_follows_env_edits() {
     // fallback, so wait for the reference rather than for any credential.
     let res = call_until(
         &provider.iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         resolve.clone(),
         |v| v["configured"] == json!(true) && v["credential_ref"] == json!(reference),
     )
@@ -2875,9 +2954,13 @@ async fn env_reference_resolves_through_secrets_and_follows_env_edits() {
     let ready_before = provider.ready_calls.load(Ordering::SeqCst);
     secrets.set(&reference, Ok("sk-edited-in-dotenv"));
     secrets.announce_ref(env_var, &reference, "rotated").await;
-    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
-        .await
-        .unwrap();
+    let res = call(
+        &provider.iii,
+        "llm-router::provider::resolve",
+        resolve.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(res["credential"]["key"], "sk-edited-in-dotenv");
     wait_for_count(
         &provider.ready_calls,
@@ -2890,9 +2973,13 @@ async fn env_reference_resolves_through_secrets_and_follows_env_edits() {
     // variable still does not take over.
     secrets.set(&reference, Err("SECRET_NOT_FOUND"));
     secrets.announce_ref(env_var, &reference, "deleted").await;
-    let res = call(&provider.iii, "router::provider::resolve", resolve.clone())
-        .await
-        .unwrap();
+    let res = call(
+        &provider.iii,
+        "llm-router::provider::resolve",
+        resolve.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(res["configured"], false);
     assert_eq!(res["credential"], Value::Null);
     assert!(
@@ -2920,7 +3007,7 @@ async fn pasting_a_secret_reference_is_resolvable_when_discovery_runs() {
         .await
         .expect("router boots");
 
-    // A provider whose discovery records what router::provider::resolve
+    // A provider whose discovery records what llm-router::provider::resolve
     // handed it at that moment.
     let provider_iii = register_worker(&engine.url, test_init_options());
     let token_cell: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
@@ -2935,7 +3022,7 @@ async fn pasting_a_secret_reference_is_resolvable_when_discovery_runs() {
                 async move {
                     let resolved = call(
                         &iii,
-                        "router::provider::resolve",
+                        "llm-router::provider::resolve",
                         json!({ "id": "sec", "token": token }),
                     )
                     .await?;
@@ -2947,7 +3034,7 @@ async fn pasting_a_secret_reference_is_resolvable_when_discovery_runs() {
     }
     let declared = call(
         &provider_iii,
-        "router::provider::register",
+        "llm-router::provider::register",
         json!({ "id": "sec", "supports_model_listing": true }),
     )
     .await

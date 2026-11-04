@@ -145,7 +145,7 @@ describe('inheritedTags', () => {
       leaf: { parent: 'gap' },
     })
     // The gap span must not hide the scope from its descendants: this is
-    // how `router::models::get` under a tag-less `context::assemble` still
+    // how `llm-router::models::get` under a tag-less `context::assemble` still
     // reads as an echo of the sub-agent scope.
     expect(inheritedTags('gap', lookup)).toEqual({
       kind: 'harness.subagent',

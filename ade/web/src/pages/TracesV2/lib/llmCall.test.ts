@@ -219,11 +219,14 @@ describe('llmCallFromSpan', () => {
 
 describe('isLlmCall', () => {
   it('matches router/provider function ids, gen_ai attributes, or a messages+model payload', () => {
+    expect(isLlmCall('llm-router::chat', undefined, undefined)).toBe(true)
     expect(isLlmCall('router::chat', undefined, undefined)).toBe(true)
     expect(isLlmCall('provider::anthropic::stream', undefined, undefined)).toBe(
       true,
     )
-    expect(isLlmCall('router::models::list', undefined, undefined)).toBe(false)
+    expect(isLlmCall('llm-router::models::list', undefined, undefined)).toBe(
+      false,
+    )
     expect(isLlmCall(null, { 'gen_ai.request.model': 'x' }, undefined)).toBe(
       true,
     )

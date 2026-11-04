@@ -1,6 +1,6 @@
 //! Debounced per-provider follow-ups after a configuration change
-//! (`router::on_config_changed`) or a credential change
-//! (`router::on_secret_changed`, a secret resolving differently). One quiet
+//! (`llm-router::on_config_changed`) or a credential change
+//! (`llm-router::on_secret_changed`, a secret resolving differently). One quiet
 //! period coalesces a burst — the paste-a-key flow writes the secret and the
 //! slice back to back — into one call per provider.
 use std::collections::BTreeMap;
@@ -45,7 +45,7 @@ impl Refresh {
 }
 
 /// Delivers one follow-up; fire-and-forget (discovery reports back through
-/// `router::models::reconcile`).
+/// `llm-router::models::reconcile`).
 pub type Fire = Arc<dyn Fn(String, Refresh) -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub fn bus_fire(iii: IIIClient) -> Fire {

@@ -112,7 +112,7 @@ max_output_chars: 2000         # larger outputs are immediately eligible; smalle
 max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve
-summarizer_timeout_ms: 320000  # outer budget for one router::chat summariser call
+summarizer_timeout_ms: 320000  # outer budget for one llm-router::chat summariser call
 ```
 
 Other details (and the defaults' single source of truth) live in

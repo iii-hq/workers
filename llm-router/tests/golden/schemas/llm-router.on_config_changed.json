@@ -1,9 +1,9 @@
 {
   "description": "Internal: reactively reload the in-memory configuration snapshot and fan out provider model discovery after configuration changes.",
-  "function_id": "router::on_config_changed",
+  "function_id": "llm-router::on_config_changed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Advisory configuration-change event delivered to `router::on_config_changed`. The handler ignores event values and re-fetches the authoritative entry before replacing its in-memory snapshot.",
+    "description": "Advisory configuration-change event delivered to `llm-router::on_config_changed`. The handler ignores event values and re-fetches the authoritative entry before replacing its in-memory snapshot.",
     "properties": {
       "id": {
         "description": "Configuration id that changed (advisory).",

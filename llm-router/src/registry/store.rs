@@ -146,7 +146,7 @@ fn build_record(
 
 impl ProviderRecord {
     /// A flagged embedder seen live within [`EMBEDDER_GRACE_MS`]: when its
-    /// `embed` is not found, `router::embed` waits for it instead of falling
+    /// `embed` is not found, `llm-router::embed` waits for it instead of falling
     /// back (embed.rs), whatever else of it is live (restarting, partly
     /// re-registered, or this router just restarted). One gone for longer
     /// (removed, say) no longer holds the fallback.
@@ -214,7 +214,7 @@ impl RegistryStore {
         // stay wrongly listed until a dispatch burned on it (F9: topology
         // events can't be resolved to providers). Restore every record DOWN
         // and let the sources of truth flip it up: providers re-declare on
-        // `router::ready` (upsert emits the op:"available" recovery), and a
+        // `llm-router::ready` (upsert emits the op:"available" recovery), and a
         // successful dispatch heals it too (chat.rs `Done` arm). Not persisted
         // here — flags re-persist on their next real change.
         restore(records.values_mut(), booted);

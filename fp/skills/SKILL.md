@@ -43,7 +43,7 @@ for small values).
   (`engine::register_trigger`/`engine::unregister_trigger`), nested pipes,
   and the agent-policy hard-denied classes (session writes/`approval::*`,
   credentials via `configuration::*`/`oauth::*`, model spend via
-  `router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus
+  `llm-router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus
   internals) — call those directly. Session reads (`session::get-attachment`,
   `session::messages-tail`, …) and `state::*` stay allowed on purpose.
 - The first pipe step receives no threaded value — start with a producer

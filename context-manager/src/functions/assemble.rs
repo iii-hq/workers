@@ -133,7 +133,7 @@ pub struct AssembleOptions {
     /// the provider's count, whose template may render it.
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
-    /// The `response_format` the turn sends on `router::chat`, forwarded to
+    /// The `response_format` the turn sends on `llm-router::chat`, forwarded to
     /// the provider's count for providers that render it into the prompt.
     #[serde(default)]
     pub response_format: Option<serde_json::Value>,

@@ -30,7 +30,7 @@ pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
     }
 }
 
-/// Map router bus errors surfaced through `router::provider::resolve`.
+/// Map router bus errors surfaced through `llm-router::provider::resolve`.
 pub fn classify_bus_error(err: &Error) -> ErrorKind {
     match err {
         Error::Remote { code, .. } if code == "router/registration_rejected" => {

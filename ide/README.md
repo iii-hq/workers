@@ -191,7 +191,7 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 | `shell::fs::write` | Write a file. Simplest form passes inline string `content` (host target only): `{ path, content: "file text" }`, with `mode` (octal, default `"0644"`) and `parents: true` to create parents. A `ContentRef` object in `content` instead streams large/staged payloads through an SDK channel (temp file + atomic rename) and is **required** for sandbox targets — an inline string on a sandbox target returns `S210`. Batch form: pass `files: [{ path, content, mode?, parents? }, ...]` (host, inline per file) to write several files in one call; the response then carries per-file `files: [{ path, bytes_written }]`. A single-file write leaves `files` empty and returns `{ bytes_written, path }`. Supplying both single `path`/`content` and `files` returns `S210`. |
 | `shell::fs::read` | Stream a file's bytes out through an SDK channel. For an inline read on the web surface, use the `harness::fs::read_inline` wrapper instead. |
 | `shell::scm::commit-message-config` | *(console only)* The live `commit_messages` settings: `{}` → `{ model: string \| null, thinking, instructions }`. See [Commit messages](#commit-messages-shellscm). |
-| `shell::scm::commit-message` | *(console only)* Write a git commit message for a diff with an LLM through `router::complete`: `{ changes, recent_subjects?, fallback_model? }` → `{ message, model }`. See [Commit messages](#commit-messages-shellscm). |
+| `shell::scm::commit-message` | *(console only)* Write a git commit message for a diff with an LLM through `llm-router::complete`: `{ changes, recent_subjects?, fallback_model? }` → `{ message, model }`. See [Commit messages](#commit-messages-shellscm). |
 
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host and sandbox share one wire shape.
 
@@ -315,7 +315,7 @@ no output arrived from one whose frames the browser dropped.
 The Commit panel's **Generate** button writes a commit message with an LLM.
 The page runs git and prepares the diff text; this worker reads its live
 `commit_messages` config (model, reasoning effort, extra instructions), builds
-the prompt and calls `router::complete` on the `llm-router` worker (120 s
+the prompt and calls `llm-router::complete` on the `llm-router` worker (120 s
 timeout, at most 1024 output tokens). Both functions are console-only
 (`internal: true`, denied to agents in `iii-permissions.yaml`: a call spends
 model budget outside the harness loop's accounting). Install and configure a
@@ -345,7 +345,7 @@ Errors carry `{ code, message }`:
 |---|---|
 | `NO_MODEL` | `commit_messages.model` is unset and no `fallback_model` was passed. |
 | `EMPTY_CHANGES` | `changes` is empty or whitespace. |
-| `ROUTER_FAILED` | `router::complete` failed (provider not configured, `llm-router` not installed, timeout) or the model's turn ended in an error; the message names `router::complete` and the router's reason. |
+| `ROUTER_FAILED` | `llm-router::complete` failed (provider not configured, `llm-router` not installed, timeout) or the model's turn ended in an error; the message names `llm-router::complete` and the router's reason. |
 | `EMPTY_MESSAGE` | The model answered with no text. |
 
 ## Two surfaces, one contract

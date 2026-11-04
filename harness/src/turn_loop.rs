@@ -1250,7 +1250,7 @@ async fn generate_step(
 
     // Release the per-session lock across the generation RPC. The loop writes no
     // turn record between here and the post-generation cancellation check
-    // (router::chat streams into the SESSION, not the turn record), so dropping
+    // (llm-router::chat streams into the SESSION, not the turn record), so dropping
     // the lock lets a concurrent harness::stop take it and set the durable abort
     // flag — observed THIS step by the re-read below — instead of leaving the
     // stop blocked behind the whole step and a step of tool execution leaking.
@@ -1264,7 +1264,7 @@ async fn generate_step(
         .await;
 
     let router = deps.router().await;
-    // Harness-local cancel backstop: cuts this await even when router::abort
+    // Harness-local cancel backstop: cuts this await even when llm-router::abort
     // was a no-op (registration race / router restart). Level-triggered, so a
     // stop fired before this subscribe is still observed.
     let abort_rx = deps.cancels.watch(&record.turn_id);
@@ -3344,7 +3344,7 @@ where
     F: std::future::Future<Output = trigger::ResultData> + Send + 'static,
 {
     use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
-    // Carry the step's OTel context into the task (the router::chat idiom) so
+    // Carry the step's OTel context into the task (the llm-router::chat idiom) so
     // the target's span still nests under the turn's trace.
     let detached = async move {
         tokio::spawn(dispatch.with_context(Context::current()))

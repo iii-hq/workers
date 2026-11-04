@@ -1,7 +1,52 @@
 {
-  "description": "Provider self-declaration at attach time (token-gated upsert); composes the configuration entry schema and reconciles static models.",
-  "function_id": "router::provider::register",
+  "description": "List catalog models, optionally filtered by provider, a capability flag, and modality (chat by default; stt, tts, or any).",
+  "function_id": "llm-router::models::list",
   "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ModalityFilter": {
+        "description": "Model family selector for `llm-router::models::list`. `chat` is the default so pickers built before speech models existed keep listing only what `llm-router::chat` can run.",
+        "enum": [
+          "chat",
+          "stt",
+          "tts",
+          "any"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Input of `llm-router::models::list`.",
+    "properties": {
+      "capability": {
+        "description": "Keep only models that support this capability flag (optional).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "modality": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ModalityFilter"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Model family: `chat` (default), `stt`, `tts`, or `any`."
+      },
+      "provider": {
+        "description": "Filter to a single provider id (optional).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ModelsListRequest",
+    "type": "object"
+  },
+  "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "Model": {
@@ -163,26 +208,6 @@
         },
         "type": "object"
       },
-      "ProviderDefaults": {
-        "additionalProperties": true,
-        "properties": {
-          "api_url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "max_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
       "ReasoningEffort": {
         "description": "One provider-native reasoning effort advertised for a specific model.\n\nValues intentionally remain strings: provider catalogs can add efforts without requiring a router-wide enum release first.",
         "properties": {
@@ -205,14 +230,14 @@
         "description": "What a speech model does. Chat models carry no `speech` block.",
         "oneOf": [
           {
-            "description": "Speech to text, served through `router::transcribe`.",
+            "description": "Speech to text, served through `llm-router::transcribe`.",
             "enum": [
               "stt"
             ],
             "type": "string"
           },
           {
-            "description": "Text to speech, served through `router::speak`.",
+            "description": "Text to speech, served through `llm-router::speak`.",
             "enum": [
               "tts"
             ],
@@ -221,7 +246,7 @@
         ]
       },
       "SpeechModel": {
-        "description": "Facts about a speech model. Present only on models served through `router::transcribe` / `router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
+        "description": "Facts about a speech model. Present only on models served through `llm-router::transcribe` / `llm-router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
         "properties": {
           "languages": {
             "description": "BCP-47 tags of the languages the model handles; empty when the provider does not say.",
@@ -243,145 +268,21 @@
           "modality"
         ],
         "type": "object"
-      },
-      "ThinkingLevel": {
-        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
-        "enum": [
-          "off",
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "type": "string"
       }
     },
-    "description": "Input of `router::provider::register` — a provider worker's declaration plus the optional re-registration token.",
+    "description": "Output of `llm-router::models::list`.",
     "properties": {
-      "config_schema": true,
-      "context_overflow_hint": {
-        "description": "Guidance a console shows under a context-overflow failure on one of this provider's models, for causes the console cannot fix by compacting (a self-hosted server started with a small window, say). One or two plain sentences, optionally with a link to the provider's docs. `router::provider::list` carries it verbatim.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "credential_env_var": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "credential_optional": {
-        "description": "`true` when the provider works without a credential (a local server started without a key): the router then reports it `configured` with no key. A key that is set is still resolved and sent. Absent means a key is required.",
-        "type": [
-          "boolean",
-          "null"
-        ]
-      },
-      "default_models": {
-        "description": "Chat model ids the provider recommends as a starting point. The order in which the list first names each variant sets the variant rank. `router::provider::list` reports the newest catalog model of the best-ranked variant as `default_model` (see `registry::availability::resolve_default_model`).",
-        "items": {
-          "type": "string"
-        },
-        "type": [
-          "array",
-          "null"
-        ]
-      },
-      "default_thinking_level": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/ThinkingLevel"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "description": "The thinking level to use with the default model when a caller names none. Absent means omit the level."
-      },
-      "defaults": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/ProviderDefaults"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "display_name": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "icon_svg": {
-        "description": "The provider's mark: one self-contained `<svg>` document, monochrome, drawn with a square `viewBox` and no fixed size. Consoles paint it as a `currentColor` mask next to the provider's models, so colour and scripts are ignored. Keep it under [`PROVIDER_ICON_SVG_MAX_BYTES`]; the router drops anything larger or not starting with `<svg`.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "id": {
-        "type": "string"
-      },
       "models": {
         "items": {
           "$ref": "#/definitions/Model"
         },
-        "type": [
-          "array",
-          "null"
-        ]
-      },
-      "supports_model_listing": {
-        "type": [
-          "boolean",
-          "null"
-        ]
-      },
-      "token": {
-        "description": "Registration token proving ownership on re-register (omit on first declare).",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "worker_id": {
-        "type": [
-          "string",
-          "null"
-        ]
+        "type": "array"
       }
     },
     "required": [
-      "id"
+      "models"
     ],
-    "title": "ProviderRegisterRequest",
-    "type": "object"
-  },
-  "response_schema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "`registration_token` is the provider ownership credential; only its sha256 hash is persisted. Engine caller metadata is not an authorization identity because worker names are self-reported.",
-    "properties": {
-      "id": {
-        "type": "string"
-      },
-      "ok": {
-        "type": "boolean"
-      },
-      "registration_token": {
-        "type": "string"
-      }
-    },
-    "required": [
-      "id",
-      "ok",
-      "registration_token"
-    ],
-    "title": "ProviderRegisterResponse",
+    "title": "ModelsListResponse",
     "type": "object"
   }
 }

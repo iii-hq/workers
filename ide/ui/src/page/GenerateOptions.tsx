@@ -40,7 +40,7 @@ const THINKING: readonly { value: string; label: string; detail: string }[] = [
 const thinkingLabel = (value: string | undefined) =>
   THINKING.find((option) => option.value === value)?.label ?? value ?? 'Model default'
 
-/** `router::models::list` rows as choices: `provider::id` unless already qualified. */
+/** `llm-router::models::list` rows as choices: `provider::id` unless already qualified. */
 export function modelChoices(response: unknown): ModelChoice[] {
   const models = (response as { models?: unknown } | null | undefined)?.models
   if (!Array.isArray(models)) return []
@@ -129,7 +129,7 @@ export function GenerateOptions({
     if (!open || models !== null) return
     let live = true
     Promise.resolve()
-      .then(() => host.iii.trigger('router::models::list', {}, { timeoutMs: 10_000 }))
+      .then(() => host.iii.trigger('llm-router::models::list', {}, { timeoutMs: 10_000 }))
       .then(modelChoices, () => [])
       .then((choices) => live && setModels(choices))
     return () => {

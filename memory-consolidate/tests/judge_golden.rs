@@ -145,7 +145,7 @@ async fn judge_golden_cases() {
         let batch = build_batch(&[(pending, candidates)]);
         let reply = iii
             .trigger(TriggerRequest {
-                function_id: "router::complete".into(),
+                function_id: "llm-router::complete".into(),
                 payload: json!({
                     "model": model,
                     "system_prompt": SEMANTIC_SYSTEM,

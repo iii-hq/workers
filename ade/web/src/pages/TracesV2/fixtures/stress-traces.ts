@@ -5,7 +5,7 @@
  * on demand, deterministically, so the measurement is repeatable.
  *
  * Shape: one `harness::turn step` root, then a breadth-first tree of
- * worker calls with realistic names (`execute router::chat`,
+ * worker calls with realistic names (`execute llm-router::chat`,
  * `provider::anthropic::stream`, `execute state::get`, …) across eight
  * workers. Siblings are mostly sequential with some genuinely concurrent
  * runs, so the hierarchical timeline packs onto many lines and the
@@ -64,9 +64,9 @@ interface Call {
 
 const FIRST_LEVEL: Call[] = [
   {
-    name: 'execute router::chat',
+    name: 'execute llm-router::chat',
     worker: 'llm-router',
-    functionId: 'router::chat',
+    functionId: 'llm-router::chat',
     kind: 'internal',
     llm: true,
   },
@@ -123,9 +123,9 @@ const NESTED: Call[] = [
     llm: true,
   },
   {
-    name: 'execute router::count_tokens',
+    name: 'execute llm-router::count_tokens',
     worker: 'llm-router',
-    functionId: 'router::count_tokens',
+    functionId: 'llm-router::count_tokens',
     kind: 'internal',
     llm: true,
   },

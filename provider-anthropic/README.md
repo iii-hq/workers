@@ -3,7 +3,7 @@
 Claude models behind [llm-router](https://github.com/iii-hq/workers/tree/main/llm-router). Install this worker next
 to the router, give it an API key, and the Anthropic catalog — streaming,
 extended thinking, tool use, vision, automatic prompt caching — appears
-behind the router's single front door (`router::chat` / `router::complete`).
+behind the router's single front door (`llm-router::chat` / `llm-router::complete`).
 You never call this worker directly: the router invokes it worker-to-worker,
 and `iii-permissions.yaml` blocks agent access to `provider::anthropic::*`.
 
@@ -33,18 +33,18 @@ router's environment.
 ```
 
 The router picks up the change and kicks model discovery; Claude models land
-in the catalog (`router::models::list`). Then make a first call — Node shown,
+in the catalog (`llm-router::models::list`). Then make a first call — Node shown,
 any SDK works:
 
 ```ts
-const res = await iii.trigger('router::complete', {
+const res = await iii.trigger('llm-router::complete', {
   model: 'claude-sonnet-4-6',
   messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
 }, { timeout_ms: 320_000 }); // outer timeout ≥ the router's 300s stream budget
 // res: { message, usage, provider, model } — message is the final AssistantMessage
 ```
 
-For token-by-token streaming, call `router::chat` with an iii channel — the
+For token-by-token streaming, call `llm-router::chat` with an iii channel — the
 walkthrough lives in [llm-router's Quickstart](https://github.com/iii-hq/workers/blob/main/llm-router/README.md).
 Request extended thinking with `thinking_level`; the worker maps the level
 to an Anthropic thinking budget from the model's catalog record. `xhigh`
@@ -116,7 +116,7 @@ when Anthropic ships or reprices a model.
 ## Notes
 
 - **Token counting:** `provider::anthropic::count_tokens` (behind
-  `router::count_tokens`) posts the assembled prompt to the messages
+  `llm-router::count_tokens`) posts the assembled prompt to the messages
   endpoint's `count_tokens` sibling for an exact provider-metered count;
   it never runs the model and costs nothing.
 - **Structured output:** the Messages API has no native JSON mode; every
@@ -125,7 +125,7 @@ when Anthropic ships or reprices a model.
 - **Errors:** 401/403 → `auth_expired`, 429 → `rate_limited`, 413/context →
   `context_overflow`, 5xx/network → `transient`, other 4xx → `permanent`.
   The worker never retries — the router owns retry policy.
-- **Credentials:** resolved per request via `router::provider::resolve`
+- **Credentials:** resolved per request via `llm-router::provider::resolve`
   (config slice → `ANTHROPIC_API_KEY` on the router → none). Both `api_key`
   (x-api-key) and `oauth` (Bearer) shapes work; v1 performs no OAuth refresh.
 - **Identity binding:** the router issues a `registration_token` on first

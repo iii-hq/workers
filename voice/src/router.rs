@@ -1,5 +1,5 @@
 //! The `router` engines: speech to text and text to speech through
-//! llm-router's `router::transcribe` and `router::speak`, so any speech
+//! llm-router's `llm-router::transcribe` and `llm-router::speak`, so any speech
 //! provider registered with the router (ElevenLabs, OpenAI, a self-hosted
 //! server) serves the voice worker without the worker knowing its API.
 //! Model ids are the router's `provider::model` form or a bare id the
@@ -96,7 +96,7 @@ fn non_empty(value: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-/// Transcribe a whole buffer through `router::transcribe`. Returns the
+/// Transcribe a whole buffer through `llm-router::transcribe`. Returns the
 /// transcript and the `provider::model` that produced it.
 pub async fn transcribe(
     iii: &IIIClient,
@@ -122,7 +122,7 @@ pub async fn transcribe_within(
         .or_else(|| non_empty(&cfg.stt.router.language));
     let reply = call(
         iii,
-        "router::transcribe",
+        "llm-router::transcribe",
         json!({
             "model": non_empty(&cfg.stt.router.model),
             "audio_base64": base64::engine::general_purpose::STANDARD.encode(wav),
@@ -133,7 +133,7 @@ pub async fn transcribe_within(
     )
     .await?;
     let wire: WireTranscript = serde_json::from_value(reply)
-        .map_err(|e| format!("router::transcribe answered an unexpected shape: {e}"))?;
+        .map_err(|e| format!("llm-router::transcribe answered an unexpected shape: {e}"))?;
     let duration_secs = wire
         .duration_secs
         .map(|d| d as f32)
@@ -167,7 +167,7 @@ pub async fn transcribe_within(
     ))
 }
 
-/// Speak `text` through `router::speak`. Returns the audio bytes, their
+/// Speak `text` through `llm-router::speak`. Returns the audio bytes, their
 /// MIME type and the `provider::model` that produced them.
 pub async fn speak(
     iii: &IIIClient,
@@ -180,7 +180,7 @@ pub async fn speak(
         .or_else(|| non_empty(&cfg.tts.router.voice));
     let reply = call(
         iii,
-        "router::speak",
+        "llm-router::speak",
         json!({
             "model": non_empty(&cfg.tts.router.model),
             "text": text,
@@ -191,10 +191,10 @@ pub async fn speak(
     )
     .await?;
     let wire: WireSpeech = serde_json::from_value(reply)
-        .map_err(|e| format!("router::speak answered an unexpected shape: {e}"))?;
+        .map_err(|e| format!("llm-router::speak answered an unexpected shape: {e}"))?;
     let audio = base64::engine::general_purpose::STANDARD
         .decode(wire.audio_base64.trim())
-        .map_err(|e| format!("router::speak returned audio that is not base64: {e}"))?;
+        .map_err(|e| format!("llm-router::speak returned audio that is not base64: {e}"))?;
     Ok((
         audio,
         wire.mime.unwrap_or_else(|| "audio/mpeg".to_string()),
@@ -206,13 +206,13 @@ pub async fn speak(
 pub async fn models(iii: &IIIClient, modality: &str) -> Result<Vec<RouterSpeechModel>, String> {
     let reply = call(
         iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "modality": modality }),
         LIST_TIMEOUT_MS,
     )
     .await?;
     let wire: WireModels = serde_json::from_value(reply)
-        .map_err(|e| format!("router::models::list answered an unexpected shape: {e}"))?;
+        .map_err(|e| format!("llm-router::models::list answered an unexpected shape: {e}"))?;
     Ok(wire.models)
 }
 

@@ -38,7 +38,7 @@ pub struct WorkerConfig {
     pub max_supersedes_per_run: usize,
 
     /// Run the LLM-assisted tier after the deterministic pass: an
-    /// `router::complete` judge confirms reorder merges and promotes
+    /// `llm-router::complete` judge confirms reorder merges and promotes
     /// standing instructions into the bank's `learned` rule. Off by
     /// default — the deterministic pass alone never needs a model.
     #[serde(default)]
@@ -57,7 +57,7 @@ pub struct WorkerConfig {
     /// Run the semantic consolidation tier after the other tiers: memories
     /// written since the last pass are compared with their nearest
     /// neighbours (raw BM25 and raw cosine, interleaved) and a
-    /// `router::complete` judge merges paraphrases and supersedes outdated
+    /// `llm-router::complete` judge merges paraphrases and supersedes outdated
     /// states, each with a reason. On by default; costs one LLM call per
     /// batch of new memories, and stops with a note (never an error) when
     /// no router or embeddings are available. Off = no model calls.

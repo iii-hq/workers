@@ -20,7 +20,7 @@ iii trigger compose::add worker=llm-router
 
 A consumer streams a turn by creating an iii channel, handing the router the
 channel's **write** endpoint, and reading frames from the **read** endpoint
-while `router::chat` runs. Any SDK works; Node shown:
+while `llm-router::chat` runs. Any SDK works; Node shown:
 
 ```ts
 import { createChannel } from 'iii-sdk';
@@ -31,7 +31,7 @@ reader.onMessage((frame) => {
   if (event.type === 'text_delta') process.stdout.write(event.delta);
 });
 
-const res = await iii.trigger('router::chat', {
+const res = await iii.trigger('llm-router::chat', {
   writer_ref: writerRef, // direction "write"
   model: 'claude-sonnet-4',
   messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
@@ -44,7 +44,7 @@ The streaming contract: every stream ends with exactly one terminal frame
 timeout, provider crash), it synthesizes the terminal frame and attaches the
 partial content, so consumers never hang on a half-open stream.
 
-Both `router::chat` and `router::complete` accept an optional `retry_max`:
+Both `llm-router::chat` and `llm-router::complete` accept an optional `retry_max`:
 the maximum number of retries **after** the first provider attempt. Omit it
 to keep the router's configured retry behavior, or pass `0` when the caller
 must authorize and budget each attempt itself. A caller can only reduce the
@@ -53,30 +53,39 @@ for the turn. This bounds router dispatches; it does not change a provider's
 own retry policy or make missing usage a billable cost of zero. If a caller
 may need to abort, it must send its own unique `request_id` with the original
 request: an omitted id is generated internally and is not returned in the
-response. Caller timeouts still require explicit `router::abort` with that
+response. Caller timeouts still require explicit `llm-router::abort` with that
 same caller-supplied `request_id`.
 
 ## Functions
+
+> **Deprecated `router::*` ids.** Every function and trigger type here used to
+> be named `router::…`. The `llm-router::…` names below replace them. Until
+> the aliases are removed, the router still registers each public function
+> (`router::chat`, `router::models::list`, …) and each trigger type
+> (`router::ready`, `router::models::changed`, `router::provider::changed`)
+> under its old name too: same handler, hidden from discovery, described as
+> deprecated. A binding on an old trigger name receives every emit. New code
+> calls and binds `llm-router::…` only.
 
 ### Consumer surface
 
 | Function | Purpose |
 |---|---|
-| `router::chat` | Stream a turn into the caller's channel; returns the turn summary. |
-| `router::complete` | Non-streaming convenience over the same pipeline; returns the final message. |
-| `router::abort` | Cancel an in-flight turn by `request_id`. |
-| `router::route` | Read-only routing preview: `{model, provider?}` → `{provider, candidates}`, same rules and error codes as `router::chat`. Pin the result as the explicit `provider` on the chat call when you need the provider before streaming. |
-| `router::models::list` | List catalog models, filterable by `provider` / `capability` / `modality` (`chat` by default, `stt`, `tts`, `any`). |
-| `router::models::get` | Fetch one model record (`null` when unknown). |
-| `router::models::supports` | Check one capability flag for one model. |
-| `router::embed` | Batch text embeddings through the first embed-capable provider in the registry, then embed-only workers (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
-| `router::transcribe` | Speech to text: `{model?, provider?, audio_base64, mime?, language?, prompt?}` → `{provider, model, text, segments[]?, language?, duration_secs?}`. The provider comes from the named `provider`, else from the catalog owner of the `stt` model, else the first provider that declared one. |
-| `router::speak` | Text to speech: `{model?, provider?, text, voice?, format?, language?, speed?}` → `{provider, model, audio_base64, mime, voice?, duration_secs?}`. Same resolution over `tts` models. |
-| `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages, thinking_level?, response_format?}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
-| `router::provider::list` | Registered providers with `configured` / `available` status, where each credential comes from (`credential_source`, `credential_ref`, `credential_error` — never a value), and each provider's starting point: `default_model` and `default_thinking_level` (see [Default model](#default-model)). |
+| `llm-router::chat` | Stream a turn into the caller's channel; returns the turn summary. |
+| `llm-router::complete` | Non-streaming convenience over the same pipeline; returns the final message. |
+| `llm-router::abort` | Cancel an in-flight turn by `request_id`. |
+| `llm-router::route` | Read-only routing preview: `{model, provider?}` → `{provider, candidates}`, same rules and error codes as `llm-router::chat`. Pin the result as the explicit `provider` on the chat call when you need the provider before streaming. |
+| `llm-router::models::list` | List catalog models, filterable by `provider` / `capability` / `modality` (`chat` by default, `stt`, `tts`, `any`). |
+| `llm-router::models::get` | Fetch one model record (`null` when unknown). |
+| `llm-router::models::supports` | Check one capability flag for one model. |
+| `llm-router::embed` | Batch text embeddings through the first embed-capable provider in the registry, then embed-only workers (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
+| `llm-router::transcribe` | Speech to text: `{model?, provider?, audio_base64, mime?, language?, prompt?}` → `{provider, model, text, segments[]?, language?, duration_secs?}`. The provider comes from the named `provider`, else from the catalog owner of the `stt` model, else the first provider that declared one. |
+| `llm-router::speak` | Text to speech: `{model?, provider?, text, voice?, format?, language?, speed?}` → `{provider, model, audio_base64, mime, voice?, duration_secs?}`. Same resolution over `tts` models. |
+| `llm-router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages, thinking_level?, response_format?}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `llm-router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
+| `llm-router::provider::list` | Registered providers with `configured` / `available` status, where each credential comes from (`credential_source`, `credential_ref`, `credential_error` — never a value), and each provider's starting point: `default_model` and `default_thinking_level` (see [Default model](#default-model)). |
 
-Only the read surface is agent-callable (`router::models::list` / `get` /
-`supports`, `router::provider::list`); everything else is denied to in-run
+Only the read surface is agent-callable (`llm-router::models::list` / `get` /
+`supports`, `llm-router::provider::list`); everything else is denied to in-run
 agents — see [Security model](#security-model).
 
 ### Error conventions
@@ -100,10 +109,10 @@ registration token, and every later protocol call must present it.
 
 | Function | Purpose |
 |---|---|
-| `router::provider::register` | Self-declaration at attach time; idempotent re-declare with the token. |
-| `router::provider::resolve` | Per-request credential + endpoint resolution (config > `secret://` / `env://` reference > env > none, see [Credentials](#credentials-and-secret-references)). |
-| `router::provider::update_credential` | Persist a refreshed credential (OAuth write-back). |
-| `router::models::reconcile` | Replace the provider's catalog slice in one write. |
+| `llm-router::provider::register` | Self-declaration at attach time; idempotent re-declare with the token. |
+| `llm-router::provider::resolve` | Per-request credential + endpoint resolution (config > `secret://` / `env://` reference > env > none, see [Credentials](#credentials-and-secret-references)). |
+| `llm-router::provider::update_credential` | Persist a refreshed credential (OAuth write-back). |
+| `llm-router::models::reconcile` | Replace the provider's catalog slice in one write. |
 
 The provider worker itself exposes `provider::<id>::stream` and, when
 capable, `provider::<id>::refresh_models` (model discovery),
@@ -112,9 +121,9 @@ capable, `provider::<id>::refresh_models` (model discovery),
 `provider::<id>::transcribe` / `provider::<id>::speak`.
 
 A worker that serves only embeddings registers `provider::<id>::embed` and
-never calls `router::provider::register`, so it stays out of
-`router::provider::list` and out of every model picker; iii-directory's local
-MiniLM (`minilm`) is one. A `router::embed` call that names no provider tries
+never calls `llm-router::provider::register`, so it stays out of
+`llm-router::provider::list` and out of every model picker; iii-directory's local
+MiniLM (`minilm`) is one. An `llm-router::embed` call that names no provider tries
 these embed-only surfaces last, alphabetically, found through
 `engine::functions::list` in the router's namespace, and only when every
 registered provider either has no embed surface (Anthropic only, say) or is
@@ -130,7 +139,7 @@ answered embed, or the first 3 minutes after the router starts), whatever else o
 window it no longer blocks: the registry keeps every record, so a removed
 provider must not hold the fallback for good.
 
-`router::chat` accepts an optional structured prompt next to the flat
+`llm-router::chat` accepts an optional structured prompt next to the flat
 `system_prompt`: `system_sections` (ordered `{text, cache_boundary}` blocks)
 and `cache_intent` (`{surface_digest}`, the caller's `sha256:` identity for
 the text before the boundary). A sections-only request is flattened into
@@ -183,7 +192,7 @@ entry at boot and keeps an in-memory snapshot synchronized by the
 Pasting a key into a provider's slice is the whole onboarding flow: the
 router diffs the changed slice, debounces ~2 s, and kicks that provider's
 `provider::<id>::refresh_models` discovery; discovered models land in the
-catalog via `router::models::reconcile` and show up in `router::models::list`
+catalog via `llm-router::models::reconcile` and show up in `llm-router::models::list`
 within seconds — no restart.
 
 ### Credentials and secret references
@@ -223,10 +232,10 @@ allowed to read secret NAME; add llm-router to the secret's consumers`, or
 explicit reference: you chose the stored secret, so a missing one is reported
 rather than silently replaced by a different key. Providers built on the
 shared scaffold skip their own env fallback in that case too, and
-`router::chat` fails before dispatch with `router/not_configured` and the same
+`llm-router::chat` fails before dispatch with `router/not_configured` and the same
 reason.
 
-`router::provider::list` entries and the `router::provider::resolve` response
+`llm-router::provider::list` entries and the `llm-router::provider::resolve` response
 carry `credential_source` (`config` | `env` | `secret` | `none`),
 `credential_ref` (the `secret://` or `env://` reference, when the slice uses
 one; `credential_source` is `secret` for both, as the secrets worker resolved
@@ -280,19 +289,21 @@ The agent-callable surface is governed by the engine-wide permission policy
 (repo-root [`iii-permissions.yaml`](https://github.com/iii-hq/workers/blob/main/iii-permissions.yaml)), not a per-worker
 file. In-run agents may only **read** the catalog and provider list:
 
-- **Allowed:** `router::models::list`, `router::models::get`,
-  `router::models::supports`, `router::provider::list`.
-- **Denied to agents:** the chat/spend surface (`router::chat`,
-  `router::complete`, `router::abort`, `router::route`), the whole
-  provider/credential protocol (`router::provider::resolve` / `register` /
-  `update_credential`, `router::models::reconcile`), and direct `provider::*`
+- **Allowed:** `llm-router::models::list`, `llm-router::models::get`,
+  `llm-router::models::supports`, `llm-router::provider::list`.
+- **Denied to agents:** the chat/spend surface (`llm-router::chat`,
+  `llm-router::complete`, `llm-router::abort`, `llm-router::route`), the whole
+  provider/credential protocol (`llm-router::provider::resolve` / `register` /
+  `update_credential`, `llm-router::models::reconcile`), and direct `provider::*`
   calls.
+- Each rule is repeated for the deprecated `router::` alias of the same
+  function, so the old names grant nothing the new ones don't.
 
 Worker-to-worker calls bypass the agent gate, so the harness, context-manager,
 and provider workers reach the full surface — only in-run agents are
 restricted. Provider credentials live in the configuration entry, or behind a
 `secret://` or `env://` reference in the `secrets` worker, and are never readable back
-through any allowed function: `router::provider::list` reports where a
+through any allowed function: `llm-router::provider::list` reports where a
 credential comes from, never its value.
 
 ## Events
@@ -303,13 +314,13 @@ payload verbatim (no envelope).
 
 | Trigger type | Fires when | Payload |
 |---|---|---|
-| `router::models::changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
-| `router::provider::changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
-| `router::ready` | the router finishes booting; providers re-declare on it | `{}` |
+| `llm-router::models::changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
+| `llm-router::provider::changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
+| `llm-router::ready` | the router finishes booting; providers re-declare on it | `{}` |
 
 The router itself binds the engine's `configuration` trigger (its entry) and,
 when the optional `secrets` worker is installed, `secrets::changed`
-(`router::on_secret_changed`).
+(`llm-router::on_secret_changed`).
 
 ```ts
 iii.registerFunction('my-worker::on-models-changed', async (payload) => {
@@ -318,7 +329,7 @@ iii.registerFunction('my-worker::on-models-changed', async (payload) => {
 });
 
 iii.registerTrigger({
-  type: 'router::models::changed',
+  type: 'llm-router::models::changed',
   function_id: 'my-worker::on-models-changed',
   config: {},
 });
@@ -331,19 +342,19 @@ A provider worker must:
 1. Register `provider::<id>::stream` honouring the channel-writer contract:
    forward upstream output as `AssistantMessageEvent` frames into the
    `writer_ref` it receives, ending with one terminal frame.
-2. Declare itself at startup via `router::provider::register` — retrying with
+2. Declare itself at startup via `llm-router::provider::register` — retrying with
    backoff until acknowledged (covers provider-before-router boot order) —
-   and re-declare on the `router::ready` event after a router restart. The
+   and re-declare on the `llm-router::ready` event after a router restart. The
    declaration may carry `icon_svg`: one self-contained, monochrome `<svg>`
    document (square `viewBox`, no fixed size, at most 32 KiB). The router
-   echoes it in `router::provider::list` and the console paints it as a
+   echoes it in `llm-router::provider::list` and the console paints it as a
    `currentColor` mask beside the provider's models; a missing or malformed
    mark falls back to the provider's initial.
    The declaration may also carry `default_models`, the provider's
    recommended starting models in preference order (the current mid-range
    model first, then its predecessors), and `default_thinking_level`, the
    level to pair with it; see [Default model](#default-model).
-3. Resolve credentials per request via `router::provider::resolve`; never
+3. Resolve credentials per request via `llm-router::provider::resolve`; never
    read keys directly. A response with `credential_source: "secret"` and no
    credential is an unresolvable `secret://` or `env://` reference: report its
    `credential_error`, do not substitute a key of your own.
@@ -355,16 +366,16 @@ A provider worker must:
 
 A provider may also register `provider::<id>::count_tokens` (`{model,
 system_prompt?, tools?, messages, thinking_level?, response_format?}` →
-`{model, tokens, estimator}`; the last two are the turn's `router::chat`
+`{model, tokens, estimator}`; the last two are the turn's `llm-router::chat`
 values, sent only when set) to serve
-`router::count_tokens`: an exact count from a provider metering API
+`llm-router::count_tokens`: an exact count from a provider metering API
 (`estimator: "provider"`) or a local tokenizer estimate (`estimator:
-"tiktoken"`). Providers without it simply make `router::count_tokens` return
+"tiktoken"`). Providers without it simply make `llm-router::count_tokens` return
 a typed `router/no_token_counter` error for that provider.
 
 ### Default model
 
-`router::provider::list` reports one `default_model` per provider so that a
+`llm-router::provider::list` reports one `default_model` per provider so that a
 caller with no model choice of its own (a fresh `harness::send` naming only
 a provider, a console opening its first chat) starts on something sensible.
 It is resolved at read time against the provider's current catalog slice:
@@ -394,7 +405,7 @@ A declaration may also carry `context_overflow_hint`: one or two plain
 sentences a console shows under a context-overflow failure on one of the
 provider's models, for causes compacting cannot fix (a self-hosted server
 started with a small window, say), optionally with a link to the provider's
-docs. `router::provider::list` reports it verbatim; absent means the console
+docs. `llm-router::provider::list` reports it verbatim; absent means the console
 shows only its generic steps.
 
 A provider that works without a key (a local server started without one)
@@ -404,7 +415,7 @@ resolved and sent. Absent or `false` means a key is required.
 
 ### Thinking levels
 
-`router::chat` takes `thinking_level`: `off`, `minimal`, `low`, `medium`,
+`llm-router::chat` takes `thinking_level`: `off`, `minimal`, `low`, `medium`,
 `high` or `xhigh`. Each provider maps a level onto its own knob and warns
 when a model cannot honour it. `off` asks for no reasoning at all and is
 honoured only where the model's descriptor says `supports_thinking_off:
@@ -419,8 +430,8 @@ switch reasoning off sends its lowest effort instead and reports a warning.
 
 A speech provider is the same kind of worker with no chat stream: it
 declares its models with a `speech` block and serves one or both speech
-surfaces. `router::models::list` hides speech models from chat pickers
-unless asked (`modality: "stt" | "tts" | "any"`), and `router::chat`
+surfaces. `llm-router::models::list` hides speech models from chat pickers
+unless asked (`modality: "stt" | "tts" | "any"`), and `llm-router::chat`
 refuses them with a message that names the right door.
 
 ```json
@@ -436,7 +447,7 @@ refuses them with a message that names the right door.
 `model` arrives as the id the caller named, or `null` for the provider's
 default. `format` is what the caller asked for (`mp3`, `wav`, `pcm16`,
 `opus`); answer with the container you produced and say so in `mime`.
-Credentials resolve through `router::provider::resolve` exactly as for
+Credentials resolve through `llm-router::provider::resolve` exactly as for
 chat providers.
 
 The first real provider implementing this protocol is

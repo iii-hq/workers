@@ -1,6 +1,6 @@
 {
   "description": "Stream a chat completion: route {model, provider?} to a provider, relay assistant frames to writer_ref, and return the terminal response.",
-  "function_id": "router::chat",
+  "function_id": "llm-router::chat",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
@@ -59,7 +59,7 @@
         "type": "object"
       }
     },
-    "description": "Input of the `router::chat` iii function: a [`ChatCall`] plus the caller's write channel. The handler relays assistant frames to `writer_ref` and also returns the terminal [`ChatResponse`].",
+    "description": "Input of the `llm-router::chat` iii function: a [`ChatCall`] plus the caller's write channel. The handler relays assistant frames to `writer_ref` and also returns the terminal [`ChatResponse`].",
     "properties": {
       "cache_intent": {
         "anyOf": [

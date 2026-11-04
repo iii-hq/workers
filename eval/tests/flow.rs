@@ -69,9 +69,9 @@ struct World {
     extra_frames: Vec<Value>,
     /// The cost every `harness::metrics` call reports; `None` is unknown.
     cost_usd: Option<f64>,
-    /// The cost every `router::complete` reply reports; `None` is unknown.
+    /// The cost every `llm-router::complete` reply reports; `None` is unknown.
     sample_cost_usd: Option<f64>,
-    /// Every `router::complete` call fails, as when the bus gives up on a
+    /// Every `llm-router::complete` call fails, as when the bus gives up on a
     /// provider that may still bill.
     samples_fail: bool,
     /// What `engine::workers::list` answers; `None` is an engine without it.
@@ -189,7 +189,7 @@ impl World {
                 self.steps.push_back(data.clone());
                 json!({"message_id": "queued"})
             }
-            "router::models::list" => json!({"models": [
+            "llm-router::models::list" => json!({"models": [
                 {"id": "analyst-model", "provider": "analyst-provider", "context_window": 200000,
                  "max_output_tokens": 8192, "supports_thinking": true}
             ]}),
@@ -397,11 +397,11 @@ impl World {
                 "token_count": 100, "usable": 100_000, "effective_max_output_tokens": 1_000,
                 "applied": {}
             }),
-            "router::count_tokens" => json!({"tokens": 100, "estimator": "provider",
+            "llm-router::count_tokens" => json!({"tokens": 100, "estimator": "provider",
                 "model": data["model"], "provider": "p"}),
             // A model that re-reads the contract only while the registry
             // notice is in its context.
-            "router::complete" => {
+            "llm-router::complete" => {
                 if self.samples_fail {
                     return Some(Err("the provider never answered".into()));
                 }
@@ -3824,7 +3824,7 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
     .unwrap();
     assert_eq!(preview.original.signal, Some(true));
     assert_eq!(preview.original.calls[0].target, INFO);
-    assert!(h.world().calls_to("router::complete").is_empty());
+    assert!(h.world().calls_to("llm-router::complete").is_empty());
 
     // The base: the model saw the notice and re-reads the contract.
     let base = reproduce(
@@ -3878,7 +3878,7 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
     assert_eq!(extended.samples.len(), 5);
 
     // A change whose text is not where it says is refused before spending.
-    let calls = h.world().calls_to("router::complete").len();
+    let calls = h.world().calls_to("llm-router::complete").len();
     let refused = reproduce(
         &h,
         json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "by": "ana",
@@ -3890,7 +3890,7 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
         matches!(refused, Err(EvalError::InvalidRequest(_))),
         "{refused:?}"
     );
-    assert_eq!(h.world().calls_to("router::complete").len(), calls);
+    assert_eq!(h.world().calls_to("llm-router::complete").len(), calls);
 }
 
 #[tokio::test]
@@ -3909,7 +3909,7 @@ async fn the_fidelity_count_carries_the_turns_thinking_level() {
     assert!(settled(&h, &evaluation_id, &id).await.fidelity.is_some());
     // The provider counts the prompt the turn sends: assemble and the
     // fidelity count must render the same thinking mode.
-    let counts = h.world().calls_to("router::count_tokens");
+    let counts = h.world().calls_to("llm-router::count_tokens");
     assert!(!counts.is_empty());
     assert!(
         counts.iter().all(|count| count["thinking_level"] == "off"),
@@ -4105,7 +4105,7 @@ async fn a_replay_keeps_the_turns_response_language_in_the_tool_schema() {
 
     let expected =
         serde_json::to_value([harness::policy::agent_trigger_schema(Some(&language))]).unwrap();
-    let calls = h.world().calls_to("router::complete");
+    let calls = h.world().calls_to("llm-router::complete");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["tools"], expected);
 }

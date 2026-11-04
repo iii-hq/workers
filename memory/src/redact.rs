@@ -1,6 +1,6 @@
 //! Deterministic secret redaction for everything the worker persists or
 //! hands to a model: memory text and entities, rules (always injected), and
-//! the transcript excerpt extraction sends to `router::complete`. The
+//! the transcript excerpt extraction sends to `llm-router::complete`. The
 //! extraction prompt's "never store secrets" is a request; this is the
 //! guarantee for the shapes it knows.
 //!

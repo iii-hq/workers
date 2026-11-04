@@ -84,7 +84,7 @@ async function relevantSlugs(id, q, n = 5) {
 async function askFastLLM(worker, { q, blocks, model }) {
   const context = blocks.map((b) => `## ${b.title || b.slug}\n${b.excerpt}`).join('\n\n');
   const res = await worker.trigger({
-    function_id: 'router::complete',
+    function_id: 'llm-router::complete',
     payload: {
       model,
       system_prompt: ASK_SYSTEM,
@@ -198,7 +198,7 @@ export async function askWiki(worker, { id, q, mode = 'fast', file_answer = fals
     console.warn(`[openwiki] ask ${mode} tier failed: ${e?.message || e}`);
     answer = null;
   }
-  // Fast mode uses router::complete; if that path is down, try the harness
+  // Fast mode uses llm-router::complete; if that path is down, try the harness
   // (streaming) before dropping to the heuristic stitch.
   if (!answer && mode !== 'deep') {
     try {

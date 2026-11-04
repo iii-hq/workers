@@ -205,7 +205,7 @@ max_depth: 3                     # sub-agent depth budget
 max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
 max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
-prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
+prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on llm-router::chat
 co_author: true                  # tell agents to end git commit messages with "Co-authored-by: iii harness (<model>) <noreply@iii.dev>"
 call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
@@ -352,7 +352,7 @@ the model, and the send response reports the choice as `reasoning`
 (`thinking_level` and the native `reasoning_effort`). Later sends inherit it
 like any explicit effort.
 
-The prompt reaches `router::chat` in two forms: the flat `system_prompt`,
+The prompt reaches `llm-router::chat` in two forms: the flat `system_prompt`,
 and `system_sections` — the STABLE prefix (the frozen profile or identity
 prompt plus the frozen skills index, `cache_boundary: true`) followed by the
 per-session tail (session id, working directory, policy aid, and whatever

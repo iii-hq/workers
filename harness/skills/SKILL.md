@@ -27,7 +27,7 @@ the original turn without appending.
 
 A session-creating send names a `model`, or only a `provider`: the harness
 then starts on that provider's declared default model (`default_model` in
-`router::provider::list`, checked against its live catalog; a provider that
+`llm-router::provider::list`, checked against its live catalog; a provider that
 reports none fails the send as before). A new session that names neither
 `thinking_level` nor `provider_options` also starts on the provider's
 `default_thinking_level`; an explicit level wins, and later sends into the
@@ -162,7 +162,7 @@ workflow worker to join parallel work.
 An in-session registration that omits `model` also inherits its provider,
 when the spec pins none; raw engine-side registrations have no turn to
 inherit from and must pass one, and any supplied `model` must be a live id
-from `router::models::list` (validated at registration and again at fire
+from `llm-router::models::list` (validated at registration and again at fire
 time). Omit `parent_session_id` and the child nests under the registering
 session's root automatically; pin it only to choose a different REAL
 session (an invented id shows the children as disconnected roots). A

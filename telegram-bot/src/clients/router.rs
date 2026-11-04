@@ -29,13 +29,13 @@ pub struct ModelsListResponse {
 pub async fn list_models(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<Model>, Error> {
     let value = iii
         .trigger(TriggerRequest {
-            function_id: "router::models::list".into(),
+            function_id: "llm-router::models::list".into(),
             payload: json!({ "capability": "tools" }),
             action: None,
             timeout_ms: Some(timeout_ms),
         })
         .await?;
     let resp: ModelsListResponse = serde_json::from_value(value)
-        .map_err(|e| Error::Handler(format!("router::models::list: {e}")))?;
+        .map_err(|e| Error::Handler(format!("llm-router::models::list: {e}")))?;
     Ok(resp.models)
 }

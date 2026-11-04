@@ -525,10 +525,10 @@ describe('runStep wait-models', () => {
     configured = true
     trigger.mockImplementation(async (fn: string) => {
       order.push(fn)
-      if (fn === 'router::models::list') {
+      if (fn === 'llm-router::models::list') {
         return { models: Array.from({ length: models }, () => ({})) }
       }
-      if (fn === 'router::provider::list') {
+      if (fn === 'llm-router::provider::list') {
         return {
           providers: [
             {
@@ -600,7 +600,7 @@ describe('runStep wait-models', () => {
     const done = runStep(codex, context).catch((e: unknown) => e)
     await settle()
     expect(calls('provider::openai-codex::refresh_models')).toBe(1)
-    emit('router::provider::changed', { provider: 'openai-codex' })
+    emit('llm-router::provider::changed', { provider: 'openai-codex' })
     const error = await done
     expect(error).not.toBeInstanceOf(SignInRequiredError)
     expect(error).toMatchObject({ message: 'connection reset' })
@@ -619,10 +619,10 @@ describe('runStep wait-models', () => {
     await settle()
     expect(calls('provider::deepseek::refresh_models')).toBe(1)
     // Someone else's catalog changing is not a reason to ask again.
-    emit('router::models::changed', { provider: 'openai', count: 9 })
+    emit('llm-router::models::changed', { provider: 'openai', count: 9 })
     await settle()
     expect(calls('provider::deepseek::refresh_models')).toBe(1)
-    emit('router::models::changed', { provider: 'deepseek', count: 0 })
+    emit('llm-router::models::changed', { provider: 'deepseek', count: 0 })
     await failed
     expect(calls('provider::deepseek::refresh_models')).toBe(2)
   })
@@ -634,7 +634,10 @@ describe('runStep wait-models', () => {
     expect(calls('provider::deepseek::refresh_models')).toBe(0)
     configured = true
     refreshCount = 2
-    emit('router::provider::changed', { provider: 'deepseek', op: 'register' })
+    emit('llm-router::provider::changed', {
+      provider: 'deepseek',
+      op: 'register',
+    })
     await expect(done).resolves.toEqual({ note: '2 models' })
   })
 })
@@ -727,10 +730,10 @@ describe('checkProviderKey', () => {
     resetBus()
     configured = false
     trigger.mockImplementation(async (fn: string) => {
-      if (fn === 'router::provider::list') {
+      if (fn === 'llm-router::provider::list') {
         return { providers: [{ id: 'deepseek', configured, available: true }] }
       }
-      if (fn === 'router::models::list') return { models: [{}, {}] }
+      if (fn === 'llm-router::models::list') return { models: [{}, {}] }
       if (fn === 'provider::deepseek::refresh_models') return { count: 2 }
       return { models: [] }
     })
@@ -743,9 +746,9 @@ describe('checkProviderKey', () => {
   it('looks again when the router reports the provider', async () => {
     const done = checkProviderKey('deepseek')
     await settle()
-    expect(calls('router::provider::list')).toBe(2)
+    expect(calls('llm-router::provider::list')).toBe(2)
     configured = true
-    emit('router::models::changed', { provider: 'deepseek', count: 2 })
+    emit('llm-router::models::changed', { provider: 'deepseek', count: 2 })
     await expect(done).resolves.toEqual({ configured: true, models: 2 })
   })
 
@@ -757,7 +760,7 @@ describe('checkProviderKey', () => {
       models: 0,
       error: undefined,
     })
-    expect(calls('router::provider::list')).toBe(3)
+    expect(calls('llm-router::provider::list')).toBe(3)
   })
 })
 

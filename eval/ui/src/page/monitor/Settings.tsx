@@ -329,7 +329,7 @@ export function MonitorSettings({
               headline="Couldn't load the model list"
               detail={
                 <>
-                  router::models::list didn't answer, so no model is picked for you.
+                  llm-router::models::list didn't answer, so no model is picked for you.
                   {catalog.message ? (
                     <>
                       {' '}

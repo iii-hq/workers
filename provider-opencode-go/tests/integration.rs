@@ -157,7 +157,7 @@ async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
         .expect("provider boots");
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router_iii, "router::provider::list", json!({}))
+        let list = call(&router_iii, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let registered = list["providers"]
@@ -202,7 +202,7 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
     loop {
         let list = call(
             router_iii,
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "provider": "opencode_go" }),
         )
         .await
@@ -232,7 +232,7 @@ async fn chat_streams_end_to_end() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "deepseek-v4-flash",
@@ -269,7 +269,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "deepseek-v4-flash",
@@ -311,7 +311,7 @@ async fn abort_lands_mid_stream_and_cancels_the_upstream() {
         async move {
             consumer
                 .trigger(TriggerRequest {
-                    function_id: "router::chat".into(),
+                    function_id: "llm-router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
                         "model": "deepseek-v4-flash",
@@ -333,11 +333,15 @@ async fn abort_lands_mid_stream_and_cancels_the_upstream() {
         assert!(Instant::now() < deadline, "upstream never connected");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // router::abort closes the relay AND fires provider::opencode_go::abort
+    // llm-router::abort closes the relay AND fires provider::opencode_go::abort
     // (the provider's own abort surface), which drops the in-flight request.
-    let res = call(&router_iii, "router::abort", json!({ "request_id": rid }))
-        .await
-        .expect("abort resolves");
+    let res = call(
+        &router_iii,
+        "llm-router::abort",
+        json!({ "request_id": rid }),
+    )
+    .await
+    .expect("abort resolves");
     assert_eq!(res["aborted"], true, "abort response: {res}");
     let res = chat
         .await
@@ -385,7 +389,7 @@ async fn refresh_models_reconciles_live_catalog() {
     refresh_and_wait(&router_iii, &provider_iii, "deepseek-v4-flash").await;
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "opencode_go" }),
     )
     .await
@@ -426,10 +430,10 @@ async fn provider_redeclares_on_router_ready() {
     register_router(router2.clone())
         .await
         .expect("router reboots");
-    // router::ready trigger → provider re-declares with its persisted token
+    // llm-router::ready trigger → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router2, "router::provider::list", json!({}))
+        let list = call(&router2, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let listed = list["providers"]

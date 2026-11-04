@@ -1,6 +1,6 @@
 //! The LLM-assisted tier: judge what determinism cannot.
 //!
-//! Two candidate kinds feed ONE `router::complete` call per pass:
+//! Two candidate kinds feed ONE `llm-router::complete` call per pass:
 //! - REORDER groups (same token set, different order) — the deterministic
 //!   pass surfaces them report-only because word order can flip meaning;
 //!   the model judges semantic equivalence, and only a confirmed group is
@@ -149,13 +149,13 @@ pub(crate) async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<S
     }
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "router::models::list".into(),
+            function_id: "llm-router::models::list".into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(5_000),
         })
         .await
-        .map_err(|e| format!("router::models::list: {e}"))?;
+        .map_err(|e| format!("llm-router::models::list: {e}"))?;
     reply
         .get("models")
         .and_then(Value::as_array)
@@ -176,7 +176,7 @@ pub async fn judge(
     Ok(parse_reply(&reply_text(&reply)))
 }
 
-/// One `router::complete` call with a static system prompt (cache-friendly)
+/// One `llm-router::complete` call with a static system prompt (cache-friendly)
 /// and one user message; the raw reply, so callers can classify provider
 /// errors (`message.stop_reason == "error"`) before reading text.
 pub(crate) async fn complete(
@@ -188,7 +188,7 @@ pub(crate) async fn complete(
 ) -> Result<Value, String> {
     let model = resolve_model(iii, configured_model).await?;
     iii.trigger(TriggerRequest {
-        function_id: "router::complete".into(),
+        function_id: "llm-router::complete".into(),
         payload: json!({
             "model": model,
             "system_prompt": system_prompt,
@@ -203,10 +203,10 @@ pub(crate) async fn complete(
         timeout_ms: Some(LLM_TIMEOUT_MS),
     })
     .await
-    .map_err(|e| format!("router::complete: {e}"))
+    .map_err(|e| format!("llm-router::complete: {e}"))
 }
 
-/// The assistant text of a `router::complete` reply.
+/// The assistant text of an `llm-router::complete` reply.
 pub(crate) fn reply_text(reply: &Value) -> String {
     reply
         .pointer("/message/content")

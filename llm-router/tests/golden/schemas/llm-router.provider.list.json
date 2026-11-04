@@ -1,9 +1,9 @@
 {
   "description": "List registered providers with their configured/available status, where each credential comes from (credential_source, credential_ref, credential_error; never a value), and the provider's starting point (default_model: the newest model of the best-ranked variant its preferences name, else its first declared preference present in the catalog, else the closest same-family model; default_thinking_level).",
-  "function_id": "router::provider::list",
+  "function_id": "llm-router::provider::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Input of `router::provider::list` — takes no arguments. A struct (rather than `Value`) keeps the request schema concrete; unknown fields (e.g. the engine-injected `_caller_worker_id`) are ignored.",
+    "description": "Input of `llm-router::provider::list` — takes no arguments. A struct (rather than `Value`) keeps the request schema concrete; unknown fields (e.g. the engine-injected `_caller_worker_id`) are ignored.",
     "title": "ProviderListRequest",
     "type": "object"
   },
@@ -87,7 +87,7 @@
         "type": "object"
       },
       "ProviderInfo": {
-        "description": "One `router::provider::list` entry.",
+        "description": "One `llm-router::provider::list` entry.",
         "properties": {
           "available": {
             "type": "boolean"

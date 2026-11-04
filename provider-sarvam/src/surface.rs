@@ -19,7 +19,7 @@ pub const STREAM_DESC: &str = "Stream a Sarvam chat completion: resolve credenti
 
 pub const ABORT_ID: &str = "provider::sarvam::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::sarvam::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Reconcile the curated Sarvam catalog slice, chat and speech \
@@ -27,7 +27,7 @@ pub const REFRESH_MODELS_DESC: &str = "Reconcile the curated Sarvam catalog slic
 
 pub const ON_ROUTER_READY_ID: &str = "provider::sarvam::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::sarvam::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
@@ -36,12 +36,12 @@ pub const COUNT_TOKENS_DESC: &str =
 
 pub const TRANSCRIBE_ID: &str = "provider::sarvam::transcribe";
 pub const TRANSCRIBE_DESC: &str =
-    "Speech to text on Sarvam Saaras behind router::transcribe: base64 audio in, text with timed \
+    "Speech to text on Sarvam Saaras behind llm-router::transcribe: base64 audio in, text with timed \
      segments and the detected language out; 22 Indian languages and English.";
 
 pub const SPEAK_ID: &str = "provider::sarvam::speak";
 pub const SPEAK_DESC: &str =
-    "Text to speech on Sarvam Bulbul behind router::speak: text, a speaker name and a language in, \
+    "Text to speech on Sarvam Bulbul behind llm-router::speak: text, a speaker name and a language in, \
      base64 audio out (mp3, wav, pcm16, opus).";
 
 /// One function's complete agent-facing wire surface: id, registration

@@ -1,4 +1,4 @@
-//! `router::count_tokens` — one front door for prompt token counting,
+//! `llm-router::count_tokens` — one front door for prompt token counting,
 //! resolved with the SAME `decide()` the chat pipeline uses: `{model,
 //! provider?}` maps to a provider, and the request is forwarded to
 //! `provider::<id>::count_tokens`. Providers answer with an exact count from
@@ -27,12 +27,12 @@ use crate::types::messages::AgentMessage;
 use crate::types::model::{AgentFunction, ThinkingLevel};
 use crate::types::router::ResponseFormat;
 
-/// Counting is bounded and non-streaming, like `router::embed`.
+/// Counting is bounded and non-streaming, like `llm-router::embed`.
 const COUNT_TOKENS_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RouterCountTokensRequest {
-    /// Model id the prompt targets; routes exactly like `router::chat` and
+    /// Model id the prompt targets; routes exactly like `llm-router::chat` and
     /// selects the provider's tokenizer. Optional only when `provider` pins
     /// the destination.
     #[serde(default)]
@@ -47,15 +47,15 @@ pub struct RouterCountTokensRequest {
     /// schemas count toward the total (optional).
     #[serde(default)]
     pub tools: Option<Vec<AgentFunction>>,
-    /// Wire agent messages, the same shape `router::chat` accepts. Must be
+    /// Wire agent messages, the same shape `llm-router::chat` accepts. Must be
     /// non-empty.
     pub messages: Vec<AgentMessage>,
-    /// The turn's `router::chat` thinking level (optional). Providers whose
+    /// The turn's `llm-router::chat` thinking level (optional). Providers whose
     /// prompt template depends on it (a reasoning-effort line, a chat vs
     /// thinking transition) count the prompt that level renders.
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
-    /// The turn's `router::chat` response format (optional), for providers
+    /// The turn's `llm-router::chat` response format (optional), for providers
     /// that render it into the prompt they bill.
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
@@ -126,7 +126,7 @@ pub fn make_count_tokens(
                 .map(|record| record.declaration.id.clone())
                 .collect();
             let catalog_ids = catalog.model_ids().await;
-            // Composite `provider::model` ids split exactly as `router::chat`'s
+            // Composite `provider::model` ids split exactly as `llm-router::chat`'s
             // entry does, so the provider counts the same split id a chat with
             // this request would stream.
             let (provider, model) = {

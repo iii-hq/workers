@@ -1,9 +1,9 @@
 {
   "description": "Internal: a worker's function registrations changed — re-discover live providers and nudge them to re-declare, so a provider that reconnected is resolvable again without waiting for its own catalog timer.",
-  "function_id": "router::on_functions_changed",
+  "function_id": "llm-router::on_functions_changed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Advisory `engine::functions-available` event delivered to `router::on_functions_changed`. The engine sends `{ event: \"functions_changed\", functions: [...] }` with the full current function list; it does not say which worker or function changed. The handler ignores event values (the `functions` list is not deserialized) and re-fetches the authoritative registry before nudging live providers.",
+    "description": "Advisory `engine::functions-available` event delivered to `llm-router::on_functions_changed`. The engine sends `{ event: \"functions_changed\", functions: [...] }` with the full current function list; it does not say which worker or function changed. The handler ignores event values (the `functions` list is not deserialized) and re-fetches the authoritative registry before nudging live providers.",
     "properties": {
       "event": {
         "description": "Engine event tag, `\"functions_changed\"` (advisory).",

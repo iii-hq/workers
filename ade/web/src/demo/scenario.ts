@@ -13,7 +13,7 @@
  *
  * Span shapes mirror what a real turn produces: one `harness::turn step`
  * root per durable loop step (`workers/harness/src/functions/turn.rs`),
- * `execute router::chat` → `execute provider::anthropic::stream` for the
+ * `execute llm-router::chat` → `execute provider::anthropic::stream` for the
  * generation, and `execute <fn>` for each dispatched call.
  */
 
@@ -340,7 +340,7 @@ async function* step(
     span: {
       id: routerSpan,
       parent: stepSpan,
-      name: 'execute router::chat',
+      name: 'execute llm-router::chat',
       service: 'llm-router',
       kind: 'internal',
       attributes: [...TURN_TAGS, ['gen_ai.request.model', 'claude-sonnet-5']],

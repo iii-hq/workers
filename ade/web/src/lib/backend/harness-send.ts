@@ -283,7 +283,7 @@ export function sendTurn(
 }
 
 /**
- * Trigger `harness::stop`: set the abort flag and `router::abort` any live
+ * Trigger `harness::stop`: set the abort flag and `llm-router::abort` any live
  * stream. Omit `turnId` to stop the session's current turn.
  */
 export async function stopTurn(

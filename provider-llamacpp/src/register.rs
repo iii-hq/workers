@@ -1,4 +1,4 @@
-//! Boot wiring: function surface, the router::ready rebind, and the
+//! Boot wiring: function surface, the llm-router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::DEFAULT_MAX_TOKENS;
 use crate::discovery::{make_refresh_models, refresh_models};
@@ -72,7 +72,7 @@ fn declaration_with(default_models: Option<Vec<String>>) -> ProviderDeclaration 
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-llamacpp".into()),
         // The mark the console paints beside this provider's models; the
-        // router carries it verbatim in `router::provider::list`.
+        // router carries it verbatim in `llm-router::provider::list`.
         icon_svg: Some(
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg")).into(),
         ),
@@ -96,7 +96,7 @@ fn remember_defaults(preferred: Vec<String>) {
 }
 
 /// The boot declaration plus whatever discovery ranked so far: a
-/// router::ready rebind re-declares through here, so it never erases the
+/// llm-router::ready rebind re-declares through here, so it never erases the
 /// default list from the router's record (which the unchanged-check in
 /// `redeclare_with_defaults` would then not restore).
 fn current_declaration() -> ProviderDeclaration {
@@ -187,7 +187,7 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
-    // router::ready — a restarted router may carry new config and reissues
+    // llm-router::ready — a restarted router may carry new config and reissues
     // declare/refresh anyway — and on upstream auth errors (stream_fn).
     let cache = ScaffoldCache::new();
     // Streaming uses no total timeout (the router owns stream budgets);
@@ -234,7 +234,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         .metadata(json!({ "internal": true })),
     );
 
-    // Re-declare when the router restarts: bind to the router::ready trigger type.
+    // Re-declare when the router restarts: bind to the llm-router::ready trigger type.
     {
         let iii_ready = iii.clone();
         let http_ready = http.clone();
@@ -276,7 +276,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         );
     }
     let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
+        "llm-router::ready",
         surface::ON_ROUTER_READY_ID,
         json!({}),
     ));
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn rebind_redeclares_with_the_last_discovered_defaults() {
-        // router::ready re-runs declare_once after discovery already sent a
+        // llm-router::ready re-runs declare_once after discovery already sent a
         // ranked list; the plain boot declaration would wipe it from the
         // router's record and the unchanged-check would then skip the fix.
         remember_defaults(vec!["served-27B".into(), "served-7B".into()]);

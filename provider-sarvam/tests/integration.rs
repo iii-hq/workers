@@ -108,7 +108,7 @@ async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router_iii, "router::provider::list", json!({}))
+        let list = call(&router_iii, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let registered = list["providers"]
@@ -151,7 +151,7 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
     loop {
         let list = call(
             router_iii,
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "provider": "sarvam" }),
         )
         .await
@@ -183,7 +183,7 @@ async fn provider_registers_with_persisted_token_and_credential_gated_catalog() 
     assert_eq!(res["count"], 0, "no key → empty reconcile: {res}");
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "sarvam" }),
     )
     .await
@@ -229,7 +229,7 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "sarvam-105b",
@@ -277,7 +277,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "sarvam-105b",
@@ -311,11 +311,11 @@ async fn refresh_models_reconciles_curated_catalog() {
     refresh_and_wait(&router_iii, &provider_iii, "sarvam-105b").await;
 
     // The default listing is the chat modality: the speech rows (saaras:*,
-    // saarika:*, bulbul:*) are reached through router::transcribe / speak and
+    // saarika:*, bulbul:*) are reached through llm-router::transcribe / speak and
     // only appear with `modality: "any"`.
     let chat = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "sarvam" }),
     )
     .await
@@ -342,7 +342,7 @@ async fn refresh_models_reconciles_curated_catalog() {
 
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "sarvam", "modality": "any" }),
     )
     .await
@@ -390,7 +390,7 @@ async fn provider_redeclares_on_router_ready() {
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router2, "router::provider::list", json!({}))
+        let list = call(&router2, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let listed = list["providers"]

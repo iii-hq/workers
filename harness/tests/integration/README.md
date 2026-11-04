@@ -3,7 +3,7 @@
 Deterministic public-path regression tests for the harness. Each scenario
 boots a fresh isolated stack with the latest published `iii@rc` engine and the real queue,
 session-manager, context-manager, iii-directory, state, database, and harness
-workers. Only the `router::*` model boundary is replaced by a strict scripted
+workers. Only the `llm-router::*` model boundary is replaced by a strict scripted
 worker.
 
 No provider key or network access is required.

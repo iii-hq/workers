@@ -34,7 +34,7 @@ export function splitKey(key) {
 }
 
 /**
- * Rows from `router::models::list` as options for the console's
+ * Rows from `llm-router::models::list` as options for the console's
  * `ModelPicker`, keyed like the stored pair, dropping anything that cannot
  * be addressed. An unreachable router yields nothing, and the picker says it
  * is empty rather than pretending.

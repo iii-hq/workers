@@ -60,7 +60,7 @@ pub enum SttBackend {
     WhisperCpp,
     /// An OpenAI-compatible `/v1/audio/transcriptions` endpoint.
     Openai,
-    /// llm-router's `router::transcribe`: any speech provider registered
+    /// llm-router's `llm-router::transcribe`: any speech provider registered
     /// with the router (ElevenLabs, OpenAI, a self-hosted server).
     Router,
 }
@@ -238,7 +238,7 @@ pub enum TtsBackend {
     /// An OpenAI-compatible `/v1/audio/speech` endpoint. Audio is returned to
     /// the caller for playback in the browser.
     Openai,
-    /// llm-router's `router::speak`: any speech provider registered with the
+    /// llm-router's `llm-router::speak`: any speech provider registered with the
     /// router. Audio is returned to the caller for playback in the browser.
     Router,
     /// Read-aloud disabled.

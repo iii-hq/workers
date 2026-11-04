@@ -22,7 +22,7 @@ export function useModelCatalog(host: Host): { catalog: ModelOption[]; loading: 
     let live = true
     const load = () => {
       host.iii
-        .trigger('router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS })
+        .trigger('llm-router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS })
         .then((response) => {
           if (!live) return
           setCatalog(readCatalog(response))
@@ -41,7 +41,7 @@ export function useModelCatalog(host: Host): { catalog: ModelOption[]; loading: 
     try {
       offHandler = host.iii.on(CHANGED_FN, () => load())
       offTrigger = host.iii.registerTrigger({
-        type: 'router::models::changed',
+        type: 'llm-router::models::changed',
         function_id: `${CHANGED_FN}::${host.iii.browserId}`,
         config: {},
       })

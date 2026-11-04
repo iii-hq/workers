@@ -201,8 +201,8 @@ mod tests {
         );
 
         let router = describe_bus_failure(
-            "router::complete",
-            "remote error (NOT_FOUND): router::complete not registered",
+            "llm-router::complete",
+            "remote error (NOT_FOUND): llm-router::complete not registered",
         );
         assert!(router.contains("llm-router"), "{router}");
     }

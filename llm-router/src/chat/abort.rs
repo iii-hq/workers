@@ -1,4 +1,4 @@
-//! The `router::abort` iii function (spec § router::abort).
+//! The `llm-router::abort` iii function (spec § llm-router::abort).
 use std::sync::Arc;
 
 use futures::future::BoxFuture;

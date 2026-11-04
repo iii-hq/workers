@@ -20,7 +20,7 @@ pub const STREAM_DESC: &str =
 
 pub const ABORT_ID: &str = "provider::kimi::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::kimi::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Refresh the Kimi catalog slice from GET /v1/models and \
@@ -32,7 +32,7 @@ pub const COUNT_TOKENS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::kimi::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

@@ -193,7 +193,7 @@ fn verify(run: &crate::evidence_data::RunEvidence) -> anyhow::Result<()> {
         .collect::<std::collections::BTreeSet<_>>();
     anyhow::ensure!(
         aborted_requests.len() >= 3,
-        "router::abort must acknowledge root and both child requests: {}",
+        "llm-router::abort must acknowledge root and both child requests: {}",
         run.router_evidence
     );
 

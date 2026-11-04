@@ -1,4 +1,4 @@
-// Smoke-test mock: registers `router::chat`, closes the caller's stream
+// Smoke-test mock: registers `llm-router::chat`, closes the caller's stream
 // channel (EOF for the harness frame loop), then fails — so a harness turn
 // step ends fast and its spans export with their trace tags. Not part of
 // the implementation; lives here only to borrow this package's iii-sdk.
@@ -8,7 +8,7 @@ const ENGINE = process.env.III_URL ?? 'ws://127.0.0.1:49234'
 const worker = registerWorker(ENGINE)
 
 worker.registerFunction(
-  'router::chat',
+  'llm-router::chat',
   async (input: { writer_ref?: { channel_id: string; access_key: string } }) => {
     const ref = input?.writer_ref
     if (ref?.channel_id) {
@@ -27,5 +27,5 @@ worker.registerFunction(
   },
 )
 
-console.log('mock router::chat registered')
+console.log('mock llm-router::chat registered')
 setInterval(() => {}, 1 << 30)

@@ -37,7 +37,7 @@ single configured bot token.
 - In channels the bridge acts only on an explicit @mention; DMs always trigger.
   Untagged messages are captured as context, never acted on alone.
 - Identity (team, workspace, bot user) is discovered via `auth.test`, never
-  configured. Models/providers come from `router::models::list` — no vendor names
+  configured. Models/providers come from `llm-router::models::list` — no vendor names
   are baked in.
 - `slack::search::messages` needs a `user_token` (`xoxp-`); bot tokens cannot
   search.

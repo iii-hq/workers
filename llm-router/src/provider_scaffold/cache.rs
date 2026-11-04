@@ -1,13 +1,13 @@
 //! Per-provider caches for the two engine round trips every stream call
 //! paid before its first upstream byte: the registration token
-//! (`state::get`) and `router::provider::resolve`.
+//! (`state::get`) and `llm-router::provider::resolve`.
 //!
 //! The token changes only on re-registration, which happens in-process —
 //! `store` updates the cell alongside iii-state, so reads never miss after
 //! boot. The resolve response (credential, api_url, max_tokens) changes when
 //! an operator edits the ROUTER's configuration entry, which providers
 //! cannot observe; a short TTL bounds that staleness, and callers invalidate
-//! eagerly on `router::ready` (router restart) and on upstream auth errors
+//! eagerly on `llm-router::ready` (router restart) and on upstream auth errors
 //! (credential rotated out from under us). Invalidation only drops the
 //! cache — retry/failover stays the router's job.
 
@@ -80,7 +80,7 @@ impl ScaffoldCache {
         Ok(())
     }
 
-    /// `router::provider::resolve`, served from cache within [`RESOLVE_TTL`].
+    /// `llm-router::provider::resolve`, served from cache within [`RESOLVE_TTL`].
     pub async fn resolve(
         &self,
         iii: &IIIClient,
@@ -106,7 +106,7 @@ impl ScaffoldCache {
         (stored_at.elapsed() <= RESOLVE_TTL).then(|| resolved.clone())
     }
 
-    /// Drop the cached resolve response AND token. Call on `router::ready`
+    /// Drop the cached resolve response AND token. Call on `llm-router::ready`
     /// (a restarted router may carry new config; the token survives but the
     /// re-declare path refreshes it anyway) and on upstream auth errors
     /// (the operator rotated the credential; the next attempt re-resolves).

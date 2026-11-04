@@ -80,5 +80,5 @@ export function doctor(iii: ExtensionIii): Promise<DoctorResponse> {
 
 /** Speech models llm-router knows for one family; empty when no speech provider is registered. */
 export function routerSpeechModels(iii: ExtensionIii, modality: 'stt' | 'tts'): Promise<RouterModelsListResponse> {
-  return iii.trigger<RouterModelsListResponse>('router::models::list', { modality })
+  return iii.trigger<RouterModelsListResponse>('llm-router::models::list', { modality })
 }

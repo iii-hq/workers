@@ -116,7 +116,7 @@ The monitor reuses the existing providers; it never receives a TypeSafe or
 LLM key. Jev credentials stay in `judge-typesafe`; the LLM's in its provider.
 
 ```bash
-# 1. Choose the investigating model (validated against router::models::list)
+# 1. Choose the investigating model (validated against llm-router::models::list)
 #    and keep it paused.
 iii trigger eval::configure --json '{
   "enabled": false,
@@ -398,10 +398,10 @@ later fork of the session needs it, and the next turn replaces it); when it
 would take the assets over their limit it is left out and
 `assets.capture.record_omitted` says why, while the options and digest above
 stay.
-It counts the result with `router::count_tokens` (the context manager's estimate
+It counts the result with `llm-router::count_tokens` (the context manager's estimate
 when the provider has no counter) against the recorded usage: `exact` when the
 difference equals the fixed overhead measured at the turn's first step,
-`approximate` otherwise, with the reasons. It then samples `router::complete`
+`approximate` otherwise, with the reasons. It then samples `llm-router::complete`
 (one warm-up call, then four at a time), never runs a function, reads each
 reply's signal and stores everything in the suggestion's review row
 (`reproductions[]`). `extend` adds replies; `samples: 0` finishes one that

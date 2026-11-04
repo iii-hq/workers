@@ -11,7 +11,7 @@ Implements the provider protocol from
 `tech-specs/2026-06-agentic/llm-router.md`: `provider::github-copilot::stream`
 (SSE chunks → `AssistantMessageEvent` frames into a router-owned channel),
 `provider::github-copilot::refresh_models` (live `GET /models`, admitted rows
-mapped to catalog records → `router::models::reconcile`), plus a device-flow
+mapped to catalog records → `llm-router::models::reconcile`), plus a device-flow
 sign-in surface (`login::start` / `login::poll`).
 
 ## Signing in
@@ -66,7 +66,7 @@ dev sessions).
   Discovery therefore probes each admitted model with a one-token request,
   four at a time, and reconciles only what answered. Verdicts persist for
   24 hours, so a model is probed once and answered from cache after that —
-  a refresh runs at boot, on every `router::ready` rebind, and after each
+  a refresh runs at boot, on every `llm-router::ready` rebind, and after each
   sign-in, and a probe that *succeeds* on a premium model spends a premium
   request, not just a token. When the TTL lapses everything is re-checked,
   so enabling more models upstream (or changing plan) needs no code change.
@@ -77,8 +77,8 @@ dev sessions).
 - **`model_picker_enabled` is deliberately ignored.** It reflects an
   editor-side picker preference and reads `false` for every row on accounts
   that have never toggled models in an editor — gating on it admits nothing.
-- **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+- **Registration:** self-declares via `llm-router::provider::register` with
+  backoff until acked, and re-declares on the `llm-router::ready` trigger type.
   The declaration carries no static `models` slice; a refresh fires right
   after registration and after every successful login.
 - **Client identity:** the token exchange, discovery, and every chat call
@@ -95,11 +95,11 @@ dev sessions).
   declares `structured_outputs`; a schema requested for any other model
   degrades to `json_object` with a warning.
 - **Token counting:** none. The Copilot API exposes no tokenizer endpoint
-  and its models span several vendors' vocabularies — `router::count_tokens`
+  and its models span several vendors' vocabularies — `llm-router::count_tokens`
   reports `no_token_counter` for this provider and the harness falls back
   to its own estimate.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
-  channel write (caller gone / `router::abort`) drops the SSE receiver and
+  channel write (caller gone / `llm-router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.
 - **Errors:** statuses carry subscription semantics on the shared taxonomy:
   401 (bearer or login died) → `auth_expired` and the cached bearer is

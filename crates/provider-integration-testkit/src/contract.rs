@@ -102,7 +102,7 @@ pub(crate) async fn configure(
 pub(crate) async fn wait_for_provider(router: &IIIClient, provider: &str) -> anyhow::Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(router, "router::provider::list", json!({})).await?;
+        let list = call(router, "llm-router::provider::list", json!({})).await?;
         if let Some(found) = list["providers"]
             .as_array()
             .and_then(|providers| providers.iter().find(|item| item["id"] == provider))
@@ -149,7 +149,7 @@ async fn wait_for_discovered_models(router: &IIIClient, case: ProviderCase) -> a
     loop {
         let list = call(
             router,
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "provider": case.id }),
         )
         .await?;
@@ -206,7 +206,7 @@ pub(crate) async fn chat(
     });
     let response = call(
         &consumer,
-        "router::chat",
+        "llm-router::chat",
         json!({
             "writer_ref": writer_ref,
             "request_id": request_id,
@@ -395,7 +395,7 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
     stub.wait_for_post_count(1).await?;
     let aborted = call(
         &router,
-        "router::abort",
+        "llm-router::abort",
         json!({ "request_id": "contract-abort" }),
     )
     .await?;

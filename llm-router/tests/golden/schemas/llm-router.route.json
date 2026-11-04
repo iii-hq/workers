@@ -1,9 +1,9 @@
 {
   "description": "Read-only routing preview: resolve {model, provider?} to the chosen provider + ordered candidates without streaming.",
-  "function_id": "router::route",
+  "function_id": "llm-router::route",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Input of `router::route` — the read-only routing preview.",
+    "description": "Input of `llm-router::route` — the read-only routing preview.",
     "properties": {
       "model": {
         "default": "",
@@ -23,7 +23,7 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Output of `router::route`.",
+    "description": "Output of `llm-router::route`.",
     "properties": {
       "candidates": {
         "items": {

@@ -161,7 +161,7 @@ impl ScenarioRunner<'_> {
             "harness::turn",
             "harness::send",
             "session::messages",
-            "router::chat",
+            "llm-router::chat",
         ];
         if let Some(target) = &prepared.scenario.target {
             required.push(target.function_id.as_str());

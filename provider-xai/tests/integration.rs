@@ -74,7 +74,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     register_router(iii.clone()).await.unwrap();
     let registered = call(
         &iii,
-        "router::provider::register",
+        "llm-router::provider::register",
         serde_json::to_value(provider_xai::register::declaration()).unwrap(),
     )
     .await
@@ -92,13 +92,13 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
         }),
     );
     iii.register_trigger(RegisterTriggerInput::new(
-        "router::models::changed",
+        "llm-router::models::changed",
         "probe::discovery_event",
         json!({}),
     ))
     .unwrap();
     // A bus roundtrip ensures the fixture subscription is registered before production.
-    call(&iii, "router::provider::list", json!({}))
+    call(&iii, "llm-router::provider::list", json!({}))
         .await
         .unwrap();
     provider_xai::state::store_token(&iii, token).await.unwrap();
@@ -128,7 +128,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     configure_stub_key(&iii, &url).await;
     call(
         &iii,
-        "router::on_config_changed",
+        "llm-router::on_config_changed",
         json!({"id":"llm-router"}),
     )
     .await
@@ -147,7 +147,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
         .unwrap()
         .unwrap();
     assert_eq!(event["count"], 0);
-    let list = call(&iii, "router::provider::list", json!({}))
+    let list = call(&iii, "llm-router::provider::list", json!({}))
         .await
         .unwrap();
     assert_eq!(list["providers"][0]["discovery"]["outcome"], "billing");
@@ -171,13 +171,13 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     let begin = || {
         call(
             &iii,
-            "router::provider::resolve",
+            "llm-router::provider::resolve",
             json!({"id":"xai", "token":token, "begin_discovery":true}),
         )
     };
     assert!(call(
         &iii,
-        "router::provider::resolve",
+        "llm-router::provider::resolve",
         json!({"id":"xai", "begin_discovery":true})
     )
     .await
@@ -187,18 +187,18 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     let report = |attempt: Value| json!({"provider":"xai", "token":token, "models":[], "discovery":{"attempt":attempt, "outcome":"empty", "http_status":200}});
     let mut unauthorized = report(latest.clone());
     unauthorized["token"] = json!("wrong-token");
-    assert!(call(&iii, "router::models::reconcile", unauthorized)
+    assert!(call(&iii, "llm-router::models::reconcile", unauthorized)
         .await
         .is_err());
-    assert!(call(&iii, "router::models::reconcile", report(first))
+    assert!(call(&iii, "llm-router::models::reconcile", report(first))
         .await
         .is_err());
     let mut unsafe_code = report(latest.clone());
     unsafe_code["discovery"]["code"] = json!("sk-PRIVATE");
-    assert!(call(&iii, "router::models::reconcile", unsafe_code)
+    assert!(call(&iii, "llm-router::models::reconcile", unsafe_code)
         .await
         .is_err());
-    call(&iii, "router::models::reconcile", report(latest))
+    call(&iii, "llm-router::models::reconcile", report(latest))
         .await
         .unwrap();
     let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
@@ -210,7 +210,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
         "empty recovery must emit even when count stays zero"
     );
     assert_eq!(
-        call(&iii, "router::provider::list", json!({}))
+        call(&iii, "llm-router::provider::list", json!({}))
             .await
             .unwrap()["providers"][0]["discovery"]["outcome"],
         "empty"
@@ -231,7 +231,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     assert!(!transient.refreshed.ok);
     assert_eq!(transient.refreshed.count, 1);
     assert_eq!(
-        call(&iii, "router::provider::list", json!({}))
+        call(&iii, "llm-router::provider::list", json!({}))
             .await
             .unwrap()["providers"][0]["discovery"]["stale"],
         true
@@ -240,21 +240,23 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     call(&iii, "configuration::set", json!({"id":"llm-router", "value":{"providers":{"xai":{"api_key":"new-fixture-key", "api_url":url}}}})).await.unwrap();
     call(
         &iii,
-        "router::on_config_changed",
+        "llm-router::on_config_changed",
         json!({"id":"llm-router"}),
     )
     .await
     .unwrap();
-    assert!(call(&iii, "router::models::reconcile", report(old_config))
-        .await
-        .is_err());
+    assert!(
+        call(&iii, "llm-router::models::reconcile", report(old_config))
+            .await
+            .is_err()
+    );
     *response.lock().unwrap() = (200, json!({"data":[]}).to_string());
     let empty = provider_xai::discovery::refresh_models(&iii, &http)
         .await
         .unwrap();
     assert!(empty.refreshed.ok);
     assert_eq!(empty.refreshed.count, 0);
-    let list = call(&iii, "router::provider::list", json!({}))
+    let list = call(&iii, "llm-router::provider::list", json!({}))
         .await
         .unwrap();
     assert_eq!(list["providers"][0]["discovery"]["outcome"], "empty");
@@ -263,7 +265,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     // Legacy callers still replace their own slice without a discovery report.
     call(
         &iii,
-        "router::models::reconcile",
+        "llm-router::models::reconcile",
         json!({"provider":"xai", "token":token, "models":[]}),
     )
     .await
@@ -327,7 +329,7 @@ async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
 
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router_iii, "router::provider::list", json!({}))
+        let list = call(&router_iii, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let registered = list["providers"]
@@ -370,7 +372,7 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
     loop {
         let list = call(
             router_iii,
-            "router::models::list",
+            "llm-router::models::list",
             json!({ "provider": "xai" }),
         )
         .await
@@ -400,7 +402,7 @@ async fn provider_registers_with_persisted_token_and_live_only_catalog() {
     // until live discovery can run (models come from GET /v1/models only).
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "xai" }),
     )
     .await
@@ -444,7 +446,7 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "grok-4",
@@ -490,7 +492,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
         .trigger(TriggerRequest {
-            function_id: "router::chat".into(),
+            function_id: "llm-router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "grok-4",
@@ -525,7 +527,7 @@ async fn refresh_models_reconciles_filtered_live_catalog() {
 
     let list = call(
         &router_iii,
-        "router::models::list",
+        "llm-router::models::list",
         json!({ "provider": "xai" }),
     )
     .await
@@ -576,10 +578,10 @@ async fn provider_redeclares_on_router_ready() {
         .await
         .expect("router reboots");
 
-    // router::ready trigger → provider re-declares with its persisted token
+    // llm-router::ready trigger → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let list = call(&router2, "router::provider::list", json!({}))
+        let list = call(&router2, "llm-router::provider::list", json!({}))
             .await
             .unwrap();
         let listed = list["providers"]

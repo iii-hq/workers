@@ -19,4 +19,4 @@ Use this worker when a task should be handled by a Cursor coding agent. Local ex
 
 Login-backed local execution stays in Cursor's `ask` mode and cancels every permission request. Cursor ACP cannot enforce a per-request tool list, so omit `tools`; any explicit value is rejected. Cloud runs require the separately installed SDK Bridge and `CURSOR_API_KEY`, and default to neither working on the current branch nor creating a pull request.
 
-The LLM Router provider functions are internal and denied to agents; use `router::chat` or `router::complete` through a selected `cursor/*` model. Read-only status, session, auth, and model discovery are allowed by the default policy; direct run, start, stop, and usage stay approval-gated.
+The LLM Router provider functions are internal and denied to agents; use `llm-router::chat` or `llm-router::complete` through a selected `cursor/*` model. Read-only status, session, auth, and model discovery are allowed by the default policy; direct run, start, stop, and usage stay approval-gated.

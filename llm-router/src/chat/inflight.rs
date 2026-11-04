@@ -1,6 +1,6 @@
-//! request_id → in-flight stream handle for router::abort. In-memory only:
+//! request_id → in-flight stream handle for llm-router::abort. In-memory only:
 //! an abort must reach the router instance holding the stream
-//! (single-instance worker — design doc § router::abort).
+//! (single-instance worker — design doc § llm-router::abort).
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,7 +82,7 @@ impl Drop for InflightReservation {
 
 impl InflightMap {
     /// Atomically reserves a request id. A live request keeps the reservation
-    /// after `router::abort` until its chat future actually terminates.
+    /// after `llm-router::abort` until its chat future actually terminates.
     pub fn reserve(self: &Arc<Self>, request_id: &str) -> Option<InflightReservation> {
         let entry = InflightEntry::default();
         let mut entries = self.entries.lock().unwrap();

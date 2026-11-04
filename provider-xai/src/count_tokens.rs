@@ -11,7 +11,7 @@
 //! the server-side tools on the Agent Tools path. Those constants are
 //! measured against billed `prompt_tokens`, not published by xAI.
 //!
-//! Exposed behind `router::count_tokens`.
+//! Exposed behind `llm-router::count_tokens`.
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;

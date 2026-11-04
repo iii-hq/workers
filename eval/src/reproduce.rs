@@ -807,7 +807,7 @@ async fn count(
         payload["thinking_level"] = level.clone();
     }
     let counted: Result<Value, EvalError> =
-        call(deps, "router::count_tokens", payload, BUS_TIMEOUT_MS).await;
+        call(deps, "llm-router::count_tokens", payload, BUS_TIMEOUT_MS).await;
     if let Ok(reply) = &counted {
         if let (Some(tokens), Some("provider")) =
             (reply["tokens"].as_u64(), reply["estimator"].as_str())
@@ -1170,7 +1170,7 @@ async fn sample(
     request["session_id"] = json!(session);
     let started = Instant::now();
     let outcome: Result<Value, EvalError> =
-        call(deps, "router::complete", request, SAMPLE_TIMEOUT_MS).await;
+        call(deps, "llm-router::complete", request, SAMPLE_TIMEOUT_MS).await;
     let duration_ms = started.elapsed().as_millis() as u64;
     match outcome {
         Ok(reply) => {

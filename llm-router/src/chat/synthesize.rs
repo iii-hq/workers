@@ -1,4 +1,4 @@
-//! Terminal-frame synthesis (spec § close-without-terminal, § router::abort).
+//! Terminal-frame synthesis (spec § close-without-terminal, § llm-router::abort).
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use crate::types::messages::{AssistantMessage, AssistantRoleTag};
 

@@ -637,7 +637,7 @@ fn register_scm(iii: &iii_sdk::IIIClient, state: &AppState) {
             })
             .description(
                 "Console-only: write a git commit message for the diff text `changes` (stat + \
-                 unified diff, capped at 60000 chars) with an LLM through router::complete. \
+                 unified diff, capped at 60000 chars) with an LLM through llm-router::complete. \
                  Optional `recent_subjects` give the repository's style; `fallback_model` \
                  (provider::model) is used when commit_messages.model is unset. Returns \
                  { message, model }. Errors return { code, message }: NO_MODEL no model \

@@ -1,5 +1,5 @@
 {
-  "description": "Text to speech on the ElevenLabs voices behind router::speak: text and a voice id or name in, base64 audio out (mp3, wav, pcm16, opus).",
+  "description": "Text to speech on the ElevenLabs voices behind llm-router::speak: text and a voice id or name in, base64 audio out (mp3, wav, pcm16, opus).",
   "function_id": "provider::elevenlabs::speak",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

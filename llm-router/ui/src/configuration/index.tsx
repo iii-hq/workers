@@ -117,7 +117,7 @@ export interface LlmRouterConfigFormProps extends ConfigFormProps {
    * (`env://NAME`); Consoles without it keep the plain input below.
    */
   secretField?: ComponentType<SecretKeyFieldProps>
-  /** `router::provider::list`, by provider id. */
+  /** `llm-router::provider::list`, by provider id. */
   credentials?: ReadonlyMap<string, ProviderCredential>
 }
 

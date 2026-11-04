@@ -11,7 +11,7 @@ use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 
 pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {
     // Stamp this turn's identity into OTel baggage for the whole step. Every
-    // span the step spawns — session::*, router::chat, and (via the
+    // span the step spawns — session::*, llm-router::chat, and (via the
     // spawn-context propagation in the router/provider clients)
     // provider::*::stream — then carries `iii.session.id`/`iii.message.id`
     // (the BaggageSpanProcessor allowlist), so the turn's spans are
@@ -233,11 +233,11 @@ mod tests {
             "session::append: invocation timed out".into()
         )));
         assert!(!is_transient_step_error(&HarnessError::Dependency(
-            "router::chat: invocation timed out".into()
+            "llm-router::chat: invocation timed out".into()
         )));
         // Ordinary failures stay terminal.
         assert!(!is_transient_step_error(&HarnessError::Dependency(
-            "router::chat: provider rejected the request".into()
+            "llm-router::chat: provider rejected the request".into()
         )));
         assert!(!is_transient_step_error(&HarnessError::Internal(
             "function_not_found mentioned in an internal error".into()

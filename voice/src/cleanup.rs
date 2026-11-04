@@ -5,7 +5,7 @@
 //! the start. Dictation tools people like (Wispr Flow, Superwhisper) run the
 //! raw transcript through a language model that rewrites it into what the
 //! speaker meant, and that is what this module does, through llm-router's
-//! `router::complete` so any configured chat provider serves it.
+//! `llm-router::complete` so any configured chat provider serves it.
 //!
 //! The pass is best-effort. It runs once, on the whole transcript, when a
 //! dictation stops; a slow or failing model hands the raw text back, never
@@ -70,7 +70,7 @@ pub async fn polish(iii: &IIIClient, cfg: &WorkerConfig, raw: &str) -> Result<Po
         .ok_or_else(|| "clean-up timed out resolving a model".to_string())?;
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "router::complete".into(),
+            function_id: "llm-router::complete".into(),
             payload: json!({
                 "model": model,
                 "system_prompt": system_prompt(&cfg.stt.cleanup.instructions),
@@ -90,7 +90,7 @@ pub async fn polish(iii: &IIIClient, cfg: &WorkerConfig, raw: &str) -> Result<Po
     let message = &reply["message"];
     if message["stop_reason"] == "error" {
         return Err(format!(
-            "router::complete: provider error {}: {}",
+            "llm-router::complete: provider error {}: {}",
             message["error_kind"].as_str().unwrap_or("unknown"),
             message["error_message"].as_str().unwrap_or("")
         ));
@@ -185,7 +185,7 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     }
     let reply = iii
         .trigger(TriggerRequest {
-            function_id: "router::provider::list".into(),
+            function_id: "llm-router::provider::list".into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(PROVIDER_LIST_TIMEOUT_MS),
@@ -199,7 +199,7 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     })
 }
 
-/// Pick the clean-up model from a `router::provider::list` reply.
+/// Pick the clean-up model from an `llm-router::provider::list` reply.
 pub fn default_model_from(reply: &Value) -> Option<String> {
     reply
         .get("providers")

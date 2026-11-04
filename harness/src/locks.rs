@@ -37,7 +37,7 @@ impl SessionLocks {
 
 /// Per-turn in-process cancel signals. `harness::stop` fires one lock-free so
 /// the running step can observe the stop where durable state can't reach it:
-/// inside the `router::chat` await (via `watch`) and between tool executions
+/// inside the `llm-router::chat` await (via `watch`) and between tool executions
 /// (via `is_fired`) — the tool phase holds the session lock, so the durable
 /// abort write is blocked behind it by construction. Level-triggered `watch`
 /// channels: a fire before subscribe is still observed. Keyed by turn_id so a

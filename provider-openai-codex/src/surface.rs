@@ -20,7 +20,7 @@ pub const STREAM_DESC: &str = "Stream an OpenAI Codex completion: resolve a Chat
 
 pub const ABORT_ID: &str = "provider::openai-codex::abort";
 pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request_id \
-     (router::abort fan-out), stopping billed generation immediately.";
+     (llm-router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::openai-codex::refresh_models";
 pub const REFRESH_MODELS_DESC: &str = "Fetch the authenticated Codex model catalog and replace \
@@ -28,7 +28,7 @@ pub const REFRESH_MODELS_DESC: &str = "Fetch the authenticated Codex model catal
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openai-codex::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: llm-router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
 pub const IMAGE_GENERATE_ID: &str = "provider::openai-codex::image::generate";
 pub const IMAGE_GENERATE_DESC: &str = "Generate one image from a text prompt with gpt-image-2.5-sunburst or gpt-image-2.5-flare on the ChatGPT subscription backend (a Codex chat model hosts the image_generation tool). Returns viewable content blocks (image + caption) that render inline, and saves the file under data/provider-openai-codex/images/ (details.path) for other processes to pick up.";

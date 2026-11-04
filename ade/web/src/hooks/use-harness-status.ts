@@ -256,7 +256,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
 }
 
 /**
- * Whether harness-owned bus functions (`router::models::list`, etc.) are
+ * Whether harness-owned bus functions (`llm-router::models::list`, etc.) are
  * registered and safe to trigger. False during the initial presence probe and
  * while the worker is absent.
  *

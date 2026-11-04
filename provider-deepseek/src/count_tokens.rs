@@ -16,7 +16,7 @@
 //! thinking level picks the encoder's mode: chat mode bills no effort line
 //! and no reasoning replay.
 //!
-//! Exposed behind `router::count_tokens`.
+//! Exposed behind `llm-router::count_tokens`.
 
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::deepseek_v41::{
@@ -123,7 +123,7 @@ pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Erro
 /// catalog's `supports_thinking`, so a native `"disabled"` switch, or a
 /// catalog record that overrides the id pattern, still counts thinking mode
 /// (over by ~26 tokens plus the replayed reasoning). Forward them on
-/// `router::count_tokens` if a caller starts sending the native switch.
+/// `llm-router::count_tokens` if a caller starts sending the native switch.
 fn mode(model: &str, level: Option<ThinkingLevel>) -> Mode {
     let level = level.filter(|_| is_reasoning_model(model, None));
     if level == Some(ThinkingLevel::Off) {

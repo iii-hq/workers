@@ -17,7 +17,7 @@ nothing is committed as a static `config.yaml` (defaults live in
 | `require_mention` | Channels fire a turn only on `@bot` mention. DMs always trigger. Default true. |
 | `backfill_thread` | Pull prior thread replies into the session on first mention. Default true. |
 | `backfill_max_messages` | Cap on backfilled/pending context messages. Default 50. |
-| `default_model` | Optional `{provider,id}`, validated against `router::models::list`. Provider-agnostic. |
+| `default_model` | Optional `{provider,id}`, validated against `llm-router::models::list`. Provider-agnostic. |
 | `system_prompt` | Optional system prompt appended to every harness send. |
 | `functions_allow` | Globs for `harness::send` `options.functions.allow`. Default `["slack::*"]`. |
 | `timeout_ms` | Slack Web API and engine RPC timeout (ms). Default 10000. |

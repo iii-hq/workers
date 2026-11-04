@@ -1,4 +1,4 @@
-//! `router::chat` orchestration: validate → decide → gates → budget → attempt
+//! `llm-router::chat` orchestration: validate → decide → gates → budget → attempt
 //! loop (relay + invisible pre-first-frame retries) → exactly one terminal.
 //! Each attempt invokes the provider's `provider::<id>::stream` iii function
 //! via `iii.trigger` with a fresh router-owned iii channel.
@@ -83,7 +83,7 @@ pub struct ChatCall {
     pub metadata: Option<Value>,
 }
 
-/// Input of the `router::chat` iii function: a [`ChatCall`] plus the caller's
+/// Input of the `llm-router::chat` iii function: a [`ChatCall`] plus the caller's
 /// write channel. The handler relays assistant frames to `writer_ref` and also
 /// returns the terminal [`ChatResponse`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -400,7 +400,7 @@ impl ChatPipeline {
         let call = call; // frozen: nothing below mutates the normalized pair
 
         // Speech models live in the same catalog so callers can list and
-        // pick them, but they answer router::transcribe / router::speak, not
+        // pick them, but they answer llm-router::transcribe / llm-router::speak, not
         // chat. Refuse before routing so the message names the right door
         // instead of a provider stream failing on an unknown model.
         if let Some(modality) = models_get(&self.catalog, call.provider.as_deref(), &call.model)
@@ -408,8 +408,8 @@ impl ChatPipeline {
             .and_then(|meta| meta.speech_modality())
         {
             let door = match modality {
-                SpeechModality::Stt => "router::transcribe",
-                SpeechModality::Tts => "router::speak",
+                SpeechModality::Stt => "llm-router::transcribe",
+                SpeechModality::Tts => "llm-router::speak",
             };
             return Err(fail_with_terminal(
                 sink.as_ref(),
@@ -427,8 +427,8 @@ impl ChatPipeline {
         }
 
         // A pre-stream failure must still leave exactly one terminal frame on
-        // the sink. Without it, `router::complete`'s drain blocks for its full
-        // reader budget and `router::chat` consumers never see a terminal.
+        // the sink. Without it, `llm-router::complete`'s drain blocks for its full
+        // reader budget and `llm-router::chat` consumers never see a terminal.
         // (Regression: pre_stream_routing_failure_emits_one_error_terminal_frame.)
         let fail_pre_stream = |provider: &str, code: RouterCode, message: String| -> Error {
             // Most routing/validation decisions are permanent. Availability is
@@ -568,7 +568,7 @@ impl ChatPipeline {
                 sink,
             )
             .await;
-        // Stamp token usage + cost onto the active `execute router::chat`
+        // Stamp token usage + cost onto the active `execute llm-router::chat`
         // span. Every terminal outcome of the attempt loop funnels into the
         // ChatResponse, which carries the cost-filled usage.
         if let Ok(resp) = &result {
@@ -668,7 +668,7 @@ impl ChatPipeline {
                 drop(call_slot);
                 break;
             }
-            // router::abort closes the relay AND actively cancels the
+            // llm-router::abort closes the relay AND actively cancels the
             // provider's upstream via `provider::<id>::abort` — without it the
             // provider only notices the closed channel on its next (ping)
             // write, billing tokens meanwhile. Detached + best-effort: a
@@ -720,7 +720,7 @@ impl ChatPipeline {
                 break;
             }
             // Carry the caller's OTel context into the spawned task so the
-            // provider stream nests under `router::chat` instead of rooting a
+            // provider stream nests under `llm-router::chat` instead of rooting a
             // detached trace. `with_context` (not `cx.attach()`) because the
             // `ContextGuard` is `!Send` and can't cross the `.await` below.
             let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
@@ -973,7 +973,7 @@ impl ChatPipeline {
             }
         }
 
-        // router::abort: synthesized done(aborted) carrying the partial.
+        // llm-router::abort: synthesized done(aborted) carrying the partial.
         let terminal = synthesize_aborted(
             last_partial.as_ref(),
             &call.model,
@@ -1397,8 +1397,8 @@ mod tests {
 
     /// A pre-stream failure (here: a model that routes to no provider) must
     /// still emit exactly one terminal error frame to the sink. Without it,
-    /// `router::complete`'s drain blocks for the full reader budget and
-    /// `router::chat` streaming consumers never see a terminal.
+    /// `llm-router::complete`'s drain blocks for the full reader budget and
+    /// `llm-router::chat` streaming consumers never see a terminal.
     #[tokio::test]
     async fn pre_stream_routing_failure_emits_one_error_terminal_frame() {
         use crate::catalog::store::CatalogStore;

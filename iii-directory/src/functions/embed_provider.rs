@@ -1,6 +1,6 @@
 //! `provider::minilm::embed`: the local MiniLM that ranks
 //! `directory::search_functions` candidates, served as an embed-only
-//! provider for `router::embed`. It never declares itself to the router, so
+//! provider for `llm-router::embed`. It never declares itself to the router, so
 //! it lists no models and no model picker shows it; the router tries it
 //! only when every registered provider has no embed surface or is not
 //! configured for good (no API key), and none whose embed answered before
@@ -24,7 +24,7 @@ use super::search_semantic::{embedding_model_id, EmbedError, SemanticSearch, MIN
 pub const EMBED_ID: &str = "provider::minilm::embed";
 const EMBED_DESC: &str = "Batch text embeddings from the local MiniLM \
      (sentence-transformers/all-MiniLM-L6-v2, 384 dims, L2-normalized): one vector per input, \
-     order preserved. Called by router::embed.";
+     order preserved. Called by llm-router::embed.";
 /// The same batch ceiling provider-llamacpp takes.
 const MAX_INPUTS: usize = 512;
 

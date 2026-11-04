@@ -1,9 +1,9 @@
 //! The scripted router: a strict, deterministic implementation of the fixed
-//! `router::*` functions. It runs
+//! `llm-router::*` functions. It runs
 //! in-process as its own worker connection; the real llm-router is absent so
 //! function ownership is unambiguous.
 //!
-//! `router::chat` consumes generations in ordinal order. An unexpected call
+//! `llm-router::chat` consumes generations in ordinal order. An unexpected call
 //! or matcher failure records `contract_failure` evidence, streams nothing,
 //! and returns a bus error; an unused generation is detected by the runner
 //! floor via `generations_consumed`.
@@ -29,7 +29,7 @@ use crate::types::script::{
     ModelFixtureV1, RouterDispatchV1, RouterScriptV1, ScriptedGenerationV1, ServeEffectV1,
 };
 
-/// One `router::chat` call's evidence, stored raw (never normalized).
+/// One `llm-router::chat` call's evidence, stored raw (never normalized).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RouterCallEvidence {
     /// Ordinal of the generation this call was checked against; absent when
@@ -70,7 +70,7 @@ struct State {
     consumed: BTreeSet<usize>,
     calls: Vec<RouterCallEvidence>,
     aborts: Vec<RouterAbortEvidence>,
-    /// request_id → aborted-once flag, for `router::abort` semantics.
+    /// request_id → aborted-once flag, for `llm-router::abort` semantics.
     live: BTreeMap<String, bool>,
     gates: BTreeMap<String, GateState>,
     gate_notify: Arc<tokio::sync::Notify>,
@@ -117,7 +117,7 @@ impl ScriptedRouter {
             let address = address.clone();
             let client = iii.clone();
             iii.register_function(
-                "router::chat",
+                "llm-router::chat",
                 with_router_contract(
                     RegisterFunction::new_async(move |input: Value| {
                         let state = state.clone();
@@ -125,7 +125,7 @@ impl ScriptedRouter {
                         let client = client.clone();
                         async move { chat(state, address, client, input).await }
                     }),
-                    "router::chat",
+                    "llm-router::chat",
                 )
                 .metadata(json!({ "internal": true })),
             );
@@ -133,7 +133,7 @@ impl ScriptedRouter {
         {
             let state = self.state.clone();
             iii.register_function(
-                "router::abort",
+                "llm-router::abort",
                 with_router_contract(
                     RegisterFunction::new_async(move |input: Value| {
                         let state = state.clone();
@@ -158,7 +158,7 @@ impl ScriptedRouter {
                             Ok::<Value, Error>(json!({ "aborted": aborted }))
                         }
                     }),
-                    "router::abort",
+                    "llm-router::abort",
                 )
                 .metadata(json!({ "internal": true })),
             );
@@ -166,7 +166,7 @@ impl ScriptedRouter {
         {
             let state = self.state.clone();
             iii.register_function(
-                "router::models::list",
+                "llm-router::models::list",
                 with_router_contract(
                     RegisterFunction::new_async(move |input: Value| {
                         let state = state.clone();
@@ -187,14 +187,14 @@ impl ScriptedRouter {
                             Ok::<Value, Error>(json!({ "models": models }))
                         }
                     }),
-                    "router::models::list",
+                    "llm-router::models::list",
                 ),
             );
         }
         {
             let state = self.state.clone();
             iii.register_function(
-                "router::models::get",
+                "llm-router::models::get",
                 with_router_contract(
                     RegisterFunction::new_async(move |input: Value| {
                         let state = state.clone();
@@ -211,14 +211,14 @@ impl ScriptedRouter {
                             }
                         }
                     }),
-                    "router::models::get",
+                    "llm-router::models::get",
                 ),
             );
         }
         {
             let state = self.state.clone();
             iii.register_function(
-                "router::models::supports",
+                "llm-router::models::supports",
                 with_router_contract(
                     RegisterFunction::new_async(move |input: Value| {
                         let state = state.clone();
@@ -239,7 +239,7 @@ impl ScriptedRouter {
                             Ok::<Value, Error>(json!({ "supported": supported }))
                         }
                     }),
-                    "router::models::supports",
+                    "llm-router::models::supports",
                 ),
             );
         }
@@ -538,7 +538,7 @@ async fn chat(
                 field_results: Vec::new(),
             });
             return Err(Error::Handler(
-                "integration/unexpected_call: router::chat after script exhausted".into(),
+                "integration/unexpected_call: llm-router::chat after script exhausted".into(),
             ));
         };
 

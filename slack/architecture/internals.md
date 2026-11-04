@@ -46,7 +46,7 @@ after the typed text in an `<attached-file path="slack-thread">` block, so
 memory's learned-rule gate never counts thread lines as the user's words, the
 asker's own earlier lines included. A `/compact` mention goes bare, with no
 context, so the harness runs it as the command. The model comes from `default_model`
-(validated against `router::models::list`) or the first available model — no
+(validated against `llm-router::models::list`) or the first available model — no
 vendor names are baked in. The Slack channel-context prompt
 (`prompts/channel-context.txt`) is layered onto the system prompt. The returned
 `session_id` is mapped to the thread so streamed output knows where to go.

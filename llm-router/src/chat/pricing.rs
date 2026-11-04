@@ -1,4 +1,4 @@
-//! cost_usd fill from catalog pricing (spec § router::chat). Never mutates.
+//! cost_usd fill from catalog pricing (spec § llm-router::chat). Never mutates.
 use crate::types::events::Usage;
 use crate::types::model::Pricing;
 

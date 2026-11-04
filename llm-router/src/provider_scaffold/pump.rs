@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 /// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
 ///
 /// Also the abort-detection bound: a failed ping write is how a provider
-/// notices the router closed the channel (`router::abort`) while the upstream
+/// notices the router closed the channel (`llm-router::abort`) while the upstream
 /// is silent — e.g. Anthropic server-buffering a large tool_use input,
 /// generating (billed) tokens with no frames flowing. Worst-case waste after
 /// a stop is ~2 intervals (one ping trips the forwarder, the next observes

@@ -1,4 +1,4 @@
-//! `router::on_config_changed` — the iii function bound to the engine's
+//! `llm-router::on_config_changed` — the iii function bound to the engine's
 //! `configuration` trigger (paste-a-key flow, spec § Triggers bound).
 //! Fingerprint → diff → resolve the changed slices' `secret://` references →
 //! debounce → `provider::<id>::refresh_models` (fire-and-forget iii call) +
@@ -109,7 +109,7 @@ pub fn make_on_config_changed(
 /// After a new snapshot is installed: drop cached secrets no slice
 /// references any more, re-read the references of the changed slices, and
 /// only then queue discovery — so a pasted `secret://NAME` is resolvable by
-/// the time the provider's `refresh_models` asks `router::provider::resolve`.
+/// the time the provider's `refresh_models` asks `llm-router::provider::resolve`.
 async fn follow_up(
     changed: Vec<String>,
     config: &ConfigCell,

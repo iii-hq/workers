@@ -1,6 +1,6 @@
 //! `provider::openai::embed` — batch text embeddings through the OpenAI
 //! embeddings endpoint, using the same router-resolved credential as the
-//! chat path. Consumers (llm-router's `router::embed`, and through it the
+//! chat path. Consumers (llm-router's `llm-router::embed`, and through it the
 //! memory worker's semantic recall) treat this as the provider protocol's
 //! embedding surface.
 

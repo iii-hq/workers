@@ -54,7 +54,7 @@ Exemplo do request proposto de `eval::configure`; os nomes entre `<...>` devem v
 }
 ```
 
-Validar seleção não vazia e opções suportadas pelo modelo. Usar `router::models::list` para a seleção; falha do catálogo deve aparecer na interface, sem escolher outro modelo automaticamente. Análises já admitidas conservam sua configuração original.
+Validar seleção não vazia e opções suportadas pelo modelo. Usar `llm-router::models::list` para a seleção; falha do catálogo deve aparecer na interface, sem escolher outro modelo automaticamente. Análises já admitidas conservam sua configuração original.
 
 ### 2.2 Superfície pública proposta
 

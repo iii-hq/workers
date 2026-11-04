@@ -207,13 +207,13 @@ impl Composer {
         let response = self
             .iii
             .trigger(TriggerRequest {
-                function_id: "router::complete".into(),
+                function_id: "llm-router::complete".into(),
                 payload,
                 action: None,
                 timeout_ms: Some(600_000),
             })
             .await
-            .map_err(|error| format!("router::complete failed: {error}"))?;
+            .map_err(|error| format!("llm-router::complete failed: {error}"))?;
         extract_composition(&response)
     }
 }
@@ -246,7 +246,7 @@ fn extract_composition(response: &Value) -> Result<String, String> {
         .get("message")
         .and_then(|message| message.get("content"))
         .and_then(Value::as_array)
-        .ok_or_else(|| "router::complete returned no assistant content".to_string())?;
+        .ok_or_else(|| "llm-router::complete returned no assistant content".to_string())?;
     if let Some(arguments) = blocks.iter().find_map(|block| {
         (block.get("type").and_then(Value::as_str) == Some("function_call")
             && block.get("function_id").and_then(Value::as_str) == Some(COMPOSE_TOOL_NAME))
@@ -266,7 +266,7 @@ fn extract_composition(response: &Value) -> Result<String, String> {
         .join("\n");
     if text.trim().is_empty() {
         Err(format!(
-            "router::complete returned neither a `{COMPOSE_TOOL_NAME}` call nor a text block"
+            "llm-router::complete returned neither a `{COMPOSE_TOOL_NAME}` call nor a text block"
         ))
     } else {
         Ok(text)

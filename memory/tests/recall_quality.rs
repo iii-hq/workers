@@ -1083,7 +1083,7 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
 }
 
 /// Regenerates `tests/recall_quality/vectors.json` through a live engine's
-/// `router::embed`. Pins the model so reruns are comparable, and the
+/// `llm-router::embed`. Pins the model so reruns are comparable, and the
 /// provider: only provider-openai serves it, and an auto-pick could land on
 /// one that echoes the requested model (llama-server) with its own vectors.
 #[tokio::test(flavor = "multi_thread")]
@@ -1163,24 +1163,26 @@ async fn embed_golden(model: &str, dims: usize, provider: &str, file: &str) {
     let texts: Vec<String> = items.iter().map(|(_, t)| t.clone()).collect();
     let reply = iii
         .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "router::embed".into(),
+            function_id: "llm-router::embed".into(),
             payload: serde_json::json!({ "input": texts, "model": model, "provider": provider }),
             action: None,
             timeout_ms: Some(120_000),
         })
         .await
-        .expect("router::embed failed (engine up? embed provider configured? III_NAMESPACE set?)");
+        .expect(
+            "llm-router::embed failed (engine up? embed provider configured? III_NAMESPACE set?)",
+        );
     let reported = reply["model"].as_str().unwrap_or_default().to_string();
     assert!(
         reported == model || reported.starts_with(&format!("{model}@")),
-        "router::embed answered with {reported:?}, not {model}"
+        "llm-router::embed answered with {reported:?}, not {model}"
     );
     assert_eq!(reply["provider"], provider, "answered by another provider");
     // The model the provider reported: what recall keys vectors by. Vectors
     // of two revisions live in different spaces.
     assert!(
         vectors.items.is_empty() || vectors.model == reported,
-        "{file} holds {} vectors, router::embed answered with {reported}: delete the file \
+        "{file} holds {} vectors, llm-router::embed answered with {reported}: delete the file \
          to re-embed every text",
         vectors.model
     );
