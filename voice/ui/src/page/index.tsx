@@ -139,13 +139,24 @@ export function VoicePage({
   const sectionMeta = (id: SectionId) => {
     switch (id) {
       case 'dictate':
-        return listening ? <StatusDot tone="accent" pulse /> : null
+        // The dot is aria-hidden; the words carry the state to a screen reader.
+        return listening ? (
+          <>
+            <StatusDot tone="accent" pulse />
+            <span className="voice-sr-only">listening</span>
+          </>
+        ) : null
       case 'models':
         return models ? (
           <span className="voice-nav-count">{models.models.filter((m) => m.installed).length}</span>
         ) : null
       case 'speak':
-        return report && !report.tts.available && report.tts.backend !== 'off' ? <StatusDot tone="warn" /> : null
+        return report && !report.tts.available && report.tts.backend !== 'off' ? (
+          <>
+            <StatusDot tone="warn" />
+            <span className="voice-sr-only">engine not ready</span>
+          </>
+        ) : null
       default:
         return null
     }

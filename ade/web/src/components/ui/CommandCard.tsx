@@ -45,10 +45,14 @@ export function CommandCard({
     void copyTextToClipboard(command).then((ok) => {
       setCopyState(ok ? 'copied' : 'failed')
       if (flashRef.current != null) window.clearTimeout(flashRef.current)
-      flashRef.current = window.setTimeout(() => {
-        flashRef.current = null
-        setCopyState('idle')
-      }, 1200)
+      flashRef.current = window.setTimeout(
+        () => {
+          flashRef.current = null
+          setCopyState('idle')
+          // A failure stays long enough to read and act on.
+        },
+        ok ? 1200 : 4000,
+      )
     })
   }, [command])
 
@@ -68,6 +72,20 @@ export function CommandCard({
         <span className="font-inter text-[13px] font-medium text-ink">
           {label}
         </span>
+        {/* A failed copy says so in the card, not only in a tooltip (which
+            touch never shows), so the reader knows to select it by hand. */}
+        {copyState === 'failed' ? (
+          <span className="ml-auto font-inter text-[13px] text-warn">
+            Couldn't copy, select the command instead
+          </span>
+        ) : null}
+        <span role="status" className="sr-only">
+          {copyState === 'copied'
+            ? 'Command copied'
+            : copyState === 'failed'
+              ? "Couldn't copy the command"
+              : ''}
+        </span>
         <Hint
           label={
             copyState === 'copied'
@@ -81,7 +99,10 @@ export function CommandCard({
             variant="ghost"
             size="icon-sm"
             aria-label="Copy command"
-            className="ml-auto text-ink-faint hover:text-ink"
+            className={cn(
+              'text-ink-faint hover:text-ink',
+              copyState !== 'failed' && 'ml-auto',
+            )}
             onClick={handleCopy}
           >
             {copyState === 'copied' ? (

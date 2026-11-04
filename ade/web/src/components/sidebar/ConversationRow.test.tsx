@@ -137,6 +137,9 @@ describe('ConversationRow row actions', () => {
       onDragOver: vi.fn(),
       onDrop: vi.fn(),
       onDragEnd: vi.fn(),
+      onMove: vi.fn(),
+      canMoveUp: true,
+      canMoveDown: false,
     }
     const row = (withReorder: boolean) =>
       renderToStaticMarkup(
@@ -219,6 +222,7 @@ describe('ConversationRow menu', () => {
     onTogglePin: () => void
     onSelect: () => void
     pinned?: boolean
+    reorder?: Parameters<typeof ConversationRow>[0]['reorder']
   }) {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     root = createRoot(document.body.appendChild(document.createElement('div')))
@@ -288,5 +292,36 @@ describe('ConversationRow menu', () => {
     ].find((el) => el.textContent?.trim() === 'Delete') as HTMLElement
     act(() => del.click())
     expect(onRemove).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers Move up and Move down for a pinned chat that can be rearranged', () => {
+    const onMove = vi.fn()
+    mount({
+      onRemove: vi.fn(),
+      onTogglePin: vi.fn(),
+      onSelect: vi.fn(),
+      pinned: true,
+      reorder: {
+        dragging: false,
+        onDragStart: vi.fn(),
+        onDragOver: vi.fn(),
+        onDrop: vi.fn(),
+        onDragEnd: vi.fn(),
+        onMove,
+        canMoveUp: true,
+        canMoveDown: false,
+      },
+    })
+    open()
+    expect(items()).toEqual(expect.arrayContaining(['Move up', 'Move down']))
+    const item = (text: string) =>
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          '[data-slot="dropdown-menu-item"]',
+        ),
+      ].find((el) => el.textContent?.trim() === text)
+    expect(item('Move down')?.hasAttribute('data-disabled')).toBe(true)
+    act(() => item('Move up')?.click())
+    expect(onMove).toHaveBeenCalledWith(-1)
   })
 })

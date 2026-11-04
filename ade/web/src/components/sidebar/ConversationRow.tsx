@@ -1,5 +1,7 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
+  ArrowDown,
+  ArrowUp,
   Bot,
   ChevronRight,
   Ellipsis,
@@ -65,6 +67,10 @@ interface ConversationRowProps {
     onDragOver: (event: DragEvent<HTMLDivElement>) => void
     onDrop: (event: DragEvent<HTMLDivElement>) => void
     onDragEnd: () => void
+    /** The keyboard way to rearrange: one step up or down, from the menu. */
+    onMove: (step: -1 | 1) => void
+    canMoveUp: boolean
+    canMoveDown: boolean
   }
   /** Tree nesting level; 0 = root. Drives the shared tree indent. */
   depth?: number
@@ -356,6 +362,26 @@ export function ConversationRow({
                 <PinIcon aria-hidden />
                 {pinned ? 'Unpin' : 'Pin'}
               </DropdownMenuItem>
+              {reorder ? (
+                <>
+                  <DropdownMenuItem
+                    className={MENU_ITEM_CLASS}
+                    disabled={!reorder.canMoveUp}
+                    onClick={() => reorder.onMove(-1)}
+                  >
+                    <ArrowUp aria-hidden />
+                    Move up
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className={MENU_ITEM_CLASS}
+                    disabled={!reorder.canMoveDown}
+                    onClick={() => reorder.onMove(1)}
+                  >
+                    <ArrowDown aria-hidden />
+                    Move down
+                  </DropdownMenuItem>
+                </>
+              ) : null}
               <DropdownMenuSeparator className="my-1.5" />
               <DropdownMenuItem
                 variant="destructive"

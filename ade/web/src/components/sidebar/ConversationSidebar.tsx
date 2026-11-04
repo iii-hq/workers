@@ -229,8 +229,21 @@ export function ConversationSidebar({
       window.removeEventListener('drop', reset)
     }
   }, [pinDrag])
+  /* What a keyboard move did, for a screen reader: the drag shows it. */
+  const [pinAnnouncement, setPinAnnouncement] = useState('')
   const pinReorder = useCallback(
-    (id: string) => ({
+    (id: string, order: readonly ConvNode[]) => ({
+      canMoveUp: order[0]?.conversation.id !== id,
+      canMoveDown: order.at(-1)?.conversation.id !== id,
+      onMove: (step: -1 | 1) => {
+        const index = order.findIndex((n) => n.conversation.id === id)
+        const target = order[index + step]
+        if (index === -1 || !target) return
+        movePin(id, target.conversation.id, step < 0 ? 'before' : 'after')
+        setPinAnnouncement(
+          `Moved ${order[index].conversation.title} to position ${index + step + 1} of ${order.length}`,
+        )
+      },
       dragging: pinDrag === id,
       dropEdge: pinDrop?.id === id ? pinDrop.place : undefined,
       onDragStart: (event: DragEvent<HTMLDivElement>) => {
@@ -437,6 +450,9 @@ export function ConversationSidebar({
         </div>
       </div>
 
+      <div role="status" className="sr-only">
+        {pinAnnouncement}
+      </div>
       <div className="conversation-list-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-1">
         {sections.length === 0 ? (
           <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-inter text-base text-ink-ghost sm:text-sm">
@@ -507,7 +523,7 @@ export function ConversationSidebar({
                       group.key === PINNED_GROUP_KEY &&
                       depth === 0 &&
                       group.roots.length > 1
-                        ? pinReorder(c.id)
+                        ? pinReorder(c.id, group.roots)
                         : undefined
                     }
                   />

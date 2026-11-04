@@ -33,12 +33,16 @@ function StatusMark({ conversation }: { conversation: Conversation }) {
     return <StatusDot tone="accent" pulse title="working" />
   }
   if (isAwaitingAnswer(conversation)) {
+    // The dot is aria-hidden; the words carry the state to a screen reader.
     return (
-      <StatusDot
-        tone="warn"
-        title="waiting for your answer"
-        data-awaiting-answer=""
-      />
+      <>
+        <StatusDot
+          tone="warn"
+          title="waiting for your answer"
+          data-awaiting-answer=""
+        />
+        <span className="sr-only">waiting for your answer</span>
+      </>
     )
   }
   if (conversation.status === 'error') {

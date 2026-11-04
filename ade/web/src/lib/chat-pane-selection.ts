@@ -45,8 +45,17 @@ function readAll(store: Storage | undefined): Record<string, string> {
   }
 }
 
-const tabStore = () => globalThis.sessionStorage as Storage | undefined
-const sharedStore = () => globalThis.localStorage as Storage | undefined
+/* Reading the storage property itself throws (SecurityError) where the
+   browser blocks storage; that must not take the chat pane down with it. */
+function storage(name: 'sessionStorage' | 'localStorage'): Storage | undefined {
+  try {
+    return globalThis[name] as Storage | undefined
+  } catch {
+    return undefined
+  }
+}
+const tabStore = () => storage('sessionStorage')
+const sharedStore = () => storage('localStorage')
 
 /**
  * The chat a pane showed last in this browser tab, else the one any tab

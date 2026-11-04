@@ -16,6 +16,7 @@ import type { SessionObserverInfo } from '@/lib/backend/observers'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
   loadDismissedTriggers,
+  onDismissedTriggersChange,
   saveDismissedTriggers,
 } from '@/lib/dismissed-triggers'
 import { JsonHighlight } from '@/lib/syntax'
@@ -445,9 +446,14 @@ export function SessionObservers({
     setDismissed((prev) => {
       const next = new Set(prev)
       update(next)
-      saveDismissedTriggers(next)
-      return next
+      return saveDismissedTriggers(next)
     })
+  // Another pane on the same chat (or another browser tab) dismissed rows.
+  useEffect(
+    () =>
+      onDismissedTriggersChange(() => setDismissed(loadDismissedTriggers())),
+    [],
+  )
   // The inactive rows fold into their own group under the live ones, closed
   // by default: a long run of spent one-shots must not bury the live ones.
   const [inactiveExpanded, setInactiveExpanded] = useState(false)

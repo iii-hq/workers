@@ -1285,3 +1285,13 @@
 [data-iii-ui='voice'] .voice-pill[data-status='stopping'] .voice-pill-label {
   color: var(--color-ink-faint);
 }
+
+/* Words for a screen reader beside a mark that is only drawn. */
+[data-iii-ui='voice'] .voice-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
