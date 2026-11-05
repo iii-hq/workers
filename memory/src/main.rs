@@ -43,6 +43,7 @@ use memory::deps::Deps;
 use memory::events::{self, Emitter};
 use memory::functions::rest;
 use memory::store::Store;
+use memory::observed::{delivered_event, Delivered};
 use memory::{config, functions, hooks, manifest};
 
 #[derive(Parser, Debug)]
@@ -406,8 +407,9 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     let d = deps.clone();
     iii.register_function(
         hooks::TURN_COMPLETED_FN,
-        RegisterFunction::new_async(move |input: hooks::TurnCompletedInput| {
+        RegisterFunction::new_async(move |delivered: Delivered<hooks::TurnCompletedInput>| {
             let d = d.clone();
+            let input = delivered_event(delivered).unwrap_or_default();
             async move { hooks::turn_completed(&d, input).await }
         })
         .description(hooks::TURN_COMPLETED_DESC)
@@ -428,8 +430,9 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     let d = deps.clone();
     iii.register_function(
         hooks::SESSION_DELETED_FN,
-        RegisterFunction::new_async(move |input: hooks::SessionDeletedInput| {
+        RegisterFunction::new_async(move |delivered: Delivered<hooks::SessionDeletedInput>| {
             let d = d.clone();
+            let input = delivered_event(delivered).unwrap_or_default();
             async move { hooks::session_deleted(&d, input).await }
         })
         .description(hooks::SESSION_DELETED_DESC)
