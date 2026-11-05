@@ -41,6 +41,7 @@ pub mod error;
 pub mod events;
 pub mod functions;
 pub mod manifest;
+pub mod observed;
 pub mod pagination;
 pub mod resync;
 pub mod runtime;
