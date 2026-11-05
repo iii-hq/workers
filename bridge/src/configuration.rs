@@ -59,7 +59,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
     RegisterFunction, Source,
 };
 use serde_json::{json, Value};
@@ -253,7 +253,7 @@ pub async fn observe_config_changes(iii: &Arc<IIIClient>, boot: &BootHandle) -> 
                 "input.id": { "$eq": config_id() },
                 "input.event_type": { "$eq": "configuration:updated" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_FN_ID,
     )
 }
