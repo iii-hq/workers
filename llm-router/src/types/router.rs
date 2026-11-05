@@ -710,7 +710,8 @@ pub struct FunctionsChangedEvent {
     pub event: Option<String>,
 }
 
-/// Advisory `secrets::on-changed` event delivered to `router::on_secret_changed`.
+/// Advisory `secrets::on-changed` event: the `output` of the Observed envelope
+/// `router::on_secret_changed` receives.
 /// It never carries a value; the handler re-reads the reference through
 /// `secrets::resolve`. Other payload fields (`fingerprint`, `updated_at`) are
 /// ignored.
@@ -726,6 +727,16 @@ pub struct SecretChangedEvent {
     /// `created`, `rotated`, `deleted` or `access_changed` (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+}
+
+/// What `router::on_secret_changed` receives: the `Observed` envelope of a
+/// `secrets::on-changed` call, captured as output only. Other envelope fields
+/// are ignored.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SecretChangedObserved {
+    /// The `secrets::on-changed` event (the observed call's output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<SecretChangedEvent>,
 }
 
 /// Generic acknowledgement returned by observer targets whose result is not

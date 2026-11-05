@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use iii_sdk::engine::EngineSources;
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::catalog::handlers::{
@@ -324,7 +324,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                 "input.id": { "$eq": crate::config::entry::config_id() },
                 "input.event_type": { "$eq": "configuration:updated" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         surface::ON_CONFIG_CHANGED_ID,
     );
 
@@ -417,19 +417,18 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
 
 /// Every `engine::on-functions-changed` call; the target ignores the event.
 fn functions_changed_source() -> Source {
-    Source::function(EngineSources::FUNCTIONS_CHANGED).deliver(Deliver::Output)
+    Source::function(EngineSources::FUNCTIONS_CHANGED).capture([Capture::Output])
 }
 
 /// Every `secrets::on-changed` call; the target reads the event (the output).
 fn secret_changes_source() -> Source {
-    Source::function(crate::secrets::ON_CHANGED_FN).deliver(Deliver::Output)
+    Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::router::FunctionsChangedEvent;
-    use iii_sdk::Capture;
 
     /// An `Observed` envelope as the engine delivers it with `capture: [output]`.
     fn envelope(function_id: &str, output: Value) -> Value {
