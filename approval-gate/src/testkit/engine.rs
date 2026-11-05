@@ -396,6 +396,17 @@ impl Drop for TestStack {
     }
 }
 
+/// Shuts the client down on drop unless emptied.
+struct ClientGuard(Option<Arc<IIIClient>>);
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        if let Some(iii) = self.0.take() {
+            iii.shutdown();
+        }
+    }
+}
+
 fn spawn_harness_worker(engine: &Engine) -> Option<std::process::Child> {
     let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
     std::process::Command::new(bin)
@@ -441,6 +452,8 @@ pub fn log_snapshot(log: &CallLog) -> Vec<Value> {
 /// worker connection against the engine.
 pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    // Until `TestStack` owns the client, a failed step must still remove its marker.
+    let mut guard = ClientGuard(Some(iii.clone()));
 
     // `configuration` is a required boot dependency: register the schema
     // (seeding built-in defaults on first boot) and fetch the authoritative
@@ -571,6 +584,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         .real_harness
         .then(|| spawn_harness_worker(engine).expect("spawn harness worker"));
     // Built before the readiness checks, so a failed check reaps the child.
+    guard.0 = None;
     let stack = TestStack {
         iii,
         deps,
