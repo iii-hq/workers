@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
 use serde_json::Value;
 
 use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
@@ -389,11 +389,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// The `engine::on-workers-changed` event, delivered as output to
-/// `directory::__on_workers_changed`. Only `event` is read; declared as a
-/// struct so the function publishes a typed schema.
+/// What `directory::__on_workers_changed` receives: the `Observed` envelope
+/// of an `engine::on-workers-changed` call, captured as output. Only the
+/// event's `event` is read; declared as a struct so the function publishes a
+/// typed schema.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 struct WorkersChanged {
+    #[serde(default)]
+    output: WorkerChange,
+}
+
+/// The `engine::on-workers-changed` event (the observed call's output).
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+struct WorkerChange {
     #[serde(default)]
     event: String,
 }
@@ -402,7 +410,7 @@ impl WorkersChanged {
     /// A connection is when a worker Compose just added comes up; its
     /// metadata update and every disconnect bring no new worker.
     fn is_connect(&self) -> bool {
-        self.event == "worker_connected"
+        self.output.event == "worker_connected"
     }
 }
 
@@ -486,7 +494,7 @@ fn setup_auto_download(
 
 /// Every `engine::on-workers-changed` call, unfiltered.
 fn workers_changed_source() -> Source {
-    Source::function(WORKERS_ON_CHANGED_FN).deliver(Deliver::Output)
+    Source::function(WORKERS_ON_CHANGED_FN).capture([Capture::Output])
 }
 
 /// The `(container, version)` pairs of a `compose::status` reply; the
@@ -729,7 +737,7 @@ mod tests {
     fn worker_connections_are_observed_capturing_output() {
         assert_eq!(
             workers_changed_source(),
-            Source::function(WORKERS_ON_CHANGED_FN).capture([iii_sdk::Capture::Output])
+            Source::function(WORKERS_ON_CHANGED_FN).capture([Capture::Output])
         );
     }
 

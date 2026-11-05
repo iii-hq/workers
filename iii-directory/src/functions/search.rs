@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
@@ -2350,7 +2350,7 @@ pub fn observe_catalog_changes(iii: &IIIClient) {
 
 /// Every `engine::on-functions-changed` call.
 fn catalog_changes_source() -> Source {
-    Source::function(FUNCTIONS_ON_CHANGED_FN).deliver(Deliver::Output)
+    Source::function(FUNCTIONS_ON_CHANGED_FN).capture([Capture::Output])
 }
 
 /// Register the public search function, the internal catalog listener, and
@@ -2437,7 +2437,7 @@ mod tests {
         serde_json::from_value::<OnFunctionsChangeEvent>(envelope).expect("envelope accepted");
         assert_eq!(
             catalog_changes_source(),
-            Source::function(FUNCTIONS_ON_CHANGED_FN).capture([iii_sdk::Capture::Output])
+            Source::function(FUNCTIONS_ON_CHANGED_FN).capture([Capture::Output])
         );
     }
 
