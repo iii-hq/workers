@@ -398,6 +398,39 @@ mod tests {
             parse_feed_payload(&json!({ "session_id": "s", "epoch": "e", "event": {} })).is_none()
         );
     }
+    /// The observer captures `[output]`, so the target receives the Observed
+    /// envelope and the feed frame sits under `output`.
+    #[test]
+    fn parses_the_frame_from_an_observed_envelope() {
+        let envelope = json!({
+            "observer_id": "obs_1",
+            "activation_id": "act_1",
+            "function_id": "claude::on-agent-event",
+            "invocation_id": "inv_1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": {
+                "session_id": "sess_1",
+                "event_id": "cursor-stable",
+                "seq": 3,
+                "epoch": "e1",
+                "source": "cursor",
+                "event": { "type": "message_complete" }
+            }
+        });
+        let parsed = parse_feed_payload(&envelope).expect("frame under output");
+        assert_eq!(parsed.session_id, "sess_1");
+        assert_eq!(parsed.event_id, "cursor-stable");
+        assert_eq!(parsed.seq, 3);
+        assert_eq!(parsed.epoch, "e1");
+        assert_eq!(parsed.source, "cursor");
+        assert_eq!(parsed.event["type"], "message_complete");
+        // An envelope without output (e.g. an errored call) carries no frame.
+        let mut errored = envelope.clone();
+        errored.as_object_mut().unwrap().remove("output");
+        assert!(parse_feed_payload(&errored).is_none());
+    }
 
     #[test]
     fn in_order_frames_pass_straight_through() {
