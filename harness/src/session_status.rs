@@ -1,9 +1,10 @@
 //! The coarse `session::status` (`working` / `done` / `error` / `idle`) is a
 //! projection of the durable turn record, never a second source of truth.
 //! The loop writes the live phases itself (`working` + "preparing context",
-//! "waiting for <model>", "stopping"); everything terminal is derived here,
-//! and every path that observes a terminal or missing record re-derives it:
-//! the finalizers, `harness::stop`, `harness::status`, and a boot sweep.
+//! "waiting for <model>", "running tools", "waiting for pending calls",
+//! "queueing next step", "stopping"); everything terminal is derived here, and
+//! every path that observes a terminal or missing record re-derives it: the
+//! finalizers, `harness::stop`, `harness::status`, and a boot sweep.
 //!
 //! WHY: the two stores never reconciled. A finalizer wrote the terminal
 //! record, then fired `session::set-status` once, fire-and-forget; when the
@@ -39,6 +40,21 @@ pub fn projection_for(
 
 pub fn projection(record: &TurnRecord) -> Option<(&'static str, Option<&str>)> {
     projection_for(record.status, record.result_error.as_deref())
+}
+
+/// The live phase of a parked turn. Sub-agent chips classify on the word "waiting".
+pub const PARKED_PHASE: &str = "waiting for pending calls";
+
+/// Write a live phase from a record read under the session lock. A persisted
+/// abort keeps its "stopping" ack until the turn ends.
+pub async fn write_phase(deps: &Deps, record: &TurnRecord, reason: &str) {
+    if !record.abort {
+        let _ = deps
+            .session()
+            .await
+            .set_status(&record.session_id, "working", Some(reason))
+            .await;
+    }
 }
 
 const WRITE_ATTEMPTS: u32 = 2;
