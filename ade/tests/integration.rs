@@ -13,7 +13,8 @@
 //! The worker listens on ephemeral ports and keeps its data in the temp dir.
 //! Without an engine the test prints why and skips; with `III_E2E_REQUIRE`
 //! set it fails instead. A failed run keeps the temp dir (engine and worker
-//! logs) and prints where it is.
+//! logs) and prints where it is. Every engine-backed test runs with a throwaway
+//! `HOME`, so a developer's own `~/.iii` is never touched.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -85,6 +86,34 @@ fn free_port() -> u16 {
         .and_then(|listener| listener.local_addr())
         .expect("bind an ephemeral port")
         .port()
+}
+
+/// `true` in the child, which goes on with `test`. The parent runs `test` in a
+/// child with a private `HOME`, which the engine and the worker inherit (they and
+/// the SDK client would otherwise write `iii ps` markers under the real
+/// `~/.iii/run`), fails when the child fails, and returns `false`, so it stops.
+fn in_private_home(test: &str) -> bool {
+    if std::env::var_os("ADE_E2E_CHILD").is_some() {
+        return true;
+    }
+    let home = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", test, "--nocapture"])
+        .env("HOME", home.path())
+        .env("ADE_E2E_CHILD", "1")
+        .output()
+        .expect("run the test in a private HOME");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
+    false
 }
 
 /// No engine to run against: skip, or fail under `III_E2E_REQUIRE`.
@@ -354,6 +383,9 @@ async fn rejected(observer: &ObserverHandle, what: &str) -> String {
 
 #[tokio::test]
 async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
+    if !in_private_home("end_to_end_http_ws_proxy_and_configuration_rebind") {
+        return;
+    }
     let Some(harness) = boot().await else {
         return;
     };
@@ -777,6 +809,9 @@ async fn console_assets_served(client: &IIIClient) {
 /// observer, the event for a `deliver: output` one.
 #[tokio::test]
 async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() {
+    if !in_private_home("a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event") {
+        return;
+    }
     let Some(harness) = boot().await else {
         return;
     };
@@ -959,6 +994,9 @@ async fn connection(client: &IIIClient, connected: bool, what: &str) {
 /// set again after.
 #[tokio::test]
 async fn an_observer_that_reattaches_gets_its_current_state_again() {
+    if !in_private_home("an_observer_that_reattaches_gets_its_current_state_again") {
+        return;
+    }
     let Some(harness) = boot().await else {
         return;
     };

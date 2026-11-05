@@ -41,9 +41,20 @@ impl Drop for Engine {
     }
 }
 
+/// A path-like binary made absolute: the stack's processes start in its own
+/// directory, which would re-base a relative one. A bare name stays a `PATH`
+/// lookup.
+fn anchored(bin: std::path::PathBuf) -> std::path::PathBuf {
+    if bin.components().count() > 1 {
+        std::path::absolute(&bin).unwrap_or(bin)
+    } else {
+        bin
+    }
+}
+
 pub fn engine_bin() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("III_ENGINE_BIN") {
-        return Some(p.into());
+        return Some(anchored(p.into()));
     }
     let on_path = std::process::Command::new("iii")
         .arg("--version")
@@ -57,7 +68,7 @@ pub fn engine_bin() -> Option<std::path::PathBuf> {
 
 /// The standalone `state` worker binary (`III_STATE_BIN`).
 pub fn state_bin() -> Option<std::path::PathBuf> {
-    std::env::var_os("III_STATE_BIN").map(Into::into)
+    std::env::var_os("III_STATE_BIN").map(|p| anchored(p.into()))
 }
 
 /// Why the engine-backed stack cannot run here, or `None` when it can.
@@ -144,6 +155,8 @@ pub async fn spawn_engine() -> Option<Engine> {
         .arg("--config")
         .arg(&config_path)
         .current_dir(&dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -203,6 +216,8 @@ pub async fn spawn_engine() -> Option<Engine> {
             .arg("--config")
             .arg(&state_seed)
             .current_dir(&dir)
+            // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
+            .env("HOME", &dir)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -375,14 +390,30 @@ impl Drop for TestStack {
             let _ = child.kill();
             let _ = child.wait();
         }
+        // Joins the connection thread, which removes this client's `iii ps`
+        // marker from the test process's $HOME/.iii/run.
+        self.iii.shutdown();
     }
 }
 
-fn spawn_harness_worker(engine_url: &str) -> Option<std::process::Child> {
+/// Shuts the client down on drop unless emptied.
+struct ClientGuard(Option<Arc<IIIClient>>);
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        if let Some(iii) = self.0.take() {
+            iii.shutdown();
+        }
+    }
+}
+
+fn spawn_harness_worker(engine: &Engine) -> Option<std::process::Child> {
     let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
     std::process::Command::new(bin)
         .arg("--url")
-        .arg(engine_url)
+        .arg(&engine.url)
+        // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &engine.dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -421,6 +452,8 @@ pub fn log_snapshot(log: &CallLog) -> Vec<Value> {
 /// worker connection against the engine.
 pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    // Until `TestStack` owns the client, a failed step must still remove its marker.
+    let mut guard = ClientGuard(Some(iii.clone()));
 
     // `configuration` is a required boot dependency: register the schema
     // (seeding built-in defaults on first boot) and fetch the authoritative
@@ -547,21 +580,12 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     // `configuration::on-updated` (mirrors the production boot order: last).
     configuration::observe_config_changes(&iii, config.clone());
 
-    let harness_child = if opts.real_harness {
-        let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
-        assert!(
-            wait_for_harness(&iii).await,
-            "harness worker did not become ready"
-        );
-        // The gate's observer of `harness::hook::on-pre-call` stays pending
-        // until the harness registers its hook function.
-        await_active(&gate_observer, configuration::HOOK_ON_PRE_CALL_FN).await;
-        Some(child)
-    } else {
-        None
-    };
-
-    TestStack {
+    let harness_child = opts
+        .real_harness
+        .then(|| spawn_harness_worker(engine).expect("spawn harness worker"));
+    // Built before the readiness checks, so a failed check reaps the child.
+    guard.0 = None;
+    let stack = TestStack {
         iii,
         deps,
         config,
@@ -569,7 +593,17 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         created,
         resolved,
         harness_child,
+    };
+    if opts.real_harness {
+        assert!(
+            wait_for_harness(&stack.iii).await,
+            "harness worker did not become ready"
+        );
+        // The gate's observer of `harness::hook::on-pre-call` stays pending
+        // until the harness registers its hook function.
+        await_active(&gate_observer, configuration::HOOK_ON_PRE_CALL_FN).await;
     }
+    stack
 }
 
 /// Wait (bounded) until an observer is active; panics with its state and
@@ -675,7 +709,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::stack_dir;
+    use super::{anchored, stack_dir};
+
+    #[test]
+    fn a_relative_binary_survives_the_stacks_working_directory() {
+        assert_eq!(anchored("state".into()), std::path::Path::new("state"));
+        let relative = anchored("../state/target/debug/state".into());
+        assert!(relative.is_absolute(), "{}", relative.display());
+        assert!(relative.ends_with("state/target/debug/state"));
+    }
 
     #[test]
     fn every_stack_gets_its_own_directory() {

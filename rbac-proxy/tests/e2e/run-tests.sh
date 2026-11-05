@@ -66,6 +66,7 @@ done
 ENGINE_PID=""
 PROXY_PID=""
 HARNESS_PID=""
+RUN_HOME=""
 # Kill a backgrounded process and its children. The `iii` engine forks a child
 # that outlives its parent pid, so reaping children (`pkill -P`) is required to
 # free :49134 for the next run.
@@ -81,6 +82,7 @@ cleanup() {
   kill_tree "$HARNESS_PID"
   kill_tree "$PROXY_PID"
   kill_tree "$ENGINE_PID"
+  [[ -z "$RUN_HOME" ]] || rm -rf "$RUN_HOME"
   [[ "$KEEP" -eq 0 ]] && rm -f "$SEED_FILE"
   exit "$code"
 }
@@ -121,6 +123,11 @@ if [[ ! -d "$ROOT_DIR/workers/harness/node_modules" ]]; then
   echo "[run-tests] npm install (harness)"
   (cd "$ROOT_DIR/workers/harness" && npm install --silent)
 fi
+
+# Engine, proxy and harness write `iii ps` markers and state under
+# $HOME/.iii: give them a scratch HOME, never the caller's.
+RUN_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rbac-proxy-e2e-home.XXXXXX")
+export HOME="$RUN_HOME"
 
 # 4. Start the engine. Its configuration store (./config/) keeps the
 #    `rbac-proxy` entry between runs, and the proxy seeds only an absent entry:

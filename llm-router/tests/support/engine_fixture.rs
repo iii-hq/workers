@@ -257,6 +257,7 @@ pub async fn spawn_engine_with_state(
         .arg("--config")
         .arg(&state_config)
         .current_dir(&engine.dir)
+        .env("HOME", &engine.dir)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -320,6 +321,8 @@ pub async fn spawn_engine_with(config_for: impl FnOnce(u16, &Path) -> String) ->
         .arg("--config")
         .arg(&config_path)
         .current_dir(&dir)
+        // Engine and state worker write `iii ps` markers under $HOME/.iii/run.
+        .env("HOME", &dir)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

@@ -6,11 +6,13 @@
 //! The engine and the worker come from the bus harness (tests/bus): without
 //! an engine the test skips; `III_E2E_REQUIRE=1` turns the skip into a
 //! failure. The engine hosts no `state::*` functions, so the test registers
-//! in-memory ones when the engine has none.
+//! in-memory ones when the engine has none. Every process runs with a throwaway
+//! `HOME`, so a developer's own `~/.iii` is never touched.
 
 mod bus;
 
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use bus::{call, engine, git, register_state, registered, request, require, spawn_worker};
@@ -32,8 +34,38 @@ fn recorder(client: &IIIClient, function_id: &str) -> mpsc::UnboundedReceiver<Va
     rx
 }
 
+/// Runs the end-to-end body in a child with a private `HOME`, which the engine
+/// and the worker inherit: they and its SDK client would otherwise write `iii ps`
+/// markers under the real `~/.iii/run`.
+#[test]
+fn end_to_end_lifecycle_via_iii_sdk() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .env("HOME", home.path())
+        .env("WORKTREE_E2E_CHILD", "1")
+        .output()
+        .expect("run the end-to-end child");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
+}
+
 #[tokio::test]
-async fn end_to_end_lifecycle_via_iii_sdk() {
+#[ignore = "isolated subprocess invoked by end_to_end_lifecycle_via_iii_sdk"]
+async fn end_to_end_child() {
+    // `--ignored` runs would otherwise use the real HOME; only the parent sets this.
+    if std::env::var_os("WORKTREE_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of end_to_end_lifecycle_via_iii_sdk");
+        return;
+    }
     let Some(engine) = engine().await else {
         assert!(
             !require(),

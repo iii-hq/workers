@@ -3,7 +3,8 @@
 //!
 //! The engine binary is `III_ENGINE_BIN`, or `iii` on PATH. Without either the
 //! test skips; `III_E2E_REQUIRE=1` makes a missing or unreachable engine a
-//! failure.
+//! failure. Every process runs with a throwaway `HOME`, so a developer's own
+//! `~/.iii` is never touched.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -160,8 +161,40 @@ fn lists_function(list: &Value, id: &str) -> bool {
         })
 }
 
+/// Runs the end-to-end body in a child with a private `HOME`, which the engine
+/// and the worker inherit: they and its SDK client would otherwise write `iii ps`
+/// markers under the real `~/.iii/run`.
+#[test]
+fn worker_registers_on_engine() {
+    let home = std::env::temp_dir().join(format!("telegram-bot-it-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("create the private HOME");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .env("HOME", &home)
+        .env("TELEGRAM_BOT_E2E_CHILD", "1")
+        .output();
+    let _ = std::fs::remove_dir_all(&home);
+    let output = output.expect("run the end-to-end child");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
+}
+
 #[tokio::test]
-async fn worker_registers_on_engine() {
+#[ignore = "isolated subprocess invoked by worker_registers_on_engine"]
+async fn end_to_end_child() {
+    // `--ignored` runs would otherwise use the real HOME; only the parent sets this.
+    if std::env::var_os("TELEGRAM_BOT_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of worker_registers_on_engine");
+        return;
+    }
     let engine = match spawn_engine().await {
         Ok(engine) => engine,
         Err(reason) if !e2e_required() => {

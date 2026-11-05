@@ -19,6 +19,9 @@ use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
 
+#[path = "support/private_home.rs"]
+mod private_home;
+
 struct Harness {
     iii: Child,
     worker: Child,
@@ -66,7 +69,7 @@ async fn boot(seed: &str) -> Option<Harness> {
 /// `boot`, with `env` set on the worker process.
 async fn boot_with(seed: &str, env: &[(&str, &str)]) -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
-    if !chromium_present() {
+    if !chromium_present() || !private_home::in_child() {
         return None;
     }
     let port = TcpListener::bind("127.0.0.1:0")
@@ -91,18 +94,21 @@ async fn boot_with(seed: &str, env: &[(&str, &str)]) -> Option<Harness> {
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::create_dir_all(&data_dir).ok()?;
+    // Written before the engine starts, so failing here leaks no process.
+    let seed_path = data_dir.join("browser-seed.yaml");
+    std::fs::write(&seed_path, format!("browser:\n{seed}")).ok()?;
 
     let mut iii = Command::new(&iii_bin)
         .args(["--config", config_path.to_str()?, "--no-update-check"])
         .current_dir(&data_dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &data_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
     sleep(Duration::from_millis(800)).await;
 
-    let seed_path = data_dir.join("browser-seed.yaml");
-    std::fs::write(&seed_path, format!("browser:\n{seed}")).ok()?;
     let worker_log = std::env::var_os("BROWSER_TEST_WORKER_LOG")
         .and_then(|path| std::fs::File::create(path).ok());
     let mut worker_cmd = Command::new(env!("CARGO_BIN_EXE_browser"));
@@ -112,6 +118,8 @@ async fn boot_with(seed: &str, env: &[(&str, &str)]) -> Option<Harness> {
         .arg("--config")
         .arg(&seed_path)
         .env("III_COMPOSE_DIR", &data_dir)
+        // The worker writes its `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &data_dir)
         .envs(env.iter().copied());
     match worker_log {
         Some(file) => {

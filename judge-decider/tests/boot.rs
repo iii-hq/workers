@@ -88,8 +88,11 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             }
         }
     });
+    // The worker writes an `iii ps` marker under $HOME/.iii/run.
+    let home = tempfile::tempdir().unwrap();
     let mut worker = Worker(
         Command::new(env!("CARGO_BIN_EXE_judge-decider"))
+            .env("HOME", home.path())
             .env("III_URL", url)
             .env("III_CONFIG_NAME", "decider-boot-test")
             .env(

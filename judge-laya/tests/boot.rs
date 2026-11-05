@@ -87,8 +87,11 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             }
         }
     });
+    // The worker writes an `iii ps` marker under $HOME/.iii/run.
+    let home = tempfile::tempdir().unwrap();
     let mut worker = Worker(
         Command::new(env!("CARGO_BIN_EXE_judge-laya"))
+            .env("HOME", home.path())
             .env("III_URL", url)
             .env("III_CONFIG_NAME", "laya-boot-test")
             .env(

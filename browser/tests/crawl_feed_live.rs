@@ -22,6 +22,9 @@ use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunc
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
 
+#[path = "support/private_home.rs"]
+mod private_home;
+
 struct Live {
     iii: Child,
     worker: Child,
@@ -110,6 +113,9 @@ async fn boot() -> Option<Live> {
 /// An engine on `port` and the worker binary connected to it.
 async fn boot_on(port: u16) -> Option<Live> {
     let iii_bin = which::which("iii").ok()?;
+    if !private_home::in_child() {
+        return None;
+    }
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "browser-crawl-live-{}",
         uuid::Uuid::new_v4().simple()
@@ -122,16 +128,8 @@ async fn boot_on(port: u16) -> Option<Live> {
         format!("workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n"),
     )
     .ok()?;
-    let engine_log = std::fs::File::create(dir.join("engine.log")).ok()?;
-    let mut iii = Command::new(&iii_bin)
-        .args(["--config", config_path.to_str()?, "--no-update-check"])
-        .current_dir(&dir)
-        .stdout(Stdio::from(engine_log.try_clone().ok()?))
-        .stderr(Stdio::from(engine_log))
-        .spawn()
-        .ok()?;
-    sleep(Duration::from_millis(1000)).await;
-
+    // Seed and worker log are ready before the engine starts, so failing
+    // here leaks no process.
     let seed_path = dir.join("browser-seed.yaml");
     std::fs::write(
         &seed_path,
@@ -139,14 +137,29 @@ async fn boot_on(port: u16) -> Option<Live> {
     )
     .ok()?;
     let worker_log = std::fs::File::create(dir.join("worker.log")).ok()?;
+    let worker_stdout = Stdio::from(worker_log.try_clone().ok()?);
+    let engine_log = std::fs::File::create(dir.join("engine.log")).ok()?;
+    let mut iii = Command::new(&iii_bin)
+        .args(["--config", config_path.to_str()?, "--no-update-check"])
+        .current_dir(&dir)
+        // The engine and the worker write `iii ps` markers under $HOME/.iii/run.
+        .env("HOME", &dir)
+        .stdout(Stdio::from(engine_log.try_clone().ok()?))
+        .stderr(Stdio::from(engine_log))
+        .spawn()
+        .ok()?;
+    sleep(Duration::from_millis(1000)).await;
+
     let worker = match Command::new(env!("CARGO_BIN_EXE_browser"))
         .arg("--url")
         .arg(format!("ws://127.0.0.1:{port}"))
         .arg("--config")
         .arg(&seed_path)
         .env("III_COMPOSE_DIR", &dir)
+        // No Chromium lookup to keep: the crawl uses the http fetcher.
+        .env("HOME", &dir)
         .env("RUST_LOG", "info")
-        .stdout(Stdio::from(worker_log.try_clone().ok()?))
+        .stdout(worker_stdout)
         .stderr(Stdio::from(worker_log))
         .spawn()
     {

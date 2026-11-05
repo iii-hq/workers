@@ -108,13 +108,20 @@ async fn spawn_engine() -> Option<Engine> {
         .arg("--config")
         .arg(&config_path)
         .current_dir(&dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
+    // Owned from here on, so every early return kills and reaps the engine.
+    let engine = Engine {
+        url: format!("ws://127.0.0.1:{port}"),
+        child,
+        dir,
+    };
 
-    let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, InitOptions::default());
+    let probe = register_worker(&engine.url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         // The engine core must be up AND the configuration worker serving:
@@ -142,7 +149,7 @@ async fn spawn_engine() -> Option<Engine> {
     }
     probe.shutdown_async().await;
 
-    Some(Engine { url, child, dir })
+    Some(engine)
 }
 
 pub struct Stack {

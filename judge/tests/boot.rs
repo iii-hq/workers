@@ -73,8 +73,11 @@ async fn check_boot(shutdown_signal: Option<&str>) {
         replies
     })
     .await;
+    // The worker writes an `iii ps` marker under $HOME/.iii/run.
+    let home = tempfile::tempdir().unwrap();
     let mut worker = Worker(
         Command::new(env!("CARGO_BIN_EXE_judge"))
+            .env("HOME", home.path())
             .env("III_URL", &engine.url)
             .env("III_CONFIG_NAME", "judge-boot-test")
             .env("JUDGE_PROVIDER", "local-llm")

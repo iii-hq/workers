@@ -1,7 +1,8 @@
 //! End-to-end test: start the engine `III_ENGINE_BIN` names on an ephemeral
 //! port, run the worker binary against it, and drive the worker through
 //! `iii-sdk` as a client. Skips without `III_ENGINE_BIN`; with
-//! `III_E2E_REQUIRE=1` a missing engine fails the test.
+//! `III_E2E_REQUIRE=1` a missing engine fails the test. Every process runs with
+//! a throwaway `HOME`, so a developer's own `~/.iii` is never touched.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -140,8 +141,38 @@ async fn boot() -> Option<Harness> {
     })
 }
 
+/// Runs the end-to-end body in a child with a private `HOME`, which the engine
+/// and the worker inherit: they and its SDK client would otherwise write `iii ps`
+/// markers under the real `~/.iii/run`.
+#[test]
+fn end_to_end_via_iii_sdk() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .env("HOME", home.path())
+        .env("CONTEXT_MANAGER_E2E_CHILD", "1")
+        .output()
+        .expect("run the end-to-end child");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
+}
+
 #[tokio::test]
-async fn end_to_end_via_iii_sdk() {
+#[ignore = "isolated subprocess invoked by end_to_end_via_iii_sdk"]
+async fn end_to_end_child() {
+    // `--ignored` runs would otherwise use the real HOME; only the parent sets this.
+    if std::env::var_os("CONTEXT_MANAGER_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of end_to_end_via_iii_sdk");
+        return;
+    }
     let Some(h) = boot().await else {
         eprintln!("skipping: III_ENGINE_BIN is unset");
         return;

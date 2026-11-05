@@ -177,6 +177,8 @@ async fn live_frames_without_iii_stream() {
         std::process::Command::new(env!("CARGO_BIN_EXE_computer"))
             .env("III_URL", &url)
             .env("RUST_LOG", "info,computer=debug")
+            // The worker writes an `iii ps` marker under $HOME/.iii/run.
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .spawn()
             .expect("spawn computer worker"),
     );

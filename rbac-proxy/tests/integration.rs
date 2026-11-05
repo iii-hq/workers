@@ -3,12 +3,11 @@
 //! worker **through the proxy port** and assert the RBAC contract.
 //!
 //! The engine is the `iii` on `PATH`, or `III_BIN`. It runs from its own
-//! temporary directory on its own port ([`engine_port`], not the default
+//! temporary directory on a free port picked at boot (never the default
 //! 49134), so the test never reaches an engine a developer has running.
 //!
 //! Self-skips (printing why) when:
 //!   - there is no `iii` binary, or
-//!   - the engine or proxy port is already taken, or
 //!   - the proxy does not come up within the timeout (e.g. the `configuration`
 //!     worker — a required boot dependency — is not deployed in this engine).
 //!
@@ -34,32 +33,6 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
-/// The engine's port: `RBAC_PROXY_ITEST_ENGINE_PORT`, else 49381.
-fn engine_port() -> u16 {
-    port_from_env("RBAC_PROXY_ITEST_ENGINE_PORT", 49381)
-}
-
-/// The proxy's public port: `RBAC_PROXY_ITEST_PROXY_PORT`, else 49382.
-fn proxy_port() -> u16 {
-    port_from_env("RBAC_PROXY_ITEST_PROXY_PORT", 49382)
-}
-
-fn engine_ws() -> String {
-    format!("ws://127.0.0.1:{}", engine_port())
-}
-
-/// `name` from the environment, so a run can use the ports its machine
-/// reserves for it; a value that is not a port fails the test rather than
-/// falling back to the default.
-fn port_from_env(name: &str, default: u16) -> u16 {
-    match std::env::var(name) {
-        Ok(value) => value
-            .parse()
-            .unwrap_or_else(|_| panic!("{name}={value:?} is not a port")),
-        Err(_) => default,
-    }
-}
-
 /// A call of `function_id` with a 5 s timeout.
 fn call(function_id: &str, payload: Value) -> CallRequest {
     CallRequest {
@@ -73,6 +46,7 @@ struct Harness {
     iii: Child,
     _support: IIIClient,
     dir: PathBuf,
+    proxy_port: u16,
 }
 
 impl Drop for Harness {
@@ -91,6 +65,13 @@ fn kill_tree(child: &mut Child) {
         .status();
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Distinct free ports: every listener stays bound until all are picked.
+fn free_ports<const N: usize>() -> [u16; N] {
+    [(); N]
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port"))
+        .map(|listener| listener.local_addr().expect("local addr").port())
 }
 
 fn iii_bin() -> Option<PathBuf> {
@@ -113,9 +94,9 @@ async fn wait_for_listen(port: u16, max: Duration) -> bool {
 
 /// Register the auth function and target functions on the engine's internal
 /// listener (the proxy fronts these from its own port).
-fn register_support() -> IIIClient {
+fn register_support(engine_ws: &str) -> IIIClient {
     let support = register_worker(
-        &engine_ws(),
+        engine_ws,
         InitOptions {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
@@ -158,20 +139,14 @@ fn register_support() -> IIIClient {
     support
 }
 
-async fn boot(seed_path: &str) -> Option<Harness> {
-    let (engine_port, proxy_port) = (engine_port(), proxy_port());
-    let engine_ws = engine_ws();
+async fn boot() -> Option<Harness> {
     let Some(iii_bin) = iii_bin() else {
         eprintln!("skipping: no `iii` binary (set III_BIN or put iii on PATH)");
         return None;
     };
 
-    for port in [engine_port, proxy_port] {
-        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-            eprintln!("skipping: port {port} already in use on 127.0.0.1");
-            return None;
-        }
-    }
+    let [engine_port, proxy_port] = free_ports();
+    let engine_ws = format!("ws://127.0.0.1:{engine_port}");
 
     // The engine keeps its state (configuration entries) under its working
     // directory: a fresh one per run.
@@ -185,10 +160,25 @@ async fn boot(seed_path: &str) -> Option<Harness> {
     )
     .ok()?;
 
+    // Seed config: RBAC on, exposing only api::* and the functions-discovery
+    // surface. Written before any child starts, so failing here leaks none.
+    // It lives in the run's directory: concurrent runs no longer share a path.
+    let seed_path = dir.join("seed.yaml");
+    std::fs::write(
+        &seed_path,
+        format!(
+            "host: 127.0.0.1\nport: {proxy_port}\nengine_url: {engine_ws}\n\
+             rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
+        ),
+    )
+    .ok()?;
+
     let spawned = Command::new(&iii_bin)
         .args(["-c", "config.yaml"])
         .current_dir(&dir)
         .env_remove("III_URL")
+        // Engine and proxy write `iii ps` markers under $HOME/.iii/run.
+        .env("HOME", &dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
@@ -209,28 +199,25 @@ async fn boot(seed_path: &str) -> Option<Harness> {
     }
 
     // Register auth + targets, give the engine a moment to index them.
-    let support = register_support();
+    let support = register_support(&engine_ws);
     sleep(Duration::from_millis(600)).await;
 
-    // Seed config: RBAC on, exposing only api::* and the functions-discovery
-    // surface.
-    std::fs::write(
-        seed_path,
-        format!(
-            "host: 127.0.0.1\nport: {proxy_port}\nengine_url: {engine_ws}\n\
-             rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
-        ),
-    )
-    .ok()?;
-
     let proxy_bin = env!("CARGO_BIN_EXE_rbac-proxy");
-    let proxy = Command::new(proxy_bin)
-        .args(["--url", engine_ws.as_str(), "--config", seed_path])
+    let spawned = Command::new(proxy_bin)
+        .arg("--url")
+        .arg(&engine_ws)
+        .arg("--config")
+        .arg(&seed_path)
         .env_remove("III_URL")
+        .env("HOME", &dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .spawn();
+    let Ok(proxy) = spawned else {
+        kill_tree(&mut iii);
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    };
 
     if !wait_for_listen(proxy_port, Duration::from_secs(10)).await {
         eprintln!(
@@ -242,6 +229,7 @@ async fn boot(seed_path: &str) -> Option<Harness> {
             iii,
             _support: support,
             dir,
+            proxy_port,
         };
         // Ensure the proxy child is reaped by the Drop; signal skip via None.
         let _ = h.proxy.kill();
@@ -254,14 +242,15 @@ async fn boot(seed_path: &str) -> Option<Harness> {
         iii,
         _support: support,
         dir,
+        proxy_port,
     })
 }
 
-fn downstream() -> IIIClient {
+fn downstream(proxy_port: u16) -> IIIClient {
     let mut headers = HashMap::new();
     headers.insert("authorization".to_string(), "Bearer test-token".to_string());
     register_worker(
-        &format!("ws://127.0.0.1:{}", proxy_port()),
+        &format!("ws://127.0.0.1:{proxy_port}"),
         InitOptions {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
@@ -274,18 +263,46 @@ fn downstream() -> IIIClient {
     )
 }
 
-#[tokio::test]
-async fn end_to_end_rbac_through_proxy() {
-    let seed_path = format!(
-        "{}/rbac-proxy-itest-seed.yaml",
-        std::env::temp_dir().display()
+/// Runs the end-to-end body in a child with a private `HOME`: its SDK clients
+/// would otherwise write `iii ps` markers under the real `~/.iii/run`.
+#[test]
+fn end_to_end_rbac_through_proxy() {
+    let home = std::env::temp_dir().join(format!("rbac-proxy-itest-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("create the private HOME");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .env("HOME", &home)
+        .env("RBAC_PROXY_E2E_CHILD", "1")
+        .output();
+    let _ = std::fs::remove_dir_all(&home);
+    let output = output.expect("run the end-to-end child");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
-    let Some(_h) = boot(&seed_path).await else {
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
+}
+
+#[tokio::test]
+#[ignore = "isolated subprocess invoked by end_to_end_rbac_through_proxy"]
+async fn end_to_end_child() {
+    // `--ignored` runs would otherwise use the real HOME; only the parent sets this.
+    if std::env::var_os("RBAC_PROXY_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of end_to_end_rbac_through_proxy");
+        return;
+    }
+    let Some(h) = boot().await else {
         eprintln!("skipping: prerequisites not met (see logs above)");
         return;
     };
+    let proxy_port = h.proxy_port;
 
-    let client = downstream();
+    let client = downstream(proxy_port);
     // Give the downstream connection time to upgrade + authenticate.
     sleep(Duration::from_millis(800)).await;
 
@@ -316,7 +333,7 @@ async fn end_to_end_rbac_through_proxy() {
     //     the engine's answer, `observeresult { state: error }`, and never
     //     reaches the engine.
     {
-        let mut ws = raw_client().await;
+        let mut ws = raw_client(proxy_port).await;
         let reply = request(
             &mut ws,
             json!({
@@ -345,7 +362,6 @@ async fn end_to_end_rbac_through_proxy() {
     let wkey = ch["writer"]["access_key"].as_str().expect("writer key");
     let rkey = ch["reader"]["access_key"].as_str().expect("reader key");
 
-    let proxy_port = proxy_port();
     let read_url = format!("ws://127.0.0.1:{proxy_port}/ws/channels/{cid}?key={rkey}&dir=read");
     let write_url = format!("ws://127.0.0.1:{proxy_port}/ws/channels/{cid}?key={wkey}&dir=write");
     let (mut reader, _) = tokio_tungstenite::connect_async(&read_url)
@@ -393,7 +409,7 @@ async fn end_to_end_rbac_through_proxy() {
     // (f) The exposed id, called in another namespace, is not exposed there:
     //     a rule without a namespace answers in `default` only.
     {
-        let mut ws = raw_client().await;
+        let mut ws = raw_client(proxy_port).await;
         let reply = request(
             &mut ws,
             json!({
@@ -417,7 +433,7 @@ async fn end_to_end_rbac_through_proxy() {
     //     the engine, which accepts it. Declaring the worker first settles
     //     the connection's namespace, so the engine answers at once.
     {
-        let mut ws = raw_client().await;
+        let mut ws = raw_client(proxy_port).await;
         ws.send(Message::Text(
             json!({
                 "type": "invokefunction",
@@ -454,7 +470,7 @@ async fn end_to_end_rbac_through_proxy() {
     // (h) An engine event that lists functions cannot be observed: its calls
     //     carry the unfiltered function list.
     {
-        let mut ws = raw_client().await;
+        let mut ws = raw_client(proxy_port).await;
         let reply = request(
             &mut ws,
             json!({
@@ -496,7 +512,7 @@ async fn end_to_end_rbac_through_proxy() {
             "target": { "function_id": "itest::observed-echo" }
         });
 
-        let mut first = raw_client().await;
+        let mut first = raw_client(proxy_port).await;
         let registered = request(&mut first, register_worker.clone(), |v| {
             v["type"] == "workerregistered"
         })
@@ -513,7 +529,7 @@ async fn end_to_end_rbac_through_proxy() {
         let _ = first.close(None).await;
         sleep(Duration::from_millis(300)).await;
 
-        let mut narrow = raw_client_with("Bearer narrow").await;
+        let mut narrow = raw_client_with(proxy_port, "Bearer narrow").await;
         narrow
             .send(Message::Text(
                 json!({
@@ -568,8 +584,8 @@ async fn end_to_end_rbac_through_proxy() {
             "data": { "runtime": "rust", "name": "rbac-proxy-itest-same-name" }
         });
         let answered = |v: &Value| v["type"] == "invocationresult";
-        let mut first = raw_client().await;
-        let mut second = raw_client().await;
+        let mut first = raw_client(proxy_port).await;
+        let mut second = raw_client(proxy_port).await;
         let a = request(&mut first, register.clone(), answered).await;
         let b = request(&mut second, register, answered).await;
         assert_eq!(a["result"]["success"], true, "got {a}");
@@ -577,19 +593,17 @@ async fn end_to_end_rbac_through_proxy() {
         let _ = first.close(None).await;
         let _ = second.close(None).await;
     }
-
-    let _ = std::fs::remove_file(&seed_path);
 }
 
 type RawClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn raw_client() -> RawClient {
-    raw_client_with("Bearer test-token").await
+async fn raw_client(proxy_port: u16) -> RawClient {
+    raw_client_with(proxy_port, "Bearer test-token").await
 }
 
-async fn raw_client_with(authorization: &str) -> RawClient {
-    let url = format!("ws://127.0.0.1:{}/", proxy_port());
+async fn raw_client_with(proxy_port: u16, authorization: &str) -> RawClient {
+    let url = format!("ws://127.0.0.1:{proxy_port}/");
     let mut request =
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
             url.as_str(),

@@ -19,6 +19,9 @@ use iii_sdk::{
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
+#[path = "support/private_home.rs"]
+mod private_home;
+
 struct Harness {
     iii: Child,
     worker: Child,
@@ -141,6 +144,9 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
             ))
         }
     };
+    if !private_home::in_child() {
+        return None;
+    }
 
     let port = TcpListener::bind("127.0.0.1:0")
         .ok()?
@@ -176,10 +182,17 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::create_dir_all(&data_dir).ok()?;
+    // Written before the engine starts, so failing here leaks no process.
+    let seed_path = data_dir.join("browser-seed.yaml");
+    if let Some(seed) = &seed {
+        std::fs::write(&seed_path, seed).ok()?;
+    }
 
     let mut iii = Command::new(&iii_bin)
         .args(["--config", config_path.to_str()?, "--no-update-check"])
         .current_dir(&data_dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &data_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -194,10 +207,10 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
     worker_cmd
         .arg("--url")
         .arg(&engine_ws)
-        .env("III_COMPOSE_DIR", &data_dir);
-    if let Some(seed) = seed {
-        let seed_path = data_dir.join("browser-seed.yaml");
-        std::fs::write(&seed_path, seed).ok()?;
+        .env("III_COMPOSE_DIR", &data_dir)
+        // The worker writes its `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &data_dir);
+    if seed.is_some() {
         worker_cmd.arg("--config").arg(&seed_path);
     }
     match worker_log {

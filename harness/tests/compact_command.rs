@@ -81,6 +81,8 @@ async fn isolated_engine() -> Option<Engine> {
         .arg("--config")
         .arg(&config)
         .current_dir(dir.path())
+        // The engine writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", dir.path())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()

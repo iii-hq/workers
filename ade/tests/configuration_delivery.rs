@@ -12,6 +12,8 @@ use tokio_tungstenite::tungstenite::Message;
 /// Exercise stored, absent and failed lookups with a fresh process-local configuration ID.
 #[test]
 fn configuration_delivery_preserves_compose_and_publishes_identity() {
+    // Each child's SDK client writes an `iii ps` marker under $HOME/.iii/run.
+    let home = tempfile::tempdir().unwrap();
     for scenario in [
         "stored",
         "missing",
@@ -39,6 +41,7 @@ fn configuration_delivery_preserves_compose_and_publishes_identity() {
                 "--ignored",
                 "--nocapture",
             ])
+            .env("HOME", home.path())
             .env("III_CONFIG_NAME", "project-console-0123456789abcdef")
             .env("CONFIG_DELIVERY_CASE", scenario)
             .output()

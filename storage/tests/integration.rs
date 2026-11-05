@@ -59,6 +59,8 @@ async fn boot() -> Option<Harness> {
         .arg("--config")
         .arg(&engine_config_path)
         .current_dir(directory.path())
+        // Engine and worker write `iii ps` markers under $HOME/.iii/run.
+        .env("HOME", directory.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -76,6 +78,7 @@ async fn boot() -> Option<Harness> {
     // leave a stray engine bound to the test port.
     let worker = match Command::new(worker_bin)
         .args(["--url", &url, "--config", &config_path])
+        .env("HOME", directory.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
