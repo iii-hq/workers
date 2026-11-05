@@ -276,7 +276,7 @@ impl Fixture {
     /// The tunnel is ready at `url`: quick-tunnel::on-changed is called with
     /// the snapshot and iii delivers it (contract: default delivery). Waits
     /// until github::webhooks::tunnel-changed accepted it: its observer
-    /// (`deliver: output`) hands it the snapshot itself.
+    /// (`capture: [output]`) hands it the snapshot as the envelope's `output`.
     async fn tunnel_ready(&self, url: &str, generation: &str) {
         const TARGET: &str = "github::webhooks::tunnel-changed";
         let before = self.engine.activations().len();
@@ -290,7 +290,7 @@ impl Fixture {
         wait(|| delivered().is_some()).await;
         let delivered = delivered().unwrap();
         assert_eq!(
-            delivered["data"], snapshot,
+            delivered["data"]["output"], snapshot,
             "{TARGET} receives: {delivered}"
         );
         assert!(

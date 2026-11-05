@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
-    "test": "vitest run src/page/WebhookSetup.test.tsx",
+    "test": "vitest run src/page/WebhookSetup.test.tsx src/page/events.test.ts",
     "watch": "node build.mjs --watch"
   },
   "dependencies": {
