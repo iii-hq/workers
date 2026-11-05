@@ -3,8 +3,9 @@
 //! Every agent worker (claude-code, pi, opencode, cursor, codex, grok, devin,
 //! hermes, or any brain that follows the same contract) hosts a private
 //! function `<namespace>::on-agent-event`. acp observes it once per owned
-//! session with args `{ session_id }` and `deliver: output`, so its target
-//! receives each frame the function returns:
+//! session with args `{ session_id }` and `capture: [output]`, so its target
+//! receives an Observed envelope whose `output` is the frame the function
+//! returned:
 //!
 //! ```json
 //! { "session_id": "sess_..", "event_id": "..", "seq": 7, "epoch": "..",
@@ -44,9 +45,16 @@ pub struct FeedEvent {
     pub event: Value,
 }
 
-/// Parse a delivery. Returns `None` when the payload does not follow the
-/// contract (missing session id, sequence, epoch or event).
+/// Parse a delivery: the Observed envelope of a `capture: [output]`
+/// observer, whose `output` is the frame. Returns `None` without an output
+/// or when the frame does not follow the contract.
 pub fn parse_feed_payload(payload: &Value) -> Option<FeedEvent> {
+    parse_feed_frame(payload.get("output")?)
+}
+
+/// Parse one feed frame. Returns `None` when it does not follow the
+/// contract (missing session id, sequence, epoch or event).
+pub fn parse_feed_frame(payload: &Value) -> Option<FeedEvent> {
     let session_id = payload.get("session_id")?.as_str()?.to_string();
     if session_id.is_empty() {
         return None;
@@ -372,7 +380,7 @@ mod tests {
             "source": "cursor",
             "event": { "type": "message_complete" }
         });
-        let parsed = parse_feed_payload(&payload).unwrap();
+        let parsed = parse_feed_frame(&payload).unwrap();
         assert_eq!(parsed.session_id, "sess_1");
         assert_eq!(parsed.event_id, "cursor-stable");
         assert_eq!(parsed.seq, 3);
@@ -383,19 +391,16 @@ mod tests {
     #[test]
     fn synthesizes_event_id_and_rejects_partial_payloads() {
         let payload = json!({ "session_id": "s", "seq": 1, "epoch": "e", "event": {} });
-        assert_eq!(
-            parse_feed_payload(&payload).unwrap().event_id,
-            "s-e-00000001"
-        );
+        assert_eq!(parse_feed_frame(&payload).unwrap().event_id, "s-e-00000001");
         // Legacy stream envelope is not this contract.
         let legacy = json!({ "groupId": "s", "id": "x", "event": { "data": {} } });
-        assert!(parse_feed_payload(&legacy).is_none());
+        assert!(parse_feed_frame(&legacy).is_none());
         assert!(
-            parse_feed_payload(&json!({ "session_id": "", "seq": 0, "epoch": "e", "event": {} }))
+            parse_feed_frame(&json!({ "session_id": "", "seq": 0, "epoch": "e", "event": {} }))
                 .is_none()
         );
         assert!(
-            parse_feed_payload(&json!({ "session_id": "s", "epoch": "e", "event": {} })).is_none()
+            parse_feed_frame(&json!({ "session_id": "s", "epoch": "e", "event": {} })).is_none()
         );
     }
     /// The observer captures `[output]`, so the target receives the Observed
