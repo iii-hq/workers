@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, RegisterFunction, Source};
+use iii_sdk::{Capture, RegisterFunction, Source};
 
 use crate::observed::{delivered_event, Delivered};
 use serde_json::json;
@@ -154,7 +154,7 @@ pub fn register(deps: &Arc<Deps>) {
         .metadata(json!({ "internal": true })),
     );
     let _observer = deps.iii.observe(
-        Source::function(ON_WORKERS_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ON_WORKERS_CHANGED_FN).capture([Capture::Output]),
         ENGINE_CHANGE_FN_ID,
     );
     tracing::info!(

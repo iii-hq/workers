@@ -21,7 +21,7 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-use iii_sdk::{Deliver, Source};
+use iii_sdk::{Capture, Source};
 use serde_json::{json, Value};
 
 use super::Binding;
@@ -185,7 +185,7 @@ fn terminal_operation(delivered: Delivered<ComposeOperationEvent>) -> Option<Str
 fn terminal_watch_source() -> Source {
     let source = Source::function(crate::functions::observe::COMPOSE_PROGRESS_FN)
         .filters(json!({ "input.terminal": { "$eq": true } }))
-        .deliver(Deliver::Output);
+        .capture([Capture::Output]);
     match crate::functions::observe::compose_namespace() {
         Some(namespace) => source.namespace(namespace),
         None => source,

@@ -1,12 +1,14 @@
 //! What an observer target of this worker is called with, and the event it
 //! acts on.
 
-/// The payload an observer target receives.
-pub type Delivered<T> = T;
+/// The payload an observer target receives: the `Observed` envelope its
+/// observer's `capture: [output]` filled.
+pub type Delivered<T> = iii_sdk::Observed<serde_json::Value, T>;
 
-/// The observed call's event, the part the target acts on.
+/// The observed call's event, the part the target acts on: its output.
+/// `None` when the activation carried no output.
 pub fn delivered_event<T>(delivered: Delivered<T>) -> Option<T> {
-    Some(delivered)
+    delivered.output
 }
 
 /// An `Observed` envelope of a successful call of `function_id` that
