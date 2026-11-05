@@ -290,7 +290,7 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
                   number(
                     'config.save_interval_ms',
                     'Save interval (ms)',
-                    'Accepted for compatibility and defaults to 5000; mutations are persisted immediately.',
+                    'How often the journal is folded into the snapshot; defaults to 5000. Mutations are journaled immediately. Applies at the next restart.',
                     { min: 0, optional: true },
                   ),
                 ],

@@ -189,8 +189,9 @@ does not consume retry budget while the target worker is still booting. The
 wait is event-driven: the worker observes the engine's
 `engine::on-functions-changed` and `engine::on-workers-changed` with the
 internal `queue::on-engine-change` function and re-checks the target once per
-change, never on a timer. The same feed drives the
-`redeliver_on_engine_restart` restart check.
+change, not on a timer. The one exception is a check that fails, such as a probe
+timeout: it says nothing about the registry, so it is retried after at most 5
+seconds. The same feed drives the `redeliver_on_engine_restart` restart check.
 
 `run_jobs_in` (read at boot) says which namespace runs a function-queue job:
 
@@ -226,8 +227,10 @@ subscriber_retention_ms: 30000
 `adapter.name` selects the transport: `builtin` (default), `redis`, or
 `rabbitmq`. Changing the adapter config hot-swaps the transport and
 restarts every consumer — the new adapter is built first, so a bad config
-leaves the previous adapter serving. Pending in-memory jobs are lost on
-swap/restart; file-backed jobs survive. An unreachable `redis`/`rabbitmq`
+leaves the previous adapter serving. An edit that keeps a file store's
+directory, such as `save_interval_ms`, swaps nothing and applies at the next
+restart. Pending in-memory jobs are lost on swap/restart; file-backed jobs
+survive. An unreachable `redis`/`rabbitmq`
 target at boot fails the boot itself (no fallback to `builtin`).
 
 ### Adapters
@@ -255,7 +258,20 @@ adapter:
 |---|---|---|
 | `adapter.config.store_method` | `file_based` | `in_memory` or `file_based`. |
 | `adapter.config.file_path` | `data/queue` | Directory used by `file_based`. |
-| `adapter.config.save_interval_ms` | `5000` | Accepted for parity; this worker persists on mutation rather than on an interval. |
+| `adapter.config.save_interval_ms` | `5000` | How often the journal is folded into the snapshot. It bounds journal size and restart time, not durability: every mutation is journaled as it happens. Read when the store opens, so a change applies at the next restart. |
+
+`file_based` keeps a snapshot (`queue_store.json`) and an append-only journal
+(`queue_store.journal`, plus `queue_store.journal.<revision>` segments during a
+compaction) in `file_path`. A mutation survives process death once its journal
+line is written; nothing is fsynced, so power loss is not covered. A journal
+entry the worker cannot read stops it from opening the store, as an unreadable
+snapshot does, and the journal stays on disk. The directory belongs to one
+running worker.
+
+Rolling back: an older binary reads only the snapshot, so it does not see what
+is still in the journal. Stop publishing and wait one `save_interval_ms` before
+stopping the worker, or restart once on this version, which folds the journal
+into the snapshot when it opens.
 
 #### `redis`
 
