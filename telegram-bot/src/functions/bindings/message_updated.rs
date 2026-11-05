@@ -11,7 +11,7 @@ use crate::types::MessageUpdatedEvent;
 use super::message_added::BindingAck;
 
 pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    super::super::register(
+    super::super::register_observed(
         iii,
         deps,
         super::super::ON_MESSAGE_UPDATED_ID,

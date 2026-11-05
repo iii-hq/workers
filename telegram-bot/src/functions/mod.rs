@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, Observed, ObserverHandle, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -62,6 +62,44 @@ fn register<Req, Resp, F, Fut>(
     );
 }
 
+/// The event a `capture: [output]` observer target receives: the output of
+/// the observed call, carried in its Observed envelope. An envelope without
+/// an output (the call returned nothing) is an error naming the function.
+pub fn observed_output<T>(event: Observed<Value, T>) -> Result<T, Error> {
+    event.output.ok_or_else(|| {
+        Error::Handler(format!(
+            "observed call of {} carried no output",
+            event.function_id
+        ))
+    })
+}
+
+/// [`register`] for an observer target: the request is the Observed
+/// envelope and `handler` gets the event in its `output`.
+fn register_observed<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, Error>> + Send + 'static,
+{
+    register(
+        iii,
+        deps,
+        id,
+        description,
+        move |deps, event: Observed<Value, Req>| {
+            let handler = handler.clone();
+            async move { handler(deps, observed_output(event)?).await }
+        },
+    );
+}
+
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     webhook::register(iii, deps);
     set_webhook::register(iii, deps);
@@ -105,7 +143,8 @@ pub fn approval_observers() -> [(&'static str, &'static str, Option<Value>); 2] 
 /// optional `approval-gate` worker. Each observer stays `pending` while its
 /// worker is absent and becomes active when that worker registers the
 /// function, so a gate that connects later is observed with no extra step.
-/// Targets receive the event itself (`deliver: output`).
+/// Observers capture `[output]`: targets receive the Observed envelope and
+/// read the event from its `output` ([`observed_output`]).
 pub fn observe_events(iii: &Arc<IIIClient>) {
     for (source, target, filters) in session_observers().into_iter().chain(approval_observers()) {
         observe_event(iii, source, target, filters);
@@ -115,17 +154,23 @@ pub fn observe_events(iii: &Arc<IIIClient>) {
 /// The observer lives as long as the worker's connection; dropping the
 /// handle does not dispose it.
 fn observe_event(iii: &IIIClient, source: &str, target: &str, filters: Option<Value>) {
-    let mut src = Source::function(source).deliver(Deliver::Output);
-    if let Some(filters) = filters {
-        src = src.filters(filters);
-    }
-    let handle = iii.observe(src, target);
+    let handle = iii.observe(event_source(source, filters), target);
     tracing::info!(
         function_id = source,
         observer_target = target,
         observer_id = handle.id(),
         "observing"
     );
+}
+
+/// The source of an event observer: `source`'s calls matching `filters`,
+/// captured as their output.
+pub fn event_source(source: &str, filters: Option<Value>) -> Source {
+    let src = Source::function(source).capture([Capture::Output]);
+    match filters {
+        Some(filters) => src.filters(filters),
+        None => src,
+    }
 }
 
 /// The args of the `http::on-request` observer that serves `POST /<api_path>`.

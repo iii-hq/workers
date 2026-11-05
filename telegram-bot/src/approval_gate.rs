@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, Observed, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -77,6 +77,10 @@ pub async fn probe_presence(iii: &IIIClient) -> bool {
 
 /// An `engine::on-workers-changed` event. It names the worker by id only, so
 /// the handler re-reads `engine::workers::list` for names.
+/// What the watch target receives: the Observed envelope of a
+/// `capture: [output]` observer, the event in its `output`.
+type WorkersChangedWake = Observed<Value, WorkersChangedEvent>;
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 struct WorkersChangedEvent {
     #[serde(default)]
@@ -113,7 +117,7 @@ pub fn start_watch(iii: Arc<IIIClient>, status: Arc<ApprovalGateStatus>) {
     let refreshing = Arc::new(tokio::sync::Mutex::new(()));
     iii.register_function(
         WATCH_FN_ID,
-        RegisterFunction::new_async(move |_event: WorkersChangedEvent| {
+        RegisterFunction::new_async(move |_event: WorkersChangedWake| {
             let status = status.clone();
             let engine = engine.clone();
             let refreshing = refreshing.clone();
@@ -128,12 +132,15 @@ pub fn start_watch(iii: Arc<IIIClient>, status: Arc<ApprovalGateStatus>) {
 
     // The observer lives as long as the worker's connection; dropping the
     // handle does not dispose it.
-    iii.observe(
-        Source::function(ON_WORKERS_CHANGED_FN)
-            .filters(lifecycle_filters())
-            .deliver(Deliver::Output),
-        WATCH_FN_ID,
-    );
+    iii.observe(watch_source(), WATCH_FN_ID);
+}
+
+/// What the watch observes: lifecycle events of `engine::on-workers-changed`,
+/// captured as their output.
+fn watch_source() -> Source {
+    Source::function(ON_WORKERS_CHANGED_FN)
+        .filters(lifecycle_filters())
+        .capture([Capture::Output])
 }
 
 /// Re-read the worker list and record whether the gate is in it. A failed
