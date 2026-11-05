@@ -74,7 +74,7 @@ iii.observe(
   {
     function_id: 'approval::on-pending-created',
     filters: { 'input.session_metadata.owner': { $eq: 'u_1' } },
-    deliver: 'output',   // the target receives the event itself
+    capture: ['output'],   // the target reads the event as payload.output
   },
   'notify::approval-requested',
 )
