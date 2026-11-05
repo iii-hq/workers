@@ -5,7 +5,7 @@ use crate::config::WorkerConfig;
 use crate::handlers::AppState;
 use crate::pool::{self, Pool};
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -313,7 +313,8 @@ pub async fn on_secret_changed(
 }
 
 /// Register the internal `database::on-secret-change` handler and observe
-/// `secrets::on-changed` with it, the event delivered as output. A rotated,
+/// `secrets::on-changed` with it, the event captured as the envelope's
+/// output. A rotated,
 /// deleted or re-shared secret that a connection references is re-read, and
 /// only the connections whose resolved values changed are rebuilt. The event
 /// is advisory (it never carries a value) and anything unrelated is ignored,
@@ -330,12 +331,11 @@ pub fn observe_secret_changes(
     let st = state.clone();
     iii.register_function(
         SECRET_FN_ID,
-        RegisterFunction::new_async(move |event: OnSecretChangeEvent| {
+        RegisterFunction::new_async(move |event: ObservedSecretChange| {
             let st = st.clone();
             let listeners = listeners.clone();
             async move {
-                let payload = json!({ "name": event.name, "ref": event.reference });
-                let Some(reference) = crate::secrets::event_reference(&payload) else {
+                let Some(reference) = secret_change_reference(event) else {
                     return Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse {
                         ok: false,
                     });
@@ -350,10 +350,36 @@ pub fn observe_secret_changes(
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    iii.observe(
-        Source::function(crate::secrets::ON_CHANGED_FN).deliver(Deliver::Output),
-        SECRET_FN_ID,
-    )
+    iii.observe(secret_change_source(), SECRET_FN_ID)
+}
+
+/// What the secret watcher receives: the activation envelope, the advisory
+/// `secrets::on-changed` event as its `output`.
+pub type ObservedSecretChange = iii_sdk::Observed<Value, OnSecretChangeEvent>;
+
+/// The reference an observed secret change names, if any. An activation
+/// without an output names nothing.
+pub fn secret_change_reference(observed: ObservedSecretChange) -> Option<String> {
+    let event = observed.output?;
+    crate::secrets::event_reference(&json!({ "name": event.name, "ref": event.reference }))
+}
+
+/// `secrets::on-changed`, the event as the envelope's output.
+pub fn secret_change_source() -> Source {
+    Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
+}
+
+/// `configuration::on-updated` for this worker's entry. The handler ignores
+/// the payload and re-fetches the authoritative value, so the capture only
+/// has to be one the engine accepts (caller-only is refused): the output.
+pub fn config_change_source() -> Source {
+    Source::function("configuration::on-updated")
+        .namespace("default")
+        .filters(json!({
+            "input.id": { "$eq": config_id() },
+            "input.event_type": { "$eq": "configuration:updated" },
+        }))
+        .capture([Capture::Output])
 }
 
 /// The advisory `secrets::on-changed` event (never carries a value).
@@ -412,22 +438,7 @@ pub fn observe_config_changes(
         )
         .metadata(json!({ "internal": true })),
     );
-    iii.observe(
-        Source::function("configuration::on-updated")
-            .namespace("default")
-            .filters(json!({
-                "input.id": { "$eq": config_id() },
-                "input.event_type": { "$eq": "configuration:updated" },
-            }))
-            // The event's input carries the whole configuration value (url
-            // passwords included), and whatever a delivery ships lands in
-            // this worker's trace span. The filter reads the input; the
-            // delivery ships only the caller — the handler re-fetches the
-            // value anyway.
-            .capture([iii_sdk::Capture::Caller])
-            .deliver(Deliver::Envelope),
-        CONFIG_FN_ID,
-    )
+    iii.observe(config_change_source(), CONFIG_FN_ID)
 }
 
 /// Reload pools from the AUTHORITATIVE configuration.

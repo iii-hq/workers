@@ -1,5 +1,5 @@
 import type { TestCase } from './cases.ts'
-import { expect, expectEqual, observeRowChanged, ROW_CHANGED_FN } from './cases.ts'
+import { expect, expectEqual, observeRowChanged, ROW_CHANGED_FN, type Observed } from './cases.ts'
 
 const EVENT_TIMEOUT_MS = 5_000
 const SILENCE_WINDOW_MS = 500
@@ -69,7 +69,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
       })
       const fnRef = iii.registerFunction(
         functionId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
@@ -124,7 +124,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
       const events: RowChangedEvent[] = []
       const fnRef = iii.registerFunction(
         functionId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
@@ -179,7 +179,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
 
       const functionRef = iii.registerFunction(
         functionId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
@@ -187,7 +187,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
       )
       const insertFunctionRef = iii.registerFunction(
         insertFunctionId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           insertEvents.push(payload)
           return null
         },
@@ -373,7 +373,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
       const events: RowChangedEvent[] = []
       const fnRef = iii.registerFunction(
         functionId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
