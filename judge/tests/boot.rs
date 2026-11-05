@@ -215,6 +215,11 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         "judge::mentions::pre-generate"
                     );
                     assert_eq!(value["source"]["args"]["on_error"], "fail_open");
+                    // Only what the hook reads, not the whole prompt.
+                    assert_eq!(
+                        value["source"]["args"]["input"],
+                        json!(["generate.messages", "generate.tools[].name"])
+                    );
                     mention_hook = true;
                 }
                 "observe"

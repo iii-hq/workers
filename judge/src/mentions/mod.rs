@@ -38,6 +38,9 @@ use render::{DetailsCall, MentionStatus, ResolvedMention};
 pub const PRE_GENERATE_FN: &str = "judge::mentions::pre-generate";
 /// The harness hook point the pre-generate function observes.
 pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
+/// The hook-input fields `judge::mentions::pre-generate` reads
+/// ([`hook::PreGenerateInput`]); the envelope always comes along.
+pub const HOOK_INPUT: [&str; 2] = ["generate.messages", "generate.tools[].name"];
 pub const RESOLVE_FN: &str = "judge::mentions::resolve";
 /// Mentions resolved per generation; older unresolved ones wait.
 pub const MAX_MENTIONS: usize = 10;
@@ -120,12 +123,30 @@ pub fn register(iii: &Arc<IIIClient>) {
 /// observer stays `pending` until `harness::hook::on-pre-generate`
 /// registers. `fail_open` is mandatory: pre-generate hooks fail closed by
 /// default, and a mention that could not be resolved must never block a turn.
+///
+/// The observer asks for the two input fields the hook reads
+/// ([`HOOK_INPUT`]), not the whole prompt and every tool schema. A harness
+/// older than the hook `input` arg refuses it (`CONFIG_ERROR`); the hook then
+/// observes again with the whole input.
 pub fn observe(iii: &IIIClient) -> ObserverHandle {
+    let args = json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" });
+    let mut projected = args.clone();
+    projected["input"] = json!(HOOK_INPUT);
     let handle = iii.observe(
-        Source::function(PRE_GENERATE_HOOK_FN)
-            .args(json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" })),
+        Source::function(PRE_GENERATE_HOOK_FN).args(projected),
         PRE_GENERATE_FN,
     );
+    let (client, first) = (iii.clone(), handle.clone());
+    tokio::spawn(async move {
+        if let Err(Error::Remote { code, .. }) = first.ready().await {
+            if code == "CONFIG_ERROR" {
+                client.observe(
+                    Source::function(PRE_GENERATE_HOOK_FN).args(args),
+                    PRE_GENERATE_FN,
+                );
+            }
+        }
+    });
     tracing::info!(
         observer_id = handle.id(),
         "mention resolution observes agent generations"

@@ -690,18 +690,24 @@ with `decision` `continue`, `deny` or `hold`.
 | `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). | `result` (the turn's result) | `decision`, `reason?`, `prompt?` |
 
 Hook args: `{ functions?, sessions?, payload?, result_into?, retry_prompt?,
-priority?, timeout_ms?, on_error?, inject_prompt? }` — `functions` globs select
+priority?, timeout_ms?, on_error?, inject_prompt?, input? }` — `functions` globs select
 the called functions (`on-pre-call`, `on-post-call`), `sessions` globs the
 sessions (omit for every session), `payload` + `result_into` call a plain
 composition function as an `on-post-turn` validator, `timeout_ms` bounds each
 call (default 5000), and `on_error` is `fail_closed` (default for the `pre`
 points and `on-post-turn`) or `fail_open`. A call that fails, times out, or is
-refused (`OVERFLOW`, `OBSERVER_NOT_ACTIVE`) follows `on_error`.
+refused (`OVERFLOW`, `OBSERVER_NOT_ACTIVE`) follows `on_error`. `input` lists the
+input fields the target reads as dotted paths, `[]` mapping over a list
+(`generate.tools[].name` sends each tool as `{ name }`); the target gets those
+plus the envelope (`point`, `session_id`, `turn_id`, `step`, `depth`,
+`metadata`). An `on-pre-generate` input carries the whole prompt, every message
+and every tool schema, so a target that reads a few of them should list them.
 
 ```rust
 iii.observe(
     Source::function("harness::hook::on-pre-generate")
-        .args(json!({ "priority": 100, "timeout_ms": 3000, "on_error": "fail_open" })),
+        .args(json!({ "priority": 100, "timeout_ms": 3000, "on_error": "fail_open",
+            "input": ["generate.messages", "generate.tools[].name"] })),
     "judge::mentions::pre-generate",
 );
 ```
