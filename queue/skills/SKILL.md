@@ -163,5 +163,7 @@ adapter:
 
 Changing the adapter config hot-swaps the transport and restarts every
 consumer — the new adapter is built first, so a bad config leaves the
-previous one serving. File-backed jobs survive by construction; in-memory
-jobs are lost, matching the builtin adapter's in-process durability profile.
+previous one serving. An edit that keeps a file store's directory, such as
+`save_interval_ms`, swaps nothing and applies at the next restart. File-backed
+jobs survive by construction; in-memory jobs are lost, matching the builtin
+adapter's in-process durability profile.

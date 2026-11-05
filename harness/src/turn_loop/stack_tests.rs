@@ -367,6 +367,266 @@ fn text_reply(cost: f64) -> Value {
         "content": [{"type": "text", "text": "done"}]}})
 }
 
+/// `waiting for <model>` used to stay up with no model request in flight:
+/// through the tools, the enqueue retries and the wait in the queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_running_its_calls_stops_claiming_to_wait_for_the_model() {
+    let (result, calls, _) = generate(hold_reply()["message"].clone()).await;
+    assert_eq!(result.expect("the step advances").next_step, Some(2));
+    assert_eq!(
+        phases(&calls),
+        [
+            "preparing context",
+            "waiting for fake",
+            "running tools",
+            "test::hold",
+            "queueing next step",
+            "harness::turn"
+        ]
+    );
+}
+
+/// A live phase written after the terminal projection would leave a finished
+/// session `working`: nothing writes its status again until the next turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_ending_the_turn_writes_no_live_phase_after_its_projection() {
+    let (result, calls, _) = generate(text_reply(0.25)["message"].clone()).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
+    assert_eq!(
+        phases(&calls),
+        ["preparing context", "waiting for fake", "done"]
+    );
+
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"].as_array_mut().unwrap().push(json!({
+        "type": "function_call", "id": "call_submit",
+        "function_id": "submit_result", "arguments": {"ok": true}}));
+    let (result, calls, _) = generate(reply).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
+    assert_eq!(
+        phases(&calls),
+        [
+            "preparing context",
+            "waiting for fake",
+            "running tools",
+            "test::hold",
+            "done"
+        ]
+    );
+}
+
+/// A stop mid-generation still runs the post_generate hooks: writing the next
+/// phase over its `stopping` ack would show the stop as not taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_generation_keeps_its_stopping_ack() {
+    let mut reply = text_reply(0.25)["message"].clone();
+    reply["stop_reason"] = json!("aborted");
+    let (result, calls, _) = generate(reply).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Cancelled);
+    assert_eq!(
+        phases(&calls),
+        ["preparing context", "waiting for fake", "stopped"]
+    );
+}
+
+/// A held call runs nothing until someone decides, possibly hours later:
+/// `running tools` pulsed a sub-agent chip that was waiting on a person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_parked_on_a_held_call_stops_claiming_to_run_tools() {
+    let (result, calls, turn) = generate_observed(
+        hold_reply()["message"].clone(),
+        json!({"harness::hook::on-pre-call": {"decision": "hold", "held_by": "test::gate"}}),
+    )
+    .await;
+    assert_eq!(result.unwrap().status, TurnStatus::AwaitingFunctions);
+    assert_eq!(turn["calls"]["call_hold"]["state"], "pending");
+    assert_eq!(
+        phases(&calls),
+        [
+            "preparing context",
+            "waiting for fake",
+            "running tools",
+            "harness::hook::on-pre-call",
+            "waiting for pending calls"
+        ]
+    );
+}
+
+/// A resolve resumes a parked turn through the enqueue retries and the queue
+/// wait: the parked reason would stay up with nothing pending any more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resolve_resuming_the_turn_says_it_is_queueing_the_next_step() {
+    let held = json!({"call_hold": {
+        "state": "pending", "function_id": "test::hold", "held_by": "test::gate"}});
+    let (result, calls, turn) =
+        run_on_fake_engine(held, json!([]), None, json!({}), |deps| async move {
+            let req = crate::functions::function_resolve::FunctionResolveRequest {
+                session_id: "s".into(),
+                turn_id: "t1".into(),
+                function_call_id: "call_hold".into(),
+                content: Some(vec![ContentBlock::text("denied")]),
+                is_error: Some(true),
+                ..Default::default()
+            };
+            crate::deferred::resolve(&deps, req).await
+        })
+        .await;
+    assert!(result.unwrap().turn_resumed);
+    assert_eq!(turn["step"], 2);
+    assert_eq!(phases(&calls), ["queueing next step", "harness::turn"]);
+}
+
+/// An approved call really runs: the parked reason read as still waiting on a
+/// person, with nothing left to wait on but the running tool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_stops_claiming_to_wait_for_pending_calls() {
+    let (result, calls, _) = release(json!({"call_hold": held_call()}), json!({})).await;
+    assert!(result.unwrap().turn_resumed);
+    assert_eq!(
+        phases(&calls),
+        [
+            "running tools",
+            "test::hold",
+            "queueing next step",
+            "harness::turn"
+        ]
+    );
+}
+
+/// A released call post_call holds again runs nothing until someone decides:
+/// `running tools` would stay up for as long as that takes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_held_again_stops_claiming_to_run_tools() {
+    let (result, calls, turn) = release(
+        json!({"call_hold": held_call()}),
+        json!({"harness::hook::on-post-call": {"decision": "hold", "held_by": "test::gate"}}),
+    )
+    .await;
+    assert!(!result.unwrap().turn_resumed);
+    assert_eq!(turn["calls"]["call_hold"]["state"], "pending");
+    assert_eq!(
+        phases(&calls),
+        [
+            "running tools",
+            "test::hold",
+            "harness::hook::on-post-call",
+            "waiting for pending calls"
+        ]
+    );
+}
+
+/// The released call finished and a sibling still waits on a person, for
+/// hours maybe: `running tools` would stay up with nothing running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_with_a_held_sibling_stops_claiming_to_run_tools() {
+    let (result, calls, _) = release(
+        json!({"call_hold": held_call(), "call_sibling": held_call()}),
+        json!({}),
+    )
+    .await;
+    assert!(!result.unwrap().turn_resumed);
+    assert_eq!(
+        phases(&calls),
+        ["running tools", "test::hold", "waiting for pending calls"]
+    );
+}
+
+/// External work cannot be confirmed stopped, so a stop leaves the turn parked
+/// on its `stopping` ack: a live phase over it would show a stopped turn as
+/// running until the next delivery observes the abort.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolves_after_a_stop_keep_its_stopping_ack() {
+    let parked = json!({
+        "call_hold": held_call(),
+        "call_external": {"state": "pending", "function_id": "test::external"},
+    });
+    let (result, calls, _) =
+        run_on_fake_engine(parked, json!([]), None, json!({}), |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = TurnStatus::AwaitingFunctions;
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            stop(&deps).await;
+            for req in [
+                resolve_request("call_hold", "execute"),
+                resolve_request("call_external", "deliver"),
+            ] {
+                crate::deferred::resolve(&deps, req).await.unwrap();
+            }
+            let payload =
+                serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 2}))
+                    .unwrap();
+            run_step(&deps, payload).await
+        })
+        .await;
+    assert_eq!(result.unwrap().status, TurnStatus::Cancelled);
+    assert_eq!(
+        phases(&calls),
+        ["stopping", "test::hold", "harness::turn", "stopped"]
+    );
+}
+
+fn held_call() -> Value {
+    json!({"state": "pending", "function_id": "test::hold",
+        "held_by": "test::gate", "held_arguments": {}})
+}
+
+fn resolve_request(
+    call: &str,
+    action: &str,
+) -> crate::functions::function_resolve::FunctionResolveRequest {
+    crate::functions::function_resolve::FunctionResolveRequest {
+        session_id: "s".into(),
+        turn_id: "t1".into(),
+        function_call_id: call.into(),
+        action: Some(action.into()),
+        ..Default::default()
+    }
+}
+
+async fn stop(deps: &Deps) {
+    let req = crate::functions::stop::StopRequest {
+        session_id: "s".into(),
+        turn_id: None,
+    };
+    crate::functions::stop::stop_one(deps, req).await.unwrap();
+}
+
+/// Approve `call_hold` on a fake engine.
+async fn release(
+    checkpoints: Value,
+    hooks: Value,
+) -> (
+    Result<crate::functions::function_resolve::FunctionResolveResponse, HarnessError>,
+    Vec<(String, Value)>,
+    Value,
+) {
+    run_on_fake_engine(checkpoints, json!([]), None, hooks, |deps| async move {
+        crate::deferred::resolve(&deps, resolve_request("call_hold", "execute")).await
+    })
+    .await
+}
+
+/// Every status write (its reason, or the status without one) in order with
+/// the hook chains, the tool call and the enqueue it must precede.
+fn phases(calls: &[(String, Value)]) -> Vec<&str> {
+    calls
+        .iter()
+        .filter_map(|(function, data)| match function.as_str() {
+            "session::set-status" => data["reason"].as_str().or(data["status"].as_str()),
+            "test::hold" | "harness::turn" => Some(function.as_str()),
+            hook if hook.starts_with("harness::hook::") => Some(hook),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Run step 1 of turn `t1` again on a fake engine, as the queue redelivers it
 /// after the worker died: the record as the first delivery persisted it (the
 /// generation counted, `calls` checkpointed) and the entries that step left
@@ -380,6 +640,47 @@ async fn redeliver(
     Vec<(String, Value)>,
     Value,
 ) {
+    run_on_fake_engine(checkpoints, stored, None, json!({}), step_one).await
+}
+
+/// Run step 1 with nothing stored, the provider streaming `reply`.
+async fn generate(
+    reply: Value,
+) -> (
+    Result<TurnStepResult, HarnessError>,
+    Vec<(String, Value)>,
+    Value,
+) {
+    generate_observed(reply, json!({})).await
+}
+
+/// [`generate`] with `hooks` (hook function -> chain outcome) observed.
+async fn generate_observed(
+    reply: Value,
+    hooks: Value,
+) -> (
+    Result<TurnStepResult, HarnessError>,
+    Vec<(String, Value)>,
+    Value,
+) {
+    run_on_fake_engine(json!({}), json!([]), Some(reply), hooks, step_one).await
+}
+
+async fn step_one(deps: Deps) -> Result<TurnStepResult, HarnessError> {
+    let payload =
+        serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 1})).unwrap();
+    run_step(&deps, payload).await
+}
+
+/// Without a `reply` the provider's stream channel cannot open: the step ends
+/// at that boundary.
+async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
+    checkpoints: Value,
+    stored: Value,
+    reply: Option<Value>,
+    hooks: Value,
+    drive: impl FnOnce(Deps) -> F,
+) -> (T, Vec<(String, Value)>, Value) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
     let calls = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
@@ -388,20 +689,55 @@ async fn redeliver(
     let turn = Arc::new(Mutex::new(json!({
         "session_id": "s", "turn_id": "t1", "status": "running",
         "step": 1, "turn_count": 2, "depth": 0,
-        "options": {"model": "fake", "max_turns": 16},
+        "options": {"model": "fake", "max_turns": 16,
+            "functions": {"allow": ["*"], "deny": [], "expose": "agent_call"}},
         "calls": checkpoints,
         "created_at": 1, "updated_at": 1
     })));
     let stored_turn = turn.clone();
+    let observed_hooks: Vec<String> = hooks.as_object().unwrap().keys().cloned().collect();
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        // The hook functions only register on an engine advertising observe.v2.
+        let hello = json!({"type": "workerregistered", "worker_id": "w",
+            "features": ["observe.v2"]});
+        let frame = tokio_tungstenite::tungstenite::Message::Text(hello.to_string().into());
+        socket.send(frame).await.unwrap();
         ready_tx.send(()).unwrap();
+        let channel = reply.is_some();
+        tokio::spawn(async move {
+            let Some(reply) = reply else { return };
+            let done = json!({"type": "done", "message": reply}).to_string();
+            // The stream channel is not the only later dial: answer them all.
+            while let Ok((tcp, _)) = listener.accept().await {
+                let Ok(mut stream) = tokio_tungstenite::accept_async(tcp).await else {
+                    continue;
+                };
+                let frame = tokio_tungstenite::tungstenite::Message::Text(done.clone().into());
+                tokio::spawn(async move {
+                    let _ = stream.send(frame).await;
+                    let _ = stream.close(None).await;
+                });
+            }
+        });
         while let Some(Ok(frame)) = socket.next().await {
             let Ok(text) = frame.to_text() else { continue };
             let Ok(message) = serde_json::from_str::<Value>(text) else {
                 continue;
             };
+            if message["type"] == "registerfunction" {
+                let id = message["id"].as_str().unwrap();
+                if !hooks[id].is_null() {
+                    let registered = json!({"type": "functionregistered", "id": id, "revision": 1,
+                        "observers": [{"id": format!("o_{id}"), "target": "test::gate"}]});
+                    let frame = tokio_tungstenite::tungstenite::Message::Text(
+                        registered.to_string().into(),
+                    );
+                    socket.send(frame).await.unwrap();
+                }
+                continue;
+            }
             if message["type"] != "invokefunction" {
                 continue;
             }
@@ -412,6 +748,7 @@ async fn redeliver(
                 .unwrap()
                 .push((function.clone(), data.clone()));
             let result = match function.as_str() {
+                hook if !hooks[hook].is_null() => hooks[hook].clone(),
                 "engine::workers::register" => json!({"success": true}),
                 "state::get" | "harness::state::get" if data["scope"] == "harness_turn" => {
                     stored_turn.lock().unwrap().clone()
@@ -423,6 +760,9 @@ async fn redeliver(
                 "state::list" | "harness::state::list" => json!([]),
                 "state::list_keys" => json!({"keys": []}),
                 "session::get" => json!({"meta": {"session_id": "s", "metadata": {}}}),
+                "session::messages" if !data["after_entry_id"].is_null() => {
+                    json!({"messages": []})
+                }
                 "session::messages" => {
                     let mut messages = vec![json!({"entry_id": "e_user", "message": {
                         "role": "user", "timestamp": 1,
@@ -443,6 +783,11 @@ async fn redeliver(
                 "session::set-status" => json!({"ok": true}),
                 "session::append" => json!({"entry_id": data["entry_id"]}),
                 "state::set" => json!({}),
+                "harness::state::compare-and-set" => json!({"swapped": true}),
+                "engine::channels::create" if channel => json!({
+                    "writer": {"channel_id": "c", "access_key": "k", "direction": "write"},
+                    "reader": {"channel_id": "c", "access_key": "k", "direction": "read"},
+                }),
                 _ => Value::Null,
             };
             if !message["invocation_id"].is_null() {
@@ -471,9 +816,15 @@ async fn redeliver(
         crate::events::TurnEvents::register(&iii),
         crate::hooks::HookRegistry::register(&iii),
     );
-    let payload =
-        serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 1})).unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(10), run_step(&deps, payload)).await;
+    // A hook chain is only called once its observer is active.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while observed_hooks.iter().any(|id| !iii.is_observed(id)) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the hooks' observers activate");
+    let result = tokio::time::timeout(Duration::from_secs(10), drive(deps)).await;
     iii.shutdown();
     server.abort();
     let calls = calls.lock().unwrap().clone();

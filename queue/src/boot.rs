@@ -1,5 +1,6 @@
 //! Worker boot and shutdown wiring.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -225,24 +226,11 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
         );
     }
 
-    // An absent `adapter` / `adapter.config` means builtin defaults; Null does
-    // not deserialize into the struct, so only parse an actual object.
-    let builtin = match config
-        .adapter
-        .as_ref()
-        .and_then(|adapter| adapter.config.clone())
-    {
-        Some(value) if !value.is_null() => serde_json::from_value::<BuiltinAdapterConfig>(value)?,
-        _ => BuiltinAdapterConfig::default(),
-    };
-
+    let builtin = builtin_adapter_config(config)?;
     let store_method = builtin.store_method.as_deref().unwrap_or(adapter_name);
     match store_method {
         "file_based" => {
-            let configured_path = builtin
-                .file_path
-                .unwrap_or_else(|| iii_worker_paths::default_path("data/queue"));
-            let path = iii_worker_paths::resolve_path(&configured_path);
+            let path = file_store_path(&builtin);
             let save_interval_ms = builtin.save_interval_ms.unwrap_or(5000);
             let store = FileStore::open(&path, save_interval_ms).await?;
             tracing::info!(store = "file_based", path = %path.display(), "queue store ready");
@@ -257,6 +245,42 @@ pub async fn build_store(config: &QueueConfig) -> anyhow::Result<Arc<dyn QueueSt
         }
         other => anyhow::bail!("unknown builtin queue store_method '{other}'"),
     }
+}
+
+/// The directory of the file store `config` selects, the same for every way of
+/// writing it, or `None` when `config` selects anything else.
+pub(crate) fn file_store_dir(config: &QueueConfig) -> Option<PathBuf> {
+    let adapter_name = config.effective_adapter_name();
+    if !matches!(adapter_name, "builtin" | "file_based" | "in_memory") {
+        return None;
+    }
+    let builtin = builtin_adapter_config(config).ok()?;
+    if builtin.store_method.as_deref().unwrap_or(adapter_name) != "file_based" {
+        return None;
+    }
+    let path = file_store_path(&builtin);
+    Some(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+/// An absent `adapter` / `adapter.config` means builtin defaults; Null does not
+/// deserialize into the struct, so only parse an actual object.
+fn builtin_adapter_config(config: &QueueConfig) -> serde_json::Result<BuiltinAdapterConfig> {
+    match config
+        .adapter
+        .as_ref()
+        .and_then(|adapter| adapter.config.clone())
+    {
+        Some(value) if !value.is_null() => serde_json::from_value(value),
+        _ => Ok(BuiltinAdapterConfig::default()),
+    }
+}
+
+fn file_store_path(builtin: &BuiltinAdapterConfig) -> PathBuf {
+    let configured_path = builtin
+        .file_path
+        .clone()
+        .unwrap_or_else(|| iii_worker_paths::default_path("data/queue"));
+    iii_worker_paths::resolve_path(configured_path)
 }
 
 async fn guard_against_builtin_iii_queue(iii: &Arc<IIIClient>) -> anyhow::Result<()> {

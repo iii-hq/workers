@@ -512,7 +512,8 @@ pub struct IngestStatusV1 {
     pub logs_unattributed: u64,
     /// Values rewritten as `[redacted:<kind>]` on capture, all sources.
     pub redactions: u64,
-    /// Traces that had already left the engine's ring when the job ran.
+    /// Traces that had already left the engine's ring when the tick read them
+    /// or the job ran, whether or not they held an error.
     pub lost_before_capture: u64,
     /// Deliveries refused because the durable dependencies were not claimed
     /// yet. They are redelivered, not lost.

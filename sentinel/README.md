@@ -112,8 +112,8 @@ Three fields carry most of the diagnostic weight:
 - `enabled` is false while the store or the queue has not registered yet —
   the worker is up, ingest is closed, and nothing is being dropped silently.
 - `lost_before_capture` counts traces that left the engine's ring before the
-  job ran. A number that climbs is the signal to raise the engine's
-  `memory_max_spans`, not a bug in a group.
+  tick's read or the job got to them. A number that climbs is the signal to
+  raise the engine's `memory_max_spans`, not a bug in a group.
 - `repositories[].exists` says whether a mapped checkout is really on this
   machine. False disables code access for its workers; grouping, evidence and
   regression keep working.
@@ -208,7 +208,7 @@ iii.observe(
 
 | Function | Args, filters | Target |
 |---|---|---|
-| `observability::on-span` (`default` namespace) | none; every span-activity tick, and the ingest keeps the traces that hold an error | `sentinel::on-trace-activity` |
+| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target reads the tick's traces in one call and queues those that hold an error; if that read fails it queues them all | `sentinel::on-trace-activity` |
 | `observability::on-log` (`default` namespace) | filter `{ "input.severity_number": { "$gte": 17 } }` (ERROR and above) | `sentinel::on-log` |
 | `harness::on-turn-completed` | none | `sentinel::on-turn-completed` |
 | `cron::on-tick` | args `{ expression: retention.cron }` | `sentinel::on-schedule` |
@@ -230,7 +230,7 @@ change:
 ```yaml
 enabled: true
 sources:
-  trace: { enabled: true }              # spans with status error
+  trace: { enabled: true }              # traces that hold an error, queued from each span-activity tick
   log:   { enabled: true, join_window_ms: 2000 }   # an ERROR log waits this long for the span of its own trace
 redaction:
   patterns: []                          # extra value shapes to redact on capture; the built-in set always runs

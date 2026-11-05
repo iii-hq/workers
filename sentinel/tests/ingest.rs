@@ -8,6 +8,7 @@
 mod db;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,21 +17,43 @@ use db::TestDb;
 use sentinel::ingest::{ring::PhantomRing, CheckoutVersions, Ingest, IngestJob, Telemetry};
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::store::Db;
-use sentinel::{Counters, GroupStatusV1, SentinelError, Store, TraceSummary, WorkerConfig};
+use sentinel::{
+    Counters, GroupStatusV1, SentinelError, Store, TraceStoreStateV1, TraceSummary, WorkerConfig,
+};
 use serde_json::{json, Value};
 
 const NOW_NANOS: u64 = 1_789_000_000_500_000_000;
+/// What the engine answers, as the SDK and the runtime render it, with no span store.
+const SPAN_STORE_DISABLED: &str = "engine::traces::list: remote error \
+     (memory_exporter_not_enabled): In-memory span storage is not available. \
+     Set exporter: memory or both in config.";
 
 #[derive(Default)]
 struct FakeEngineTelemetry {
     summaries: BTreeMap<String, TraceSummary>,
     trees: BTreeMap<String, Vec<Value>>,
     logs: BTreeMap<String, Vec<Value>>,
+    /// Every read of the summaries fails with this.
+    read_error: Option<String>,
+    /// A read before this sees nothing: the engine has broadcast the spans and
+    /// not stored them yet.
+    stored_at: Option<tokio::time::Instant>,
+    reads: Arc<AtomicU64>,
 }
 
 #[async_trait]
 impl Telemetry for FakeEngineTelemetry {
     async fn traces(&self, trace_ids: &[String]) -> Result<Vec<TraceSummary>, SentinelError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        if let Some(message) = &self.read_error {
+            return Err(SentinelError::dependency(message));
+        }
+        if self
+            .stored_at
+            .is_some_and(|at| tokio::time::Instant::now() < at)
+        {
+            return Ok(Vec::new());
+        }
         Ok(trace_ids
             .iter()
             .filter_map(|id| self.summaries.get(id).cloned())
@@ -95,6 +118,7 @@ struct Harness {
     ingest: Ingest<TestDb, FakeRegistry>,
     store: Arc<Store<TestDb>>,
     counters: Arc<Counters>,
+    ring: Arc<PhantomRing>,
     config: WorkerConfig,
 }
 
@@ -102,18 +126,20 @@ async fn harness(telemetry: FakeEngineTelemetry) -> Harness {
     let store = Arc::new(Store::new(db::test_db().await));
     store.migrate().await.expect("migrate");
     let counters = Arc::new(Counters::default());
+    let ring = Arc::new(PhantomRing::default());
     let ingest = Ingest::new(
         store.clone(),
         Arc::new(telemetry),
         Arc::new(Registry::new(FakeRegistry, Duration::from_secs(60))),
         Arc::new(FakeCheckouts),
         counters.clone(),
-        Arc::new(PhantomRing::default()),
+        ring.clone(),
     );
     Harness {
         ingest,
         store,
         counters,
+        ring,
         config: WorkerConfig::default(),
     }
 }
@@ -227,6 +253,218 @@ async fn one(store: &Store<TestDb>, sql: &str) -> Value {
         .and_then(|row| row.values().next().cloned())
         .map(db::plain)
         .unwrap_or(Value::Null)
+}
+
+fn clean(trace_id: &str) -> TraceSummary {
+    TraceSummary {
+        trace_id: trace_id.into(),
+        status: "ok".into(),
+        ..TraceSummary::default()
+    }
+}
+
+fn ids(trace_ids: &[&str]) -> Vec<String> {
+    trace_ids.iter().map(|id| id.to_string()).collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tick_of_one_failing_and_two_clean_traces_queues_one_job_that_records_the_group() {
+    let (summary, tree) = cas_trace();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    telemetry.trees.insert("t1".into(), tree);
+    telemetry.summaries.insert("c1".into(), clean("c1"));
+    telemetry.summaries.insert("c2".into(), clean("c2"));
+    let reads = telemetry.reads.clone();
+    let harness = harness(telemetry).await;
+
+    let queued = harness
+        .ingest
+        .filter_tick(&ids(&["c1", "t1", "c2"]))
+        .await
+        .0;
+
+    assert_eq!(queued, ids(&["t1"]), "a clean trace must cost no job");
+    assert_eq!(reads.load(Ordering::Relaxed), 1, "the tick is one read");
+    assert_eq!(harness.counters.trace_store(), TraceStoreStateV1::Memory);
+    assert_eq!(harness.counters.ingest_snapshot(0).lost_before_capture, 0);
+
+    let report = harness
+        .ingest
+        .handle(
+            IngestJob::Trace {
+                trace_id: queued[0].clone(),
+            },
+            &harness.config,
+        )
+        .await
+        .expect("ingest");
+    assert_eq!(report.recorded, 1);
+    assert_eq!(
+        count(&harness.store, "SELECT COUNT(*) FROM sentinel_groups").await,
+        1
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tick_keeps_a_trace_by_its_error_count_or_by_its_status_in_any_case() {
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert(
+        "counted".into(),
+        TraceSummary {
+            error_count: 2,
+            ..clean("counted")
+        },
+    );
+    telemetry.summaries.insert(
+        "tagged".into(),
+        TraceSummary {
+            status: "ERROR".into(),
+            ..clean("tagged")
+        },
+    );
+    let harness = harness(telemetry).await;
+
+    assert_eq!(
+        harness
+            .ingest
+            .filter_tick(&ids(&["counted", "tagged"]))
+            .await
+            .0,
+        ids(&["counted", "tagged"])
+    );
+}
+
+/// The engine broadcasts a span before it stores it, and the last span of a
+/// trace never ticks again: a read on the tick would lose that error for good.
+#[tokio::test(start_paused = true)]
+async fn a_span_the_engine_stores_just_after_its_tick_is_still_seen() {
+    let (summary, tree) = cas_trace();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    telemetry.trees.insert("t1".into(), tree);
+    telemetry.stored_at = Some(tokio::time::Instant::now() + Duration::from_millis(100));
+    let harness = harness(telemetry).await;
+
+    assert_eq!(
+        harness.ingest.filter_tick(&ids(&["t1"])).await.0,
+        ids(&["t1"])
+    );
+    assert_eq!(harness.counters.ingest_snapshot(0).lost_before_capture, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_failure_queues_every_trace_of_the_tick() {
+    let telemetry = FakeEngineTelemetry {
+        read_error: Some("connection refused".into()),
+        ..FakeEngineTelemetry::default()
+    };
+    let harness = harness(telemetry).await;
+
+    assert_eq!(
+        harness
+            .ingest
+            .filter_tick(&ids(&["t1", "t2", "t3"]))
+            .await
+            .0,
+        ids(&["t1", "t2", "t3"]),
+        "the job re-reads and the queue retries; dropping them could lose an error"
+    );
+    assert_eq!(harness.counters.ingest_snapshot(0).lost_before_capture, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disabled_span_store_queues_nothing_and_says_so() {
+    let telemetry = FakeEngineTelemetry {
+        read_error: Some(SPAN_STORE_DISABLED.into()),
+        ..FakeEngineTelemetry::default()
+    };
+    let harness = harness(telemetry).await;
+
+    assert!(harness
+        .ingest
+        .filter_tick(&ids(&["t1", "t2"]))
+        .await
+        .0
+        .is_empty());
+    assert_eq!(harness.counters.trace_store(), TraceStoreStateV1::Disabled);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trace_gone_from_the_answer_counts_as_lost_at_the_tick() {
+    let (summary, _) = cas_trace();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    let harness = harness(telemetry).await;
+
+    assert_eq!(
+        harness.ingest.filter_tick(&ids(&["t1", "gone"])).await.0,
+        ids(&["t1"])
+    );
+    assert_eq!(harness.counters.ingest_snapshot(0).lost_before_capture, 1);
+}
+
+#[tokio::test]
+async fn a_log_runs_on_its_own_when_the_engine_has_no_span_store() {
+    let telemetry = FakeEngineTelemetry {
+        read_error: Some(SPAN_STORE_DISABLED.into()),
+        ..FakeEngineTelemetry::default()
+    };
+    let harness = harness(telemetry).await;
+
+    harness
+        .ingest
+        .handle(
+            IngestJob::Log {
+                trace_id: "t1".into(),
+                log: json!({
+                    "timestamp_unix_nano": NOW_NANOS,
+                    "severity_text": "ERROR",
+                    "body": "compare-and-set rejected",
+                    "attributes": {},
+                    "trace_id": "t1",
+                    "span_id": "leaf",
+                    "service_name": "harness",
+                }),
+            },
+            &harness.config,
+        )
+        .await
+        .expect("a missing span store is a state, not a failure for the queue to retry");
+
+    assert_eq!(harness.counters.trace_store(), TraceStoreStateV1::Disabled);
+    assert_eq!(
+        count(
+            &harness.store,
+            "SELECT COUNT(*) FROM sentinel_occurrences WHERE pending_join = 1"
+        )
+        .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_tick_of_only_this_workers_own_traces_reads_nothing() {
+    let telemetry = FakeEngineTelemetry::default();
+    let reads = telemetry.reads.clone();
+    let harness = harness(telemetry).await;
+    harness.ring.remember("own");
+
+    let (queued, phantom_dropped) = harness.ingest.filter_tick(&ids(&["own"])).await;
+
+    assert!(queued.is_empty());
+    assert_eq!(phantom_dropped, 1);
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn an_empty_tick_reads_nothing() {
+    let telemetry = FakeEngineTelemetry::default();
+    let reads = telemetry.reads.clone();
+    let harness = harness(telemetry).await;
+
+    assert!(harness.ingest.filter_tick(&[]).await.0.is_empty());
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -541,7 +779,7 @@ async fn a_log_waits_for_the_span_of_its_own_trace_and_then_folds_into_it() {
     });
 
     // The log is emitted inside the handler; the span closes after it.
-    harness
+    let report = harness
         .ingest
         .handle(
             IngestJob::Log {
@@ -552,6 +790,15 @@ async fn a_log_waits_for_the_span_of_its_own_trace_and_then_folds_into_it() {
         )
         .await
         .expect("log");
+    // Queued at once, these run ahead of the span job behind this log in the
+    // trace's queue.
+    for job in report.follow_up {
+        harness
+            .ingest
+            .handle(job, &harness.config)
+            .await
+            .expect("follow-up");
+    }
 
     assert_eq!(
         count(
@@ -662,6 +909,7 @@ async fn a_log_whose_span_never_arrives_is_promoted_to_a_group_of_its_own() {
         .insert("t2".into(), summary("t2", "queue", "queue::deliver", &[]));
     let harness = harness(telemetry).await;
 
+    let arriving = sentinel::ids::now_ms();
     let report = harness
         .ingest
         .handle(
@@ -681,22 +929,36 @@ async fn a_log_whose_span_never_arrives_is_promoted_to_a_group_of_its_own() {
         )
         .await
         .expect("log");
+    let arrived = sentinel::ids::now_ms();
 
-    let promote = report
-        .follow_up
-        .into_iter()
-        .find_map(|job| match job {
-            IngestJob::Promote { occurrence_id, .. } => Some(occurrence_id),
-            _ => None,
-        })
-        .expect("the wait is scheduled");
+    assert!(
+        report.follow_up.is_empty(),
+        "nothing promotes the log before its wait runs out"
+    );
+
+    let window = harness.config.sources.log.join_window_ms as i64;
+    assert!(
+        harness
+            .store
+            .due_pending_logs(arriving + window - 1, 100)
+            .await
+            .expect("read")
+            .is_empty(),
+        "the log is still waiting for its span"
+    );
+    let due = harness
+        .store
+        .due_pending_logs(arrived + window, 100)
+        .await
+        .expect("read");
+    assert_eq!(due.len(), 1, "the sweep claims it when the wait runs out");
 
     harness
         .ingest
         .handle(
             IngestJob::Promote {
                 trace_id: "t2".into(),
-                occurrence_id: promote,
+                occurrence_id: due[0].id.clone(),
             },
             &harness.config,
         )
@@ -733,6 +995,66 @@ async fn a_log_whose_span_never_arrives_is_promoted_to_a_group_of_its_own() {
         count(&harness.store, "SELECT COUNT(*) FROM sentinel_occurrences").await,
         1,
         "and does not insert a second one"
+    );
+}
+
+/// Ingests an ERROR log stamped `skew_ms` off the real clock; answers the times around its arrival.
+async fn log_stamped_off_by(harness: &Harness, skew_ms: i64) -> (i64, i64) {
+    let arriving = sentinel::ids::now_ms();
+    harness
+        .ingest
+        .handle(
+            IngestJob::Log {
+                trace_id: "t2".into(),
+                log: json!({
+                    "timestamp_unix_nano": (arriving + skew_ms) as u64 * 1_000_000,
+                    "severity_text": "ERROR",
+                    "body": "redelivery exhausted after 3 attempts",
+                    "attributes": {},
+                    "trace_id": "t2",
+                    "span_id": "s2",
+                    "service_name": "queue",
+                }),
+            },
+            &harness.config,
+        )
+        .await
+        .expect("log");
+    (arriving, sentinel::ids::now_ms())
+}
+
+#[tokio::test]
+async fn a_log_from_a_clock_an_hour_ahead_is_due_when_its_window_ends() {
+    let harness = harness(FakeEngineTelemetry::default()).await;
+    let (_, arrived) = log_stamped_off_by(&harness, 3_600_000).await;
+
+    let window = harness.config.sources.log.join_window_ms as i64;
+    let due = harness
+        .store
+        .due_pending_logs(arrived + window, 100)
+        .await
+        .expect("read");
+    assert_eq!(
+        due.len(),
+        1,
+        "only the sweep promotes a parked log, so a fast clock would hide it for as long as it is fast"
+    );
+}
+
+#[tokio::test]
+async fn a_log_from_a_clock_five_seconds_behind_still_waits_its_window() {
+    let harness = harness(FakeEngineTelemetry::default()).await;
+    let (arriving, _) = log_stamped_off_by(&harness, -5_000).await;
+
+    let window = harness.config.sources.log.join_window_ms as i64;
+    assert!(
+        harness
+            .store
+            .due_pending_logs(arriving + window - 1, 100)
+            .await
+            .expect("read")
+            .is_empty(),
+        "a promotion queued now would run ahead of the span job the wait is for"
     );
 }
 

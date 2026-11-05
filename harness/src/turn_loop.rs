@@ -1738,6 +1738,7 @@ async fn finish_step(
     let submit_call = planned.iter().find(|c| c.kind == CallKind::SubmitResult);
 
     if !dispatch_calls.is_empty() {
+        crate::session_status::write_phase(deps, &record, "running tools").await;
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
         let session_grants =
@@ -2288,6 +2289,8 @@ async fn finish_step(
         record.status = TurnStatus::AwaitingFunctions;
         record.updated_at = AgentMessage::now_ms();
         crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+        crate::session_status::write_phase(deps, &record, crate::session_status::PARKED_PHASE)
+            .await;
         return Ok(TurnStepResult {
             session_id: record.session_id.clone(),
             status: TurnStatus::AwaitingFunctions,
@@ -2674,13 +2677,18 @@ async fn retry_or_giveup_with(
 }
 
 /// Persist the advanced step and re-enqueue the next `harness::turn`.
-async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult, HarnessError> {
+pub(crate) async fn advance(
+    deps: &Deps,
+    record: &mut TurnRecord,
+) -> Result<TurnStepResult, HarnessError> {
     let cfg = deps.cfg().await;
     let next = record.step + 1;
     record.step = next;
     record.status = TurnStatus::Running;
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    // Stays up through the enqueue retries and the queue wait.
+    crate::session_status::write_phase(deps, record, "queueing next step").await;
     enqueue_step(
         &deps.iii,
         &record.session_id,

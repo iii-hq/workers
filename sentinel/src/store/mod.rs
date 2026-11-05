@@ -20,8 +20,12 @@
 pub mod investigations;
 pub mod schema;
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tokio::sync::Notify;
 
 use crate::{
     ids, ErrorSourceV1, GroupCountsV1, GroupState, GroupStatusV1, GroupTriageV1, IgnoreBaselineV1,
@@ -221,6 +225,8 @@ pub struct OccurrenceWrite {
 #[derive(Debug, Clone)]
 pub struct Store<D: Db> {
     db: D,
+    /// Rung when a log parks, so the sweep can sleep until there is one.
+    parked: Arc<Notify>,
 }
 
 /// How many times a compare-and-set is retried before giving up. A miss means
@@ -230,13 +236,21 @@ pub(crate) const CAS_ATTEMPTS: usize = 5;
 
 /// How long a parked log is left alone once the sweeper has handed it to the
 /// queue. Long enough that a row which cannot be promoted costs one job every
-/// half minute rather than two a second, short enough that a job lost to a
-/// restart is picked up again quickly.
+/// half minute rather than one every pass of the sweep, short enough that a job
+/// lost to a restart is picked up again quickly.
 const JOIN_RETRY_MS: i64 = 30_000;
+
+/// The longest the sweep sleeps without reading the store. The notification
+/// stops at this process and only follows a commit whose reply arrived, so this
+/// is what finds a row another sentinel left behind or a park whose reply was lost.
+const JOIN_RESCAN: Duration = Duration::from_secs(30);
 
 impl<D: Db> Store<D> {
     pub fn new(db: D) -> Self {
-        Self { db }
+        Self {
+            db,
+            parked: Arc::new(Notify::new()),
+        }
     }
 
     pub fn db(&self) -> &D {
@@ -600,7 +614,46 @@ impl<D: Db> Store<D> {
                 ],
             )])
             .await?;
+        self.parked.notify_one();
         Ok(Some(occurrence_id))
+    }
+
+    /// When the soonest parked log's wait runs out, if any log is parked.
+    pub async fn next_join_deadline(&self) -> Result<Option<i64>, SentinelError> {
+        let rows = self
+            .db
+            .query(
+                "SELECT MIN(join_deadline_ms) AS deadline FROM sentinel_occurrences \
+                 WHERE pending_join = 1",
+                vec![],
+            )
+            .await?;
+        Ok(rows.first().and_then(|row| number(row, "deadline")))
+    }
+
+    /// Sleep until a parked log's wait has run out, then claim as
+    /// [`Self::due_pending_logs`] does. Each read here is traced by the database
+    /// worker, so a sweep with nothing to do reads only every `JOIN_RESCAN`.
+    pub async fn next_due_pending_logs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PendingLog>, SentinelError> {
+        loop {
+            // The notification keeps a permit, so a log parked after this read
+            // still ends the wait below.
+            let deadline = self.next_join_deadline().await?;
+            let now_ms = ids::now_ms();
+            let wait = match deadline {
+                None => JOIN_RESCAN,
+                Some(deadline) if deadline <= now_ms => {
+                    return self.due_pending_logs(now_ms, limit).await;
+                }
+                Some(deadline) => {
+                    JOIN_RESCAN.min(Duration::from_millis((deadline - now_ms) as u64))
+                }
+            };
+            let _ = tokio::time::timeout(wait, self.parked.notified()).await;
+        }
     }
 
     /// Logs whose wait has run out, oldest first.
@@ -619,13 +672,12 @@ impl<D: Db> Store<D> {
             )
             .await?;
         let due: Vec<PendingLog> = rows.iter().map(pending_log).collect();
-        // Claiming is part of reading. The sweeper runs twice a second, and a
-        // row it cannot promote — the span never came, the write failed —
-        // stays due, so without this the same handful of rows is queued
-        // thousands of times a minute and the queue grows faster than it
-        // drains. Pushing the wait forward makes a stuck row retry on a
-        // backoff instead, and the deadline lives in the store, so a restart
-        // does not start the flood again.
+        // Claiming is part of reading. A row the sweeper cannot promote — the
+        // span never came, the write failed — stays due, so without this the
+        // sweep never sleeps, the same handful of rows is queued over and over
+        // and the queue grows faster than it drains. Pushing the wait forward
+        // makes a stuck row retry on a backoff instead, and the deadline lives
+        // in the store, so a restart does not start the flood again.
         if !due.is_empty() {
             let mut params = vec![json!(now_ms + JOIN_RETRY_MS)];
             params.extend(due.iter().map(|pending| json!(pending.id)));

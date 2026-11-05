@@ -78,8 +78,8 @@ impl Observers {
     }
 }
 
-/// Every span-activity tick. The event carries trace ids only, so the
-/// target reads each trace and records it only when it holds an error.
+/// Every span-activity tick. The event carries trace ids only, so the target
+/// reads them in one call and queues only the ones that hold an error.
 pub fn span_source() -> Source {
     Source::function(ON_SPAN_FN)
         .namespace("default")

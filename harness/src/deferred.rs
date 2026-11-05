@@ -340,6 +340,7 @@ pub async fn resolve(
                 cp.state = CallState::Dispatched;
             }
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+            crate::session_status::write_phase(deps, &record, "running tools").await;
 
             let policy = crate::policy::CompiledPolicy::from(record.options.functions.as_ref());
             let engine = deps.engine().await;
@@ -389,6 +390,12 @@ pub async fn resolve(
                     record.status = TurnStatus::AwaitingFunctions;
                     record.updated_at = AgentMessage::now_ms();
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                    crate::session_status::write_phase(
+                        deps,
+                        &record,
+                        crate::session_status::PARKED_PHASE,
+                    )
+                    .await;
                     return Ok(FunctionResolveResponse {
                         resolved: true,
                         turn_resumed: false,
@@ -483,21 +490,10 @@ async fn persist_and_maybe_resume(
     if still_pending {
         record.updated_at = AgentMessage::now_ms();
         crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+        crate::session_status::write_phase(deps, record, crate::session_status::PARKED_PHASE).await;
         return Ok(false);
     }
-    record.step += 1;
-    record.status = TurnStatus::Running;
-    record.updated_at = AgentMessage::now_ms();
-    crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    crate::turn_loop::enqueue_step(
-        &deps.iii,
-        &record.session_id,
-        &record.turn_id,
-        record.step,
-        record.message_preview.as_deref(),
-        record.depth,
-    )
-    .await?;
+    crate::turn_loop::advance(deps, record).await?;
     Ok(true)
 }
 

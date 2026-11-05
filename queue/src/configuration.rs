@@ -180,6 +180,11 @@ pub fn swap_needed(old: &QueueConfig, new: &QueueConfig) -> bool {
 }
 
 fn effective_adapter(config: &QueueConfig) -> (String, Value) {
+    // A file store is its directory: a swap to the same one under another
+    // spelling would put a second live store on its journal.
+    if let Some(dir) = crate::boot::file_store_dir(config) {
+        return ("file_based".to_string(), json!(dir.to_string_lossy()));
+    }
     (
         config.effective_adapter_name().to_string(),
         config
@@ -557,6 +562,50 @@ mod tests {
             ..QueueConfig::default()
         };
         assert!(swap_needed(&old, &new));
+    }
+
+    #[test]
+    fn another_spelling_of_the_store_directory_does_not_open_a_second_store_on_its_journal() {
+        let dir = std::env::temp_dir().join(format!("queue_swap_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.display().to_string();
+        let config = |name: &str, settings: Value| QueueConfig {
+            adapter: Some(AdapterEntry {
+                name: name.to_string(),
+                config: Some(settings),
+            }),
+            ..QueueConfig::default()
+        };
+        let current = config(
+            "builtin",
+            json!({ "store_method": "file_based", "file_path": path, "save_interval_ms": 5000 }),
+        );
+
+        for same_store in [
+            config(
+                "builtin",
+                json!({ "store_method": "file_based", "file_path": path, "save_interval_ms": 1000 }),
+            ),
+            config("file_based", json!({ "file_path": path })),
+            config(
+                "builtin",
+                json!({ "store_method": "file_based", "file_path": format!("{path}/.") }),
+            ),
+        ] {
+            assert!(!swap_needed(&current, &same_store), "{same_store:?}");
+        }
+        assert!(swap_needed(
+            &current,
+            &config(
+                "file_based",
+                json!({ "file_path": format!("{path}/other") })
+            )
+        ));
+        assert!(swap_needed(
+            &current,
+            &config("in_memory", json!({ "file_path": path }))
+        ));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
