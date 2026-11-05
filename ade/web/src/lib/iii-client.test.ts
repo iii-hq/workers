@@ -284,7 +284,10 @@ describe('namespaced browser connection', () => {
     const client = wrapSdk(sdk, BROWSER_ID)
     const seen: unknown[] = []
     client.on(FN, (p) => void seen.push(p))
-    client.observe({ function_id: 'payments::charge', capture: ['input'] }, SDK_ID)
+    client.observe(
+      { function_id: 'payments::charge', capture: ['input'] },
+      SDK_ID,
+    )
 
     const event = envelope('obs-1', { input: { amount: 3 } })
     await functions.get(SDK_ID)?.(event)
@@ -297,7 +300,10 @@ describe('namespaced browser connection', () => {
     const seen: unknown[] = []
     client.on(FN, (p) => void seen.push(p))
     client.observe('session::on-created', SDK_ID)
-    client.observe({ function_id: 'payments::charge', capture: ['input'] }, SDK_ID)
+    client.observe(
+      { function_id: 'payments::charge', capture: ['input'] },
+      SDK_ID,
+    )
 
     const raw = envelope('obs-2', { input: { amount: 3 } })
     await functions.get(SDK_ID)?.(envelope('obs-1', { output: 'o' }))

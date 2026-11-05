@@ -9,6 +9,7 @@ import { JsonHighlight } from '@/lib/syntax'
 import { ObserverRow } from './ObserversListView'
 import {
   type ObserverInfo,
+  observerFiresOn,
   observerIdRequestSchema,
   safeParseRequest,
 } from './parsers'
@@ -52,27 +53,7 @@ export function ObserverInfoView({
     )
   }
 
-  const policy = {
-    ...(observer.on ? { on: observer.on } : {}),
-    ...(observer.deliver ? { deliver: observer.deliver } : {}),
-    ...(observer.capture ? { capture: observer.capture } : {}),
-    ...(observer.max_fires !== undefined
-      ? { max_fires: observer.max_fires }
-      : {}),
-    ...(observer.expires_in_ms !== undefined
-      ? { expires_in_ms: observer.expires_in_ms }
-      : {}),
-    ...(observer.max_in_flight !== undefined
-      ? { max_in_flight: observer.max_in_flight }
-      : {}),
-    ...(observer.dropped && Object.keys(observer.dropped).length > 0
-      ? { dropped: observer.dropped }
-      : {}),
-    ...(observer.activation_failures &&
-    Object.keys(observer.activation_failures).length > 0
-      ? { activation_failures: observer.activation_failures }
-      : {}),
-  }
+  const policy = observerPolicy(observer)
 
   return (
     <div className="border-t border-rule-2 bg-bg">
@@ -106,4 +87,37 @@ export function ObserverInfoView({
       ) : null}
     </div>
   )
+}
+
+/**
+ * The "delivery and policy" block: the outcomes that fire the target
+ * (`fires_on`), a legacy raw `deliver` only when an older engine reports
+ * one, what is captured and the lifecycle policy.
+ */
+export function observerPolicy(
+  observer: ObserverInfo,
+): Record<string, unknown> {
+  return {
+    fires_on: observerFiresOn(observer),
+    ...(observer.deliver && observer.deliver !== 'envelope'
+      ? { deliver: observer.deliver }
+      : {}),
+    ...(observer.capture ? { capture: observer.capture } : {}),
+    ...(observer.max_fires !== undefined
+      ? { max_fires: observer.max_fires }
+      : {}),
+    ...(observer.expires_in_ms !== undefined
+      ? { expires_in_ms: observer.expires_in_ms }
+      : {}),
+    ...(observer.max_in_flight !== undefined
+      ? { max_in_flight: observer.max_in_flight }
+      : {}),
+    ...(observer.dropped && Object.keys(observer.dropped).length > 0
+      ? { dropped: observer.dropped }
+      : {}),
+    ...(observer.activation_failures &&
+    Object.keys(observer.activation_failures).length > 0
+      ? { activation_failures: observer.activation_failures }
+      : {}),
+  }
 }

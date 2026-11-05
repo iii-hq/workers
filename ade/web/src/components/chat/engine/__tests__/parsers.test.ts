@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { observerPolicy } from '../ObserverInfoView'
 import { ObserveView } from '../ObserveView'
 import {
   coerceJsonObject,
@@ -31,7 +32,6 @@ import {
   workersRegisterRequestSchema,
   workersRegisterResponseSchema,
 } from '../parsers'
-import { observerPolicy } from '../ObserverInfoView'
 import { UnobserveView } from '../UnobserveView'
 
 function wrap<T>(details: T) {
@@ -277,23 +277,29 @@ describe('observer outcomes', () => {
   })
 
   it('reads fires_on, never capture', () => {
-    expect(observerFiresOn({ ...captureObserver, fires_on: ['success'] })).toEqual(['success'])
-    expect(observerFiresOn({ ...captureObserver, fires_on: ['error', 'success'] })).toEqual([
-      'success',
-      'error',
-    ])
+    expect(
+      observerFiresOn({ ...captureObserver, fires_on: ['success'] }),
+    ).toEqual(['success'])
+    expect(
+      observerFiresOn({ ...captureObserver, fires_on: ['error', 'success'] }),
+    ).toEqual(['success', 'error'])
   })
 
   it('falls back to the legacy on when fires_on is absent or unusable', () => {
     expect(observerFiresOn(observer)).toEqual(['success'])
-    expect(observerFiresOn({ ...captureObserver, fires_on: undefined, on: 'error' })).toEqual([
-      'error',
-    ])
-    expect(observerFiresOn({ ...captureObserver, fires_on: ['bogus'], on: 'complete' })).toEqual([
-      'success',
-      'error',
-    ])
-    expect(observerFiresOn({ ...captureObserver, fires_on: undefined })).toEqual(['success'])
+    expect(
+      observerFiresOn({ ...captureObserver, fires_on: undefined, on: 'error' }),
+    ).toEqual(['error'])
+    expect(
+      observerFiresOn({
+        ...captureObserver,
+        fires_on: ['bogus'],
+        on: 'complete',
+      }),
+    ).toEqual(['success', 'error'])
+    expect(
+      observerFiresOn({ ...captureObserver, fires_on: undefined }),
+    ).toEqual(['success'])
   })
 
   it('the policy block shows fires_on, and deliver only for a legacy raw delivery', () => {
@@ -305,7 +311,9 @@ describe('observer outcomes', () => {
     expect(legacy.fires_on).toEqual(['success'])
     expect(legacy).not.toHaveProperty('on')
     expect(legacy.deliver).toBe('output')
-    expect(observerPolicy({ ...observer, deliver: 'envelope' })).not.toHaveProperty('deliver')
+    expect(
+      observerPolicy({ ...observer, deliver: 'envelope' }),
+    ).not.toHaveProperty('deliver')
   })
 })
 
