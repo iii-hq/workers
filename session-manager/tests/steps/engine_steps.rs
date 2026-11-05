@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::{CallRequest, Deliver, Source};
+use iii_sdk::{CallRequest, Capture, Source};
 use serde_json::{json, Value};
 
 use session_manager::events::EventKind;
@@ -174,7 +174,7 @@ async fn engine_observer(world: &mut SessionWorld, alias: String, source: String
     let handle = iii.observe(
         Source::function(source.as_str())
             .filters(filters)
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         target.as_str(),
     );
     match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {
@@ -368,7 +368,7 @@ async fn outsider_observes(world: &mut SessionWorld, source: String) {
         .expect("a second engine connection while the first one is connected");
     let target = register_recorder_function(&iii);
     let handle = outsider.observe(
-        Source::function(source.as_str()).deliver(Deliver::Output),
+        Source::function(source.as_str()).capture([Capture::Output]),
         target.as_str(),
     );
     match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {
@@ -396,7 +396,7 @@ async fn engine_observer_with_args(world: &mut SessionWorld, source: String, ste
     let handle = iii.observe(
         Source::function(source.as_str())
             .args(args)
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         target.as_str(),
     );
     match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {

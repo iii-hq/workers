@@ -42,7 +42,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    CallAction, CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction,
+    CallAction, CallRequest, Capture, IIIClient, ObserverHandle, ObserverState, RegisterFunction,
     Source,
 };
 use schemars::JsonSchema;
@@ -684,7 +684,7 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
     );
 
     let observer = remote.observe(
-        Source::function(STORE_ON_EVENTS_FN).deliver(Deliver::Output),
+        Source::function(STORE_ON_EVENTS_FN).capture([Capture::Output]),
         relay_id.as_str(),
     );
     let relay = relay_id.clone();
