@@ -518,9 +518,10 @@ mod tests {
             );
             assert!(
                 logs.contains("WARN")
-                    && logs.contains("deprecated")
-                    && logs.contains("deliver")
-                    && logs.contains("capture")
+                    && logs.contains(
+                        "guest observe `deliver` is deprecated and will be removed in a future \
+                         release; use `capture` instead"
+                    )
                     && logs.contains("state::on-changed"),
                 "no deprecation warning naming capture for deliver {raw}: {logs:?}"
             );
