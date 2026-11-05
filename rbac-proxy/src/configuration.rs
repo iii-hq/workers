@@ -244,7 +244,9 @@ pub fn observe_config_changes(
     let iii = iii.clone();
     tokio::spawn(async move {
         match observer.ready().await {
-            Ok(()) => on_config_change(&iii, &cell, &server, &default_engine_url).await,
+            Ok(()) => {
+                on_config_change(&iii, &cell, &server, &default_engine_url).await;
+            }
             Err(e) => tracing::warn!(
                 error = %e,
                 "the configuration change observer did not become active; configuration changes apply on restart"

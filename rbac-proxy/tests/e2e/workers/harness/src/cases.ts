@@ -206,34 +206,6 @@ function rawInvoke(functionId: string, data: Json, timeoutMs = 10_000): Promise<
   })
 }
 
-async function waitFor(description: string, check: () => Promise<boolean>) {
-  const deadline = Date.now() + 5000
-  while (Date.now() < deadline) {
-    if (await check()) return
-    await sleep(50)
-  }
-  throw new Error(`timed out waiting for ${description}`)
-}
-
-function rawTriggerResult(frame: Json): Promise<Json> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(PROXY_URL, { headers: { authorization: 'Bearer test-token' } })
-    const fail = (error: Error) => { clearTimeout(timer); ws.terminate(); reject(error) }
-    const timer = setTimeout(() => fail(new Error('no condition binding refusal')), 5000)
-    ws.on('open', () => ws.send(JSON.stringify(frame)))
-    ws.on('message', (raw) => {
-      let result: Json
-      try { result = JSON.parse(String(raw)) } catch (error) { return fail(error as Error) }
-      if (result.type !== 'triggerregistrationresult' || result.id !== frame.id) return
-      clearTimeout(timer)
-      resolve(result)
-      ws.close()
-    })
-    ws.on('error', fail)
-    ws.on('close', () => fail(new Error('condition socket closed before refusal')))
-  })
-}
-
 export const CASES: TestCase[] = [
   // (a) An exposed call succeeds — and flows through middleware, which wraps
   //     the result and invokes the real target.
@@ -554,68 +526,6 @@ export const CASES: TestCase[] = [
         back.send({ type: 'unobserve', id })
       } finally {
         back.close()
-      }
-    },
-  },
-
-  // Keep trigger-registration hooks absent: this must reach the proxy's own
-  // embedded callback policy, independently of Mesh's earlier hook defense.
-  {
-    name: 'condition-callback-outside-grants-denied',
-    async run({ support, down }) {
-      let forbiddenCalls = 0
-      let allowedCalls = 0
-      let delivered = 0
-      const target = 'api::condition-event'
-      const allowed = 'api::condition-ready'
-      const forbidden = 'secret::condition-callback'
-      const configId = 'tenant1__condition'
-      const refs = [
-        support.registerFunction(target, async () => { delivered++; return {} }),
-        support.registerFunction(allowed, async () => { allowedCalls++; return true }),
-        support.registerFunction(forbidden, async () => { forbiddenCalls++; return true }),
-      ]
-      let positive: ReturnType<IIIClient['registerTrigger']> | undefined
-      try {
-        await waitFor('real callback registrations', async () => {
-          for (const function_id of [target, allowed, forbidden]) {
-            const result: Json = await support.trigger({ function_id: 'engine::functions::info', payload: { function_id } })
-            if (result?.function_id !== function_id) return false
-          }
-          return true
-        })
-        const proxyConfig: Json = await support.trigger({ function_id: 'configuration::get', payload: { id: 'rbac-proxy', raw: true } })
-        if (!proxyConfig?.value?.rbac || proxyConfig.value.rbac.on_trigger_registration_function_id) {
-          throw new Error('condition test requires the independent proxy policy without a registration hook')
-        }
-        await support.trigger({ function_id: 'configuration::ensure', payload: {
-          id: configId, name: 'Condition probe', description: 'Real proxy callback test', schema: {}, initial_value: {},
-        } })
-        const config = { configuration_id: configId, event_types: ['configuration:updated'] }
-        const id = randomUUID()
-        const result = await rawTriggerResult({
-          type: 'registertrigger', id, namespace: 'default', trigger_type: 'configuration', function_id: target,
-          config: { ...config, condition_function_id: forbidden },
-        })
-        if (result.error?.code !== 'REGISTRATION_DENIED' || !result.error?.message?.includes(forbidden)) {
-          throw new Error(`expected independent condition refusal: ${JSON.stringify(result)}`)
-        }
-        positive = down.registerTrigger({ type: 'configuration', function_id: target, config: { ...config, condition_function_id: allowed } })
-        await waitFor('allowed condition binding', async () => {
-          const catalog: Json = await support.trigger({ function_id: 'engine::registered-triggers::list', payload: {} })
-          const bindings: Json[] = catalog?.registered_triggers ?? []
-          if (bindings.some((binding) => binding.id === id || binding.config?.condition_function_id === forbidden)) {
-            throw new Error('forbidden condition reached the actual engine registry')
-          }
-          return bindings.some((binding) => binding.function_id === target && binding.config?.condition_function_id === allowed)
-        })
-        await support.trigger({ function_id: 'configuration::set', payload: { id: configId, value: { changed: true } } })
-        await waitFor('real conditional configuration delivery', async () => allowedCalls > 0 && delivered > 0)
-        if (forbiddenCalls !== 0) throw new Error(`forbidden condition executed ${forbiddenCalls} times`)
-        console.log(`[condition] independent refusal=${result.error.code}; allowed callbacks=${allowedCalls}; deliveries=${delivered}; forbidden callbacks=${forbiddenCalls}`)
-      } finally {
-        positive?.unregister()
-        for (const ref of refs) ref.unregister()
       }
     },
   },

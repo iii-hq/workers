@@ -16,7 +16,7 @@ type Node = {
   workers: ComponentState[]; drives: ComponentState[]
 }
 type Join = { code: string; install: { unix: string; windows: string } }
-const NO_TRIGGERS: readonly string[] = []
+const NO_SOURCES: readonly string[] = []
 
 function CopyValue({ label, value }: { label: string; value: string }) {
   const { state, copy } = useCopyFlash(value)
@@ -53,7 +53,7 @@ function MeshPage({ host, onRequestClose }: PageRenderProps & { host: Host }) {
     }
   }, [host])
   const { data, loading, error, refresh } = useWorkerLive({
-    iii: host.iii, fetch, triggers: NO_TRIGGERS, handlerId: 'iii::mesh-ui::events',
+    iii: host.iii, fetch, sources: NO_SOURCES, handlerId: 'iii::mesh-ui::events',
   })
   return <PageShell className="mesh-ui-shell">
     <PageHeader icon={<Network />} title="Mesh" description="Your machines" onClose={onRequestClose}
