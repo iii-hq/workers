@@ -205,7 +205,8 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                             "input.event_type": { "$eq": "configuration:updated" }
                         })
                     );
-                    assert_eq!(value["source"]["deliver"], "output");
+                    assert_eq!(value["source"]["capture"], json!(["output"]));
+                    assert!(value["source"].get("deliver").is_none());
                     reload = true;
                 }
                 "observe" if value["source"]["function_id"] == "harness::hook::on-pre-generate" => {
