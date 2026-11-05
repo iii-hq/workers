@@ -107,10 +107,13 @@ Code you run gets a global `iii`:
   call the function while any worker may observe it.
 - `await iii.observe(source, target, opts?)` — run the registered function
   `target` on every call of `source` that matches. `source` is a function id,
-  or `{ function_id, namespace?, args?, filters?, deliver? }`: `args` are read
+  or `{ function_id, namespace?, args?, filters?, capture? }`: `args` are read
   by the worker that hosts `source`, `filters` select calls by `input`,
-  `output`, `error`, `caller` and `metadata`, and `deliver` is what `target`
-  receives (`'envelope'`, the default, `'input'` or `'output'`). `opts` takes
+  `output`, `error`, `caller` and `metadata`, and `capture` lists which of
+  those travel to `target` in its envelope (default `['input', 'output',
+  'caller']`; read `payload.output` / `payload.input`). The pre-0.26
+  `deliver` is deprecated: it is still forwarded to the engine, which
+  translates it, and logs a warning naming `capture`. `opts` takes
   `id` (inside this runtime's namespace), `metadata`, `max_fires`,
   `expires_in_ms` and `max_in_flight`. Resolves to `{ id, dispose() }`; the
   observer stays pending until `source` is registered and accepts it.

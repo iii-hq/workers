@@ -285,11 +285,29 @@ pub struct GuestObserveSource {
     /// Read by iii: which calls reach the target.
     #[serde(default)]
     pub filters: Option<serde_json::Map<String, Value>>,
+    /// What travels to the target, in the engine's vocabulary (`input`,
+    /// `output`, `error`, `caller`, `metadata`). Unset: the engine default.
+    #[serde(default)]
+    pub capture: Option<Vec<GuestCapture>>,
+    /// Deprecated: the pre-0.26 delivery mode. Still forwarded to the engine
+    /// as the legacy source field, which the engine translates; use
+    /// `capture` and read `payload.output` / `payload.input` instead.
     #[serde(default)]
     pub deliver: Option<GuestDeliver>,
 }
 
-/// What the target receives when iii delivers a call.
+/// One field of the activation envelope a guest observer asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuestCapture {
+    Input,
+    Output,
+    Error,
+    Caller,
+    Metadata,
+}
+
+/// Deprecated legacy delivery mode (see [`GuestObserveSource::deliver`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuestDeliver {

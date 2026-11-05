@@ -11,14 +11,15 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use iii_sdk::{
-    CallAction, CallRequest, Deliver, Error, IIIClient, ObserveRejection, Observer, ObserverHandle,
-    ObserverOptions, ObserverState, RegisterFunction, Source, Target,
+    CallAction, CallRequest, Capture, Deliver, Error, IIIClient, ObserveRejection, Observer,
+    ObserverHandle, ObserverOptions, ObserverState, RegisterFunction, Source, Target,
 };
 use serde_json::Value;
 
 use iii_node_core::engine::{
-    hook_outcome, observer_hook_payload, parse_guest_observe, CallResult, Engine, GuestDeliver,
-    GuestFunctionOptions, GuestObserveInput, GuestObserver, HookMethod, ProxyHandler, UnregisterFn,
+    hook_outcome, observer_hook_payload, parse_guest_observe, CallResult, Engine, GuestCapture,
+    GuestDeliver, GuestFunctionOptions, GuestObserveInput, GuestObserver, HookMethod, ProxyHandler,
+    UnregisterFn,
 };
 
 /// Stands in when a caller registers without a description, on this worker's
@@ -229,12 +230,32 @@ fn sdk_observe(guest: GuestObserveInput) -> (Source, Target, ObserverOptions) {
     if let Some(filters) = guest.source.filters {
         source = source.filters(Value::Object(filters));
     }
+    if let Some(capture) = guest.source.capture {
+        source = source.capture(capture.into_iter().map(|field| match field {
+            GuestCapture::Input => Capture::Input,
+            GuestCapture::Output => Capture::Output,
+            GuestCapture::Error => Capture::Error,
+            GuestCapture::Caller => Capture::Caller,
+            GuestCapture::Metadata => Capture::Metadata,
+        }));
+    }
     if let Some(deliver) = guest.source.deliver {
-        source = source.deliver(match deliver {
-            GuestDeliver::Envelope => Deliver::Envelope,
-            GuestDeliver::Input => Deliver::Input,
-            GuestDeliver::Output => Deliver::Output,
-        });
+        // Deprecated, still honoured: forwarded as the legacy source field,
+        // which the 0.26 engine translates (with its own warning).
+        let (deliver, replacement) = match deliver {
+            GuestDeliver::Envelope => (Deliver::Envelope, "omit it (the envelope is the default)"),
+            GuestDeliver::Input => (Deliver::Input, "capture: ['input'] and read payload.input"),
+            GuestDeliver::Output => (Deliver::Output, "capture: ['output'] and read payload.output"),
+        };
+        tracing::warn!(
+            function_id = %source.function_id(),
+            target = %guest.target,
+            deliver = %deliver,
+            "guest observe `deliver` is deprecated and will be removed in a future release; \
+             use `capture` instead ({replacement}); forwarded to the engine as the legacy \
+             field until then"
+        );
+        source = source.deliver(deliver);
     }
 
     let mut options = ObserverOptions::default();
