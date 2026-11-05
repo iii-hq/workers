@@ -77,7 +77,7 @@ jobs:
           git diff --exit-code -- mesh/assets
       - name: Install current iii engine
         run: |
-          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 https://install.iii.dev/iii/main/install.sh | sh
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 https://install.iii.dev/iii/main/install.sh | VERSION=0.26.0 sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install isolated desktop test tools
         run: |
@@ -92,7 +92,8 @@ jobs:
       - name: Run real mesh suite without privileged networking
         run: |
           iii --version
-          mkdir -p mesh/tests/e2e/reports
+          install -d -m 700 mesh/tests/e2e/reports
+          install -m 600 /dev/null mesh/tests/e2e/reports/results.log
           III_BIN=$(command -v iii) MESH_TEST_CHROMIUM_BIN=$(command -v google-chrome) mesh/tests/e2e/run-tests.sh 2>&1 | tee mesh/tests/e2e/reports/results.log
       - name: Prepare credential-free public report
         if: always()

@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -18,7 +19,7 @@ import (
 
 func fakeWorker(f *fixture, n *testNode, name string) *iii.Client {
 	c := connect(f.t, f.ctx, n.url, name, f.ns)
-	if err := iii.RegisterFunctionTyped(c, "echo", func(context.Context, json.RawMessage) (map[string]string, error) {
+	if _, err := iii.RegisterFunctionTyped(c, "echo", func(context.Context, json.RawMessage) (map[string]string, error) {
 		return map[string]string{"node": n.name}, nil
 	}); err != nil {
 		f.t.Fatal(err)
@@ -82,7 +83,7 @@ func TestE2ENodeRegistersMeshIDGetsPrefix(t *testing.T) {
 	f := newFixture(t, "default")
 	n := f.enroll("evil")
 	c := fakeWorker(f, n, "mesh")
-	if err := iii.RegisterFunctionTyped(c, "mesh::status", func(context.Context, json.RawMessage) (map[string]bool, error) {
+	if _, err := iii.RegisterFunctionTyped(c, "mesh::status", func(context.Context, json.RawMessage) (map[string]bool, error) {
 		return map[string]bool{"evil": true}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -102,7 +103,7 @@ func TestE2ENodeRegistersMeshIDGetsPrefix(t *testing.T) {
 func TestE2ERevocationWithin5s(t *testing.T) {
 	f := newFixture(t, "default")
 	var calls atomic.Int32
-	if err := iii.RegisterFunctionTyped(f.admin, "target::allowed", func(context.Context, json.RawMessage) (map[string]bool, error) {
+	if _, err := iii.RegisterFunctionTyped(f.admin, "target::allowed", func(context.Context, json.RawMessage) (map[string]bool, error) {
 		calls.Add(1)
 		return map[string]bool{"ok": true}, nil
 	}); err != nil {
@@ -185,69 +186,104 @@ func TestE2ESupervisorUnreachable(t *testing.T) {
 	refused(t, f.admin, "default", "laptop::mesh-node::workers::apply", envelope, "replayed")
 }
 
-func waitRegistrationRefused(t *testing.T, n *testNode, id string) {
+func observe(t *testing.T, c *iii.Client, source iii.Source, target, id string, allowed bool) *iii.ObserverHandle {
 	t.Helper()
-	eventually(t, 5*time.Second, "registration refusal "+id, func() error {
-		for _, frame := range n.snapshot() {
-			if frame.Direction == "hub-to-node" && frame.Data["type"] == "triggerregistrationresult" && frame.Data["id"] == id && frame.Data["error"] != nil {
-				return nil
-			}
+	h, err := c.Observe(source, target, iii.ObserverOptions{ID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	err = h.Ready(ctx)
+	if allowed {
+		if err != nil {
+			t.Fatalf("observe %s: %v", id, err)
 		}
-		return fmt.Errorf("no error acknowledgement")
-	})
+	} else {
+		var rejection *iii.ObserveRejectionError
+		if !errors.As(err, &rejection) || rejection.Code != "FORBIDDEN" {
+			t.Fatalf("observer %s not refused: %v", id, err)
+		}
+	}
+	return h
 }
+
 func TestE2EConditionCallbackRefused(t *testing.T) {
-	f := newFixture(t, "default")
+	f := newFixture(t, "project")
 	n := f.enroll("evil")
 	c := fakeWorker(f, n, "echo")
 	var called atomic.Int32
-	if err := iii.RegisterFunctionTyped(f.admin, "outside::callback", func(context.Context, json.RawMessage) (bool, error) { called.Add(1); return true, nil }); err != nil {
+	if _, err := iii.RegisterFunctionTyped(f.admin, "outside::callback", func(context.Context, json.RawMessage) (bool, error) { called.Add(1); return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	// The bare spelling collides with a hub producer and must resolve to the node.
+	if _, err := iii.RegisterFunctionTyped(f.admin, "hub::collision", func(_ context.Context, p json.RawMessage) (json.RawMessage, error) { return p, nil }); err != nil {
 		t.Fatal(err)
 	}
 	mustCall(t, c, "default", "configuration::ensure", configEntry("evil__probe", map[string]any{}))
-	for i, condition := range []string{"outside::callback", "echo"} {
-		id := fmt.Sprintf("condition-%d", i)
-		cfg := json.RawMessage(mustJSON(map[string]any{"configuration_id": "evil__probe", "condition_function_id": condition}))
-		if err := c.RegisterTrigger(id, "configuration", "echo", cfg); err != nil {
-			t.Fatal(err)
-		}
-		waitRegistrationRefused(t, n, id)
+	delivered := make(chan json.RawMessage, 16)
+	if _, err := iii.RegisterFunctionTyped(c, "on-change", func(_ context.Context, raw json.RawMessage) (bool, error) { delivered <- raw; return true, nil }); err != nil {
+		t.Fatal(err)
 	}
-	var delivered atomic.Int32
-	if err := iii.RegisterFunctionTyped(c, "on-change", func(context.Context, json.RawMessage) (json.RawMessage, error) {
-		delivered.Add(1)
-		return json.RawMessage(`{}`), nil
+	owned := iii.Filters{"input.id": iii.Op{"$eq": "evil__probe"}, "input.event_type": iii.Op{"$eq": "configuration:updated"}}
+	sources := []iii.Source{
+		{FunctionID: "configuration::on-updated", Namespace: "default"},
+		{FunctionID: "configuration::on-updated", Namespace: "default", Filters: iii.Filters{"input.id": iii.Op{"$eq": "mesh"}}},
+		{FunctionID: "configuration::on-updated", Namespace: "default", Filters: iii.Filters{"input.id": iii.Op{"$eq": "laptop__probe"}}},
+		{FunctionID: "configuration::on-updated", Namespace: "foreign", Filters: owned},
+		{FunctionID: "configuration::on-updated", Namespace: "default", Filters: iii.Filters{"input.id": iii.Op{"$in": []string{"evil__probe", "mesh"}}}},
+		{FunctionID: "configuration::on-updated", Namespace: "default", Filters: iii.Filters{"input.id": iii.Op{"$eq": true}}},
+		{FunctionID: "configuration::on-updated", Namespace: "default", Filters: owned, Args: iii.Args{"condition_function_id": "outside::callback"}},
+		{FunctionID: "configuration::on-updated", Namespace: "default", Filters: owned, Args: iii.Args{"condition_function_id": "echo"}},
+		{FunctionID: "configuration::on-updated", Namespace: "default", Filters: owned, Args: iii.Args{"id": "mesh"}},
+		{FunctionID: "echo", Namespace: "foreign"},
+		{FunctionID: "laptop::echo", Namespace: f.ns},
+		{FunctionID: "hub::collision", Namespace: f.ns},
+	}
+	for _, id := range []string{"state::on-changed", "queue::on-message", "http::on-request", "cron::on-tick", "harness::hook::on-pre-call", "ade::ui::asset"} {
+		sources = append(sources, iii.Source{FunctionID: id, Namespace: f.ns})
+	}
+	for i, source := range sources {
+		observe(t, c, source, "on-change", fmt.Sprintf("denied-%d", i), false)
+	}
+	if _, err := iii.RegisterFunctionTyped(f.admin, "echo", func(context.Context, json.RawMessage) (map[string]string, error) {
+		return map[string]string{"node": "hub"}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.RegisterTrigger("positive-config", "configuration", "on-change", json.RawMessage(`{"configuration_id":"evil__probe","event_types":["configuration:updated"]}`)); err != nil {
-		t.Fatal(err)
+	own := observe(t, c, iii.Source{FunctionID: "echo", Namespace: f.ns, Deliver: iii.DeliverOutput}, "on-change", "positive-own", true)
+	mustCall(t, f.admin, f.ns, "echo", map[string]any{"secret": "foreign-producer"})
+	select {
+	case raw := <-delivered:
+		t.Fatalf("bare-name observer leaked hub source: %s", raw)
+	case <-time.After(150 * time.Millisecond):
 	}
-	eventually(t, 5*time.Second, "positive config binding accepted", func() error {
-		b, err := call(f.ctx, f.admin, "default", "engine::registered-triggers::list", map[string]any{})
-		if err != nil {
-			return err
-		}
-		if strings.Contains(string(b), "positive-config") {
-			return nil
-		}
-		return fmt.Errorf("binding absent: %s", b)
-	})
 
-	mustCall(t, c, "default", "configuration::set", map[string]any{"id": "evil__probe", "value": map[string]any{"changed": true}})
-	eventually(t, 5*time.Second, "configuration update delivered", func() error {
-		if delivered.Load() > 0 {
-			return nil
+	mustCall(t, f.admin, f.ns, "evil::echo", map[string]any{})
+	select {
+	case raw := <-delivered:
+		if !strings.Contains(string(raw), `"node":"evil"`) {
+			t.Fatalf("own event: %s", raw)
 		}
-		return fmt.Errorf("positive config callback did not run")
-	})
+	case <-time.After(5 * time.Second):
+		t.Fatal("own event not delivered")
+	}
+	own.Dispose(f.ctx)
+	cfg := observe(t, c, iii.Source{FunctionID: "configuration::on-updated", Namespace: "default", Filters: owned, Deliver: iii.DeliverOutput}, "on-change", "positive-config", true)
+	defer cfg.Dispose(f.ctx)
+	mustCall(t, c, "default", "configuration::set", map[string]any{"id": "evil__probe", "value": map[string]any{"changed": true}})
+	select {
+	case raw := <-delivered:
+		if !strings.Contains(string(raw), `"id":"evil__probe"`) {
+			t.Fatalf("config event: %s", raw)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("configuration event not delivered")
+	}
 	if called.Load() != 0 {
 		t.Fatal("ungranted condition ran")
 	}
-	if err := c.RegisterTrigger("foreign-config", "configuration", "echo", json.RawMessage(`{"configuration_id":"mesh"}`)); err != nil {
-		t.Fatal(err)
-	}
-	waitRegistrationRefused(t, n, "foreign-config")
+	f.observeWorker(n, "echo")
 }
 func TestE2ENameSquatting(t *testing.T) {
 	f := newFixture(t, "default")
@@ -274,33 +310,27 @@ func TestE2ENameSquatting(t *testing.T) {
 	}
 }
 
-type triggerRecorder struct{ registered chan iii.TriggerConfig }
-
-func (r triggerRecorder) RegisterTrigger(_ context.Context, cfg iii.TriggerConfig) error {
-	r.registered <- cfg
-	return nil
-}
-func (r triggerRecorder) UnregisterTrigger(context.Context, iii.TriggerConfig) error { return nil }
 func TestE2ETwoNodesSameWorkerName(t *testing.T) {
 	f := newFixture(t, "default")
 	for _, name := range []string{"alpha", "beta"} {
 		n := f.enroll(name)
 		c := fakeWorker(f, n, "echo")
-		received := make(chan iii.TriggerConfig, 4)
-		if err := c.RegisterTriggerType("echo::event", "Echo event", triggerRecorder{received}); err != nil {
+		received := make(chan json.RawMessage, 4)
+		if _, err := iii.RegisterFunctionTyped(c, "received", func(_ context.Context, p json.RawMessage) (bool, error) { received <- p; return true, nil }); err != nil {
 			t.Fatal(err)
 		}
-		if err := c.RegisterTrigger("binding", "echo::event", "echo", json.RawMessage(`{}`)); err != nil {
-			t.Fatal(err)
-		}
+		h := observe(t, c, iii.Source{FunctionID: "echo", Namespace: f.ns, Deliver: iii.DeliverOutput}, "received", "", true)
+		mustCall(t, f.admin, f.ns, name+"::echo", map[string]any{"probe": "same-payload"})
 		select {
-		case cfg := <-received:
-			if cfg.ID != "binding" || cfg.FunctionID != "echo" {
-				t.Fatalf("type delivery not unprefixed: %+v", cfg)
+		case raw := <-received:
+			var reply struct{ Node string }
+			if json.Unmarshal(raw, &reply) != nil || reply.Node != name {
+				t.Fatalf("observer escaped node: %s", raw)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("own trigger binding never reached fake worker")
+			t.Fatal("own event never reached fake worker")
 		}
+		defer h.Dispose(f.ctx)
 	}
 	for _, name := range []string{"alpha", "beta"} {
 		out := mustCall(t, f.admin, "default", name+"::echo", map[string]any{"probe": "same-payload"})

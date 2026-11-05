@@ -4,12 +4,10 @@ package e2e
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Engine metadata is authoritative here: the proxy rewrites the upstream worker name.
@@ -82,31 +80,9 @@ func TestE2EConsoleNodeConfigurationDiscovery(t *testing.T) {
 			if identities != 1 {
 				t.Fatalf("Console identity count=%d: %s", identities, info)
 			}
-			refusals := map[string]map[string]any{}
-			eventually(t, 5*time.Second, "remote UI registrations refused", func() error {
-				for _, frame := range n.snapshot() {
-					if frame.Direction != "hub-to-node" || frame.Data["type"] != "triggerregistrationresult" || frame.Data["function_id"] != "ide::ui-content" {
-						continue
-					}
-					kind, _ := frame.Data["trigger_type"].(string)
-					if kind != "console:script" && kind != "console:style" && kind != "console:module" {
-						continue
-					}
-					failure, _ := frame.Data["error"].(map[string]any)
-					if failure["code"] == "REGISTRATION_DENIED" {
-						refusals[kind] = frame.Data
-					}
-				}
-				if len(refusals) != 3 {
-					return fmt.Errorf("refusals=%v", refusals)
-				}
-				return nil
-			})
-			rawRefusals, _ := json.MarshalIndent(refusals, "", "  ")
-			if err := os.WriteFile(filepath.Join(os.Getenv("MESH_E2E_REPORT_DIR"), "console-node-"+ns+"-ui-refusals.json"), rawRefusals, 0600); err != nil {
-				t.Fatal(err)
-			}
-			t.Log("Console form delivery: remote module/script/style registrations rejected by Mesh policy; identity/schema discovery works, node-only form assets require follow-up")
+			f.assertWorkerPolicy(n, "ide", 3)
+			f.observeWorker(n, "ide")
+			t.Log("ADE asset observers refused by Mesh policy; configuration identity/schema discovery succeeds")
 			if err := os.WriteFile(filepath.Join(os.Getenv("MESH_E2E_REPORT_DIR"), "console-node-"+ns+"-info.json"), info, 0600); err != nil {
 				t.Fatal(err)
 			}

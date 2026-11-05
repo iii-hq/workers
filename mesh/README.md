@@ -10,7 +10,7 @@ person who joined the machine. It uses
 ## Install
 
 ```bash
-iii trigger compose::add worker=mesh worker=rbac-proxy
+iii call --engine ws://127.0.0.1:49834 compose::add worker=mesh worker=rbac-proxy
 ```
 
 Compose resolves dependencies and starts the hub in the project. Install or
@@ -27,9 +27,9 @@ verification.
 With the hub running, inspect its health and discover joined machines:
 
 ```bash
-iii trigger mesh::status
-iii trigger mesh::nodes::list
-iii trigger mesh::nodes::get name=laptop
+iii call --engine ws://127.0.0.1:49834 mesh::status
+iii call --engine ws://127.0.0.1:49834 mesh::nodes::list
+iii call --engine ws://127.0.0.1:49834 mesh::nodes::get name=laptop
 ```
 
 Status reports front-door, gateway and proxy health plus total, online and
@@ -40,17 +40,27 @@ An offline machine exposes no functions. Windows has no `shell::*` or
 
 ## Node events
 
-Bind `mesh::node-changed` to a function in the hub's project. The binding config
-accepts only an optional node name: `{}` watches all nodes and
-`{"node":"laptop"}` watches one. Unknown keys, including condition callbacks,
-are refused. For example, with a connected Go SDK client:
+Observe the private `mesh::on-node-changed` source from a connected hub
+client in the project's namespace. Its args accept only an optional node name:
+`{}` watches all nodes and `{"node":"laptop"}` watches one. Unknown keys,
+including condition callbacks, are refused. Register the callback first:
 
 ```go
-err := client.RegisterTriggerNamespaced(
-    "laptop-changes", "mesh::node-changed", "audit::node-change", "my-project",
-    json.RawMessage(`{"node":"laptop"}`),
-)
+_, err := iii.RegisterFunctionTyped(client, "audit::node-change", handler)
+if err != nil { return err }
+observer, err := client.Observe(iii.Source{
+    FunctionID: "mesh::on-node-changed", Namespace: "my-project",
+    Args: iii.Args{"node": "laptop"}, Deliver: iii.DeliverInput,
+}, "audit::node-change", iii.ObserverOptions{TargetNamespace: "my-project"})
+if err != nil { return err }
+if err := observer.Ready(ctx); err != nil { return err }
+defer observer.Dispose(ctx)
 ```
+
+Direct remote calls to this private producer are refused; the hosting Mesh
+worker publishes locally. Use SDK-generated observer IDs: explicit IDs are
+global to the engine and reuse by another connection returns
+`OBSERVER_ID_CONFLICT`.
 
 The target receives `{"name":"laptop","event":"online","at":"2026-10-30T12:00:00Z"}`.
 Events are `joined`, `online`, `offline`, `removed` and `outdated`. Connectivity
@@ -59,14 +69,18 @@ expiry. `outdated` is emitted when authenticated runtime metadata changes to a
 version different from the hub, matching the status count. The hub itself is
 excluded.
 
-Delivery is best effort, with no event history or replay for new bindings.
+Delivery is best effort, with no event history or replay for new observers.
 Restored inventory is a baseline; use `mesh::nodes::list` for a current snapshot.
-The worker permits 256 active bindings and 256 pending deliveries, drops overflow
-and skips canceled or disconnected bindings. A slow callback can delay other
-callbacks for up to five seconds. The SDK owns reconnect and may still transmit
-a frame already handed to it during a disconnect; removing a binding cannot
-recall an invocation already sent. Node worker grants are unchanged; this type
-is not added to their default grants. Local tests cover SDK delivery and control
+The worker permits 256 active observers and 256 pending deliveries, drops overflow
+and skips canceled or disconnected observers. A slow callback can delay other
+callbacks for up to five seconds. Callback admission occurs after matching, under the delivery lock, using the
+live binding and generation. Changed or removed generations fail that check
+and drain before replacement acknowledgements. The SDK cannot atomically pin
+an admitted local invocation to a connection epoch: a callback already admitted
+can still enqueue after reconnection to the same retained observer. Queued or
+unadmitted events are discarded across disconnects and never become history.
+Node worker grants are unchanged; this source is not a default node grant.
+Local tests cover SDK delivery and control
 transitions; native machine, tunnel and mount acceptance remains unverified.
 
 ## Console
@@ -86,7 +100,7 @@ network links and trusted proxies are editable there.
 Node worker identity discovery was checked against a real engine and proxy in
 both `default` and project namespaces: `laptop::ide::configuration-id` resolves
 to `laptop__ide`, whose form family is `ide`. Remote IDE, browser, computer and
-tmux Console script/style/module registrations are rejected by Mesh's trigger
+tmux ADE script/style/module asset observers are rejected by Mesh's observer
 policy: an asset path prefix does not confine injected code or shared delivery.
 A Console with an already loaded IDE form can reuse that family; node-only
 form and page asset delivery remains unavailable.
@@ -125,6 +139,11 @@ a direct `ws` numeric loopback address with an explicit port. Mesh refuses
 foreign proxy ownership and verifies that the running proxy has applied the
 mesh hooks and matching listener before opening the gateway. Failed application
 revokes sessions and is retried automatically.
+The runtime upgrades only the known legacy Mesh-owned
+`on_trigger_registration_function_id: mesh::on-trigger-registration` key to
+`on_observer_registration_function_id: mesh::on-observer-registration` when
+`middleware_function_id` is `mesh::middleware`. Operator fields and endpoints
+are preserved; conflicting or foreign ownership remains refused.
 If an existing mesh-owned proxy entry disagrees with a changed engine URL or
 proxy endpoint, update that entry to match; mesh does not overwrite it.
 
@@ -137,7 +156,7 @@ and enrollment state. Node worker configuration IDs are `<node>__<worker>`.
 
 ## Join a machine
 
-Have an operator call `iii trigger mesh::join::code` and run the returned platform
+Have an operator call `iii call --engine ws://127.0.0.1:49834 mesh::join::code` and run the returned platform
 install command on the machine to join. The code is a credential and this call
 requires approval. The versioned command has this form; substitute the returned
 version, public URL and code:
@@ -211,10 +230,10 @@ does not verify supervised desktop access or native machine acceptance.
 Remote desktop endpoints are supported by the computer worker but were not
 exercised in the Mesh integration check.
 
-`DefaultAllow()` and `DefaultTriggerTypes()` add no shared grants. Effective
-node grants still include owned configuration get/ensure/register/set calls in
-`default`, the ownership-checked configuration binding, and node-prefixed
-trigger types. Additional operator `nodes.<name>.allow` values are preserved.
+`DefaultAllow()` adds no shared grants. Effective node grants still include
+owned configuration get/ensure/register/set calls in `default`, the
+ownership-checked `configuration::on-updated` observer, and canonical same-node
+function observations in the project's namespace. Additional operator `nodes.<name>.allow` values are preserved.
 Configuration reads are raw and restricted to `<node>__*`; cross-node reads,
 non-owned `shell-ui` reads and template expansion remain refused.
 
@@ -222,31 +241,75 @@ Observed optional requests do not become grants. The shared `state::*`,
 `stream::*`, `queue::*`, `http::*`, `cron::*` and `harness::hook::*` surfaces
 remain excluded from default grants. Computer session persistence/restore is unavailable because
 its `state::list`, `state::set` and `state::delete` calls use shared scope
-`computer_sessions`. Browser's harness guidance binding is refused, so its
-automatic prompt injection is unavailable. Console asset bindings are also
+`computer_sessions`. Browser's harness guidance observer is refused, so its
+automatic prompt injection is unavailable. ADE asset observers are also
 refused; direct worker RPCs continue serving after those optional failures.
-Own trigger bindings accept only an empty config until a confined shape is
-established; shared configuration bindings accept only `configuration_id` and
-`event_types`. Condition callbacks and unknown config fields are refused.
+Same-node observations accept only empty args. Shared configuration observations
+must select an owned ID with `"input.id":{"$eq":"<node>__<worker>"}` and may
+select `"input.event_type":{"$eq":"configuration:updated"}`. Missing, broad,
+malformed, foreign or condition-like filters/args are refused. Configuration
+notifications deliver output and cause workers to re-fetch raw owned settings.
 
-The local runner requires built worker binaries plus Chromium, Xvfb and tmux:
+## Isolated local build and validation
+
+Use iii 0.26.0 or a compatible 0.26 build with the pinned SDK
+`v0.26.0-rc.5`. Install the repository-pinned Go, Rust, Node and pnpm versions;
+`mesh/iii.worker.yaml` declares the `>=0.26.0` engine floor. Build current
+frontends and auxiliary workers before running the complete suite:
 
 ```sh
-III_BIN=/path/to/iii MESH_TEST_CHROMIUM_BIN=/path/to/chromium mesh/tests/e2e/run-tests.sh
+pnpm --filter '@iii-workers/shell-ui...' --filter '@iii-workers/harness-ui...' --filter '@iii-workers/state-ui...' --filter '@iii-workers/mesh-ui...' --filter '@iii-workers/browser-ui...' --filter '@iii-workers/browser-native-ui...' --filter '@iii-workers/computer-ui...' --filter '@iii-workers/tmux-ui...' install --frozen-lockfile
+for directory in ide/ui harness/ui state/ui mesh/ui browser/ui browser/native-ui computer/ui tmux/ui; do
+  pnpm --dir "$directory" build
+done
+for worker in ide browser computer tmux rbac-proxy harness fp state queue session-manager; do
+  cargo build --locked --manifest-path "$worker/Cargo.toml" --bin "$worker"
+done
+III_BIN=/absolute/path/to/iii MESH_TEST_CHROMIUM_BIN=/absolute/path/to/chromium mesh/tests/e2e/run-tests.sh
+node --test mesh/tests/e2e/public-report.test.mjs
 ```
 
-It allocates its own engine ports, browser profiles, display and tmux sockets.
-Observation JSON and process logs are written under `mesh/tests/e2e/reports`
-(or `MESH_E2E_REPORT_DIR`). These checks use controlled Registry resolve/cache
-fixtures; live publication, cross-network operation and native acceptance 11
-on Ubuntu/macOS/Windows remain unverified.
+The runner requires Chromium, Xvfb and tmux. It allocates loopback engine/proxy
+ports, temporary state, browser profiles, a display and tmux sockets, and cleans
+up only its own process groups. Raw logs/frames can contain credentials: keep
+`MESH_E2E_REPORT_DIR` private (the runner sets directory mode 0700 and files
+use 0600). Publish only `public-report.json` from the allowlisted projection.
+The runner uses controlled Registry resolve/cache fixtures, real signed apply,
+supervised binaries and a real engine/proxy. ADE source-contract fixtures prove
+Mesh asset registration/content; the browser check uses controlled bus data
+with the actual ADE SPA loader.
+
+For manual local inspection, start a separate loopback engine in its own
+working directory. All CLI examples above explicitly target port 49834; ensure
+these alternative ports are free. Product defaults remain unchanged.
+
+```sh
+repo=$(pwd)
+lab=$(mktemp -d)
+printf '%s\n' '{"workers":[{"name":"iii-worker-manager","config":{"host":"127.0.0.1","port":49834}}]}' > "$lab/engine.json"
+(cd "$lab" && exec /absolute/path/to/iii --no-update-check --config "$lab/engine.json")
+# In another terminal, using that same lab path:
+# Build: (cd "$repo/mesh" && go build -o "$lab/mesh" .)
+# Run: (cd "$lab" && exec ./mesh --url ws://127.0.0.1:49834)
+iii call --engine ws://127.0.0.1:49834 -n project mesh::status --json '{}'
+```
+
+Configure Mesh's entry on that isolated engine before launching the hub:
+`listen: 127.0.0.1:49880`, `public_url: http://127.0.0.1:49880`,
+`proxy_url: ws://127.0.0.1:49871`, `gateway_port: 49835`, `stun_port: 0`.
+Run a current rbac-proxy there too with a separate seed configuration pointing
+to engine 49834 and listener `127.0.0.1:49871`. Set `III_NAMESPACE=project`
+on both workers for project examples; keep `III_COMPOSE_DIR` under the lab.
+Live publication, cross-network operation, native installs, supervised desktop
+access and native networking/mount acceptance on Ubuntu/macOS/Windows remain
+unverified.
 
 ## Unattended enrollment
 
 Issue a single-use token with an optional lifetime in seconds:
 
 ```bash
-iii trigger mesh::join::token expires_in_secs=3600
+iii call --engine ws://127.0.0.1:49834 mesh::join::token expires_in_secs=3600
 mesh join --token <returned-token>
 ```
 
@@ -262,7 +325,7 @@ hub state save leaves it usable. Omitted or zero `expires_in_secs` means no
 expiry; negative values are refused. To revoke future enrollment:
 
 ```bash
-iii trigger mesh::join::revoke token_id=<returned-id>
+iii call --engine ws://127.0.0.1:49834 mesh::join::revoke token_id=<returned-id>
 ```
 
 Revocation and expiry leave the device code and already accepted nodes intact.
@@ -270,7 +333,7 @@ Removing a node also revokes its creating token, including reusable tokens,
 and cycles the device code. Reusable tokens require ephemeral nodes:
 
 ```bash
-iii trigger mesh::join::token ephemeral=true reusable=true expires_in_secs=3600
+iii call --engine ws://127.0.0.1:49834 mesh::join::token ephemeral=true reusable=true expires_in_secs=3600
 ```
 
 An ephemeral node disappears after three minutes without map activity. Healthy

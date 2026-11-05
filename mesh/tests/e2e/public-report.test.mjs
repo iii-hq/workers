@@ -18,7 +18,7 @@ test('CI selects only outcomes and curated observations, excluding raw credentia
     await writeFile(resolve(directory, 'results.log'), `=== RUN   TestFixture\n${raw}\n--- PASS: TestFixture (1.25s)\n--- FAIL: TestFailure (0.10s)\n--- SKIP: TestSkipped (0.00s)\n`)
     await writeFile(resolve(directory, 'TestFixture-observations.json'), JSON.stringify([
       { connection: 1, request: { type: 'invokefunction', function_id: 'configuration::get', namespace: 'default', data: { reattach_token: token } }, result: 'success' },
-      { connection: 1, request: { type: 'registertrigger', function_id: 'ide::ui-content', trigger_type: 'console:assets', config: { reattach_token: token } }, result: { code: 'REGISTRATION_DENIED', message: token } },
+      { connection: 1, request: { type: 'observe', id: token, source: { function_id: 'ade::ui::asset', namespace: 'project', args: { reattach_token: token }, filters: { token } }, target: { function_id: 'ide::ui-content', namespace: 'project' }, metadata: { token } }, result: { code: 'FORBIDDEN', message: token } },
       { connection: 1, request: { type: 'workerregistered', reattach_token: token }, result: 'success' },
     ]))
     execFileSync(process.execPath, [script.pathname, directory])
@@ -32,7 +32,7 @@ test('CI selects only outcomes and curated observations, excluding raw credentia
     assert.deepEqual(report.counts, { passed: 1, failed: 1, skipped: 1, observations: 2 })
     assert.deepEqual(report.observations, [
       { scenario: 'TestFixture', connection: 1, type: 'invokefunction', function_id: 'configuration::get', namespace: 'default', outcome: 'success' },
-      { scenario: 'TestFixture', connection: 1, type: 'registertrigger', function_id: 'ide::ui-content', trigger_type: 'console:assets', outcome: 'REGISTRATION_DENIED' },
+      { scenario: 'TestFixture', connection: 1, type: 'observe', function_id: 'ade::ui::asset', namespace: 'project', target_function_id: 'ide::ui-content', target_namespace: 'project', outcome: 'FORBIDDEN' },
     ])
     assert.equal(await readFile(resolve(directory, 'ide-default-frames.json'), 'utf8'), raw, 'private diagnostics preserved')
   } finally {

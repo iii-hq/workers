@@ -42,6 +42,30 @@ func bootstrapIDE(t *testing.T, ns string) {
 		t.Fatalf("harness remote shell: %s", result)
 	}
 	f.assertWorkerPolicy(n, "ide", 3)
+	// Change an effective runtime setting, not only the notification payload:
+	// a command without cwd must switch to the new authoritative working dir.
+	updatedRoot := t.TempDir()
+	raw := mustCall(t, f.admin, "default", "configuration::get", map[string]any{"id": "laptop__ide", "raw": true})
+	var stored struct {
+		Value map[string]any `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	stored.Value["working_dir"] = updatedRoot
+	stored.Value["fs"].(map[string]any)["host_roots"] = []string{root, updatedRoot}
+	mustCall(t, f.admin, "default", "configuration::set", map[string]any{"id": "laptop__ide", "value": stored.Value})
+	eventually(t, 5*time.Second, "IDE applies observed config hot reload", func() error {
+		out, err := call(f.ctx, f.admin, ns, "laptop::shell::exec", map[string]any{"command": "pwd"})
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(string(out), updatedRoot) {
+			return fmt.Errorf("working directory was not hot reloaded: %s", out)
+		}
+		return nil
+	})
+
 	f.assertRefusedCalls(n, []string{"configuration::get"}, "invocation_failed")
 	frames := n.snapshot()
 
@@ -79,8 +103,8 @@ func bootstrapIDE(t *testing.T, ns string) {
 	for _, frame := range frames {
 		if frame.Direction == "node-to-hub" {
 			switch frame.Data["type"] {
-			case "invokefunction", "registertrigger":
-				entry := map[string]any{"type": frame.Data["type"], "function_id": frame.Data["function_id"], "namespace": frame.Data["namespace"], "trigger_type": frame.Data["trigger_type"], "config": frame.Data["config"]}
+			case "invokefunction", "observe":
+				entry := map[string]any{"type": frame.Data["type"], "function_id": frame.Data["function_id"], "namespace": frame.Data["namespace"], "source": frame.Data["source"], "target": frame.Data["target"]}
 				if data, ok := frame.Data["data"].(map[string]any); ok {
 					entry["configuration_id"] = data["id"]
 				}

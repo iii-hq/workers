@@ -34,7 +34,7 @@ func (f *fixture) seedTurn(session string, allow []string, root string) {
 	mustCall(f.t, f.admin, f.ns, "state::set", map[string]any{"scope": "harness_turn", "key": session, "value": record})
 }
 func (f *fixture) harnessCall(session, id string, args any) json.RawMessage {
-	return mustCall(f.t, f.admin, f.ns, "harness::function::trigger", map[string]any{"session_id": session, "call": map[string]any{"id": "call-e2e", "function_id": id, "arguments": args}})
+	return mustCall(f.t, f.admin, f.ns, "harness::function::call", map[string]any{"session_id": session, "call": map[string]any{"id": "call-e2e", "function_id": id, "arguments": args}})
 }
 func TestE2EFsScopeOnRemoteCoder(t *testing.T) {
 	f := newFixture(t, "default")
@@ -92,23 +92,20 @@ func TestE2EHooksRefused(t *testing.T) {
 	n := f.enroll("evil")
 	c := fakeWorker(f, n, "hook")
 	var hooks, target atomic.Int32
-	if err := iii.RegisterFunctionTyped(c, "hook", func(context.Context, json.RawMessage) (map[string]any, error) {
+	if _, err := iii.RegisterFunctionTyped(c, "hook", func(context.Context, json.RawMessage) (map[string]any, error) {
 		hooks.Add(1)
 		return map[string]any{"action": "continue"}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := iii.RegisterFunctionTyped(f.admin, "target::ping", func(context.Context, json.RawMessage) (map[string]bool, error) {
+	if _, err := iii.RegisterFunctionTyped(f.admin, "target::ping", func(context.Context, json.RawMessage) (map[string]bool, error) {
 		target.Add(1)
 		return map[string]bool{"ok": true}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"pre-trigger", "post-trigger"} {
-		if err := c.RegisterTrigger(kind, "harness::hook::"+kind, "hook", json.RawMessage(`{}`)); err != nil {
-			t.Fatal(err)
-		}
-		waitRegistrationRefused(t, n, kind)
+	for _, kind := range []string{"on-pre-call", "on-post-call"} {
+		observe(t, c, iii.Source{FunctionID: "harness::hook::" + kind, Namespace: f.ns}, "hook", kind, false)
 	}
 	f.seedTurn("hooks", []string{"target::ping"}, t.TempDir())
 	out := f.harnessCall("hooks", "target::ping", map[string]any{})
@@ -120,9 +117,22 @@ func TestE2ERefusedRegistrationLogged(t *testing.T) {
 	f := newFixture(t, "default")
 	n := f.enroll("laptop")
 	f.startIDE(n)
-	eventually(t, 5*time.Second, "IDE receives console refusal", func() error {
+	eventually(t, 5*time.Second, "IDE receives ADE refusal", func() error {
 		for _, frame := range n.snapshot() {
-			if frame.Direction == "hub-to-node" && frame.Data["type"] == "triggerregistrationresult" && frame.Data["error"] != nil && strings.HasPrefix(fmt.Sprint(frame.Data["trigger_type"]), "console:") {
+			if frame.Direction == "hub-to-node" && frame.Data["type"] == "observeresult" && frame.Data["error"] != nil {
+				refusedID := frame.Data["id"]
+				ade := false
+				for _, request := range n.snapshot() {
+					source, _ := request.Data["source"].(map[string]any)
+					target, _ := request.Data["target"].(map[string]any)
+					if request.Connection == frame.Connection && request.Direction == "node-to-hub" && request.Data["type"] == "observe" && request.Data["id"] == refusedID && source["function_id"] == "ade::ui::asset" && target["function_id"] == "ide::ui-content" {
+						ade = true
+					}
+				}
+				failure, _ := frame.Data["error"].(map[string]any)
+				if !ade || failure["code"] != "FORBIDDEN" {
+					continue
+				}
 				return nil
 			}
 		}
@@ -139,7 +149,7 @@ func TestE2ERefusedRegistrationLogged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.ToLower(string(b)), "trigger registration") {
+	if !strings.Contains(strings.ToLower(string(b)), "observer registration denied") {
 		t.Fatalf("Rust SDK did not log refused registration: %s", b)
 	}
 	if before != after {

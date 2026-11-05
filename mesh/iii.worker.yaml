@@ -5,6 +5,7 @@ deploy: binary
 manifest: package.json
 bin: mesh
 license: MIT
+iii_engine_version: ">=0.26.0"
 description: Mesh hub and node connectivity for iii workers.
 tags: [mesh, networking, hub, go]
 dependencies:

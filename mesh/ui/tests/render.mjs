@@ -78,9 +78,14 @@ try {
       await page.routeWebSocket('**/ws', (socket) => {
         socket.onMessage(async (message) => {
           const frame = JSON.parse(String(message))
-          if (frame.type === 'registertrigger' && frame.trigger_type === 'console:assets') {
-            socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: frame.function_id,
-              data: { event: 'sync', assets: [{ path: 'mesh/styles.css', kind: 'style', hash: 'fixture-css' }, { path: 'mesh/page.js', kind: 'script', hash: 'fixture-js' }] } }))
+          if (frame.type === 'invokefunction' && frame.function_id === 'engine::workers::register') {
+            socket.send(JSON.stringify({ type: 'workerregistered', worker_id: randomUUID(), features: ['observe.v1', 'observe.v2', 'local-dispatch.v1'] }))
+          }
+          if (frame.type === 'registerfunction') socket.send(JSON.stringify({ type: 'functionregistered', id: frame.id, namespace: frame.namespace ?? 'project', revision: 0, local_dispatch: false, observers: [] }))
+          if (frame.type === 'observe') socket.send(JSON.stringify({ type: 'observeresult', id: frame.id, state: 'active' }))
+          if (frame.type === 'observe' && frame.source.function_id === 'ade::ui::on-assets-changed') {
+            socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: frame.target.function_id,
+              activation: { observer_id: frame.id }, data: { op: 'sync', assets: [{ path: 'mesh/styles.css', kind: 'style', hash: 'fixture-css' }, { path: 'mesh/page.js', kind: 'script', hash: 'fixture-js' }] } }))
           }
           if (frame.type !== 'invokefunction') return
           calls.push({ id: frame.function_id, namespace: frame.namespace, data: frame.data })
@@ -98,7 +103,7 @@ try {
             case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
             case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
             case 'engine::functions::list': return send({ functions: [] })
-            case 'console::ui-manifest': return send({ warnings: [], disabled: false })
+            case 'ade::ui-manifest': return send({ warnings: [], disabled: false })
             case 'harness::sessions::list': return send({ sessions: [] })
             default: return send({})
           }

@@ -33,6 +33,31 @@ Native Windows networking and session acceptance remain unverified.
 Discovery reads are allowed. Remote calls need approval by default; a local
 tool's allow rule does not grant access to its remote counterpart.
 
+## Current call and observation API
+
+Use `Call` / `call` for RPCs. For CLI discovery, select the intended engine
+explicitly, for example:
+
+```sh
+iii call --engine ws://127.0.0.1:49834 -n project mesh::nodes::list --json '{}'
+```
+
+This example selects an isolated local engine. Match the namespace
+to the hub. Build and isolation instructions are in [the Mesh README](../README.md#isolated-local-build-and-validation).
+
+Hub integrations observe `mesh::on-node-changed` using the SDK's `Observe`,
+with optional args `{"node":"laptop"}`. Register a callback, wait for observer
+readiness, and dispose it when finished. This private producer is unavailable
+as a direct tool call and is not a default node grant. Use machine discovery
+for the current snapshot; observations contain no queued/unadmitted history.
+An already-admitted SDK callback may enqueue after reconnect to the same
+retained observer. Prefer generated observer IDs; explicit IDs are global.
+
+Node workers observe only canonical same-node sources, or
+`configuration::on-updated` in `default` with an exact owned
+`input.id` equality filter. ADE asset injection and shared producer observations
+remain refused. Extra operator function grants do not widen this policy.
+
 ## Shared drives
 
 Use the mount on the machine running the operation:

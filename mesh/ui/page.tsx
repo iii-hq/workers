@@ -42,8 +42,8 @@ function Components({ label, values }: { label: string; values: ComponentState[]
 function MeshPage({ host, onRequestClose }: PageRenderProps & { host: Host }) {
   const fetch = useCallback(async () => {
     const [nodes, join] = await Promise.allSettled([
-      host.iii.trigger<Node[]>('mesh::nodes::list', {}),
-      host.iii.trigger<Join>('mesh::join::code', {}),
+      host.iii.call<Node[]>('mesh::nodes::list', {}),
+      host.iii.call<Join>('mesh::join::code', {}),
     ])
     return {
       nodes: nodes.status === 'fulfilled' ? nodes.value : null,

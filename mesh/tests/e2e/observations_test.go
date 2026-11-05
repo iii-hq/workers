@@ -25,7 +25,7 @@ func (f *fixture) seedWorker(n *testNode, worker string, value map[string]any) {
 
 func (f *fixture) workerCall(id string, payload any) map[string]any {
 	f.t.Helper()
-	b, err := f.admin.Trigger(f.ctx, iii.TriggerRequest{FunctionID: id, Namespace: f.ns, Data: json.RawMessage(mustJSON(payload)), Timeout: 30 * time.Second})
+	b, err := f.admin.Call(f.ctx, iii.CallRequest{FunctionID: id, Namespace: f.ns, Payload: json.RawMessage(mustJSON(payload)), Timeout: 30 * time.Second})
 	if err != nil {
 		f.t.Fatalf("%s: %v", id, err)
 	}
@@ -83,9 +83,9 @@ func (f *fixture) waitWorker(n *testNode, worker, readyFunction string) {
 	f.t.Logf("authoritative engine worker=%s namespace=%s functions=%d; stored operator values preserved", name, f.ns, len(detail.Functions))
 }
 
-func (f *fixture) assertWorkerPolicy(n *testNode, worker string, consoleCount int) {
+func (f *fixture) assertWorkerPolicy(n *testNode, worker string, assetCount int) {
 	f.t.Helper()
-	eventually(f.t, 5*time.Second, "owned configuration and refused Console bindings", func() error {
+	eventually(f.t, 5*time.Second, "owned configuration and refused ADE bindings", func() error {
 		gets, ensures := 0, 0
 		refused := map[string]bool{}
 		binding, guidanceRefused := false, false
@@ -99,7 +99,7 @@ func (f *fixture) assertWorkerPolicy(n *testNode, worker string, consoleCount in
 						return fmt.Errorf("configuration routing: %s", mustJSON(d))
 					}
 					for _, response := range frames {
-						if response.Direction == "hub-to-node" && response.Data["type"] == "invocationresult" && response.Data["invocation_id"] == d["invocation_id"] {
+						if response.Connection == frame.Connection && response.Direction == "hub-to-node" && response.Data["type"] == "invocationresult" && response.Data["invocation_id"] == d["invocation_id"] {
 							if response.Data["error"] != nil {
 								return fmt.Errorf("owned config refused: %s", mustJSON(response.Data))
 							}
@@ -113,29 +113,39 @@ func (f *fixture) assertWorkerPolicy(n *testNode, worker string, consoleCount in
 					}
 				}
 			}
-			if frame.Direction == "node-to-hub" && d["type"] == "registertrigger" && d["trigger_type"] == "configuration" {
-				p, _ := d["config"].(map[string]any)
-				if p["configuration_id"] == n.name+"__"+worker && d["namespace"] == f.ns {
+			if frame.Direction != "node-to-hub" || d["type"] != "observe" {
+				continue
+			}
+			source, _ := d["source"].(map[string]any)
+			target, _ := d["target"].(map[string]any)
+			filters, _ := source["filters"].(map[string]any)
+			idFilter, _ := filters["input.id"].(map[string]any)
+			for _, response := range frames {
+				r := response.Data
+				if response.Connection != frame.Connection || response.Direction != "hub-to-node" || r["type"] != "observeresult" || r["id"] != d["id"] {
+					continue
+				}
+				if source["function_id"] == "configuration::on-updated" && source["namespace"] == "default" && idFilter["$eq"] == n.name+"__"+worker && target["namespace"] == f.ns && r["state"] == "active" && r["error"] == nil {
 					binding = true
 				}
-			}
-			if frame.Direction == "hub-to-node" && d["type"] == "triggerregistrationresult" && d["trigger_type"] == "harness::hook::pre-generate" {
-				failure, _ := d["error"].(map[string]any)
-				guidanceRefused = failure["code"] == "REGISTRATION_DENIED"
-			}
-			if frame.Direction == "hub-to-node" && d["type"] == "triggerregistrationresult" && d["function_id"] == worker+"::ui-content" {
-				failure, _ := d["error"].(map[string]any)
-				kind, _ := d["trigger_type"].(string)
-				if strings.HasPrefix(kind, "console:") && failure["code"] == "REGISTRATION_DENIED" {
-					refused[kind] = true
+				failure, _ := r["error"].(map[string]any)
+				if failure["code"] != "FORBIDDEN" {
+					continue
+				}
+				if source["function_id"] == "harness::hook::on-pre-generate" {
+					guidanceRefused = true
+				}
+				if source["function_id"] == "ade::ui::asset" && target["function_id"] == worker+"::ui-content" {
+					args, _ := source["args"].(map[string]any)
+					refused[fmt.Sprint(args["path"])] = true
 				}
 			}
 		}
 		if worker == "browser" && !guidanceRefused {
-			return fmt.Errorf("browser guidance hook not refused")
+			return fmt.Errorf("browser guidance observer not refused")
 		}
-		if gets == 0 || ensures == 0 || !binding || len(refused) != consoleCount {
-			return fmt.Errorf("gets=%d ensures=%d config binding=%v Console refusals=%v", gets, ensures, binding, refused)
+		if gets == 0 || ensures == 0 || !binding || len(refused) != assetCount {
+			return fmt.Errorf("gets=%d ensures=%d config observer=%v ADE refusals=%v", gets, ensures, binding, refused)
 		}
 		return nil
 	})
@@ -146,19 +156,27 @@ func (f *fixture) assertWorkerPolicy(n *testNode, worker string, consoleCount in
 	if err := json.Unmarshal(stored, &entry); err != nil {
 		f.t.Fatal(err)
 	}
-	configReceiver := worker + "::on-config-change"
-	if worker == "ide" {
-		configReceiver = "shell::on-config-change"
-	}
 	before := len(n.snapshot())
 	mustCall(f.t, f.admin, "default", "configuration::set", map[string]any{"id": n.name + "__" + worker, "value": entry.Value})
-	eventually(f.t, 5*time.Second, "owned configuration event delivery", func() error {
-		for _, frame := range n.snapshot()[before:] {
-			if frame.Direction == "hub-to-node" && frame.Data["type"] == "invokefunction" && frame.Data["function_id"] == configReceiver {
-				return nil
+	eventually(f.t, 5*time.Second, "owned configuration delivery and hot reload refetch", func() error {
+		entries := workerObservations(n.snapshot(), n.name+"__"+worker)
+		delivered := false
+		for _, e := range entries {
+			if e["result"] == "configuration event delivery observed" {
+				delivered = true
 			}
 		}
-		return fmt.Errorf("configuration update did not reach %s", worker)
+		refetch := false
+		for _, frame := range n.snapshot()[before:] {
+			p, _ := frame.Data["data"].(map[string]any)
+			if frame.Direction == "node-to-hub" && frame.Data["type"] == "invokefunction" && frame.Data["function_id"] == "configuration::get" && p["id"] == n.name+"__"+worker {
+				refetch = true
+			}
+		}
+		if !delivered || !refetch {
+			return fmt.Errorf("delivery=%v config-refetch=%v", delivered, refetch)
+		}
+		return nil
 	})
 }
 
@@ -190,34 +208,30 @@ func workerObservations(frames []observedFrame, configurationID string) []map[st
 	entries := []map[string]any{}
 	for i, frame := range frames {
 		d := frame.Data
-		if frame.Direction != "node-to-hub" {
-			continue
-		}
-		typeName := d["type"]
-		if typeName != "invokefunction" && typeName != "registertrigger" && typeName != "registertriggertype" {
+		if frame.Direction != "node-to-hub" || (d["type"] != "invokefunction" && d["type"] != "observe") {
 			continue
 		}
 		entry := map[string]any{"connection": frame.Connection, "request": d, "result": "no acknowledgement observed"}
+		source, _ := d["source"].(map[string]any)
+		target, _ := d["target"].(map[string]any)
+		filters, _ := source["filters"].(map[string]any)
+		idFilter, _ := filters["input.id"].(map[string]any)
 		for _, response := range frames[i+1:] {
 			r := response.Data
 			if response.Direction != "hub-to-node" || frame.Connection <= 0 || response.Connection != frame.Connection {
 				continue
 			}
-			matched := typeName == "invokefunction" && d["invocation_id"] != nil && r["type"] == "invocationresult" && r["invocation_id"] == d["invocation_id"]
-			matched = matched || typeName == "registertrigger" && r["type"] == "triggerregistrationresult" && r["id"] == d["id"]
-			config, _ := d["config"].(map[string]any)
+			matched := d["type"] == "invokefunction" && d["invocation_id"] != nil && r["type"] == "invocationresult" && r["invocation_id"] == d["invocation_id"]
+			matched = matched || (d["type"] == "observe" && r["type"] == "observeresult" && r["id"] == d["id"])
+			activation, _ := r["activation"].(map[string]any)
 			event, _ := r["data"].(map[string]any)
-			receiver, _ := d["function_id"].(string)
-			if typeName == "registertrigger" && d["trigger_type"] == "configuration" &&
-				configurationID != "" && config["configuration_id"] == configurationID &&
-				r["type"] == "invokefunction" && receiver != "" && r["function_id"] == receiver &&
-				event["type"] == "configuration" && event["event_type"] == "configuration:updated" && event["id"] == configurationID {
+			if d["type"] == "observe" && source["function_id"] == "configuration::on-updated" && configurationID != "" && idFilter["$eq"] == configurationID && d["id"] != nil && activation["observer_id"] == d["id"] && r["type"] == "invokefunction" && target["function_id"] != "" && r["function_id"] == target["function_id"] && event["event_type"] == "configuration:updated" && event["id"] == configurationID {
 				entry["result"] = "configuration event delivery observed"
 			}
-			if matched {
+			if matched && entry["result"] != "configuration event delivery observed" {
 				if r["error"] != nil {
 					entry["result"] = r["error"]
-				} else {
+				} else if d["type"] == "invokefunction" || r["state"] == "active" {
 					entry["result"] = "success"
 				}
 			}
@@ -233,7 +247,7 @@ func (f *fixture) observeWorker(n *testNode, worker string) {
 	entries := workerObservations(n.snapshot(), n.name+"__"+worker)
 	for _, entry := range entries {
 		d := entry["request"].(map[string]any)
-		f.t.Logf("%s observation: type=%v function=%v namespace=%v trigger=%v config=%s result=%s", worker, d["type"], d["function_id"], d["namespace"], d["trigger_type"], mustJSON(d["config"]), mustJSON(entry["result"]))
+		f.t.Logf("%s observation: type=%v function=%v namespace=%v source=%s target=%s result=%s", worker, d["type"], d["function_id"], d["namespace"], mustJSON(d["source"]), mustJSON(d["target"]), mustJSON(entry["result"]))
 	}
 	if reports := os.Getenv("MESH_E2E_REPORT_DIR"); reports != "" {
 		b, _ := json.MarshalIndent(entries, "", "  ")
@@ -264,17 +278,11 @@ func (f *fixture) startXvfb() string {
 }
 
 func TestWorkerObservationsConfigurationDelivery(t *testing.T) {
-	registration := func(connection int, id string) observedFrame {
-		return observedFrame{Connection: connection, Direction: "node-to-hub", Data: map[string]any{
-			"type": "registertrigger", "id": fmt.Sprint("binding-", connection), "trigger_type": "configuration",
-			"function_id": "computer::on-config-change", "config": map[string]any{"configuration_id": id, "event_types": []any{"configuration:updated"}},
-		}}
+	registration := func(connection int, id, observer string) observedFrame {
+		return observedFrame{Connection: connection, Direction: "node-to-hub", Data: map[string]any{"type": "observe", "id": observer, "source": map[string]any{"function_id": "configuration::on-updated", "filters": map[string]any{"input.id": map[string]any{"$eq": id}}}, "target": map[string]any{"function_id": "computer::on-config-change"}}}
 	}
-	delivery := func(connection int, id string) observedFrame {
-		return observedFrame{Connection: connection, Direction: "hub-to-node", Data: map[string]any{
-			"type": "invokefunction", "function_id": "computer::on-config-change",
-			"data": map[string]any{"type": "configuration", "event_type": "configuration:updated", "id": id},
-		}}
+	delivery := func(connection int, id, observer string) observedFrame {
+		return observedFrame{Connection: connection, Direction: "hub-to-node", Data: map[string]any{"type": "invokefunction", "function_id": "computer::on-config-change", "activation": map[string]any{"observer_id": observer}, "data": map[string]any{"event_type": "configuration:updated", "id": id}}}
 	}
 	const owned = "laptop__computer"
 	for _, tc := range []struct {
@@ -282,27 +290,29 @@ func TestWorkerObservationsConfigurationDelivery(t *testing.T) {
 		frames []observedFrame
 		want   []bool
 	}{
-		{"current delivery", []observedFrame{registration(1, owned), delivery(1, owned)}, []bool{true}},
-		{"historical delivery before new process", []observedFrame{registration(1, owned), delivery(1, owned), registration(2, owned)}, []bool{true, false}},
-		{"historical delivery on same connection", []observedFrame{delivery(1, owned), registration(1, owned)}, []bool{false}},
-		{"old connection delivers later", []observedFrame{registration(1, owned), registration(2, owned), delivery(1, owned)}, []bool{true, false}},
-		{"each process has its own delivery", []observedFrame{registration(1, owned), delivery(1, owned), registration(2, owned), delivery(2, owned)}, []bool{true, true}},
-		{"wrong configuration delivered", []observedFrame{registration(1, owned), delivery(1, "desktop__computer")}, []bool{false}},
-		{"nonowned registration", []observedFrame{registration(1, "desktop__computer"), delivery(1, "desktop__computer")}, []bool{false}},
-		{"missing connection identity", []observedFrame{registration(0, owned), delivery(0, owned)}, []bool{false}},
+		{"current delivery", []observedFrame{registration(1, owned, "one"), delivery(1, owned, "one")}, []bool{true}},
+		{"historical delivery before new process", []observedFrame{registration(1, owned, "one"), delivery(1, owned, "one"), registration(2, owned, "two")}, []bool{true, false}},
+		{"historical delivery on same connection", []observedFrame{delivery(1, owned, "one"), registration(1, owned, "one")}, []bool{false}},
+		{"old connection delivers later", []observedFrame{registration(1, owned, "one"), registration(2, owned, "two"), delivery(1, owned, "one")}, []bool{true, false}},
+		{"each process own delivery", []observedFrame{registration(1, owned, "one"), delivery(1, owned, "one"), registration(2, owned, "two"), delivery(2, owned, "two")}, []bool{true, true}},
+		{"wrong configuration", []observedFrame{registration(1, owned, "one"), delivery(1, "desktop__computer", "one")}, []bool{false}},
+		{"nonowned registration", []observedFrame{registration(1, "desktop__computer", "one"), delivery(1, "desktop__computer", "one")}, []bool{false}},
+		{"missing connection", []observedFrame{registration(0, owned, "one"), delivery(0, owned, "one")}, []bool{false}},
+		{"different observer same target", []observedFrame{registration(1, owned, "one"), delivery(1, owned, "two")}, []bool{false}},
+		{"later observer same target", []observedFrame{registration(1, owned, "one"), registration(1, owned, "two"), delivery(1, owned, "two")}, []bool{false, true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entries := workerObservations(tc.frames, owned)
 			if len(entries) != len(tc.want) {
 				t.Fatalf("entries=%d want=%d", len(entries), len(tc.want))
 			}
-			for i, entry := range entries {
+			for i, e := range entries {
 				want := "no acknowledgement observed"
 				if tc.want[i] {
 					want = "configuration event delivery observed"
 				}
-				if entry["result"] != want {
-					t.Errorf("registration %d: result=%v want=%s", i, entry["result"], want)
+				if e["result"] != want {
+					t.Errorf("registration %d result=%v want=%s", i, e["result"], want)
 				}
 			}
 		})

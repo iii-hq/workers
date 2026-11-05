@@ -68,7 +68,7 @@ func binary(t *testing.T, env string) string {
 func startProcess(t *testing.T, dir, name, bin string, env []string, args ...string) *exec.Cmd {
 	t.Helper()
 	logPath := filepath.Join(dir, name+".log")
-	log, err := os.Create(logPath)
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func writeJSON(t *testing.T, path string, value any) {
 }
 func connect(t *testing.T, ctx context.Context, url, name, ns string) *iii.Client {
 	t.Helper()
-	c := iii.New(url, iii.WithName(name), iii.WithNamespace(ns))
+	c := iii.New(url, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName(name), iii.WithNamespace(ns))
 	t.Cleanup(func() { c.Close() })
 	wait, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -126,7 +126,7 @@ func call(ctx context.Context, c *iii.Client, ns, id string, p any) (json.RawMes
 	if err != nil {
 		return nil, err
 	}
-	return c.Trigger(ctx, iii.TriggerRequest{FunctionID: id, Namespace: ns, Data: b, Timeout: time.Second})
+	return c.Call(ctx, iii.CallRequest{FunctionID: id, Namespace: ns, Payload: b, Timeout: time.Second})
 }
 func mustCall(t *testing.T, c *iii.Client, ns, id string, p any) json.RawMessage {
 	t.Helper()
