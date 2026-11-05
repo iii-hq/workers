@@ -166,7 +166,16 @@ struct Inner {
     /// the bundle) or, for anything but a verification mismatch (I/O, ORT
     /// init, a failed task, all of which may clear), [`LOAD_RETRY`] passes.
     failed_load: Mutex<Option<(BundleStamp, Option<Instant>, String)>>,
+    /// Vectors of ad-hoc documents by their searchable text
+    /// ([`SemanticSearch::rank_documents`]). The observer and skill lanes
+    /// rank the same documents on every search.
+    /// ponytail: cleared whole past [`DOCUMENT_CACHE_MAX`]; an LRU if the
+    /// corpus outgrows it.
+    document_vectors: Mutex<HashMap<String, Vec<f32>>>,
 }
+
+/// Ad-hoc document vectors kept between searches (384 floats each).
+const DOCUMENT_CACHE_MAX: usize = 4_096;
 
 struct DenseIndex {
     catalog_fingerprint: String,
@@ -427,18 +436,51 @@ impl SemanticSearch {
         let corpus = canonical_tools(documents);
         let ids: Vec<String> = corpus.iter().map(|tool| tool.name.clone()).collect();
         let texts: Vec<String> = corpus.iter().map(searchable_text).collect();
+        // Encoding every observer document again took ~1.5 s per search, even
+        // for an exact function id; only texts not seen before are encoded.
+        let cached: Vec<Option<Vec<f32>>> = {
+            let cache = self
+                .inner
+                .document_vectors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            texts.iter().map(|text| cache.get(text).cloned()).collect()
+        };
+        let missing: Vec<String> = texts
+            .iter()
+            .zip(&cached)
+            .filter(|(_, vector)| vector.is_none())
+            .map(|(text, _)| text.clone())
+            .collect();
         let queries = queries.to_vec();
-        let (query_count, document_count) = (queries.len(), ids.len());
+        let (query_count, missing_count) = (queries.len(), missing.len());
         let dimensions = MINILM_DIMENSIONS;
-        let (query_vectors, document_vectors) = tokio::task::spawn_blocking(move || {
-            let documents = model.encode(&texts, ENCODE_CHUNK)?;
+        let (query_vectors, encoded, missing) = tokio::task::spawn_blocking(move || {
+            let documents = if missing.is_empty() {
+                Vec::new()
+            } else {
+                model.encode(&missing, ENCODE_CHUNK)?
+            };
             let queries = model.encode(&queries, ENCODE_CHUNK)?;
-            Ok::<_, SemanticUnavailable>((queries, documents))
+            Ok::<_, SemanticUnavailable>((queries, documents, missing))
         })
         .await
         .map_err(|error| unavailable(format!("document rank task failed: {error}")))??;
         validate_vectors(&query_vectors, query_count, dimensions)?;
-        validate_vectors(&document_vectors, document_count, dimensions)?;
+        validate_vectors(&encoded, missing_count, dimensions)?;
+        let document_vectors = {
+            let mut cache = self
+                .inner
+                .document_vectors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            fill_document_vectors(
+                &mut cache,
+                cached,
+                &texts,
+                missing.into_iter().zip(encoded).collect(),
+            )
+        };
         query_vectors
             .iter()
             .map(|query| {
@@ -671,6 +713,27 @@ fn publish_if_desired(inner: &Inner, fingerprint: &str, index: DenseIndex) -> bo
 fn catch_encoding<T>(encode: impl FnOnce() -> T) -> Result<T, SemanticUnavailable> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(encode))
         .map_err(|_| unavailable("encoding panicked"))
+}
+
+/// `texts`' vectors in order: the `cached` ones read before encoding, the
+/// rest from `fresh`. `fresh` then joins `cache`, which is cleared first when
+/// it would pass [`DOCUMENT_CACHE_MAX`].
+fn fill_document_vectors(
+    cache: &mut HashMap<String, Vec<f32>>,
+    cached: Vec<Option<Vec<f32>>>,
+    texts: &[String],
+    fresh: HashMap<String, Vec<f32>>,
+) -> Vec<Vec<f32>> {
+    let vectors = cached
+        .into_iter()
+        .zip(texts)
+        .map(|(vector, text)| vector.unwrap_or_else(|| fresh[text].clone()))
+        .collect();
+    if cache.len() + fresh.len() > DOCUMENT_CACHE_MAX {
+        cache.clear();
+    }
+    cache.extend(fresh);
+    vectors
 }
 
 fn validate_vectors(
@@ -1191,6 +1254,26 @@ mod tests {
         let mut non_finite = vec![0.0; MINILM_DIMENSIONS];
         non_finite[0] = f32::NAN;
         assert!(validate_vectors(&[non_finite], 1, MINILM_DIMENSIONS).is_err());
+    }
+
+    #[test]
+    fn document_vectors_come_from_the_cache_or_the_fresh_encodes_in_order() {
+        let texts = vec!["a".to_string(), "b".to_string(), "a".to_string()];
+        let mut cache = HashMap::from([("b".to_string(), vec![2.0])]);
+        let cached = vec![None, Some(vec![2.0]), None];
+        let fresh = HashMap::from([("a".to_string(), vec![1.0])]);
+        let vectors = fill_document_vectors(&mut cache, cached, &texts, fresh);
+        assert_eq!(vectors, vec![vec![1.0], vec![2.0], vec![1.0]]);
+        assert_eq!(cache.len(), 2);
+
+        // Past the cap the cache restarts from this search's encodes.
+        let mut full: HashMap<String, Vec<f32>> = (0..DOCUMENT_CACHE_MAX)
+            .map(|i| (i.to_string(), vec![0.0]))
+            .collect();
+        let fresh = HashMap::from([("new".to_string(), vec![3.0])]);
+        let vectors = fill_document_vectors(&mut full, vec![None], &["new".into()], fresh);
+        assert_eq!(vectors, vec![vec![3.0]]);
+        assert_eq!(full.len(), 1);
     }
 
     #[test]
