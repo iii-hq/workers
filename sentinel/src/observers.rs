@@ -110,7 +110,26 @@ pub fn prune_source(expression: &str) -> Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::Capture;
     use std::sync::Arc;
+
+    #[test]
+    fn span_activity_ships_only_the_output() {
+        assert_eq!(
+            span_source(),
+            Source::function("observability::on-span")
+                .namespace("default")
+                .capture([Capture::Output])
+        );
+    }
+
+    #[test]
+    fn finished_turns_ship_only_the_output() {
+        assert_eq!(
+            turn_completed_source(),
+            Source::function("harness::on-turn-completed").capture([Capture::Output])
+        );
+    }
 
     #[test]
     fn error_logs_are_selected_by_severity() {
@@ -119,7 +138,7 @@ mod tests {
             Source::function("observability::on-log")
                 .namespace("default")
                 .filters(json!({ "input.severity_number": { "$gte": 17 } }))
-                .deliver(Deliver::Output)
+                .capture([Capture::Output])
         );
     }
 
@@ -129,7 +148,7 @@ mod tests {
             prune_source("0 0 3 * * *"),
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "0 0 3 * * *" }))
-                .deliver(Deliver::Output)
+                .capture([Capture::Output])
         );
     }
 

@@ -863,6 +863,67 @@ pub const INVESTIGATION_DENY: [&str; 22] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// What iii delivers to an observer target with `capture: ['output']`:
+    /// the activation envelope, the observed call's event as `output`.
+    fn envelope(function_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": function_id,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": output,
+        })
+    }
+
+    #[test]
+    fn observer_targets_read_their_event_from_the_observed_envelope() {
+        let spans: ObservedEventV1<TraceActivityEventV1> = serde_json::from_value(envelope(
+            "observability::on-span",
+            json!({ "trace_ids": ["t1", "t2"] }),
+        ))
+        .unwrap();
+        assert_eq!(observed_event(spans).trace_ids, vec!["t1", "t2"]);
+
+        let log: ObservedEventV1<StoredLogEventV1> = serde_json::from_value(envelope(
+            "observability::on-log",
+            json!({ "severity_number": 17, "body": "boom", "trace_id": "t1", "service_name": "api" }),
+        ))
+        .unwrap();
+        let log = observed_event(log);
+        assert_eq!(log.severity_number, 17);
+        assert_eq!(log.body, "boom");
+        assert_eq!(log.trace_id.as_deref(), Some("t1"));
+        assert_eq!(log.service_name, "api");
+
+        // The turn's own status, never the envelope's `status: success`.
+        let turn: ObservedEventV1<TurnCompletedEventV1> = serde_json::from_value(envelope(
+            "harness::on-turn-completed",
+            json!({ "session_id": "s1", "turn_id": "t9", "status": "failed", "terminal": true }),
+        ))
+        .unwrap();
+        let turn = observed_event(turn);
+        assert_eq!(turn.session_id, "s1");
+        assert_eq!(turn.turn_id.as_deref(), Some("t9"));
+        assert_eq!(turn.status.as_deref(), Some("failed"));
+        assert_eq!(turn.terminal, Some(true));
+
+        let tick: ObservedEventV1<ScheduleEventV1> = serde_json::from_value(envelope(
+            "cron::on-tick",
+            json!({ "expression": "0 0 3 * * *" }),
+        ))
+        .unwrap();
+        let _ = observed_event(tick);
+
+        // An activation without an output (an error) reads as an empty event.
+        let mut empty = envelope("harness::on-turn-completed", Value::Null);
+        empty.as_object_mut().unwrap().remove("output");
+        let turn: ObservedEventV1<TurnCompletedEventV1> = serde_json::from_value(empty).unwrap();
+        assert_eq!(observed_event(turn).session_id, "");
+    }
+
 
     #[test]
     fn the_only_write_an_investigation_can_make_is_its_own_diagnosis() {
