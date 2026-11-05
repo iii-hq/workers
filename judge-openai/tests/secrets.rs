@@ -189,7 +189,7 @@ async fn a_secrets_on_changed_event_rotates_the_cached_key() {
                 Some("00000000-0000-0000-0000-000000000001") => vec![invoke(
                     2,
                     judge_openai::SECRET_CHANGED_ID,
-                    json!({"name": "OPENAI_API_KEY", "action": "updated"}),
+                    json!({"observer_id": "obs-1", "activation_id": "act-1", "function_id": "secrets::on-changed", "invocation_id": "inv-1", "status": "success", "started_at_ms": 1, "duration_ms": 0.5, "output": {"name": "OPENAI_API_KEY", "action": "updated"}}),
                 )],
                 Some("00000000-0000-0000-0000-000000000002") => {
                     vec![invoke(3, judge_openai::MODELS_ID, json!({"timeout_ms": 5000}))]
