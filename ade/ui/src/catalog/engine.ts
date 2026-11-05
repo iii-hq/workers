@@ -17,7 +17,10 @@
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ObserverInfo, observerInfo } from './observer-info'
 import { type SpanEvent, startSpanFeed } from './span-feed'
+
+export { type ObserverInfo, observerInfo }
 
 export interface FunctionSummary {
   function_id: string
@@ -42,34 +45,6 @@ export interface FunctionDetail extends FunctionSummary {
 /** An event source: a function its worker calls with the event (private), or one that takes args. */
 export function isEventSource(fn: FunctionSummary): boolean {
   return fn.private === true || fn.args_format !== undefined
-}
-
-/** One observer, as `engine::observers::list` / `get` report it. */
-export interface ObserverInfo {
-  id: string
-  /** The observed function. */
-  function_id: string
-  namespace: string
-  /** Read by the observed function's worker (a route, a schedule, a topic). */
-  args: Record<string, unknown>
-  /** Which calls reach the target, normalized. */
-  filters: Record<string, unknown>
-  target: { function_id: string; namespace: string }
-  capture: string[]
-  on: string
-  deliver: string
-  /** The worker that created the observer. */
-  worker: { worker_id: string; worker_name?: string }
-  state: string
-  reason?: { code: string; message: string }
-  fires: number
-  /** Activations dropped, by reason. */
-  dropped: Record<string, number>
-  activation_failures: Record<string, number>
-  max_fires?: number
-  expires_in_ms?: number
-  max_in_flight?: number
-  created_at_ms?: number
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -128,47 +103,6 @@ function functionSummary(row: unknown): FunctionSummary | null {
   const observers = num(row.observer_count)
   if (observers !== undefined) summary.observer_count = observers
   return summary
-}
-
-export function observerInfo(row: unknown): ObserverInfo | null {
-  if (!isRecord(row)) return null
-  const id = str(row.id)
-  const function_id = str(row.function_id)
-  if (!id || !function_id) return null
-  const target = isRecord(row.target) ? row.target : {}
-  const worker = isRecord(row.worker) ? row.worker : {}
-  const reason = isRecord(row.reason) ? row.reason : undefined
-  return {
-    id,
-    function_id,
-    namespace: str(row.namespace) ?? 'default',
-    args: isRecord(row.args) ? row.args : {},
-    filters: isRecord(row.filters) ? row.filters : {},
-    target: {
-      function_id: str(target.function_id) ?? '',
-      namespace: str(target.namespace) ?? 'default',
-    },
-    capture: Array.isArray(row.capture)
-      ? row.capture.filter((c): c is string => typeof c === 'string')
-      : [],
-    on: str(row.on) ?? 'success',
-    deliver: str(row.deliver) ?? 'envelope',
-    worker: {
-      worker_id: str(worker.worker_id) ?? '',
-      worker_name: str(worker.worker_name),
-    },
-    state: str(row.state) ?? 'pending',
-    reason: reason
-      ? { code: str(reason.code) ?? '', message: str(reason.message) ?? '' }
-      : undefined,
-    fires: num(row.fires) ?? 0,
-    dropped: counts(row.dropped),
-    activation_failures: counts(row.activation_failures),
-    max_fires: num(row.max_fires),
-    expires_in_ms: num(row.expires_in_ms),
-    max_in_flight: num(row.max_in_flight),
-    created_at_ms: num(row.created_at_ms),
-  }
 }
 
 export async function listFunctions(
