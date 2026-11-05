@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 
 use crate::observed::{delivered_event, Delivered};
 use serde_json::json;
@@ -356,14 +356,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 /// observers live as long as the worker's connection.
 pub fn observe(iii: &IIIClient, deps: &Deps) -> [ObserverHandle; 2] {
     let turns = iii.observe(
-        Source::function(TURN_COMPLETED_FN).deliver(Deliver::Output),
+        Source::function(TURN_COMPLETED_FN).capture([Capture::Output]),
         WAKE_ID,
     );
     deps.observer.set(turns.clone());
     let sweep = iii.observe(
         Source::function(ON_TICK_FN)
             .args(json!({ "expression": SWEEP_EXPRESSION }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         SWEEP_ID,
     );
     [turns, sweep]
