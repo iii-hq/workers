@@ -594,6 +594,7 @@ async fn stop(deps: &Deps) {
     let req = crate::functions::stop::StopRequest {
         session_id: "s".into(),
         turn_id: None,
+        ..Default::default()
     };
     crate::functions::stop::stop_one(deps, req).await.unwrap();
 }

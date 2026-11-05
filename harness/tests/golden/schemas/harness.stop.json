@@ -3,6 +3,10 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
+      "quiet_deadlines": {
+        "description": "For a stop that means no more turns: a session parked on a wake has no turn to cancel, so also record the stop on it. That wake's deadline then retires it without starting a turn, and the last one ends the session as cancelled; a delivery still wakes it. Omit to leave a parked session to end on its next wake, its deadline included.",
+        "type": "boolean"
+      },
       "session_id": {
         "type": "string"
       },

@@ -46,7 +46,7 @@
         "description": "The caller-settable half of a binding's lifecycle. Strict on purpose: an unknown key here (the retired `expires_at` above all) is a dropped deadline, so it must error naming the accepted fields, never pass.",
         "properties": {
           "expires_in_ms": {
-            "description": "Relative deadline: the observer stops this many milliseconds after it was created (the only deadline form).",
+            "description": "Relative deadline: the observer stops this many milliseconds after it was created (the only deadline form). Set it on every wake except a timer, to how long the work should take: if nothing fires by then, the session is woken with a notice. A one-shot wake without it expires after 10 minutes.",
             "format": "int64",
             "type": [
               "integer",
@@ -165,7 +165,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "note": {
-        "description": "Advisory only — the observer was CREATED, but its wiring looks suspicious (e.g. a filter naming a key someone already wrote). Read it and fix the wiring if it applies.",
+        "description": "Advisory only — the observer was CREATED. Says what applied by default or what looks suspicious in its wiring (e.g. a filter naming a key someone already wrote). Read it and act on it if it applies.",
         "type": [
           "string",
           "null"

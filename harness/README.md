@@ -652,7 +652,7 @@ observes only `harness::on-timer` and its own post-turn validator.
 |---|---|---|---|
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
-| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
@@ -736,7 +736,9 @@ is the call's `output`) and the payload a source's deliver hook sends through
 the observer (`kanban::on-change`, `stories::on-changed`: the event is the
 payload as sent). The harness counts delivered fires
 itself (`once`, `max_fires`) and runs the conditions before a delivery; the
-lifecycle deadline is also the observer's `expires_in_ms`. The harness waits
+lifecycle deadline is also the observer's `expires_in_ms`. A one-shot wake
+without a deadline gets 10 minutes, unless it observes `harness::on-timer` or
+`cron::on-tick`; when one passes unfired, the session is woken with a notice. The harness waits
 briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,
 `NOT_OBSERVABLE` and a worker's rejection come back to the agent. An observer
 reads every call of the function it observes, other sessions' included, so the

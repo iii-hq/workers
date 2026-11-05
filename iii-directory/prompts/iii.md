@@ -409,4 +409,4 @@ If you end with observers armed, check each one: can its producer actually produ
 watched key or event — is the write inside the producer's allowed functions, and does its
 task name EXACTLY the watched table/scope/key? Was the observer created BEFORE its
 producer started — and if not, did you read the watched state once to cover what may
-already have happened? An observer armed on something nothing can produce waits forever.
+already have happened? An observer armed on something nothing can produce never fires.

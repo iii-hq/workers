@@ -15,6 +15,13 @@ pub struct StopRequest {
     /// Omit to stop the current turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// For a stop that means no more turns: a session parked on a wake has no turn to
+    /// cancel, so also record the stop on it. That wake's deadline then retires it
+    /// without starting a turn, and the last one ends the session as cancelled; a
+    /// delivery still wakes it. Omit to leave a parked session to end on its next
+    /// wake, its deadline included.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet_deadlines: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -58,6 +65,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
             StopRequest {
                 session_id: node.session_id.clone(),
                 turn_id: None,
+                quiet_deadlines: req.quiet_deadlines,
             },
         )
         .await
@@ -148,7 +156,21 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         }
     }
     if record.status.is_terminal() {
+        let turn_id = record.turn_id.clone();
         crate::session_status::spawn_project(deps, record);
+        if req.quiet_deadlines {
+            let _guard = deps.locks.guard(&req.session_id).await;
+            if let Some(mut record) = crate::state::get_turn_unhydrated(
+                &deps.iii,
+                &req.session_id,
+                cfg.session_timeout_ms,
+            )
+            .await?
+            .filter(|record| record.turn_id == turn_id && record.status.is_terminal())
+            {
+                flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
+            }
+        }
         return Ok(StopOutcome::default());
     }
     // Pin the turn we observed so the write under the lock can't land on a newer
@@ -209,6 +231,9 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         // turn before this handler reacquires the session lock. The stop was
         // accepted against the matching non-terminal pre-read; report that
         // acceptance even though the durable abort bit can no longer be set.
+        if req.quiet_deadlines {
+            flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
+        }
         return Ok(outcome);
     }
     record.abort = true;
@@ -267,6 +292,21 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     }
 
     Ok(outcome)
+}
+
+/// Set `abort` on a parked session's ended turn, which no step will ever read, for
+/// the wake's expiry to find. The next turn starts a new record, so a person's next
+/// send undoes it. The caller holds the session lock and read `record` under it.
+async fn flag_parked_turn(
+    deps: &Deps,
+    record: &mut crate::types::turn::TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    if !record.abort && crate::bindings::session_expects_wake(deps, &record.session_id).await {
+        record.abort = true;
+        crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
+    }
+    Ok(())
 }
 
 /// A pending call that is neither a hook hold nor a legacy child spawn: an

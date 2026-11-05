@@ -87,7 +87,7 @@ Facts the cases below lean on (all from `harness/src/functions/observe.rs`):
 
 ### UC-01 — one-shot state wake
 
-*Proves:* the default `once: true` on a wake, the armed-wake advisory, and that
+*Proves:* the default `once: true` on a wake, the default-deadline advisory, and that
 a wake actually re-enters the parked session.
 
 Grant: `harness::observe`, `state::get`
@@ -113,8 +113,8 @@ Deliver it from the shell:
 $III call state::set --json '{"scope":"rtuc-01","key":"go","value":{"n":1}}'
 ```
 
-*Expect:* the result has `once: true` and a `note` saying the session stays
-parked until a state write on `rtuc-01/go`. One new turn after the write,
+*Expect:* the result has `once: true` and a `note` saying the wake expires in 10
+minutes and that only a state write on `rtuc-01/go` wakes it. One new turn after the write,
 ending with `woke with {"n":1}`. A second `state::set` wakes nothing — the
 observer was removed on its first delivery.
 

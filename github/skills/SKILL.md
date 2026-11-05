@@ -140,7 +140,9 @@ A watch is kept alive by the `github::pr::on-event` observers that listen to it
   within `webhooks.orphan_grace_minutes` (default 60), maintenance stops it,
   releases its quick-tunnel lease and deletes the repository hook once no live
   watch remains there; the tunnel stops with its last lease. One-shot wakes are
-  disposed right after they fire, so observe again before the grace period ends.
+  disposed right after they fire, or at their deadline (10 minutes unless
+  `lifecycle.expires_in_ms` sets another), so observe again before the grace
+  period ends.
 - Observers disposed while the worker was offline are reconciled at most every
   five minutes: a subscriber with no observer at two reconciliations in a row
   is dropped.

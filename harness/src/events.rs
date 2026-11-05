@@ -65,7 +65,9 @@ pub struct TurnStartedEvent {
     pub parent_session_id: Option<String>,
 }
 
-/// `harness::on-turn-completed`: a turn reached a terminal status.
+/// `harness::on-turn-completed`: a turn reached a terminal status. A turn that ended
+/// with a wake armed and was then stopped completes twice: `terminal: false`, then
+/// `terminal: true` when its last wake is gone.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TurnCompletedEvent {
     pub session_id: String,
