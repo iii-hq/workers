@@ -58,6 +58,9 @@ function fakeSdk() {
 }
 
 const BROWSER_ID = 'console-test'
+// What an injected UI built against an older console still passes: the
+// host must translate it to capture, never forward it.
+const LEGACY_DELIVER_INPUT = 'input' as const
 const FN = 'iii::console::turn_completed'
 const SDK_ID = `${FN}::${BROWSER_ID}`
 
@@ -206,7 +209,7 @@ describe('namespaced browser connection', () => {
     client.observe('session::on-created', `${FN}::${BROWSER_ID}`)
     client.observe(
       // An injected UI built against an older console still passes deliver.
-      { function_id: 'observability::on-span', deliver: 'input' },
+      { function_id: 'observability::on-span', deliver: LEGACY_DELIVER_INPUT },
       `${FN}::${BROWSER_ID}`,
     )
     client.observe(
@@ -271,7 +274,7 @@ describe('namespaced browser connection', () => {
     const seen: unknown[] = []
     client.on(FN, (p) => void seen.push(p))
     client.observe(
-      { function_id: 'observability::on-span', deliver: 'input' },
+      { function_id: 'observability::on-span', deliver: LEGACY_DELIVER_INPUT },
       SDK_ID,
     )
 

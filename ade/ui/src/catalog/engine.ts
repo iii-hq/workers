@@ -287,7 +287,6 @@ export function useLiveSignals(
             {
               function_id: source,
               namespace: liveSourceNamespace(source),
-              deliver: 'output',
             },
             target,
           )

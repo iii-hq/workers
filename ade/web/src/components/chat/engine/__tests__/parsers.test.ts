@@ -212,6 +212,10 @@ describe('engine::functions::info', () => {
   })
 })
 
+// A legacy engine's listing row reports the raw delivery it used; this is
+// a listing row, not an observe source.
+const LEGACY_RAW_DELIVERY = 'output'
+
 const observer = {
   id: 'obs-1',
   function_id: 'http::on-request',
@@ -221,7 +225,7 @@ const observer = {
   target: { function_id: 'todo::create', namespace: 'default' },
   capture: ['input', 'output', 'caller'],
   on: 'success',
-  deliver: 'output',
+  deliver: LEGACY_RAW_DELIVERY,
   worker: { worker_id: 'w-1', worker_name: 'todo-app' },
   state: 'active',
   fires: 3,

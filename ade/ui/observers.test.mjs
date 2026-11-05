@@ -21,6 +21,10 @@ async function loadObserverInfo() {
   return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 }
 
+// A legacy engine's listing still reports the raw delivery it used; this is
+// a listing row, not an observe source.
+const LEGACY_RAW_DELIVERY = 'output'
+
 const base = {
   id: 'obs-1',
   function_id: 'payments::charge',
@@ -84,7 +88,7 @@ test('an outcome array under fires is not read as fires_on', async () => {
 
 test('a legacy engine row: on error, deliver output, numeric fires count', async () => {
   const { observerInfo, observerDeliveryFacts } = await loadObserverInfo()
-  const info = observerInfo({ ...base, on: 'error', deliver: 'output', fires: 7, capture: [] })
+  const info = observerInfo({ ...base, on: 'error', deliver: LEGACY_RAW_DELIVERY, fires: 7, capture: [] })
   assert.deepEqual(info.outcomes, ['error'])
   assert.equal(info.fires, 7)
   assert.equal(info.deliver, 'output')
