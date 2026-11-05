@@ -212,14 +212,15 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 				Source struct {
 					FunctionID string `json:"function_id"`
 					Namespace  string `json:"namespace"`
-					Deliver    string `json:"deliver"`
+					Deliver    string   `json:"deliver"`
+					Capture    []string `json:"capture"`
 				} `json:"source"`
 				Target struct {
 					FunctionID string `json:"function_id"`
 				} `json:"target"`
 			}
 			if json.Unmarshal(msg["source"], &frame.Source) == nil && json.Unmarshal(msg["target"], &frame.Target) == nil && frame.Source.FunctionID == "secrets::on-changed" {
-				bound = frame.Target.FunctionID == "whatsapp::on-secret-changed" && frame.Source.Namespace == "team-a" && frame.Source.Deliver == "output"
+				bound = frame.Target.FunctionID == "whatsapp::on-secret-changed" && frame.Source.Namespace == "team-a" && frame.Source.Deliver == "" && len(frame.Source.Capture) == 1 && frame.Source.Capture[0] == "output"
 			}
 		case string(msg["function_id"]) == `"configuration::get"` && len(msg["invocation_id"]) > 0:
 			reply := callbackInvocationReply(msg)
@@ -258,7 +259,7 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 	current = testSecretRotate
 	before := resolves
 	mu.Unlock()
-	if _, remote, err := peer.invoke(ctx, "whatsapp::on-secret-changed", json.RawMessage(`{"name":"OTHER","ref":"secret://OTHER","action":"rotated"}`)); err != nil || remote != nil {
+	if _, remote, err := peer.invoke(ctx, "whatsapp::on-secret-changed", secretChangedEnvelope(`{"name":"OTHER","ref":"secret://OTHER","action":"rotated"}`)); err != nil || remote != nil {
 		t.Fatal(remote, err)
 	}
 	mu.Lock()
@@ -267,7 +268,7 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 	if unrelated != 0 || manager.Config().Cloud.AccessToken != testSecretToken {
 		t.Fatalf("an unrelated secret caused %d resolves", unrelated)
 	}
-	if _, remote, err := peer.invoke(ctx, "whatsapp::on-secret-changed", json.RawMessage(`{"name":"WA_TOKEN","ref":"secret://WA_TOKEN","action":"rotated"}`)); err != nil || remote != nil {
+	if _, remote, err := peer.invoke(ctx, "whatsapp::on-secret-changed", secretChangedEnvelope(`{"name":"WA_TOKEN","ref":"secret://WA_TOKEN","action":"rotated"}`)); err != nil || remote != nil {
 		t.Fatal(remote, err)
 	}
 	if got := manager.Config().Cloud.AccessToken; got != testSecretRotate {
@@ -282,4 +283,11 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 	if resolvedIn != `"team-a"` {
 		t.Fatalf("secrets::resolve called in namespace %s", resolvedIn)
 	}
+}
+
+// secretChangedEnvelope is what whatsapp::on-secret-changed receives from its
+// capture: [output] observer: the Observed envelope with the secrets::on-changed
+// event as its output.
+func secretChangedEnvelope(event string) json.RawMessage {
+	return json.RawMessage(`{"observer_id":"obs_1","activation_id":"act_1","function_id":"secrets::on-changed","invocation_id":"inv_1","status":"success","started_at_ms":1,"duration_ms":0.5,"output":` + event + `}`)
 }
