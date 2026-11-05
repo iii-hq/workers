@@ -542,6 +542,61 @@ mod tests {
         assert_missing_entry_contract(super::is_not_found);
     }
 
+    fn observed(function_id: &str, output: Option<serde_json::Value>) -> serde_json::Value {
+        let mut envelope = serde_json::json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": function_id,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+        });
+        if let Some(output) = output {
+            envelope["output"] = output;
+        }
+        envelope
+    }
+
+    /// The secret watcher's target reads the advisory event from the
+    /// envelope's `output`; without one there is nothing to re-read.
+    #[test]
+    fn the_secret_watcher_reads_the_event_from_the_observed_envelope() {
+        let expected =
+            crate::secrets::event_reference(&serde_json::json!({ "ref": "secret://db-pass" }));
+        assert!(expected.is_some(), "fixture ref must parse");
+        let event: super::ObservedSecretChange = serde_json::from_value(observed(
+            crate::secrets::ON_CHANGED_FN,
+            Some(serde_json::json!({ "name": "db-pass", "ref": "secret://db-pass", "action": "rotated" })),
+        ))
+        .unwrap();
+        assert_eq!(super::secret_change_reference(event), expected);
+        let event: super::ObservedSecretChange =
+            serde_json::from_value(observed(crate::secrets::ON_CHANGED_FN, None)).unwrap();
+        assert_eq!(super::secret_change_reference(event), None);
+    }
+
+    /// Both watchers ask for a capture the engine accepts: the output (the
+    /// config watcher ignores it and re-fetches; caller-only is refused).
+    #[test]
+    fn the_watchers_capture_the_output() {
+        use iii_sdk::{Capture, Source};
+        assert_eq!(
+            super::secret_change_source(),
+            Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
+        );
+        assert_eq!(
+            super::config_change_source(),
+            Source::function("configuration::on-updated")
+                .namespace("default")
+                .filters(serde_json::json!({
+                    "input.id": { "$eq": super::config_id() },
+                    "input.event_type": { "$eq": "configuration:updated" },
+                }))
+                .capture([Capture::Output])
+        );
+    }
+
     /// A hand-edited entry with an absurd pool size becomes that
     /// connection's error; the worker and the other connections carry on.
     #[tokio::test(flavor = "multi_thread")]
