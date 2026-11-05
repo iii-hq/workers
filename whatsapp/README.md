@@ -157,14 +157,14 @@ Delivery is best effort and not retried: target return values do not send replie
 
 ### Native events
 
-Native kinds are `session.connected`, `session.disconnected`, `session.paired`, `session.failed`, `session.logged_out`, `pairing.qr`, `message.received`, `message.receipt`, `history.sync`, `group.updated`, `group.joined` and `chat.presence`. `pairing.qr` announces that a new QR code is available from `whatsapp::sessions::qr`; it does not carry the code. Observe one session's incoming messages:
+Native kinds are `session.connected`, `session.disconnected`, `session.paired`, `session.failed`, `session.logged_out`, `pairing.qr`, `message.received`, `message.receipt`, `history.sync`, `group.updated`, `group.joined` and `chat.presence`. `pairing.qr` announces that a new QR code is available from `whatsapp::sessions::qr`; it does not carry the code. Observe one session's incoming messages; with `capture: ['output']` the target receives the Observed envelope and reads the event from its `output`:
 
 ```ts
 iii.observe(
   {
     function_id: 'whatsapp::on-events',
     filters: { 'input.session_id': { $eq: 'support' }, 'input.kind': { $eq: 'message.received' } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'automation::on-whatsapp-message',
 )
@@ -185,7 +185,7 @@ iii.observe(
       'input.chat_id': { $eq: '+15550000009' },
       'input.message_type': { $eq: 'text' },
     },
-    deliver: 'output',
+    capture: ['output'],
   },
   'automation::on-whatsapp-message',
 )

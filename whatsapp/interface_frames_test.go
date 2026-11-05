@@ -134,10 +134,9 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		if err := json.Unmarshal(raw, &observer); err != nil {
 			t.Fatal(err)
 		}
-		if len(observer.Source.Capture) != 0 {
-			t.Errorf("%s observer of %s sets capture %s; it uses the default", observer.Target.FunctionID, observer.Source.FunctionID, observer.Source.Capture)
-		}
-		observer.Source.Capture = nil
+		// capture is compared with want: ["output"] for the three event
+		// observers whose targets read the envelope, absent (the default) for
+		// the rest.
 		got = append(got, observer)
 	}
 	key := func(o observerFrame) string {

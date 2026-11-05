@@ -210,8 +210,8 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 		case string(msg["type"]) == `"observe"`:
 			var frame struct {
 				Source struct {
-					FunctionID string `json:"function_id"`
-					Namespace  string `json:"namespace"`
+					FunctionID string   `json:"function_id"`
+					Namespace  string   `json:"namespace"`
 					Deliver    string   `json:"deliver"`
 					Capture    []string `json:"capture"`
 				} `json:"source"`
