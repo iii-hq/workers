@@ -20,8 +20,9 @@ const DEFINE_RETRY_BACKOFF_MS: u64 = 250;
 /// Provision both queues before recovery or readiness. Deletion REQUIRES
 /// restart redelivery; only the pre-existing turn queue allows a legacy schema.
 /// Both use the same bounded boot-readiness retry policy.
-pub async fn ensure_turn_queue(iii: &IIIClient) -> Result<(), String> {
+pub async fn ensure_turn_queue(iii: &IIIClient, concurrency: u32) -> Result<(), String> {
     ensure_queues_with(
+        concurrency,
         |payload| async move {
             iii.call(CallRequest {
                 function_id: DEFINE_QUEUE_FUNCTION_ID.into(),
@@ -38,13 +39,17 @@ pub async fn ensure_turn_queue(iii: &IIIClient) -> Result<(), String> {
     .await
 }
 
-async fn ensure_queues_with<F, Fut>(mut define: F, backoff: Duration) -> Result<(), String>
+async fn ensure_queues_with<F, Fut>(
+    concurrency: u32,
+    mut define: F,
+    backoff: Duration,
+) -> Result<(), String>
 where
     F: FnMut(Value) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
     for (payload, allow_legacy) in [
-        (turn_queue_definition(), true),
+        (turn_queue_definition(concurrency), true),
         (deletion_queue_definition(), false),
     ] {
         ensure_queue_with(payload, allow_legacy, &mut define, backoff).await?;
@@ -110,13 +115,14 @@ fn is_legacy_queue_schema_error(error: &str) -> bool {
     error.contains("unknown field `redeliver_on_engine_restart`")
 }
 
-fn turn_queue_definition() -> Value {
+fn turn_queue_definition(concurrency: u32) -> Value {
     json!({
         "queue": TURN_QUEUE,
         "config": {
             "type": "fifo",
             "message_group_field": "session_id",
-            "concurrency": 10,
+            // The queue refuses 0, which would stop the boot.
+            "concurrency": concurrency.max(1),
             "max_retries": 3,
             "backoff_ms": 1_000,
             "redeliver_on_engine_restart": true
@@ -131,28 +137,30 @@ mod tests {
     #[test]
     fn turn_queue_is_grouped_fifo_and_uses_worker_timeout_default() {
         assert_eq!(
-            turn_queue_definition(),
+            turn_queue_definition(64),
             json!({
                 "queue": "harness-turn",
                 "config": {
                     "type": "fifo",
                     "message_group_field": "session_id",
-                    "concurrency": 10,
+                    "concurrency": 64,
                     "max_retries": 3,
                     "backoff_ms": 1_000,
                     "redeliver_on_engine_restart": true
                 }
             })
         );
-        assert!(turn_queue_definition()["config"]
+        assert!(turn_queue_definition(64)["config"]
             .get("timeout_ms")
             .is_none());
+        assert_eq!(turn_queue_definition(0)["config"]["concurrency"], 1);
     }
 
     #[tokio::test]
     async fn both_queues_retry_readiness_before_success() {
         let mut attempts = std::collections::BTreeMap::new();
         ensure_queues_with(
+            64,
             |payload| {
                 let count = attempts
                     .entry(payload["queue"].as_str().unwrap().to_string())
@@ -176,6 +184,7 @@ mod tests {
     async fn legacy_turn_fallback_does_not_silently_downgrade_deletion() {
         let mut seen = Vec::new();
         let error = ensure_queues_with(
+            64,
             |payload| {
                 let legacy = payload["config"]
                     .get("redeliver_on_engine_restart")
@@ -204,6 +213,7 @@ mod tests {
     async fn deletion_readiness_exhaustion_blocks_boot_with_named_error() {
         let mut calls = 0;
         let error = ensure_queues_with(
+            64,
             |payload| {
                 calls += 1;
                 std::future::ready(if payload["queue"] == TURN_QUEUE {
