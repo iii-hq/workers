@@ -54,7 +54,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<RecurrenceRequestV1, RecurrenceResponseV1>(RECURRENCE_ID),
         spec::<ReproduceRequestV1, ReproduceResponseV1>(REPRODUCE_ID),
         spec::<StepRequestV1, StepResponseV1>(STEP_ID),
-        spec::<WakeEventV1, WakeResponseV1>(WAKE_ID),
+        spec::<crate::observed::Delivered<WakeEventV1>, WakeResponseV1>(WAKE_ID),
         spec::<SweepEventV1, SweepResponseV1>(SWEEP_ID),
         spec::<CompletedEventV1, CompletedEventV1>(ON_COMPLETED_FN),
     ]

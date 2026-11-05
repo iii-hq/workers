@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+
+use crate::observed::{delivered_event, Delivered};
 use serde_json::json;
 
 use crate::contract::{
@@ -322,8 +324,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let current = deps.clone();
     iii.register_function(
         WAKE_ID,
-        RegisterFunction::new_async(move |event: WakeEventV1| {
+        RegisterFunction::new_async(move |delivered: Delivered<WakeEventV1>| {
             let deps = current.clone();
+            let event = delivered_event(delivered).unwrap_or_default();
             async move {
                 crate::runtime::wake(&deps, event)
                     .await
@@ -364,4 +367,25 @@ pub fn observe(iii: &IIIClient, deps: &Deps) -> [ObserverHandle; 2] {
         SWEEP_ID,
     );
     [turns, sweep]
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+    use crate::observed::envelope;
+
+    /// The wake target is called with the `Observed` envelope: the finished
+    /// turn is its output.
+    #[test]
+    fn the_finished_turn_is_read_from_the_envelope() {
+        let delivered: Delivered<WakeEventV1> = serde_json::from_value(envelope(
+            TURN_COMPLETED_FN,
+            json!({ "session_id": "s-1", "turn_id": "t-1", "terminal": true }),
+        ))
+        .expect("the envelope parses");
+        let event = delivered_event(delivered).unwrap_or_default();
+        assert_eq!(event.session_id, "s-1");
+        assert_eq!(event.turn_id, "t-1");
+        assert!(event.terminal);
+    }
 }

@@ -1698,7 +1698,8 @@ async fn the_monitor_observes_finished_turns_and_the_sweep_tick() {
         .frame(|frame| frame["type"] == "observe" && frame["id"] == turns.id())
         .await;
     assert_eq!(frame["source"]["function_id"], TURN_COMPLETED_FN);
-    assert_eq!(frame["source"]["deliver"], "output");
+    assert_eq!(frame["source"]["capture"], json!(["output"]), "{frame}");
+    assert!(frame["source"].get("deliver").is_none(), "{frame}");
     assert!(frame["source"].get("args").is_none(), "{frame}");
     assert!(frame["source"].get("filters").is_none(), "{frame}");
     assert_eq!(frame["target"]["function_id"], WAKE_ID);
@@ -1710,7 +1711,8 @@ async fn the_monitor_observes_finished_turns_and_the_sweep_tick() {
         frame["source"]["args"],
         json!({"expression": SWEEP_EXPRESSION})
     );
-    assert_eq!(frame["source"]["deliver"], "output");
+    assert_eq!(frame["source"]["capture"], json!(["output"]), "{frame}");
+    assert!(frame["source"].get("deliver").is_none(), "{frame}");
     assert!(frame["source"].get("filters").is_none(), "{frame}");
     assert_eq!(frame["target"]["function_id"], SWEEP_ID);
 
