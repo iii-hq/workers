@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,8 @@ type eventWire struct {
 	frames      chan map[string]json.RawMessage
 	connections chan *websocket.Conn
 	revision    int
+	replayMu    sync.Mutex
+	replay      []iii.ObserverInfo
 }
 
 func newEventWire(t *testing.T, h *Hub) *eventWire {
@@ -56,7 +59,10 @@ func newEventWire(t *testing.T, h *Hub) *eventWire {
 				continue
 			}
 			if string(frame["type"]) == `"registerfunction"` {
-				confirm, _ := json.Marshal(map[string]any{"type": "functionregistered", "id": "mesh::on-node-changed", "namespace": "hub-project", "revision": 0, "local_dispatch": true, "observers": []any{}})
+				e.replayMu.Lock()
+				replay := append([]iii.ObserverInfo{}, e.replay...)
+				e.replayMu.Unlock()
+				confirm, _ := json.Marshal(map[string]any{"type": "functionregistered", "id": "mesh::on-node-changed", "namespace": "hub-project", "revision": 0, "local_dispatch": true, "observers": replay})
 				conn.Write(ctx, websocket.MessageText, confirm)
 			}
 			if string(frame["type"]) == `"invocationsobserved"` || string(frame["type"]) == `"localinvocationstats"` {
