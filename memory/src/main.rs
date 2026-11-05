@@ -32,7 +32,7 @@ use clap::Parser;
 use iii_sdk::protocol::observe_codes;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
     RegisterFunction, Source,
 };
 use serde_json::json;
@@ -42,8 +42,8 @@ use memory::configuration::{self, ConfigCell, StoreCell};
 use memory::deps::Deps;
 use memory::events::{self, Emitter};
 use memory::functions::rest;
-use memory::store::Store;
 use memory::observed::{delivered_event, Delivered};
+use memory::store::Store;
 use memory::{config, functions, hooks, manifest};
 
 #[derive(Parser, Debug)]
@@ -113,12 +113,12 @@ fn seam_observers(extraction_id: String) -> Vec<(Source, &'static str, ObserverO
             ObserverOptions::default(),
         ),
         (
-            Source::function("harness::on-turn-completed").deliver(Deliver::Output),
+            Source::function("harness::on-turn-completed").capture([Capture::Output]),
             hooks::TURN_COMPLETED_FN,
             ObserverOptions::default(),
         ),
         (
-            Source::function("session::on-deleted").deliver(Deliver::Output),
+            Source::function("session::on-deleted").capture([Capture::Output]),
             hooks::SESSION_DELETED_FN,
             ObserverOptions::default(),
         ),
