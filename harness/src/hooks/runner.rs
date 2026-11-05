@@ -849,9 +849,14 @@ fn chain_slice(
 }
 
 /// Whether a pre/post_call observer's `functions` globs match the called
-/// function (no `functions` filter → all calls).
+/// function (no `functions` filter → all calls), under either id of a sandbox
+/// operation.
 pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool {
-    globs_match(binding.functions.as_deref(), function_id)
+    let globs = binding.functions.as_deref();
+    globs_match(globs, function_id)
+        || crate::policy::sandbox_op_aliases(function_id)
+            .iter()
+            .any(|alias| globs_match(globs, alias))
 }
 
 /// Whether an observer's `sessions` globs match the turn's session (no
@@ -1134,6 +1139,26 @@ mod tests {
             ..binding
         };
         assert!(functions_match(&all, "anything"));
+    }
+
+    // A guard on one id of a sandbox op must not be skipped through the other.
+    #[test]
+    fn functions_filter_covers_both_ids_of_a_sandbox_op() {
+        let on_router = HookBinding {
+            functions: Some(vec!["sandbox::exec".into()]),
+            ..binding("gate", 0)
+        };
+        assert!(functions_match(&on_router, "sandbox::exec"));
+        assert!(functions_match(&on_router, "sandbox-libkrun::exec"));
+        assert!(!functions_match(&on_router, "sandbox-libkrun::fs::rm"));
+        assert!(!functions_match(&on_router, "shell::exec"));
+
+        let on_adapter = HookBinding {
+            functions: Some(vec!["sandbox-libkrun::fs::*".into()]),
+            ..binding("gate", 0)
+        };
+        assert!(functions_match(&on_adapter, "sandbox::fs::read"));
+        assert!(!functions_match(&on_adapter, "sandbox::exec"));
     }
 
     /// A scripted invoker: each target answers from the map, and every call

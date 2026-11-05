@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! `sandbox-libkrun::worker::*`: worker VMs that Compose supervises.
+//! `sandbox-libkrun::worker::*`: worker VMs that Compose or `iii sandbox run` supervises.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -36,6 +36,7 @@ use crate::wire::{
     LogRecord, LogStream, State, WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest,
     WorkerLogsResponse, WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource,
     WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest,
+    scoped_auth_matches,
 };
 
 /// Compose's own worker-log cap: past it `console.log` rotates to `console.log.1`.
@@ -51,6 +52,15 @@ const CONSOLE_LOG: &str = "console.log";
 /// Where `console.log` rotates to; one rotated file is kept.
 const CONSOLE_LOG_OLD: &str = "console.log.1";
 const STATE_FILE: &str = "state.json";
+/// How long a leased VM may go without a log follower. `iii sandbox run` gives up on an
+/// adapter that has not answered for as long (its `LOST_AFTER`).
+const LEASE_GRACE: Duration = Duration::from_secs(45);
+/// How long a VM whose lease lapsed gets to exit before it is killed.
+const LEASE_STOP_GRACE: Duration = Duration::from_secs(10);
+/// How many times per grace a leased VM's quiet follower is probed: 5 s by default.
+const LEASE_PROBES: u32 = 9;
+/// Records the VM's `state_key`: `status`, `stop` and `logs` name it by `vm_id`.
+const STATE_KEY_FILE: &str = "state_key";
 
 /// The worker VMs of one project, behind its token and host roots.
 pub struct WorkerVms {
@@ -71,6 +81,9 @@ pub struct WorkerVms {
     /// shortcut: in memory, so a daemon restart forgets it; persist it outside
     /// `<base>` if a stale stop can ever outlive the daemon.
     destroyed: Mutex<HashMap<String, u64>>,
+    /// How long a VM a scoped `start` booted may go without a log follower before
+    /// it is stopped. A field so tests can shorten it.
+    pub lease_grace: Duration,
 }
 
 #[derive(Clone)]
@@ -96,6 +109,10 @@ struct Vm {
     ended: watch::Sender<Option<Ended>>,
     /// The log its pumps append to; `worker::logs` reads it under this lock.
     console: Arc<Mutex<Console>>,
+    /// How many `worker::logs` streams follow it now.
+    followers: watch::Sender<usize>,
+    /// Booted by a scoped `start`: stopped when nothing follows it (see `lease`).
+    leased: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -120,6 +137,7 @@ impl WorkerVms {
             starts: AtomicU64::new(0),
             unreserved: tokio::sync::Notify::new(),
             destroyed: Mutex::default(),
+            lease_grace: LEASE_GRACE,
         }
     }
 
@@ -145,7 +163,7 @@ impl WorkerVms {
         &self,
         req: WorkerPrepareRequest,
     ) -> Result<WorkerPrepareResponse, SandboxError> {
-        self.authorize(&req.auth)?;
+        self.authorize(&req.auth, req.state_key.as_deref())?;
         let (package, host_path, run_override) = source_parts(&req.source);
         let dir = self.admit(host_path)?;
         let (project, kind) =
@@ -159,6 +177,13 @@ impl WorkerVms {
                 .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
                 .map_err(SandboxError::PrepareFailed)?;
         }
+        // For a client reattaching to a live boot: its `start` writes nothing, it gets S502.
+        if let Some(state_key) = &req.state_key {
+            let vm_dir = self.base.join(vm_id(state_key));
+            std::fs::create_dir_all(&vm_dir)
+                .and_then(|()| store_state_key(&vm_dir, state_key))
+                .map_err(|e| SandboxError::PrepareFailed(format!("{}: {e}", vm_dir.display())))?;
+        }
         Ok(WorkerPrepareResponse {})
     }
 
@@ -169,7 +194,9 @@ impl WorkerVms {
         &self,
         req: WorkerStartRequest,
     ) -> Result<WorkerStartResponse, SandboxError> {
-        self.authorize(&req.auth)?;
+        self.authorize(&req.auth, Some(&req.state_key))?;
+        // Compose presents the project token and supervises its VMs itself.
+        let leased = !self.is_project_token(&req.auth);
         let (package, host_path, run_override) = source_parts(&req.source);
         let dir = self.admit(host_path)?;
         let id = vm_id(&req.state_key);
@@ -192,7 +219,11 @@ impl WorkerVms {
             None => local_vm_command(&req.worker_name, &dir, run_override, over).await,
         }
         .map_err(SandboxError::BootFailed)?;
-        self.launch(&req.state_key, built.command, built.env_stdin, Some(start))
+        let started = self.launch(&req.state_key, built.command, built.env_stdin, Some(start))?;
+        if leased {
+            self.arm_lease(&started.vm_id);
+        }
+        Ok(started)
     }
 
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
@@ -220,9 +251,10 @@ impl WorkerVms {
             }
         }
         let instance = self.next_instance(&id)?;
-        let (console, lifeline, mut child) = spawn(&dir, instance, cmd).map_err(|e| {
-            SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
-        })?;
+        let (console, lifeline, mut child) =
+            spawn(&dir, state_key, instance, cmd).map_err(|e| {
+                SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
+            })?;
         let console = Arc::new(Mutex::new(Console {
             dir,
             file: console,
@@ -237,6 +269,8 @@ impl WorkerVms {
             reaped: AtomicBool::new(false),
             ended: watch::Sender::new(None),
             console: console.clone(),
+            followers: watch::Sender::new(0),
+            leased: AtomicBool::new(false),
         });
         let stdin = child.stdin.take();
         tokio::spawn(async move {
@@ -282,7 +316,7 @@ impl WorkerVms {
 
     /// S504 for an unknown `vm_id`, S503 for another instance.
     pub fn status(&self, req: WorkerStatusRequest) -> Result<WorkerStatus, SandboxError> {
-        self.authorize(&req.auth)?;
+        self.authorize_vm(&req.auth, &req.vm_id)?;
         Ok(self.lookup(&req.vm_id, req.instance)?.status(&req.vm_id))
     }
 
@@ -290,7 +324,7 @@ impl WorkerVms {
     /// Returns the final status; an exited VM returns it as is, and one still
     /// preparing is cancelled before it boots, once its build has ended.
     pub async fn stop(&self, req: WorkerStopRequest) -> Result<WorkerStatus, SandboxError> {
-        self.authorize(&req.auth)?;
+        self.authorize_vm(&req.auth, &req.vm_id)?;
         // A boot still preparing is cancelled: its `start` never launches, and
         // this returns once that build has ended, so neither the start retried
         // after it nor a `destroy` writes the VM's state alongside it.
@@ -321,21 +355,7 @@ impl WorkerVms {
             });
         }
         let vm = booted(&req.vm_id, self.lookup(&req.vm_id, req.instance)?)?;
-        if vm.ended.borrow().is_none() {
-            vm.stopping.store(true, Ordering::SeqCst);
-            let mut ended = vm.ended.subscribe();
-            let gone = req.grace_ms > 0 && {
-                vm.signal(Signal::SIGTERM);
-                let grace = Duration::from_millis(req.grace_ms);
-                tokio::time::timeout(grace, ended.wait_for(Option::is_some))
-                    .await
-                    .is_ok()
-            };
-            if !gone {
-                vm.signal(Signal::SIGKILL);
-                let _ = ended.wait_for(Option::is_some).await;
-            }
-        }
+        vm.stop(Duration::from_millis(req.grace_ms)).await;
         Ok(Slot::Booted(vm).status(&req.vm_id))
     }
 
@@ -344,24 +364,39 @@ impl WorkerVms {
     pub async fn logs(
         self: &Arc<Self>,
         iii: &IIIClient,
-        req: WorkerLogsRequest,
+        mut req: WorkerLogsRequest,
     ) -> Result<WorkerLogsResponse, SandboxError> {
-        self.authorize(&req.auth)?;
+        self.authorize_vm(&req.auth, &req.vm_id)?;
         // Checked here: an error inside the task would reach no caller.
-        booted(&req.vm_id, self.slot(&req.vm_id)?)?;
+        let vm = booted(&req.vm_id, self.slot(&req.vm_id)?)?;
+        let mut reply = WorkerLogsResponse::default();
+        if req.from_end {
+            let end = vm
+                .console
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .end();
+            req.cursor = Some(end);
+            reply.cursor = (end > 0).then_some(end);
+        }
+        let probed = req.follow && vm.leased.load(Ordering::SeqCst);
+        let every = self.lease_grace / LEASE_PROBES;
         let writer = ChannelWriter::new(iii.address(), &req.channel);
         let vms = self.clone();
         tokio::spawn(async move {
             let channel = &writer;
-            let pumped = vms
-                .pump_logs(&req, |record| async move {
+            let pumped = tokio::select! {
+                pumped = vms.pump_logs(&req, |record| async move {
                     let frame = serde_json::to_string(&record).map_err(|e| e.to_string())?;
                     channel
                         .send_message(&frame)
                         .await
                         .map_err(|e| e.to_string())
-                })
-                .await;
+                }) => pumped,
+                gone = reader_gone(channel, every), if probed => {
+                    Err(SandboxError::FsChannelAborted(gone))
+                }
+            };
             if let Err(e) = pumped {
                 tracing::info!(error = %e, vm_id = %req.vm_id, "worker log stream ended early");
             }
@@ -369,12 +404,12 @@ impl WorkerVms {
             let _ = writer.write(&[]).await;
             let _ = writer.close().await;
         });
-        Ok(WorkerLogsResponse {})
+        Ok(reply)
     }
 
     /// Feed `sink` the instance's records from `req.cursor`. With `follow` it
     /// polls until the instance has exited and its log is drained; a sink error
-    /// ends it too (S218).
+    /// ends it too (S218). A `follow` holds the VM's lease for as long as it runs.
     pub(crate) async fn pump_logs<F, Fut>(
         &self,
         req: &WorkerLogsRequest,
@@ -386,6 +421,7 @@ impl WorkerVms {
     {
         // Looked up before the join: only ids `vm_id()` made are in `slots`.
         let vm = booted(&req.vm_id, self.slot(&req.vm_id)?)?;
+        let _follower = req.follow.then(|| Follower::new(vm.clone()));
         let path = self.base.join(&req.vm_id).join(CONSOLE_LOG);
         let mut ended = vm.ended.subscribe();
         let mut cursor = req.cursor.unwrap_or(0);
@@ -419,7 +455,7 @@ impl WorkerVms {
         &self,
         req: WorkerDestroyRequest,
     ) -> Result<WorkerDestroyResponse, SandboxError> {
-        self.authorize(&req.auth)?;
+        self.authorize(&req.auth, Some(&req.state_key))?;
         let id = vm_id(&req.state_key);
         let dir = self.base.join(&id);
         // The marker, not the lock, keeps a `start` out of a half-removed dir:
@@ -454,6 +490,15 @@ impl WorkerVms {
             }
         };
         Ok(WorkerDestroyResponse { destroyed })
+    }
+
+    /// Leave `vm_id`'s VM to its lease, from now on. Nothing is told when a client
+    /// dies before it opens the logs, so the grace starts here.
+    fn arm_lease(&self, vm_id: &str) {
+        if let Some(Slot::Booted(vm)) = self.slots().get(vm_id) {
+            vm.leased.store(true, Ordering::SeqCst);
+            tokio::spawn(lease(vm.clone(), vm_id.to_string(), self.lease_grace));
+        }
     }
 
     /// The instance the next boot of `vm_id` gets. Call it holding `slots`.
@@ -496,17 +541,34 @@ impl WorkerVms {
         self.slots.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Constant-time token check; no token (or an empty one) refuses every call.
-    fn authorize(&self, auth: &str) -> Result<(), SandboxError> {
+    /// Constant-time token check; no token (or an empty one) is never matched.
+    fn is_project_token(&self, auth: &str) -> bool {
         let token = self.token.as_deref().unwrap_or("");
         let diff = token
             .bytes()
             .zip(auth.bytes())
             .fold(0, |d, (a, b)| d | (a ^ b));
-        if token.is_empty() || token.len() != auth.len() || diff != 0 {
-            return Err(SandboxError::Unauthorized);
+        !token.is_empty() && token.len() == auth.len() && diff == 0
+    }
+
+    /// `auth` must be the project token or, for a call that names one, `state_key`'s scoped token.
+    fn authorize(&self, auth: &str, state_key: Option<&str>) -> Result<(), SandboxError> {
+        let token = self.token.as_deref().unwrap_or("");
+        if self.is_project_token(auth)
+            || state_key.is_some_and(|key| scoped_auth_matches(token, key, auth))
+        {
+            return Ok(());
         }
-        Ok(())
+        Err(SandboxError::Unauthorized)
+    }
+
+    /// As `authorize`, for a call that names its VM by `vm_id`: a scoped token
+    /// needs that VM's record of its state key.
+    fn authorize_vm(&self, auth: &str, vm_id: &str) -> Result<(), SandboxError> {
+        if self.is_project_token(auth) {
+            return Ok(());
+        }
+        self.authorize(auth, stored_state_key(&self.base, vm_id).as_deref())
     }
 
     /// `host_path`, canonicalized, if it lies under a canonicalized root.
@@ -580,6 +642,56 @@ fn refuse_busy(vm_id: &str, slot: Option<&Slot>) -> Result<(), SandboxError> {
     }
 }
 
+/// One following `worker::logs` stream of a VM, for as long as it lives.
+struct Follower(Arc<Vm>);
+
+impl Follower {
+    fn new(vm: Arc<Vm>) -> Self {
+        vm.followers.send_modify(|n| *n += 1);
+        Self(vm)
+    }
+}
+
+impl Drop for Follower {
+    fn drop(&mut self) {
+        self.0.followers.send_modify(|n| *n -= 1);
+    }
+}
+
+/// Stops `vm` once `grace` passes with nothing following it, however that came
+/// about: a client that never opened the logs, or the last stream's end. A VM
+/// that exited ends this.
+async fn lease(vm: Arc<Vm>, vm_id: String, grace: Duration) {
+    let mut followers = vm.followers.subscribe();
+    let mut ended = vm.ended.subscribe();
+    loop {
+        tokio::select! {
+            _ = ended.wait_for(Option::is_some) => return,
+            _ = followers.wait_for(|n| *n > 0) => {}
+            () = tokio::time::sleep(grace) => break,
+        }
+        tokio::select! {
+            _ = ended.wait_for(Option::is_some) => return,
+            _ = followers.wait_for(|n| *n == 0) => {}
+        }
+    }
+    tracing::warn!(%vm_id, instance = vm.instance, ?grace, "no client follows this worker VM; stopping it");
+    vm.stop(LEASE_STOP_GRACE).await;
+}
+
+/// Resolves once a frame cannot reach `channel`'s reader. The engine closes a writer's
+/// socket when its reader leaves, but `ChannelWriter` never reads that socket and a quiet
+/// guest gives it nothing to fail on, so this writes a byte. Readers take records from text
+/// frames only. The write after the one that meets the closed socket is the one that fails.
+async fn reader_gone(channel: &ChannelWriter, every: Duration) -> String {
+    loop {
+        tokio::time::sleep(every).await;
+        if let Err(e) = channel.write(&[0]).await {
+            return e.to_string();
+        }
+    }
+}
+
 /// Drops `start`'s `Preparing` entry if it never launched (an error, a
 /// cancel, or the call was dropped), so the key stays startable.
 struct Unreserve<'a>(&'a WorkerVms, &'a str, u64);
@@ -643,6 +755,26 @@ impl Vm {
             let _ = kill(self.pid, signal);
         }
     }
+
+    /// SIGTERM, then SIGKILL after `grace`; a zero `grace` kills at once. Returns once
+    /// the exit is recorded. A VM that already exited is left as it is.
+    async fn stop(&self, grace: Duration) {
+        if self.ended.borrow().is_some() {
+            return;
+        }
+        self.stopping.store(true, Ordering::SeqCst);
+        let mut ended = self.ended.subscribe();
+        let gone = !grace.is_zero() && {
+            self.signal(Signal::SIGTERM);
+            tokio::time::timeout(grace, ended.wait_for(Option::is_some))
+                .await
+                .is_ok()
+        };
+        if !gone {
+            self.signal(Signal::SIGKILL);
+            let _ = ended.wait_for(Option::is_some).await;
+        }
+    }
 }
 
 /// Opens a control file with `O_NOFOLLOW`: a planted
@@ -687,11 +819,36 @@ fn store_instance(dir: &Path, instance: u64) -> io::Result<()> {
     std::fs::rename(&tmp, dir.join(STATE_FILE))
 }
 
-/// Record `instance` in `state.json`, truncate `console.log` and spawn `cmd`
+/// Record `state_key` in `<dir>`, where `stored_state_key` reads it.
+fn store_state_key(dir: &Path, state_key: &str) -> io::Result<()> {
+    open_private(&dir.join(STATE_KEY_FILE), true)?.write_all(state_key.as_bytes())
+}
+
+/// The state key `<base>/<vm_id>/` records, if any. `vm_id` is whatever the caller sent,
+/// not yet authorized, and `<base>/<vm_id>/root/` is the guest's: only an id `vm_id()`
+/// could have made reaches the path.
+fn stored_state_key(base: &Path, id: &str) -> Option<String> {
+    if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut state_key = String::new();
+    open_private(&base.join(id).join(STATE_KEY_FILE), false)
+        .and_then(|mut file| file.read_to_string(&mut state_key))
+        .ok()?;
+    Some(state_key)
+}
+
+/// Record `state_key` and `instance`, truncate `console.log` and spawn `cmd`
 /// with piped stdin (the env frame) and output, and a lifeline.
-fn spawn(dir: &Path, instance: u64, mut cmd: Command) -> io::Result<(File, Lifeline, Child)> {
+fn spawn(
+    dir: &Path,
+    state_key: &str,
+    instance: u64,
+    mut cmd: Command,
+) -> io::Result<(File, Lifeline, Child)> {
     std::fs::create_dir_all(dir)?;
     let console = open_private(&dir.join(CONSOLE_LOG), true)?;
+    store_state_key(dir, state_key)?;
     store_instance(dir, instance)?;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -712,6 +869,11 @@ struct Console {
 }
 
 impl Console {
+    /// The log offset after the last record: `append` writes whole lines under this lock.
+    fn end(&self) -> u64 {
+        self.base + self.len
+    }
+
     /// Append one `{stream, line, ts_ms}` JSON line.
     fn append(&mut self, stream: &LogStream, line: &[u8]) -> io::Result<()> {
         let mut record = serde_json::to_vec(&serde_json::json!({
@@ -845,7 +1007,11 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::scoped_auth_token;
+    use futures::StreamExt;
     use iii_sdk::channels::{ChannelDirection, StreamChannelRef};
+    use tokio::sync::{Notify, mpsc};
+    use tokio_tungstenite::tungstenite::Message;
 
     fn vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
         WorkerVms::new(t.join("workers"), token.map(str::to_string), roots)
@@ -862,6 +1028,7 @@ mod tests {
         vms.prepare(WorkerPrepareRequest {
             auth: auth.to_string(),
             source,
+            state_key: None,
         })
         .await
         .expect_err("prepare must be refused")
@@ -916,6 +1083,7 @@ mod tests {
                 access_key: "k".to_string(),
                 direction: ChannelDirection::Write,
             },
+            from_end: false,
         }
     }
 
@@ -951,6 +1119,20 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("VM {vm_id} did not exit within 10 s");
+    }
+
+    async fn wait_ended_within(vms: &WorkerVms, vm_id: &str, within: Duration) -> WorkerStatus {
+        tokio::time::timeout(within, async {
+            loop {
+                let status = vms.status(status_req("t", vm_id, 1)).unwrap();
+                if status.ended_at_ms.is_some() {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the VM outlived its bound")
     }
 
     /// The first `console.log` record whose line is `line`.
@@ -1616,6 +1798,423 @@ mod tests {
         assert_eq!(code(ended), "S218");
 
         vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_scoped_token_controls_its_vm_and_no_other() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = Arc::new(vms(t, Some("t"), vec![t.into()]));
+        let iii = IIIClient::new("ws://127.0.0.1:9");
+        let mine = vms
+            .launch("mine", sh("sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        let other = vms
+            .launch("other", sh("sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        let token = scoped_auth_token("t", "mine");
+
+        assert_eq!(code(vms.status(status_req(&token, &other, 1))), "S505");
+        assert_eq!(code(vms.stop(stop_req(&token, &other, 1, 0)).await), "S505");
+        assert_eq!(
+            code(vms.logs(&iii, logs_req(&token, &other, false)).await),
+            "S505"
+        );
+        assert_eq!(
+            code(vms.start(start_req(&token, "other", local(t))).await),
+            "S505"
+        );
+        assert_eq!(code(vms.destroy(destroy_req(&token, "other"))), "S505");
+
+        // S502, not S505: it got past the token.
+        assert_eq!(
+            code(vms.start(start_req(&token, "mine", local(t))).await),
+            "S502"
+        );
+        assert_eq!(code(vms.destroy(destroy_req(&token, "mine"))), "S502");
+        let status = vms.status(status_req(&token, &mine, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+        vms.logs(&iii, logs_req(&token, &mine, false))
+            .await
+            .unwrap();
+        let stopped = vms.stop(stop_req(&token, &mine, 1, 0)).await.unwrap();
+        assert!(matches!(stopped.state, State::Stopped), "{stopped:?}");
+        assert!(vms.destroy(destroy_req(&token, "mine")).unwrap().destroyed);
+
+        // The project token still opens every VM.
+        let status = vms.status(status_req("t", &other, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+        vms.stop(stop_req("t", &other, 1, 0)).await.unwrap();
+    }
+
+    /// An empty project token's MAC anyone can compute.
+    #[tokio::test]
+    async fn no_token_derives_from_an_absent_or_empty_project_token() {
+        let t = tempfile::tempdir().unwrap();
+        for token in [None, Some("")] {
+            let vms = vms(t.path(), token, vec![t.path().into()]);
+            let id = vms
+                .launch("k", sh("exit 0"), Vec::new(), None)
+                .unwrap()
+                .vm_id;
+            let forged = scoped_auth_token("", "k");
+            assert_eq!(code(vms.status(status_req(&forged, &id, 1))), "S505");
+            assert_eq!(code(vms.destroy(destroy_req(&forged, "k"))), "S505");
+            assert_eq!(code(vms.status(status_req("", &id, 1))), "S505");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scoped_prepare_needs_its_own_state_key() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let empty = t.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let prepare = |auth: String, state_key: Option<&str>| {
+            vms.prepare(WorkerPrepareRequest {
+                auth,
+                source: local(&empty),
+                state_key: state_key.map(str::to_string),
+            })
+        };
+        let token = scoped_auth_token("t", "k");
+        assert_eq!(code(prepare(token.clone(), None).await), "S505");
+        assert_eq!(code(prepare(token.clone(), Some("other")).await), "S505");
+        assert_eq!(code(prepare(String::new(), Some("k")).await), "S505");
+        // S501, not S505: it got past the token, to the empty source.
+        assert_eq!(code(prepare(token, Some("k")).await), "S501");
+        assert_eq!(code(prepare("t".to_string(), None).await), "S501");
+        assert_eq!(code(prepare("t".to_string(), Some("k")).await), "S501");
+    }
+
+    /// `status`, `stop` and `logs` name the VM by `vm_id`, so only the record
+    /// `launch` wrote ties a scoped token to it.
+    #[tokio::test]
+    async fn a_scoped_token_without_the_vms_record_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh("exit 0"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        wait_ended(&vms, &id, 1).await;
+        let token = scoped_auth_token("t", "k");
+        vms.status(status_req(&token, &id, 1)).unwrap();
+
+        let record = t.path().join("workers").join(&id).join(STATE_KEY_FILE);
+        let mode = std::fs::metadata(&record).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        std::fs::remove_file(&record).unwrap();
+        assert_eq!(code(vms.status(status_req(&token, &id, 1))), "S505");
+        // The project token needs no record.
+        vms.status(status_req("t", &id, 1)).unwrap();
+    }
+
+    /// `vm_id` reaches a path before anything authorized the caller, and `root/`
+    /// is the guest's: nothing planted there may open a call, or even be read.
+    #[tokio::test]
+    async fn a_scoped_token_reads_no_record_outside_a_vms_own_dir() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let share = t.path().join("workers").join(vm_id("k")).join("root");
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::write(share.join(STATE_KEY_FILE), "k").unwrap();
+        let token = scoped_auth_token("t", "k");
+        let planted = format!("{}/root", vm_id("k"));
+        assert_eq!(code(vms.status(status_req(&token, &planted, 1))), "S505");
+    }
+
+    /// A stand-in for the engine's channel endpoint. It passes on what each writer
+    /// sends, and when notified closes the writer's socket, as the engine does
+    /// once the reader has left.
+    async fn channel_engine() -> (IIIClient, mpsc::UnboundedReceiver<Message>, Arc<Notify>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let iii = IIIClient::new(&format!("ws://{}", listener.local_addr().unwrap()));
+        let (frames, received) = mpsc::unbounded_channel();
+        let leave = Arc::new(Notify::new());
+        let left = leave.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                loop {
+                    tokio::select! {
+                        frame = ws.next() => match frame {
+                            Some(Ok(frame)) => { let _ = frames.send(frame); }
+                            _ => break,
+                        },
+                        () = left.notified() => {
+                            let _ = ws.close(None).await;
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        (iii, received, leave)
+    }
+
+    async fn next_frame(frames: &mut mpsc::UnboundedReceiver<Message>) -> Message {
+        tokio::time::timeout(Duration::from_secs(10), frames.recv())
+            .await
+            .expect("no frame within 10 s")
+            .expect("the engine stand-in ended")
+    }
+
+    /// The next `LogRecord` frame, skipping any other.
+    async fn next_record(frames: &mut mpsc::UnboundedReceiver<Message>) -> LogRecord {
+        loop {
+            if let Message::Text(text) = next_frame(frames).await {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+
+    /// `sh` that prints `before`, waits for `go` to exist, then prints `after`
+    /// and stays up, so a test decides what the log holds when it asks.
+    fn gated(t: &Path, before: &str, after: &str) -> (tokio::process::Command, PathBuf) {
+        let go = t.join("go");
+        let script = format!(
+            "{before}; while [ ! -e {go} ]; do sleep 0.02; done; echo {after}; sleep 30",
+            go = go.display()
+        );
+        (sh(&script), go)
+    }
+
+    #[tokio::test]
+    async fn from_end_starts_after_the_last_record_and_names_it() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = Arc::new(vms(t, Some("t"), vec![]));
+        let (iii, mut frames, _) = channel_engine().await;
+        let (cmd, go) = gated(t, "echo old", "new");
+        let id = vms.launch("k", cmd, Vec::new(), None).unwrap().vm_id;
+        let dir = t.join("workers").join(&id);
+        wait_record(&dir, "old").await;
+        let old = pumped(&vms, &logs_req("t", &id, false)).await;
+
+        let mut req = logs_req("t", &id, true);
+        req.from_end = true;
+        // Ignored: honoured, it would replay the old record.
+        req.cursor = Some(0);
+        let reply = vms.logs(&iii, req).await.unwrap();
+        assert_eq!(reply.cursor, Some(old[0].cursor));
+
+        std::fs::write(&go, "").unwrap();
+        let first = next_record(&mut frames).await;
+        assert_eq!(first.line, "new", "the old record was replayed");
+
+        // A stream reopened at the reply's cursor neither replays nor skips.
+        let mut reopened = logs_req("t", &id, false);
+        reopened.cursor = reply.cursor;
+        assert_eq!(lines(&pumped(&vms, &reopened).await), ["new"]);
+
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    /// An empty log has no last record, and what comes next is the stream's first.
+    #[tokio::test]
+    async fn from_end_on_an_empty_log_names_nothing_and_loses_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = Arc::new(vms(t, Some("t"), vec![]));
+        let (iii, mut frames, _) = channel_engine().await;
+        let (cmd, go) = gated(t, ":", "first");
+        let id = vms.launch("k", cmd, Vec::new(), None).unwrap().vm_id;
+
+        let mut req = logs_req("t", &id, true);
+        req.from_end = true;
+        let reply = vms.logs(&iii, req).await.unwrap();
+        assert_eq!(reply.cursor, None);
+        assert_eq!(serde_json::to_value(&reply).unwrap(), serde_json::json!({}));
+
+        std::fs::write(&go, "").unwrap();
+        assert_eq!(next_record(&mut frames).await.line, "first");
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    /// Past a rotation the end still counts every byte, so it names the same
+    /// record `read_records` does.
+    #[test]
+    fn the_end_of_a_rotated_log_is_a_read_cursor() {
+        let t = tempfile::tempdir().unwrap();
+        let console = console_over(t.path(), &record("a"), &record("b"));
+        let (all, _) = read_records(&console, 0).unwrap();
+        let end = console.lock().unwrap().end();
+        assert_eq!(end, all[1].cursor);
+        assert!(read_records(&console, end).unwrap().0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_from_end_the_stream_honours_the_cursor_and_names_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = Arc::new(vms(t, Some("t"), vec![]));
+        let (iii, mut frames, _) = channel_engine().await;
+        let id = vms
+            .launch("k", sh("echo a; echo b; sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        wait_record(&t.join("workers").join(&id), "b").await;
+
+        let reply = vms.logs(&iii, logs_req("t", &id, true)).await.unwrap();
+        assert_eq!(reply.cursor, None);
+        assert_eq!(next_record(&mut frames).await.line, "a");
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    /// A VM left to its lease, with `grace`.
+    fn leased(t: &Path, script: &str, grace: Duration) -> (Arc<WorkerVms>, String) {
+        let mut vms = vms(t, Some("t"), vec![]);
+        vms.lease_grace = grace;
+        let id = vms.launch("k", sh(script), Vec::new(), None).unwrap().vm_id;
+        vms.arm_lease(&id);
+        (Arc::new(vms), id)
+    }
+
+    /// Follows the VM, sinking records without fail, for `held`.
+    async fn follow_for(vms: &WorkerVms, id: &str, held: Duration) {
+        let req = logs_req("t", id, true);
+        let pump = vms.pump_logs(&req, |_| async { Ok(()) });
+        let _ = tokio::time::timeout(held, pump).await;
+    }
+
+    #[tokio::test]
+    async fn a_lease_stops_a_vm_nothing_follows() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(200));
+        let status = wait_ended(&vms, &id, 1).await;
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+        assert_eq!(status.signal, Some(15), "{status:?}");
+    }
+
+    /// A guest that ignores SIGTERM cannot outlive its lease.
+    #[tokio::test]
+    async fn a_lease_kills_a_vm_that_ignores_its_stop() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(
+            t.path(),
+            "trap '' TERM; echo ready; sleep 60",
+            Duration::from_millis(200),
+        );
+        let status = wait_ended_within(&vms, &id, LEASE_STOP_GRACE + Duration::from_secs(10)).await;
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+        assert_eq!(status.signal, Some(9), "{status:?}");
+    }
+
+    #[tokio::test]
+    async fn a_follower_holds_a_lease_and_its_end_starts_the_grace() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(300));
+        follow_for(&vms, &id, Duration::from_millis(1000)).await;
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+
+        let status = wait_ended(&vms, &id, 1).await;
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+    }
+
+    /// The last of several followers ending is what starts the grace.
+    #[tokio::test]
+    async fn a_lease_waits_for_the_last_follower() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(300));
+        tokio::join!(
+            follow_for(&vms, &id, Duration::from_millis(100)),
+            follow_for(&vms, &id, Duration::from_millis(1000)),
+        );
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reattach_within_the_grace_keeps_the_vm() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(1000));
+        follow_for(&vms, &id, Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Well past the grace of the first follower's end.
+        follow_for(&vms, &id, Duration::from_millis(1500)).await;
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failing_sink_counts_as_a_gone_follower() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(t.path(), "echo a; sleep 30", Duration::from_millis(300));
+        wait_record(&t.path().join("workers").join(&id), "a").await;
+        let ended = vms
+            .pump_logs(&logs_req("t", &id, true), |_| async {
+                Err("channel closed".to_string())
+            })
+            .await;
+        assert_eq!(code(ended), "S218");
+        let status = wait_ended(&vms, &id, 1).await;
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+    }
+
+    /// The case the lease exists for: the client was killed while the guest has
+    /// nothing to say, so no record ever fails to send. The engine closes the
+    /// writer's socket, and only a write can find out.
+    #[tokio::test]
+    async fn a_quiet_follower_whose_reader_left_counts_as_gone() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(900));
+        let (iii, mut frames, reader_left) = channel_engine().await;
+        vms.logs(&iii, logs_req("t", &id, true)).await.unwrap();
+
+        // Connected, and past the grace: the probes reach a live reader.
+        next_frame(&mut frames).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+
+        reader_left.notify_one();
+        let status = wait_ended(&vms, &id, 1).await;
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+    }
+
+    /// Only records reach a stream of a VM without a lease, whatever it waits for.
+    #[tokio::test]
+    async fn a_vm_without_a_lease_is_left_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let mut vms = vms(t.path(), Some("t"), vec![]);
+        vms.lease_grace = Duration::from_millis(100);
+        let vms = Arc::new(vms);
+        let id = vms
+            .launch("k", sh("sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        let (iii, mut frames, reader_left) = channel_engine().await;
+        vms.logs(&iii, logs_req("t", &id, true)).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(frames.try_recv().is_err(), "a frame reached the reader");
+        reader_left.notify_one();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    /// An exit that needed no lease reads as the guest's own.
+    #[tokio::test]
+    async fn a_lease_leaves_an_exited_vm_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let (vms, id) = leased(t.path(), "exit 3", Duration::from_millis(100));
+        let status = wait_ended(&vms, &id, 1).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(matches!(status.state, State::Exited), "{status:?}");
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(matches!(status.state, State::Exited), "{status:?}");
+        assert_eq!(status.exit_code, Some(3), "{status:?}");
     }
 
     #[test]

@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 const FIXTURE: &str = include_str!("fixtures/wire_examples.json");
 const OPERATION_SCHEMAS: &str = include_str!("fixtures/operation_schemas.json");
+const SCOPED_AUTH: &str = include_str!("fixtures/scoped_auth.json");
 
 /// Every type the adapter copies; `RouterInfo` is answered only by the router.
 const COPIED: &[&str] = &[
@@ -325,7 +326,11 @@ fn constants_match_the_contract() {
     let fixture: serde_json::Map<String, Value> = serde_json::from_str(FIXTURE).unwrap();
     let version = serde_json::to_value(ContractVersion::CURRENT).unwrap();
     assert_eq!(version, fixture["ContractVersion"]);
-    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 1));
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 2));
+    assert_eq!(
+        fixture["AdapterInfo"]["features"],
+        json!([FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END])
+    );
     assert_eq!(
         [
             WORKER_PREPARE,
@@ -344,4 +349,26 @@ fn constants_match_the_contract() {
             "worker::destroy"
         ]
     );
+}
+
+#[test]
+fn scoped_tokens_match_the_contract() {
+    let vectors: Vec<Value> = serde_json::from_str(SCOPED_AUTH).unwrap();
+    assert!(!vectors.is_empty());
+    for vector in &vectors {
+        let project = vector["project_token"].as_str().unwrap();
+        let key = vector["state_key"].as_str().unwrap();
+        let token = vector["token"].as_str().unwrap();
+        assert_eq!(scoped_auth_token(project, key), token);
+        assert!(scoped_auth_matches(project, key, token));
+        assert!(!scoped_auth_matches(project, &format!("{key}x"), token));
+        assert!(!scoped_auth_matches(&format!("{project}x"), key, token));
+    }
+    assert!(!scoped_auth_matches("tok", "9f2c1e", ""));
+    assert!(!scoped_auth_matches("tok", "9f2c1e", "not hex"));
+    // An empty token's MAC anyone can compute; an empty key scopes to nothing.
+    let forged = scoped_auth_token("", "9f2c1e");
+    assert!(!scoped_auth_matches("", "9f2c1e", &forged));
+    let unscoped = scoped_auth_token("tok", "");
+    assert!(!scoped_auth_matches("tok", "", &unscoped));
 }

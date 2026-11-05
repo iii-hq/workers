@@ -5,17 +5,63 @@
 // See LICENSE and PATENTS files for details.
 
 //! The adapter's own copies of the sandbox contract's info and worker-VM types
-//! (`iii-sandbox-contract`, `info.rs` and `worker.rs`). They are copies, not a
-//! dependency; `tests/wire_examples.rs` pins their JSON to the contract's
-//! `wire_examples.json`. `RouterInfo` is not copied: only the router answers it.
+//! and its scoped token (`iii-sandbox-contract`, `info.rs` and `worker.rs`). They
+//! are copies, not a dependency; `tests/wire_examples.rs` pins them to the
+//! contract's `wire_examples.json` and `scoped_auth.json`. `RouterInfo` is not
+//! copied: only the router answers it.
 
+use hmac::{Hmac, KeyInit, Mac};
 use iii_sdk::channels::StreamChannelRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::BTreeMap;
 
 pub const CONTRACT_MAJOR: u32 = 1;
-pub const CONTRACT_MINOR: u32 = 1;
+pub const CONTRACT_MINOR: u32 = 2;
+
+/// `worker::*` accepts a token scoped to one VM, [`scoped_auth_token`], besides the
+/// project token. Since contract 1.2.
+pub const FEATURE_SCOPED_AUTH: &str = "worker.scoped_auth";
+/// The adapter stops a VM whose last log follower is gone and that no client reattaches to
+/// within its grace. Since contract 1.2.
+pub const FEATURE_LEASE: &str = "worker.lease";
+/// `worker::logs` honours [`WorkerLogsRequest::from_end`]. Since contract 1.2.
+pub const FEATURE_LOGS_FROM_END: &str = "worker.logs_from_end";
+
+/// What the scoped token's MAC covers before the state key, so it can never equal another MAC
+/// of the project token over the same bytes. A different derivation gets a new version.
+const SCOPED_AUTH_DOMAIN: &[u8] = b"iii-sandbox/worker-scope/v1\0";
+
+/// The token that authorizes `worker::*` calls for the VM of `state_key` alone: the lowercase
+/// hex of HMAC-SHA256 keyed with the project token over `iii-sandbox/worker-scope/v1\0`
+/// followed by the state key. `tests/fixtures/scoped_auth.json` pins it.
+pub fn scoped_auth_token(project_token: &str, state_key: &str) -> String {
+    hex::encode(scoped_mac(project_token, state_key).finalize().into_bytes())
+}
+
+/// Whether `presented` is the scoped token for `state_key`, compared in constant time. Never
+/// with an empty project token, whose MAC anyone can compute, or an empty state key.
+pub fn scoped_auth_matches(project_token: &str, state_key: &str, presented: &str) -> bool {
+    if project_token.is_empty() || state_key.is_empty() {
+        return false;
+    }
+    let Ok(tag) = hex::decode(presented) else {
+        return false;
+    };
+    scoped_mac(project_token, state_key)
+        .verify_slice(&tag)
+        .is_ok()
+}
+
+fn scoped_mac(project_token: &str, state_key: &str) -> Hmac<Sha256> {
+    // HMAC takes a key of any length; only fixed-size MACs can refuse one.
+    let mut mac = Hmac::<Sha256>::new_from_slice(project_token.as_bytes())
+        .expect("HMAC accepts a key of any length");
+    mac.update(SCOPED_AUTH_DOMAIN);
+    mac.update(state_key.as_bytes());
+    mac
+}
 
 /// Worker-VM function suffixes, called as `<adapter>::<suffix>`.
 pub const WORKER_PREPARE: &str = "worker::prepare";
@@ -51,6 +97,10 @@ pub struct AdapterInfo {
     pub adapter_version: String,
     /// The contract version the adapter implements.
     pub contract: ContractVersion,
+    /// What the adapter implements beyond the base contract, e.g. [`FEATURE_SCOPED_AUTH`].
+    /// Since contract 1.2; an older adapter sends none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 /// Where the worker's code comes from.
@@ -73,9 +123,13 @@ pub enum WorkerSource {
 /// Idempotent image and base-layer pull; long-running.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerPrepareRequest {
-    /// Per-project token.
+    /// The project token or the VM's scoped token.
     pub auth: String,
     pub source: WorkerSource,
+    /// The VM the prepare is for. Required with a scoped token, which the adapter checks
+    /// against it. Since contract 1.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -84,7 +138,7 @@ pub struct WorkerPrepareResponse {}
 /// Boots the VM. The adapter reads resources from the worker's manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerStartRequest {
-    /// Per-project token.
+    /// The project token or the VM's scoped token.
     pub auth: String,
     /// Hash of the compose state dir and container key; the same key gets the same persistent upper.
     pub state_key: String,
@@ -150,11 +204,22 @@ pub struct WorkerLogsRequest {
     pub follow: bool,
     /// Writer end of a channel Compose created; one `LogRecord` JSON per text frame.
     pub channel: StreamChannelRef,
+    /// Start after the record that is last when the request arrives, ignoring `cursor`: a client
+    /// that reattaches to a running instance gets only what follows, not the log again. Since
+    /// contract 1.2; the response's `cursor` says where the stream started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_end: bool,
 }
 
 /// Returned once the log pump starts; the records travel over the channel.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkerLogsResponse {}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerLogsResponse {
+    /// With `from_end`: the cursor of the record that was last when the request arrived, the
+    /// one the stream starts after, so a stream reopened later resumes there instead of at the
+    /// end again; `None` when the log was empty. Since contract 1.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

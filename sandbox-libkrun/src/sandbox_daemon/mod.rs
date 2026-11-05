@@ -113,8 +113,9 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
 use crate::sandbox_daemon::errors::{Payload, SandboxErrorWire};
 use crate::wire::{
-    AdapterInfo, AdapterInfoRequest, ContractVersion, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE,
-    WORKER_START, WORKER_STATUS, WORKER_STOP,
+    AdapterInfo, AdapterInfoRequest, ContractVersion, FEATURE_LEASE, FEATURE_LOGS_FROM_END,
+    FEATURE_SCOPED_AUTH, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STATUS,
+    WORKER_STOP,
 };
 use crate::worker_vm::WorkerVms;
 
@@ -335,6 +336,9 @@ pub fn adapter_info() -> AdapterInfo {
         adapter: ADAPTER_NAME.to_string(),
         adapter_version: env!("CARGO_PKG_VERSION").to_string(),
         contract: ContractVersion::CURRENT,
+        features: [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END]
+            .map(String::from)
+            .to_vec(),
     }
 }
 
@@ -366,7 +370,9 @@ where
                 result.map_err(|e| SandboxErrorWire(e).into())
             }
         })
-        .description(description),
+        .description(description)
+        // `auth` can be the project token, good for every worker::*: no observer may read it.
+        .observable(false),
     )
 }
 
@@ -654,6 +660,58 @@ mod registration_tests {
         assert_eq!(ids, want);
     }
 
+    /// Their requests carry the project token, and `worker::start`'s the guest's
+    /// env. The SDK sends `observable: false` only to an engine with observe.v2.
+    #[tokio::test]
+    async fn worker_functions_refuse_observers() {
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let iii = iii_sdk::register_worker(
+            &format!("ws://{}", listener.local_addr().unwrap()),
+            InitOptions::default(),
+        );
+        register_all(
+            &iii,
+            Arc::new(SandboxConfig::default()),
+            Arc::new(SandboxRegistry::default()),
+        );
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let registered =
+            r#"{"type":"workerregistered","worker_id":"t","features":["observe.v1","observe.v2"]}"#;
+        ws.send(Message::Text(registered.into())).await.unwrap();
+
+        let ids = [
+            WORKER_PREPARE,
+            WORKER_START,
+            WORKER_STATUS,
+            WORKER_LOGS,
+            WORKER_STOP,
+            WORKER_DESTROY,
+        ]
+        .map(|op| format!("sandbox-libkrun::{op}"));
+        let mut frames = std::collections::BTreeMap::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !ids.iter().all(|id| frames.contains_key(id)) {
+                let Message::Text(text) = ws.next().await.unwrap().unwrap() else {
+                    continue;
+                };
+                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if frame["type"] == "registerfunction" {
+                    frames.insert(frame["id"].as_str().unwrap().to_string(), frame);
+                }
+            }
+        })
+        .await
+        .expect("every worker::* function registers");
+
+        for id in &ids {
+            assert_eq!(frames[id]["observable"], false, "{}", frames[id]);
+        }
+    }
+
     #[test]
     fn adapter_info_names_the_package_and_the_contract() {
         let i = adapter_info();
@@ -667,13 +725,20 @@ mod registration_tests {
             ),
             ("sandbox-libkrun", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
-        // iii-compose installs ADAPTER_RANGE "^0.2" for contract 1, so releases stay 0.2.x.
+        // iii-compose installs ADAPTER_RANGE "^0.3" for contract 1.2, so releases stay 0.3.x.
         assert_eq!(
             (
                 env!("CARGO_PKG_VERSION_MAJOR"),
                 env!("CARGO_PKG_VERSION_MINOR")
             ),
-            ("0", "2")
+            ("0", "3")
+        );
+        // 0.3.0 is published on contract 1.1: this build must not report that version.
+        assert_ne!(env!("CARGO_PKG_VERSION"), "0.3.0");
+        // What `iii sandbox run` refuses an adapter without.
+        assert_eq!(
+            i.features,
+            ["worker.scoped_auth", "worker.lease", "worker.logs_from_end"]
         );
     }
 

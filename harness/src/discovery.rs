@@ -341,8 +341,13 @@ async fn reload(
     mode: Option<Hydration>,
 ) -> usize {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
-    let (functions, internal_ids) =
-        tokio::join!(engine.functions_list(), engine.internal_function_ids());
+    let (functions, internal_ids, adapter) = tokio::join!(
+        engine.functions_list(),
+        engine.internal_function_ids(),
+        engine.sandbox_router_adapter()
+    );
+    // Before the swap, so no snapshot offers a new adapter's ids before its denies apply.
+    crate::policy::learn_sandbox_adapter(adapter);
     let mode = match mode {
         Some(mode) => mode,
         None => {
@@ -370,8 +375,12 @@ pub async fn refresh(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64
 /// `None` schemas), then hydrated and re-applied.
 pub async fn seed(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
-    let (functions, internal_ids) =
-        tokio::join!(engine.functions_list(), engine.internal_function_ids());
+    let (functions, internal_ids, adapter) = tokio::join!(
+        engine.functions_list(),
+        engine.internal_function_ids(),
+        engine.sandbox_router_adapter()
+    );
+    crate::policy::learn_sandbox_adapter(adapter);
     apply_with_internal(cell, functions.clone(), internal_ids).await;
     let hydrated = hydrate(&engine, cell, functions, Hydration::Missing).await;
     let count = hydrated.len();

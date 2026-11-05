@@ -11,6 +11,7 @@
 //!
 //! Uses msb_krun VmBuilder for type-safe VM configuration.
 
+use super::source_watcher::is_compose_state;
 use iii_filesystem::{
     Context, DirEntry, DynFileSystem, Entry, FsOptions, OpenOptions, ZeroCopyWriter, stat64,
     statvfs64,
@@ -281,10 +282,10 @@ fn source_share(
     passthrough_share(&entry.host_path, true).map(|fs| Some(SourceShareFs(fs)))
 }
 
-/// The source share: the read-only PassthroughFs without the virtual
-/// `init.krun` it lists at every share root, which dev-run.sh's
-/// `tar -cf - .` would copy into `/workspace` (msb_krun's `fs.path` only
-/// answered lookups for it). Only the read path is passed on; every op that
+/// The source share: the read-only PassthroughFs without Compose's state, and
+/// without the virtual `init.krun` it lists at every share root, which
+/// dev-run.sh's `tar -cf - .` would copy into `/workspace` (msb_krun's `fs.path`
+/// only answered lookups for it). Only the read path is passed on; every op that
 /// could change the host keeps the trait's ENOSYS.
 struct SourceShareFs(iii_filesystem::PassthroughFs);
 
@@ -302,6 +303,11 @@ impl DynFileSystem for SourceShareFs {
     }
 
     fn lookup(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
+        // Guest root can mount this share again after dev-run.sh's copy-in. At any
+        // depth: a compose file can sit below the worker's dir.
+        if is_compose_state(name.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::ENOENT));
+        }
         self.0.lookup(ctx, parent, name)
     }
 
@@ -400,7 +406,7 @@ impl DynFileSystem for SourceShareFs {
     ) -> io::Result<()> {
         self.0
             .readdir_for_each(ctx, ino, handle, size, offset, &mut |e: DirEntry<'_>| {
-                if is_listed_init(ino, e.name) {
+                if is_listed_init(ino, e.name) || is_compose_state(e.name) {
                     Ok(1)
                 } else {
                     add_entry(e)
@@ -424,7 +430,12 @@ impl DynFileSystem for SourceShareFs {
             size,
             offset,
             &mut |d: DirEntry<'_>, e: Entry| {
-                if is_listed_init(ino, d.name) {
+                if is_compose_state(d.name) {
+                    // The backend looked it up before this callback. Requests are
+                    // served one at a time, so no other request can name this inode.
+                    self.0.forget(ctx, e.inode, 1);
+                    Ok(1)
+                } else if is_listed_init(ino, d.name) {
                     Ok(1)
                 } else {
                     add_entry(d, e)
@@ -1451,6 +1462,31 @@ mod tests {
         assert_eq!(std::fs::read(project.path().join("a")).unwrap(), b"src");
     }
 
+    fn share_listing(fs: &dyn DynFileSystem, ino: u64, plus: bool) -> Vec<Vec<u8>> {
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let (handle, _) = fs.opendir(ctx, ino, 0).unwrap();
+        let handle = handle.unwrap();
+        let mut names = Vec::new();
+        if plus {
+            fs.readdirplus_for_each(ctx, ino, handle, 64 * 1024, 0, &mut |d, _| {
+                names.push(d.name.to_vec());
+                Ok(1)
+            })
+        } else {
+            fs.readdir_for_each(ctx, ino, handle, 64 * 1024, 0, &mut |d| {
+                names.push(d.name.to_vec());
+                Ok(1)
+            })
+        }
+        .unwrap();
+        fs.releasedir(ctx, ino, 0, handle).unwrap();
+        names
+    }
+
     /// dev-run.sh copies the whole share root into /workspace, so the share
     /// must not list the virtual init.krun that PassthroughFs adds there in
     /// `embed-init` builds (the backend alone does: checked below).
@@ -1462,41 +1498,99 @@ mod tests {
         let plan = build_virtiofs_mount_plan(&[format!("{host}:/mnt/host-src")]).unwrap();
         let fs = source_share(&plan.entries[0], Some(host)).unwrap().unwrap();
         fs.init(FsOptions::empty()).unwrap();
+        let init = b"init.krun".to_vec();
+        for plus in [false, true] {
+            let names = share_listing(&fs, 1, plus);
+            assert!(names.contains(&b"a".to_vec()), "{names:?}");
+            assert!(!names.contains(&init), "readdirplus={plus}: {names:?}");
+            assert_eq!(
+                share_listing(&fs.0, 1, plus).contains(&init),
+                iii_filesystem::init::has_init(),
+                "the backend lists init.krun only with an embedded init"
+            );
+        }
+    }
+
+    /// Guest root can mount the source tag again and `.iii` holds the project's
+    /// token, so the share must not answer for that name, at any depth or in
+    /// any case, and must leave no inode for it behind.
+    #[test]
+    fn source_sync_share_hides_compose_state() {
+        use std::{ffi::CString, os::unix::fs::symlink};
+
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        for dir in [".iii", "sub/.iii", "cased/.III"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("secret"), b"token").unwrap();
+        }
+        std::fs::write(root.join("sibling"), b"src").unwrap();
+        std::fs::write(root.join("sub/sibling"), b"src").unwrap();
+        symlink(".iii", root.join("link")).unwrap();
+
+        let host = root.to_str().unwrap();
+        let plan = build_virtiofs_mount_plan(&[format!("{host}:/mnt/host-src")]).unwrap();
+        let fs = source_share(&plan.entries[0], Some(host)).unwrap().unwrap();
+        fs.init(FsOptions::empty()).unwrap();
         let ctx = Context {
             uid: 0,
             gid: 0,
             pid: 1,
         };
-        let list = |fs: &dyn DynFileSystem, plus: bool| {
-            let (handle, _) = fs.opendir(ctx, 1, 0).unwrap();
-            let handle = handle.unwrap();
-            let mut names = Vec::new();
-            if plus {
-                fs.readdirplus_for_each(ctx, 1, handle, 64 * 1024, 0, &mut |d, _| {
-                    names.push(d.name.to_vec());
-                    Ok(1)
-                })
-            } else {
-                fs.readdir_for_each(ctx, 1, handle, 64 * 1024, 0, &mut |d| {
-                    names.push(d.name.to_vec());
-                    Ok(1)
-                })
-            }
-            .unwrap();
-            fs.releasedir(ctx, 1, 0, handle).unwrap();
-            names
-        };
-        let init = b"init.krun".to_vec();
-        for plus in [false, true] {
-            let names = list(&fs, plus);
-            assert!(names.contains(&b"a".to_vec()), "{names:?}");
-            assert!(!names.contains(&init), "readdirplus={plus}: {names:?}");
-            assert_eq!(
-                list(&fs.0, plus).contains(&init),
-                iii_filesystem::init::has_init(),
-                "the backend lists init.krun only with an embedded init"
-            );
+        let lookup = |parent, name: &str| fs.lookup(ctx, parent, &CString::new(name).unwrap());
+        let sub = lookup(1, "sub").unwrap().inode;
+        let cased = lookup(1, "cased").unwrap().inode;
+
+        for (dir, name) in [
+            (1, ".iii"),
+            (1, ".III"),
+            (1, ".iIi"),
+            (sub, ".iii"),
+            (sub, ".III"),
+            (cased, ".III"),
+            (cased, ".iii"),
+        ] {
+            let errno = lookup(dir, name).err().and_then(|e| e.raw_os_error());
+            assert_eq!(errno, Some(libc::ENOENT), "{name}");
         }
+        // A name is one path component: the backend refuses anything else.
+        for name in ["./.iii", ".iii/secret", "sub/.iii"] {
+            assert!(lookup(1, name).is_err(), "{name}");
+        }
+        for plus in [false, true] {
+            for dir in [1, sub, cased] {
+                let names = share_listing(&fs, dir, plus);
+                assert!(
+                    !names.iter().any(|n| n.eq_ignore_ascii_case(b".iii")),
+                    "readdirplus={plus}: {names:?}"
+                );
+            }
+            for dir in [1, sub] {
+                let names = share_listing(&fs, dir, plus);
+                assert!(names.contains(&b"sibling".to_vec()), "{names:?}");
+            }
+        }
+        lookup(1, "sibling").unwrap();
+        lookup(sub, "sibling").unwrap();
+
+        // READDIRPLUS looks an entry up before its callback sees it. That
+        // reference must not outlive the listing: the guest could name the inode.
+        let hidden =
+            fs.0.lookup(ctx, 1, &CString::new(".iii").unwrap())
+                .unwrap()
+                .inode;
+        fs.0.forget(ctx, hidden, 1);
+        assert!(
+            fs.getattr(ctx, hidden, None).is_err(),
+            "a listing left the .iii inode in the backend's table"
+        );
+
+        // The guest kernel walks a symlink itself, which ends at the lookup
+        // above; the backend never follows one.
+        let link = lookup(1, "link").unwrap().inode;
+        assert_eq!(fs.readlink(ctx, link).unwrap(), b".iii");
+        assert!(fs.open(ctx, link, false, libc::O_RDONLY as u32).is_err());
+        assert!(fs.opendir(ctx, link, 0).is_err());
     }
 
     // --- 6.1: check_kvm_nonexistent_path (Linux only) ---
