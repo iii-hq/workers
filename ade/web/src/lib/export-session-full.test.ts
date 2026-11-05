@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionMeta } from '@/lib/sessions/types'
 import type { UserMessage } from '@/types/chat'
 
-const mockTrigger = vi.hoisted(() => vi.fn())
+const mockCall = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: () => Promise.resolve({ trigger: mockTrigger }),
+  getIiiClient: () => Promise.resolve({ call: mockCall }),
 }))
 
 import type { Conversation } from '@/types/chat'
@@ -66,11 +66,11 @@ describe('collectDescendants', () => {
 
 describe('listAllSessions', () => {
   beforeEach(() => {
-    mockTrigger.mockReset()
+    mockCall.mockReset()
   })
 
   it('follows next_cursor until exhausted', async () => {
-    mockTrigger
+    mockCall
       .mockResolvedValueOnce({
         sessions: [meta('s1', null)],
         next_cursor: 'c1',
@@ -81,8 +81,8 @@ describe('listAllSessions', () => {
       })
     const out = await listAllSessions()
     expect(out?.map((s) => s.session_id)).toEqual(['s1', 's2'])
-    expect(mockTrigger).toHaveBeenCalledTimes(2)
-    expect(mockTrigger).toHaveBeenLastCalledWith(
+    expect(mockCall).toHaveBeenCalledTimes(2)
+    expect(mockCall).toHaveBeenLastCalledWith(
       'session::list',
       {
         limit: 200,
@@ -93,13 +93,13 @@ describe('listAllSessions', () => {
     )
   })
 
-  it('returns null when the trigger rejects', async () => {
-    mockTrigger.mockRejectedValue(new Error('offline'))
+  it('returns null when the call rejects', async () => {
+    mockCall.mockRejectedValue(new Error('offline'))
     await expect(listAllSessions()).resolves.toBeNull()
   })
 
   it('returns null on a malformed page', async () => {
-    mockTrigger.mockResolvedValue({ nope: true })
+    mockCall.mockResolvedValue({ nope: true })
     await expect(listAllSessions()).resolves.toBeNull()
   })
 })
@@ -147,12 +147,12 @@ function conv(id: string): Conversation {
   }
 }
 
-/** Route mockTrigger by function id; per-session transcripts by session_id. */
-function routeTriggers(opts: {
+/** Route mockCall by function id; per-session transcripts by session_id. */
+function routeCalls(opts: {
   sessions?: unknown
   transcripts?: Record<string, unknown>
 }) {
-  mockTrigger.mockImplementation(
+  mockCall.mockImplementation(
     (
       fnId: string,
       payload: Record<string, unknown> = {},
@@ -172,14 +172,14 @@ function routeTriggers(opts: {
         if (entry instanceof Error) return Promise.reject(entry)
         return Promise.resolve({ messages: entry ?? [], next_cursor: null })
       }
-      return Promise.reject(new Error(`unrouted trigger ${fnId}`))
+      return Promise.reject(new Error(`unrouted call ${fnId}`))
     },
   )
 }
 
 describe('assembleFullExport', () => {
   beforeEach(() => {
-    mockTrigger.mockReset()
+    mockCall.mockReset()
   })
 
   const childTranscript = [
@@ -194,7 +194,7 @@ describe('assembleFullExport', () => {
   ]
 
   it('bundles descendants with a count bullet and -full filename', async () => {
-    routeTriggers({
+    routeCalls({
       sessions: [meta('root', null), meta('child', 'root', 10)],
       transcripts: { child: childTranscript },
     })
@@ -204,7 +204,7 @@ describe('assembleFullExport', () => {
     expect(markdown).toContain('# Sub-agent: title-child')
     expect(markdown).toContain('child msg')
     expect(markdown).toContain('- Workers:')
-    expect(mockTrigger).toHaveBeenCalledWith(
+    expect(mockCall).toHaveBeenCalledWith(
       'session::messages',
       expect.objectContaining({ session_id: 'child' }),
       { timeoutMs: 30000 },
@@ -212,7 +212,7 @@ describe('assembleFullExport', () => {
   })
 
   it('degrades to _(unavailable)_ when session discovery fails', async () => {
-    routeTriggers({ sessions: new Error('offline') })
+    routeCalls({ sessions: new Error('offline') })
     const { markdown } = await assembleFullExport(conv('root'))
     expect(markdown).toContain('- Sub-agents: _(unavailable)_')
     expect(markdown).not.toContain('# Sub-agent:')
@@ -220,7 +220,7 @@ describe('assembleFullExport', () => {
   })
 
   it('keeps other sections when one transcript fails', async () => {
-    routeTriggers({
+    routeCalls({
       sessions: [
         meta('root', null),
         meta('bad', 'root', 10),

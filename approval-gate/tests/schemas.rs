@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the `approval::*` functions and trigger types.
+//! Wire-schema snapshots for the `approval::*` functions and event functions.
 //!
 //! `approval_gate::functions::catalog()` is the single source of truth for
 //! each function's id, registration description, and schemars-derived
@@ -8,8 +8,9 @@
 //! JSON and compared against `tests/golden/schemas/<id>.json` (`::` maps to
 //! `.` in filenames).
 //!
-//! `approval_gate::functions::trigger_catalog()` covers the two custom
-//! trigger types with the same pattern.
+//! `approval_gate::functions::event_catalog()` covers the two event
+//! functions (`approval::on-pending-created`, `approval::on-pending-resolved`)
+//! with the same pattern.
 //!
 //! These snapshots ARE the product surface consumed by callers and agents —
 //! any schema or description change must land as an explicit golden diff.
@@ -17,7 +18,7 @@
 
 mod support;
 
-use approval_gate::functions::{catalog, trigger_catalog, FunctionSpec, TriggerSpec};
+use approval_gate::functions::{catalog, event_catalog, FunctionSpec};
 
 fn golden_file_name(id: &str) -> String {
     format!("schemas/{}.json", id.replace("::", "."))
@@ -35,21 +36,10 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-fn trigger_spec_to_pretty_json(spec: &TriggerSpec) -> String {
-    let value = serde_json::json!({
-        "trigger_id": spec.trigger_id,
-        "description": spec.description,
-        "payload_schema": spec.payload_schema,
-    });
-    let mut pretty = serde_json::to_string_pretty(&value).expect("trigger spec serializes");
-    pretty.push('\n');
-    pretty
-}
-
 /// The catalog must cover exactly the 13 registered functions, in
 /// registration order (kept in lockstep with `register_all`). The internal
 /// `approval::on-config-change` handler is registered separately via
-/// `configuration::register_config_trigger` (mirroring session-manager /
+/// `configuration::observe_config_changes` (mirroring session-manager /
 /// context-manager), so it is not part of this public catalog.
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
@@ -75,14 +65,17 @@ fn catalog_lists_all_functions_in_registration_order() {
     );
 }
 
-/// The trigger catalog must cover exactly the 2 registered trigger types,
-/// in registration order (kept in lockstep with `register_trigger_types`).
+/// The event catalog must cover exactly the 2 event functions, in
+/// registration order (kept in lockstep with `events::register_functions`).
 #[test]
-fn trigger_catalog_lists_both_trigger_types_in_registration_order() {
-    let ids: Vec<&str> = trigger_catalog().iter().map(|s| s.trigger_id).collect();
+fn event_catalog_lists_both_event_functions_in_registration_order() {
+    let ids: Vec<&str> = event_catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
-        vec!["approval::pending-created", "approval::pending-resolved",]
+        vec![
+            "approval::on-pending-created",
+            "approval::on-pending-resolved"
+        ]
     );
 }
 
@@ -107,20 +100,26 @@ fn wire_schema_snapshots_match_goldens() {
     );
 }
 
-/// Every trigger catalog entry matches its committed golden.
+/// Every event catalog entry matches its committed golden, and its handler
+/// returns its input, so the request and response schemas are one schema.
 #[test]
-fn trigger_schema_snapshots_match_goldens() {
+fn event_schema_snapshots_match_goldens() {
     let mut failures = Vec::new();
-    for spec in trigger_catalog() {
-        let rel = golden_file_name(spec.trigger_id);
-        let actual = trigger_spec_to_pretty_json(&spec);
+    for spec in event_catalog() {
+        assert_eq!(
+            spec.request_schema, spec.response_schema,
+            "{}: an event function returns the event it is called with",
+            spec.function_id
+        );
+        let rel = golden_file_name(spec.function_id);
+        let actual = spec_to_pretty_json(&spec);
         if let Err(msg) = support::check_golden(&rel, &actual) {
             failures.push(msg);
         }
     }
     assert!(
         failures.is_empty(),
-        "{} trigger wire-schema golden(s) drifted:\n\n{}",
+        "{} event wire-schema golden(s) drifted:\n\n{}",
         failures.len(),
         failures.join("\n")
     );

@@ -17,7 +17,7 @@ const tree: Record<string, string[]> = {
 
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
-    trigger: async (id: string, payload: { path?: string }) =>
+    call: async (id: string, payload: { path?: string }) =>
       id === 'shell::workspace::roots'
         ? { roots: ['/w'] }
         : {

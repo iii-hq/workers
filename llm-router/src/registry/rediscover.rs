@@ -1,34 +1,28 @@
 //! Provider re-discovery: find live providers from the ENGINE's function
 //! registry rather than from the router's own persisted registry, and nudge
-//! each one to re-declare.
+//! each newly live one to re-declare.
 //!
 //! Why this exists. Providers re-declare (and re-push their catalog) when they
-//! handle `provider::<id>::on_router_ready`. Two things can stop that from
-//! happening, and both leave the router serving an empty catalog while the
-//! providers themselves are healthy and connected:
+//! handle `provider::<id>::on_router_ready`, the target of their observer of
+//! `router::on-ready`. The router sends `router::on-ready` to each observer
+//! once it is ready, and again when the engine adds the observer again (its
+//! worker came back within the observer grace period). A provider that comes
+//! back after the grace period finds its observer disposed: the provider
+//! hears nothing, and its availability stays where the outage left it.
 //!
-//! 1. The engine drops a trigger binding when the type's owner — this worker —
-//!    disconnects, so a provider that outlived a router restart never hears the
-//!    `router::ready` fan-out. `register.rs` already compensates by nudging
-//!    `registry.ids()` directly, but that list comes from the persisted
-//!    registry: on a stack whose state worker runs in-memory it is EMPTY after
-//!    a restart, so the nudge reaches nobody.
-//! 2. `router::ready` is a one-shot broadcast. A provider that re-binds its
-//!    subscription after the router fired it simply misses it.
-//!
-//! In both cases the provider recovers only on its own periodic catalog timer
-//! (three minutes for openai-codex), and until then every model it serves is
+//! Such a provider recovers only on its own periodic catalog timer (three
+//! minutes for openai-codex), and until then every model it serves is
 //! unresolvable — `router::models::budget` returns null, context-manager takes
 //! its conservative 8k fallback, and healthy sessions die with a bewildering
 //! `context/overflow`.
 //!
-//! The engine's function registry is the one source that is always current, so
-//! we derive the provider set from it. `provider::<id>::on_router_ready` is the
-//! deterministic per-provider handler (the same one the fan-out targets), which
-//! makes it both the discovery key and the thing to call.
+//! The engine's function registry is the one source that is always current
+//! (the persisted registry is empty after a restart on a stack whose state
+//! worker runs in-memory), so we derive the provider set from it.
+//! `provider::<id>::on_router_ready` is the deterministic per-provider handler,
+//! which makes it both the discovery key and the thing to call.
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -50,7 +44,7 @@ const NUDGE_TIMEOUT_MS: u64 = 10_000;
 /// verified live, one of four.
 pub async fn live_provider_ids(iii: &IIIClient) -> Vec<String> {
     let response = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::list".into(),
             payload: json!({ "prefix": PROVIDER_PREFIX, "include_internal": true }),
             action: None,
@@ -96,10 +90,13 @@ fn newly_live_provider_ids(known: &mut HashSet<String>, live: Vec<String>) -> Ve
     added
 }
 
+/// Nudge each provider in `ids` to re-declare, one at a time: a dead one
+/// answers `function_not_found`, which is exactly the right answer, and a
+/// slow one is bounded by [`NUDGE_TIMEOUT_MS`].
 async fn nudge_provider_ids(iii: &IIIClient, ids: &[String]) {
     for id in ids {
         let _ = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: format!("{PROVIDER_PREFIX}{id}{READY_HANDLER_SUFFIX}"),
                 payload: json!({}),
                 action: None,
@@ -109,36 +106,25 @@ async fn nudge_provider_ids(iii: &IIIClient, ids: &[String]) {
     }
 }
 
-/// Nudge every live provider to re-declare. Fire-and-forget per provider: a
-/// dead one answers `function_not_found`, which is exactly the right answer,
-/// and a slow one cannot hold up the rest.
-pub async fn nudge_live_providers(iii: &IIIClient) -> usize {
-    let ids = live_provider_ids(iii).await;
-    nudge_provider_ids(iii, &ids).await;
-    ids.len()
-}
-
 /// Coalescing handle for the re-discovery sweep, requested on every
-/// `engine::functions-available` event.
+/// `engine::on-functions-changed` event.
 ///
-/// What that event means depends on the engine. Current engines fire it from
-/// the registry itself: every register (including re-registering an existing
-/// id with a new schema, description or metadata) and every removal, folded
-/// into one event per ~100ms burst. Older engines poll every 5s and fire only
-/// when the set of function ids changes. Either way it is advisory and
-/// carries no provider-specific signal, and most events are unrelated to
-/// providers (console subscriptions, other workers, schema-only updates).
+/// The engine calls that function from the registry itself: every register
+/// (including re-registering an existing id with a new schema, description or
+/// metadata) and every removal, folded into one event per ~100ms burst. It is
+/// advisory and carries no provider-specific signal, and most events are
+/// unrelated to providers (console observers, other workers, schema-only
+/// updates).
 ///
 /// So the sweep ignores the payload, re-reads provider membership from the
 /// engine, and nudges only providers that were not live at the previous
-/// sweep. The quiet period below is kept on purpose even though current
-/// engines already fold a burst: their 100ms window only covers changes that
-/// land inside it, while a worker finishing async setup, several workers
-/// starting together, or console subscription churn spread changes over
-/// seconds. Folding those into one membership read keeps the cost at one
+/// sweep. The quiet period below is kept on purpose even though the engine
+/// already folds a burst: its 100ms window only covers changes that land
+/// inside it, while a worker finishing async setup, several workers starting
+/// together, or console observer churn spread changes over seconds. Folding
+/// those into one membership read keeps the cost at one
 /// `engine::functions::list` round-trip per settle. The single task also
-/// serialises sweeps, which the `known`-set diff depends on. Against older
-/// engines it is harmless: their 5s ticks are longer than the quiet period.
+/// serialises sweeps, which the `known`-set diff depends on.
 #[derive(Clone)]
 pub struct SweepHandle {
     tx: tokio::sync::mpsc::Sender<()>,

@@ -264,9 +264,9 @@ where
             });
         }
 
-        // A trigger event is only a wake-up signal. Read the terminal result
-        // back from Harness so a forged or duplicated callback cannot inject
-        // a report into the durable run record.
+        // A turn-completed event is only a wake-up signal. Read the terminal
+        // result back from Harness so a forged or duplicated callback cannot
+        // inject a report into the durable run record.
         let Some(authoritative) = self.runtime.completed_analysis(&run).await? else {
             return Ok(TurnCompletedResponseV1 {
                 woke: false,

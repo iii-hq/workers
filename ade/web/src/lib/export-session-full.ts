@@ -17,7 +17,7 @@ import {
   fetchWorkerVersions,
   formatTimestamp,
   messagesToMarkdown,
-  triggerMarkdownDownload,
+  startMarkdownDownload,
 } from './export-session'
 
 const SESSIONS_LIST_RPC = 'session::list'
@@ -44,7 +44,7 @@ export async function listAllSessions(): Promise<SessionMeta[] | null> {
     const sessions: SessionMeta[] = []
     let cursor: string | undefined
     for (let page = 0; page < SESSIONS_MAX_PAGES; page++) {
-      const resp = await client.trigger<{
+      const resp = await client.call<{
         sessions?: SessionMeta[]
         next_cursor?: string | null
       }>(
@@ -129,7 +129,7 @@ export function subagentSectionToMarkdown(
 
 /**
  * Everything but the DOM: fetch versions + descendants, render one markdown
- * document. Separated from the download trigger so tests can cover the
+ * document. Separated from the download so tests can cover the
  * assembly without a browser click.
  */
 export async function assembleFullExport(
@@ -177,6 +177,6 @@ export async function downloadConversationWithSubagents(
   conversation: Conversation,
 ): Promise<string> {
   const { markdown, filename } = await assembleFullExport(conversation)
-  triggerMarkdownDownload(markdown, filename)
+  startMarkdownDownload(markdown, filename)
   return filename
 }

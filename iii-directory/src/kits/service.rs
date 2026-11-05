@@ -15,7 +15,7 @@ use super::plan::{
     auto_applicable, build_install_plan, build_remove_plan, build_update_plan, summary, KitsEnv,
     LocalView, Plan, PlanContents, PlanKind,
 };
-use super::registry::{Deprecation, KitDetail, KitRegistry, UpdateQuery};
+use super::registry::{Deprecation, KitDetail, KitRegistry, KitVersions, UpdateQuery};
 use super::store::{self, ApplyProgress, PlanRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -58,19 +58,26 @@ pub async fn resolve_version(
                 .await?
                 .ok_or_else(|| kit_not_found(kit))?;
             let req = semver::VersionReq::parse(range).map_err(|e| e.to_string())?;
-            versions
-                .versions
-                .iter()
-                .filter_map(|v| semver::Version::parse(&v.version).ok())
-                .filter(|v| req.matches(v))
-                .max()
-                .map(|v| v.to_string())
-                .ok_or_else(|| {
-                    format!(
-                        "D510 not_found: no version of {kit} satisfies {range:?}. \
+            let newest = |versions: &KitVersions| {
+                versions
+                    .versions
+                    .iter()
+                    .filter_map(|v| semver::Version::parse(&v.version).ok())
+                    .filter(|v| req.matches(v))
+                    .max()
+            };
+            let found = match newest(&versions) {
+                Some(v) => Some(v),
+                // `versions` hides what this engine cannot run; asking for such a
+                // match below makes the registry answer D521 instead of D510.
+                None => registry.all_versions(kit).await?.as_ref().and_then(newest),
+            };
+            found.map(|v| v.to_string()).ok_or_else(|| {
+                format!(
+                    "D510 not_found: no version of {kit} satisfies {range:?}. \
                          Next: open the kit's versions in the registry."
-                    )
-                })?
+                )
+            })?
         }
     };
     match registry.detail(kit, &wanted).await? {
@@ -167,7 +174,7 @@ fn planned_message(plan: &Plan) -> String {
     };
     format!(
         "{verb} is planned{extra}. Review it in the ADE: Directory → Kits, or apply it with \
-         `iii trigger directory::kits::apply plan_id={}`.",
+         `iii call directory::kits::apply plan_id={}`.",
         plan.plan_id
     )
 }

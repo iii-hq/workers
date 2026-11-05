@@ -3,6 +3,7 @@
 from pathlib import Path
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import tomllib
@@ -13,6 +14,14 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "template"
+ADAPTER = "sandbox-libkrun"
+# The fields of an `engine::functions::info` row (`FunctionDetail`, iii 0.26.0):
+# the typed schemas are `request_schema` / `response_schema`.
+FUNCTION_DETAIL_FIELDS = frozenset({
+    "function_id", "namespace", "worker_name", "description", "metadata",
+    "request_schema", "response_schema", "args_format", "private", "observable",
+    "observer_count",
+})
 
 
 def tracked_files(*paths):
@@ -36,11 +45,12 @@ class TemplateTests(unittest.TestCase):
     def test_local_stack_matches_harness_and_adds_browser_and_computer(self):
         """Every declared worker must build from the expected sibling source."""
         base = load_yaml(ROOT / "harness/worker-compose.yaml")
-        self.assertEqual(set(self.containers), set(base["containers"]) | {"browser", "computer"})
+        self.assertEqual(set(self.containers), set(base["containers"]) | {"browser", "computer", ADAPTER})
         self.assertEqual(self.compose["engine"]["url"], base["engine"]["url"])
-        self.assertIn("iii-sandbox", self.compose["engine"]["workers"])
         self.assertEqual(self.compose["startup_timeout"], base["startup_timeout"])
         for name, container in self.containers.items():
+            if name == ADAPTER:
+                continue  # a published package: see test_sandbox_adapter_is_operator_declared
             with self.subTest(worker=name):
                 self.assertEqual(container["worker"], f"path://../{name}")
                 source = (TEMPLATE / container["worker"].removeprefix("path://")).resolve()
@@ -54,6 +64,16 @@ class TemplateTests(unittest.TestCase):
                 self.assertEqual(command[:3], ["cargo", "run", "--bin"])
                 self.assertIn(command[3], binaries)
                 self.assertEqual(command[3], name)
+
+    def test_sandbox_adapter_is_operator_declared(self):
+        """computer needs the adapter for sandbox::*, so Compose must never remove it."""
+        self.assertNotIn("workers", self.compose["engine"])
+        adapter = self.containers[ADAPTER]
+        self.assertEqual((adapter["worker"], adapter["version"]), ("package://sandbox-libkrun", "^0.2"))
+        self.assertEqual(adapter["config_override"]["image_allowlist"], ["desktop", "anthropic"])
+        self.assertEqual(adapter["config_override"]["custom_images"]["desktop"], "ghcr.io/trycua/linux:24.04-slim-20261013-36bc520")
+        lines = (TEMPLATE / "worker-compose.yaml").read_text().splitlines()
+        self.assertNotEqual(lines[lines.index(f"  {ADAPTER}:") - 1].strip(), "# added by compose::add")
 
     def test_dependencies_are_declared_before_consumers(self):
         """Compose dependency ordering must be valid and Harness must start last."""
@@ -70,6 +90,8 @@ class TemplateTests(unittest.TestCase):
     def test_default_env_file_exists_and_has_no_credentials(self):
         """The tracked environment example must be available and contain no keys."""
         for name, container in self.containers.items():
+            if name == ADAPTER:
+                continue  # holds no credentials: only its config_override
             self.assertEqual(
                 container["env_file"],
                 ["${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}"],
@@ -136,6 +158,21 @@ class TemplateTests(unittest.TestCase):
                 actual[path.relative_to(TEMPLATE).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
         self.assertFalse(any(path.startswith("config/") for path in manifest["files"]))
         self.assertEqual(actual, manifest["files"], "Run sync.sh; do not edit generated files directly")
+
+    def test_function_info_fields_are_named_as_the_engine_returns_them(self):
+        """A doc that points at a field of an `engine::functions::info` row names a field the row has."""
+        returned = FUNCTION_DETAIL_FIELDS | {"functions"}
+        checked = 0
+        for path in tracked_files("template/agents", "template/skills"):
+            if path.suffix != ".md":
+                continue
+            for paragraph in path.read_text(encoding="utf-8").split("\n\n"):
+                if "engine::functions::info" not in paragraph:
+                    continue
+                for field in re.findall(r"\bits `([a-z_]+)`", paragraph):
+                    checked += 1
+                    self.assertIn(field, returned, f"{path.relative_to(ROOT)}: `{field}`")
+        self.assertGreater(checked, 0, "no doc names a field of an engine::functions::info row")
 
     def test_all_upstream_skill_documents_are_present(self):
         """The imported skill set must contain nonempty regular Markdown files."""

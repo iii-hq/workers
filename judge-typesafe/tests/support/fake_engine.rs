@@ -1,5 +1,6 @@
-//! One-connection fake engine for bus-contract tests: acknowledges the worker,
-//! hands every text frame to `handle` and sends back the frames it returns.
+//! One-connection fake engine for bus-contract tests: acknowledges the worker
+//! as an engine with observe v2 (so the SDK sends its observers), hands every
+//! text frame to `handle` and sends back the frames it returns.
 //! Shared by the hub and provider test crates through `#[path]`.
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -23,7 +24,11 @@ pub async fn start(mut handle: impl FnMut(Value) -> Vec<Value> + Send + 'static)
     let task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(stream).await.unwrap();
-        let registered = json!({"type":"workerregistered","worker_id":"fake-engine-worker"});
+        let registered = json!({
+            "type": "workerregistered",
+            "worker_id": "fake-engine-worker",
+            "features": ["observe.v1", "observe.v2"]
+        });
         socket
             .send(Message::Text(registered.to_string().into()))
             .await

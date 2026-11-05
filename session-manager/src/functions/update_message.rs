@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use super::Deps;
 use crate::error::SessionError;
+use crate::events::EventKind;
 use crate::types::{ContentBlock, JsonMap, Usage};
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -39,7 +40,8 @@ pub async fn handle(
     deps: &Deps,
     req: UpdateMessageRequest,
 ) -> Result<UpdateMessageResponse, SessionError> {
-    let (resp, events) = deps.service.update_message(req).await?;
+    let wants_event = deps.sink.wants(EventKind::MessageUpdated);
+    let (resp, events) = deps.service.update_message(req, wants_event).await?;
     deps.sink.publish_all(&events).await;
     Ok(resp)
 }

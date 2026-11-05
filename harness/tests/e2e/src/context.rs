@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use harness::functions::metrics::SessionMetricsResponseV1;
 use harness::functions::status::StatusReport;
 use harness::types::turn::TurnStatus;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde::de::DeserializeOwned;
@@ -98,7 +98,7 @@ impl E2eContext {
         Ok(context)
     }
 
-    pub async fn trigger<I, O>(&self, function_id: &str, payload: I) -> Result<O>
+    pub async fn call<I, O>(&self, function_id: &str, payload: I) -> Result<O>
     where
         I: Serialize + Send,
         O: DeserializeOwned,
@@ -106,19 +106,19 @@ impl E2eContext {
         let payload = serde_json::to_value(payload)
             .with_context(|| format!("serialize request for {function_id}"))?;
         let value = self
-            .trigger_value_with_timeout(function_id, payload, INVOCATION_TIMEOUT)
+            .call_value_with_timeout(function_id, payload, INVOCATION_TIMEOUT)
             .await?;
         serde_json::from_value(value).with_context(|| format!("decode response from {function_id}"))
     }
 
-    pub async fn trigger_value(&self, function_id: &str, payload: Value) -> Result<Value> {
-        self.trigger_value_with_timeout(function_id, payload, INVOCATION_TIMEOUT)
+    pub async fn call_value(&self, function_id: &str, payload: Value) -> Result<Value> {
+        self.call_value_with_timeout(function_id, payload, INVOCATION_TIMEOUT)
             .await
     }
 
     pub async fn function_exists(&self, function_id: &str) -> Result<bool> {
         let listed = self
-            .trigger_value(
+            .call_value(
                 "engine::functions::list",
                 json!({ "include_internal": true }),
             )
@@ -144,7 +144,7 @@ impl E2eContext {
         let mut metrics_progress = None;
         loop {
             let status: Option<StatusReport> = self
-                .trigger(
+                .call(
                     "harness::status",
                     json!({ "session_id": session_id, "verbose": true }),
                 )
@@ -214,7 +214,7 @@ impl E2eContext {
     }
 
     pub async fn metrics(&self, session_id: &str) -> Result<SessionMetricsResponseV1> {
-        self.trigger("harness::metrics", json!({ "root_session_id": session_id }))
+        self.call("harness::metrics", json!({ "root_session_id": session_id }))
             .await
     }
 
@@ -260,7 +260,7 @@ impl E2eContext {
             }
             if progress_due(&mut next_progress, progress_interval) {
                 let tree = self
-                    .trigger::<_, harness::functions::session_tree::SessionTreeResponseV1>(
+                    .call::<_, harness::functions::session_tree::SessionTreeResponseV1>(
                         "harness::session-tree",
                         json!({ "root_session_id": session_id }),
                     )
@@ -292,7 +292,7 @@ impl E2eContext {
         let mut messages = Vec::new();
         loop {
             let response: Value = self
-                .trigger(
+                .call(
                     "session::messages",
                     json!({
                         "session_id": session_id,
@@ -324,7 +324,7 @@ impl E2eContext {
 
     pub async fn stop_session(&self, session_id: &str, turn_id: Option<&str>) -> Result<()> {
         let _: harness::functions::stop::StopResponse = self
-            .trigger(
+            .call(
                 "harness::stop",
                 json!({ "session_id": session_id, "turn_id": turn_id }),
             )
@@ -335,7 +335,7 @@ impl E2eContext {
     async fn stop_session_tree(&self, root_session_id: &str) {
         let tree = tokio::time::timeout(
             Duration::from_secs(5),
-            self.trigger::<_, harness::functions::session_tree::SessionTreeResponseV1>(
+            self.call::<_, harness::functions::session_tree::SessionTreeResponseV1>(
                 "harness::session-tree",
                 json!({ "root_session_id": root_session_id }),
             ),
@@ -352,7 +352,7 @@ impl E2eContext {
 
     pub async fn teardown(&self, root_session_id: &str) -> Result<u64> {
         let response: harness::functions::teardown::TeardownResponseV1 = self
-            .trigger(
+            .call(
                 "harness::teardown",
                 json!({ "root_session_id": root_session_id }),
             )
@@ -368,7 +368,7 @@ impl E2eContext {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
             if self
-                .trigger_value_with_timeout(
+                .call_value_with_timeout(
                     "engine::functions::list",
                     json!({ "include_internal": true }),
                     Duration::from_secs(1),
@@ -385,7 +385,7 @@ impl E2eContext {
         }
     }
 
-    async fn trigger_value_with_timeout(
+    async fn call_value_with_timeout(
         &self,
         function_id: &str,
         payload: Value,
@@ -395,7 +395,7 @@ impl E2eContext {
         let outer = timeout + Duration::from_secs(5);
         match tokio::time::timeout(
             outer,
-            self.client.trigger(TriggerRequest {
+            self.client.call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,
@@ -481,6 +481,8 @@ mod tests {
             queued: None,
             result: None,
             result_error: None,
+            stop_reason: None,
+            context: None,
         }
     }
 

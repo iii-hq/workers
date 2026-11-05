@@ -602,7 +602,7 @@
   background: var(--color-edge);
 }
 
-.conversation-transcript .function-trigger-surface {
+.conversation-transcript .function-call-surface {
   font-family: var(--font-inter);
 }
 
@@ -611,7 +611,7 @@
   min-height: 32px;
 }
 
-.conversation-transcript .function-trigger-display-slot {
+.conversation-transcript .function-call-display-slot {
   padding-top: 8px;
   padding-bottom: 6px;
 }

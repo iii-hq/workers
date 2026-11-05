@@ -12,12 +12,10 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 harness_root=$(cd -- "$script_dir/../.." && pwd)
 repo_root=$(cd -- "$harness_root/.." && pwd)
 iii_bin_dir=$(cd -- "$(dirname -- "$III_BIN")" && pwd)
-for binary in iii iii-init iii-worker; do
-  [[ -x "$iii_bin_dir/$binary" ]] || {
-    echo "installed iii companion is not executable: $iii_bin_dir/$binary" >&2
-    exit 2
-  }
-done
+[[ -x "$iii_bin_dir/iii" ]] || {
+  echo "installed iii is not executable: $iii_bin_dir/iii" >&2
+  exit 2
+}
 export PATH="$iii_bin_dir:$PATH"
 artifacts_dir=${HARNESS_E2E_ARTIFACTS_DIR:-"$repo_root/target/harness-e2e"}
 e2e_bin=${HARNESS_E2E_BIN:-"$harness_root/target/release/harness-e2e"}
@@ -31,21 +29,15 @@ if [[ ! "$iii_port" =~ ^[0-9]+$ ]] || ((iii_port < 1 || iii_port > 65535)); then
 fi
 iii_url="ws://127.0.0.1:$iii_port"
 engine_config_template=${HARNESS_E2E_ENGINE_CONFIG:-"$script_dir/stack-config/engine.yaml"}
-# iii-worker's lifecycle helpers mutate config.yaml in their project root.
-# Use that same isolated path for the engine reload watcher.
+# The engine's own copy, in the isolated run dir its reload watcher follows.
 engine_config="$run_dir/config.yaml"
 database_config=${HARNESS_E2E_DATABASE_CONFIG:-"$script_dir/stack-config/database.yaml"}
 
 mkdir -p "$run_dir" "$logs_dir" "$run_dir/database"
 cp "$engine_config_template" "$engine_config"
-# The engine expands environment placeholders itself, but iii-worker reads the
-# same project file directly and expects the manager port to already be numeric.
-sed -i "s/\${HARNESS_E2E_PORT}/$iii_port/g" "$engine_config"
+# The engine expands the ${HARNESS_E2E_*} placeholders in it itself.
 export HARNESS_E2E_RUN_DIR="$run_dir"
 export HARNESS_E2E_PORT="$iii_port"
-# Built-in iii-worker daemons otherwise fall back to the fixed 49134 default,
-# which breaks isolated runs that select a different port.
-export III_ENGINE_URL="$iii_url"
 
 pids=()
 
@@ -76,7 +68,7 @@ wait_for_function() {
   local response
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     response=$(
-      "$III_BIN" trigger engine::functions::list \
+      "$III_BIN" call engine::functions::list \
         --port "$iii_port" \
         --json '{"include_internal":true}' 2>/dev/null || true
     )
@@ -91,27 +83,6 @@ wait_for_function() {
   return 1
 }
 
-wait_for_trigger_type() {
-  local trigger_type=$1
-  local attempts=120
-  local response
-  for ((attempt = 1; attempt <= attempts; attempt++)); do
-    response=$(
-      "$III_BIN" trigger engine::triggers::list \
-        --port "$iii_port" \
-        --json '{"include_internal":true}' 2>/dev/null || true
-    )
-    if jq -e --arg id "$trigger_type" \
-      '.triggers[]? | select(.id == $id)' \
-      <<<"$response" >/dev/null; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  echo "timed out waiting for trigger type $trigger_type" >&2
-  return 1
-}
-
 wait_for_model() {
   local provider=$1
   local model=$2
@@ -122,7 +93,7 @@ wait_for_model() {
     '{provider:$provider,id:$id}')
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     response=$(
-      "$III_BIN" trigger router::models::get \
+      "$III_BIN" call router::models::get \
         --port "$iii_port" \
         --json "$request" 2>/dev/null || true
     )
@@ -153,14 +124,13 @@ start_provider() {
 
 start_process engine "$III_BIN" -c "$engine_config"
 wait_for_function engine::workers::list
-wait_for_function worker::add
 
 start_process database \
   "$repo_root/database/target/release/database" \
   --url "$iii_url" \
   --config "$database_config"
 wait_for_function database::query
-wait_for_trigger_type database::row-changed
+wait_for_function database::on-row-changed
 
 start_process state \
   "$repo_root/state/target/release/state" \
@@ -216,7 +186,7 @@ wait_for_function directory::skills::list
 start_process cron \
   "$repo_root/cron/target/release/cron" \
   --url "$iii_url"
-wait_for_trigger_type cron
+wait_for_function cron::on-tick
 
 start_process harness \
   "$harness_root/target/release/harness" \

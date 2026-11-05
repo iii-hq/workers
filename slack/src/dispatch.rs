@@ -100,7 +100,7 @@ async fn handle_message(deps: &Deps, team: Option<&str>, m: MessageEvent) {
     let thread_ts = m.thread_ts.clone().unwrap_or_else(|| ts.clone());
     let text = m.text.clone().unwrap_or_default();
 
-    // DMs are implicitly addressed to the bot → trigger.
+    // DMs are implicitly addressed to the bot → run a turn.
     if m.channel_type.as_deref() == Some("im") {
         if let Err(e) = turn::handle_addressed(
             deps,
@@ -123,7 +123,7 @@ async fn handle_message(deps: &Deps, team: Option<&str>, m: MessageEvent) {
     if mentions_bot(deps, &text).await {
         return;
     }
-    // With require_mention disabled, every channel message triggers a turn.
+    // With require_mention disabled, every channel message runs a turn.
     if !deps.cfg().await.require_mention {
         if let Err(e) = turn::handle_addressed(
             deps,

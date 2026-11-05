@@ -1,7 +1,7 @@
 /**
  * Invoke a runtime-registered bus function by hand: a JSON payload editor,
  * one call, and the raw result (JsonHighlight) or the failure. The
- * function id is invoked verbatim over `host.iii.trigger` — these are the
+ * function id is called verbatim over `host.iii.call` — these are the
  * ids guest code registered through the planted SDK, so whatever the guest
  * handler returns renders as-is.
  */
@@ -71,7 +71,7 @@ export function InvokeDialog({
     host.iii
       // Guest handlers run real code — give them the same transport
       // headroom as the run dialog instead of the default deadline.
-      .trigger(functionId, parsed as Record<string, unknown>, { timeoutMs: 120_000 })
+      .call(functionId, parsed as Record<string, unknown>, { timeoutMs: 120_000 })
       .then((value) => {
         if (gen === generation.current)
           setResult(JSON.stringify(value, null, 2) ?? 'null')
@@ -88,9 +88,9 @@ export function InvokeDialog({
     <Dialog open={functionId !== null} onOpenChange={(open) => !open && onClose()}>
       {functionId === null ? null : (
         <DialogContent className="cr-page-dialog">
-          <DialogTitle>trigger {functionId}</DialogTitle>
+          <DialogTitle>call {functionId}</DialogTitle>
           <DialogDescription>
-            triggers the guest-registered function over the bus with the input
+            calls the guest-registered function over the bus with the input
             payload below — this runs real code in its runtime.
           </DialogDescription>
           <div className="cr-page-editor-pane">
@@ -116,7 +116,7 @@ export function InvokeDialog({
               close
             </Button>
             <Button variant="primary" size="sm" onClick={invoke} disabled={busy}>
-              {busy ? 'triggering…' : 'trigger'}
+              {busy ? 'calling…' : 'call'}
             </Button>
           </div>
           {callError ? (

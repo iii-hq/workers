@@ -2,8 +2,8 @@
 name: kanban-tickets
 description: >-
   Work tickets on the kanban board from an agent session: find and claim a
-  ticket, comment, and register a kanban:comment trigger as a feedback loop
-  without waking on your own comments. Finish by moving the ticket to in
+  ticket, comment, and observe kanban::on-comment as a feedback loop without
+  waking on your own comments. Finish by moving the ticket to in
   review or done — deleting a ticket is a human action.
 type: how-to
 ---
@@ -12,7 +12,7 @@ type: how-to
 
 The `kanban` worker owns a file-backed board. Every ticket mutation is a
 registered function, so you work a ticket with ordinary function calls and
-learn about new comments through a trigger instead of polling.
+learn about new comments by observing `kanban::on-comment` instead of polling.
 
 The board file is `<data_path>/board.json`, resolved from the `kanban`
 configuration entry; `kanban::config::info` prints the absolute path, the
@@ -25,7 +25,7 @@ with `deleted_at` set, so a person can undo it.
 Every ticket carries an internal `id` (uuid) and a human `key` (`KAN-7`).
 Both work everywhere a ticket is addressed and the key is case-insensitive,
 so `kanban::ticket::get { "id": "kan-7" }` and `{ "id": "<uuid>" }` are the
-same call. Prefer the key in prose and in trigger configs; it is the form a
+same call. Prefer the key in prose and in observer args; it is the form a
 human reads.
 
 ## The working loop
@@ -103,7 +103,8 @@ counts).
   `canceled_status`): move a ticket that will not be done to that column. A deleted parent leaves its children; their
   `parent` brief then has `deleted_at`.
 - **Attaching writes on both tickets.** Setting or clearing `parent` adds an
-  activity line to the child and to the parent, and both fire `kanban:change`.
+  activity line to the child and to the parent, and the worker calls
+  `kanban::on-change` for both.
 - **Project and release are filed, not created.** You may set them on tickets
   and read the lists, but creating, renaming, archiving, shipping or deleting a
   project or a release, and converting a label into one, are console actions
@@ -124,20 +125,20 @@ iii-directory. A ticket stores the profile **id** (for example
 
 ## Feedback loop: wake on comments
 
-Register a binding on the `kanban:comment` trigger type; it fires once per
-comment created on one ticket.
+Observe `kanban::on-comment`; the worker calls it once per comment created,
+and an observer gets the comments its args select.
 
-| config field | meaning |
+| arg | meaning |
 | --- | --- |
-| `ticket_id` | uuid or human key. A binding with neither `ticket_id` nor `parent_id` never fires. |
-| `parent_id` | Instead of `ticket_id`: fire for a comment on that ticket **or on any of its children**. One binding then covers a feature and every subtask. |
-| `author` | Fire only for comments by exactly this author. |
-| `exclude_author` | Fire for every author **except** this one. |
-| `root_only` | Ignore replies; fire only for top-level comments. |
+| `ticket_id` | uuid or human key. An observer with neither `ticket_id` nor `parent_id` is rejected (`TICKET_OR_PARENT_REQUIRED`). |
+| `parent_id` | Instead of `ticket_id`: a comment on that ticket **or on any of its children**. One observer then covers a feature and every subtask. |
+| `author` | Only comments by exactly this author. |
+| `exclude_author` | Every author **except** this one. |
+| `root_only` | Ignore replies; only top-level comments. |
 | `ticket` | `full` (default) delivers the whole ticket, comments and activity inline; `summary` delivers only the board-card fields. Agents that re-read the ticket on a wake should pass `summary`. |
 
-The payload carries the ticket plus the new comment — the whole ticket by
-default, or its summary when the binding says `"ticket": "summary"` (the
+The event carries the ticket plus the new comment — the whole ticket by
+default, or its summary when the args say `"ticket": "summary"` (the
 `comment` field is complete either way):
 
 ```json
@@ -160,13 +161,13 @@ default, or its summary when the binding says `"ticket": "summary"` (the
 
 ### Keep your own comments from waking you
 
-Author your comments with your profile id, and exclude that same id on the
-binding:
+Author your comments with your profile id, and exclude that same id in the
+observer's args:
 
 ```json
-engine::register_trigger {
-  "trigger_type": "kanban:comment",
-  "config": {
+harness::observe {
+  "function_id": "kanban::on-comment",
+  "args": {
     "ticket_id": "KAN-7",
     "exclude_author": "senior-software-engineer",
     "ticket": "summary"
@@ -184,41 +185,48 @@ kanban::comment::create {
 }
 ```
 
-The two strings must match exactly. The binding then fires for every comment
+The two strings must match exactly. The observer then gets every comment
 whose `author` is **not** that id — a human's reply, another agent's note —
 and stays silent on your own posts, so answering the ticket cannot re-enter
 your own handler.
 
-Two details of that registration:
+Two details of that observer:
 
-- A **wake** (no `function_id`) defaults to firing **once**. `once: false`
-makes it standing; give it a `lifecycle` so a forgotten binding cannot run
-forever. Omit `function_id` to be woken in your session, or name a function
-to have the event call it instead — that second shape runs token-free but
-its result is discarded and it cannot reach you.
-- Teardown is `harness::triggers::unregister`; `harness::triggers::list`
+- A **wake** (no `target`) defaults to firing **once**. `once: false` makes
+it standing; give it a `lifecycle` so a forgotten observer cannot run
+forever. Omit `target` to be woken in your session, or name a function in
+`target` to have the event call it instead — that second shape runs
+token-free but its result is discarded and it cannot reach you.
+- `harness::observe` answers `{ observer_id, once }`. Teardown is
+`harness::unobserve { "id": "<observer_id>" }`; `harness::observers::list`
 audits what is armed.
 
 ### Avoid a wake that can never fire
 
-A registration response, and a row in `engine::registered-triggers::list`, mean the
-engine took the binding — **not** that the `kanban` worker will ever emit to it.
-The worker delivers only to bindings in its own in-process subscriber map, so a
-binding it is missing never fires and reports nothing at all. Build the loop so
-that cannot leave you parked:
+An `observer_id` means the engine holds the observer; args the kanban worker
+refuses (an unknown arg, neither `ticket_id` nor `parent_id`) come back from
+`harness::observe` as an error. While the kanban worker is not connected the
+observer is pending; it becomes active when the worker registers
+`kanban::on-comment`. Delivery is at most once and fire-and-forget, so a
+dropped delivery or an expired observer reports nothing at all. Build the loop
+so that cannot leave you parked:
 
-- **Never let the wake be your only way back.** Pair it with a check-in you own: a
-`cron` binding that reads the same filtered list. It goes through the board file
-rather than the worker's emit path, so it cannot fall silent with it.
+- **Never let the wake be your only way back.** Pair it with a check-in you own:
+a `cron::on-tick` observer that reads the same filtered list. It goes through
+the board file rather than the worker's event calls, so it cannot fall silent
+with them.
 
 ```json
-engine::register_trigger {
-  "trigger_type": "cron",
-  "config": { "expression": "0 * * * *" },
+harness::observe {
+  "function_id": "cron::on-tick",
+  "args": { "expression": "0 0 * * * *" },
   "once": false,
   "label": "KAN-7-check-in"
 }
 ```
+
+`expression` has six fields (sec min hour day month weekday, UTC):
+`0 0 * * * *` fires at the top of every hour.
 
 On each fire, read what you missed and move the watermark forward:
 
@@ -230,24 +238,21 @@ kanban::comment::list {
 }
 ```
 
-- **Arm a binding for a hand-off, not for the ages.** Bound its life so it cannot
-outlive its usefulness: `{ "max_fires": 20, "expires_in_ms": 3600000 }` stops it
-after a fixed window and wakes you with an expiry notice instead of leaving you
-parked. Re-arm it at your next hand-off if the work is still open; a bare
-`once: false` with no bound is the shape that fails silently.
+- **Arm an observer for a hand-off, not for the ages.** Bound its life so it
+cannot outlive its usefulness: `{ "max_fires": 20, "expires_in_ms": 3600000 }`
+stops it after a fixed window and wakes you with an expiry notice instead of
+leaving you parked. Re-arm it at your next hand-off if the work is still
+open; a bare `once: false` with no bound is the shape that fails silently.
 
-- **The worker's copy of your binding dies with the worker process** while the
-engine's row survives, so re-arm a long-running loop when you pick the ticket
-back up — or let a `cron` check-in carry it so nothing depends on that copy.
-
-- If the trigger type itself looks missing, that is the namespace, not the type:
-`engine::triggers::info { "id": "kanban:comment" }` alone reports it that way
-because these types live in the **worker's** namespace. Read the namespace off
-`engine::triggers::list` and pass it along.
+- An observer of a function that is not registered in its namespace stays
+pending and never fires. If `engine::functions::info { "function_id":
+"kanban::on-comment" }` does not find it, the kanban worker runs in another
+namespace: read it off `engine::functions::list` and pass it as `namespace`
+to `harness::observe`.
 
 ### Tighter and looser variants
 
-- **Only the human.** `"author": "user"` fires only for comments the console
+- **Only the human.** `"author": "user"` keeps only comments the console
   UI writes, and is the strictest loop guard available.
 - **Whole ticket.** Drop `exclude_author` and you are woken by every comment
   on that ticket, your own included — do that only when your handler never
@@ -266,21 +271,21 @@ kanban::comment::list {
 }
 ```
 
-### Do not reach for kanban:change when you need author filtering
+### Do not reach for kanban::on-change when you need author filtering
 
-`kanban:change` is the board-wide trigger: config
+`kanban::on-change` is the board-wide event: args
 `{ ticket_id?, parent_id?, release_id?, events?, ticket? }`, where `parent_id`
-fires for the parent itself and any of its children, `release_id` fires for
-tickets in that release and for the change that moved one out of it, and `events`
-is any of `ticket.created`, `ticket.updated`, `ticket.moved`,
-`ticket.deleted`, `ticket.restored`, `comment.created`, and `ticket` takes the
-same `full` / `summary` choice. It carries the ticket and is the right
-primitive for keeping a board view in sync or for a done-watch.
+keeps the parent itself and any of its children, `release_id` keeps tickets in
+that release and the change that moved one out of it, and `events` is any of
+`ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`,
+`ticket.restored`, `comment.created`, and `ticket` takes the same `full` /
+`summary` choice. It carries the ticket and is the right function for keeping
+a board view in sync or for a done-watch.
 
-It filters by **ticket and event name only** — there is no `author` and no
-`exclude_author`. A binding of
-`{ "ticket_id": "KAN-7", "events": ["comment.created"] }` fires for your own
-comments too, which is exactly the loop the `kanban:comment` filters exist to
+It selects by **ticket and event name only** — there is no `author` and no
+`exclude_author`. An observer with args
+`{ "ticket_id": "KAN-7", "events": ["comment.created"] }` gets your own
+comments too, which is exactly the loop the `kanban::on-comment` args exist to
 prevent.
 
 ## Reading the history
@@ -327,13 +332,14 @@ ids from `kanban::config::info` if the board has been reconfigured.
 - Read column ids and priorities from the board instead of assuming them.
 - Finish by moving the ticket: `in_review` when it needs a check, `done` when
   it is finished and verified. **Never delete a ticket** — only a human does.
-- For a feedback loop, register `kanban:comment` with `ticket_id` (or
-  `parent_id` for a feature and its subtasks),
-  `exclude_author: "<your id>"`, `"ticket": "summary"` and `once: false`, and
-  never let the handler comment back on the same ticket unconditionally.
+- For a feedback loop, observe `kanban::on-comment` with args `ticket_id` (or
+  `parent_id` for a feature and its subtasks), `exclude_author: "<your id>"`
+  and `"ticket": "summary"`, and `once: false`, and never let the handler
+  comment back on the same ticket unconditionally.
 - Read the board once per planning pass, narrowed (`statuses`, `compact`),
   never on a wake; catch up with `updated_since`.
 - Catch up with `kanban::comment::list` using the same filters.
-- Never make a wake your only way back: pair it with a `cron` check-in
-  reading `kanban::comment::list`, and bound the binding's life (`max_fires` +
-  `expires_in_ms`) so a binding the worker never took cannot park you.
+- Never make a wake your only way back: pair it with a `cron::on-tick`
+  check-in reading `kanban::comment::list`, and bound the observer's life
+  (`max_fires` + `expires_in_ms`) so an observer that stays pending cannot park
+  you.

@@ -11,12 +11,12 @@ They are registered as internal, so default discovery
 ## Install
 
 ```bash
-iii trigger compose::add worker=judge-typesafe
+iii call compose::add worker=judge-typesafe
 ```
 
 Compose starts the provider with its `configuration` dependency; installing
 `judge` pulls it in automatically. Use engine
-**`iii/v0.24.0-rc.2`**, the verified release with `configuration::ensure` used by
+**`iii/v0.26.0`**, the verified release with `configuration::ensure` used by
 this repository's CI. Wait for JEV's functions to register before making a call.
 
 ## Quickstart
@@ -31,7 +31,7 @@ See [Configuration](#configuration) for precedence and reload behavior.
 Ask whether a support ticket needs urgent attention:
 
 ```bash
-iii trigger judge-typesafe::evaluate --timeout-ms 65000 --json '{
+iii call judge-typesafe::evaluate --timeout-ms 65000 --json '{
   "timeout_ms": 60000,
   "evaluations": [{
     "id": "ticket-42",
@@ -99,9 +99,9 @@ project configuration: store the key in the `secrets` worker, list
 `judge-typesafe` in its `consumers`, and set `api_key: secret://TYPESAFE_API_KEY`
 (`NAME` matches `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`). The reference is resolved
 through `secrets::resolve` at call time, never sent upstream as a key, and kept
-only in memory. It is re-read when `secrets::changed` names it (bound at boot; the
-engine holds the binding until a secrets worker registers the type), after
-5 minutes, and 10 seconds after a failure. While the secrets worker is
+only in memory. It is re-read when a `secrets::on-changed` event names it
+(observed at boot; the observer stays `pending` until a secrets worker
+registers the function), after 5 minutes, and 10 seconds after a failure. While the secrets worker is
 unreachable, a key already resolved keeps being used. A reference that does not
 resolve returns `missing_key` with `provider_error.message` naming the fix
 (`secret NAME not found in the secrets worker`, `judge-typesafe is not allowed to

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::Value;
 
@@ -54,7 +54,7 @@ impl Client {
         let outer = std::time::Duration::from_millis(timeout_ms + 5_000);
         match tokio::time::timeout(
             outer,
-            self.iii.trigger(TriggerRequest {
+            self.iii.call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,

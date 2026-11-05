@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createVerdictEmitter } from '../src/verdict-events.js';
+import { FUNCTION_FORMATS } from '../src/formats.js';
+import { createVerdictEmitter, ON_VERDICT_FN, toVerdictEvent } from '../src/verdict-events.js';
 import { BoundedMap } from '../src/stores.js';
 import {
   createVerifyHandler,
@@ -11,7 +12,7 @@ import {
 
 function testDeps(overrides = {}) {
   return {
-    forwardTrigger: async () => ({ ok: true }),
+    forwardCall: async () => ({ ok: true }),
     leaseStores: new BoundedMap(32),
     governance: new BoundedMap(32),
     coalescer: new VerifyCoalescer(),
@@ -22,18 +23,19 @@ function testDeps(overrides = {}) {
   };
 }
 
-test('verdict emitter fans out to registered bindings', async () => {
+test('gantry::on-verdict returns the event it is called with', () => {
+  const { handler } = createVerdictEmitter({ call: async () => {}, isObserved: () => true });
+  const event = toVerdictEvent({ status: 'passed' });
+  assert.equal(handler(event), event);
+});
+
+test('verdict emitter calls gantry::on-verdict fire-and-forget while observed', async () => {
   const calls = [];
-  const { handler, emit } = createVerdictEmitter({
-    trigger: async (request) => {
+  const { emit } = createVerdictEmitter({
+    call: async (request) => {
       calls.push(request);
-      return { ok: true };
     },
-  });
-  await handler.registerTrigger({
-    id: 'audit-1',
-    function_id: 'audit::on-verdict',
-    config: {},
+    isObserved: () => true,
   });
   await emit({
     status: 'passed',
@@ -41,45 +43,46 @@ test('verdict emitter fans out to registered bindings', async () => {
     msn_id: 'MSN-0001',
     mission_rel_path: '.gitagent/missions/MSN-0001.yaml',
   });
-  assert.equal(calls.length, 1, 'expected one fan-out call');
-  assert.equal(calls[0]?.function_id, 'audit::on-verdict');
-  assert.equal(calls[0]?.payload?.status, 'passed');
+  assert.equal(calls.length, 1, 'expected one call');
+  assert.equal(calls[0]?.function_id, ON_VERDICT_FN);
+  assert.equal(ON_VERDICT_FN, 'gantry::on-verdict');
+  assert.deepEqual(calls[0]?.action, { type: 'void' });
+  assert.deepEqual(calls[0]?.payload, {
+    status: 'passed',
+    error_code: null,
+    repo_root: '/tmp/repo',
+    msn_id: 'MSN-0001',
+    mission_rel_path: '.gitagent/missions/MSN-0001.yaml',
+  });
 });
 
-test('verdict emitter stops fan-out after unregister', async () => {
+test('verdict emitter makes no call while nothing observes gantry::on-verdict', async () => {
   const calls = [];
-  const { handler, emit } = createVerdictEmitter({
-    trigger: async (request) => {
+  const { emit } = createVerdictEmitter({
+    call: async (request) => {
       calls.push(request);
-      return { ok: true };
     },
-  });
-  await handler.registerTrigger({
-    id: 'audit-1',
-    function_id: 'audit::on-verdict',
-    config: {},
-  });
-  await handler.unregisterTrigger({
-    id: 'audit-1',
-    function_id: 'audit::on-verdict',
-    config: {},
+    isObserved: () => false,
   });
   await emit({ status: 'failed', error_code: 'GATE_FAILED' });
-  assert.equal(calls.length, 0, 'unregistered binding should not receive events');
+  assert.equal(calls.length, 0, 'an unobserved verdict should not be sent');
 });
 
-test('verdict emitter ignores subscriber failures', async () => {
-  const { handler, emit } = createVerdictEmitter({
-    trigger: async () => {
-      throw new Error('subscriber down');
+test('verdict emitter ignores a refused call', async () => {
+  const { emit } = createVerdictEmitter({
+    call: async () => {
+      throw new Error('OVERFLOW');
     },
-  });
-  await handler.registerTrigger({
-    id: 'audit-1',
-    function_id: 'audit::on-verdict',
-    config: {},
+    isObserved: () => true,
   });
   await assert.doesNotReject(() => emit({ status: 'passed' }));
+});
+
+test('gantry::on-verdict is registered private with the verdict event as both formats', () => {
+  const formats = FUNCTION_FORMATS[ON_VERDICT_FN];
+  assert.equal(formats?.private, true);
+  assert.equal(formats?.request, formats?.response);
+  assert.doesNotThrow(() => formats.request.parse(toVerdictEvent({ status: 'passed' })));
 });
 
 test('verify handler emits verdict event on saturation failure', async () => {

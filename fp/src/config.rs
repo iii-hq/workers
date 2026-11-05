@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct FpConfig {
     /// Append the `fp::pipe` usage guidance (~750 tokens) to every agent
-    /// system prompt via the harness `pre-generate` hook. On by default;
+    /// system prompt via `harness::hook::on-pre-generate`. On by default;
     /// turn it off to shrink prompts (the harness's `# Granted functions`
     /// catalog still advertises the `fp::*` ids) or for discovery
     /// evaluations, where an advertised worker cannot be discovered — for
     /// those, store the off value BEFORE the worker's first boot (seed
     /// `./data/configuration/fp.yaml` or call `configuration::set` first),
-    /// since boot binds the hook before any later flip could land.
+    /// since boot observes the hook before any later flip could land.
     pub inject_guidance: bool,
 }
 

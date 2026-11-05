@@ -1,6 +1,6 @@
 # iii Language Server - VS Code Extension
 
-Autocompletion, hover documentation, and diagnostics for [iii engine](https://github.com/iii-hq/iii) functions and triggers.
+Autocompletion, hover documentation, and diagnostics for [iii engine](https://github.com/iii-hq/iii) function calls and observers.
 
 The source directory and release tag namespace are `lsp-vscode`; the Marketplace/OpenVSX package name remains `iii-lsp` for continuity.
 
@@ -94,6 +94,6 @@ Configure via **Settings** > search "iii LSP", or in `settings.json`:
 
 ## Features
 
-- **Completions** - Function IDs, trigger types, payload properties, trigger config properties, and known values (stream names, topics, API paths)
-- **Hover** - Function documentation with request/response JSON schemas
-- **Diagnostics** - Validates function IDs, required payload fields, trigger types, config properties, cron expressions, and HTTP methods
+- **Completions** - Function IDs and payload properties for `call`, observe sources and targets for `observe`, observer args from each function's `args_format`, and known values (stream names, topics, scopes, and the args of current observers)
+- **Hover** - Function documentation with request/response/args JSON schemas, whether the function is private or observable, and its observers
+- **Diagnostics** - Validates function IDs, required payload fields, observe sources and targets (unknown, not observable, private targets), observer args (required args, args a function does not take, cron expressions, HTTP methods), and flags the deprecated `trigger` alias of `call`

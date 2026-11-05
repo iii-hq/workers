@@ -337,13 +337,13 @@ async fn otel_span_propagates_inbound_traceparent() {
 }
 
 /// Phase 3 (outbound): the worker must propagate its HTTP span's trace context
-/// onto the trigger it fires at the matched function, so `HTTP GET -> worker ->
+/// onto the call that reaches the matched function, so `HTTP GET -> worker ->
 /// function` is ONE trace rather than two disjoint ones. We register a backend
 /// that records the trace id it runs under, drive a request with NO inbound
 /// `traceparent` (so the worker's HTTP span is the trace root), and assert the
 /// function ran under the SAME trace id as the worker's exported HTTP span.
 ///
-/// Buggy behaviour (no context attached to the outbound trigger): the worker
+/// Buggy behaviour (no context attached to the outbound call): the worker
 /// injects no `traceparent`, the receiving SDK starts a fresh root trace, and
 /// the function's trace id differs from the HTTP span's -> assertion fails.
 #[tokio::test]
@@ -383,6 +383,103 @@ async fn otel_span_propagates_outbound_traceparent_to_function() {
         "the invoked function must run under the worker's HTTP-span trace \
          (one unified trace), not a disconnected trace"
     );
+
+    boot.shutdown().await;
+}
+
+/// The *exported* OTel span, not just the `tracing` fields: once a route
+/// matches, the span is named after the route template and carries exactly one
+/// `http.route`. The HTTP span is already started (entered by `instrument`)
+/// when `record_status` runs, and `tracing_opentelemetry` drops a late
+/// `otel.name` on a started span and appends late attributes, so the fields
+/// the tests above read can be right while the exported span keeps the actual
+/// path as its name and two `http.route` values.
+#[tokio::test]
+#[serial]
+async fn otel_exported_span_is_named_after_the_route() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_echo_backend(&iii, "/otel/named/:id", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/otel/named/:id").await;
+
+    let url = format!("http://{}/otel/named/7", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/named/7").await;
+    assert_eq!(span.name, "GET /otel/named/:id");
+    let routes: Vec<String> = span
+        .attributes
+        .iter()
+        .filter(|kv| kv.key.as_str() == "http.route")
+        .map(|kv| kv.value.as_str().into_owned())
+        .collect();
+    assert_eq!(routes, vec!["/otel/named/:id".to_string()]);
+
+    boot.shutdown().await;
+}
+
+/// Without a matching route the exported span keeps the actual path, once.
+#[tokio::test]
+#[serial]
+async fn otel_exported_span_without_a_route_keeps_the_path() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+
+    let url = format!("http://{}/otel/unrouted", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/unrouted").await;
+    assert_eq!(span.name, "GET /otel/unrouted");
+    let routes: Vec<String> = span
+        .attributes
+        .iter()
+        .filter(|kv| kv.key.as_str() == "http.route")
+        .map(|kv| kv.value.as_str().into_owned())
+        .collect();
+    assert_eq!(routes, vec!["/otel/unrouted".to_string()]);
+
+    boot.shutdown().await;
+}
+
+/// A matched request that times out never reaches `record_status`: the tower
+/// `TimeoutLayer` answers 504 and drops the handler future. The span is named
+/// when the route matches, so it still exports the route template, once.
+#[tokio::test]
+#[serial]
+async fn otel_exported_span_of_a_timed_out_request_keeps_the_route() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let timeout_ms = 500;
+    let boot = worker::start_http_worker_with_timeout(iii.clone(), timeout_ms).await;
+    backend::register_slow_backend(&iii, "/otel/slow/:id", "GET", timeout_ms * 4).await;
+    common::wait_for_route(&boot.routes, "GET", "/otel/slow/:id").await;
+
+    let url = format!("http://{}/otel/slow/3", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::GATEWAY_TIMEOUT);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/slow/3").await;
+    assert_eq!(span.name, "GET /otel/slow/:id");
+    let routes: Vec<String> = span
+        .attributes
+        .iter()
+        .filter(|kv| kv.key.as_str() == "http.route")
+        .map(|kv| kv.value.as_str().into_owned())
+        .collect();
+    assert_eq!(routes, vec!["/otel/slow/:id".to_string()]);
 
     boot.shutdown().await;
 }

@@ -1,5 +1,5 @@
 /**
- * One readable string out of whatever a rejected `host.iii.trigger` throws.
+ * One readable string out of whatever a rejected `host.iii.call` throws.
  *
  * The browser SDK rejects with the wire error *object*, not an `Error`, so the
  * usual `err instanceof Error ? err.message : String(err)` rendered every

@@ -1,10 +1,10 @@
 /**
  * The page's picture of tmux: both lists fetched once, then kept current by
- * the worker's `tmux::changed` trigger type, which pushes the whole overview
- * whenever anything in it changes. The binding goes through a tab-scoped
- * handler (`iii::` keeps per-event invocations out of the traces) and is
- * collected with the tab. A transport that comes back fetches again, since
- * pushes sent while it was down are gone.
+ * observing the worker's `tmux::on-changed`, which sends the whole overview
+ * to a new observer and again whenever anything in it changes. The observer's
+ * target is a tab-scoped handler (`iii::` keeps per-event invocations out of
+ * the traces) and is disposed with the tab. A transport that comes back
+ * fetches again, since overviews sent while it was down are gone.
  */
 
 import type { ExtensionIii } from '@iii-dev/console-ui'
@@ -23,7 +23,7 @@ export interface TmuxOverview {
   loading: boolean
   /** Why the last fetch failed; cleared by the next success or push. */
   error: string | null
-  /** A `tmux::changed` push has arrived since the page mounted. */
+  /** A `tmux::on-changed` overview has arrived since the page mounted. */
   live: boolean
   refresh(): void
 }
@@ -73,11 +73,10 @@ export function useTmuxOverview(iii: ExtensionIii, api: TmuxApi): TmuxOverview {
       setError(null)
       setLive(true)
     })
-    const offTrigger = iii.registerTrigger({
-      type: 'tmux::changed',
-      function_id: `${CHANGED_HANDLER}::${iii.browserId}`,
-      config: {},
-    })
+    const offObserver = iii.observe(
+      { function_id: 'tmux::on-changed', deliver: 'output' },
+      `${CHANGED_HANDLER}::${iii.browserId}`,
+    )
     refresh()
     let interrupted = false
     const offConnection = iii.addConnectionStateListener((state) => {
@@ -93,7 +92,7 @@ export function useTmuxOverview(iii: ExtensionIii, api: TmuxApi): TmuxOverview {
     return () => {
       mounted.current = false
       offConnection()
-      offTrigger()
+      offObserver()
       offHandler()
     }
   }, [iii, refresh])

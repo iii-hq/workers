@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::calls::{CallFwd, IiiCallFwd};
 use crate::config::ShellConfig;
+use crate::exec::error::ExecError;
 use crate::exec::host::{build_command, parse_argv};
 use crate::exec::policy::{build_overrides, scope_root_for_target, ExecOverrides};
-use crate::exec::sandbox::SandboxExecResponse;
+use crate::exec::sandbox::{is_engine_timeout, SandboxExecResponse};
 use crate::functions::types::{ExecBgRequest, ExecBgResponse};
 use crate::jobs::{self, JobHandle, JobRecord, JobStatus};
 use crate::target::Target;
-use crate::triggers::{IiiTriggerFwd, TriggerFwd};
 use tokio::io::AsyncReadExt;
 
 /// Grace for joining a host job's stdout/stderr drain tasks after the child has
@@ -39,7 +40,7 @@ pub async fn handle(
 ) -> Result<ExecBgResponse, String> {
     // Field-level type errors (wrong-type `command`, non-string `args[i]`,
     // bad `target.kind`) come from the per-field deserializers in
-    // `functions::types`; the SDK forwards them as the trigger `Err` with
+    // `functions::types`; the SDK forwards them as the call's `Err` with
     // the actionable text the LLM needs to self-correct.
     // See `functions::exec` — `args.as_ref()` preserves the shell-words
     // tokenization contract when the caller omits `args`.
@@ -89,7 +90,7 @@ pub async fn handle(
             // the per-call timeout_ms and uses cfg.max_bg_timeout_ms instead
             // (zero leaves background host jobs unbounded).
             let resolved = cfg.resolve_timeout(req.timeout_ms);
-            let fwd: Arc<dyn TriggerFwd> = Arc::new(IiiTriggerFwd::new(iii));
+            let fwd: Arc<dyn CallFwd> = Arc::new(IiiCallFwd::new(iii));
             spawn_sandbox_job(
                 req.session_id,
                 req.job_id,
@@ -295,7 +296,7 @@ pub(crate) async fn spawn_sandbox_job(
     owner_session_id: Option<String>,
     job_id: Option<String>,
     cfg: Arc<ShellConfig>,
-    fwd: Arc<dyn TriggerFwd>,
+    fwd: Arc<dyn CallFwd>,
     sandbox_id: Uuid,
     argv: Vec<String>,
     timeout_ms: u64,
@@ -351,33 +352,33 @@ pub(crate) async fn spawn_sandbox_job(
         // transport/queueing slack before declaring the engine unresponsive.
         let rpc_timeout =
             std::time::Duration::from_millis(timeout_ms.saturating_add(SANDBOX_RPC_SLACK_MS));
-        let res =
-            match tokio::time::timeout(rpc_timeout, fwd.trigger("sandbox::exec", payload)).await {
-                Ok(r) => r,
-                Err(_) => {
-                    // RPC deadline blown: finalize the job (unless an external kill
-                    // already did), then publish its completion just like a
-                    // normal response before releasing the slot/gauge.
-                    if let Some(handle) = jobs::get(&id_clone).await {
-                        let mut h = handle.lock().await;
-                        if h.record.status == JobStatus::Running {
-                            h.record.status = JobStatus::Failed;
-                            h.record.stderr = format!(
-                                "sandbox::exec RPC timed out after {}ms (engine unresponsive)",
-                                rpc_timeout.as_millis()
-                            );
-                            if h.record.finished_at_ms.is_none() {
-                                h.record.finished_at_ms = Some(jobs::now_ms());
-                            }
+        let res = match tokio::time::timeout(rpc_timeout, fwd.call("sandbox::exec", payload)).await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                // RPC deadline blown: finalize the job (unless an external kill
+                // already did), then publish its completion just like a
+                // normal response before releasing the slot/gauge.
+                if let Some(handle) = jobs::get(&id_clone).await {
+                    let mut h = handle.lock().await;
+                    if h.record.status == JobStatus::Running {
+                        h.record.status = JobStatus::Failed;
+                        h.record.stderr = format!(
+                            "sandbox::exec RPC timed out after {}ms (engine unresponsive)",
+                            rpc_timeout.as_millis()
+                        );
+                        if h.record.finished_at_ms.is_none() {
+                            h.record.finished_at_ms = Some(jobs::now_ms());
                         }
-                        h.finalized = true;
-                        let finished = h.record.clone();
-                        drop(h);
-                        crate::job_events::fire(&finished).await;
                     }
-                    return;
+                    h.finalized = true;
+                    let finished = h.record.clone();
+                    drop(h);
+                    crate::job_events::fire(&finished).await;
                 }
-            };
+                return;
+            }
+        };
 
         let handle = match jobs::get(&id_clone).await {
             Some(h) => h,
@@ -385,7 +386,7 @@ pub(crate) async fn spawn_sandbox_job(
         };
         let mut h = handle.lock().await;
 
-        // If shell::kill marked this Killed before the trigger returned, do not
+        // If shell::kill marked this Killed before the call returned, do not
         // overwrite the status — but capture stdout/stderr for completeness.
         let already_killed = h.record.status == JobStatus::Killed;
 
@@ -396,11 +397,13 @@ pub(crate) async fn spawn_sandbox_job(
                     Ok(p) => {
                         h.record.stdout = p.stdout;
                         h.record.stderr = p.stderr;
-                        h.record.exit_code = Some(p.exit_code);
+                        h.record.stdout_truncated = p.stdout_truncated;
+                        h.record.stderr_truncated = p.stderr_truncated;
+                        h.record.exit_code = p.exit_code;
                         if !already_killed {
                             h.record.status = if p.timed_out {
                                 JobStatus::Killed
-                            } else if p.exit_code == 0 {
+                            } else if p.exit_code == Some(0) {
                                 JobStatus::Finished
                             } else {
                                 JobStatus::Failed
@@ -417,14 +420,21 @@ pub(crate) async fn spawn_sandbox_job(
             }
             Err(err) => {
                 if !already_killed {
-                    h.record.status = JobStatus::Failed;
+                    // The adapter reports an in-VM timeout as an S200 error,
+                    // not `timed_out: true`; it is the same kill.
+                    let mapped = crate::scode::map_iii_err(&err, ExecError::new);
+                    h.record.status = if is_engine_timeout(&mapped) {
+                        JobStatus::Killed
+                    } else {
+                        JobStatus::Failed
+                    };
                 }
                 h.record.stderr = format!("engine error: {err:?}");
             }
         }
         // Same guard as the status writes: if shell::kill already
         // recorded a finished_at_ms when it flipped status to Killed,
-        // a late trigger response must NOT clobber that timestamp —
+        // a late call response must NOT clobber that timestamp —
         // pollers reading finished_at_ms expect the kill-time, not
         // the in-VM process's eventual completion time.
         if !already_killed {
@@ -704,9 +714,9 @@ mod host_path_tests {
 
 #[cfg(test)]
 mod sandbox_path_tests {
+    use crate::calls::CallFwd;
     use crate::config::ShellConfig;
     use crate::jobs::{self, JobStatus};
-    use crate::triggers::TriggerFwd;
     use async_trait::async_trait;
     use iii_sdk::errors::Error;
     use serde_json::{json, Value};
@@ -716,8 +726,8 @@ mod sandbox_path_tests {
     struct ImmediateOk(Mutex<Option<Value>>);
 
     #[async_trait]
-    impl TriggerFwd for ImmediateOk {
-        async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+    impl CallFwd for ImmediateOk {
+        async fn call(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
             Ok(self.0.lock().unwrap().take().unwrap())
         }
     }
@@ -735,7 +745,7 @@ mod sandbox_path_tests {
     #[tokio::test]
     async fn sandbox_job_transitions_to_finished() {
         let cfg = cfg_open();
-        let fwd: Arc<dyn TriggerFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
+        let fwd: Arc<dyn CallFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
             "stdout": "ok\n",
             "stderr": "",
             "exit_code": 0,
@@ -771,10 +781,62 @@ mod sandbox_path_tests {
         jobs::JOBS.map.lock().await.remove(&resp.job_id);
     }
 
+    /// The job keeps the adapter's truncation flags.
+    #[tokio::test]
+    async fn sandbox_job_keeps_the_truncation_flags() {
+        let fwd: Arc<dyn CallFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
+            "stdout": "x",
+            "stderr": "y",
+            "exit_code": 0,
+            "duration_ms": 5,
+            "timed_out": false,
+            "stdout_truncated": true,
+            "stderr_truncated": true,
+        })))));
+        let resp =
+            handle_sandbox_for_test(cfg_open(), fwd, Uuid::new_v4(), vec!["yes".into()], 5000)
+                .await
+                .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert!(r.record.stdout_truncated && r.record.stderr_truncated);
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn sandbox_job_null_exit_code_marks_failed() {
+        // Signal death: the router reports `exit_code: null`. The job must be
+        // Failed with no exit code, and the output captured so far kept.
+        let cfg = cfg_open();
+        let fwd: Arc<dyn CallFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
+            "stdout": "partial\n",
+            "stderr": "",
+            "exit_code": null,
+            "duration_ms": 5,
+            "timed_out": false,
+        })))));
+        let resp =
+            handle_sandbox_for_test(cfg.clone(), fwd, Uuid::new_v4(), vec!["sh".into()], 5000)
+                .await
+                .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert_eq!(r.record.status, JobStatus::Failed);
+        assert_eq!(r.record.exit_code, None);
+        assert_eq!(r.record.stdout, "partial\n");
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
     #[tokio::test]
     async fn sandbox_job_timed_out_marks_killed() {
         let cfg = cfg_open();
-        let fwd: Arc<dyn TriggerFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
+        let fwd: Arc<dyn CallFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
             "stdout": "",
             "stderr": "",
             "exit_code": 0,
@@ -801,11 +863,44 @@ mod sandbox_path_tests {
     }
 
     #[tokio::test]
-    async fn sandbox_job_trigger_error_marks_failed_with_message() {
+    async fn sandbox_job_in_vm_timeout_error_marks_killed() {
+        // The adapter's in-VM timeout, as the router forwards it.
+        struct TimedOut;
+        #[async_trait]
+        impl CallFwd for TimedOut {
+            async fn call(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+                Err(Error::Remote {
+                    code: "invocation_failed".into(),
+                    message: r#"handler error: {"code":"S200","message":"exec timed out after 1000 ms","retryable":false,"type":"execution"}"#.into(),
+                    stacktrace: None,
+                })
+            }
+        }
+        let resp = handle_sandbox_for_test(
+            cfg_open(),
+            Arc::new(TimedOut),
+            Uuid::new_v4(),
+            vec!["sleep".into(), "30".into()],
+            1000,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert_eq!(r.record.status, JobStatus::Killed);
+        assert!(r.record.stderr.contains("exec timed out"));
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn sandbox_job_call_error_marks_failed_with_message() {
         struct AlwaysErr;
         #[async_trait]
-        impl TriggerFwd for AlwaysErr {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+        impl CallFwd for AlwaysErr {
+            async fn call(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
                 Err(Error::Remote {
                     code: "S300".into(),
                     message: "VM boot failed".into(),
@@ -836,7 +931,7 @@ mod sandbox_path_tests {
     #[tokio::test]
     async fn sandbox_job_late_completion_does_not_overwrite_killed() {
         // Race scenario: shell::kill marks the JobRecord Killed BEFORE the
-        // sandbox::exec trigger returns. The late response must populate
+        // sandbox::exec call returns. The late response must populate
         // stdout/stderr/exit_code (the data is still useful for debugging)
         // but must NOT overwrite the Killed status to Finished. This guards
         // the `already_killed` check in spawn_sandbox_job's tokio task.
@@ -845,8 +940,8 @@ mod sandbox_path_tests {
             response: Mutex<Option<Value>>,
         }
         #[async_trait]
-        impl TriggerFwd for GatedFwd {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+        impl CallFwd for GatedFwd {
+            async fn call(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
                 // Wait until the test releases us via the oneshot channel.
                 let rx = self.release.lock().await.take().unwrap();
                 rx.await.unwrap();
@@ -856,7 +951,7 @@ mod sandbox_path_tests {
 
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let cfg = cfg_open();
-        let fwd: Arc<dyn TriggerFwd> = Arc::new(GatedFwd {
+        let fwd: Arc<dyn CallFwd> = Arc::new(GatedFwd {
             release: tokio::sync::Mutex::new(Some(rx)),
             response: Mutex::new(Some(json!({
                 "stdout": "late\n",
@@ -877,7 +972,7 @@ mod sandbox_path_tests {
         .await
         .unwrap();
 
-        // The background task is now parked inside `fwd.trigger`. While it's
+        // The background task is now parked inside `fwd.call`. While it's
         // blocked, simulate shell::kill mutating the record to Killed.
         let kill_time_ms = jobs::now_ms();
         {
@@ -887,7 +982,7 @@ mod sandbox_path_tests {
             r.record.finished_at_ms = Some(kill_time_ms);
         }
 
-        // Release the trigger; the late completion will run.
+        // Release the call; the late completion will run.
         let _ = tx.send(());
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -909,12 +1004,12 @@ mod sandbox_path_tests {
     }
 
     /// Test seam: the production `handle` accepts `iii_sdk::IIIClient` and
-    /// constructs the backend internally. Tests inject the TriggerFwd
+    /// constructs the backend internally. Tests inject the CallFwd
     /// directly to avoid spinning up an engine. The implementation
     /// factors out a `spawn_sandbox_job` helper that this shim calls.
     async fn handle_sandbox_for_test(
         cfg: Arc<ShellConfig>,
-        fwd: Arc<dyn TriggerFwd>,
+        fwd: Arc<dyn CallFwd>,
         sandbox_id: Uuid,
         argv: Vec<String>,
         timeout_ms: u64,

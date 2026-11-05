@@ -12,7 +12,7 @@ are in [`binary-worker.md`](binary-worker.md) for Rust and
   or `pyproject.toml`.
 - Add a consumer-facing `README.md` and a non-empty `tests/` directory, or
   adjacent `*_test.go` files for Go workers.
-- Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
+- Add `iii.worker.yaml` for local development, scaffolding and Compose.
 - Add an entry to the private
   [`.deploy/workers.yaml`](../../.deploy/workers.yaml) build catalog.
 - Optionally add `screenshots/` with the images the Worker Store shows and
@@ -32,9 +32,11 @@ license, description, dependency ranges, configuration, and discovery tags in
 the public manifest. Fixtures use private `publish: false` and are never
 deployment targets.
 
-When a worker needs a minimum iii engine, declare it in the public manifest as
-`iii_engine_version`, a semver range like Node's `engines` (e.g. `">=0.26.0"`;
-no `v`, prerelease, wildcard or hyphen range). The field is optional; CI rejects
+Set `iii_engine_version: ">=0.26.0"` in the public manifest of every worker
+built on the 0.26 SDK. Any other worker that needs a minimum iii engine
+declares it the same way: a semver range like Node's `engines` (e.g.
+`">=0.26.0"`; no `v`, prerelease, wildcard or hyphen range). The schema keeps
+the field optional; CI rejects
 any other shape.
 
 Never put API keys, tokens, `III_*` connection settings, or mutable external

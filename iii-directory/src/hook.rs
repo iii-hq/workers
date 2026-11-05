@@ -26,28 +26,28 @@ fn text_content(message: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// The live pre-generate binding, if any. Shared with the configuration
-/// change handler so an `inject_hint` flip can bind/unbind at runtime.
-pub type HintBindingState = iii_config_client::BindingSlot;
+/// The live pre-generate observer, if any. Shared with the configuration
+/// change handler so an `inject_hint` flip can observe or dispose at runtime.
+pub type HintObserverSlot = iii_config_client::ObserverSlot;
 
-/// Reconcile the live binding with the configured `inject_hint` value:
-/// on → bind once; off → unregister and drop the handle. Idempotent under
-/// repeated config events, and a failed bind retries on the next event.
-/// If the harness is not up yet the engine parks the binding as a pending
-/// intent and activates it when the trigger type registers (recoverable
-/// triggers). `on_error: fail_open` is mandatory: pre_generate defaults
+/// The harness's pre-generate hook function this worker observes.
+pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
+
+/// Reconcile the live observer with the configured `inject_hint` value:
+/// on → observe once; off → dispose it and drop the handle. Idempotent under
+/// repeated config events. While the harness is not up the observer stays
+/// `pending`, and it becomes active when the harness registers the hook
+/// function. `on_error: fail_open` is mandatory: pre-generate hooks default
 /// fail-CLOSED, and a missing hint must never block a turn.
-pub fn apply(iii: &iii_sdk::IIIClient, state: &HintBindingState, enabled: bool) {
+pub fn apply(iii: &iii_sdk::IIIClient, state: &HintObserverSlot, enabled: bool) {
     state.reconcile(
         enabled,
         || {
-            iii_config_client::try_bind(
-                iii,
-                iii_sdk::protocol::RegisterTriggerInput::new(
-                    "harness::hook::pre-generate",
-                    "directory::pre-generate",
+            iii.observe(
+                iii_sdk::Source::function(PRE_GENERATE_HOOK_FN).args(
                     serde_json::json!({ "priority": 100, "timeout_ms": 5000, "on_error": "fail_open" }),
                 ),
+                "directory::pre-generate",
             )
         },
         "inject_hint on: the search hint can join agent generations",
@@ -71,8 +71,8 @@ pub struct GeneratePayload {
     pub functions_generation: u64,
     pub tools: Vec<ToolSchema>,
     /// How the harness exposes functions to the model for this generation.
-    /// Absent on harnesses that predate the field, which only ever exposed
-    /// through agent_trigger by default.
+    /// Absent on harnesses that predate the field, which exposed functions
+    /// through the call tool.
     #[serde(default)]
     pub expose: ExposeKind,
 }
@@ -80,8 +80,12 @@ pub struct GeneratePayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExposeKind {
+    // The model calls functions through the harness's `agent_call` tool;
+    // stored configuration may still name it `agent_trigger`. A plain
+    // comment, so the schema keeps one enum for the documented modes.
     #[default]
-    AgentTrigger,
+    #[serde(alias = "agent_trigger")]
+    AgentCall,
     Native,
     /// Forward compatibility: an exposure mode this build does not know gets
     /// the mode-neutral call instruction rather than a deserialization error.
@@ -276,8 +280,8 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
 /// The exact `<discovery_assist>` block one generation receives.
 fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
     let call_instruction = match expose {
-        ExposeKind::AgentTrigger => {
-            "Invoke it through agent_trigger with this call envelope: { \"function\": \"directory::search_functions\", \"description\": \"<short user-facing search description in the response language>\", \"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
+        ExposeKind::AgentCall => {
+            "Invoke it through agent_call with this call envelope: { \"function\": \"directory::search_functions\", \"description\": \"<short user-facing search description in the response language>\", \"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
         }
         ExposeKind::Native | ExposeKind::Other => {
             "Call directory::search_functions directly with its required `capabilities` request field.\n"
@@ -316,13 +320,13 @@ pub struct HintPreviewRequest {}
 /// the preview renders it as 0.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct HintPreviewResponse {
-    pub agent_trigger: String,
+    pub agent_call: String,
     pub native: String,
 }
 
 pub fn hint_preview() -> HintPreviewResponse {
     HintPreviewResponse {
-        agent_trigger: hint_block(0, ExposeKind::AgentTrigger),
+        agent_call: hint_block(0, ExposeKind::AgentCall),
         native: hint_block(0, ExposeKind::Native),
     }
 }
@@ -481,7 +485,7 @@ mod tests {
                 })],
                 functions_generation: 3,
                 tools,
-                expose: ExposeKind::AgentTrigger,
+                expose: ExposeKind::AgentCall,
             },
         }
     }
@@ -529,7 +533,7 @@ mod tests {
         assert!(prompt.contains("\"description\""));
         assert!(!prompt.contains("functions you do not already know"));
         assert!(!prompt.contains("call no discovery at all"));
-        assert!(prompt.contains("agent_trigger"));
+        assert!(prompt.contains("agent_call"));
         assert!(prompt.contains("\"capabilities\""));
         assert!(!prompt.contains("\"query\""));
         assert!(prompt.contains("current execution state"));
@@ -588,7 +592,15 @@ mod tests {
         let response = pre_generate(&deps, request).await;
         let prompt = hint_text(&response);
         assert!(prompt.contains("required `capabilities` request field"));
-        assert!(!prompt.contains("agent_trigger"));
+        assert!(!prompt.contains("agent_call"));
+    }
+
+    #[test]
+    fn expose_reads_the_call_tool_under_both_names() {
+        for name in ["agent_call", "agent_trigger"] {
+            let expose: ExposeKind = serde_json::from_value(json!(name)).unwrap();
+            assert_eq!(expose, ExposeKind::AgentCall, "{name}");
+        }
     }
 
     #[tokio::test]
@@ -747,7 +759,7 @@ mod tests {
         let response = pre_generate(
             &deps,
             request_for(
-                "Call engine::register_trigger with function_id: \"state::set\" exactly.",
+                "Call harness::observe with function_id: \"state::set\" exactly.",
                 wide_tools(),
             ),
         )

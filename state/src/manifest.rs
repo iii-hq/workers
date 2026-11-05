@@ -13,7 +13,8 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Key-value state with reactive change triggers.".to_string(),
+        description: "Key-value state with an observable change event (state::on-changed)."
+            .to_string(),
         default_config: crate::config::StateConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
     }
@@ -26,7 +27,7 @@ mod tests {
     fn manifest_has_required_fields() {
         let v = serde_json::to_value(build_manifest()).unwrap();
         assert_eq!(v["name"], env!("CARGO_PKG_NAME"));
-        assert_eq!(v["default_config"]["triggers_enabled"], true);
+        assert_eq!(v["default_config"]["events_enabled"], true);
         assert!(!v["supported_targets"].as_array().unwrap().is_empty());
     }
 }

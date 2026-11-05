@@ -5,10 +5,12 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
+import { useEffect } from 'react'
+import { useWorkersChanged } from '@/hooks/use-workers-changed'
 import { getDefaultBackend } from '@/lib/backend'
 import { configurationFormFamily } from '@/lib/configuration-family'
 import { notifyHarnessConfigSaved } from '@/lib/harness-config-events'
+import { subscribeObserved } from '@/lib/observe-events'
 import {
   type ConfigurationSchemaView,
   getConfiguration,
@@ -51,28 +53,61 @@ export function useConfigurationsList() {
   })
 }
 
-/** Browser-local handler id bound to the `worker` lifecycle trigger. */
+/** Browser-local handler id observing `engine::on-workers-changed`. */
 const WORKER_REGISTRY_WATCH_FN = 'ade::workers-config-watch'
+/** Browser-local handler id observing `configuration::on-updated`. */
+const CONFIGURATION_WATCH_FN = 'iii::console::configuration-list-watch'
 
 /**
  * Keep the worker configuration list fresh when workers are added or removed
- * out of band — e.g. `iii trigger compose::add worker=harness` run in a terminal — purely off
- * the engine's `worker` lifecycle trigger (its push channel). No polling.
- * Each event re-pulls `configuration::list` so a freshly-installed worker's
- * entry appears once it registers.
+ * out of band — e.g. `iii call compose::add worker=harness` run in a
+ * terminal — purely off engine-hosted sources. No polling. A worker connects
+ * before it registers its entry, so the list is re-pulled on both
+ * `engine::on-workers-changed` and `configuration::on-updated`
+ * registered/updated events.
  */
 export function useWorkerRegistryReactivity(): void {
   const qc = useQueryClient()
   const enabled = getDefaultBackend().id === 'real'
 
-  useWorkerLifecycle({
+  useWorkersChanged({
     enabled,
     fnId: WORKER_REGISTRY_WATCH_FN,
-    operations: ['add', 'remove'],
-    onEvent: () => {
+    onChange: () => {
       qc.invalidateQueries({ queryKey: configurationKeys.list() })
     },
   })
+
+  useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+    let dispose: (() => void) | undefined
+    // No configuration id in the filters: a per-id observer would hold that
+    // entry's TTL slot (see waitForConfiguration).
+    subscribeObserved(
+      'configuration::on-updated',
+      {
+        filters: {
+          'input.event_type': {
+            $in: ['configuration:registered', 'configuration:updated'],
+          },
+        },
+      },
+      () => {
+        qc.invalidateQueries({ queryKey: configurationKeys.list() })
+      },
+      { handler: CONFIGURATION_WATCH_FN },
+    )
+      .then((off) => {
+        if (cancelled) off()
+        else dispose = off
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+      dispose?.()
+    }
+  }, [enabled, qc])
 }
 
 export function useConfigurationSchema(id: string | null | undefined) {

@@ -1,11 +1,11 @@
 //! `browser::screencast::start` / `stop` / `browser::frame` — the live-view
 //! pipeline behind the console viewport. Chromium pushes encoded frames
-//! continuously (`Page.startScreencast`); the worker fans each one out on the
-//! `browser::frame-event` trigger (bind with a `session_id` filter) and keeps
-//! the newest in memory, which `browser::frame` hands out for a viewer's
-//! first paint. All three are internal console-UI plumbing, not agent
-//! surface — agents read pages with `browser::snapshot` and
-//! `browser::screenshot`.
+//! continuously (`Page.startScreencast`); the worker calls
+//! `browser::on-frame-event` with each one (observed with `{ session_id }`
+//! args, it reaches that tab's viewers only) and keeps the newest in memory,
+//! which `browser::frame` hands out for a viewer's first paint. All three are
+//! internal console-UI plumbing, not agent surface — agents read pages with
+//! `browser::snapshot` and `browser::screenshot`.
 //!
 //! A viewer that names itself (`viewer_id`) holds the screencast through a
 //! lease instead of a bare count: repeating the start renews it, and a

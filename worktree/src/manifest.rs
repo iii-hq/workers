@@ -19,7 +19,7 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description: "Git worktree lifecycle for parallel agents: isolated worktrees, \
-                      a cross-agent registry with lifecycle trigger types, and a \
+                      a cross-agent registry with observable lifecycle events, and a \
                       per-repo FIFO land queue (rebase, test gate, ff-only merge)."
             .to_string(),
         default_config: WorkerConfig::default().to_json(),

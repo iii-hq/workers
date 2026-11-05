@@ -43,7 +43,7 @@ export function ManualTaskForm({
   const [maxFires, setMaxFires] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
 
-  /** What this expression actually means, before it is registered: the plain
+  /** What this expression actually means, before it is scheduled: the plain
       reading, then the next few literal times. A six-field slip usually looks
       right and only reveals itself at the first fire. */
   const expressionError = validateCron(expression)
@@ -125,7 +125,7 @@ export function ManualTaskForm({
         <h2 className="cron-ui-detail-title">New schedule</h2>
       </header>
       <p className="cron-ui-inspector-copy">
-        The active agent registers the task so Harness can persist ownership, lifecycle, and fire count.
+        The active agent creates the task's observer so Harness can persist ownership, lifecycle, and fire count.
       </p>
 
       <Field label="Task" htmlFor="cron-task-label">

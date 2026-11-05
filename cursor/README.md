@@ -7,7 +7,7 @@ No Cursor API key is required for the provider or local agent path. Both reuse t
 ## Install
 
 ```bash
-iii trigger compose::add worker=cursor
+iii call compose::add worker=cursor
 ```
 
 Install the official Cursor Agent CLI and authenticate it once outside the worker:
@@ -22,15 +22,15 @@ Some installations expose the official CLI only as `~/.local/bin/agent`; use tha
 Use the worker's redacted status function to confirm that the login is available without returning account details or credentials:
 
 ```bash
-iii trigger cursor::auth::status --json '{}'
+iii call cursor::auth::status --json '{}'
 ```
 
 ## LLM Router provider
 
-On startup, the worker declares provider `cursor` and reconciles the ACP-selectable account catalog as `cursor/*` model IDs. The models then appear under **Cursor** in the Console model picker. Refresh explicitly with:
+On startup, the worker declares provider `cursor` and reconciles the ACP-selectable account catalog as `cursor/*` model IDs. It observes `router::on-ready` with `provider::cursor::on_router_ready`, so it declares the provider again whenever LLM Router becomes ready. The models then appear under **Cursor** in the Console model picker. Refresh explicitly with:
 
 ```bash
-iii trigger provider::cursor::refresh_models --json '{}'
+iii call provider::cursor::refresh_models --json '{}'
 ```
 
 The provider runs each request in Cursor `ask` mode inside a fresh empty temporary workspace and denies permission requests. Cursor exposes a coding-agent ACP rather than a raw chat-completions API, so this compatibility provider streams text and thinking but does not claim router tool calling, images, structured output, exact token limits, token usage, or per-token cost. Those catalog capabilities are marked unsupported instead of invented. Use `cursor::run` when Cursor should work directly on a repository.
@@ -40,9 +40,9 @@ The provider runs each request in Cursor `ask` mode inside a fresh empty tempora
 Read the account-scoped model catalog, then run a direct coding-agent turn without `CURSOR_API_KEY`:
 
 ```bash
-iii trigger cursor::models::list --json '{}'
+iii call cursor::models::list --json '{}'
 
-iii trigger cursor::run --json '{
+iii call cursor::run --json '{
   "runtime": "local",
   "cwd": "/absolute/path/to/repository",
   "model": "auto",
@@ -64,16 +64,25 @@ ACP forwards the editor `cwd`, maps cancellation to `cursor::stop`, and reports 
 
 ## Event feeds
 
-The worker owns two trigger types. Bind either one to a function of yours with the session you want to follow; the worker calls that function once per frame (fire-and-forget).
+The worker hosts two event feeds, private functions it calls once per frame:
+only this worker calls them, and anyone may observe them.
 
-| Trigger type | `event` in the payload |
-| --- | --- |
-| `cursor::agent-event` | one normalized AgentEvent frame (`message_update` text/thinking deltas, `function_execution_start/end`, `message_complete`, `turn_end`, `agent_end`) |
-| `cursor::raw-event` | one raw frame, unchanged: an ACP `session/update` notification or an SDK Bridge run-stream message |
+| Function | Args | Delivery | `event` in the frame |
+| --- | --- | --- | --- |
+| `cursor::on-agent-event` | `{ session_id }` | iii, to the observers of that session | one normalized AgentEvent frame (`message_update` text/thinking deltas, `function_execution_start/end`, `message_complete`, `turn_end`, `agent_end`) |
+| `cursor::on-raw-event` | `{ session_id }` | iii, to the observers of that session | one raw frame, unchanged: an ACP `session/update` notification or an SDK Bridge run-stream message |
 
-Binding config: `{ "session_id": "<iii session_id>", "metadata": { ... } }`. `session_id` is required (non-empty, at most 512 characters); `metadata` is optional and is handed to your function (it wins over the binding's own metadata). Unknown keys are rejected, and each trigger type accepts at most 256 bindings.
+`session_id` is the iii session id: required, non-empty and at most 512 characters; the engine rejects any other arg with `INVALID_ARGS`. Each feed accepts at most 256 observers; one more is rejected with `OBSERVER_LIMIT`. A frame of a session nobody observes is not sent.
 
-Payload your function receives:
+```ts
+iii.observe(
+  { function_id: 'cursor::on-agent-event', args: { session_id }, deliver: 'output' },
+  'my::on-cursor-event',
+  { metadata: { team: 'a' } }, // optional: handed to your function as the metadata sidecar
+);
+```
+
+With `deliver: 'output'` your function receives one call per frame (fire-and-forget):
 
 ```jsonc
 {
@@ -86,7 +95,7 @@ Payload your function receives:
 }
 ```
 
-The two feeds number their frames independently, and each turn starts a new epoch. Frames the worker re-emits while recovering a run (Bridge `ObserveRun` replay, ACP updates) keep the same stable `cursor-...` `event_id`, so drop repeated `event_id`s. Deliveries are not guaranteed to arrive in order: order by `(epoch, seq)`. Frames are ephemeral: nothing is stored or replayed, and a consumer bound after a frame was emitted never sees it. Text and thinking deltas are only counted as streamed once a bound consumer accepted them, so when nobody received them the final `message_complete` carries the full body without `body_streamed`. The durable record is the session record behind `cursor::status` / `cursor::sessions::list` and the value `cursor::run` returns. These feeds replace the former `agent::events` / `cursor::events` iii-stream streams (see the guide "Migrate from iii-stream and pubsub").
+The two feeds number their frames independently, `seq` advances for every frame, observed or not, and each turn starts a new epoch. Frames the worker re-emits while recovering a run (Bridge `ObserveRun` replay, ACP updates) keep the same stable `cursor-...` `event_id`, so drop repeated `event_id`s. Deliveries are not guaranteed to arrive in order: order by `(epoch, seq)`. Frames are ephemeral: nothing is stored or replayed, and an observer added after a frame was emitted never sees it. Text and thinking deltas are only counted as streamed once a frame was sent to an observer of the session, so when nobody observed them the final `message_complete` carries the full body without `body_streamed`. The durable record is the session record behind `cursor::status` / `cursor::sessions::list` and the value `cursor::run` returns. The feeds do not use iii-stream (see the guide "Migrate from iii-stream and pubsub").
 
 ## Configuration
 
@@ -104,7 +113,7 @@ rpc_timeout_ms: 60000
 max_frame_bytes: 16777216
 ```
 
-The event feeds are fixed trigger types, not configuration. The former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configurations keep loading.
+The event feeds are fixed functions, not configuration. The former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configurations keep loading.
 
 Login-backed local sessions run in Cursor's `ask` mode, and the worker cancels every permission request. Cursor ACP does not provide an enforceable per-request tool-list control, so explicit `tools` values, including `tools: []`, are rejected. Omit `tools` for CLI ACP. Start a new session when changing backend; legacy Bridge session IDs are never loaded as CLI ACP sessions.
 
@@ -121,7 +130,7 @@ Set `CURSOR_API_KEY` for cloud runs or configure `local_backend: sdk-bridge` to 
 Select the Bridge catalog when choosing a model for a cloud run:
 
 ```bash
-iii trigger cursor::models::list --json '{"backend":"sdk-bridge"}'
+iii call cursor::models::list --json '{"backend":"sdk-bridge"}'
 ```
 
 Cloud sessions require at least one repository and default both `work_on_current_branch` and `auto_create_pr` to `false`. Creating or sending a cloud agent may incur Cursor charges. Usage and cost fields remain `null` when the Bridge does not report them.

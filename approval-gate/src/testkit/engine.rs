@@ -1,32 +1,37 @@
-//! Engine-backed test bootstrap (llm-router's `engine_fixture` pattern): an
-//! engine with `configuration` inline plus the standalone `state` worker,
-//! which engines since 0.23 refuse inline (`UNSUPPORTED_CONFIG_WORKERS`).
-//! Self-skips, saying why, when either binary is missing or never answers;
-//! a state worker named by `III_STATE_BIN` that fails is a test failure.
+//! Engine-backed test bootstrap (llm-router / integration.rs pattern).
+//!
+//! The stack is an engine (`III_ENGINE_BIN`, or `iii` on PATH) with its
+//! `configuration` worker, plus the standalone `state` worker of this repo
+//! (`III_STATE_BIN`, a built `state/target/debug/state`): the engine hosts no
+//! state worker of its own. Tests skip when either binary is unavailable and
+//! fail when both are there and the stack does not come up.
 
 use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::configuration::{self, ConfigCell};
-use crate::events::{self, Emitter, PENDING_CREATED, PENDING_RESOLVED};
+use crate::events::{self, Emitter, ON_PENDING_CREATED_FN, ON_PENDING_RESOLVED_FN};
 use crate::functions::{self, Deps};
 
 pub struct Engine {
     pub url: String,
     child: std::process::Child,
-    state_child: Option<std::process::Child>,
+    state: Option<std::process::Child>,
     dir: std::path::PathBuf,
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        if let Some(mut state) = self.state_child.take() {
+        if let Some(mut state) = self.state.take() {
             let _ = state.kill();
             let _ = state.wait();
         }
@@ -50,44 +55,37 @@ pub fn engine_bin() -> Option<std::path::PathBuf> {
     on_path.then(|| "iii".into())
 }
 
-/// `III_STATE_BIN`, else the in-repo `state` build, else the newest `state`
-/// package in the Compose cache: llm-router's `engine_fixture::state_bin`.
+/// The standalone `state` worker binary (`III_STATE_BIN`).
 pub fn state_bin() -> Option<std::path::PathBuf> {
-    if let Some(p) = std::env::var_os("III_STATE_BIN") {
-        return Some(p.into());
-    }
-    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../state/target");
-    if let Some(p) = ["debug", "release"]
-        .map(|profile| target.join(profile).join("state"))
-        .into_iter()
-        .find(|p| p.is_file())
-    {
-        return Some(p);
-    }
-    let cache = std::path::PathBuf::from(std::env::var_os("HOME")?).join(".iii/compose/packages");
-    std::fs::read_dir(cache)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let version = package_version(e.file_name().to_str()?)?;
-            let bin = e.path().join("state");
-            bin.is_file().then_some((version, bin))
-        })
-        .max()
-        .map(|(_, bin)| bin)
+    std::env::var_os("III_STATE_BIN").map(Into::into)
 }
 
-/// The numeric version of a `state-<version>-<target>-<hash>` package, so
-/// 0.22.22 outranks 0.22.5-rc.1 (string order puts the rc last).
-/// shortcut: a release and its own pre-release rank equal, parse the full
-/// semver if both ever share the cache.
-fn package_version(name: &str) -> Option<Vec<u64>> {
-    name.strip_prefix("state-")?
-        .split('-')
-        .next()?
-        .split('.')
-        .map(|n| n.parse().ok())
-        .collect()
+/// Why the engine-backed stack cannot run here, or `None` when it can.
+pub fn stack_unavailable() -> Option<&'static str> {
+    if engine_bin().is_none() {
+        return Some("no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
+    }
+    if state_bin().is_none() {
+        return Some("no state worker (set III_STATE_BIN to a built `state` binary)");
+    }
+    None
+}
+
+/// A working directory of its own for one stack: the process id, a
+/// per-process sequence number and the wall clock, so no two stacks (in one
+/// test process or across runs) share the directory one of them removes on
+/// drop.
+fn stack_dir() -> std::path::PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!(
+        "approval-gate-it-{}-{seq}-{nanos}",
+        std::process::id()
+    ))
 }
 
 fn free_port() -> u16 {
@@ -98,17 +96,14 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Start an isolated engine and the state worker on it. `None` when a binary
+/// is unavailable ([`stack_unavailable`] says which); panics when both are
+/// there and the stack does not answer within 30 s.
 pub async fn spawn_engine() -> Option<Engine> {
-    let Some(bin) = engine_bin() else {
-        eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
-        return None;
-    };
+    let bin = engine_bin()?;
+    let state_bin = state_bin()?;
     let port = free_port();
-    let dir = std::env::temp_dir().join(format!(
-        "approval-gate-it-{}-{}",
-        std::process::id(),
-        Instant::now().elapsed().as_nanos()
-    ));
+    let dir = stack_dir();
     std::fs::create_dir_all(&dir).ok()?;
     // The configuration worker's fs adapter writes one YAML file per id
     // under this directory; create it up front so register/get never race
@@ -135,13 +130,14 @@ pub async fn spawn_engine() -> Option<Engine> {
     let config_path = dir.join("config.yaml");
     std::fs::File::create(&config_path)
         .and_then(|mut f| f.write_all(config.as_bytes()))
-        .ok()?;
-    let state_config = dir.join("state-config.yaml");
+        .expect("write the engine config");
+    // The state worker's seed: an in-memory kv store, gone with the stack.
+    let state_seed = dir.join("state.yaml");
     std::fs::write(
-        &state_config,
+        &state_seed,
         "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
     )
-    .ok()?;
+    .expect("write the state worker seed");
 
     let child = std::process::Command::new(&bin)
         .arg("--no-update-check")
@@ -153,17 +149,16 @@ pub async fn spawn_engine() -> Option<Engine> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| eprintln!("skipping: cannot start {}: {e}", bin.display()))
-        .ok()?;
-    // Built right after the spawn, so every early return below reaps it.
+        .unwrap_or_else(|e| panic!("spawn the engine {}: {e}", bin.display()));
+    let url = format!("ws://127.0.0.1:{port}");
     let mut engine = Engine {
-        url: format!("ws://127.0.0.1:{port}"),
+        url: url.clone(),
         child,
-        state_child: None,
-        dir,
+        state: None,
+        dir: dir.clone(),
     };
 
-    let probe = register_worker(&engine.url, InitOptions::default());
+    let probe = register_worker(&url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         // The engine core must be up AND the configuration worker must be
@@ -172,7 +167,7 @@ pub async fn spawn_engine() -> Option<Engine> {
         // spuriously. Probe a dummy id and accept any response (including
         // NOT_FOUND) as "the worker is up".
         let core_ready = probe
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".into(),
                 payload: json!({}),
                 action: None,
@@ -182,7 +177,7 @@ pub async fn spawn_engine() -> Option<Engine> {
             .is_ok();
         let ready = core_ready
             && match probe
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "configuration::get".into(),
                     payload: json!({ "id": "__readiness_probe__" }),
                     action: None,
@@ -198,75 +193,43 @@ pub async fn spawn_engine() -> Option<Engine> {
         }
         if Instant::now() >= deadline {
             probe.shutdown();
-            eprintln!("skipping: the iii engine or its configuration worker never answered");
-            return None;
+            panic!("the engine on {url} did not answer within 30 s");
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    // The state worker registers its own configuration at boot, so it starts
-    // only once the configuration worker answers.
-    let Some(state_bin) = state_bin() else {
-        probe.shutdown();
-        eprintln!(
-            "skipping: no state worker (set III_STATE_BIN or build state/ with `cargo build --manifest-path state/Cargo.toml --bin state`)"
-        );
-        return None;
-    };
-    let state_ready = match std::process::Command::new(&state_bin)
-        .arg("--url")
-        .arg(&engine.url)
-        .arg("--config")
-        .arg(&state_config)
-        .current_dir(&engine.dir)
-        // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
-        .env("HOME", &engine.dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    engine.state = Some(
+        std::process::Command::new(&state_bin)
+            .arg("--url")
+            .arg(&url)
+            .arg("--config")
+            .arg(&state_seed)
+            .current_dir(&dir)
+            // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
+            .env("HOME", &dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("spawn the state worker {}: {e}", state_bin.display())),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while probe
+        .call(CallRequest {
+            function_id: "state::get".into(),
+            payload: json!({ "scope": "__readiness_probe__", "key": "__readiness_probe__" }),
+            action: None,
+            timeout_ms: Some(1000),
+        })
+        .await
+        .is_err()
     {
-        Err(e) => Err(format!("cannot start it: {e}")),
-        Ok(child) => {
-            let child = engine.state_child.insert(child);
-            let deadline = Instant::now() + Duration::from_secs(15);
-            loop {
-                if probe
-                    .trigger(TriggerRequest {
-                        function_id: "state::get".into(),
-                        payload: json!({ "scope": "testkit", "key": "ready" }),
-                        action: None,
-                        timeout_ms: Some(1000),
-                    })
-                    .await
-                    .is_ok()
-                {
-                    break Ok(());
-                }
-                if let Ok(Some(status)) = child.try_wait() {
-                    break Err(format!("it exited ({status}) before answering state::get"));
-                }
-                if Instant::now() >= deadline {
-                    break Err("it never answered state::get in 15s".to_string());
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
+        if Instant::now() >= deadline {
+            probe.shutdown();
+            panic!("the state worker on {url} did not answer within 30 s");
         }
-    };
-    probe.shutdown();
-    if let Err(why) = state_ready {
-        // A binary the caller named failing is their error to see; a discovered one is a skip.
-        if std::env::var_os("III_STATE_BIN").is_some() {
-            panic!(
-                "state worker named by III_STATE_BIN={} is unusable: {why}",
-                state_bin.display()
-            );
-        }
-        eprintln!(
-            "skipping: state worker {} is unusable: {why}",
-            state_bin.display()
-        );
-        return None;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    probe.shutdown();
 
     Some(engine)
 }
@@ -285,7 +248,11 @@ async fn boot_lock() -> tokio::sync::MutexGuard<'static, ()> {
 /// run in parallel; each call gets its own state store.
 pub async fn require_engine() -> Option<Engine> {
     let _guard = boot_lock().await;
-    spawn_engine().await
+    let engine = spawn_engine().await;
+    if engine.is_none() {
+        eprintln!("skipping: {}", stack_unavailable().unwrap_or_default());
+    }
+    engine
 }
 
 pub type CallLog = Arc<Mutex<Vec<Value>>>;
@@ -310,7 +277,7 @@ pub struct BootOpts {
     /// `harness::function::resolve` stub.
     pub real_harness: bool,
     /// Test-only replacement written while the fake function resolver runs,
-    /// modeling a post-trigger hook that parks the same call again.
+    /// modeling a post-call hook that parks the same call again.
     pub function_resolve_replacement: Option<Value>,
 }
 
@@ -399,9 +366,9 @@ pub struct TestStack {
     pub config: ConfigCell,
     /// Requests received by the fake `harness::function::resolve`.
     pub harness_calls: CallLog,
-    /// `approval::pending-created` deliveries.
+    /// `approval::on-pending-created` events, delivered as output.
     pub created: CallLog,
-    /// `approval::pending-resolved` deliveries.
+    /// `approval::on-pending-resolved` events, delivered as output.
     pub resolved: CallLog,
     harness_child: Option<std::process::Child>,
 }
@@ -435,7 +402,7 @@ async fn wait_for_harness(iii: &IIIClient) -> bool {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "harness::status".into(),
                 payload: json!({ "session_id": "__probe__" }),
                 action: None,
@@ -483,10 +450,10 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     }
     let config: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    let sets = events::register_trigger_types(&iii);
+    events::register_functions(&iii);
     let deps = Arc::new(Deps {
         iii: iii.clone(),
-        sink: Arc::new(Emitter::new(sets, iii.clone())),
+        sink: Arc::new(Emitter::new(iii.clone())),
         config: config.clone(),
     });
     functions::register_all(&iii, &deps);
@@ -569,30 +536,30 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             }),
         );
     }
-    iii.register_trigger(RegisterTriggerInput::new(
-        PENDING_CREATED.to_string(),
-        "recorder::on_created".to_string(),
-        json!({}),
-    ))
-    .expect("bind pending_created");
-    iii.register_trigger(RegisterTriggerInput::new(
-        PENDING_RESOLVED.to_string(),
-        "recorder::on_resolved".to_string(),
-        json!({}),
-    ))
-    .expect("bind pending_resolved");
+    // The recorders observe both event functions; wait until each observer
+    // is active, so the emitter (which calls only while observed) reaches
+    // them from the first test step on.
+    for (function_id, recorder) in [
+        (ON_PENDING_CREATED_FN, "recorder::on_created"),
+        (ON_PENDING_RESOLVED_FN, "recorder::on_resolved"),
+    ] {
+        let handle = iii.observe(
+            Source::function(function_id).deliver(Deliver::Output),
+            recorder,
+        );
+        await_active(&handle, function_id).await;
+    }
 
-    configuration::bind_hook(&iii);
+    let gate_observer = configuration::observe_hook(&iii);
 
-    // The typed, re-fetching config-change handler + its `configuration`
-    // trigger binding (mirrors the production boot order: last).
-    configuration::register_config_trigger(&iii, config.clone())
-        .expect("register configuration change trigger");
+    // The typed, re-fetching config-change handler + its observer of
+    // `configuration::on-updated` (mirrors the production boot order: last).
+    configuration::observe_config_changes(&iii, config.clone());
 
     let harness_child = opts
         .real_harness
         .then(|| spawn_harness_worker(engine).expect("spawn harness worker"));
-    // Built before the readiness check, so a failed check reaps the child.
+    // Built before the readiness checks, so a failed check reaps the child.
     let stack = TestStack {
         iii,
         deps,
@@ -607,8 +574,25 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             wait_for_harness(&stack.iii).await,
             "harness worker did not become ready"
         );
+        // The gate's observer of `harness::hook::on-pre-call` stays pending
+        // until the harness registers its hook function.
+        await_active(&gate_observer, configuration::HOOK_ON_PRE_CALL_FN).await;
     }
     stack
+}
+
+/// Wait (bounded) until an observer is active; panics with its state and
+/// reason otherwise.
+async fn await_active(handle: &ObserverHandle, function_id: &str) {
+    match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("observer of {function_id} failed: {e}"),
+        Err(_) => panic!(
+            "observer of {function_id} not active after 10s: {:?} ({:?})",
+            handle.state(),
+            handle.reason()
+        ),
+    }
 }
 
 pub async fn call(
@@ -616,7 +600,7 @@ pub async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -647,7 +631,7 @@ pub async fn settle() {
 
 pub fn hook_input(session_id: &str, call_id: &str, function_id: &str) -> Value {
     json!({
-        "point": "pre_trigger",
+        "point": "pre_call",
         "session_id": session_id,
         "turn_id": "t_1",
         "step": 1,
@@ -675,21 +659,22 @@ pub async fn wait_for(deadline_ms: u64, mut predicate: impl FnMut() -> bool) -> 
     }
 }
 
-/// Run `f` against a freshly booted stack; skip when no engine is available.
+/// Run `f` against a freshly booted stack; skip when the engine or the state
+/// worker binary is unavailable.
 ///
 /// The boot lock is held for the WHOLE test, not just the spawn: each
-/// engine-backed test runs its own engine, and approval-gate now depends
-/// on the configuration worker being responsive at boot. Serializing the
-/// tests keeps that worker from being starved under parallel load (the
-/// suite is local-only — it self-skips in CI where `iii` is absent).
+/// engine-backed test runs its own engine, and approval-gate depends on the
+/// configuration worker being responsive at boot. Serializing the tests
+/// keeps that worker from being starved under parallel load (the suite is
+/// local-only — it self-skips in CI, where neither binary is provided).
 pub async fn with_stack<F, Fut>(opts: BootOpts, f: F)
 where
     F: FnOnce(TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
     let _guard = boot_lock().await;
-    // spawn_engine already said why it skipped.
     let Some(engine) = spawn_engine().await else {
+        eprintln!("skipping: {}", stack_unavailable().unwrap_or_default());
         return;
     };
     let stack = boot(&engine, opts).await;
@@ -699,14 +684,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::package_version;
+    use super::stack_dir;
 
     #[test]
-    fn package_version_orders_numerically() {
-        let newer = package_version("state-0.22.22-aarch64-apple-darwin-284a31ea");
-        let older = package_version("state-0.22.5-rc.1-aarch64-apple-darwin-25e0dfe0");
-        assert_eq!(newer, Some(vec![0, 22, 22]));
-        assert!(newer > older);
-        assert_eq!(package_version("rbac-proxy-0.1.0-aarch64"), None);
+    fn every_stack_gets_its_own_directory() {
+        let dirs: std::collections::HashSet<_> = (0..64).map(|_| stack_dir()).collect();
+        assert_eq!(dirs.len(), 64);
     }
 }

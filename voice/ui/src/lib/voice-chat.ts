@@ -23,7 +23,7 @@ export function finalReply(entry: SessionMessageEntry, turnId?: string): SpokenR
 export async function fetchSpokenReply(iii: ExtensionIii, sessionId: string, turnId?: string): Promise<SpokenReply | null> {
   let before: string | undefined
   for (let page = 0; page < 4; page++) {
-    const res = await iii.trigger<{ messages: SessionMessageEntry[]; has_more: boolean; oldest_entry_id?: string }>(
+    const res = await iii.call<{ messages: SessionMessageEntry[]; has_more: boolean; oldest_entry_id?: string }>(
       'session::messages-tail', { session_id: sessionId, limit: 8, include_custom: false,
         include_image_data: false, ...(before ? { before_entry_id: before } : {}) })
     for (const entry of [...res.messages].reverse()) {
@@ -108,7 +108,7 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
         if (latest?.id === event.turn_id) { handler(event); return }
         const request = generation
         try {
-          const current = await iii.trigger<{ session_id: string; turn_id: string | null; status: string } | null>(
+          const current = await iii.call<{ session_id: string; turn_id: string | null; status: string } | null>(
             'harness::status', { session_id: sessionId })
           if (!active || outdated(event) || seen.has(event.turn_id)
             || (generation !== request && latest?.id !== event.turn_id)
@@ -123,8 +123,8 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
         }
       })
     }))
-    offs.push(iii.registerTrigger({ type: `harness::turn-${kind}`,
-      function_id: `${id}::${iii.browserId}`, config: { session_id: sessionId } }))
+    offs.push(iii.observe({ function_id: `harness::on-turn-${kind}`,
+      filters: { 'input.session_id': { $eq: sessionId } } }, `${id}::${iii.browserId}`))
   }
   try {
     bind('started', (event) => {
@@ -212,7 +212,7 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
         if (checkingSnapshot) return
         checkingSnapshot = true
         const request = generation
-        void iii.trigger<{ session_id: string; turn_id: string | null } | null>(
+        void iii.call<{ session_id: string; turn_id: string | null } | null>(
           'harness::status', { session_id: sessionId }).then((current) => {
           if (!active) return
           if (generation !== request) {
@@ -236,8 +236,9 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
       for (const kind of ['added', 'updated'] as const) {
         const id = `iii::voice-ui::message-${kind}::${sessionId}`
         offs.push(iii.on<SpeechSnapshot>(id, accept))
-        offs.push(iii.registerTrigger({ type: `session::message-${kind}`,
-          function_id: `${id}::${iii.browserId}`, config: { session_id: sessionId, roles: ['assistant'] } }))
+        offs.push(iii.observe({ function_id: `session::on-message-${kind}`,
+          filters: { 'input.session_id': { $eq: sessionId }, 'input.message.role': { $in: ['assistant'] } } },
+          `${id}::${iii.browserId}`))
       }
     }
   } catch (error) {

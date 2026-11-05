@@ -1014,7 +1014,7 @@ fn harness_request(plan: &AnalysisPlan) -> Value {
             "functions": {
                 "allow": plan.allowed_functions,
                 "deny": plan.denied_functions,
-                "expose": "agent_trigger",
+                "expose": "agent_call",
             },
             "metadata": if plan.filesystem_root.is_empty() {
                 json!({})

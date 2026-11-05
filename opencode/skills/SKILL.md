@@ -13,10 +13,11 @@ The opencode worker exposes the OpenCode API as iii functions. One
 user runs in their terminal, with the same tools — in a chosen working
 directory, and returns the final result, token usage, and cost. Every JSON
 event OpenCode emits (`step_start`, `text`, `tool_use`, `step_finish`) is
-delivered verbatim on the `opencode::raw-event` trigger type; a translated
-AgentEvent view is delivered on `opencode::agent-event`, which the acp worker
-renders. Bind either with `{ session_id }`; frames are ephemeral (not stored,
-not replayed).
+delivered verbatim on `opencode::on-raw-event`; a translated AgentEvent view
+is delivered on `opencode::on-agent-event`, which the acp worker renders.
+Observe either with args `{ session_id }`
+(`iii.observe({ function_id: 'opencode::on-agent-event', args: { session_id }, deliver: 'output' }, target)`);
+frames are ephemeral (not stored, not replayed).
 
 Requires the `opencode` CLI on the host and an API key for the LLM provider you
 use (e.g. `ANTHROPIC_API_KEY`, or `opencode auth`). When a turn needs a
@@ -30,13 +31,13 @@ bolting anything onto this one.
 - Continue a conversation across calls: pass the same `session_id` again and
   the worker resumes the underlying OpenCode session (`--session`).
 - Run long jobs without holding the call open: `opencode::start` returns
-  `{session_id, started}` immediately; bind `opencode::agent-event` with
-  `{ session_id }` for the rendered view or `opencode::raw-event` for raw
-  JSON, or poll `opencode::status`;
+  `{session_id, started}` immediately; observe `opencode::on-agent-event`
+  with args `{ session_id }` for the rendered view or `opencode::on-raw-event`
+  for raw JSON, or poll `opencode::status`;
   interrupt with `opencode::stop`.
 - Act on the whole backend: turns carry the iii runtime context by default, so
   the agent discovers and calls any registered function through the iii CLI
-  (engine::functions::list, `iii trigger <fn> --help`); disable per turn with
+  (engine::functions::list, `iii call <fn> --help`); disable per turn with
   `iii_context: false`.
 - Pick a model or agent per turn: `model` as `provider/model`, `agent` as an
   OpenCode agent name.
@@ -63,3 +64,6 @@ bolting anything onto this one.
 - `opencode::sessions::list` — every session this worker has run.
 - `run::start_and_wait` — alias for `opencode::run` under the entrypoint the
   console and acp worker drive.
+- `opencode::on-agent-event`, `opencode::on-raw-event` — the event feeds:
+  private functions you observe with args `{ session_id }` (at most 256
+  observers each); never call them.

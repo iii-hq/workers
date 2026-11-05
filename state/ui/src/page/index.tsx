@@ -3,7 +3,7 @@
  * (PageShell/PageHeader from @iii-dev/console-ui) over the scopes × keys
  * browser (./browser) and its Monaco JSON value editor (./ValueEditor).
  *
- * One `state` trigger binding for the whole page (src/lib/events.ts),
+ * One `state::on-changed` observer for the whole page (src/lib/events.ts),
  * fanned out to whichever views are mounted.
  */
 
@@ -36,7 +36,7 @@ export function StateManagerPage({
         actions={
           <span
             className="state-ui-live"
-            title="live — subscribed to the state trigger type; created/updated/deleted events stream in"
+            title="live — observing state::on-changed; created/updated/deleted events stream in"
           >
             <StatusDot tone="accent" pulse /> live
           </span>

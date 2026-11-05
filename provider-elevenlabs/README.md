@@ -13,7 +13,7 @@ chat routing never lands here and chat pickers never list its models.
 ## Install
 
 ```bash
-iii trigger compose::add worker=provider-elevenlabs
+iii call compose::add worker=provider-elevenlabs
 ```
 
 Then put the key where the router reads it: `ELEVENLABS_API_KEY` in the

@@ -1,7 +1,7 @@
 import type { z } from 'zod'
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { CreateFilePreview, CreateFileView } from './CreateFileView'
 import { DeleteFilePreview, DeleteFileView } from './DeleteFileView'
 import { InfoView } from './InfoView'
@@ -35,7 +35,7 @@ export function CoderFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
+function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   if (!isCoderFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -87,7 +87,7 @@ const PREVIEW_REQUEST_SCHEMAS: Record<string, z.ZodType> = {
  *  returns null so the card shows the raw request instead of an empty
  *  preview above Approve. */
 function tryRenderPreview(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   const schema = PREVIEW_REQUEST_SCHEMAS[message.functionId]
   if (!schema) return null

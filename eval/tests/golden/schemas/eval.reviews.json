@@ -444,7 +444,7 @@
             "type": "string"
           },
           "target": {
-            "description": "The function called (through `agent_trigger` or directly).",
+            "description": "The function called (through `agent_call` or directly).",
             "type": "string"
           }
         },

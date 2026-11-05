@@ -13,7 +13,7 @@ Feature: engine round trip — the production surface over a live bus
     Given an engine connection
 
   # Prevents: the registered wire surface drifting from the handlers —
-  # a real trigger must reach the production count path end to end.
+  # a real call must reach the production count path end to end.
   Scenario: count_tokens answers over the bus
     Given a user message "hello engine"
     When I call "context::count-tokens" on the engine with:

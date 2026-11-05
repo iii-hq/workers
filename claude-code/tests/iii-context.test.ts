@@ -9,7 +9,7 @@ function directory(answers: { prompt?: string | Error; skills?: string | Error }
   const calls: string[] = [];
   const iii = {
     // biome-ignore lint/suspicious/noExplicitAny: minimal stand-in for the SDK client
-    trigger: async (req: any): Promise<any> => {
+    call: async (req: any): Promise<any> => {
       calls.push(req.function_id);
       if (req.function_id === 'directory::system-prompts::get') {
         if (answers.prompt instanceof Error) throw answers.prompt;

@@ -47,6 +47,14 @@ describe('spawnRequestSchema', () => {
     expect(r?.task).toBe('do the thing')
   })
 
+  it('reads the agent_call mode under the name spawns recorded before 0.26', () => {
+    const r = safeParseRequest(spawnRequestSchema, {
+      task: 'audit the CI runs',
+      options: { functions: { allow: ['*'], expose: 'agent_trigger' } },
+    })
+    expect(r?.options?.functions?.expose).toBe('agent_call')
+  })
+
   it('accepts a fully-populated request', () => {
     const r = safeParseRequest(spawnRequestSchema, {
       task: 'audit the CI runs',
@@ -67,7 +75,7 @@ describe('spawnRequestSchema', () => {
         functions: {
           allow: ['web::fetch'],
           deny: ['sandbox::fs::rm'],
-          expose: 'agent_trigger',
+          expose: 'agent_call',
         },
         max_children: 2,
         pending_timeout_ms: 300_000,

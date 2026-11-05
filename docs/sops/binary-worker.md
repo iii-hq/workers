@@ -68,7 +68,8 @@ path = "src/main.rs"
 ```
 
 Pin the repository's supported `iii-sdk` line exactly. Register typed request
-and response structs (`serde` plus `schemars`) for every function and trigger.
+and response structs (`serde` plus `schemars`) for every function, and a typed
+`args_format` for every event function that takes observer args.
 The process must connect to the configured iii endpoint, remain alive while it
 serves requests, and shut down cleanly on SIGINT/SIGTERM.
 
@@ -81,7 +82,7 @@ defaults file and reference it with `registry.config.defaults_file`.
 At minimum, cover:
 
 - configuration parsing and invalid values;
-- function/trigger catalog identity;
+- function catalog identity (ids, `private`, `args_format`);
 - typed request and response schemas;
 - handler success and error behavior;
 - startup and clean shutdown where practical.

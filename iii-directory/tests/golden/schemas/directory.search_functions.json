@@ -1,5 +1,5 @@
 {
-  "description": "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker, plus matching installed skill documents under `skills` and registered trigger bindings under `triggers`.",
+  "description": "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker, plus matching installed skill documents under `skills` and existing observers under `observers`.",
   "function_id": "directory::search_functions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -49,7 +49,7 @@
         "type": "string"
       },
       "InstallCall": {
-        "description": "A ready-made `compose::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
+        "description": "A ready-made `compose::add` target and payload. Under agent-call exposure, the caller still supplies the wrapper's user-facing `description`.",
         "properties": {
           "function": {
             "type": "string"
@@ -81,7 +81,7 @@
                 "$ref": "#/definitions/InstallCall"
               }
             ],
-            "description": "The `compose::add` target and payload; agent-trigger callers add `description`."
+            "description": "The `compose::add` target and payload; agent-call callers add `description`."
           },
           "name": {
             "type": "string"
@@ -96,6 +96,44 @@
           "install",
           "name",
           "version"
+        ],
+        "type": "object"
+      },
+      "ObserverCandidate": {
+        "description": "An observer (an `engine::observers::list` row) whose observed event, schedule, or hook matches a requested capability.",
+        "properties": {
+          "args": {
+            "description": "The observer's args (cron expression, route, hook priority, …)."
+          },
+          "filters": {
+            "description": "The observer's filters."
+          },
+          "function_id": {
+            "description": "The observed function (`cron::on-tick`, `harness::hook::on-pre-generate`, …).",
+            "type": "string"
+          },
+          "id": {
+            "description": "The observer's id.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The function the observer runs; inspect it with `engine::functions::info`.",
+            "type": "string"
+          },
+          "worker_name": {
+            "description": "The worker that created the observer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "args",
+          "filters",
+          "function_id",
+          "id",
+          "target"
         ],
         "type": "object"
       },
@@ -138,37 +176,6 @@
           "title"
         ],
         "type": "object"
-      },
-      "TriggerCandidate": {
-        "description": "A registered trigger binding (an `engine::registered-triggers::list` row) whose event, schedule, or hook matches a requested capability.",
-        "properties": {
-          "config": {
-            "description": "The binding's configuration (cron expression, hook filters, …)."
-          },
-          "function_id": {
-            "description": "The function the trigger runs; inspect it with `engine::functions::info`.",
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "trigger_type": {
-            "type": "string"
-          },
-          "worker_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "config",
-          "function_id",
-          "id",
-          "trigger_type"
-        ],
-        "type": "object"
       }
     },
     "properties": {
@@ -186,6 +193,13 @@
         "format": "double",
         "type": "number"
       },
+      "observers": {
+        "description": "Observers matching the capabilities: what already runs a function on their events, schedules, or hooks.",
+        "items": {
+          "$ref": "#/definitions/ObserverCandidate"
+        },
+        "type": "array"
+      },
       "search_mode": {
         "allOf": [
           {
@@ -198,13 +212,6 @@
         "description": "Installed skill documents matching the capabilities. Read one with `directory::skills::get { id }` before acting on it.",
         "items": {
           "$ref": "#/definitions/SkillCandidate"
-        },
-        "type": "array"
-      },
-      "triggers": {
-        "description": "Registered trigger bindings matching the capabilities: what already fires, schedules, or hooks a function for them.",
-        "items": {
-          "$ref": "#/definitions/TriggerCandidate"
         },
         "type": "array"
       },

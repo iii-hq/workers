@@ -28,7 +28,9 @@ async function selectSonnet(page: Page) {
   const sonnet = modelMenu.getByRole('button', { name: MODEL_LABEL })
   await expect(sonnet).toHaveCount(1)
   await sonnet.click()
-  await expect(modelPicker).toHaveAccessibleName(/^model:\s*claude[\s-]+sonnet[\s-]+5\.5,/i)
+  await expect(modelPicker).toHaveAccessibleName(
+    /^model:\s*claude[\s-]+sonnet[\s-]+5\.5\s+via\s+anthropic,\s*reasoning effort:/i,
+  )
 }
 
 test('completes and reloads the first real Harness capability', async ({ page }) => {

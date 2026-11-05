@@ -1,8 +1,8 @@
 /**
  * The ACTIVITY view of the github page: a live feed of what the agent does
- * with the github worker. It binds a tab-scoped subscription to the worker's
- * `github::called` trigger type and appends one row per call — no owner/name
- * to type, no polling: the worker pushes each event as it finishes.
+ * with the github worker. It observes the worker's `github::on-called`
+ * function with a tab-scoped handler and appends one row per call — no
+ * owner/name to type, no polling: the worker calls it as each call finishes.
  *
  * Each row shows the function id (badge), a one-line arg echo, an ok/error
  * dot with the call duration, and a relative timestamp; clicking a row
@@ -47,7 +47,7 @@ import { ResultView } from './result-views'
 
 /** Per-tab handler id — the `iii::` prefix keeps per-event invocations
  *  span-suppressed and out of the trace feed (host.iii.on namespaces it
- *  `::<browserId>`, which the trigger's function_id must match). */
+ *  `::<browserId>`, which the observer's target must match). */
 const EVENTS_FN = 'iii::github-ui::called'
 /** Newest-first cap so a long-running session can't grow the list unbounded. */
 const MAX_ENTRIES = 200
@@ -60,10 +60,10 @@ interface Entry extends CalledEvent {
 }
 
 /**
- * Register ONE tab-scoped binding to `github::called` for the view's lifetime
- * and collect events into a bounded, newest-first list. Paused drops incoming
- * events (checked via a ref so the subscription never re-registers). The
- * binding is unregistered on unmount — hot reload disposes it with the page.
+ * Observe `github::on-called` with ONE tab-scoped handler for the view's
+ * lifetime and collect events into a bounded, newest-first list. Paused drops
+ * incoming events (checked via a ref so the observer is never replaced). The
+ * observer is disposed on unmount — hot reload disposes it with the page.
  */
 function useCalledFeed(host: Host) {
   const [entries, setEntries] = useState<Entry[]>([])
@@ -173,7 +173,7 @@ export function ActivityFeed({
         <EmptyState
           icon={Activity}
           title="Waiting for github activity"
-          description="Trigger a github function and it shows here — pull requests, issues, runs, releases, searches, and any gh command the agent runs."
+          description="Call a github function and it shows here — pull requests, issues, runs, releases, searches, and any gh command the agent runs."
         />
       ) : (
         <div className="gh-ui-feed" role="list">

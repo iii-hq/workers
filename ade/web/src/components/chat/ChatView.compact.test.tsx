@@ -7,9 +7,9 @@ import type { Conversation } from '@/types/chat'
 import { ChatView } from './ChatView'
 import type { ComposerSubmitPayload } from './Composer'
 
-const trigger = vi.hoisted(() => vi.fn())
+const call = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger }),
+  getIiiClient: async () => ({ call }),
 }))
 vi.mock('@/lib/conversations-context', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -83,7 +83,7 @@ beforeEach(() => {
   onAppendMessage.mockReset()
   onPatchMessage.mockReset()
   onCompactConversation.mockReset()
-  trigger.mockReset()
+  call.mockReset()
 })
 
 // The investigated parent spent most of the night waiting on sub-agents or
@@ -91,7 +91,7 @@ beforeEach(() => {
 // "another compaction is in progress"; now the harness takes the command
 // whatever the turn is doing and reports to every client.
 it('/compact goes to the harness as a send, with no local verdict', async () => {
-  trigger.mockResolvedValue({
+  call.mockResolvedValue({
     session_id: parent.id,
     turn_id: 't-parent',
     accepted: true,
@@ -100,7 +100,7 @@ it('/compact goes to the harness as a send, with no local verdict', async () => 
 
   await submit('/compact keep the ticket ids')
 
-  const sends = trigger.mock.calls.filter(([id]) => id === 'harness::send')
+  const sends = call.mock.calls.filter(([id]) => id === 'harness::send')
   expect(sends).toHaveLength(1)
   const [, payload] = sends[0]
   expect(payload).toMatchObject({
@@ -118,11 +118,11 @@ it('/compact goes to the harness as a send, with no local verdict', async () => 
   // server, so every device shows the same thing.
   expect(appended()).toHaveLength(1)
   expect(onPatchMessage).not.toHaveBeenCalled()
-  expect(trigger.mock.calls.map(([id]) => id)).toEqual(['harness::send'])
+  expect(call.mock.calls.map(([id]) => id)).toEqual(['harness::send'])
 })
 
 it('a send the harness refuses becomes an error notice', async () => {
-  trigger.mockRejectedValue(new Error('harness/invalid_request: read-only'))
+  call.mockRejectedValue(new Error('harness/invalid_request: read-only'))
 
   await submit('/compact')
 

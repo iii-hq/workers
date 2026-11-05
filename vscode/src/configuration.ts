@@ -41,7 +41,7 @@ async function ensureConfiguration(
   payload: Record<string, unknown>,
 ): Promise<void> {
   const call = (function_id: string, payload: Record<string, unknown>) =>
-    iii.trigger({ function_id, namespace: 'default', payload, timeoutMs: TIMEOUT_MS });
+    iii.call({ function_id, namespace: 'default', payload, timeoutMs: TIMEOUT_MS });
   try {
     await call('configuration::ensure', payload);
     return;
@@ -94,7 +94,7 @@ function hasCode(error: unknown, code: string): boolean {
 /** Read and validate applied runtime settings, returning null when absent, invalid or unreachable. */
 export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null> {
   try {
-    const res = await iii.trigger<unknown, { value?: unknown }>({
+    const res = await iii.call<unknown, { value?: unknown }>({
       function_id: 'configuration::get',
       namespace: 'default',
       payload: { id: CONFIG_ID, raw: false },
@@ -109,8 +109,11 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
   }
 }
 
-/** Apply an initial reload, then subscribe to updates for this VS Code instance's assigned entry. */
-export async function bindConfigTrigger(
+/**
+ * Apply an initial reload, then observe `configuration::on-updated` for this
+ * VS Code instance's assigned entry with the internal reload function.
+ */
+export async function observeConfigChanges(
   iii: IIIClient,
   onChange: () => Promise<void>,
 ): Promise<void> {
@@ -128,9 +131,15 @@ export async function bindConfigTrigger(
       response_format: { type: 'null' },
     },
   );
-  iii.registerTrigger({
-    type: 'configuration',
-    function_id: CONFIG_FN_ID,
-    config: { configuration_id: CONFIG_ID, event_types: ['configuration:updated'] },
-  });
+  iii.observe(
+    {
+      function_id: 'configuration::on-updated',
+      filters: {
+        'input.id': { $eq: CONFIG_ID },
+        'input.event_type': { $eq: 'configuration:updated' },
+      },
+      deliver: 'output',
+    },
+    CONFIG_FN_ID,
+  );
 }

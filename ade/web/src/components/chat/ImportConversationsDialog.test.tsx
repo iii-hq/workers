@@ -226,7 +226,7 @@ describe('preview pane', () => {
     expect(html).toContain('data-function-id="Bash"')
     expect(html).toContain('data-function-status="error"')
     expect(html).toContain('pnpm test')
-    expect(html).not.toContain('Triggered')
+    expect(html).not.toContain('Called')
     expect(html).toContain('3 messages · 2 commands')
     expect(html).toContain('data-preview-role="user"')
     expect(html).not.toContain('environment_context')

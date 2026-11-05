@@ -970,7 +970,7 @@
 
 /* ---------------------------------------------------------- disclosure --- */
 
-/* The trigger the step waits on, as the dialog's "Engine log" row: a caret,
+/* The observer the step waits on, as the dialog's "Engine log" row: a caret,
    a label, and the state as its summary. Opens onto a terminal block. */
 [data-iii-ui='learn-iii'] .learn-condition {
   display: flex;

@@ -25,7 +25,7 @@ import {
   type Tone,
 } from '@iii-dev/native-ui'
 import { tabTitle } from '../address'
-import { browser, type NetworkEntry, TRIGGER } from '../api'
+import { browser, EVENT, type NetworkEntry } from '../api'
 import { createFeed, SEED_LIMIT, textFilter, workerPattern } from '../feed'
 import { sessionOf } from '../state'
 import { copyMenu, usePattern } from './console'
@@ -59,7 +59,7 @@ export function NetworkPage(props: { params: JsonObject }) {
   const pattern = usePattern()
   const feed = createFeed<NetworkEntry, NetworkRow>({
     session,
-    trigger: TRIGGER.networkEvent,
+    event: EVENT.networkEvent,
     filters: () => `${failedOnly()}|${pattern.filter()}`,
     read: (sinceSeq) =>
       browser.networkRead(session, {

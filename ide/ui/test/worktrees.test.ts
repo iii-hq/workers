@@ -317,13 +317,13 @@ describe('worktrees', () => {
     // body, and the reset back to the tip fails too.
     const failing = {
       iii: {
-        trigger: (fn: string, payload: { args?: string[] }) => {
+        call: (fn: string, payload: { args?: string[] }) => {
           const args = payload.args ?? []
           if (args[0] === 'commit')
             return Promise.reject({ message: 'handler error: {"code":"S210","message":"git timed out"}' })
           if (args[0] === 'reset' && args[2] === tip)
             return Promise.resolve({ exit_code: 1, stdout: '', stderr: 'locked' })
-          return host.iii.trigger(fn, payload)
+          return host.iii.call(fn, payload)
         },
       },
     } as unknown as Host

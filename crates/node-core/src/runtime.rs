@@ -50,9 +50,9 @@ pub enum Command {
         payload: Value,
         timeout: Duration,
         reply: oneshot::Sender<Result<Value, NodeEngineError>>,
-        /// `None` for a plain function invocation; `Some("registerTrigger" |
-        /// "unregisterTrigger")` when this targets a trigger TYPE's callback
-        /// instead — see `wrap_invoke`.
+        /// `None` for a plain function invocation; `Some("observerAdded" |
+        /// "observerRemoved")` when this targets one of the function's
+        /// observer hooks instead — see `wrap_invoke`.
         method: Option<String>,
     },
 }
@@ -64,10 +64,10 @@ pub struct RuntimeOpts {
     pub external_mb: usize,
     /// Required prefix for ids the evaluated code may register.
     pub namespace: String,
-    /// Budget for `iii.trigger`, for handler invocations arriving from
+    /// Budget for `iii.call`, for handler invocations arriving from
     /// the bus, and for any single event-loop pump.
     pub call_timeout_ms: u64,
-    /// Ceiling a guest-supplied `iii.trigger({..., timeout})` is clamped to.
+    /// Ceiling a guest-supplied `iii.call({..., timeout_ms})` is clamped to.
     /// Same value (`NodeEngineConfig::max_timeout_ms`) the RPC-level eval
     /// timeout is clamped to via `clamp_timeout` in `manager.rs` — that
     /// clamp only ever covered the eval's own deadline, not this op's
@@ -417,7 +417,7 @@ async fn run_loop(
             capturing: false,
             registered: Vec::new(),
             unregisters: unregisters.clone(),
-            pending_registrations: 0,
+            hooked_observers: Default::default(),
             call_timeout_ms: opts.call_timeout_ms,
             max_timeout_ms: opts.max_timeout_ms,
             inflight_calls: 0,
@@ -577,7 +577,7 @@ Object.freeze(globalThis.iii);"#,
 
             // Drives ops and microtasks — which means TENANT JS RUNS INSIDE
             // THIS CALL, including detached work with nothing in `pending`:
-            // `iii.trigger(...).catch(() => { for(;;){} })` settles its
+            // `iii.call(...).catch(() => { for(;;){} })` settles its
             // eval immediately and wedges the thread later, when the rejection
             // handler runs. With `pending` empty the slot is `None`, so the
             // watchdog never fires, and `next_deadline` is `None`, so no
@@ -915,8 +915,7 @@ fn complete(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::FakeEngine;
-    use crate::engine::TriggerCallback;
+    use crate::engine::{FakeEngine, GuestObserver, HookRejection, OBSERVE_REJECTED};
     use serde_json::json;
 
     /// Distinct from `call_timeout_ms` (2_000) so a test can tell "clamped to
@@ -1127,7 +1126,7 @@ mod tests {
         // Nothing is awaited, so the eval settles at once.
         let out = eval(
             &rt,
-            "iii.trigger({ function_id: 'does::not::exist', payload: {} }).catch(() => { for(;;){} }); \
+            "iii.call({ function_id: 'does::not::exist', payload: {} }).catch(() => { for(;;){} }); \
              return 'done'",
             2_000,
         )
@@ -1350,13 +1349,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_takes_the_sdk_request_object() {
+    async fn call_takes_the_sdk_request_object() {
         let fake = FakeEngine::new();
         fake.with_response("test::double", Ok(json!(42)));
         let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "return await iii.trigger({ function_id: 'test::double', payload: { n: 21 } })",
+            "return await iii.call({ function_id: 'test::double', payload: { n: 21 } })",
             2_000,
         )
         .await
@@ -1381,10 +1380,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_rejects_a_request_without_a_function_id() {
+    async fn call_rejects_a_request_without_a_function_id() {
         let fake = FakeEngine::new();
         let rt = spawn_rt_with(fake.clone());
-        let err = eval(&rt, "return await iii.trigger({ payload: {} })", 2_000)
+        let err = eval(&rt, "return await iii.call({ payload: {} })", 2_000)
             .await
             .unwrap_err();
         assert!(
@@ -1395,15 +1394,15 @@ mod tests {
         rt.shutdown();
     }
 
-    /// `trigger`'s other three validation branches — only `function_id`'s
-    /// had coverage. Each case's code is a separate eval so one failure
+    /// `call`'s other validation branches — only `function_id`'s had
+    /// coverage. Each case's code is a separate eval so one failure
     /// doesn't hide the rest; each asserts the message names what was wrong.
     #[tokio::test]
-    async fn trigger_rejects_a_malformed_request_on_every_field() {
+    async fn call_rejects_a_malformed_request_on_every_field() {
         let fake = FakeEngine::new();
         let rt = spawn_rt_with(fake.clone());
 
-        let not_an_object = eval(&rt, "return await iii.trigger('nope')", 2_000)
+        let not_an_object = eval(&rt, "return await iii.call('nope')", 2_000)
             .await
             .unwrap_err();
         assert!(
@@ -1415,25 +1414,61 @@ mod tests {
 
         let bad_action = eval(
             &rt,
-            "return await iii.trigger({ function_id: 'x::y', action: 3 })",
+            "return await iii.call({ function_id: 'x::y', action: 3 })",
             2_000,
         )
         .await
         .unwrap_err();
         assert!(
-            bad_action.to_string().contains("action must be a string"),
+            bad_action.to_string().contains("action must be an object"),
             "unhelpful message: {bad_action}"
+        );
+
+        let string_action = eval(
+            &rt,
+            "return await iii.call({ function_id: 'x::y', action: 'void' })",
+            2_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            string_action.to_string().contains("{ type: 'void' }"),
+            "the refusal must show the action shape: {string_action}"
+        );
+
+        let both = eval(
+            &rt,
+            "return await iii.call({ function_id: 'x::y', observer: { id: 'o' } })",
+            2_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            both.to_string().contains("not both"),
+            "unhelpful message: {both}"
+        );
+
+        let bad_observer = eval(&rt, "return await iii.call({ observer: 'o' })", 2_000)
+            .await
+            .unwrap_err();
+        assert!(
+            bad_observer
+                .to_string()
+                .contains("observer must be an observer an onObserverAdded hook received"),
+            "unhelpful message: {bad_observer}"
         );
 
         let bad_timeout = eval(
             &rt,
-            "return await iii.trigger({ function_id: 'x::y', timeout: '500' })",
+            "return await iii.call({ function_id: 'x::y', timeout_ms: '500' })",
             2_000,
         )
         .await
         .unwrap_err();
         assert!(
-            bad_timeout.to_string().contains("timeout must be a number"),
+            bad_timeout
+                .to_string()
+                .contains("timeout_ms must be a number"),
             "unhelpful message: {bad_timeout}"
         );
 
@@ -1441,13 +1476,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_resolves_with_the_engine_result() {
+    async fn call_resolves_with_the_engine_result() {
         let fake = FakeEngine::new();
         fake.with_response("state::get", Ok(json!({ "value": 7 })));
         let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "const r = await iii.trigger({ function_id: 'state::get', payload: { key: 'k' } }); \
+            "const r = await iii.call({ function_id: 'state::get', payload: { key: 'k' } }); \
              return r.value",
             2_000,
         )
@@ -1462,13 +1497,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_rejects_with_the_engine_error() {
+    async fn call_rejects_with_the_engine_error() {
         let fake = FakeEngine::new();
         fake.with_response("thing::fail", Err("upstream exploded".into()));
         let rt = spawn_rt_with(fake);
         let out = eval(
             &rt,
-            "try { await iii.trigger({ function_id: 'thing::fail', payload: {} }); \
+            "try { await iii.call({ function_id: 'thing::fail', payload: {} }); \
                return 'no throw' } \
              catch (e) { return e.message }",
             2_000,
@@ -1479,48 +1514,74 @@ mod tests {
         rt.shutdown();
     }
 
-    /// `FakeEngine::call` ignores `action` (see its `calls()`, which only
-    /// records `fn_id`/`payload`), so this only proves an `action` field on
-    /// the request object reaches `op_iii_call` and `Engine::call` without
-    /// tripping any of `trigger`'s own validation. The string -> `TriggerAction`
-    /// decode `IIIEngine` does with that value (`parse_trigger_action`) is
-    /// covered directly in `src/engine.rs`'s test module — it had zero
-    /// coverage before this task, since nothing called `Engine::call` with
-    /// `Some(_)` until `trigger` did.
+    /// The guest's action object crosses as its JSON text, unchanged; the
+    /// decode onto the SDK's `CallAction` lives with the hosting worker
+    /// (`code-runner/src/node_bus.rs`), which owns the SDK type. A call with
+    /// no action crosses as `None`, not as an empty action.
     #[tokio::test]
-    async fn trigger_forwards_the_action_string_to_the_engine() {
+    async fn call_forwards_the_action_object_to_the_engine() {
         let fake = FakeEngine::new();
         fake.with_response("app::react", Ok(json!(null)));
         let rt = spawn_rt_with(fake.clone());
         eval(
             &rt,
-            "return await iii.trigger({ function_id: 'app::react', payload: {}, action: 'void' })",
+            "await iii.call({ function_id: 'app::react', payload: {}, action: { type: 'void' } }); \
+             return await iii.call({ function_id: 'app::react', payload: {} })",
             2_000,
         )
         .await
         .unwrap();
-        assert_eq!(fake.calls(), vec![("app::react".to_string(), json!({}))]);
+        assert_eq!(
+            fake.calls(),
+            vec![
+                ("app::react".to_string(), json!({})),
+                ("app::react".to_string(), json!({}))
+            ]
+        );
+        assert_eq!(
+            fake.call_actions(),
+            vec![Some(r#"{"type":"void"}"#.to_string()), None]
+        );
         rt.shutdown();
     }
 
-    /// `trigger`'s payload crosses into Rust as JSON text built from the
+    /// `iii.trigger` is not a second implementation that could drift: it is
+    /// the very same function object as `iii.call`.
+    #[tokio::test]
+    async fn trigger_is_the_same_function_as_call() {
+        let fake = FakeEngine::new();
+        fake.with_response("test::double", Ok(json!(42)));
+        let rt = spawn_rt_with(fake.clone());
+        let out = eval(
+            &rt,
+            "return [iii.trigger === iii.call, \
+                     await iii.trigger({ function_id: 'test::double', payload: { n: 21 } })]",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.result, json!([true, 42]));
+        rt.shutdown();
+    }
+
+    /// `call`'s payload crosses into Rust as JSON text built from the
     /// pre-captured `stringify`, never the global `JSON.stringify` — see the
     /// capture block near the top of `prelude.js`. Overwriting the global
     /// once turned a thrown error into a reported success elsewhere in this
-    /// codebase; this proves `trigger` does not repeat that mistake. Unlike
+    /// codebase; this proves `call` does not repeat that mistake. Unlike
     /// the `settle`-forgery test, one eval is enough here: `stringify` is a
     /// closure variable resolved once when the prelude loads, not a property
     /// re-read at call time, so even tampering in the SAME eval that calls
-    /// `trigger` cannot reach it.
+    /// `call` cannot reach it.
     #[tokio::test]
-    async fn trigger_payload_survives_a_hijacked_json_stringify() {
+    async fn call_payload_survives_a_hijacked_json_stringify() {
         let fake = FakeEngine::new();
         fake.with_response("test::echo", Ok(json!("ok")));
         let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
             "JSON.stringify = () => { throw new Error('hijacked') }; \
-             return await iii.trigger({ function_id: 'test::echo', payload: { n: 1 } })",
+             return await iii.call({ function_id: 'test::echo', payload: { n: 1 } })",
             2_000,
         )
         .await
@@ -1543,7 +1604,7 @@ mod tests {
         let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "try { await iii.trigger({ function_id: 'thing::ping', \
+            "try { await iii.call({ function_id: 'thing::ping', \
                  payload: { blob: 'x'.repeat(2 * 1024 * 1024) } }); \
                return 'accepted' } \
              catch (e) { return e.message }",
@@ -1575,8 +1636,8 @@ mod tests {
         let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "try { await iii.trigger({ function_id: 'thing::ping', payload: {}, \
-                 action: 'x'.repeat(2000) }); \
+            "try { await iii.call({ function_id: 'thing::ping', payload: {}, \
+                 action: { type: 'x'.repeat(2000) } }); \
                return 'accepted' } \
              catch (e) { return e.message }",
             10_000,
@@ -1609,7 +1670,7 @@ mod tests {
         let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "try { await iii.trigger({ function_id: 'thing::' + 'x'.repeat(1024), \
+            "try { await iii.call({ function_id: 'thing::' + 'x'.repeat(1024), \
                  payload: {} }); \
                return 'accepted' } \
              catch (e) { return e.message }",
@@ -1629,8 +1690,8 @@ mod tests {
         rt.shutdown();
     }
 
-    /// A guest-supplied `timeout` is a CEILING clamp, not passed through
-    /// verbatim: `iii.trigger({..., timeout: Number.MAX_SAFE_INTEGER})`
+    /// A guest-supplied `timeout_ms` is a CEILING clamp, not passed through
+    /// verbatim: `iii.call({..., timeout_ms: Number.MAX_SAFE_INTEGER})`
     /// reaching `Engine::call` unclamped would, on the real `IIIEngine`,
     /// become a `tokio::time::timeout` that effectively never expires,
     /// holding an inflight slot and an entry in the SDK's process-wide
@@ -1638,22 +1699,22 @@ mod tests {
     /// `max_timeout_ms`. A SHORT requested timeout must still pass through
     /// unchanged — this is a ceiling, not a fixed override.
     #[tokio::test]
-    async fn triggers_timeout_is_clamped_to_the_configured_ceiling() {
+    async fn calls_timeout_is_clamped_to_the_configured_ceiling() {
         let fake = FakeEngine::new();
         fake.with_response("thing::ping", Ok(json!("pong")));
         let rt = spawn_rt_with(fake.clone());
 
         eval(
             &rt,
-            "return await iii.trigger({ function_id: 'thing::ping', payload: {}, timeout: 500 })",
+            "return await iii.call({ function_id: 'thing::ping', payload: {}, timeout_ms: 500 })",
             2_000,
         )
         .await
         .unwrap();
         eval(
             &rt,
-            "return await iii.trigger({ function_id: 'thing::ping', payload: {}, \
-                 timeout: Number.MAX_SAFE_INTEGER })",
+            "return await iii.call({ function_id: 'thing::ping', payload: {}, \
+                 timeout_ms: Number.MAX_SAFE_INTEGER })",
             2_000,
         )
         .await
@@ -1675,12 +1736,12 @@ mod tests {
             // The 32 calls that win a slot hang forever, so the rejections
             // cannot be awaited directly. Drain several microtask rounds
             // instead: an op rejection takes a few hops to reach `.catch`
-            // (op promise -> trigger's async fn -> handler), and one
+            // (op promise -> call's async fn -> handler), and one
             // round lands short. Rounds are deterministic, not timing-based,
             // so this is a fixed count with margin, not a sleep.
             "let rejected = 0; \
              for (let i = 0; i < 200; i++) { \
-               iii.trigger({ function_id: 'x::y', payload: {} }).catch(() => { rejected++ }); \
+               iii.call({ function_id: 'x::y', payload: {} }).catch(() => { rejected++ }); \
              } \
              for (let i = 0; i < 10; i++) await Promise.resolve(); \
              return rejected",
@@ -1714,7 +1775,7 @@ mod tests {
         let out = eval(
             &rt,
             "for (let i = 0; i < 40; i++) { \
-               await iii.trigger({ function_id: 'thing::ping', payload: {} }); \
+               await iii.call({ function_id: 'thing::ping', payload: {} }); \
              } \
              return 'done'",
             5_000,
@@ -1747,10 +1808,10 @@ mod tests {
             &rt,
             "let refused = 0; \
              for (let i = 0; i < 100; i++) { \
-               try { await iii.trigger({ function_id: 'thing::ping', payload: () => {} }) } \
+               try { await iii.call({ function_id: 'thing::ping', payload: () => {} }) } \
                catch (e) { refused++ } \
              } \
-             return [refused, await iii.trigger({ function_id: 'thing::ping', payload: {} })]",
+             return [refused, await iii.call({ function_id: 'thing::ping', payload: {} })]",
             10_000,
         )
         .await
@@ -1760,13 +1821,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_defaults_a_missing_payload_to_an_empty_object() {
+    async fn call_defaults_a_missing_payload_to_an_empty_object() {
         let fake = FakeEngine::new();
         fake.with_response("thing::ping", Ok(json!("pong")));
         let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "return await iii.trigger({ function_id: 'thing::ping' })",
+            "return await iii.call({ function_id: 'thing::ping' })",
             2_000,
         )
         .await
@@ -2089,7 +2150,7 @@ mod tests {
     #[tokio::test]
     async fn a_handler_can_await_another_handler_in_the_same_runtime() {
         let fake = FakeEngine::new();
-        // `iii.trigger` inside the isolate must come back in as a real
+        // `iii.call` inside the isolate must come back in as a real
         // dispatch, the way the engine would route it.
         fake.route_calls_to_registrations();
         let rt = spawn_rt_with(fake.clone());
@@ -2097,7 +2158,7 @@ mod tests {
             &rt,
             "iii.registerFunction('test::inner', (p) => p.n * 10); \
              iii.registerFunction('test::outer', async (p) => \
-               await iii.trigger({ function_id: 'test::inner', payload: { n: p.n } })); \
+               await iii.call({ function_id: 'test::inner', payload: { n: p.n } })); \
              return null",
             2_000,
         )
@@ -2279,9 +2340,10 @@ mod tests {
             .await
             .unwrap();
         let hint = out.result.as_str().unwrap();
+        assert!(hint.contains("iii.call"), "hint does not name call: {hint}");
         assert!(
-            hint.contains("iii.trigger"),
-            "hint does not name trigger: {hint}"
+            hint.contains("observe"),
+            "hint does not name observe: {hint}"
         );
         assert!(
             hint.contains("registerFunction"),
@@ -2293,15 +2355,17 @@ mod tests {
     /// writable `iii` method would be a way for tenant code to forge this
     /// runtime's results — the same reason `__iii` is frozen and
     /// non-configurable. A no-op assignment under a silently-swallowed catch
-    /// (non-strict `iii.trigger = ...` on a frozen object) must leave the
-    /// original `trigger` untouched.
+    /// (non-strict `iii.call = ...` on a frozen object) must leave the
+    /// original `call` untouched.
     #[tokio::test]
     async fn the_iii_global_is_frozen() {
         let fake = FakeEngine::new();
         let out = eval(
             &spawn_rt_with(fake.clone()),
-            "try { iii.trigger = () => 'forged'; } catch (_) {}
-             return typeof iii.trigger === 'function' && iii.trigger.name === 'trigger'",
+            "try { iii.call = () => 'forged'; } catch (_) {}
+             try { iii.trigger = () => 'forged'; } catch (_) {}
+             return typeof iii.call === 'function' && iii.call.name === 'call'
+               && iii.trigger === iii.call",
             2_000,
         )
         .await
@@ -2604,209 +2668,129 @@ mod tests {
         rt.shutdown();
     }
 
-    // --- Task 12: iii.registerTrigger / registerTriggerType / unregisterTriggerType ---
+    // --- iii.observe, iii.onObserverAdded / onObserverRemoved, and calls
+    // through an observer ---
 
-    /// The engine call for `iii.registerTrigger` — `Engine::register_trigger`
-    /// wired into the isolate for the first time. `t.unregister()` proves the
-    /// SDK-shaped ref this returns is really usable, not just shaped like
-    /// one: the brief's own test name promises "and can be removed", but its
-    /// given body never actually called `unregister()`.
-    #[tokio::test]
-    async fn register_trigger_reaches_the_engine_and_can_be_removed() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        eval(
-            &rt,
-            "const t = await iii.registerTrigger({
-                 type: 'state', function_id: 'app::react', config: { key: 'k' }
-             });
-             globalThis.t = t;
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(fake.registered_triggers().len(), 1);
-
-        eval(&rt, "t.unregister(); return 1", 2_000).await.unwrap();
-        assert_eq!(
-            fake.registered_triggers().len(),
-            0,
-            "unregister() left the trigger live on the bus"
-        );
-        rt.shutdown();
-    }
-
-    /// The engine calls INTO the isolate here. This is the same path a
-    /// registered function's handler uses; only the method name is new.
-    ///
-    /// Drives the callback with `fire_trigger_type_config` — the FULL
-    /// `TriggerConfig` shape the live engine actually sends, not
-    /// `fire_trigger_type`'s abbreviated `{method, config}` — and asserts on
-    /// `c.id`/`c.function_id` (which trigger instance, which function to
-    /// invoke — recoverable from nothing else) AND `c.config.key` (the
-    /// tenant's own opaque config), so this is evidence about the real wire
-    /// shape a `TriggerHandler` implementation receives, not about a test
-    /// double's narrower one.
-    #[tokio::test]
-    async fn a_trigger_type_handler_receives_engine_callbacks() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
-        eval(
-            &rt,
-            "globalThis.seen = [];
-             iii.registerTriggerType(
-               { id: 'app::mytype', description: 'test type' },
-               {
-                 registerTrigger: (c) => { globalThis.seen.push(['reg', c.id, c.function_id, c.config.key]) },
-                 unregisterTrigger: (c) => { globalThis.seen.push(['unreg', c.id, c.function_id, c.config.key]) },
-               },
-             );
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-
-        fake.fire_trigger_type_config(
-            "app::mytype",
-            "registerTrigger",
-            TriggerCallback {
-                id: "trig-1".to_string(),
-                function_id: "app::react".to_string(),
-                config: json!({ "key": "v" }),
-                metadata: None,
+    /// Two runtimes sharing ONE id registry, the way every runtime on a
+    /// worker does — for tests that prove a claim held by one runtime keeps
+    /// the other out. The plain spawn helpers give each runtime its own.
+    fn spawn_rt_sharing(
+        engine: Arc<FakeEngine>,
+        namespace: &str,
+        ids: crate::ids::IdRegistry,
+        runtime_id: &str,
+    ) -> RuntimeThread {
+        init_v8_platform();
+        RuntimeThread::spawn(
+            RuntimeOpts {
+                heap_mb: 32,
+                external_mb: 8,
+                namespace: namespace.into(),
+                call_timeout_ms: 2_000,
+                max_timeout_ms: TEST_MAX_TIMEOUT_MS,
+                ids,
+                runtime_id: runtime_id.into(),
+                last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+                scratch_mb: TEST_SCRATCH_MB,
+                scratch_files: TEST_SCRATCH_FILES,
+                scratch_root: None,
             },
+            engine,
+        )
+    }
+
+    fn observer_of(function_id: &str, id: &str) -> GuestObserver {
+        GuestObserver {
+            id: id.into(),
+            function_id: function_id.into(),
+            args: json!({ "key": "k" }),
+            filters: json!({}),
+            target: "other::react".into(),
+        }
+    }
+
+    /// The engine call for `iii.observe` — `Engine::observe` wired into the
+    /// isolate. `h.dispose()` proves the handle this returns is really
+    /// usable, not just shaped like one.
+    #[tokio::test]
+    async fn observe_reaches_the_engine_and_dispose_removes_it() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        let out = eval(
+            &rt,
+            "const h = await iii.observe(
+                 { function_id: 'state::on-changed',
+                   filters: { 'input.key': { $eq: 'k' } }, deliver: 'output' },
+                 'test::react',
+                 { metadata: { owner: 'test' }, max_in_flight: 1 },
+             );
+             globalThis.h = h;
+             return h.id",
+            2_000,
         )
         .await
         .unwrap();
-        let out = eval(&rt, "return globalThis.seen", 2_000).await.unwrap();
-        assert_eq!(out.result, json!([["reg", "trig-1", "app::react", "v"]]));
+        let id = out.result.as_str().unwrap().to_string();
+        let observers = fake.registered_observers();
+        assert_eq!(observers.len(), 1);
+        assert_eq!(
+            observers[0],
+            json!({
+                "source": {
+                    "function_id": "state::on-changed",
+                    "filters": { "input.key": { "$eq": "k" } },
+                    "deliver": "output",
+                },
+                "target": "test::react",
+                "options": { "metadata": { "owner": "test" }, "max_in_flight": 1, "id": id },
+            })
+        );
+        // Not a registration a caller can call: the delta stays empty.
+        assert!(out.registered.is_empty());
+
+        eval(&rt, "await h.dispose(); await h.dispose(); return 1", 2_000)
+            .await
+            .unwrap();
+        assert!(
+            fake.registered_observers().is_empty(),
+            "dispose() left the observer live on the bus"
+        );
         rt.shutdown();
     }
 
-    /// A tenant's trigger-type handler that hangs must not wedge the
-    /// engine's caller: the callback runs under `invoke_timeout_ms`, the
-    /// same budget a registered function's handler already uses
-    /// (`op_iii_register`'s proxy).
-    ///
-    /// This test discriminates by HANGING, not failing, if the timeout is
-    /// broken: `fire_trigger_type`'s future would simply never resolve. A
-    /// broken timeout should report a test failure, not wedge the whole
-    /// suite/CI run — wrapped in its own `tokio::time::timeout` so a
-    /// regression here fails fast with a clear message instead.
+    /// The SDK's string shorthand: a bare function id observes every
+    /// successful call of it.
     #[tokio::test]
-    async fn a_hanging_trigger_type_handler_times_out_instead_of_wedging() {
+    async fn observe_takes_a_function_id_string() {
         let fake = FakeEngine::new();
-        let rt = spawn_rt_with_namespace_and_timeout(fake.clone(), "app::", 50);
+        let rt = spawn_rt_with(fake.clone());
         eval(
             &rt,
-            "iii.registerTriggerType(
-               { id: 'app::slow' },
-               { registerTrigger: () => new Promise(() => {}), unregisterTrigger: () => {} },
-             );
-             return 1",
+            "await iii.observe('orders::create', 'test::alert'); return 1",
             2_000,
         )
         .await
         .unwrap();
-        let err = tokio::time::timeout(
-            Duration::from_secs(5),
-            fake.fire_trigger_type("app::slow", "registerTrigger", json!({ "id": "t1" })),
-        )
-        .await
-        .expect("fire_trigger_type must resolve within 5s, not hang")
-        .unwrap_err();
-        assert!(err.contains("timeout"), "expected a timeout, got: {err}");
-    }
-
-    /// Task 9's review flagged `IIIEngine::triggers` as unbounded and
-    /// guest-reachable the moment an op exists to reach it. Fills the shared
-    /// budget with function registrations, then proves BOTH new registration
-    /// kinds — not just functions — are refused once it is exhausted.
-    #[tokio::test]
-    async fn triggers_and_trigger_types_count_against_the_shared_registration_cap() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        let fill = format!(
-            "for (let i = 0; i < {}; i++) {{ iii.registerFunction('test::f' + i, () => i) }} \
-             return 1",
-            crate::ops::MAX_REGISTRATIONS_PER_RUNTIME,
+        let observers = fake.registered_observers();
+        assert_eq!(
+            observers[0]["source"],
+            json!({ "function_id": "orders::create" })
         );
-        eval(&rt, &fill, 20_000).await.unwrap();
-
-        let trigger_err = eval(
-            &rt,
-            "await iii.registerTrigger({ type: 'state', function_id: 'test::f0', config: {} }); \
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            trigger_err.to_string().contains("256"),
-            "must name the cap: {trigger_err}"
-        );
-        assert!(
-            fake.registered_triggers().is_empty(),
-            "the bus saw an uncapped trigger write"
-        );
-
-        let type_err = eval(
-            &rt,
-            "iii.registerTriggerType({ id: 'test::overtype' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); \
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            type_err.to_string().contains("256"),
-            "must name the cap: {type_err}"
-        );
-        assert!(
-            fake.registered_trigger_types().is_empty(),
-            "the bus saw an uncapped trigger-type write"
-        );
-
+        assert_eq!(observers[0]["target"], json!("test::alert"));
         rt.shutdown();
     }
 
+    /// Every guest shares the worker's one connection, so an observer id is
+    /// an address on it: a guest-chosen id lives inside the runtime's own
+    /// namespace, exactly like a function id.
     #[tokio::test]
-    async fn an_overlong_trigger_config_is_rejected() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        let code = "try { await iii.registerTrigger({ type: 'state', function_id: 'test::f', \
-                     config: { big: 'x'.repeat(2 * 1024 * 1024) } }); return 'accepted' } \
-                     catch (e) { return 'rejected' }";
-        let out = eval(&rt, code, 5_000).await.unwrap();
-        assert_eq!(out.result, json!("rejected"));
-        assert!(fake.registered_triggers().is_empty());
-        rt.shutdown();
-    }
-
-    #[tokio::test]
-    async fn an_overlong_trigger_type_id_is_rejected() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        let code = "try { iii.registerTriggerType({ id: 'test::' + 'x'.repeat(1024) }, \
-                     { registerTrigger(){}, unregisterTrigger(){} }); return 'accepted' } \
-                     catch (e) { return 'rejected' }";
-        let out = eval(&rt, code, 5_000).await.unwrap();
-        assert_eq!(out.result, json!("rejected"));
-        assert!(fake.registered_trigger_types().is_empty());
-        rt.shutdown();
-    }
-
-    #[tokio::test]
-    async fn trigger_type_ids_outside_the_namespace_are_rejected() {
+    async fn a_named_observer_must_live_in_the_runtimes_namespace() {
         let fake = FakeEngine::new();
         let rt = spawn_rt_with_namespace(fake.clone(), "app::");
         let out = eval(
             &rt,
-            "try { iii.registerTriggerType({ id: 'other::type' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); return 'no throw' } \
+            "try { await iii.observe('state::on-changed', 'app::react', { id: 'other::watch' }); \
+               return 'no throw' } \
              catch (e) { return e.message }",
             2_000,
         )
@@ -2817,69 +2801,224 @@ mod tests {
             "message should name the namespace, got {:?}",
             out.result
         );
-        assert!(fake.registered_trigger_types().is_empty());
-        rt.shutdown();
-    }
+        assert!(fake.registered_observers().is_empty());
 
-    #[tokio::test]
-    async fn unregister_trigger_type_removes_the_registration() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
-        eval(
+        let named = eval(
             &rt,
-            "const ref = iii.registerTriggerType({ id: 'app::mytype' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); \
-             ref.unregister(); return 1",
+            "return (await iii.observe('state::on-changed', 'app::react', { id: 'app::watch' })).id",
             2_000,
         )
         .await
         .unwrap();
-        assert!(fake.registered_trigger_types().is_empty());
+        assert_eq!(named.result, json!("app::watch"));
         rt.shutdown();
     }
 
-    /// The standalone `iii.unregisterTriggerType(id)` form — distinct from a
-    /// ref's own `unregister()` — accepts either a bare id string or the
-    /// original type object (reading its `.id`).
+    /// The id claim is what keeps a second runtime in the same namespace
+    /// from naming — and so replacing — the first runtime's observer.
     #[tokio::test]
-    async fn unregister_trigger_type_accepts_a_bare_id_or_the_type_object() {
+    async fn an_observer_id_another_runtime_holds_is_refused() {
         let fake = FakeEngine::new();
-        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        let ids = crate::ids::IdRegistry::default();
+        let first = spawn_rt_sharing(fake.clone(), "app::", ids.clone(), "rt-first");
+        let second = spawn_rt_sharing(fake.clone(), "app::", ids, "rt-second");
         eval(
+            &first,
+            "await iii.observe('state::on-changed', 'app::react', { id: 'app::watch' }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        let err = eval(
+            &second,
+            "await iii.observe('state::on-changed', 'app::mine', { id: 'app::watch' }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("already registered"),
+            "unhelpful message: {err}"
+        );
+        assert_eq!(fake.registered_observers().len(), 1);
+        first.shutdown();
+        second.shutdown();
+    }
+
+    #[tokio::test]
+    async fn observing_twice_under_one_id_is_refused() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        let err = eval(
             &rt,
-            "iii.registerTriggerType({ id: 'app::a' }, { registerTrigger(){}, unregisterTrigger(){} }); \
-             iii.registerTriggerType({ id: 'app::b' }, { registerTrigger(){}, unregisterTrigger(){} }); \
-             iii.unregisterTriggerType('app::a'); \
-             iii.unregisterTriggerType({ id: 'app::b' }); \
+            "await iii.observe('a::b', 'test::r', { id: 'test::watch' }); \
+             await iii.observe('a::b', 'test::r', { id: 'test::watch' }); \
              return 1",
             2_000,
         )
         .await
-        .unwrap();
-        assert!(fake.registered_trigger_types().is_empty());
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unhelpful message: {err}"
+        );
+        assert_eq!(fake.registered_observers().len(), 1);
         rt.shutdown();
     }
 
-    /// Re-registering under an id this runtime already holds is a no-op at
-    /// the engine layer (see `op_iii_register_trigger_type`'s doc comment for
-    /// why) — but the bus-level proxy is never rebuilt, so the invoke-time
-    /// lookup must still route to whichever handler was registered MOST
-    /// RECENTLY, not the first, or a re-registration would silently keep
-    /// firing stale JavaScript.
+    /// A malformed observer is refused in the guest's own vocabulary, before
+    /// anything reaches the engine — the prelude's checks for the shape, the
+    /// shared `parse_guest_observe` for the fields.
     #[tokio::test]
-    async fn re_registering_a_trigger_type_routes_to_the_latest_handler() {
+    async fn a_malformed_observe_is_refused_before_the_engine() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        for (code, expected) in [
+            (
+                "await iii.observe(42, 'test::r')",
+                "source must be a function id",
+            ),
+            ("await iii.observe({}, 'test::r')", "source.function_id"),
+            (
+                "await iii.observe('a::b')",
+                "target must be a non-empty function id",
+            ),
+            (
+                "await iii.observe('a::b', 'test::r', 'opts')",
+                "options must be an object",
+            ),
+            (
+                "await iii.observe({ function_id: 'a::b', filter: {} }, 'test::r')",
+                "unknown field `filter`",
+            ),
+            (
+                "await iii.observe({ function_id: 'a::b', deliver: 'everything' }, 'test::r')",
+                "invalid observe request",
+            ),
+            (
+                "await iii.observe('a::b', 'test::r', { max_fires: 'many' })",
+                "invalid observe request",
+            ),
+        ] {
+            let err = eval(&rt, &format!("{code}; return 1"), 2_000)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "{code}: expected {expected:?}, got {err}"
+            );
+        }
+        assert!(fake.registered_observers().is_empty());
+        rt.shutdown();
+    }
+
+    #[tokio::test]
+    async fn an_overlong_observe_request_is_rejected() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        let code = "try { await iii.observe({ function_id: 'a::b', \
+                     args: { big: 'x'.repeat(2 * 1024 * 1024) } }, 'test::r'); return 'accepted' } \
+                     catch (e) { return e.message }";
+        let out = eval(&rt, code, 5_000).await.unwrap();
+        assert!(
+            out.result.as_str().unwrap().contains("limit"),
+            "expected a size-limit rejection, got {:?}",
+            out.result
+        );
+        assert!(fake.registered_observers().is_empty());
+        rt.shutdown();
+    }
+
+    /// Observers pin a Rust-heap closure for the life of the runtime and
+    /// write to the bus, the same hazard functions have, so they share the
+    /// one budget. Fills it with functions, then proves both other kinds are
+    /// refused once it is exhausted.
+    #[tokio::test]
+    async fn observers_and_hooks_count_against_the_shared_registration_cap() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        let fill = format!(
+            "for (let i = 0; i < {}; i++) {{ iii.registerFunction('test::f' + i, () => i) }} \
+             return 1",
+            crate::ops::MAX_REGISTRATIONS_PER_RUNTIME,
+        );
+        eval(&rt, &fill, 20_000).await.unwrap();
+
+        let observe_err = eval(
+            &rt,
+            "await iii.observe('state::on-changed', 'test::f0'); return 1",
+            2_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            observe_err.to_string().contains("256"),
+            "must name the cap: {observe_err}"
+        );
+        assert!(
+            fake.registered_observers().is_empty(),
+            "the bus saw an uncapped observer write"
+        );
+
+        let hook_err = eval(
+            &rt,
+            "iii.onObserverAdded('test::over', () => {}); return 1",
+            2_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            hook_err.to_string().contains("256"),
+            "must name the cap: {hook_err}"
+        );
+        assert_eq!(
+            fake.hooked_ids(),
+            (vec![], vec![]),
+            "the engine saw an uncapped hook write"
+        );
+
+        rt.shutdown();
+    }
+
+    /// Un-awaited `observe()` calls all book their slot before any of them
+    /// awaits the engine, so firing past the cap in one go cannot slip extra
+    /// observers through a shared "under the cap" snapshot.
+    #[tokio::test]
+    async fn concurrent_observes_cannot_overshoot_the_cap() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        let code = format!(
+            "const all = []; \
+             for (let i = 0; i < {}; i++) {{ \
+               all.push(iii.observe('state::on-changed', 'test::r').then(() => 1, () => 0)); \
+             }} \
+             return (await Promise.all(all)).reduce((a, b) => a + b, 0)",
+            crate::ops::MAX_REGISTRATIONS_PER_RUNTIME + 20,
+        );
+        let out = eval(&rt, &code, 20_000).await.unwrap();
+        assert_eq!(out.result, json!(crate::ops::MAX_REGISTRATIONS_PER_RUNTIME));
+        assert_eq!(
+            fake.registered_observers().len(),
+            crate::ops::MAX_REGISTRATIONS_PER_RUNTIME
+        );
+        rt.shutdown();
+    }
+
+    /// The engine calls INTO the isolate here, through the same path a
+    /// registered function's handler uses; only the method name is new.
+    /// Driven with `fire_observer_added`, which builds the payload with the
+    /// SAME `observer_hook_payload` the live adapter uses, so this is
+    /// evidence about the shape a hook really receives.
+    #[tokio::test]
+    async fn an_added_hook_receives_the_observer() {
         let fake = FakeEngine::new();
         let rt = spawn_rt_with_namespace(fake.clone(), "app::");
         eval(
             &rt,
             "globalThis.seen = [];
-             iii.registerTriggerType({ id: 'app::mytype' }, {
-               registerTrigger: () => { globalThis.seen.push('first') },
-               unregisterTrigger: () => {},
-             });
-             iii.registerTriggerType({ id: 'app::mytype' }, {
-               registerTrigger: () => { globalThis.seen.push('second') },
-               unregisterTrigger: () => {},
+             iii.registerFunction('app::changed', (e) => e, { private: true });
+             iii.onObserverAdded('app::changed', (obs) => {
+               globalThis.seen.push([obs.id, obs.function_id, obs.args.key, obs.target]);
              });
              return 1",
             2_000,
@@ -2887,7 +3026,501 @@ mod tests {
         .await
         .unwrap();
 
-        fake.fire_trigger_type("app::mytype", "registerTrigger", json!({}))
+        fake.fire_observer_added(&observer_of("app::changed", "obs-1"))
+            .await
+            .unwrap();
+        let out = eval(&rt, "return globalThis.seen", 2_000).await.unwrap();
+        assert_eq!(
+            out.result,
+            json!([["obs-1", "app::changed", "k", "other::react"]])
+        );
+        rt.shutdown();
+    }
+
+    /// A hook that throws rejects the observer with the thrown error's
+    /// `code`, or `OBSERVE_REJECTED` when it names none.
+    #[tokio::test]
+    async fn an_added_hook_that_throws_rejects_the_observer() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::coded', (obs) => {
+               throw Object.assign(new Error('no key ' + obs.args.key), { code: 'UNKNOWN_KEY' });
+             });
+             iii.onObserverAdded('app::plain', async () => { throw new Error('not today') });
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            fake.fire_observer_added(&observer_of("app::coded", "obs-1"))
+                .await,
+            Err(HookRejection {
+                code: "UNKNOWN_KEY".into(),
+                message: "no key k".into()
+            })
+        );
+        assert_eq!(
+            fake.fire_observer_added(&observer_of("app::plain", "obs-2"))
+                .await,
+            Err(HookRejection {
+                code: OBSERVE_REJECTED.into(),
+                message: "not today".into()
+            })
+        );
+        rt.shutdown();
+    }
+
+    /// The rejection shape is built with the pre-captured `thenPromise`, so a
+    /// tenant that replaced `Promise.prototype.then` cannot turn its own
+    /// hook's refusal into an acceptance the engine would act on.
+    #[tokio::test]
+    async fn a_hijacked_promise_then_cannot_turn_a_rejection_into_acceptance() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::x', () => { throw new Error('refused') }); \
+             Promise.prototype.then = function () { return 'FORGED' }; \
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        let out = fake
+            .fire_observer_added(&observer_of("app::x", "obs-1"))
+            .await;
+        assert_eq!(out.unwrap_err().message, "refused");
+        rt.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_removed_hook_runs_when_an_accepted_observer_leaves() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "globalThis.seen = [];
+             iii.onObserverAdded('app::x', (obs) => { globalThis.seen.push(['added', obs.id]) });
+             iii.onObserverRemoved('app::x', (obs) => { globalThis.seen.push(['removed', obs.id]) });
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        let obs = observer_of("app::x", "obs-1");
+        fake.fire_observer_added(&obs).await.unwrap();
+        fake.fire_observer_removed(&obs).await.unwrap();
+        let out = eval(&rt, "return globalThis.seen", 2_000).await.unwrap();
+        assert_eq!(
+            out.result,
+            json!([["added", "obs-1"], ["removed", "obs-1"]])
+        );
+        rt.shutdown();
+    }
+
+    /// The engine gets both proxies whenever the guest set either hook. The
+    /// one with no guest hook behind it answers the way iii does by default:
+    /// an added observer is accepted.
+    #[tokio::test]
+    async fn a_function_with_only_a_removed_hook_accepts_its_observers() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverRemoved('app::x', () => {}); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fake.hooked_ids(),
+            (vec!["app::x".to_string()], vec!["app::x".to_string()])
+        );
+        assert_eq!(
+            fake.fire_observer_added(&observer_of("app::x", "obs-1"))
+                .await,
+            Ok(())
+        );
+        rt.shutdown();
+    }
+
+    /// A tenant's hook that hangs must not wedge the engine's caller: the
+    /// callback runs under `invoke_timeout_ms`, the same budget a registered
+    /// function's handler uses, and a hook that never finished rejects.
+    ///
+    /// This test discriminates by HANGING, not failing, if the timeout is
+    /// broken, so it is wrapped in its own `tokio::time::timeout` to fail
+    /// fast with a clear message instead of wedging the suite.
+    #[tokio::test]
+    async fn a_hanging_hook_times_out_instead_of_wedging() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with_namespace_and_timeout(fake.clone(), "app::", 50);
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::slow', () => new Promise(() => {})); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            fake.fire_observer_added(&observer_of("app::slow", "obs-1")),
+        )
+        .await
+        .expect("fire_observer_added must resolve within 5s, not hang")
+        .unwrap_err();
+        assert_eq!(err.code, OBSERVE_REJECTED);
+        assert!(
+            err.message.contains("timeout"),
+            "expected a timeout, got: {err:?}"
+        );
+    }
+
+    /// A guest source calls its observers itself: the observer a hook
+    /// received is what `iii.call({ observer })` takes.
+    #[tokio::test]
+    async fn a_hook_can_hand_its_observer_to_a_later_call() {
+        let fake = FakeEngine::new();
+        fake.with_observer_response("obs-1", Ok(json!({ "status_code": 200 })));
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::x', (obs) => { globalThis.obs = obs }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        fake.fire_observer_added(&observer_of("app::x", "obs-1"))
+            .await
+            .unwrap();
+
+        let out = eval(
+            &rt,
+            "return await iii.call({ observer: globalThis.obs, payload: { path: '/' }, \
+                                     action: { type: 'void' }, timeout_ms: 500 })",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.result, json!({ "status_code": 200 }));
+        assert_eq!(
+            fake.observer_calls(),
+            vec![("obs-1".to_string(), json!({ "path": "/" }))]
+        );
+        assert!(
+            fake.calls().is_empty(),
+            "a call through an observer is not a function call"
+        );
+        rt.shutdown();
+    }
+
+    /// A call through an observer takes no metadata (decision 53): its
+    /// target's metadata argument is the observer's. Every JSON kind other
+    /// than `null` is refused with the SDKs' message, before anything reaches
+    /// the engine.
+    #[tokio::test]
+    async fn a_call_through_an_observer_takes_no_metadata() {
+        let fake = FakeEngine::new();
+        fake.with_observer_response("obs-1", Ok(json!("ran")));
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::x', (obs) => { globalThis.obs = obs }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        fake.fire_observer_added(&observer_of("app::x", "obs-1"))
+            .await
+            .unwrap();
+
+        for metadata in ["{ binding: 'forged' }", "{}", "[]", "0", "false", "''"] {
+            let out = eval(
+                &rt,
+                &format!(
+                    "try {{ await iii.call({{ observer: globalThis.obs, payload: {{}}, \
+                                              metadata: {metadata} }}); \
+                       return 'no throw' }} \
+                     catch (e) {{ return [e instanceof Error, e.message] }}"
+                ),
+                2_000,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                out.result,
+                json!([
+                    true,
+                    "a call through an observer takes no metadata; its target receives the \
+                     observer's metadata"
+                ]),
+                "metadata {metadata}"
+            );
+        }
+        assert!(
+            fake.observer_calls().is_empty(),
+            "a refused call reached the engine"
+        );
+        rt.shutdown();
+    }
+
+    /// `metadata: null` is no metadata (decision 54): a call through an
+    /// observer and a call of a function both go through with it, exactly as
+    /// they do without it.
+    #[tokio::test]
+    async fn null_metadata_is_no_metadata_on_every_call() {
+        let fake = FakeEngine::new();
+        fake.with_observer_response("obs-1", Ok(json!("through")));
+        fake.with_response("app::y", Ok(json!("called")));
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::x', (obs) => { globalThis.obs = obs }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        fake.fire_observer_added(&observer_of("app::x", "obs-1"))
+            .await
+            .unwrap();
+
+        let out = eval(
+            &rt,
+            "return [ \
+               await iii.call({ observer: globalThis.obs, payload: { n: 1 }, metadata: null }), \
+               await iii.call({ observer: globalThis.obs, payload: { n: 2 }, metadata: undefined }), \
+               await iii.call({ function_id: 'app::y', payload: { n: 3 }, metadata: null }), \
+             ]",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.result, json!(["through", "through", "called"]));
+        assert_eq!(
+            fake.observer_calls(),
+            vec![
+                ("obs-1".to_string(), json!({ "n": 1 })),
+                ("obs-1".to_string(), json!({ "n": 2 }))
+            ]
+        );
+        assert_eq!(
+            fake.calls(),
+            vec![("app::y".to_string(), json!({ "n": 3 }))]
+        );
+        rt.shutdown();
+    }
+
+    /// Only observers this runtime's own hooks were handed may be called
+    /// through. A forged `{ id }` — or a real id that belongs to another
+    /// runtime's function — gets the same refusal, and never reaches the
+    /// engine, which only checks that the CONNECTION hosts the function.
+    #[tokio::test]
+    async fn a_runtime_cannot_call_through_an_observer_it_was_not_handed() {
+        let fake = FakeEngine::new();
+        fake.with_observer_response("victim-obs", Ok(json!("ran")));
+        let ids = crate::ids::IdRegistry::default();
+        let victim = spawn_rt_sharing(fake.clone(), "victim::", ids.clone(), "rt-victim");
+        let attacker = spawn_rt_sharing(fake.clone(), "attacker::", ids, "rt-attacker");
+        eval(
+            &victim,
+            "iii.onObserverAdded('victim::x', () => {}); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        fake.fire_observer_added(&observer_of("victim::x", "victim-obs"))
+            .await
+            .unwrap();
+
+        for id in ["victim-obs", "never-existed"] {
+            let out = eval(
+                &attacker,
+                &format!(
+                    "try {{ await iii.call({{ observer: {{ id: '{id}' }}, payload: {{}} }}); \
+                       return 'no throw' }} \
+                     catch (e) {{ return e.message }}"
+                ),
+                2_000,
+            )
+            .await
+            .unwrap();
+            assert!(
+                out.result
+                    .as_str()
+                    .unwrap()
+                    .contains("can only call through observers of its own functions"),
+                "{id}: got {:?}",
+                out.result
+            );
+        }
+        assert!(
+            fake.observer_calls().is_empty(),
+            "a foreign observer id reached the engine"
+        );
+        victim.shutdown();
+        attacker.shutdown();
+    }
+
+    /// An observer leaves the runtime's books when its removed callback
+    /// arrives, and a rejected one never stays on them.
+    #[tokio::test]
+    async fn removed_and_rejected_observers_can_no_longer_be_called_through() {
+        let fake = FakeEngine::new();
+        fake.with_observer_response("obs-ok", Ok(json!("ran")));
+        fake.with_observer_response("obs-no", Ok(json!("ran")));
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::x', (obs) => { \
+               if (obs.id === 'obs-no') throw new Error('refused') });
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        let accepted = observer_of("app::x", "obs-ok");
+        fake.fire_observer_added(&accepted).await.unwrap();
+        fake.fire_observer_added(&observer_of("app::x", "obs-no"))
+            .await
+            .unwrap_err();
+
+        let call = |id: &str| {
+            format!(
+                "try {{ return await iii.call({{ observer: {{ id: '{id}' }} }}) }} \
+                 catch (e) {{ return 'refused' }}"
+            )
+        };
+        assert_eq!(
+            eval(&rt, &call("obs-ok"), 2_000).await.unwrap().result,
+            json!("ran")
+        );
+        assert_eq!(
+            eval(&rt, &call("obs-no"), 2_000).await.unwrap().result,
+            json!("refused")
+        );
+
+        fake.fire_observer_removed(&accepted).await.unwrap();
+        assert_eq!(
+            eval(&rt, &call("obs-ok"), 2_000).await.unwrap().result,
+            json!("refused")
+        );
+        assert_eq!(fake.observer_calls().len(), 1);
+        rt.shutdown();
+    }
+
+    #[tokio::test]
+    async fn hooks_outside_the_namespace_are_rejected() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        let out = eval(
+            &rt,
+            "try { iii.onObserverAdded('other::x', () => {}); return 'no throw' } \
+             catch (e) { return e.message }",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.result.as_str().unwrap().contains("app::"),
+            "message should name the namespace, got {:?}",
+            out.result
+        );
+        assert_eq!(fake.hooked_ids(), (vec![], vec![]));
+        rt.shutdown();
+    }
+
+    #[tokio::test]
+    async fn an_overlong_hook_id_is_rejected() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        let code = "try { iii.onObserverAdded('test::' + 'x'.repeat(1024), () => {}); \
+                     return 'accepted' } \
+                     catch (e) { return 'rejected' }";
+        let out = eval(&rt, code, 5_000).await.unwrap();
+        assert_eq!(out.result, json!("rejected"));
+        assert_eq!(fake.hooked_ids(), (vec![], vec![]));
+        rt.shutdown();
+    }
+
+    /// Hooks decide who may observe a function and hand out its observers,
+    /// so they belong to the runtime that holds the id: a second runtime in
+    /// the same namespace cannot set hooks on the first one's function.
+    #[tokio::test]
+    async fn hooks_on_an_id_another_runtime_holds_are_refused() {
+        let fake = FakeEngine::new();
+        let ids = crate::ids::IdRegistry::default();
+        let owner = spawn_rt_sharing(fake.clone(), "app::", ids.clone(), "rt-owner");
+        let intruder = spawn_rt_sharing(fake.clone(), "app::", ids, "rt-intruder");
+        eval(
+            &owner,
+            "iii.registerFunction('app::x', (e) => e); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        let err = eval(
+            &intruder,
+            "iii.onObserverAdded('app::x', () => { throw new Error('mine now') }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("already registered"),
+            "unhelpful message: {err}"
+        );
+        assert_eq!(fake.hooked_ids(), (vec![], vec![]));
+        owner.shutdown();
+        intruder.shutdown();
+    }
+
+    #[tokio::test]
+    async fn a_hook_must_be_a_function_or_null() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        for code in [
+            "iii.onObserverAdded('test::x', 'nope')",
+            "iii.onObserverRemoved('test::x')",
+            "iii.onObserverAdded(() => {})",
+        ] {
+            let err = eval(&rt, &format!("{code}; return 1"), 2_000)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("functionId must be a non-empty string")
+                    || err.to_string().contains("hook must be a function, or null"),
+                "{code}: unhelpful message: {err}"
+            );
+        }
+        assert_eq!(fake.hooked_ids(), (vec![], vec![]));
+        rt.shutdown();
+    }
+
+    /// Setting a hook again under an id this runtime already hooked is a
+    /// no-op at the engine layer (see `op_iii_set_observer_hooks`'s doc
+    /// comment) — but the engine-side proxy is never rebuilt, so the
+    /// invoke-time lookup must route to whichever hook was set MOST
+    /// RECENTLY, or a replaced hook would silently keep running.
+    #[tokio::test]
+    async fn setting_a_hook_again_routes_to_the_latest_hook() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "globalThis.seen = [];
+             iii.onObserverAdded('app::x', () => { globalThis.seen.push('first') });
+             iii.onObserverAdded('app::x', () => { globalThis.seen.push('second') });
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        fake.fire_observer_added(&observer_of("app::x", "obs-1"))
             .await
             .unwrap();
         let out = eval(&rt, "return globalThis.seen", 2_000).await.unwrap();
@@ -2895,13 +3528,13 @@ mod tests {
         rt.shutdown();
     }
 
-    /// A re-registration under an id this runtime already holds must not
-    /// spend a second slot from the shared cap. Fills to `MAX - 2` with
-    /// functions, registers ONE trigger type five times over (four of those
-    /// re-registrations), and proves exactly one more registration still
-    /// fits — it would already be refused if any of the five had counted.
+    /// Both hooks of one function, set any number of times, are ONE entry
+    /// in the shared budget. Fills to `MAX - 2` with functions, sets hooks
+    /// on one id ten times over, and proves exactly one more registration
+    /// still fits — it would already be refused if any of them had counted
+    /// twice.
     #[tokio::test]
-    async fn re_registering_a_trigger_type_does_not_spend_a_second_cap_slot() {
+    async fn setting_hooks_again_does_not_spend_a_second_cap_slot() {
         let fake = FakeEngine::new();
         let rt = spawn_rt_with_namespace(fake.clone(), "app::");
         let fill = format!(
@@ -2914,16 +3547,14 @@ mod tests {
         eval(
             &rt,
             "for (let i = 0; i < 5; i++) { \
-               iii.registerTriggerType({ id: 'app::mytype' }, \
-                 { registerTrigger(){}, unregisterTrigger(){} }); \
+               iii.onObserverAdded('app::x', () => {}); \
+               iii.onObserverRemoved('app::x', () => {}); \
              } return 1",
             5_000,
         )
         .await
         .unwrap();
 
-        // `MAX - 2` functions + one logical trigger-type registration = `MAX
-        // - 1` held; exactly one more registration must still fit.
         let out = eval(
             &rt,
             "iii.registerFunction('app::last', () => 1); return 1",
@@ -2935,125 +3566,210 @@ mod tests {
         rt.shutdown();
     }
 
-    // --- Task 12 fix round: kind-tagged registrations, full trigger-type
-    // payloads, the `.then` hijack, and the `registered` delta ---
-
-    /// A function and a trigger type sharing the identical literal id must
-    /// not collide: before `RegistrationKind` tagged `unregisters` entries,
-    /// `op_iii_register_trigger_type`'s dedup check matched the FUNCTION
-    /// entry (id-only lookup) and treated the trigger type as "already
-    /// registered", so it silently never reached the bus while `eval`
-    /// reported success.
+    /// The engine hooks go away once BOTH guest hooks are `null` again, not
+    /// before: with one still set, the other's proxy keeps answering with
+    /// iii's default.
     #[tokio::test]
-    async fn a_function_id_and_a_trigger_type_id_do_not_collide_on_registration() {
+    async fn clearing_both_hooks_removes_them_from_the_engine() {
         let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        let both = (vec!["app::x".to_string()], vec!["app::x".to_string()]);
         eval(
             &rt,
-            "iii.registerFunction('test::x', () => 1); return 1",
+            "iii.onObserverAdded('app::x', () => {}); \
+             iii.onObserverRemoved('app::x', () => {}); \
+             iii.onObserverAdded('app::x', null); \
+             return 1",
             2_000,
         )
         .await
         .unwrap();
+        assert_eq!(fake.hooked_ids(), both);
 
+        eval(
+            &rt,
+            "iii.onObserverRemoved('app::x', null); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fake.hooked_ids(), (vec![], vec![]));
+
+        // Clearing what was never set is a quiet no-op.
+        eval(&rt, "iii.onObserverAdded('app::y', null); return 1", 2_000)
+            .await
+            .unwrap();
+        rt.shutdown();
+    }
+
+    /// A function and its hooks share the identical literal id — the normal
+    /// case. Neither may treat the other as "already registered", and the
+    /// reported delta names the function once: hooks publish nothing a
+    /// caller could call.
+    #[tokio::test]
+    async fn a_function_and_its_hooks_do_not_collide_in_one_eval() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "iii.registerTriggerType({ id: 'test::x' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); return 1",
+            "iii.onObserverAdded('test::x', () => {}); \
+             iii.registerFunction('test::x', (e) => e, { private: true }); \
+             return 1",
             2_000,
         )
         .await
         .unwrap();
         assert_eq!(out.result, json!(1));
         assert_eq!(
-            fake.registered_trigger_types(),
-            vec!["test::x".to_string()],
-            "the trigger type never reached the bus despite eval() reporting success"
-        );
-        rt.shutdown();
-    }
-
-    /// Registering a function must not evict a same-named trigger type:
-    /// before the kind tag, `op_iii_register`'s dedup lookup matched the
-    /// TRIGGER TYPE'S entry, swap-removed it, and called ITS unregister —
-    /// silently un-publishing a live trigger type as a side effect of an
-    /// unrelated function registration.
-    #[tokio::test]
-    async fn registering_a_function_does_not_evict_a_same_named_trigger_type() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        eval(
-            &rt,
-            "iii.registerTriggerType({ id: 'test::x', description: 'd' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(fake.registered_trigger_types(), vec!["test::x".to_string()]);
-
-        eval(
-            &rt,
-            "iii.registerFunction('test::x', () => 1, { description: 'd' }); return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            fake.registered_trigger_types(),
-            vec!["test::x".to_string()],
-            "registering a function evicted the same-named trigger type from the bus"
-        );
-        assert_eq!(fake.registered_ids(), vec!["test::x".to_string()]);
-        rt.shutdown();
-    }
-
-    /// `iii.unregisterTriggerType(id)` must not remove a same-named
-    /// FUNCTION: before the kind tag, `OpsState::unregister`'s lookup
-    /// matched on id alone, so unregistering a trigger type that was never
-    /// registered (but shares a string with a live function) silently
-    /// un-published the function instead.
-    #[tokio::test]
-    async fn unregistering_a_trigger_type_id_does_not_remove_a_same_named_function() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        eval(
-            &rt,
-            "iii.registerFunction('test::x', () => 1); return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(fake.registered_ids(), vec!["test::x".to_string()]);
-
-        eval(&rt, "iii.unregisterTriggerType('test::x'); return 1", 2_000)
-            .await
-            .unwrap();
-        assert_eq!(
             fake.registered_ids(),
             vec!["test::x".to_string()],
-            "unregisterTriggerType removed a same-named FUNCTION"
+            "the function never reached the bus despite eval() reporting success"
         );
+        assert_eq!(
+            fake.hooked_ids(),
+            (vec!["test::x".to_string()], vec!["test::x".to_string()])
+        );
+        assert_eq!(out.registered, vec!["test::x".to_string()]);
         rt.shutdown();
     }
 
-    /// `EvalOutcome.registered`/`RunResponse.registered` must report a
-    /// trigger-type id the eval just published — the same delta functions
-    /// already report, and with one-shot `run` the default, often the only
-    /// record a caller ever gets of what its eval published.
+    /// Clearing a function's hooks must not remove the function, in the
+    /// same eval or a later one, nor drop it from the reported delta.
     #[tokio::test]
-    async fn registering_a_trigger_type_is_reported_in_the_registered_delta() {
+    async fn clearing_hooks_does_not_remove_the_same_named_function() {
         let fake = FakeEngine::new();
-        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        let rt = spawn_rt_with(fake.clone());
         let out = eval(
             &rt,
-            "iii.registerTriggerType({ id: 'app::mytype' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); return 1",
+            "iii.registerFunction('test::x', () => 1); \
+             iii.onObserverAdded('test::x', () => {}); \
+             iii.onObserverAdded('test::x', null); \
+             return 1",
             2_000,
         )
         .await
         .unwrap();
-        assert_eq!(out.registered, vec!["app::mytype".to_string()]);
+        assert_eq!(out.registered, vec!["test::x".to_string()]);
+        assert_eq!(fake.registered_ids(), vec!["test::x".to_string()]);
+        assert_eq!(fake.hooked_ids(), (vec![], vec![]));
+        rt.shutdown();
+    }
+
+    /// Re-registering a function with new metadata replaces its bus
+    /// registration; its hooks are a different kind and must stay.
+    #[tokio::test]
+    async fn registering_a_function_again_does_not_evict_its_hooks() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        eval(
+            &rt,
+            "iii.registerFunction('test::x', () => 1); \
+             iii.onObserverAdded('test::x', () => {}); \
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        eval(
+            &rt,
+            "iii.registerFunction('test::x', () => 2, { description: 'd' }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fake.hooked_ids(),
+            (vec!["test::x".to_string()], vec!["test::x".to_string()]),
+            "registering a function evicted its hooks from the engine"
+        );
+        assert_eq!(
+            fake.registered_descriptions(),
+            vec![("test::x".to_string(), Some("d".to_string()))]
+        );
+        rt.shutdown();
+    }
+
+    /// `args_format` and `private` reach `Engine::register`; omitted, they
+    /// are no args and a public function.
+    #[tokio::test]
+    async fn register_function_forwards_args_format_and_private() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        eval(
+            &rt,
+            "iii.registerFunction('test::changed', (e) => e, { \
+               private: true, \
+               args_format: { type: 'object', properties: { key: { type: 'string' } } } }); \
+             iii.registerFunction('test::plain', () => 1); \
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fake.options_of("test::changed"),
+            Some(crate::engine::GuestFunctionOptions {
+                args_format: Some(
+                    json!({ "type": "object", "properties": { "key": { "type": "string" } } })
+                ),
+                private: true,
+            })
+        );
+        assert_eq!(
+            fake.options_of("test::plain"),
+            Some(crate::engine::GuestFunctionOptions::default())
+        );
+        rt.shutdown();
+    }
+
+    /// `private` and `args_format` are published metadata the engine
+    /// enforces, so a re-registration that supplies them replaces the
+    /// registration, the same way a new description does.
+    #[tokio::test]
+    async fn re_registering_with_private_replaces_the_registration() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        eval(
+            &rt,
+            "iii.registerFunction('test::x', () => 1); \
+             iii.registerFunction('test::x', () => 1, { private: true }); \
+             return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fake.options_of("test::x").map(|o| o.private), Some(true));
+        assert_eq!(fake.unregister_count(), 1);
+        rt.shutdown();
+    }
+
+    #[tokio::test]
+    async fn register_function_refuses_malformed_observer_options() {
+        let fake = FakeEngine::new();
+        let rt = spawn_rt_with(fake.clone());
+        for (code, expected) in [
+            (
+                "iii.registerFunction('test::x', () => 1, { private: 'yes' })",
+                "options.private must be a boolean",
+            ),
+            (
+                "iii.registerFunction('test::x', () => 1, { args_format: 'object' })",
+                "options.args_format must be a plain object",
+            ),
+            (
+                "iii.registerFunction('test::x', () => 1, { args_format: {} })",
+                "args_format constrains nothing",
+            ),
+        ] {
+            let err = eval(&rt, &format!("{code}; return 1"), 2_000)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "{code}: expected {expected:?}, got {err}"
+            );
+        }
+        assert!(fake.registered_ids().is_empty());
         rt.shutdown();
     }
 
@@ -3082,127 +3798,6 @@ mod tests {
         .unwrap();
         let err = fake.invoke("test::boom", json!({})).await.unwrap_err();
         assert!(err.contains("handler blew up"), "got {err}");
-        rt.shutdown();
-    }
-
-    // --- Task 12 fix round 2: the same three collision directions, but
-    // within ONE eval — `ops.registered` is eval-scoped (cleared at every
-    // `start`), so a bug gated on it can only ever show up here; the
-    // cross-eval versions above never exercised it at all. ---
-
-    /// The primary same-eval probe: `op_iii_register`'s dedup check used to
-    /// also match `ops.registered.contains(&fn_id)` — kind-blind, and
-    /// populated by the trigger-type registration one line above — so the
-    /// function registration was treated as "already registered", silently
-    /// skipped the bus write, and the eval still reported success.
-    #[tokio::test]
-    async fn a_function_id_and_a_trigger_type_id_do_not_collide_on_registration_in_the_same_eval() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        let out = eval(
-            &rt,
-            "iii.registerTriggerType({ id: 'test::x' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); \
-             iii.registerFunction('test::x', () => 1); \
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(out.result, json!(1));
-        assert_eq!(
-            fake.registered_ids(),
-            vec!["test::x".to_string()],
-            "the function never reached the bus despite eval() reporting success"
-        );
-        assert_eq!(fake.registered_trigger_types(), vec!["test::x".to_string()]);
-        assert_eq!(
-            out.registered,
-            vec!["test::x".to_string(), "test::x".to_string()],
-            "both registrations from this eval should be in the reported delta"
-        );
-        rt.shutdown();
-    }
-
-    /// The removal half of the case above: `OpsState::unregister`'s trim of
-    /// `ops.registered` was kind-BLIND (`retain(|id| id != fn_id)`) while the
-    /// bus removal beside it was kind-tagged, so unregistering ONE of a
-    /// same-id function/trigger-type pair dropped BOTH from the reported
-    /// delta — the eval answered `registered: []` with a live function still
-    /// on the bus, understating exactly what the delta exists to report.
-    #[tokio::test]
-    async fn unregistering_one_kind_leaves_the_other_in_the_reported_delta() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        let out = eval(
-            &rt,
-            "iii.registerFunction('test::x', () => 1); \
-             iii.registerTriggerType({ id: 'test::x' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); \
-             iii.unregisterTriggerType('test::x'); \
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            out.registered,
-            vec!["test::x".to_string()],
-            "the surviving function must still be reported as registered"
-        );
-        assert_eq!(
-            fake.registered_ids(),
-            vec!["test::x".to_string()],
-            "the function is live on the bus"
-        );
-        assert!(fake.registered_trigger_types().is_empty());
-        rt.shutdown();
-    }
-
-    #[tokio::test]
-    async fn registering_a_function_does_not_evict_a_same_named_trigger_type_in_the_same_eval() {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        let out = eval(
-            &rt,
-            "iii.registerTriggerType({ id: 'test::x', description: 'd' }, \
-               { registerTrigger(){}, unregisterTrigger(){} }); \
-             iii.registerFunction('test::x', () => 1, { description: 'd' }); \
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(out.result, json!(1));
-        assert_eq!(
-            fake.registered_trigger_types(),
-            vec!["test::x".to_string()],
-            "registering a function evicted the same-named trigger type from the bus"
-        );
-        assert_eq!(fake.registered_ids(), vec!["test::x".to_string()]);
-        rt.shutdown();
-    }
-
-    #[tokio::test]
-    async fn unregistering_a_trigger_type_id_does_not_remove_a_same_named_function_in_the_same_eval(
-    ) {
-        let fake = FakeEngine::new();
-        let rt = spawn_rt_with(fake.clone());
-        let out = eval(
-            &rt,
-            "iii.registerFunction('test::x', () => 1); \
-             iii.unregisterTriggerType('test::x'); \
-             return 1",
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(out.result, json!(1));
-        assert_eq!(
-            fake.registered_ids(),
-            vec!["test::x".to_string()],
-            "unregisterTriggerType removed a same-named FUNCTION"
-        );
         rt.shutdown();
     }
 }

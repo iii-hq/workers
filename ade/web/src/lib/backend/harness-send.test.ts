@@ -10,16 +10,16 @@ import {
 } from './harness-send'
 
 function fakeClient(impl?: (fn: string, payload: unknown) => unknown) {
-  const trigger = vi.fn(async (fn: string, payload: unknown) =>
+  const call = vi.fn(async (fn: string, payload: unknown) =>
     impl ? impl(fn, payload) : undefined,
   )
   return {
-    trigger: trigger as unknown as <T>(fn: string, p?: object) => Promise<T>,
+    call: call as unknown as <T>(fn: string, p?: object) => Promise<T>,
   }
 }
 
 describe('sendTurn', () => {
-  it('triggers harness::send with the request verbatim and returns the response', async () => {
+  it('calls harness::send with the request verbatim and returns the response', async () => {
     const client = fakeClient(() => ({
       session_id: 's-1',
       turn_id: 't-1',
@@ -31,25 +31,25 @@ describe('sendTurn', () => {
       model: 'claude-sonnet-4',
       provider: 'anthropic',
       idempotency_key: 'msg-1',
-      options: { functions: { allow: ['*'], expose: 'agent_trigger' } },
+      options: { functions: { allow: ['*'], expose: 'agent_call' } },
     })
     expect(res).toEqual({ session_id: 's-1', turn_id: 't-1', accepted: true })
-    expect(client.trigger).toHaveBeenCalledWith('harness::send', {
+    expect(client.call).toHaveBeenCalledWith('harness::send', {
       session_id: 's-1',
       message: 'hi',
       model: 'claude-sonnet-4',
       provider: 'anthropic',
       idempotency_key: 'msg-1',
-      options: { functions: { allow: ['*'], expose: 'agent_trigger' } },
+      options: { functions: { allow: ['*'], expose: 'agent_call' } },
     })
   })
 })
 
 describe('stopTurn', () => {
-  it('triggers harness::stop and reports the stopping flag', async () => {
+  it('calls harness::stop and reports the stopping flag', async () => {
     const client = fakeClient(() => ({ stopping: true }))
     expect(await stopTurn(client, 's-1')).toBe(true)
-    expect(client.trigger).toHaveBeenCalledWith('harness::stop', {
+    expect(client.call).toHaveBeenCalledWith('harness::stop', {
       session_id: 's-1',
     })
   })
@@ -57,7 +57,7 @@ describe('stopTurn', () => {
   it('passes turn_id when supplied', async () => {
     const client = fakeClient(() => ({ stopping: false }))
     expect(await stopTurn(client, 's-1', 't-9')).toBe(false)
-    expect(client.trigger).toHaveBeenCalledWith('harness::stop', {
+    expect(client.call).toHaveBeenCalledWith('harness::stop', {
       session_id: 's-1',
       turn_id: 't-9',
     })
@@ -65,7 +65,7 @@ describe('stopTurn', () => {
 })
 
 describe('getTurnStatus', () => {
-  it('triggers harness::status and returns the report (or null)', async () => {
+  it('calls harness::status and returns the report (or null)', async () => {
     const report = {
       session_id: 's-1',
       turn_id: 't-1',
@@ -86,7 +86,7 @@ describe('getTurnStatus', () => {
     }
     const client = fakeClient(() => report)
     expect(await getTurnStatus(client, 's-1')).toEqual(report)
-    expect(client.trigger).toHaveBeenCalledWith('harness::status', {
+    expect(client.call).toHaveBeenCalledWith('harness::status', {
       session_id: 's-1',
       verbose: true,
     })

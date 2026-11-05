@@ -169,7 +169,7 @@ def pptx():
 <p:sp>
 <p:nvSpPr><p:cNvPr id="3" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
 <p:spPr/>
-<p:txBody><a:bodyPr/><a:p><a:r><a:t>Worker, function, trigger.</a:t></a:r></a:p></p:txBody>
+<p:txBody><a:bodyPr/><a:p><a:r><a:t>Worker, function, observer.</a:t></a:r></a:p></p:txBody>
 </p:sp>
 <p:pic>
 <p:nvPicPr><p:cNvPr id="4" name="Diagram" descr="the engine diagram"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>

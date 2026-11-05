@@ -1,10 +1,10 @@
 /**
  * Publish a message onto a queue subscriber's topic.
  *
- * Unlike calling the subscriber's function directly, this is the real path:
+ * Unlike calling the subscriber's target directly, this is the real path:
  * `iii::durable::publish` puts the message on the queue, the queue worker
- * delivers it, and the binding's retry and DLQ behavior applies exactly as it
- * would in production. That is also why it asks before sending.
+ * calls `queue::on-message`, and the subscriber's retry and DLQ behavior
+ * applies exactly as it would in production. That is also why it asks before sending.
  */
 
 import {
@@ -61,7 +61,7 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
     <div className="console-catalog-invoke">
       <div className="console-catalog-note">
         publishes to <code>{topic}</code> through the queue, so every consumer
-        of this topic receives it and the binding's retry and dead-letter
+        of this topic receives it and the subscriber's retry and dead-letter
         behavior applies.
       </div>
       <CodeEditor

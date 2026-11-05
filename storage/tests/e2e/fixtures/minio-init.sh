@@ -57,7 +57,7 @@ else
     echo "[minio-init] bound $WEBHOOK_ARN → scratch-s3 (put,delete)"
   else
     echo "[minio-init] WARN: could not bind webhook event rule on scratch-s3" >&2
-    # Don't hard-fail — non-trigger e2e cases should still run; the trigger
-    # cases will skip via the runner's per-provider trigger probe.
+    # Don't hard-fail — the other e2e cases should still run; the object-event
+    # cases will skip via the runner's per-provider object-event probe.
   fi
 fi

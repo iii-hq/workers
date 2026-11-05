@@ -4,15 +4,11 @@
 //! (`engine/src/workers/queue/adapters/redis_adapter.rs`, whole file),
 //! including its limitations: this transport is pub/sub only — it has no
 //! DLQ, retries, or message durability. Each `(topic, id)` subscription uses
-//! its own subscriber connection so Redis fans a copy out to every binding.
+//! its own subscriber connection so Redis fans a copy out to every
+//! subscriber.
 //! Seams applied for the standalone worker:
 //! - `Arc<Engine>` + `engine.call(...)` inside the pubsub task ->
-//!   `Arc<dyn crate::trigger::Invoker>` + `invoker.call(function_id, payload)`.
-//! - The engine's `check_condition` helper (`engine/src/condition.rs`) is
-//!   reimplemented locally against `Invoker` with identical semantics:
-//!   `Ok(Some(v))` -> proceed unless `v` is the JSON boolean `false`,
-//!   `Ok(None)` -> proceed (with a warn log), `Err` -> skip the message
-//!   (logged), condition_function_id handling is otherwise untouched.
+//!   `Arc<dyn crate::subscribers::Invoker>` + [`Subscriber::deliver`].
 //! - Telemetry spans (the engine's `tracing::info_span!` + OTel
 //!   `with_parent_headers`) are dropped; the `__trace` envelope
 //!   (`traceparent`/`baggage`) is still built on `enqueue` and unwrapped on
@@ -46,7 +42,7 @@ use tokio::time::timeout;
 
 use crate::adapter::{QueueAdapter, QueueMessage, TopicInfo};
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::{Invoker, SubscriberTarget};
+use crate::subscribers::{Invoker, Subscriber};
 
 /// `engine/src/workers/redis.rs:9`.
 const DEFAULT_REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -120,32 +116,6 @@ impl RedisAdapter {
     }
 }
 
-/// Port of the engine's `check_condition` (`engine/src/condition.rs`)
-/// against `Invoker` instead of `EngineTrait`. Same semantics: `Ok(true)`
-/// proceed, `Ok(false)` skip (only when the condition function explicitly
-/// returned JSON `false`), `Err` propagates the invocation failure.
-async fn check_condition(
-    invoker: &dyn Invoker,
-    condition_function_id: &str,
-    data: Value,
-    namespace: Option<&str>,
-) -> Result<bool, String> {
-    match invoker
-        .call_in_namespace(condition_function_id, data, namespace)
-        .await
-    {
-        Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
-        Ok(None) => {
-            tracing::warn!(
-                condition_function_id = %condition_function_id,
-                "Condition function returned no result"
-            );
-            Ok(true)
-        }
-        Err(e) => Err(e),
-    }
-}
-
 #[async_trait]
 impl QueueAdapter for RedisAdapter {
     async fn enqueue(
@@ -188,18 +158,17 @@ impl QueueAdapter for RedisAdapter {
         }
     }
 
-    async fn subscribe_target(
+    async fn subscribe(
         &self,
         topic: &str,
         id: &str,
-        target: SubscriberTarget,
-        condition_function_id: Option<String>,
+        subscriber: Subscriber,
         _queue_config: Option<SubscriberQueueConfig>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_id = target.function_id().to_string();
-        let subscriber = Arc::clone(&self.subscriber);
+        let subscriber_id = subscriber.id().to_string();
+        let connection = Arc::clone(&self.subscriber);
         let invoker = Arc::clone(&self.invoker);
         let subscriptions = Arc::clone(&self.subscriptions);
         let key = (topic.clone(), id.clone());
@@ -218,14 +187,12 @@ impl QueueAdapter for RedisAdapter {
 
         let topic_for_task = topic.clone();
         let id_for_task = id.clone();
-        let function_id_for_task = function_id.clone();
-        let target_for_task = target.clone();
-        let condition_function_id_for_task = condition_function_id.clone();
+        let subscriber_id_for_task = subscriber_id.clone();
 
-        tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_id = %function_id_for_task, "Subscribing to Redis channel");
+        tracing::debug!(topic = %topic_for_task, id = %id_for_task, subscriber = %subscriber_id_for_task, "Subscribing to Redis channel");
 
         let task_handle = tokio::spawn(async move {
-            let mut pubsub = match subscriber.get_async_pubsub().await {
+            let mut pubsub = match connection.get_async_pubsub().await {
                 Ok(pubsub) => pubsub,
                 Err(e) => {
                     tracing::error!(error = %e, topic = %topic_for_task, "Failed to get async pubsub connection");
@@ -241,8 +208,7 @@ impl QueueAdapter for RedisAdapter {
             tracing::debug!(
                 topic = %topic_for_task,
                 id = %id_for_task,
-                function_id = %function_id_for_task,
-                condition_function_id = ?condition_function_id_for_task,
+                subscriber = %subscriber_id_for_task,
                 "Subscribed to Redis channel"
             );
 
@@ -293,52 +259,19 @@ impl QueueAdapter for RedisAdapter {
                         (parsed, None, None)
                     };
 
-                tracing::debug!(topic = %topic_for_task, function_id = %function_id_for_task, traceparent = ?traceparent, baggage = ?baggage, "Received message from Redis queue, invoking function");
-
-                if let Some(ref condition_id) = condition_function_id_for_task {
-                    tracing::debug!(
-                        condition_function_id = %condition_id,
-                        "Checking trigger conditions"
-                    );
-                    match check_condition(
-                        invoker.as_ref(),
-                        condition_id,
-                        data.clone(),
-                        target_for_task.namespace(),
-                    )
-                    .await
-                    {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            tracing::debug!(
-                                function_id = %function_id_for_task,
-                                "Condition check failed, skipping handler"
-                            );
-                            continue;
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                condition_function_id = %condition_id,
-                                error = %err,
-                                "Error invoking condition function"
-                            );
-                            continue;
-                        }
-                    }
-                }
+                tracing::debug!(topic = %topic_for_task, subscriber = %subscriber_id_for_task, traceparent = ?traceparent, baggage = ?baggage, "Received message from Redis queue, delivering it");
 
                 let invoker = Arc::clone(&invoker);
-                let function_id = function_id_for_task.clone();
-                let target = target_for_task.clone();
+                let subscriber = subscriber.clone();
                 let topic_for_call = topic_for_task.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = target.deliver(invoker.as_ref(), data).await {
+                    if let Err(e) = subscriber.deliver(invoker.as_ref(), data).await {
                         tracing::error!(
                             error = %e,
-                            function_id = %function_id,
+                            subscriber = %subscriber.id(),
                             topic = %topic_for_call,
-                            "Failed to invoke function for queue job"
+                            "Failed to deliver queue message"
                         );
                     }
                 });
@@ -352,7 +285,9 @@ impl QueueAdapter for RedisAdapter {
         subs.insert(key, SubscriptionInfo { task_handle });
     }
 
-    async fn unsubscribe(&self, topic: &str, id: &str) {
+    /// `_retain` does not apply: a pub/sub subscription holds no queue, so a
+    /// message published while no subscription is connected is lost.
+    async fn unsubscribe(&self, topic: &str, id: &str, _retain: Duration) {
         let mut subs = self.subscriptions.write().await;
         if let Some(sub_info) = subs.remove(&(topic.to_string(), id.to_string())) {
             tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");

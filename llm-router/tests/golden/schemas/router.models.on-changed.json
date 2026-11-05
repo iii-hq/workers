@@ -1,0 +1,48 @@
+{
+  "description": "A provider reconciled its catalog slice. Event: { provider, count }. Takes no args; filter on input.provider.",
+  "function_id": "router::models::on-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What `router::models::on-changed` returns: a provider reconciled its catalog slice.",
+    "properties": {
+      "count": {
+        "description": "How many models the slice holds.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "provider": {
+        "description": "The provider whose slice changed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "count",
+      "provider"
+    ],
+    "title": "ModelsChangedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What `router::models::on-changed` returns: a provider reconciled its catalog slice.",
+    "properties": {
+      "count": {
+        "description": "How many models the slice holds.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "provider": {
+        "description": "The provider whose slice changed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "count",
+      "provider"
+    ],
+    "title": "ModelsChangedEvent",
+    "type": "object"
+  }
+}

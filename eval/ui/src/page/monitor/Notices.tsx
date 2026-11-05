@@ -54,7 +54,7 @@ export function MonitorNotices({
           headline="Monitor unavailable"
           detail={
             <>
-              The <code className="eval-ui-mono">harness::turn-completed</code> trigger didn't register, so finished
+              The <code className="eval-ui-mono">harness::on-turn-completed</code> observer isn't active, so finished
               sessions aren't being seen.
               {state.observer_error ? (
                 <>

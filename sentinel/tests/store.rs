@@ -8,13 +8,21 @@
 #[path = "support/db.rs"]
 mod db;
 
-use db::TestDb;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use db::{SqliteDb, TestDb};
 use sentinel::store::schema::SCHEMA_VERSION;
+use sentinel::store::PendingLogWrite;
 use sentinel::{
-    Db, ErrorSourceV1, GroupStatusV1, IgnoreBaselineV1, IgnoreRuleV1, OccurrenceWrite,
-    RecordOutcome, Statement, Store,
+    Db, ErrorSourceV1, GroupStatusV1, IgnoreBaselineV1, IgnoreRuleV1, NamedRow, OccurrenceWrite,
+    RecordOutcome, SentinelError, Statement, StepResult, Store,
 };
 use serde_json::{json, Value};
+use tokio::sync::{oneshot, Mutex};
+use tokio::time::timeout;
 
 const NOW: i64 = 1_789_000_000_000;
 
@@ -601,4 +609,329 @@ async fn the_sweeper_cannot_hand_the_same_parked_log_over_twice_a_second() {
         .await
         .expect("read after the backoff");
     assert_eq!(later.len(), 1, "a stuck row is retried, not abandoned");
+}
+
+/// What the parked-log sweep reads, and a way to hold its deadline read open so
+/// a log can park between the read and the wait.
+struct WatchedDb {
+    inner: TestDb,
+    deadline_reads: AtomicU64,
+    due_reads: AtomicU64,
+    hold_deadline_read: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    /// The next transaction commits and then fails, as a call whose reply
+    /// timed out does.
+    lose_next_reply: AtomicBool,
+}
+
+#[async_trait]
+impl Db for WatchedDb {
+    async fn query(&self, sql: &str, params: Vec<Value>) -> Result<Vec<NamedRow>, SentinelError> {
+        if sql.contains("MIN(join_deadline_ms)") {
+            self.deadline_reads.fetch_add(1, Ordering::Relaxed);
+            let rows = self.inner.query(sql, params).await;
+            if let Some((read, resume)) = self.hold_deadline_read.lock().await.take() {
+                read.send(()).expect("the test is waiting");
+                resume.await.expect("the test releases the read");
+            }
+            return rows;
+        }
+        if sql.contains("join_deadline_ms <=") {
+            self.due_reads.fetch_add(1, Ordering::Relaxed);
+        }
+        self.inner.query(sql, params).await
+    }
+
+    async fn execute(&self, sql: &str, params: Vec<Value>) -> Result<u64, SentinelError> {
+        self.inner.execute(sql, params).await
+    }
+
+    async fn transaction(
+        &self,
+        statements: &[Statement],
+    ) -> Result<Vec<StepResult>, SentinelError> {
+        let committed = self.inner.transaction(statements).await?;
+        if self.lose_next_reply.swap(false, Ordering::Relaxed) {
+            return Err(SentinelError::dependency("invocation timed out"));
+        }
+        Ok(committed)
+    }
+}
+
+async fn watched_store() -> Arc<Store<WatchedDb>> {
+    watching(db::test_db().await).await
+}
+
+/// For a paused clock, which runs ahead while a socket waits: never Postgres.
+async fn watched_sqlite_store() -> Arc<Store<WatchedDb>> {
+    watching(TestDb::Sqlite(SqliteDb::in_memory())).await
+}
+
+async fn watching(inner: TestDb) -> Arc<Store<WatchedDb>> {
+    let store = Store::new(WatchedDb {
+        inner,
+        deadline_reads: AtomicU64::new(0),
+        due_reads: AtomicU64::new(0),
+        hold_deadline_read: Mutex::new(None),
+        lose_next_reply: AtomicBool::new(false),
+    });
+    store.migrate().await.expect("migrate a fresh database");
+    Arc::new(store)
+}
+
+/// A row this process rang no bell for, as another sentinel on the same store
+/// or a previous run leaves it.
+async fn parked_behind_the_sweeps_back(store: &Store<WatchedDb>, id: &str) {
+    store
+        .db()
+        .transaction(&[Statement::new(
+            "INSERT INTO sentinel_occurrences (id, group_id, dedupe_key, source, at_ms, message, \
+             pending_join, join_deadline_ms) VALUES (?, NULL, ?, 'log', ?, ?, 1, ?)",
+            vec![
+                json!(id),
+                json!(format!("log:-:-:1:{id}")),
+                json!(NOW),
+                json!("Function not found"),
+                json!(NOW),
+            ],
+        )])
+        .await
+        .expect("a row nobody announced");
+}
+
+fn parked_log(dedupe_key: &str, join_deadline_ms: i64) -> PendingLogWrite {
+    PendingLogWrite {
+        dedupe_key: dedupe_key.into(),
+        at_ms: join_deadline_ms,
+        trace_id: None,
+        span_id: None,
+        session_id: None,
+        worker_version: None,
+        message: "Function not found".into(),
+        evidence: None,
+        join_deadline_ms,
+        session_unknown: true,
+    }
+}
+
+const NOT_WITHIN: Duration = Duration::from_millis(150);
+const WITHIN: Duration = Duration::from_secs(5);
+/// Past the longest the sweep may sleep, on a paused clock.
+const WITHIN_THE_RESCAN: Duration = Duration::from_secs(45);
+
+/// Each of these reads is three root traces in the engine's ring, so a sweep
+/// polling an empty table is what fills it.
+#[tokio::test(start_paused = true)]
+async fn a_sweep_with_nothing_parked_reads_only_twice_a_minute_and_never_for_due_rows() {
+    let store = watched_sqlite_store().await;
+
+    timeout(Duration::from_secs(295), store.next_due_pending_logs(100))
+        .await
+        .expect_err("nothing can be due");
+
+    assert_eq!(store.db().deadline_reads.load(Ordering::Relaxed), 10);
+    assert_eq!(store.db().due_reads.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn parking_a_log_wakes_the_sweep_and_it_claims_the_log_when_the_wait_runs_out() {
+    let store = watched_store().await;
+    let sweep = tokio::spawn({
+        let store = store.clone();
+        async move { store.next_due_pending_logs(100).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(store.db().deadline_reads.load(Ordering::Relaxed), 1);
+
+    let id = store
+        .insert_pending_log(&parked_log("log:-:-:1:wake", sentinel::ids::now_ms() + 100))
+        .await
+        .expect("park the log");
+
+    let due = timeout(WITHIN, sweep)
+        .await
+        .expect("the park wakes the sweep")
+        .expect("the sweep did not panic")
+        .expect("the read works");
+    assert_eq!(due.len(), 1);
+    assert_eq!(Some(due[0].id.clone()), id);
+    assert_eq!(
+        store.db().due_reads.load(Ordering::Relaxed),
+        1,
+        "no due query before the wait ran out"
+    );
+    assert_eq!(
+        store.db().deadline_reads.load(Ordering::Relaxed),
+        3,
+        "nothing parked, then a wait to sleep through, then due: nothing in between"
+    );
+}
+
+#[tokio::test]
+async fn a_log_parked_with_an_earlier_deadline_cuts_the_sweeps_sleep_short() {
+    let store = watched_store().await;
+    let far = sentinel::ids::now_ms() + 3_600_000;
+    store
+        .insert_pending_log(&parked_log("log:-:-:1:far", far))
+        .await
+        .expect("park the far log");
+    let sweep = tokio::spawn({
+        let store = store.clone();
+        async move { store.next_due_pending_logs(100).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    store
+        .insert_pending_log(&parked_log("log:-:-:1:near", sentinel::ids::now_ms() - 1))
+        .await
+        .expect("park the near log");
+
+    let due = timeout(WITHIN, sweep)
+        .await
+        .expect("the sweep does not sleep through the earlier deadline")
+        .expect("the sweep did not panic")
+        .expect("the read works");
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].dedupe_key, "log:-:-:1:near");
+}
+
+#[tokio::test]
+async fn a_due_row_is_claimed_once_and_does_not_wake_the_sweep_again() {
+    let store = watched_store().await;
+    store
+        .insert_pending_log(&parked_log("log:-:-:1:due", sentinel::ids::now_ms() - 1))
+        .await
+        .expect("park the log");
+
+    let due = timeout(WITHIN, store.next_due_pending_logs(100))
+        .await
+        .expect("the row is due")
+        .expect("the read works");
+    assert_eq!(due.len(), 1);
+
+    timeout(NOT_WITHIN, store.next_due_pending_logs(100))
+        .await
+        .expect_err("the claim pushed the deadline forward");
+    assert_eq!(
+        store.db().due_reads.load(Ordering::Relaxed),
+        1,
+        "the claimed row must not be queued in a loop"
+    );
+}
+
+#[tokio::test]
+async fn a_row_parked_before_the_sweep_starts_is_found() {
+    let store = watched_store().await;
+    parked_behind_the_sweeps_back(&store, "occ_restart").await;
+
+    let due = timeout(WITHIN, store.next_due_pending_logs(100))
+        .await
+        .expect("the first pass reads the store")
+        .expect("the read works");
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].id, "occ_restart");
+}
+
+/// The commit went through and only its reply was lost. The queue's retry then
+/// dedupes against the row, so neither attempt tells the sweep it is there.
+#[tokio::test(start_paused = true)]
+async fn a_park_whose_reply_was_lost_is_still_claimed_by_the_sleeping_sweep() {
+    let store = watched_sqlite_store().await;
+    let sweep = tokio::spawn({
+        let store = store.clone();
+        async move { store.next_due_pending_logs(100).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let log = parked_log("log:-:-:1:lost-reply", sentinel::ids::now_ms() - 1);
+    store.db().lose_next_reply.store(true, Ordering::Relaxed);
+    store
+        .insert_pending_log(&log)
+        .await
+        .expect_err("the reply of the commit was lost");
+    assert_eq!(
+        store.insert_pending_log(&log).await.expect("the retry"),
+        None,
+        "the retry dedupes against the parked row"
+    );
+
+    let due = timeout(WITHIN_THE_RESCAN, sweep)
+        .await
+        .expect("nothing else will ever promote this row")
+        .expect("the sweep did not panic")
+        .expect("the read works");
+    assert_eq!(due.len(), 1);
+}
+
+/// The notification stops at this process, and a store can be shared by the team.
+#[tokio::test(start_paused = true)]
+async fn a_row_another_sentinel_left_parked_is_claimed_by_this_ones_sleeping_sweep() {
+    let store = watched_sqlite_store().await;
+    let sweep = tokio::spawn({
+        let store = store.clone();
+        async move { store.next_due_pending_logs(100).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    parked_behind_the_sweeps_back(&store, "occ_teammate").await;
+
+    let due = timeout(WITHIN_THE_RESCAN, sweep)
+        .await
+        .expect("its owner may never come back")
+        .expect("the sweep did not panic")
+        .expect("the read works");
+    assert_eq!(due[0].id, "occ_teammate");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_far_deadline_does_not_hide_a_row_another_sentinel_left_due() {
+    let store = watched_sqlite_store().await;
+    store
+        .insert_pending_log(&parked_log(
+            "log:-:-:1:far",
+            sentinel::ids::now_ms() + 3_600_000,
+        ))
+        .await
+        .expect("park the far log");
+    let sweep = tokio::spawn({
+        let store = store.clone();
+        async move { store.next_due_pending_logs(100).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    parked_behind_the_sweeps_back(&store, "occ_teammate").await;
+
+    let due = timeout(WITHIN_THE_RESCAN, sweep)
+        .await
+        .expect("the sweep looks again before the far deadline")
+        .expect("the sweep did not panic")
+        .expect("the read works");
+    assert_eq!(due[0].id, "occ_teammate");
+}
+
+#[tokio::test]
+async fn a_log_parked_between_the_read_and_the_wait_is_not_lost() {
+    let store = watched_store().await;
+    let (read, deadline_read) = oneshot::channel();
+    let (release, resume) = oneshot::channel();
+    *store.db().hold_deadline_read.lock().await = Some((read, resume));
+
+    let sweep = tokio::spawn({
+        let store = store.clone();
+        async move { store.next_due_pending_logs(100).await }
+    });
+    deadline_read.await.expect("the sweep read the deadline");
+
+    // The sweep has its answer, nothing parked, and has not started waiting.
+    store
+        .insert_pending_log(&parked_log("log:-:-:1:race", sentinel::ids::now_ms() - 1))
+        .await
+        .expect("park the log");
+    release.send(()).expect("the sweep is held");
+
+    let due = timeout(WITHIN, sweep)
+        .await
+        .expect("the park was not lost")
+        .expect("the sweep did not panic")
+        .expect("the read works");
+    assert_eq!(due.len(), 1);
 }

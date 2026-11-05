@@ -1,13 +1,13 @@
-// Real-time collection of harness turns via `harness::turn-completed` events,
-// replacing per-turn `harness::status` polling. openwiki registers ONE trigger
-// on the harness's emitted turn-completed type (see index.mjs) and routes each
-// event here. A generation registers its root session; the router delivers the
+// Real-time collection of harness turns via `harness::on-turn-completed`
+// events, with no per-turn `harness::status` polling. openwiki creates ONE
+// observer of the harness's turn-completed function (see index.mjs) and routes
+// each event here. A generation registers its root session; the router delivers the
 // plan turn (matched by session_id == root) and each page child (matched by
 // event.parent_session_id == root, which only harness::spawn stamps — a plain
 // send leaves it null, harness send.rs sets display_parent_session_id: None).
 //
 // One in-process map keyed by root session id. Single-process worker; if
-// openwiki ever runs multiple instances, the subscription is per-engine so each
+// openwiki ever runs multiple instances, each instance has its own observer, so each
 // instance sees every event and ignores roots it does not own (cheap map miss).
 
 const active = new Map(); // root session id -> collector
@@ -30,7 +30,7 @@ export function isActive(rootSessionId) {
   return active.has(rootSessionId);
 }
 
-// Route a harness::turn-started event: a child sub-agent under a root we own
+// Route a harness::on-turn-started event: a child sub-agent under a root we own
 // just began, so signal its spawn (for live progress). The parent's own start
 // (session_id === root, no parent) is ignored.
 export function deliverStarted(evt) {
@@ -47,7 +47,7 @@ export function deliverStarted(evt) {
   return false;
 }
 
-// Route one harness::turn-completed event payload to its generation, if any.
+// Route one harness::on-turn-completed event to its generation, if any.
 // Event shape (harness events.rs): { session_id, turn_id, status, result?,
 // result_error?, parent_session_id? }. Returns true when it matched a root.
 export function deliver(evt) {

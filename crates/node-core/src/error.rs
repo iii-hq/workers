@@ -76,8 +76,8 @@ impl NodeEngineError {
                 "id {id:?} must start with this runtime's namespace {namespace:?} — a runtime \
                  can only register or unregister ids inside its own namespace"
             ),
-            // Shared by function AND trigger-type registration (both live in
-            // the same namespaced id space), so the wording names neither.
+            // Shared by functions, observers and observer hooks (all live in
+            // the same namespaced id space), so the wording names none.
             Self::IdTaken(id) => format!("id {id} is already registered"),
             Self::InvalidRequest(m) => m.clone(),
         }

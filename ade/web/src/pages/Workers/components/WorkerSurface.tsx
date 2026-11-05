@@ -1,18 +1,19 @@
 /**
- * What one worker brought to the bus: the functions it registered and the
- * trigger types it publishes.
+ * What one worker brought to the bus: the functions it registered, marked
+ * when they are private or take observer args, and how many observers it
+ * created.
  *
  * Rendered inline under an expanded row on the Workers table, so "what can
  * this worker actually do" is answered where the operator already is instead
- * of on another page. One `engine::workers::info` call carries both lists,
- * and it only runs when a row is actually opened.
+ * of on another page. One `engine::workers::info` call carries both, and it
+ * only runs when a row is actually opened.
  *
- * Registered triggers deliberately do NOT appear here. They are live
- * bindings of a type to a function, they belong to the triggers view, and
- * showing them per worker invited the question of whose they are — the
- * registering worker's or the target's. Deeper reads stay on the dedicated
- * pages: schemas, invoke and call history on the `functions` page, registered
- * triggers and their fire paths on the `triggers` page.
+ * The observers themselves stay on the `observers` page: each one ties an
+ * observed function to a target, and listing them per worker invited the
+ * question of whose they are — the observing worker's or the observed
+ * function's. Deeper reads stay on the dedicated pages: schemas, invoke and
+ * call history on the `functions` page, observers and their fire paths on
+ * the `observers` page.
  */
 
 import { useQuery } from '@tanstack/react-query'
@@ -56,7 +57,8 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
     )
   }
 
-  const { functions, trigger_types: triggerTypes } = query.data
+  const { functions } = query.data
+  const observers = query.data.observers ?? []
 
   return (
     <div className="grid gap-4 py-1 @3xl:grid-cols-2">
@@ -70,22 +72,42 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
           <Row
             key={fn.function_id}
             id={fn.function_id}
+            facts={facts(fn)}
             description={fn.description}
           />
         ))}
       </Section>
       <Section
-        title="Trigger types"
+        title="Observers created"
         icon={<Zap className="size-4" aria-hidden />}
-        count={triggerTypes.length}
-        empty="This worker publishes no trigger types."
+        count={observers.length}
+        empty="This worker observes no functions."
       >
-        {triggerTypes.map((type) => (
-          <Row key={type.id} id={type.id} description={type.description} />
+        {observers.map((id) => (
+          <Row key={id} id={id} />
         ))}
       </Section>
     </div>
   )
+}
+
+/** The short facts a function row carries: private, takes args, observed. */
+function facts(fn: {
+  private?: boolean
+  args_format?: unknown
+  observable?: boolean
+  observer_count?: number
+}): string[] {
+  const out: string[] = []
+  if (fn.private) out.push('private')
+  if (fn.args_format !== undefined && fn.args_format !== null)
+    out.push('takes args')
+  if (fn.observable === false) out.push('not observable')
+  if (fn.observer_count)
+    out.push(
+      `${fn.observer_count} ${fn.observer_count === 1 ? 'observer' : 'observers'}`,
+    )
+  return out
 }
 
 function Section({
@@ -123,11 +145,29 @@ function Section({
   )
 }
 
-function Row({ id, description }: { id: string; description?: string | null }) {
+function Row({
+  id,
+  facts = [],
+  description,
+}: {
+  id: string
+  facts?: readonly string[]
+  description?: string | null
+}) {
   return (
     <div className="flex flex-col gap-1 px-4 py-3">
-      <div className="wk-machine break-words text-neutral-900 dark:text-neutral-100">
-        {id}
+      <div className="flex flex-wrap items-baseline gap-x-2">
+        <span className="wk-machine break-words text-neutral-900 dark:text-neutral-100">
+          {id}
+        </span>
+        {facts.map((fact) => (
+          <span
+            key={fact}
+            className="text-[12px] text-neutral-500 dark:text-neutral-400"
+          >
+            {fact}
+          </span>
+        ))}
       </div>
       {description ? (
         <p className="text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">

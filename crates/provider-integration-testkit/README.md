@@ -26,8 +26,9 @@ They cover login RPCs, durable session records, automatic catalog discovery,
 authenticated streaming, logout without fallback, cancellation during polling,
 public state read isolation (`state::get`, `state::list`, `state::list_keys`
 must all answer with the reserved-scope denial), and suppressed private state
-events. The event listener is verified with public writes before login and
-after logout. Native OAuth HTTP wire coverage lives in the provider's
+events: an observer of `state::on-changed` (no filter, delivered as output)
+sees no write to the auth scope. The observer is verified with public writes
+before login and after logout. Native OAuth HTTP wire coverage lives in the provider's
 `oauth_tests.rs`.
 
 Run the login tests and existing Codex provider contract together:

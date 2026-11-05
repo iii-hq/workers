@@ -9,8 +9,8 @@ a worker may have both.
 The worker publishes a JavaScript bundle; the iii app fetches it, checks its
 sha256, compiles it and runs it in a QuickJS VM on the device, and draws
 what the script describes with its own native components. The script may
-only call the worker's own functions (`<ns>::…`) and bind its own trigger
-types (`<ns>::…` or `<ns>:…`).
+only call the worker's own functions (`<ns>::…`) and observe its own
+functions (`<ns>::…`).
 
 ## What lives elsewhere
 
@@ -139,7 +139,7 @@ first line:
   `Accessor`, `Setter`, `Component`, `ParentProps` and the other Solid types,
   and `createStore` from `solid-js/store`, come from `@iii-dev/native-ui`.
 - Stop what costs only while visible when `iii.env.visible` turns false
-  (`useTrigger` takes `enabled`).
+  (`useObserve` takes `enabled`).
 - Frames, video and anything streaming never go through the script: a
   high-level component (`RemoteScreen`) takes them natively.
 
@@ -311,7 +311,7 @@ character outside `[A-Z0-9]` as `_` (`III_IOS_SIMULATOR_NATIVE_UI_WATCH`).
   `provide`/`inject`; a `beforeAll` per file works for a small app), then
   `createTestHost` with `calls` answering the worker functions the app uses
   (the browser keeps them in a fake worker, `test/fake.ts`), and drive it
-  like a person (`press`, `type`, `itemPress`, `emitTrigger`, `tick`,
+  like a person (`press`, `type`, `itemPress`, `emitObserved`, `tick`,
   `env`). Assert on `tree()`, `requests`, `toasts`, `menus`. The harness
   fails the test on any protocol violation, so a passing test also means
   the host will accept the ops. See `packages/native-ui/test/*.test.ts`,

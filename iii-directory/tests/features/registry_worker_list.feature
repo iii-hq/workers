@@ -48,7 +48,7 @@ Feature: directory::registry::workers::list (workers registry HTTP proxy)
         }
       }
       """
-    When I trigger directory::registry::workers::list with payload:
+    When I call directory::registry::workers::list with payload:
       """
       {"search": "email"}
       """
@@ -71,7 +71,7 @@ Feature: directory::registry::workers::list (workers registry HTTP proxy)
         }
       }
       """
-    When I trigger directory::registry::workers::list with payload:
+    When I call directory::registry::workers::list with payload:
       """
       {"search": "nope"}
       """
@@ -82,7 +82,7 @@ Feature: directory::registry::workers::list (workers registry HTTP proxy)
 
   Scenario: registry HTTP error surfaces in the failure message
     Given a wiremock registry that returns 502 for search "broken"
-    When I trigger directory::registry::workers::list with payload:
+    When I call directory::registry::workers::list with payload:
       """
       {"search": "broken"}
       """

@@ -10,8 +10,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, Error, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, CallRequest, Error, IIIClient, InitOptions, RegisterFunction};
 use tokio::sync::RwLock;
 
 use crate::config::BridgeConfig;
@@ -250,7 +249,7 @@ pub fn register_expose_function(
 /// duplicate function registration silently collides (last-write-wins).
 async fn guard_against_builtin_bridge(iii: &Arc<IIIClient>) -> anyhow::Result<()> {
     let workers_list = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
             payload: serde_json::json!({}),
             action: None,

@@ -10,8 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -110,7 +109,7 @@ impl CallerDirectory {
         }
         let list = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: WORKERS_LIST.to_owned(),
                 payload: json!({}),
                 action: None,

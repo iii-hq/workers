@@ -8,7 +8,7 @@
  * react-query's `invalidateQueries` CANCELS the fetch already in flight
  * (`cancelRefetch` defaults to true) and starts another. That cancellation is
  * client-side only — the engine keeps executing the abandoned scan — so under
- * sustained span activity (the `trace` trigger ticks every ~300ms) the engine
+ * sustained span activity (`observability::on-span` ticks every ~300ms) the engine
  * accumulates overlapping scans, their latency climbs past the tick interval,
  * and every response is discarded before it can land. Measured live
  * (MOT-4621, four concurrent harness turns): six `engine::traces::list` calls

@@ -276,7 +276,7 @@ export class CursorWorker {
       async (payload: unknown) => this.start(RunPayloadSchema.parse(payload ?? {})),
       {
         description:
-          'Start a Cursor agent turn and return immediately. Bind cursor::agent-event with { session_id } for progress frames.',
+          'Start a Cursor agent turn and return immediately. Observe cursor::on-agent-event with args { session_id } for progress frames.',
         request_format: jsonSchema(RunPayloadSchema),
         response_format: jsonSchema(StartResponseSchema),
       },

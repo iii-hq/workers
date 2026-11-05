@@ -182,7 +182,7 @@ export function parseMentionView(res: unknown): MentionView | null {
 export const iiiMentionRuntime: MentionRuntime = {
   async listProviders() {
     const client = await getIiiClient()
-    const res = await client.trigger<unknown>(FUNCTIONS_LIST_RPC, {
+    const res = await client.call<unknown>(FUNCTIONS_LIST_RPC, {
       include_internal: true,
     })
     const { providers, conflicts } = parseMentionProviders(res)
@@ -191,7 +191,7 @@ export const iiiMentionRuntime: MentionRuntime = {
   },
   async search(provider, { query, limit, context }) {
     const client = await getIiiClient()
-    const res = await client.trigger<unknown>(
+    const res = await client.call<unknown>(
       provider.search,
       {
         query,
@@ -204,7 +204,7 @@ export const iiiMentionRuntime: MentionRuntime = {
   },
   async get(provider, id) {
     const client = await getIiiClient()
-    const res = await client.trigger<unknown>(
+    const res = await client.call<unknown>(
       provider.getFunctionId,
       { id },
       { timeoutMs: GET_TIMEOUT_MS },

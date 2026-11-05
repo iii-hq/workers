@@ -144,7 +144,7 @@ func TestUnreachableSecretsWorkerKeepsTheLastValue(t *testing.T) {
 	if !strings.Contains(kept.credentialProblems()["access_token"], "not running") {
 		t.Fatalf("problem: %v", kept.credentialProblems())
 	}
-	// A reference secrets::changed named is suspect: its old value is not kept.
+	// A reference secrets::on-changed named is suspect: its old value is not kept.
 	suspect := resolveCloudCredentials(context.Background(), down, referencedCloud(), previous, "secret://WA_TOKEN")
 	if suspect.AccessToken != "" || suspect.AppSecret != "app-secret" {
 		t.Fatalf("suspect handling: token %q, app secret %q", suspect.AccessToken, suspect.AppSecret)
@@ -207,8 +207,20 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
-		case string(msg["type"]) == `"registertrigger"` && string(msg["trigger_type"]) == `"secrets::changed"`:
-			bound = string(msg["function_id"]) == `"whatsapp::on-secret-changed"`
+		case string(msg["type"]) == `"observe"`:
+			var frame struct {
+				Source struct {
+					FunctionID string `json:"function_id"`
+					Namespace  string `json:"namespace"`
+					Deliver    string `json:"deliver"`
+				} `json:"source"`
+				Target struct {
+					FunctionID string `json:"function_id"`
+				} `json:"target"`
+			}
+			if json.Unmarshal(msg["source"], &frame.Source) == nil && json.Unmarshal(msg["target"], &frame.Target) == nil && frame.Source.FunctionID == "secrets::on-changed" {
+				bound = frame.Target.FunctionID == "whatsapp::on-secret-changed" && frame.Source.Namespace == "team-a" && frame.Source.Deliver == "output"
+			}
 		case string(msg["function_id"]) == `"configuration::get"` && len(msg["invocation_id"]) > 0:
 			reply := callbackInvocationReply(msg)
 			reply["result"] = map[string]any{"value": c}
@@ -222,6 +234,8 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 		}
 		return nil
 	})
+	// Observers go out once the engine has registered the worker.
+	peer.registerWorker(t)
 	manager, err := newTestManager(c)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +276,7 @@ func TestConfigurationReloadResolvesAndFollowsSecretChanges(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if !bound {
-		t.Fatal("secrets::changed not bound to whatsapp::on-secret-changed")
+		t.Fatal("whatsapp::on-secret-changed does not observe secrets::on-changed in team-a")
 	}
 	// The secrets worker admits only callers from its own namespace.
 	if resolvedIn != `"team-a"` {

@@ -2,10 +2,10 @@
 //!
 //! Each test skips (early-returns) when no engine is reachable. They share one
 //! engine connection (per-binary `OnceCell`) and are serialized so their
-//! trigger registrations don't race. Each test boots its own worker first
-//! (registering the `http` trigger type), then binds its backend trigger, so
-//! the binding is delivered live to that worker's handler; `wait_for_route`
-//! then waits for the route to land before issuing the request.
+//! route observers don't race. Each test boots its own worker first
+//! (registering `http::on-request`), then observes it with its backend, so the
+//! observer is added live to that worker's route table; `wait_for_route` then
+//! waits for the route to land before issuing the request.
 
 mod common;
 

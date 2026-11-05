@@ -2,16 +2,14 @@
 //! `fp::pipe` / transform usage guidance to the agent's system prompt,
 //! ONLY while this worker is connected AND the `fp` configuration's
 //! `inject_guidance` is on (the default; see src/configuration.rs — the
-//! The Console's global Settings modal is the flip surface, and flips hot-apply by
-//! binding/unbinding the trigger, no restart). Binding order does not
-//! matter: the engine parks a binding whose trigger
-//! type is not registered yet as a pending intent and activates it when the
-//! type appears ("recoverable triggers", engine/src/trigger.rs — this also
-//! covers a harness restart, which re-parks and re-activates the binding).
+//! Console's global Settings modal is the flip surface, and flips hot-apply
+//! by observing `harness::hook::on-pre-generate` or disposing the observer,
+//! no restart). Start order does not matter: an observer of a function that
+//! is not registered yet stays `pending` and becomes active when the harness
+//! registers it (a harness restart suspends and reactivates it the same way).
 //! The guidance stays presence-gated: without the fp worker the hook
-//! function is gone and the fail_open binding contributes nothing. Mirrors
-//! web/src/functions/inject_guidance.rs, minus the pre-recoverable-triggers
-//! registry-watching rebind dance web still carries.
+//! function is gone and the fail_open observer contributes nothing. Mirrors
+//! web/src/functions/inject_guidance.rs.
 
 use std::sync::Arc;
 
@@ -20,17 +18,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, RegisterFunction, Source};
 
 pub const GUIDANCE_HOOK_ID: &str = "fp::inject-guidance";
 pub const GUIDANCE_HOOK_DESC: &str =
     "Internal pre_generate hook: appends fp::pipe usage guidance to the agent system \
-     prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.";
+     prompt. Observes harness::hook::on-pre-generate while inject_guidance is on; not called \
+     directly.";
 
-/// The harness-PROVIDED trigger type this worker binds to (NOT an engine
+/// The harness-PROVIDED hook function this worker observes (NOT an engine
 /// built-in).
-const PRE_GENERATE_TRIGGER_TYPE: &str = "harness::hook::pre-generate";
+const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
 
 /// The pipe/transform usage guidance appended to the system prompt — the
 /// single canonical copy (previously a hand-maintained section in the harness
@@ -44,7 +42,7 @@ HARD RULE: bulk data does not pass through you. A value you will not personally 
 stalls the provider stream mid-call for minutes and has killed live turns, besides burning
 the context window; fetching a whole document "to look at it" floods the context for good.
 
-`fp::pipe` runs the move in ONE call: each step triggers a function and its result lands
+`fp::pipe` runs the move in ONE call: each step calls a function and its result lands
 in the next step's payload at `into` (default "/value"). Pure transforms run inline as steps —
 `fp::{get, pick, omit, take, drop, map, filter, split, join, uniq, size, compact, nth,
 getOr, flatten, sortBy, reverse, sum, mean, min, max, groupBy, countBy}` with lodash
@@ -100,7 +98,7 @@ Caveat: a path-access rejection inside a pipe just fails
 the step — only a DIRECT call offers the access-grant prompt.
 Session READS (`session::get-attachment`, `session::messages-tail`, …) ride a pipe too — the way
 to move an attachment's bytes somewhere without them passing through you.
-Trigger-control, session-write/approval, credential/config, LLM-routing, and
+Observer-control, session-write/approval, credential/config, LLM-routing, and
 turn-control steps are excluded — call those directly.
 
 ## Several independent calls at once
@@ -177,10 +175,10 @@ async fn handle(event: PreGenerateEvent) -> Result<PreGenerateResponse, Error> {
 }
 
 /// Register the guidance hook FUNCTION unconditionally at boot. Registering
-/// the function is inert — the guidance reaches prompts only while a trigger
-/// binding exists, and [`apply`] owns that binding. Keeping the function
-/// always registered is what lets a config flip enable injection without a
-/// worker restart.
+/// the function is inert — the guidance reaches prompts only while it
+/// observes `harness::hook::on-pre-generate`, and [`apply`] owns that
+/// observer. Keeping the function always registered is what lets a config
+/// flip enable injection without a worker restart.
 pub fn register_hook(iii: &Arc<IIIClient>) {
     iii.register_function(
         GUIDANCE_HOOK_ID,
@@ -192,34 +190,34 @@ pub fn register_hook(iii: &Arc<IIIClient>) {
     );
 }
 
-/// The live pre-generate binding, if any. Shared with the configuration
-/// change handler so a config flip can bind/unbind at runtime.
-pub type GuidanceState = iii_config_client::BindingSlot;
+/// The live pre-generate observer, if any. Shared with the configuration
+/// change handler so a config flip can observe or dispose at runtime.
+pub type GuidanceState = iii_config_client::ObserverSlot;
 
-/// Reconcile the live binding with the configured `inject_guidance` value:
-/// on → bind once; off → unregister and drop the handle. Idempotent under
-/// repeated config events, and a failed bind retries on the next event.
+/// What the guidance hook observes: the harness's pre-generate hook point,
+/// `fail_open`, with the guidance as its static `inject_prompt`.
 ///
-/// Binding is one shot: if the harness is not up yet, the engine parks the
-/// binding as a pending intent and activates it when the type registers
-/// (recoverable triggers), so there is nothing to watch or retry.
 /// `on_error: fail_open` is MANDATORY: pre_generate defaults fail-CLOSED,
 /// which would abort generation if this hook ever errored/timed out; a
 /// missing guidance section must never block a turn.
+fn pre_generate_source() -> Source {
+    Source::function(PRE_GENERATE_HOOK_FN).args(json!({
+        "on_error": "fail_open",
+        "inject_prompt": GUIDANCE,
+    }))
+}
+
+/// Reconcile the live observer with the configured `inject_guidance` value:
+/// on → observe once; off → dispose it and drop the handle. Idempotent under
+/// repeated config events.
+///
+/// Observing is one shot: if the harness is not up yet, the observer stays
+/// `pending` and becomes active when the harness registers the hook
+/// function, so there is nothing to watch or retry.
 pub fn apply(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
     state.reconcile(
         enabled,
-        || {
-            iii_config_client::try_bind(
-                iii,
-                RegisterTriggerInput::new(
-                    PRE_GENERATE_TRIGGER_TYPE.to_string(),
-                    GUIDANCE_HOOK_ID.to_string(),
-                    json!({ "on_error": "fail_open" }),
-                )
-                .with_metadata(json!({ "inject_prompt": GUIDANCE })),
-            )
-        },
+        || iii.observe(pre_generate_source(), GUIDANCE_HOOK_ID),
         "inject_guidance on: appending fp::pipe guidance to agent system prompts",
         "inject_guidance off: fp::pipe guidance stays out of agent system prompts",
     );
@@ -228,6 +226,17 @@ pub fn apply(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observes_the_pre_generate_hook_fail_open_with_the_guidance() {
+        assert_eq!(
+            pre_generate_source(),
+            Source::function("harness::hook::on-pre-generate").args(json!({
+                "on_error": "fail_open",
+                "inject_prompt": GUIDANCE,
+            }))
+        );
+    }
 
     #[test]
     fn appends_guidance_after_a_real_base() {

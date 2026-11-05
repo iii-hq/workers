@@ -15,11 +15,11 @@ import { errorMessage, formatBytes, formatRelative } from '@iii-dev/console-ui/f
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Film, Image, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { MEDIA_CHANGED, type Media, type SimApi } from '../lib/api'
+import { type Media, ON_MEDIA_CHANGED, type SimApi } from '../lib/api'
 
 /**
  * Screenshots and recordings of one simulator, newest first, live on
- * `ios-simulator::media-changed`. Opening an item reads the file from the
+ * `ios-simulator::on-media-changed`. Opening an item reads the file from the
  * worker in slices and shows it in the shared image viewer or a video
  * dialog; the blob URL is released when it closes.
  */
@@ -36,7 +36,12 @@ export function MediaPanel({
 }) {
   const { data, loading, error } = useWorkerLive({
     iii: host.iii,
-    triggers: [{ type: MEDIA_CHANGED, config: { tenant: api.tenant, udid } }],
+    sources: [
+      {
+        function_id: ON_MEDIA_CHANGED,
+        filters: { 'input.tenant': { $eq: api.tenant }, 'input.udid': { $eq: udid } },
+      },
+    ],
     fetch: () => api.media(udid),
     handlerId: 'iii::ios-simulator-ui::media',
   })

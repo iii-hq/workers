@@ -1,5 +1,5 @@
-//! `github` binary entry: connect, seed + fetch config, bind the
-//! configuration-change trigger, register the `github::*` surface, then wait
+//! `github` binary entry: connect, seed + fetch config, observe
+//! configuration changes, register the `github::*` surface, then wait
 //! for shutdown. No gh probe at boot — a missing gh binary surfaces at call
 //! time as `gh_not_found`, so interface collection works on bare runners.
 
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                name: "github".to_string(),
+                name: github::WORKER_NAME.to_string(),
                 os: std::env::consts::OS.to_string(),
                 description: Some("GitHub CLI (gh) as an iii worker.".to_string()),
                 pid: Some(std::process::id()),
@@ -85,14 +85,12 @@ async fn main() -> Result<()> {
 
     let cell: configuration::ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    if let Err(e) = configuration::register_config_trigger(&iii, cell.clone()) {
-        tracing::warn!(error = %e, "configuration change trigger registration failed");
-    }
+    configuration::observe_config_changes(&iii, cell.clone());
     configuration::reconcile(&iii, &cell).await;
 
-    // Register the `github::called` trigger type first so the emitter threaded
-    // through every function has a live subscriber set to fan out to.
-    let called = github::events::register_called_trigger(&iii);
+    // Register `github::on-called` first so the emitter threaded through every
+    // function calls a registered function.
+    let called = github::events::register_on_called(&iii);
     register_all(&iii, &cell, &called);
 
     // Register the webhook interface even when disabled; only activation uses backends.

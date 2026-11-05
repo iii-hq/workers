@@ -2,7 +2,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { isLiveUpdates, RUN_LIVE_TRIGGERS, RUNS_HANDLER_ID } from './live-triggers.js'
+import { isLiveUpdates, RUN_LIVE_SOURCES, RUNS_HANDLER_ID } from './live-sources.js'
 import {
   listRuns,
   type RetryResult,
@@ -54,14 +54,14 @@ export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId:
     loading: fetching,
     error: listError,
     refresh,
-    live: bound,
+    live: observing,
   } = useWorkerLive<RepositoryRunList>({
     iii: host.iii,
-    // Bind the worker's run/reconciliation change trigger types first, then
-    // read once; every notification re-reads the list (notify, then query),
-    // and a response older than the latest read is dropped by the hook.
-    // Without a binding the list is re-read on tab focus, never on a timer.
-    triggers: RUN_LIVE_TRIGGERS,
+    // Observe the worker's run/reconciliation change functions first, then
+    // read once; every call re-reads the list (notify, then query), and a
+    // response older than the latest read is dropped by the hook. Without
+    // observers the list is re-read on tab focus, never on a timer.
+    sources: RUN_LIVE_SOURCES,
     fetch: async () => ({
       repositoryKey,
       runs: await listRuns(host, { repository: repositoryKey, status: '' }),
@@ -162,7 +162,7 @@ export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId:
     loading: !scoped && !listError,
     detailLoading: selectedId !== null && (detailFetching || !detailIsCurrent),
     refreshing: fetching && scoped !== null,
-    live: isLiveUpdates(bound, connectionState),
+    live: isLiveUpdates(observing, connectionState),
     listError,
     detailError: detailIsCurrent ? detail.error : null,
     reconciliationRefreshRevision,

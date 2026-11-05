@@ -4,7 +4,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { loadConfig } from '../src/config.js';
-import { AGENT_EVENT_TRIGGER, RAW_EVENT_TRIGGER, registerAgentFeeds } from '../src/agent-feed.js';
+import { ON_AGENT_EVENT_FN, ON_RAW_EVENT_FN, registerAgentFeeds } from '../src/agent-feed.js';
 import { register } from '../src/run.js';
 import { fakeIii, type FakeIii } from './_helpers/fake-iii.js';
 import { fullTurn, scriptedQuery, type QueryCapture } from './_helpers/fake-query.js';
@@ -27,6 +27,8 @@ describe('register', () => {
   it('registers the full claude::* surface plus the shared entrypoint', async () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
+      'claude::on-agent-event',
+      'claude::on-raw-event',
       'claude::run',
       'claude::sessions::list',
       'claude::start',
@@ -130,8 +132,8 @@ describe('register', () => {
       expect(appended.some((m) => m.role === 'assistant')).toBe(true);
     });
 
-    // And the outcome is PUBLISHED, so an orchestrator can bind a `state`
-    // trigger on it and be woken instead of holding a call open.
+    // And the outcome is PUBLISHED, so an orchestrator can observe
+    // `state::on-changed` for it and be woken instead of holding a call open.
     await vi.waitFor(() => {
       const outcome = fake.state.get(`agent_tasks/${res.session_id}`) as
         | Record<string, unknown>
@@ -149,14 +151,14 @@ describe('register', () => {
   it('claude::task publishes frames on both feeds through the record wrapper', async () => {
     const fake = await registeredWorker();
     queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 'task-1');
-    await fake.bindFeed(RAW_EVENT_TRIGGER, 'task-1');
+    await fake.observeFeed(ON_AGENT_EVENT_FN, 'task-1');
+    await fake.observeFeed(ON_RAW_EVENT_FN, 'task-1');
 
     await fake.registered.get('claude::task')?.({ task: 'review', session_id: 'task-1' });
     await vi.waitFor(() => {
       expect(fake.state.get('agent_tasks/task-1')).toMatchObject({ status: 'done' });
     });
-    const agent = fake.feedFrames(AGENT_EVENT_TRIGGER);
+    const agent = fake.feedFrames(ON_AGENT_EVENT_FN);
     expect(agent.map((f) => (f.event as { type: string }).type)).toEqual([
       'message_complete',
       'function_execution_start',
@@ -165,7 +167,7 @@ describe('register', () => {
       'agent_end',
     ]);
     expect(agent.map((f) => f.seq)).toEqual([0, 1, 2, 3, 4]);
-    expect(fake.feedFrames(RAW_EVENT_TRIGGER).map((f) => f.event)).toEqual(fullTurn);
+    expect(fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.event)).toEqual(fullTurn);
     // The wrapper still captures the transcript for session::append.
     expect(fake.calls.some((c) => c.function_id === 'session::append')).toBe(true);
   });

@@ -1,5 +1,5 @@
 /**
- * Shared building blocks for every code-runner function-trigger renderer.
+ * Shared building blocks for every code-runner function-call renderer.
  *
  * The three cards (run / register_function / teardown) differ only in their
  * body — the frame, the runtime-id chip, the terminal streams, the exit

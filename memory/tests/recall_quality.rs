@@ -1162,7 +1162,7 @@ async fn embed_golden(model: &str, dims: usize, provider: &str, file: &str) {
     let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
     let texts: Vec<String> = items.iter().map(|(_, t)| t.clone()).collect();
     let reply = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::protocol::CallRequest {
             function_id: "router::embed".into(),
             payload: serde_json::json!({ "input": texts, "model": model, "provider": provider }),
             action: None,

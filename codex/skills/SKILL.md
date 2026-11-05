@@ -14,9 +14,9 @@ runs in their terminal, with the same login, filesystem, and sandbox — in a
 chosen working directory, and returns the final result and token usage. The
 worker is a pure pass-through: named payload fields cover the common path,
 the `options` field forwards any Codex SDK ThreadOption verbatim, and every
-thread event is delivered untouched on the `codex::raw-event` trigger type. A
-translated AgentEvent view is delivered on `codex::agent-event`, which is what
-the acp worker renders.
+thread event is delivered untouched on `codex::on-raw-event`. A translated
+AgentEvent view is delivered on `codex::on-agent-event`, which is what the acp
+worker renders.
 
 Requires the `codex` CLI on the host with an existing `codex login` or
 `OPENAI_API_KEY` in the worker environment. When a turn needs a capability
@@ -31,13 +31,13 @@ anything onto this one.
 - Continue a conversation across calls: pass the same `session_id` again and
   the worker resumes the underlying Codex thread with full context.
 - Run long jobs without holding the call open: `codex::start` returns
-  `{session_id, started}` immediately; bind `codex::raw-event` with
-  `{ session_id }` for raw progress or `codex::agent-event` for the rendered
-  view (or poll `codex::status`); interrupt with `codex::stop`.
+  `{session_id, started}` immediately; observe `codex::on-raw-event` with
+  args `{ session_id }` for raw progress or `codex::on-agent-event` for the
+  rendered view (or poll `codex::status`); interrupt with `codex::stop`.
 - Act on the whole backend: turns carry the iii runtime context by default
   (delivered as Codex `developer_instructions`), so the agent discovers and
   calls any registered function through the iii CLI
-  (engine::functions::list, `iii trigger <fn> --help`); disable per turn
+  (engine::functions::list, `iii call <fn> --help`); disable per turn
   with `iii_context: false`.
 - Plan before touching anything: run the planning prompt with
   `sandbox_mode: read-only` (writes physically fail), read the plan, then
@@ -65,10 +65,10 @@ anything onto this one.
 - One turn per session at a time: check `codex::status` (`live: true`)
   before sending another `codex::run` for the same `session_id`; parallel
   runs against one session race on the underlying thread resume.
-- `codex::agent-event` carries whole-message frames; per-item progress detail
-  (command output as it accumulates, todo lists) exists only on
-  `codex::raw-event`. Both feeds are ephemeral (not stored or replayed);
-  order by `(epoch, seq)`.
+- `codex::on-agent-event` carries whole-message frames; per-item progress
+  detail (command output as it accumulates, todo lists) exists only on
+  `codex::on-raw-event`. Both feeds are ephemeral (not stored or replayed);
+  order by `(epoch, seq)`. Each accepts at most 256 observers.
 
 ## Functions
 
@@ -83,3 +83,8 @@ anything onto this one.
 - `codex::status` — point-in-time session view: live flag, status, turns,
   usage.
 - `codex::sessions::list` — every session this worker has run.
+- `codex::on-agent-event` — observable event feed of one session's
+  translated AgentEvent frames: args `{ session_id }`, event
+  `{session_id, event_id, seq, epoch, source, event}`. Private: observe it,
+  never call it.
+- `codex::on-raw-event` — the same for the raw Codex thread events.

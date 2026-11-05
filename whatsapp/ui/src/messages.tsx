@@ -38,7 +38,7 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
   const list = useInboxPages({
     identity: `${sessionId}:${search}`,
     fetchPage: async (cursor?: string) => {
-      const page = await host.iii.trigger<ChatPage>('whatsapp::chats::list', { session_id: sessionId, query: search || undefined, cursor, limit: 100 })
+      const page = await host.iii.call<ChatPage>('whatsapp::chats::list', { session_id: sessionId, query: search || undefined, cursor, limit: 100 })
       return { ...page, items: page.chats }
     },
     merge: mergeChats,
@@ -102,7 +102,7 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
   const archive = useInboxPages<MessageView>({
     identity: `${sessionId}:${chat.chat_id}`,
     fetchPage: async (cursor?: string) => {
-      const page = await host.iii.trigger<MessagePage>('whatsapp::messages::list', { session_id: sessionId, chat_id: chat.chat_id, cursor, limit: 50 })
+      const page = await host.iii.call<MessagePage>('whatsapp::messages::list', { session_id: sessionId, chat_id: chat.chat_id, cursor, limit: 50 })
       return { ...page, items: page.messages }
     },
     merge: (previous, incoming) => mergeMessages(previous, incoming, chat.chat_id),
@@ -187,7 +187,7 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     setSendError(null)
     setSent(null)
     try {
-      const result = await host.iii.trigger<SentMessage>('whatsapp::messages::send_text', { session_id: sessionId, chat_id: chat.chat_id, text: draft }, { timeoutMs: 610000 })
+      const result = await host.iii.call<SentMessage>('whatsapp::messages::send_text', { session_id: sessionId, chat_id: chat.chat_id, text: draft }, { timeoutMs: 610000 })
       if (!current()) return
       clearDraft()
       setSent(result)
@@ -206,7 +206,7 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     setRequesting(true)
     setHistoryError(null)
     try {
-      const result = await host.iii.trigger<{ request_id: string; requested_count: number }>('whatsapp::messages::request_history', { session_id: sessionId, chat_id: chat.chat_id, count: 50 }, { timeoutMs: 610000 })
+      const result = await host.iii.call<{ request_id: string; requested_count: number }>('whatsapp::messages::request_history', { session_id: sessionId, chat_id: chat.chat_id, count: 50 }, { timeoutMs: 610000 })
       if (!current()) return
       setHistoryNotice(`Up to ${result.requested_count} older messages requested. Available history will appear when WhatsApp responds.`)
       archive.refresh()

@@ -49,7 +49,7 @@ from the profile or the chat workspace.
 # sentinel
 
 Error monitoring for an iii engine. The engine already exports every worker's
-spans and logs; `sentinel` subscribes to the failures among them, groups them
+spans and logs; `sentinel` observes the failures among them, groups them
 by a deterministic fingerprint so a thousand occurrences read as one problem,
 and — this is the part a dashboard cannot do — **freezes the evidence at the
 moment of capture**, because the engine's span store is a ring of 10 000 spans
@@ -62,7 +62,7 @@ detected on their own.
 ## Install
 
 ```bash
-iii trigger compose::add worker=sentinel worker=database worker=queue
+iii call compose::add worker=sentinel worker=database worker=queue
 ```
 
 `sentinel` keeps its groups in `database` (SQLite by default, zero-config) and
@@ -75,8 +75,7 @@ the worker starts, reports itself disabled, and waits.
 monitor is actually working — not just running:
 
 ```rust
-use iii_sdk::{register_worker, InitOptions};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
@@ -84,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
     let status = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sentinel::status".into(),
             payload: json!({}),
             action: None,
@@ -113,8 +112,8 @@ Three fields carry most of the diagnostic weight:
 - `enabled` is false while the store or the queue has not registered yet —
   the worker is up, ingest is closed, and nothing is being dropped silently.
 - `lost_before_capture` counts traces that left the engine's ring before the
-  job ran. A number that climbs is the signal to raise the engine's
-  `memory_max_spans`, not a bug in a group.
+  tick's read or the job got to them. A number that climbs is the signal to
+  raise the engine's `memory_max_spans`, not a bug in a group.
 - `repositories[].exists` says whether a mapped checkout is really on this
   machine. False disables code access for its workers; grouping, evidence and
   regression keep working.
@@ -169,13 +168,57 @@ happened.
 ## Investigating from outside the console
 
 ```bash
-iii trigger sentinel::investigate group_id=grp_... mode=assisted
-iii trigger sentinel::investigations::get investigation_id=inv_...
+iii call sentinel::investigate group_id=grp_... mode=assisted
+iii call sentinel::investigations::get investigation_id=inv_...
 ```
 
 The session id it answers with is a real console conversation: opening it in
 the console puts you in the middle of the investigation, with the same
 controls as any other chat.
+
+## Events
+
+Two private functions carry what changed: only `sentinel` calls them, anyone
+may observe them, and each handler returns the event it is called with.
+Neither takes args; select calls with filters on the event's fields. An event
+is a doorbell, not a record: re-read the group or investigation it names.
+`sentinel` calls them only while something observes them.
+
+| Function | Args | Event |
+|---|---|---|
+| `sentinel::on-group-changed` | none; filter on `input.group_id`, `input.op` | `{ op: created \| occurrence \| status, group_id, status, previous_status?, occurrence_count, reason? }` |
+| `sentinel::on-investigation-changed` | none; filter on `input.group_id`, `input.investigation_id`, `input.op` | `{ op: created \| recorded \| finished, investigation_id, group_id, session_id, status, error? }` |
+
+`occurrence` events are coalesced per group over one second; `created` and
+`status` go out at once. An alert that wants state changes only:
+
+```rust
+use iii_sdk::{Deliver, Source};
+use serde_json::json;
+
+iii.observe(
+    Source::function("sentinel::on-group-changed")
+        .filters(json!({ "input.op": { "$in": ["created", "status"] } }))
+        .deliver(Deliver::Output),
+    "alerts::on-error-group",
+);
+```
+
+## What it observes
+
+| Function | Args, filters | Target |
+|---|---|---|
+| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target reads the tick's traces in one call and queues those that hold an error; if that read fails it queues them all | `sentinel::on-trace-activity` |
+| `observability::on-log` (`default` namespace) | filter `{ "input.severity_number": { "$gte": 17 } }` (ERROR and above) | `sentinel::on-log` |
+| `harness::on-turn-completed` | none | `sentinel::on-turn-completed` |
+| `cron::on-tick` | args `{ expression: retention.cron }` | `sentinel::on-schedule` |
+| `configuration::on-updated` | filters on `input.id` and `input.event_type` | `sentinel::on-config-change` |
+
+Each takes the event as output. `sources.trace.enabled` and
+`sources.log.enabled` add or dispose the first two; `enabled: false`
+disposes all but the configuration observer. An observer of a worker that is
+not running (`harness`, `cron`) stays pending and becomes active when that
+worker registers its function.
 
 ## Configuration
 
@@ -187,7 +230,7 @@ change:
 ```yaml
 enabled: true
 sources:
-  trace: { enabled: true }              # spans with status error
+  trace: { enabled: true }              # traces that hold an error, queued from each span-activity tick
   log:   { enabled: true, join_window_ms: 2000 }   # an ERROR log waits this long for the span of its own trace
 redaction:
   patterns: []                          # extra value shapes to redact on capture; the built-in set always runs

@@ -3,8 +3,7 @@
 
 use std::path::Path;
 
-use iii_sdk::IIIClient;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -116,7 +115,7 @@ pub async fn profiles_from_disk(dir: &Path) -> Vec<AgentProfile> {
 
 pub async fn list_agents(iii: &IIIClient, agents_dir: &Path) -> AgentList {
     let directory = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "directory::agents::list".to_string(),
             payload: json!({}),
             action: None,

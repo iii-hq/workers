@@ -1,4 +1,4 @@
-//! Wire types emitted onto `codex::agent-event` (translated AgentEvent subset) and
+//! Wire types emitted onto `codex::on-agent-event` (translated AgentEvent subset) and
 //! the persisted session record. Mirrors the harness AgentEvent shape so the
 //! console and acp worker render Codex turns like any other agent worker.
 

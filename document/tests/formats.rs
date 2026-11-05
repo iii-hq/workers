@@ -92,7 +92,7 @@ fn a_deck_converts_and_reports_the_images_markdown_dropped() {
 
     let text = &response.body.text;
     assert!(text.contains("Three Primitives"), "{text}");
-    assert!(text.contains("Worker, function, trigger."), "{text}");
+    assert!(text.contains("Worker, function, observer."), "{text}");
 
     // The count is the whole reason it is on the response: markdown renders an
     // embedded image as alt text, so without this a deck of diagrams looks

@@ -2,11 +2,12 @@ iii: v1
 name: session-manager
 language: rust
 deploy: binary
+iii_engine_version: ">=0.26.0"
 manifest: Cargo.toml
 license: Apache-2.0
 bin: session-manager
 tags: [session, conversation, chat, history]
-description: Durable, reactive, branching store of typed conversation entries with six emitted trigger types.
+description: Durable, reactive, branching store of typed conversation entries with six observable session event functions.
 
 dependencies:
   configuration: "latest"

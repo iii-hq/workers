@@ -1,4 +1,4 @@
-//! Boot wiring: function surface, the router::ready rebind, and the
+//! Boot wiring: function surface, the router::on-ready observer, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models, refresh_models_periodically};
@@ -7,17 +7,18 @@ use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{auth, router_client, state, PROVIDER_ID};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub fn declaration() -> ProviderDeclaration {
@@ -65,9 +66,15 @@ pub fn declaration() -> ProviderDeclaration {
     }
 }
 
+/// Serializes one provider's registration attempts. Boot and
+/// `router::on-ready` both declare; on a first boot, unserialized, both carry
+/// no token and the router rejects whichever binds second.
+pub type DeclareLock = Arc<tokio::sync::Mutex<()>>;
+
 /// One registration attempt: declare (with the persisted token when present)
 /// and persist the token the router returns.
-pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
+pub async fn declare_once(iii: &IIIClient, lock: &DeclareLock) -> Result<(), Error> {
+    let _serialized = lock.lock().await;
     let token = state::load_token(iii).await;
     let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
     if let Some(t) = &token {
@@ -103,10 +110,10 @@ async fn persist_registration_token(iii: &IIIClient, token: &str) -> Result<(), 
 /// Retry until acknowledged: covers provider-before-router boot order.
 /// A token mismatch also lands here — it never resolves on its own and
 /// needs the operator to clear the binding (logged every attempt).
-pub async fn declare_with_backoff(iii: IIIClient) {
+pub async fn declare_with_backoff(iii: IIIClient, lock: DeclareLock) {
     let mut delay = Duration::from_millis(500);
     loop {
-        match declare_once(&iii).await {
+        match declare_once(&iii, &lock).await {
             Ok(()) => {
                 println!("[provider-claude-code] registered with llm-router");
                 return;
@@ -124,8 +131,8 @@ pub async fn declare_with_backoff(iii: IIIClient) {
 /// credential yet (best-effort, read-only), then populate the catalog from the
 /// live API. The declaration carries no models, so the slice is empty until
 /// this refresh lands; failures are logged and left to the next refresh.
-pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
-    declare_with_backoff(iii.clone()).await;
+pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client, lock: DeclareLock) {
+    declare_with_backoff(iii.clone(), lock).await;
     auth::import_claude_home_if_absent(&iii).await;
     match refresh_models(&iii, &http).await {
         Ok(count) => println!("[provider-claude-code] catalog refreshed: {count} models"),
@@ -149,9 +156,10 @@ fn read_timeout() -> Duration {
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
-    // router::ready — a restarted router may carry new config and reissues
+    // router::on-ready — a restarted router may carry new config and reissues
     // declare/refresh anyway — and on upstream auth errors (stream_fn).
     let cache = ScaffoldCache::new();
+    let declare_lock = DeclareLock::default();
     // Streaming uses no total timeout (the router owns stream budgets), but
     // reads are silence-bounded: a stalled upstream otherwise pings the router
     // past its idle guard until the engine kills the call at stream_timeout.
@@ -189,18 +197,20 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
     );
 
-    // Re-declare when the router restarts: bind to the router::ready trigger type.
+    // Re-declare whenever the router starts: this handler is the target of
+    // the worker's observer of router::on-ready (observed below).
     {
         let iii_ready = iii.clone();
         let http_ready = http.clone();
+        let lock_ready = declare_lock.clone();
         let cache_ready = cache.clone();
         iii.register_function(
             surface::ON_ROUTER_READY_ID,
             RegisterFunction::new_async(move |_event: RouterReadyEvent| {
-                let (iii, http) = (iii_ready.clone(), http_ready.clone());
+                let (iii, http, lock) = (iii_ready.clone(), http_ready.clone(), lock_ready.clone());
                 cache_ready.invalidate();
                 async move {
-                    tokio::spawn(declare_and_refresh(iii, http));
+                    tokio::spawn(declare_and_refresh(iii, http, lock));
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
@@ -227,14 +237,12 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
         );
     }
-    let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
-        surface::ON_ROUTER_READY_ID,
-        json!({}),
-    ));
+    // The observer outlives router restarts: it waits `pending` while
+    // llm-router is down, and every router start's ready event reaches it.
+    observe_router_ready(&iii, surface::ON_ROUTER_READY_ID);
 
     // Boot declare, off the boot path (a missing router must not block boot).
-    tokio::spawn(declare_and_refresh(iii.clone(), http.clone()));
+    tokio::spawn(declare_and_refresh(iii.clone(), http.clone(), declare_lock));
     tokio::spawn(refresh_models_periodically(iii, http));
     Ok(())
 }

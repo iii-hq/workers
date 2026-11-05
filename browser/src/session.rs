@@ -4,8 +4,8 @@
 //! record — url, title, history, back/forward stack — that survives the page
 //! being closed and, for regular tabs, the worker restarting (`tabs.json`
 //! under `data_dir`). A `Session` is a tab with its page open: the CDP event
-//! pumps that keep the console/network ring buffers live and fire the
-//! `browser::*` custom triggers hang off it. Selecting or calling into a
+//! pumps that keep the console/network ring buffers live and call the
+//! `browser::on-*` event functions hang off it. Selecting or calling into a
 //! sleeping tab wakes it: the page is opened again at the remembered url.
 //! Incognito tabs live in their own throwaway browser context and never
 //! touch `data_dir`.
@@ -69,6 +69,23 @@ const FRESH_FRAME_GRACE: std::time::Duration = std::time::Duration::from_millis(
 /// that frame while the page has not laid out its new size yet.
 const FRESH_FRAME_ATTEMPTS: u32 = 10;
 const FRESH_FRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How long `Session::capture_frame` waits for Chromium's screenshot: 2 s,
+/// plus 100 ms per megapixel of the JPEG it asks for, at most 30 s. Chromium
+/// encodes the picture while its screencast keeps encoding frames of the
+/// same size, so the time grows with the pixels: the largest frame the
+/// worker asks for (a 4000x2000 viewport at `frame_density` 3, 72
+/// megapixels) takes about 1 s alone and 3-4 s beside a running screencast,
+/// and a fixed 2 s timed out nearly every attempt, leaving the viewers with
+/// no frame at all (KAN-113).
+fn capture_timeout(pixels: f64) -> std::time::Duration {
+    let megapixels = if pixels.is_finite() {
+        (pixels / 1e6).max(0.0)
+    } else {
+        0.0
+    };
+    std::time::Duration::from_millis((2_000.0 + megapixels * 100.0).min(30_000.0).round() as u64)
+}
 /// Chromium's error text for a committed HTTP error status (a 4xx/5xx with
 /// an empty body). The tab shows the response like any browser does, so it is
 /// reported rather than treated as a failed navigation.
@@ -838,7 +855,7 @@ pub struct Session {
     pub viewport_width: AtomicU32,
     pub viewport_height: AtomicU32,
     pub latest_frame: Mutex<Option<LatestFrame>>,
-    /// The newest frame for the `browser::frame-event` pusher (latest
+    /// The newest frame for the `browser::on-frame-event` pusher (latest
     /// wins). Fed only by `Session::publish_frame`, with the slot above.
     frames: tokio::sync::watch::Sender<Option<LatestFrame>>,
     /// Bumped by every `Sessions::expect_fresh_frame`, so only the latest
@@ -1178,7 +1195,7 @@ impl Session {
     }
 
     /// Hand a frame to viewers as the newest: the next `frame_seq`, the
-    /// `browser::frame` slot, and the `browser::frame-event` push. The one
+    /// `browser::frame` slot, and the `browser::on-frame-event` push. The one
     /// way a frame goes out, for the screencast pump and the worker's own
     /// capture alike; numbered under the slot's lock so the slot and the
     /// push only ever move forward.
@@ -1271,11 +1288,19 @@ impl Session {
             .capture_beyond_viewport(false)
             .optimize_for_speed(true)
             .build();
-        let shot =
-            tokio::time::timeout(std::time::Duration::from_secs(2), self.page.execute(params))
-                .await
-                .map_err(|_| "capture timed out".to_string())?
-                .map_err(|e| format!("capture: {e}"))?;
+        // The JPEG comes out at the clip times its scale times the emulated
+        // device scale factor: `density` CSS-pixel multiples in the worker's
+        // own browser. The bigger it is, the longer Chromium takes.
+        let out_scale = match &self.backing {
+            Backing::Shared(_) => density * visual.scale,
+            Backing::Own(_) => visual.scale,
+        };
+        let limit =
+            capture_timeout(visual.client_width * out_scale * visual.client_height * out_scale);
+        let shot = tokio::time::timeout(limit, self.page.execute(params))
+            .await
+            .map_err(|_| format!("capture timed out after {limit:?}"))?
+            .map_err(|e| format!("capture: {e}"))?;
         let frame = ScreencastFrameEvent {
             data: shot.result.data.clone(),
             metadata: cdp_page::ScreencastFrameMetadata {
@@ -3669,8 +3694,8 @@ fn origin_access_denial(config: &WorkerConfig, url: &str) -> Option<String> {
 }
 
 /// A top-document navigation committed: the tab remembers where it is, the
-/// history panel and the back/forward stack learn about it, subscribers
-/// hear `browser::navigated`, and regular tabs are saved.
+/// history panel and the back/forward stack learn about it, observers of
+/// `browser::on-navigated` hear it, and regular tabs are saved.
 async fn note_navigation(sessions: &Arc<Sessions>, session: &Arc<Session>, url: &str) {
     // A wedged renderer must not stall the navigation pump on a title read;
     // after a short wait the visit records untitled.
@@ -3699,7 +3724,7 @@ async fn note_navigation(sessions: &Arc<Sessions>, session: &Arc<Session>, url: 
 }
 
 /// The page's title changed (reported by the title watcher): keep it on the
-/// tab and tell the tab strip (`browser::session-updated`).
+/// tab and tell the tab strip (`browser::on-session-updated`).
 async fn note_title(sessions: &Arc<Sessions>, session: &Arc<Session>, title: &str) {
     if !session.tab.retitle(title) {
         return;
@@ -3902,8 +3927,8 @@ async fn arm_title_watch(page: &Page) -> bool {
 }
 
 /// Arm the per-session CDP event listeners. Each pump owns one event stream,
-/// pushes into the ring buffer, and (console + pick) forwards to trigger
-/// subscribers.
+/// pushes into the ring buffer, and (console + pick) calls the matching
+/// `browser::on-*` event function.
 async fn spawn_event_pumps(
     sessions: Arc<Sessions>,
     session: Arc<Session>,
@@ -4007,7 +4032,7 @@ async fn spawn_event_pumps(
 
     // A title the page sets once it parsed, or later: the title watcher
     // reports `document.title` through a binding the moment it changes, and
-    // the tab strip hears it as `browser::session-updated` instead of
+    // the tab strip hears it as `browser::on-session-updated` instead of
     // re-reading the list on a timer. Best-effort: an engine without
     // isolated worlds or bindings keeps the title read at each navigation.
     if let Ok(mut events) = page.event_listener::<runtime::EventBindingCalled>().await {
@@ -4265,12 +4290,13 @@ async fn spawn_event_pumps(
     }
 
     // screencast frames: keep only the newest, ack every frame so Chromium
-    // keeps pushing. Delivery to the console (`browser::frame-event`, one
-    // awaited trigger per viewer) runs on its own task fed by a watch
-    // channel — latest frame wins — so a slow bus never stalls the pump or
-    // builds a backlog of stale pictures; the viewer always gets the newest
-    // frame the engine can take. The worker's own captures
-    // (`Sessions::expect_fresh_frame`) go out on the same channel.
+    // keeps pushing. Delivery to the console (a call of
+    // `browser::on-frame-event`, delivered to the tab's viewers) runs on its
+    // own task fed by a watch channel — latest frame wins — so a slow bus
+    // never stalls the pump or builds a backlog of stale pictures; a viewer
+    // observes with `max_in_flight: 1` and skips the frames it cannot take.
+    // The worker's own captures (`Sessions::expect_fresh_frame`) go out on
+    // the same channel.
     if let Ok(mut events) = page
         .event_listener::<cdp_page::EventScreencastFrame>()
         .await
@@ -4283,9 +4309,13 @@ async fn spawn_event_pumps(
                 while frame_rx.changed().await.is_ok() {
                     let next = frame_rx.borrow_and_update().clone();
                     if let Some(frame) = next {
+                        // Nobody watches this tab: copy nothing.
+                        if !sx.emitter.is_observed(EventKind::FrameEvent, &s.id) {
+                            continue;
+                        }
                         let data: &str = frame.frame.data.as_ref();
                         sx.emitter
-                            .emit_awaited(
+                            .emit(
                                 EventKind::FrameEvent,
                                 &s.id,
                                 &FrameEventPayload {
@@ -4347,6 +4377,9 @@ async fn spawn_event_pumps(
                             session_id = %s.id,
                             width = event.metadata.device_width,
                             height = event.metadata.device_height,
+                            jpeg = ?jpeg_size(&bytes),
+                            viewport = ?s.viewport(),
+                            cap = ?*s.cast_limits.lock().unwrap_or_else(|p| p.into_inner()),
                             "screencast frame of a stale size dropped"
                         );
                         continue;
@@ -4360,9 +4393,9 @@ async fn spawn_event_pumps(
                     continue;
                 };
                 last_push_ms = now_ms();
-                // Offer it to the pusher (the console is bound to the frame
-                // trigger); the in-memory slot stays as the seed for a fresh
-                // viewer's first paint.
+                // Offer it to the pusher (the console observes
+                // `browser::on-frame-event`); the in-memory slot stays as the
+                // seed for a fresh viewer's first paint.
                 s.publish_frame(event);
                 // Feed the recorder the same capped frame flow through a
                 // bounded queue with try_send: the pump never awaits ffmpeg
@@ -4577,7 +4610,7 @@ pub async fn resolve_pick_at(
 }
 
 /// Resolve the picked node into a `PickedElement`, register a ref for it,
-/// and emit `browser::picked`.
+/// and emit `browser::on-picked`.
 async fn handle_pick(
     sessions: &Arc<Sessions>,
     session: &Arc<Session>,
@@ -4750,6 +4783,25 @@ fn log_level(l: &cdp_log::LogEntryLevel) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capture_waits_longer_for_a_bigger_picture() {
+        use std::time::Duration;
+        assert_eq!(capture_timeout(0.0), Duration::from_secs(2));
+        assert_eq!(capture_timeout(f64::NAN), Duration::from_secs(2));
+        assert_eq!(capture_timeout(-1.0), Duration::from_secs(2));
+        // 1280x800 at density 2: about 4 megapixels.
+        assert_eq!(
+            capture_timeout(2560.0 * 1600.0),
+            Duration::from_millis(2_410)
+        );
+        // The largest frame the worker asks for: 4000x2000 at density 3.
+        assert_eq!(
+            capture_timeout(12_000.0 * 6_000.0),
+            Duration::from_millis(9_200)
+        );
+        assert_eq!(capture_timeout(1e12), Duration::from_secs(30));
+    }
 
     #[test]
     fn ring_buffer_drops_oldest_and_counts() {

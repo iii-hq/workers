@@ -7,7 +7,7 @@ import type { SessionMeta } from './types'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
 vi.mock('./api', () => ({ getSession: vi.fn() }))
-const trigger = vi.fn()
+const call = vi.fn()
 const conversation = (patch: Partial<Conversation> = {}): Conversation => ({
   id: 'target',
   title: 'Target',
@@ -38,8 +38,8 @@ const tree = (ids = ['target']) => ({
 
 beforeEach(() => {
   vi.resetAllMocks()
-  vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
-  trigger.mockResolvedValue(tree())
+  vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
+  call.mockResolvedValue(tree())
   vi.mocked(getSession).mockImplementation(async (id) => meta(id))
 })
 
@@ -63,7 +63,7 @@ describe('getRemovalPreview', () => {
       hasRunningWork: false,
       hasChildren: false,
     })
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'harness::session-tree',
       { root_session_id: 'target' },
       { timeoutMs: 10_000 },
@@ -104,7 +104,7 @@ describe('getRemovalPreview', () => {
   })
 
   it('uses the full tree and sees a running grandchild outside the sidebar', async () => {
-    trigger.mockResolvedValue(tree(['target', 'child', 'grandchild']))
+    call.mockResolvedValue(tree(['target', 'child', 'grandchild']))
     vi.mocked(getSession).mockImplementation(async (id) =>
       meta(id, { status: id === 'grandchild' ? 'working' : 'done' }),
     )
@@ -119,7 +119,7 @@ describe('getRemovalPreview', () => {
   })
 
   it('requires confirmation for children even when the root is empty', async () => {
-    trigger.mockResolvedValue(tree(['target', 'child']))
+    call.mockResolvedValue(tree(['target', 'child']))
     expect(await getRemovalPreview(conversation())).toMatchObject({
       empty: false,
       hasRunningWork: false,
@@ -161,7 +161,7 @@ describe('getRemovalPreview', () => {
     tree(['other']),
     null,
   ])('fails closed for an incomplete or invalid tree %j', async (response) => {
-    trigger.mockResolvedValue(response)
+    call.mockResolvedValue(response)
     await expect(getRemovalPreview(conversation())).rejects.toThrow(
       'Could not verify',
     )
@@ -182,7 +182,7 @@ describe('getRemovalPreview', () => {
   )
 
   it('propagates transport failure without falling back to the sidebar', async () => {
-    trigger.mockRejectedValue(new Error('disconnected'))
+    call.mockRejectedValue(new Error('disconnected'))
     await expect(
       getRemovalPreview(conversation({ started: false })),
     ).rejects.toThrow('disconnected')
@@ -193,7 +193,7 @@ describe('getRemovalPreview', () => {
       'target',
       ...Array.from({ length: 8 }, (_, index) => `child-${index}`),
     ]
-    trigger.mockResolvedValue(tree(ids))
+    call.mockResolvedValue(tree(ids))
     vi.mocked(getSession).mockImplementation(async (id) =>
       meta(id, { status: id === 'child-7' ? 'working' : 'done' }),
     )
@@ -211,7 +211,7 @@ describe('getRemovalPreview', () => {
       'target',
       ...Array.from({ length: 8 }, (_, index) => `child-${index}`),
     ]
-    trigger.mockResolvedValue(tree(ids))
+    call.mockResolvedValue(tree(ids))
     vi.mocked(getSession).mockImplementation(async (id) =>
       id === 'child-7' ? null : meta(id),
     )

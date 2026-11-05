@@ -1,5 +1,5 @@
 //! State for the `approval::filesystem-access-watch` ladder's memory rungs (steps 6-7
-//! of contracts.md § post_trigger / spec-pr3): the per-session "denied this
+//! of contracts.md, the post-call hook / spec-pr3): the per-session "denied this
 //! session" directory list and the per-call re-ask attempt counter.
 //!
 //! Both scopes follow the same read-modify-write discipline as

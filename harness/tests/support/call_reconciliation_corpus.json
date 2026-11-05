@@ -16,7 +16,7 @@
     },
     {
      "path": "src",
-     "query": "registerTrigger|registerFunction",
+     "query": "observe|registerFunction",
      "regex": true,
      "search_paths": false
     }
@@ -603,7 +603,7 @@
      ]
     },
     "namespace": {
-     "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+     "description": "Optional daemon guard. Use the call `--namespace` flag to route.",
      "type": [
       "string",
       "null"
@@ -672,49 +672,6 @@
    "required": [
     "path"
    ],
-   "type": "object"
-  },
-  "engine::register_trigger": {
-   "$schema": "http://json-schema.org/draft-07/schema#",
-   "properties": {
-    "_caller_worker_id": {
-     "default": null,
-     "description": "Injected by the engine from the calling worker. Its connection namespace is where the binding is at home: the target `function_id` resolves there and the provider lookup starts there. Not an owner — the binding outlives the connection. Absent for in-process callers, whose home is `default`.",
-     "type": [
-      "string",
-      "null"
-     ]
-    },
-    "config": {
-     "default": null,
-     "description": "Trigger-type-specific configuration, passed through verbatim."
-    },
-    "function_id": {
-     "description": "The function the fire is delivered to. The trigger binds directly to it; `metadata` is delivered alongside the payload as a distinct argument.",
-     "type": "string"
-    },
-    "metadata": {
-     "default": null,
-     "description": "Arbitrary metadata delivered to the target handler as a distinct argument (not folded into the payload) so a (possibly shared) target function can recover per-trigger context the engine routing otherwise drops."
-    },
-    "trigger_namespace": {
-     "default": null,
-     "description": "Namespace to find the trigger type's provider in. Absent asks the engine to resolve it: the caller's connection namespace first, then [`crate::protocol::DEFAULT_NAMESPACE`].",
-     "type": [
-      "string",
-      "null"
-     ]
-    },
-    "trigger_type": {
-     "description": "Trigger type to bind (e.g. `cron`, `state`, `stream`, or a custom worker trigger type).",
-     "type": "string"
-    }
-   },
-   "required": [
-    "function_id",
-    "trigger_type"
-   ],
-   "title": "RegisterTriggerInput",
    "type": "object"
   },
   "mario-game::auto::start": {
@@ -967,7 +924,7 @@
     "agent": "backend-engineer",
     "display": "{\"name\": \"Backend · mario judge context\", \"icon\": \"terminal\", \"color\": \"blue\"}",
     "session_id": "mario-judge-ctx-backend-8d21",
-    "task": "You are extending the existing mario-game worker backend so every Auto-mode judge::evaluate call carries Mario's immediate situation (threats, opportunities, priority, predicted effect of each of the six movements in the 700 ms window), a new read-only mario-game::auto::situation function exists, and AutoStatus.action carries the predicted effect of the chosen move.\n\nRead first; it is the contract: /repo/specs/mario-game-auto-judge-context.md — especially `## Architecture` (subsections Pure simulation seam, Situation data shape, Functions, Triggers/data/scheduling, Delivery/ownership/checks) and `Project context`. Safety invariants that must keep holding: /repo/specs/mario-game-auto-mode.md sections 'Judge contract and scheduling', 'Reactive surface and data home', 'Targeted correction B-AC5-01'.\nProject root: /repo Worker directory: /repo/mario-game (existing package; do not re-scaffold; `pnpm dev` watcher may already be running — keep it working).\n\nBuild: src/situation.ts (pure port of ui/src/game.ts::step + situation computation per the architecture), changes in src/auto-judge.ts (state.situation from the same report, rewritten criteria/instructions explaining dodge-jump vs coin-jump and priority; questions stay exactly {movement}, six choices), src/auto.ts (compute situation at decide(), latency from previous decision, previous-report vy estimate, attach predicted to action, auto::situation handler), src/auto-contract.ts (action.predicted exact schema, MarioSituation schema), src/game.ts (NO_REPORTED_STATE error code only), src/index.ts (register mario-game::auto::situation), tests.\nAllowed writes: mario-game/src/**, mario-game tests/scripts, and the evidence file below. Do NOT edit mario-game/ui/** (the frontend owns it; the live UI parser will temporarily reject the new action.predicted key — expected), level/physics, package deps unless strictly required, compose, Judge/TypeSafe.\nOut of scope: any policy that chooses or overrides the Judge's move; changing 700 ms / 5 s / stale 1000 ms / report cadence; persistence, config, forms, renderers; deleting files, workers or state; git commits.\n\nDone means (child checks, each recorded with inputs/observations): BJ1–BJ6 exactly as listed in the Architecture's 'Delivery, ownership and checks' subsection (schemas + invalid args + NO_REPORTED_STATE; sim parity vs ui/src/game.ts step over ≥300 starts × 6 inputs; AC1/AC2/spawn fixtures incl. replay of the predicted coin-b collector; judge request carries situation from same report; predicted == situation.moves[choice]; all prior tests + typecheck + build green; live: 10 functions registered, real auto::situation calls, one real Auto decision through judge::evaluate provider typesafe showing predicted in auto::state and mario-game:change — service-driven reports labelled service-only). Also record measured situation/request JSON byte size, and SHA-256 of each changed src file.\nNote: engine::functions::info may be reported removed; use directory::engine::functions::info {\"function_id\":\"...\"} for live contracts.\n\nParent checks, performed by the Tech Lead after this result: live schemas and invalid args, AC1/AC2 positions in the live page, real Auto trace consistency, stop/restart safety, manifest.\n\nDetailed evidence: /repo/specs/mario-game-auto-judge-context-backend-evidence.md (check ids, inputs, observations, file hashes, runtime times).\n\nWhen finished, write your result with state::set to scope \"results\", key \"mario-judge-ctx-backend-8d21\", as the report skill (harness/orchestration/report) describes, then stop. If blocked, write outcome \"blocked\" with the question, then stop."
+    "task": "You are extending the existing mario-game worker backend so every Auto-mode judge::evaluate call carries Mario's immediate situation (threats, opportunities, priority, predicted effect of each of the six movements in the 700 ms window), a new read-only mario-game::auto::situation function exists, and AutoStatus.action carries the predicted effect of the chosen move.\n\nRead first; it is the contract: /repo/specs/mario-game-auto-judge-context.md — especially `## Architecture` (subsections Pure simulation seam, Situation data shape, Functions, Observers/data/scheduling, Delivery/ownership/checks) and `Project context`. Safety invariants that must keep holding: /repo/specs/mario-game-auto-mode.md sections 'Judge contract and scheduling', 'Reactive surface and data home', 'Targeted correction B-AC5-01'.\nProject root: /repo Worker directory: /repo/mario-game (existing package; do not re-scaffold; `pnpm dev` watcher may already be running — keep it working).\n\nBuild: src/situation.ts (pure port of ui/src/game.ts::step + situation computation per the architecture), changes in src/auto-judge.ts (state.situation from the same report, rewritten criteria/instructions explaining dodge-jump vs coin-jump and priority; questions stay exactly {movement}, six choices), src/auto.ts (compute situation at decide(), latency from previous decision, previous-report vy estimate, attach predicted to action, auto::situation handler), src/auto-contract.ts (action.predicted exact schema, MarioSituation schema), src/game.ts (NO_REPORTED_STATE error code only), src/index.ts (register mario-game::auto::situation), tests.\nAllowed writes: mario-game/src/**, mario-game tests/scripts, and the evidence file below. Do NOT edit mario-game/ui/** (the frontend owns it; the live UI parser will temporarily reject the new action.predicted key — expected), level/physics, package deps unless strictly required, compose, Judge/TypeSafe.\nOut of scope: any policy that chooses or overrides the Judge's move; changing 700 ms / 5 s / stale 1000 ms / report cadence; persistence, config, forms, renderers; deleting files, workers or state; git commits.\n\nDone means (child checks, each recorded with inputs/observations): BJ1–BJ6 exactly as listed in the Architecture's 'Delivery, ownership and checks' subsection (schemas + invalid args + NO_REPORTED_STATE; sim parity vs ui/src/game.ts step over ≥300 starts × 6 inputs; AC1/AC2/spawn fixtures incl. replay of the predicted coin-b collector; judge request carries situation from same report; predicted == situation.moves[choice]; all prior tests + typecheck + build green; live: 10 functions registered, real auto::situation calls, one real Auto decision through judge::evaluate provider typesafe showing predicted in auto::state and mario-game:change — service-driven reports labelled service-only). Also record measured situation/request JSON byte size, and SHA-256 of each changed src file.\nNote: engine::functions::info may be reported removed; use directory::engine::functions::info {\"function_id\":\"...\"} for live contracts.\n\nParent checks, performed by the Tech Lead after this result: live schemas and invalid args, AC1/AC2 positions in the live page, real Auto trace consistency, stop/restart safety, manifest.\n\nDetailed evidence: /repo/specs/mario-game-auto-judge-context-backend-evidence.md (check ids, inputs, observations, file hashes, runtime times).\n\nWhen finished, write your result with state::set to scope \"results\", key \"mario-judge-ctx-backend-8d21\", as the report skill (harness/orchestration/report) describes, then stop. If blocked, write outcome \"blocked\" with the question, then stop."
    },
    "description": ""
   },
@@ -1091,9 +1048,9 @@
    "description": "Verify game description rejects unexpected fields"
   },
   {
-   "function_id": "engine::register_trigger",
+   "function_id": "harness::observe",
    "stringified": false,
-   "error": "invalid subscribe arguments: missing field `function_id`",
+   "error": "invalid harness::observe arguments: missing field `function_id`",
    "arguments": {
     "conditions": [
      {
@@ -1105,14 +1062,15 @@
       ]
      }
     ],
-    "config": {
-     "selectionKey": "todas"
+    "filters": {
+     "input.selectionKey": {
+      "$eq": "todas"
+     }
     },
     "lifecycle": {
      "expires_in_ms": 360000
     },
-    "once": true,
-    "trigger_type": "noticias-brasil:change"
+    "once": true
    },
    "description": "Armar observação de conclusão real antes de solicitar a coleta"
   },
@@ -1171,22 +1129,22 @@
    "description": "Create the calculator script"
   },
   {
-   "function_id": "engine::register_trigger",
+   "function_id": "harness::observe",
    "stringified": false,
-   "error": "invalid subscribe arguments: unknown field `expires_at`, expected one of `once`, `max_fires`, `expires_in_ms`",
+   "error": "invalid harness::observe arguments: unknown field `expires_at`, expected one of `once`, `max_fires`, `expires_in_ms`",
    "arguments": {
-    "config": {
-     "scope": "calc-build-console-27508908-39e0-4419-af31-4e187aa130d5"
+    "function_id": "state::on-changed",
+    "filters": {
+     "input.scope": {
+      "$eq": "calc-build-console-27508908-39e0-4419-af31-4e187aa130d5"
+     }
     },
     "label": "Calculator follow-up completion",
     "lifecycle": {
      "expires_at": 4102444800000
     },
-    "metadata": {
-     "action": "Calculator follow-up specialist completed"
-    },
-    "once": true,
-    "trigger_type": "state"
+    "action": "Calculator follow-up specialist completed",
+    "once": true
    },
    "description": "Arming follow-up completion wake"
   },
@@ -1203,7 +1161,7 @@
         "content": "import time\n"
        },
        {
-        "content": "def initialize_schema() -> None:\n    \"\"\"Create analytics storage without making a transient dependency fatal.\"\"\"\n    while not stopped.is_set():\n        try:\n            worker.trigger(\n                {\n                    \"function_id\": \"database::execute\",\n                    \"payload\": {\n                        \"db\": DATABASE,\n                        \"sql\": \"\"\"\n                            CREATE TABLE IF NOT EXISTS daily_link_counts (\n                                day TEXT PRIMARY KEY,\n                                count INTEGER NOT NULL DEFAULT 0\n                            )\n                        \"\"\",\n                        \"params\": [],\n                    },\n                }\n            )\n            return\n        except Exception as error:\n            print(f\"analytics database not ready; retrying: {error}\", flush=True)\n            time.sleep(1)\n",
+        "content": "def initialize_schema() -> None:\n    \"\"\"Create analytics storage without making a transient dependency fatal.\"\"\"\n    while not stopped.is_set():\n        try:\n            worker.call(\n                {\n                    \"function_id\": \"database::execute\",\n                    \"payload\": {\n                        \"db\": DATABASE,\n                        \"sql\": \"\"\"\n                            CREATE TABLE IF NOT EXISTS daily_link_counts (\n                                day TEXT PRIMARY KEY,\n                                count INTEGER NOT NULL DEFAULT 0\n                            )\n                        \"\"\",\n                        \"params\": [],\n                    },\n                }\n            )\n            return\n        except Exception as error:\n            print(f\"analytics database not ready; retrying: {error}\", flush=True)\n            time.sleep(1)\n",
         "from_line": 62,
         "op": "update_lines",
         "to_line": 77
@@ -1240,7 +1198,7 @@
    "error": "coder::search: remote error (invocation_failed): serialization error: missing field `query`",
    "arguments": {
     "path": "/repo/x",
-    "pattern": "registerTrigger|subscribe"
+    "pattern": "observe|subscribe"
    },
    "description": "",
    "asks": []
@@ -1251,7 +1209,7 @@
    "error": "",
    "arguments": {
     "path": "/repo/x",
-    "query": "registerTrigger",
+    "query": "observe",
     "pattern": "subscribe"
    },
    "description": "",

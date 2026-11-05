@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { RegisterTriggerInput } from '@/lib/iii-client'
+import type { ObserveSource } from '@/lib/iii-client'
 import { subscribeSessionTranscript } from './events'
 import type { MessageAddedEvent } from './types'
 
 describe('subscribeSessionTranscript', () => {
-  it('gives simultaneous transcript bindings unique handler ids and routes by session', () => {
+  it('gives simultaneous transcript observers unique handler ids and routes by session', () => {
     const handlers = new Map<
       string,
       (payload: unknown) => void | Promise<void>
     >()
-    const registrations: RegisterTriggerInput[] = []
+    const observers: Array<{ source: ObserveSource; target: string }> = []
     const handlerCleanups: Array<ReturnType<typeof vi.fn>> = []
-    const triggerCleanups: Array<ReturnType<typeof vi.fn>> = []
+    const observerCleanups: Array<ReturnType<typeof vi.fn>> = []
     const client = {
       browserId: 'browser-1',
       on: vi.fn(
@@ -25,10 +25,10 @@ describe('subscribeSessionTranscript', () => {
           return cleanup
         },
       ),
-      registerTrigger: vi.fn((input: RegisterTriggerInput) => {
-        registrations.push(input)
+      observe: vi.fn((source: ObserveSource, target: string) => {
+        observers.push({ source, target })
         const cleanup = vi.fn()
-        triggerCleanups.push(cleanup)
+        observerCleanups.push(cleanup)
         return cleanup
       }),
     } as unknown as Parameters<typeof subscribeSessionTranscript>[0]
@@ -47,14 +47,26 @@ describe('subscribeSessionTranscript', () => {
     const localHandlerIds = [...handlers.keys()]
     expect(localHandlerIds).toHaveLength(4)
     expect(new Set(localHandlerIds).size).toBe(4)
-    expect(
-      registrations.map((registration) => registration.function_id),
-    ).toEqual(localHandlerIds.map((id) => `${id}::browser-1`))
-    expect(registrations.map((registration) => registration.config)).toEqual([
-      { session_id: 'session-a' },
-      { session_id: 'session-a' },
-      { session_id: 'session-b' },
-      { session_id: 'session-b' },
+    expect(observers.map(({ target }) => target)).toEqual(
+      localHandlerIds.map((id) => `${id}::browser-1`),
+    )
+    expect(observers.map(({ source }) => source)).toEqual([
+      {
+        function_id: 'session::on-message-added',
+        filters: { 'input.session_id': { $eq: 'session-a' } },
+      },
+      {
+        function_id: 'session::on-message-updated',
+        filters: { 'input.session_id': { $eq: 'session-a' } },
+      },
+      {
+        function_id: 'session::on-message-added',
+        filters: { 'input.session_id': { $eq: 'session-b' } },
+      },
+      {
+        function_id: 'session::on-message-updated',
+        filters: { 'input.session_id': { $eq: 'session-b' } },
+      },
     ])
 
     const firstAddedHandler = handlers.get(localHandlerIds[0])
@@ -73,7 +85,7 @@ describe('subscribeSessionTranscript', () => {
 
     offFirst()
     offSecond()
-    for (const cleanup of [...handlerCleanups, ...triggerCleanups]) {
+    for (const cleanup of [...handlerCleanups, ...observerCleanups]) {
       expect(cleanup).toHaveBeenCalledOnce()
     }
   })
@@ -81,10 +93,10 @@ describe('subscribeSessionTranscript', () => {
 
 describe('transcript setup rollback', () => {
   it.each([1, 2])(
-    'releases partial registrations when trigger %s fails',
-    (failedTrigger) => {
+    'releases partial registrations when observer %s fails',
+    (failedObserver) => {
       const handlerCleanups: Array<ReturnType<typeof vi.fn>> = []
-      const offTrigger = vi.fn()
+      const offObserver = vi.fn()
       let registrations = 0
       const client = {
         browserId: 'rollback-browser',
@@ -93,12 +105,12 @@ describe('transcript setup rollback', () => {
           handlerCleanups.push(off)
           return off
         }),
-        registerTrigger: vi.fn(() => {
+        observe: vi.fn(() => {
           registrations += 1
-          if (registrations === failedTrigger) {
-            throw new Error('registration failed')
+          if (registrations === failedObserver) {
+            throw new Error('observe failed')
           }
-          return offTrigger
+          return offObserver
         }),
       } as unknown as Parameters<typeof subscribeSessionTranscript>[0]
       expect(() =>
@@ -106,10 +118,10 @@ describe('transcript setup rollback', () => {
           onMessageAdded: vi.fn(),
           onMessageUpdated: vi.fn(),
         }),
-      ).toThrow('registration failed')
-      expect(handlerCleanups).toHaveLength(failedTrigger)
+      ).toThrow('observe failed')
+      expect(handlerCleanups).toHaveLength(failedObserver)
       for (const off of handlerCleanups) expect(off).toHaveBeenCalledOnce()
-      expect(offTrigger).toHaveBeenCalledTimes(failedTrigger - 1)
+      expect(offObserver).toHaveBeenCalledTimes(failedObserver - 1)
     },
   )
 })

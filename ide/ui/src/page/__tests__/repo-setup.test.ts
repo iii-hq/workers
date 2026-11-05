@@ -19,13 +19,13 @@ const fail = (stderr: string, code = 1): Exec => ({ exit_code: code, stdout: '',
 /** A host whose `shell::exec` answers from `answer(command, args)`. */
 function hostWith(answer: (command: string, args: string[]) => Exec | Error) {
   const calls: string[][] = []
-  const trigger = vi.fn(async (_fn: string, payload: { command: string; args: string[] }) => {
+  const call = vi.fn(async (_fn: string, payload: { command: string; args: string[] }) => {
     calls.push([payload.command, ...payload.args])
     const out = answer(payload.command, payload.args)
     if (out instanceof Error) throw out
     return out
   })
-  return { host: { iii: { trigger } } as never, calls }
+  return { host: { iii: { call } } as never, calls }
 }
 
 describe('parseAuthStatus', () => {

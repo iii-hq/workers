@@ -2,13 +2,11 @@
 # when --providers != local. Each provider gets a dedicated bucket so the
 # harness can parameterize cases over them without collision.
 #
-# Triggers are still registered DYNAMICALLY by the harness via the SDK
-# (registerTrigger in runner.ts); we don't list them here.
-#
-# The harness registers `storage::object-{created,deleted}` triggers against
-# both `scratch-local` (native in-process dispatch) and `scratch-s3` (SQS poller →
-# ElasticMQ via the minio-sqs-bridge fixture). R2 triggers are out of scope
-# for the e2e harness — covered separately via Rust integration tests.
+# The harness observes `storage::on-object-{created,deleted}` at runtime via
+# the SDK (`iii.observe` in runner.ts), with args `{ bucket }` for both
+# `scratch-local` (native in-process dispatch) and `scratch-s3` (SQS poller →
+# ElasticMQ via the minio-sqs-bridge fixture). R2 object events are out of
+# scope for the e2e harness — covered separately via Rust integration tests.
 
 providers:
   local:

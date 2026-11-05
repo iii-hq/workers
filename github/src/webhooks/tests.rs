@@ -10,10 +10,7 @@ async fn merged_initial_snapshot_persists_final_notification_before_cleanup() {
                 "s".into(),
                 Subscriber {
                     id: "s".into(),
-                    function_id: "notify".into(),
                     filter: EventFilter::default(),
-                    metadata: None,
-                    namespace: Some("target".into()),
                 },
             );
             Ok(())
@@ -215,18 +212,16 @@ fn duplicate_entity_delivery_has_no_second_effect() {
     assert!(normalize::normalize(&mut w, &i, snapshot).is_none());
 }
 #[test]
-fn filter_and_subscriber_metadata_namespace_survive_outbox() {
+fn subscriber_filter_survives_outbox() {
     let mut d = Data::default();
+    let filter = EventFilter {
+        watch_id: Some("w".into()),
+        categories: Some(BTreeSet::from([Category::Pr])),
+        ..Default::default()
+    };
     let sub = Subscriber {
         id: "s".into(),
-        function_id: "notify".into(),
-        filter: EventFilter {
-            watch_id: Some("w".into()),
-            categories: Some(BTreeSet::from([Category::Pr])),
-            ..Default::default()
-        },
-        metadata: Some(json!({"tenant":3})),
-        namespace: Some("another".into()),
+        filter: filter.clone(),
     };
     d.subscribers.insert("s".into(), sub);
     let event = normalize::make_event(&watch("w"), Category::Pr, "merged", "pr", 0, true);
@@ -234,8 +229,9 @@ fn filter_and_subscriber_metadata_namespace_survive_outbox() {
     let Job::Notify { target, .. } = d.jobs.values().next().unwrap() else {
         panic!("notification required")
     };
-    assert_eq!(target.metadata, Some(json!({"tenant":3})));
-    assert_eq!(target.namespace.as_deref(), Some("another"));
+    assert_eq!(target.id, "s");
+    assert_eq!(target.filter.watch_id, filter.watch_id);
+    assert_eq!(target.filter.categories, filter.categories);
 }
 #[test]
 fn storage_reopens_inbox_and_rejects_second_owner() {

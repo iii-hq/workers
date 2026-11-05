@@ -168,7 +168,7 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
     fn: string,
     payload: Record<string, unknown> = {},
     timeoutMs = 15_000,
-  ) => iii.trigger<T>(fn, payload, { timeoutMs })
+  ) => iii.call<T>(fn, payload, { timeoutMs })
   const withFile = (payload: Record<string, unknown> = {}) => {
     const current = file()
     return current ? { file: current, ...payload } : payload
@@ -185,9 +185,7 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
       const [status, list, project, engine] = await Promise.all([
         call<Status>('compose::status', withFile(), 10_000).catch(() => null),
         call<ProjectList>('compose::list', {}, 10_000).catch(() => null),
-        call<Project>('ade::compose::project', withFile()).catch(
-          () => null,
-        ),
+        call<Project>('ade::compose::project', withFile()).catch(() => null),
         fetchRawWorkersSnapshot().catch(() => null),
       ])
       if (!status && !engine)
@@ -282,15 +280,9 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
         query,
       }),
     inspect: (path: string, run?: string | null) =>
-      call<Inspection>(
-        'ade::compose::inspect',
-        run ? { path, run } : { path },
-      ),
+      call<Inspection>('ade::compose::inspect', run ? { path, run } : { path }),
     container: (container: string) =>
-      call<ContainerEntry>(
-        'ade::compose::container',
-        withFile({ container }),
-      ),
+      call<ContainerEntry>('ade::compose::container', withFile({ container })),
     edit: (container: string, patch: EditPatch, operationId?: string) =>
       call<Accepted>(
         'ade::compose::edit',

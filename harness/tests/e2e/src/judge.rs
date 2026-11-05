@@ -128,7 +128,7 @@ Use this exact object shape and replace only the scores and explanatory text:\n{
 
 async fn invoke(context: &E2eContext, config: &JudgeConfig, prompt: &str) -> Result<Value> {
     context
-        .trigger_value("router::complete", judge_request(config, prompt))
+        .call_value("router::complete", judge_request(config, prompt))
         .await
 }
 

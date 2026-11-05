@@ -130,7 +130,7 @@ starting the fifth on-demand worker leaves the other four running.
 
 Workers that are not Rust binaries show `registry` instead of a state: they
 install from the registry rather than from this tree, with
-`iii trigger compose::add worker=<name>`.
+`iii call compose::add worker=<name>`.
 
 ### Workers from another directory
 
@@ -214,7 +214,8 @@ registers, so there is nothing to cancel and `Esc` says nothing rather than
 lying.
 
 While an operation is running, the state column comes from compose's
-`compose-operation` feed (`queued` → `starting` → `ready`/`failed`) with a
+`compose::on-operation-progress` feed, which the dashboard observes
+(`queued` → `starting` → `ready`/`failed`), with a
 counter in the header. This matters on a cold checkout: `compose::status` cannot
 see inside its own operation, so without the feed thirteen containers would read
 `stopped` for the several minutes cargo spends compiling them.

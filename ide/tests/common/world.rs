@@ -13,7 +13,7 @@ use ide::code::{
     },
     path::PathResolver,
 };
-use iii_sdk::{protocol::TriggerRequest, IIIClient};
+use iii_sdk::{protocol::CallRequest, IIIClient};
 use serde::Serialize;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -317,7 +317,7 @@ async fn call_live(
     payload: Value,
 ) -> Result<Value, String> {
     let response = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,

@@ -12,7 +12,7 @@ the same surface the other providers expose behind `router::count_tokens`),
 and `provider::opencode_go::abort` (cancels an in-flight upstream request).
 There is no embedding surface — the OpenCode Go API is Chat Completions only.
 
-Install with `iii trigger compose::add worker=provider-opencode-go`; the worker takes no
+Install with `iii call compose::add worker=provider-opencode-go`; the worker takes no
 per-worker config — credentials and endpoint live in the `llm-router`
 configuration entry (`providers.opencode_go.api_key`, default endpoint
 `https://opencode.ai/zen/go/v1/chat/completions`), exactly like
@@ -21,7 +21,8 @@ configuration entry (`providers.opencode_go.api_key`, default endpoint
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The model slice is populated from live discovery and the declaration
   carries `credential_env_var: OPENCODE_GO_API_KEY`.
 - **Transport:** the upstream endpoint is

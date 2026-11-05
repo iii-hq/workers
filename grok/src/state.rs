@@ -1,11 +1,10 @@
 //! Session registry on engine state. Scope `grok_sessions`, key = iii
 //! session_id. Maps iii sessions to Grok thread ids so a run with the same
 //! session_id resumes the underlying Grok thread (persisted by the CLI under
-//! ~/.grok/sessions). Trigger errors propagate (fail-fast); swallowing them
+//! ~/.grok/sessions). Call errors propagate (fail-fast); swallowing them
 //! would silently start a fresh conversation instead of resuming.
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::json;
 
 use crate::wire::SessionRecord;
@@ -18,7 +17,7 @@ pub async fn load_session(
     session_id: &str,
 ) -> anyhow::Result<Option<SessionRecord>> {
     let v = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".to_string(),
             payload: json!({ "scope": SCOPE, "key": session_id }),
             action: None,
@@ -39,7 +38,7 @@ pub async fn load_session(
 }
 
 pub async fn save_session(iii: &IIIClient, record: &SessionRecord) -> anyhow::Result<()> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({ "scope": SCOPE, "key": record.session_id, "value": record }),
         action: None,
@@ -52,7 +51,7 @@ pub async fn save_session(iii: &IIIClient, record: &SessionRecord) -> anyhow::Re
 
 pub async fn list_sessions(iii: &IIIClient) -> anyhow::Result<Vec<SessionRecord>> {
     let v = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::list".to_string(),
             payload: json!({ "scope": SCOPE }),
             action: None,

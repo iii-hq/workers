@@ -124,7 +124,7 @@ describe('collectChatLinks', () => {
   it('reads the PR a github::pr::create call returned', () => {
     const call: Message = {
       id: 'c',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'github::pr::create',
       input: {},
       output: { url: 'https://github.com/o/r/pull/7' },
@@ -180,11 +180,11 @@ describe('git parsing', () => {
       diff: { exit_code: 0, stdout: '5\t1\ta.ts\n' },
       remote: { exit_code: 0, stdout: 'git@github.com:o/r.git\n' },
     }
-    const trigger = (async (_fn: string, payload?: Record<string, unknown>) => {
+    const call = (async (_fn: string, payload?: Record<string, unknown>) => {
       const args = payload?.args as string[]
       return outputs[args.find((arg) => arg in outputs) ?? '']
     }) as Parameters<typeof readGitSummary>[0]
-    expect(await readGitSummary(trigger, '/repo')).toEqual({
+    expect(await readGitSummary(call, '/repo')).toEqual({
       branch: 'feat/x',
       ahead: 2,
       changed: 2,
@@ -193,7 +193,7 @@ describe('git parsing', () => {
       repo: 'o/r',
     })
     outputs.status = { exit_code: 128, stdout: '' }
-    expect(await readGitSummary(trigger, '/tmp')).toBeNull()
+    expect(await readGitSummary(call, '/tmp')).toBeNull()
   })
 })
 
@@ -213,7 +213,7 @@ describe('pull requests', () => {
 
   it('merges the branch PR with mentioned ones, open first, checks on open only', async () => {
     const calls: string[] = []
-    const trigger = workerExec((verb) => {
+    const call = workerExec((verb) => {
       if (verb === 'list')
         return [
           {
@@ -230,7 +230,7 @@ describe('pull requests', () => {
         return { number: 4, title: 'Old', url: 'u4', state: 'MERGED' }
       return [{ bucket: 'fail' }, { bucket: 'pass' }, { bucket: 'cancel' }]
     }, calls)
-    const { rows } = await readPullRequests(ghSource(githubWorkerGh(trigger)), {
+    const { rows } = await readPullRequests(ghSource(githubWorkerGh(call)), {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [
@@ -332,7 +332,7 @@ describe('review fixes', () => {
 
   it('keeps only PRs whose head is the branch and skips default branches', async () => {
     const calls: string[] = []
-    const trigger = workerExec(
+    const call = workerExec(
       (verb) =>
         verb === 'list'
           ? [
@@ -354,7 +354,7 @@ describe('review fixes', () => {
           : [],
       calls,
     )
-    const source = ghSource(githubWorkerGh(trigger))
+    const source = ghSource(githubWorkerGh(call))
     const { rows } = await readPullRequests(source, {
       repo: 'o/r',
       branch: 'feat/x',
@@ -371,11 +371,11 @@ describe('review fixes', () => {
 
   it('reads git with fsmonitor off, counting untracked files like the IDE', async () => {
     const calls: string[][] = []
-    const trigger = (async (_fn: string, payload?: Record<string, unknown>) => {
+    const call = (async (_fn: string, payload?: Record<string, unknown>) => {
       calls.push(payload?.args as string[])
       return { exit_code: 0, stdout: '## main\n' }
     }) as Parameters<typeof readGitSummary>[0]
-    await readGitSummary(trigger, '/repo')
+    await readGitSummary(call, '/repo')
     for (const args of calls)
       expect(args.slice(0, 3)).toEqual([
         '--no-optional-locks',
@@ -487,7 +487,7 @@ describe('side chat anchor', () => {
 describe('pull requests through gh in the folder', () => {
   it('asks gh for the branch head and reads checks whatever the exit code', async () => {
     const calls: string[][] = []
-    const trigger = (async (_fn: string, payload?: Record<string, unknown>) => {
+    const call = (async (_fn: string, payload?: Record<string, unknown>) => {
       const args = payload?.args as string[]
       calls.push(args)
       expect(payload?.command).toBe('gh')
@@ -508,14 +508,11 @@ describe('pull requests through gh in the folder', () => {
       // `gh pr checks` exits 8 while checks are pending.
       return { exit_code: 8, stdout: '[{"bucket":"pending"}]' }
     }) as Parameters<typeof folderGh>[0]
-    const { rows } = await readPullRequests(
-      ghSource(folderGh(trigger, '/repo')),
-      {
-        repo: 'o/r',
-        branch: 'feat/x',
-        mentioned: [],
-      },
-    )
+    const { rows } = await readPullRequests(ghSource(folderGh(call, '/repo')), {
+      repo: 'o/r',
+      branch: 'feat/x',
+      mentioned: [],
+    })
     expect(rows.map((r) => [r.number, r.checks])).toEqual([[3, 'pending']])
     expect(calls[0]).toEqual([
       'pr',
@@ -534,11 +531,11 @@ describe('pull requests through gh in the folder', () => {
   })
 
   it('reads no pull requests when gh is missing or prints nothing', async () => {
-    const trigger = (async () => {
+    const call = (async () => {
       throw new Error('gh: not found')
     }) as Parameters<typeof folderGh>[0]
     expect(
-      await readPullRequests(ghSource(folderGh(trigger, '/repo')), {
+      await readPullRequests(ghSource(folderGh(call, '/repo')), {
         repo: 'o/r',
         branch: 'feat/x',
         mentioned: [],
@@ -567,7 +564,7 @@ describe('collectChatImages', () => {
     }
     const tool: Message = {
       id: 'c1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'browser::screenshot',
       input: {},
       output: {
@@ -600,7 +597,7 @@ describe('collectChatTickets', () => {
   ): Message =>
     ({
       id: `${functionId}-${createdAt}`,
-      role: 'function-trigger',
+      role: 'function-call',
       functionId,
       input,
       output,

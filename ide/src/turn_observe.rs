@@ -10,7 +10,7 @@
 //! when the turn has them; a turn without falls back to the committed
 //! version when one exists and says "nothing to diff" quietly otherwise.
 //!
-//! The watch starts on the first hooked call of a turn — the pre-trigger
+//! The watch starts on the first hooked call of a turn — the pre-call
 //! hook is an awaited barrier, so on a root that walks in time the watcher
 //! is live before that call can write — and stops a grace window after the
 //! turn completes, letting the last coalesced burst land. Git internals,
@@ -47,7 +47,7 @@ const COALESCE_MS: u64 = 250;
 const MAX_WATCHED_DIRS: usize = 4_096;
 /// How long a watch outlives its turn, so the final burst still lands.
 const GRACE_MS: u64 = 1_200;
-/// How long the pre-trigger hook waits for a new watch to go live — well
+/// How long the pre-call hook waits for a new watch to go live — well
 /// under the harness hook timeout. A root slower to walk lets the call
 /// through unobserved (hook pre-images and the turn's snapshots still
 /// cover it) while the walk finishes off the runtime.
@@ -103,7 +103,7 @@ impl TurnObservers {
     }
 
     /// Make sure a watch covers this session's root for this turn. Called
-    /// from the awaited pre-trigger hook, so by the time a hooked call runs
+    /// from the awaited pre-call hook, so by the time a hooked call runs
     /// the watcher is live — unless the root takes over `SETUP_WAIT_MS` to
     /// walk.
     pub async fn ensure(self: &Arc<Self>, session_id: &str, turn_id: &str, root: Option<&str>) {

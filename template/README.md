@@ -58,6 +58,13 @@ preserved. Other local workers use their manifest's `scripts.start`. Workers
 without a local manifest or a usable start command keep their package source.
 Existing `path://` entries and custom registry URLs are kept.
 
+`sandbox-libkrun` is the exception: sync keeps it as a `package://` entry even
+when its source is in the repository, because its release build embeds the
+guest init and firmware, which `cargo run` cannot produce. The baseline
+`worker-compose.yaml` declares it for computer's sandboxes, so `up` on a host
+with no `sandbox-libkrun` build fails with `UNSUPPORTED_PLATFORM`; remove that
+container there.
+
 The YAML editor preserves comments, including disabled provider examples, and
 keeps environment, configuration and dependency settings. The `version` field
 is retained with its comments; Compose does not use it for `path://` sources.
@@ -136,7 +143,7 @@ Before Compose takes over the terminal, the run prints a summary like this:
   engine  ws://127.0.0.1:49335
   local   12 workers from this checkout: queue, state, session-manager, ...
 
-  Run `iii trigger ...` from harness. Ctrl+C stops the stack.
+  Run `iii call ...` from harness. Ctrl+C stops the stack.
 ```
 
 It replaces `template/<name>/` with a new `iii project init -t <name>`, so each
@@ -186,8 +193,8 @@ repository's workers instead, run these in place of those two steps, from
 `template/quickstart/`:
 
 ```bash
-iii trigger compose::add --json '{"workers":[{"worker":"../../state","scripts":{"run":"cargo run --bin state"}}]}'
-iii trigger compose::add --json '{"workers":[{"worker":"../../http","scripts":{"run":"cargo run --bin http"}}]}'
+iii call compose::add --json '{"workers":[{"worker":"../../state","scripts":{"run":"cargo run --bin state"}}]}'
+iii call compose::add --json '{"workers":[{"worker":"../../http","scripts":{"run":"cargo run --bin http"}}]}'
 ```
 
 ## Requirements and tests

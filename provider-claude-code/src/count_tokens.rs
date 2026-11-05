@@ -109,6 +109,7 @@ fn build_count_body(
             effort: thinking.effort,
             cache_enabled: false,
             cache_ttl: None,
+            messages_cache_ttl: None,
         },
         // The stream reports these on the turn; a count has no channel for them.
         &mut Vec::new(),
@@ -233,7 +234,7 @@ mod tests {
 
     fn tool() -> AgentFunction {
         AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "Invoke an iii function".into(),
             parameters: json!({ "type": "object" }),
             label: None,
@@ -310,7 +311,7 @@ mod tests {
         let system = body["system"].as_array().expect("system is an array");
         assert_eq!(system.len(), 1);
         assert_eq!(system[0]["text"], CLAUDE_CODE_SYSTEM);
-        assert_eq!(body["tools"][0]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["name"], "agent__call");
     }
 
     #[test]
@@ -450,6 +451,7 @@ mod tests {
                         effort: thinking.effort,
                         cache_enabled: false,
                         cache_ttl: None,
+                        messages_cache_ttl: None,
                     },
                     &mut Vec::new(),
                 );

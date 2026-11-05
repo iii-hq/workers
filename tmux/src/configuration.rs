@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use iii_config_client::{EntrySpec, Reload};
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 
 use crate::config::{SharedConfig, WorkerConfig, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME};
@@ -51,9 +50,9 @@ pub async fn fetch(iii: &IIIClient) -> Result<WorkerConfig, String> {
     }
 }
 
-/// Bind `configuration:updated` → refetch → swap. An invalid value keeps
+/// Observe the entry's `configuration:updated` events → refetch → swap. An invalid value keeps
 /// the previous one. Call `.run()` on the result once to close the boot gap.
-pub fn bind_reload(iii: &Arc<IIIClient>, shared: SharedConfig) -> Result<Reload, Error> {
+pub fn bind_reload(iii: &Arc<IIIClient>, shared: SharedConfig) -> Reload {
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,

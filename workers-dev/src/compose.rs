@@ -12,10 +12,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::{FunctionRef, IIIConnectionState, WorkerMetadata};
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction, WorkerIdentityMode};
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle, ObserverState,
+    RegisterFunction, Source, WorkerIdentityMode,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::process::{Child, Command};
@@ -25,6 +26,11 @@ use tokio::time;
 use crate::config::{
     Config, DAEMON_READY_TIMEOUT_MS, LIFECYCLE_TIMEOUT_MS, STATUS_TIMEOUT_MS, STOP_TIMEOUT_MS,
 };
+
+/// Compose's progress feed, hosted in the project's namespace. Its handler
+/// returns the event, so an observer with `deliver: output` receives the
+/// `ProgressEvent`.
+const PROGRESS_FN: &str = "compose::on-operation-progress";
 
 /// compose answers `function_not_found` for the first seconds of a cold engine
 /// (the worker manager registers late) — the house idiom is a short backoff
@@ -129,8 +135,9 @@ struct MutationError {
     message: String,
 }
 
-/// One `compose-operation` event. Only the startup `--up` publishes these —
-/// a trigger-initiated up passes an operation id compose never registers.
+/// One `compose::on-operation-progress` event. Only the startup `--up`
+/// publishes these — an up started by a `compose::*` call passes an operation
+/// id compose never registers.
 #[derive(Debug, Clone, Deserialize)]
 struct ProgressEvent {
     operation_id: String,
@@ -191,7 +198,7 @@ pub struct Compose {
     worker_dirs: Mutex<Vec<PathBuf>>,
     watch: Mutex<HashMap<String, bool>>,
     ui_children: tokio::sync::Mutex<HashMap<String, Child>>,
-    handles: Mutex<Option<(FunctionRef, Trigger)>>,
+    handles: Mutex<Option<(FunctionRef, ObserverHandle)>>,
 }
 
 impl Compose {
@@ -240,13 +247,14 @@ impl Compose {
     async fn client(&self) -> &IIIClient {
         self.client
             .get_or_init(|| async {
-                // In the project's namespace, not `default`: compose invokes a
-                // bound trigger's function from its own client, so a progress
-                // handler registered anywhere else is simply not found. The
-                // cost is that a container which times out can be reported as
-                // "registered as workers-dev-<pid>" instead of a plain
-                // readiness timeout — a worse message on an already-failing
-                // path, traded for the only live signal during a cold build.
+                // In the project's namespace, not `default`: compose hosts
+                // `compose::on-operation-progress` there, and the observer's
+                // source and target both resolve in this worker's namespace.
+                // The cost is that a container which times out can be
+                // reported as "registered as workers-dev-<pid>" instead of a
+                // plain readiness timeout — a worse message on an
+                // already-failing path, traded for the only live signal
+                // during a cold build.
                 // The pid keeps two worktree instances from colliding.
                 let client = register_worker(
                     &self.config.engine_url,
@@ -271,14 +279,13 @@ impl Compose {
             .await
     }
 
-    /// Subscribe to every operation this daemon runs. The startup `--up` is the
+    /// Observe every operation this daemon runs. The startup `--up` is the
     /// one that matters: for its whole multi-minute duration `compose::status`
     /// reads a stale `state.json`, so these events are the only live signal.
     ///
-    /// Bound only once a daemon has answered: the `compose-operation` trigger
-    /// type is registered by the daemon, so binding before one exists — which
-    /// is exactly when the first `compose::list` probe runs — would fail and
-    /// leave the cold build with no feed at all.
+    /// Observed once a daemon has answered, when the client exists. The
+    /// observer stays `pending` until compose registers
+    /// `compose::on-operation-progress` and becomes `active` with it.
     async fn bind_progress(&self) {
         if self.handles.lock().unwrap().is_some() {
             return;
@@ -298,37 +305,33 @@ impl Compose {
                 }
             }),
         );
-        let trigger = client.register_trigger(RegisterTriggerInput {
-            trigger_type: "compose-operation".to_string(),
-            function_id,
-            config: json!({}),
-            metadata: None,
-            // Both default to this worker's namespace, which is the project's —
-            // where compose registered the trigger type and where it looks for
-            // the function it calls back.
-            namespace: None,
-            trigger_namespace: None,
-        });
+        // Source and target both resolve in this worker's namespace, which is
+        // the project's: where compose hosts the progress function. The event
+        // reaches the handler as output, the `ProgressEvent` itself.
+        let observer = client.observe(
+            Source::function(PROGRESS_FN).deliver(Deliver::Output),
+            function_id.as_str(),
+        );
         // The feed is an extra, never a gate: without it the table still
-        // reports what `compose::status` knows, just later. Say so in the
-        // daemon log rather than silently, since a missing feed looks exactly
-        // like a stack that is not moving.
-        match trigger {
-            Ok(trigger) => *self.handles.lock().unwrap() = Some((function, trigger)),
-            Err(error) => self.note(&format!("progress feed unavailable: {error}")),
-        }
+        // reports what `compose::status` knows, just later. A refused observer
+        // says so in the daemon log rather than silently, since a missing feed
+        // looks exactly like a stack that is not moving.
+        let log_path = self.config.daemon_log_path.clone();
+        observer.on_state_change(move |state, reason| {
+            if *state == ObserverState::Error {
+                let why = reason.map_or_else(
+                    || state.to_string(),
+                    |r| format!("{}: {}", r.code, r.message),
+                );
+                note_to(&log_path, &format!("progress feed unavailable: {why}"));
+            }
+        });
+        *self.handles.lock().unwrap() = Some((function, observer));
     }
 
     /// One line into the daemon log, where the dashboard already shows it.
     fn note(&self, message: &str) {
-        use std::io::Write;
-        if let Ok(mut log) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.config.daemon_log_path)
-        {
-            let _ = writeln!(log, "[workers-dev] {message}");
-        }
+        note_to(&self.config.daemon_log_path, message);
     }
 
     pub fn progress(&self) -> Progress {
@@ -367,8 +370,8 @@ impl Compose {
         }
         self.client()
             .await
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: operation.function().to_string(),
                     payload,
                     action: None,
@@ -823,7 +826,7 @@ impl Compose {
         Err(last.unwrap_or_else(|| anyhow!("compose::list failed")))
     }
 
-    /// Cheap TCP probe — cheaper than a trigger round-trip, and it is the
+    /// Cheap TCP probe — cheaper than a call round-trip, and it is the
     /// question that decides managed vs attached.
     pub async fn engine_reachable(&self) -> bool {
         matches!(
@@ -989,6 +992,18 @@ impl Compose {
     }
 }
 
+/// Appends one `[workers-dev]` line to the daemon log at `path`.
+fn note_to(path: &Path, message: &str) {
+    use std::io::Write;
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(log, "[workers-dev] {message}");
+    }
+}
+
 fn apply_progress(progress: &Mutex<Progress>, event: ProgressEvent) {
     let mut progress = progress.lock().unwrap();
     if progress.operation_id.as_deref() != Some(event.operation_id.as_str()) {
@@ -1007,7 +1022,7 @@ fn apply_progress(progress: &Mutex<Progress>, event: ProgressEvent) {
 }
 
 /// `{namespace, file}` always: the namespace is a guard (the route is the
-/// trigger's own namespace) and the file is what names the project. `up` and
+/// call's own namespace) and the file is what names the project. `up` and
 /// `down` target a `container`; `restart` targets a `worker`.
 fn compose_payload(
     operation: Operation,

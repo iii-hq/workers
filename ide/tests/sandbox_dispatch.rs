@@ -7,7 +7,7 @@ use iii_sdk::errors::Error;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use ide::fs::sandbox::{SandboxFsBackend, TriggerFwd};
+use ide::fs::sandbox::{CallFwd, SandboxFsBackend};
 use ide::fs::{
     ChmodArgs, FsBackend, GrepArgs, LsArgs, MkdirArgs, MvArgs, ReadArgs, RmArgs, SedArgs, StatArgs,
     WriteArgs,
@@ -43,8 +43,8 @@ impl StubFwd {
 }
 
 #[async_trait]
-impl TriggerFwd for StubFwd {
-    async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
+impl CallFwd for StubFwd {
+    async fn call(&self, fid: &str, payload: Value) -> Result<Value, Error> {
         self.captured.lock().unwrap().push((fid.into(), payload));
         match self.next.lock().unwrap().take() {
             Some(Response::Ok(v)) => Ok(v),

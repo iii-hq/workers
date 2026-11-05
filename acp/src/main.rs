@@ -30,7 +30,7 @@ struct Args {
                 otherwise (built-in echo brain). Any function with the \
                 turn-orchestrator wire shape (session_id, messages, model, \
                 ...) whose worker publishes AgentEvent frames on a \
-                `<namespace>::agent-event` trigger type will work."
+                `<namespace>::on-agent-event` function will work."
     )]
     brain_fn: Option<String>,
 
@@ -42,15 +42,15 @@ struct Args {
     brain_stop_fn: Option<String>,
 
     #[arg(
-        long = "events-trigger-type",
-        env = "IIIACP_EVENTS_TRIGGER_TYPE",
+        long = "events-function",
+        env = "IIIACP_EVENTS_FUNCTION",
         value_delimiter = ',',
-        help = "Trigger type(s) carrying the brain's AgentEvent frames, bound \
-                per session with { session_id }. Repeat or comma-separate. \
-                Defaults to `<brain namespace>::agent-event` (claude::run -> \
-                claude::agent-event)."
+        help = "Function(s) carrying the brain's AgentEvent frames, observed \
+                per session with args { session_id }. Repeat or \
+                comma-separate. Defaults to `<brain namespace>::on-agent-event` \
+                (claude::run -> claude::on-agent-event)."
     )]
-    events_trigger_types: Vec<String>,
+    events_functions: Vec<String>,
 
     #[arg(
         long,
@@ -138,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
             model: args.model,
             provider: args.provider,
             system_prompt: args.system_prompt,
-            events_trigger_types: args.events_trigger_types,
+            events_functions: args.events_functions,
         },
     ));
 

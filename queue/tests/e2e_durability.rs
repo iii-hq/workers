@@ -12,13 +12,15 @@ use iii_queue::config::{AdapterEntry, QueueConfig};
 use iii_queue::functions::{
     DLQ_MESSAGES_FN_ID, ENQUEUE_FUNCTION_FN_ID, LIST_TOPICS_FN_ID, PUBLISH_FN_ID, REDRIVE_FN_ID,
 };
+use iii_queue::on_message::ON_MESSAGE_FN;
 use iii_queue::store::FileStore;
-use iii_queue::trigger::Invoker;
-use iii_queue::TRIGGER_TYPE;
+use iii_queue::subscribers::{Invoker, Subscriber};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{IIIClient, InitOptions, RegisterFunction, TriggerAction, WorkerIdentityMode};
+use iii_sdk::{
+    CallAction, CallRequest, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
+    WorkerIdentityMode,
+};
 use serde_json::{json, Value};
 use serial_test::serial;
 use tokio::sync::Notify;
@@ -68,54 +70,38 @@ fn register_counting_function(
     );
 }
 
-fn register_subscriber(iii: &Arc<IIIClient>, function_id: &str, queue: &str) {
-    register_subscriber_with_config(iii, function_id, queue, None);
+/// Subscribe `function_id` to `queue`: observe `queue::on-message` with the
+/// topic as args.
+fn observe_queue(iii: &Arc<IIIClient>, function_id: &str, queue: &str) -> ObserverHandle {
+    iii.observe(
+        Source::function(ON_MESSAGE_FN).args(json!({
+            "topic": queue,
+            "max_retries": 1,
+            "backoff_ms": 5
+        })),
+        function_id,
+    )
 }
 
-fn register_subscriber_with_config(
-    iii: &Arc<IIIClient>,
-    function_id: &str,
-    queue: &str,
-    queue_config: Option<Value>,
-) {
-    let mut config = json!({
-        "queue": queue,
-        "max_retries": 1,
-        "backoff_ms": 5
-    });
-    if let Some(qc) = queue_config {
-        config["queue_config"] = qc;
-    }
-    // The old consumer path: `durable:subscriber` stays served on 0.24 and
-    // 0.25 engines.
-    #[allow(deprecated)]
-    iii.register_trigger(RegisterTriggerInput::new(
-        TRIGGER_TYPE.to_string(),
-        function_id.to_string(),
-        config,
-    ))
-    .expect("register durable subscriber trigger");
-}
-
-async fn trigger(iii: &IIIClient, function_id: &str, payload: Value) -> Value {
-    iii.trigger(TriggerRequest {
+async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Value {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
         timeout_ms: Some(5_000),
     })
     .await
-    .expect("trigger should succeed")
+    .expect("call should succeed")
 }
 
-async fn trigger_in_namespace(
+async fn call_in_namespace(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
     namespace: &str,
 ) -> Value {
-    iii.trigger(
-        TriggerRequest {
+    iii.call(
+        CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
@@ -124,7 +110,7 @@ async fn trigger_in_namespace(
         .namespace(namespace),
     )
     .await
-    .expect("namespaced trigger should succeed")
+    .expect("namespaced call should succeed")
 }
 
 async fn wait_for_fires(fires: &AtomicUsize, expected: usize) {
@@ -141,39 +127,11 @@ async fn wait_for_fires(fires: &AtomicUsize, expected: usize) {
     );
 }
 
-async fn wait_for_trigger_type(iii: &IIIClient, trigger_type: &str) {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        let listed = iii
-            .trigger(TriggerRequest {
-                function_id: "engine::triggers::list".to_string(),
-                payload: json!({ "prefix": trigger_type }),
-                action: None,
-                timeout_ms: Some(800),
-            })
-            .await;
-        if listed.is_ok_and(|value| {
-            value
-                .get("triggers")
-                .and_then(Value::as_array)
-                .is_some_and(|triggers| {
-                    triggers.iter().any(|trigger| {
-                        trigger.get("id").and_then(Value::as_str) == Some(trigger_type)
-                    })
-                })
-        }) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("trigger type '{trigger_type}' was not registered");
-}
-
 async fn wait_for_function(iii: &IIIClient, function_id: &str, namespace: &str) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         let found = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::info".to_string(),
                 payload: json!({
                     "function_id": function_id,
@@ -189,30 +147,6 @@ async fn wait_for_function(iii: &IIIClient, function_id: &str, namespace: &str) 
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("function '{function_id}' was not registered");
-}
-
-async fn wait_for_registered_trigger(iii: &IIIClient, function_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        let listed = iii
-            .trigger(TriggerRequest {
-                function_id: "engine::registered-triggers::list".to_string(),
-                payload: json!({ "function_id": function_id }),
-                action: None,
-                timeout_ms: Some(800),
-            })
-            .await;
-        if listed.is_ok_and(|value| {
-            value
-                .get("registered_triggers")
-                .and_then(Value::as_array)
-                .is_some_and(|triggers| !triggers.is_empty())
-        }) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("trigger for function '{function_id}' was not registered");
 }
 
 async fn wait_for_subscription(adapter: &SwappableAdapter, queue: &str) {
@@ -233,7 +167,7 @@ async fn wait_for_subscription(adapter: &SwappableAdapter, queue: &str) {
 async fn wait_for_dlq(iii: &IIIClient, queue: &str, namespace: &str) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        let value = trigger_in_namespace(
+        let value = call_in_namespace(
             iii,
             DLQ_MESSAGES_FN_ID,
             json!({
@@ -286,31 +220,37 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     let boot = iii_queue::boot::start(iii.clone(), file_config(&dir))
         .await
         .expect("queue worker should boot");
-    wait_for_trigger_type(&iii, TRIGGER_TYPE).await;
+    wait_for_function(&iii, ON_MESSAGE_FN, &namespace).await;
 
     let fires = Arc::new(AtomicUsize::new(0));
     let fail = Arc::new(AtomicBool::new(false));
     let function_id = format!("queue.e2e.{}", Uuid::new_v4());
-    // Unique queue name: the engine re-delivers previously registered
-    // durable:subscriber triggers on boot, so a fixed name races against
-    // leftover consumers from earlier local runs.
+    // Unique queue name: a fixed name races against durable queues and
+    // consumers left over from earlier local runs.
     let queue_name = format!("e2e-demo-{}", Uuid::new_v4());
     register_counting_function(&iii, &function_id, fires.clone(), fail.clone());
     wait_for_function(&iii, &function_id, &namespace).await;
-    trigger(&iii, &function_id, json!({"probe": true})).await;
+    call(&iii, &function_id, json!({"probe": true})).await;
     wait_for_fires(&fires, 1).await;
     fires.store(0, Ordering::SeqCst);
-    register_subscriber(&iii, &function_id, &queue_name);
-    wait_for_registered_trigger(&iii, &function_id).await;
+    let observer = observe_queue(&iii, &function_id, &queue_name);
+    tokio::time::timeout(Duration::from_secs(5), observer.ready())
+        .await
+        .expect("observer ready in time")
+        .expect("observer active");
     wait_for_subscription(&boot.adapter, &queue_name).await;
-    let registrations = boot.trigger_handler.registrations().await;
-    assert_eq!(registrations.len(), 1);
-    assert_eq!(
-        registrations[0].target.namespace(),
-        Some(namespace.as_str())
-    );
+    // The engine observes `queue::on-message` in every namespace the queue
+    // worker runs in (its telemetry topics), so the worker has subscribers of
+    // other topics; this topic has one, this observer.
+    let registrations = boot.subscribers.registrations().await;
+    let on_queue: Vec<_> = registrations
+        .iter()
+        .filter(|registration| registration.spec.queue == queue_name)
+        .collect();
+    assert_eq!(on_queue.len(), 1);
+    assert_eq!(on_queue[0].id, observer.id());
 
-    trigger(
+    call(
         &iii,
         PUBLISH_FN_ID,
         json!({"queue": queue_name, "data": {"hello": "world"}}),
@@ -319,7 +259,7 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     wait_for_fires(&fires, 1).await;
 
     fail.store(true, Ordering::SeqCst);
-    trigger(
+    call(
         &iii,
         PUBLISH_FN_ID,
         json!({"queue": queue_name, "data": {"should": "dlq"}}),
@@ -330,9 +270,10 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     assert_eq!(messages.len(), 1);
 
     fail.store(false, Ordering::SeqCst);
-    trigger(&iii, REDRIVE_FN_ID, json!({"queue": queue_name})).await;
+    call(&iii, REDRIVE_FN_ID, json!({"queue": queue_name})).await;
     wait_for_fires(&fires, 3).await;
 
+    observer.dispose().await.expect("dispose");
     boot.shutdown().await;
     iii.shutdown_async().await;
     let _ = std::fs::remove_dir_all(dir);
@@ -367,7 +308,7 @@ async fn provider_functions_and_enqueue_use_the_worker_namespace() {
         .expect("queue worker should boot in its configured namespace");
 
     wait_for_function(&iii, LIST_TOPICS_FN_ID, &namespace).await;
-    let topics = trigger_in_namespace(&iii, LIST_TOPICS_FN_ID, json!({}), &namespace).await;
+    let topics = call_in_namespace(&iii, LIST_TOPICS_FN_ID, json!({}), &namespace).await;
     assert!(topics
         .as_array()
         .is_some_and(|topics| topics.iter().any(|topic| topic["name"] == queue_name)));
@@ -380,11 +321,11 @@ async fn provider_functions_and_enqueue_use_the_worker_namespace() {
     wait_for_function(&iii, &function_id, &namespace).await;
 
     let receipt = iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id,
                 payload: json!({"from": "enqueue-action"}),
-                action: Some(TriggerAction::Enqueue {
+                action: Some(CallAction::Enqueue {
                     queue: queue_name.clone(),
                 }),
                 timeout_ms: Some(5_000),
@@ -402,8 +343,8 @@ async fn provider_functions_and_enqueue_use_the_worker_namespace() {
 
 /// A function-queue delivery whose target is not registered yet is held —
 /// without spending retry budget — and released by the engine's registry
-/// change events (`engine::workers-available` / `engine::functions-available`,
-/// bound by `boot::start`), not by re-checking on a timer. The target's
+/// change events (`engine::on-workers-changed` / `engine::on-functions-changed`,
+/// observed by `boot::start`), not by re-checking on a timer. The target's
 /// worker connects only after the enqueue.
 #[tokio::test]
 #[serial]
@@ -436,7 +377,7 @@ async fn held_delivery_runs_once_its_target_worker_registers() {
     wait_for_function(&iii, ENQUEUE_FUNCTION_FN_ID, &namespace).await;
 
     let function_id = format!("queue::e2e::held::{}", suffix.simple());
-    trigger_in_namespace(
+    call_in_namespace(
         &iii,
         ENQUEUE_FUNCTION_FN_ID,
         json!({
@@ -507,11 +448,11 @@ impl Invoker for RestartInvoker {
 
 #[tokio::test]
 #[serial]
-async fn file_based_pending_message_survives_binding_restart() {
+async fn file_based_pending_message_survives_subscriber_restart() {
     let dir = temp_store_dir();
     let queue_name = format!("e2e-restart-{}", Uuid::new_v4());
     let function_id = format!("queue.restart.{queue_name}");
-    let subscription_id = "stable-binding";
+    let subscription_id = "observer:stable-subscriber";
     let invoker = Arc::new(RestartInvoker {
         started: Notify::new(),
         resume: AtomicBool::new(false),
@@ -524,10 +465,7 @@ async fn file_based_pending_message_survives_binding_restart() {
         .subscribe(
             &queue_name,
             subscription_id,
-            &function_id,
-            None,
-            None,
-            None,
+            Subscriber::new(&function_id),
             None,
         )
         .await;
@@ -547,10 +485,7 @@ async fn file_based_pending_message_survives_binding_restart() {
         .subscribe(
             &queue_name,
             subscription_id,
-            &function_id,
-            None,
-            None,
-            None,
+            Subscriber::new(&function_id),
             None,
         )
         .await;

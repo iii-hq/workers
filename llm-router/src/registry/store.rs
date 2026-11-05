@@ -214,7 +214,7 @@ impl RegistryStore {
         // stay wrongly listed until a dispatch burned on it (F9: topology
         // events can't be resolved to providers). Restore every record DOWN
         // and let the sources of truth flip it up: providers re-declare on
-        // `router::ready` (upsert emits the op:"available" recovery), and a
+        // `router::on-ready` (upsert emits the op:"available" recovery), and a
         // successful dispatch heals it too (chat.rs `Done` arm). Not persisted
         // here — flags re-persist on their next real change.
         restore(records.values_mut(), booted);

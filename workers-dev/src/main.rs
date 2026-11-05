@@ -192,7 +192,7 @@ fn on_demand_bin(compose: &Compose, container: &str) -> Result<String> {
         .with_context(|| {
             format!(
                 "{container} is not a Rust binary — install it from the registry with \
-                 `iii trigger compose::add worker={container}`"
+                 `iii call compose::add worker={container}`"
             )
         })
 }

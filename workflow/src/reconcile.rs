@@ -109,7 +109,7 @@ pub async fn reconcile_run(
         // stays Running and is re-polled next tick; the timeout sweep is the backstop.
         let resp = match deps
             .iii
-            .trigger(iii_sdk::protocol::TriggerRequest {
+            .call(iii_sdk::CallRequest {
                 function_id: "harness::status".into(),
                 payload: json!({ "session_id": session_id, "verbose": true }),
                 action: None,

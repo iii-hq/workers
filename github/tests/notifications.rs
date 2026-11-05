@@ -11,10 +11,7 @@ fn policy() -> NotificationPolicy {
 fn subscriber() -> Subscriber {
     Subscriber {
         id: "consumer".into(),
-        function_id: "test::notify".into(),
         filter: EventFilter::default(),
-        metadata: Some(json!({"tenant":7})),
-        namespace: Some("consumer-ns".into()),
     }
 }
 fn event(kind: &str, category: Category) -> PrEvent {
@@ -101,7 +98,7 @@ fn failures_are_batched_bounded_and_keep_details_and_reruns() {
         *due_at, 11_000,
         "batch deadline must not slide on every failure"
     );
-    assert_eq!(target.namespace.as_deref(), Some("consumer-ns"));
+    assert_eq!(target.id, "consumer");
     let value = serde_json::to_value(payload(&data)).unwrap();
     assert!(value.get("snapshot").is_none());
     assert_eq!(value["kind"], "ci.failed");

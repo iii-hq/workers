@@ -11,7 +11,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use serde_json::{json, Value};
 
 use crate::server::AppState;
@@ -66,7 +66,7 @@ pub async fn ui_file_handler(
     }
     let function_id = format!("{worker}::ui-file");
     let response = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.clone(),
             payload: json!({ "path": path }),
             action: None,

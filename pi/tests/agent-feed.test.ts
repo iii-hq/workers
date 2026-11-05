@@ -1,156 +1,151 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  AGENT_EVENT_TRIGGER,
-  MAX_BINDINGS,
-  RAW_EVENT_TRIGGER,
+  FEED_ARGS_FORMAT,
+  MAX_OBSERVERS,
+  ON_AGENT_EVENT_FN,
+  ON_RAW_EVENT_FN,
   registerAgentFeeds,
   SOURCE,
-  validateFeedConfig,
 } from '../src/agent-feed.js';
 import { fakeIii } from './_helpers/fake-iii.js';
 
-const FEEDS = [AGENT_EVENT_TRIGGER, RAW_EVENT_TRIGGER] as const;
+const FEEDS = [ON_AGENT_EVENT_FN, ON_RAW_EVENT_FN] as const;
+
+/** What the SDK does to a private function's payload under NODE_ENV=development. */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const member of Object.values(value)) deepFreeze(member);
+  }
+  return value;
+}
 
 function setup() {
   const fake = fakeIii();
   const feeds = registerAgentFeeds(fake.iii);
-  const feedOf = (typeId: string) => (typeId === AGENT_EVENT_TRIGGER ? feeds.agent : feeds.raw);
+  const feedOf = (functionId: string) =>
+    functionId === ON_AGENT_EVENT_FN ? feeds.agent : feeds.raw;
   return { fake, feeds, feedOf };
 }
 
 describe('agent feeds', () => {
-  it('registers both owned trigger types and nothing on iii-stream', () => {
+  it('registers both feeds as private functions with session args, and nothing on iii-stream', () => {
     const { fake } = setup();
-    expect([...fake.triggerTypes.keys()].sort()).toEqual(
-      [AGENT_EVENT_TRIGGER, RAW_EVENT_TRIGGER].sort(),
-    );
+    for (const functionId of FEEDS) {
+      const options = fake.functions.get(functionId)?.options;
+      expect(options).toMatchObject({ private: true, args_format: FEED_ARGS_FORMAT });
+      expect(options?.request_format).toEqual(options?.response_format);
+    }
+    expect(FEED_ARGS_FORMAT).toMatchObject({
+      required: ['session_id'],
+      additionalProperties: false,
+      properties: { session_id: { type: 'string', minLength: 1, maxLength: 512 } },
+    });
     expect(fake.calls).toEqual([]);
+  });
+
+  it.each(FEEDS)('%s: the handler returns the frame it is called with', async (functionId) => {
+    const { fake } = setup();
+    const frame = {
+      session_id: 's1',
+      event_id: 'e',
+      seq: 0,
+      epoch: 'x',
+      source: SOURCE,
+      event: {},
+    };
+    expect(await fake.registered.get(functionId)?.(frame)).toBe(frame);
   });
 
   it.each(
     FEEDS,
-  )('%s: delivers to a bound consumer with function, namespace, metadata and Void action', async (typeId) => {
+  )('%s: calls itself fire-and-forget and iii delivers the frame', async (functionId) => {
     const { fake, feedOf } = setup();
-    await fake.bindFeed(typeId, 's1', {
-      function_id: 'acp::__on_event::c1',
-      namespace: 'team-a',
-      metadata: { from: 'binding' },
-    });
+    await fake.observeFeed(functionId, 's1', { target: 'acp::__on_event::c1' });
     const event = { type: 'message_complete', message: { role: 'assistant', content: [] } };
-    await expect(feedOf(typeId).emit('s1', event)).resolves.toBe(1);
+    await expect(feedOf(functionId).emit('s1', event)).resolves.toBe(true);
 
     expect(fake.calls).toHaveLength(1);
     const [call] = fake.calls;
-    expect(call.function_id).toBe('acp::__on_event::c1');
-    expect(call.namespace).toBe('team-a');
-    expect(call.metadata).toEqual({ from: 'binding' });
+    expect(call.function_id).toBe(functionId);
     expect(call.action).toEqual({ type: 'void' });
-    const payload = call.payload as Record<string, unknown>;
-    expect(Object.keys(payload).sort()).toEqual(
+    expect(call).not.toHaveProperty('metadata');
+
+    expect(fake.deliveries).toHaveLength(1);
+    const [delivery] = fake.deliveries;
+    expect(delivery.target).toBe('acp::__on_event::c1');
+    expect(Object.keys(delivery.payload).sort()).toEqual(
       ['epoch', 'event', 'event_id', 'seq', 'session_id', 'source'].sort(),
     );
-    expect(payload).toMatchObject({ session_id: 's1', seq: 0, source: SOURCE, event });
-    expect(typeof payload.epoch).toBe('string');
+    expect(delivery.payload).toMatchObject({ session_id: 's1', seq: 0, source: SOURCE, event });
+    expect(typeof delivery.payload.epoch).toBe('string');
   });
 
-  it('config metadata wins over binding metadata; both absent omits metadata', async () => {
-    const { fake, feeds } = setup();
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 's1', {
-      function_id: 'a::config',
-      config: { session_id: 's1', metadata: { from: 'config' } },
-      metadata: { from: 'binding' },
-    });
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 's1', { function_id: 'a::none' });
-    await feeds.agent.emit('s1', { type: 'turn_end' });
-    const byFn = new Map(fake.calls.map((c) => [c.function_id, c]));
-    expect(byFn.get('a::config')?.metadata).toEqual({ from: 'config' });
-    expect(byFn.get('a::none')).not.toHaveProperty('metadata');
-    expect(byFn.get('a::none')).not.toHaveProperty('namespace');
-  });
-
-  it.each(FEEDS)('%s: a binding for session A never receives session B', async (typeId) => {
+  it.each(FEEDS)('%s: an observer of session A never receives session B', async (functionId) => {
     const { fake, feedOf } = setup();
-    await fake.bindFeed(typeId, 'A', { function_id: 'c::a' });
-    await fake.bindFeed(typeId, 'B', { function_id: 'c::b' });
-    await feedOf(typeId).emit('B', { n: 1 });
-    await feedOf(typeId).emit('B', { n: 2 });
-    await feedOf(typeId).emit('A', { n: 3 });
-    expect(fake.calls.filter((c) => c.function_id === 'c::a').map((c) => c.payload.event)).toEqual([
-      { n: 3 },
-    ]);
-    expect(fake.calls.filter((c) => c.function_id === 'c::b').map((c) => c.payload.event)).toEqual([
-      { n: 1 },
-      { n: 2 },
-    ]);
+    await fake.observeFeed(functionId, 'A', { target: 'c::a' });
+    await fake.observeFeed(functionId, 'B', { target: 'c::b' });
+    await feedOf(functionId).emit('B', { n: 1 });
+    await feedOf(functionId).emit('B', { n: 2 });
+    await feedOf(functionId).emit('A', { n: 3 });
+    const events = (target: string) =>
+      fake.deliveries.filter((d) => d.target === target).map((d) => d.payload.event);
+    expect(events('c::a')).toEqual([{ n: 3 }]);
+    expect(events('c::b')).toEqual([{ n: 1 }, { n: 2 }]);
   });
 
-  it('makes no trigger call at all when nobody is bound to the session', async () => {
+  it.each(FEEDS)('%s: matches observers by session id keys', async (functionId) => {
+    const { fake } = setup();
+    expect(fake.iii.isObserved(functionId, { input: { session_id: 's1' } })).toBe(false);
+    await fake.observeFeed(functionId, 's1');
+    expect(fake.iii.isObserved(functionId, { input: { session_id: 's1' } })).toBe(true);
+    expect(fake.iii.isObserved(functionId, { input: { session_id: 's2' } })).toBe(false);
+  });
+
+  it('makes no call at all when nobody observes the session', async () => {
     const { fake, feeds } = setup();
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 'other');
-    await expect(feeds.agent.emit('s1', { type: 'turn_end' })).resolves.toBe(0);
-    await expect(feeds.raw.emit('s1', { type: 'result' })).resolves.toBe(0);
+    await fake.observeFeed(ON_AGENT_EVENT_FN, 'other');
+    await expect(feeds.agent.emit('s1', { type: 'turn_end' })).resolves.toBe(false);
+    await expect(feeds.raw.emit('s1', { type: 'result' })).resolves.toBe(false);
     expect(fake.calls).toEqual([]);
   });
 
-  it.each(FEEDS)('%s: stops delivering after unbind', async (typeId) => {
+  it.each(FEEDS)('%s: stops delivering once the observer is removed', async (functionId) => {
     const { fake, feedOf } = setup();
-    const id = await fake.bindFeed(typeId, 's1');
-    await feedOf(typeId).emit('s1', { n: 1 });
-    await fake.unbindFeed(typeId, id);
-    expect(feedOf(typeId).bindingCount()).toBe(0);
-    await feedOf(typeId).emit('s1', { n: 2 });
-    expect(fake.feedFrames(typeId).map((f) => f.event)).toEqual([{ n: 1 }]);
+    const id = await fake.observeFeed(functionId, 's1');
+    await feedOf(functionId).emit('s1', { n: 1 });
+    await fake.unobserve(id);
+    expect(fake.observersOf(functionId)).toHaveLength(0);
+    await expect(feedOf(functionId).emit('s1', { n: 2 })).resolves.toBe(false);
+    expect(fake.feedFrames(functionId).map((f) => f.event)).toEqual([{ n: 1 }]);
   });
 
-  it.each([
-    ['missing session_id', {}],
-    ['empty session_id', { session_id: '' }],
-    ['non-string session_id', { session_id: 7 }],
-    ['over-long session_id', { session_id: 'x'.repeat(513) }],
-    ['unknown key', { session_id: 's1', group_id: 's1' }],
-    ['array metadata', { session_id: 's1', metadata: [] }],
-    ['string metadata', { session_id: 's1', metadata: 'm' }],
-    ['not an object', 's1'],
-    ['null', null],
-  ])('rejects an invalid binding config: %s', async (_label, config) => {
-    const { fake, feeds } = setup();
-    for (const typeId of FEEDS) {
-      await expect(fake.bindFeed(typeId, 's1', { config })).rejects.toThrow(typeId);
+  it('caps observers per feed with OBSERVER_LIMIT', async () => {
+    const { fake } = setup();
+    for (let i = 0; i < MAX_OBSERVERS; i++) {
+      await fake.observeFeed(ON_AGENT_EVENT_FN, `s${i}`, { id: `o${i}` });
     }
-    expect(feeds.agent.bindingCount()).toBe(0);
-    expect(feeds.raw.bindingCount()).toBe(0);
-  });
-
-  it('accepts a 512-char session id and an object metadata', () => {
-    expect(
-      validateFeedConfig(AGENT_EVENT_TRIGGER, { session_id: 'x'.repeat(512), metadata: { a: 1 } }),
-    ).toEqual({ session_id: 'x'.repeat(512), metadata: { a: 1 } });
-  });
-
-  it('caps bindings per trigger type; re-registering an existing id replaces it', async () => {
-    const { fake, feeds } = setup();
-    for (let i = 0; i < MAX_BINDINGS; i++) {
-      await fake.bindFeed(AGENT_EVENT_TRIGGER, `s${i}`, { id: `b${i}` });
-    }
-    expect(feeds.agent.bindingCount()).toBe(MAX_BINDINGS);
-    await expect(fake.bindFeed(AGENT_EVENT_TRIGGER, 'late', { id: 'b-new' })).rejects.toThrow(
-      /binding limit/,
+    expect(fake.observersOf(ON_AGENT_EVENT_FN)).toHaveLength(MAX_OBSERVERS);
+    await expect(
+      fake.observeFeed(ON_AGENT_EVENT_FN, 'late', { id: 'o-new' }),
+    ).rejects.toMatchObject({
+      code: 'OBSERVER_LIMIT',
+    });
+    expect(fake.observersOf(ON_AGENT_EVENT_FN)).toHaveLength(MAX_OBSERVERS);
+    // The cap is per feed: the raw feed still accepts observers.
+    await expect(fake.observeFeed(ON_RAW_EVENT_FN, 'late')).resolves.toBeTypeOf('string');
+    // A removed observer frees its slot.
+    await fake.unobserve('o0');
+    await expect(fake.observeFeed(ON_AGENT_EVENT_FN, 'late', { id: 'o-new' })).resolves.toBe(
+      'o-new',
     );
-    // Replacing an existing id is not a new binding.
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 'moved', { id: 'b0', function_id: 'c::moved' });
-    expect(feeds.agent.bindingCount()).toBe(MAX_BINDINGS);
-    await feeds.agent.emit('moved', { n: 1 });
-    await feeds.agent.emit('s0', { n: 2 });
-    expect(fake.calls.map((c) => c.function_id)).toEqual(['c::moved']);
-    // The cap is per trigger type: the raw feed still accepts bindings.
-    await expect(fake.bindFeed(RAW_EVENT_TRIGGER, 'late')).resolves.toBeTypeOf('string');
   });
 
   it('numbers seq from 0 per (feed, session) with independent agent and raw counters', async () => {
     const { fake, feeds } = setup();
-    for (const typeId of FEEDS) {
-      await fake.bindFeed(typeId, 's1');
-      await fake.bindFeed(typeId, 's2');
+    for (const functionId of FEEDS) {
+      await fake.observeFeed(functionId, 's1');
+      await fake.observeFeed(functionId, 's2');
     }
     // Interleave the feeds the way a turn does (raw, then translated).
     await feeds.raw.emit('s1', { r: 0 });
@@ -161,18 +156,18 @@ describe('agent feeds', () => {
     await feeds.agent.emit('s2', { a: 0 });
     await feeds.agent.emit('s1', { a: 2 });
 
-    const seqs = (typeId: string, sid: string) =>
+    const seqs = (functionId: string, sid: string) =>
       fake
-        .feedFrames(typeId)
+        .feedFrames(functionId)
         .filter((f) => f.session_id === sid)
         .map((f) => f.seq);
-    expect(seqs(AGENT_EVENT_TRIGGER, 's1')).toEqual([0, 1, 2]);
-    expect(seqs(AGENT_EVENT_TRIGGER, 's2')).toEqual([0]);
-    expect(seqs(RAW_EVENT_TRIGGER, 's1')).toEqual([0, 1]);
-    expect(seqs(RAW_EVENT_TRIGGER, 's2')).toEqual([0]);
+    expect(seqs(ON_AGENT_EVENT_FN, 's1')).toEqual([0, 1, 2]);
+    expect(seqs(ON_AGENT_EVENT_FN, 's2')).toEqual([0]);
+    expect(seqs(ON_RAW_EVENT_FN, 's1')).toEqual([0, 1]);
+    expect(seqs(ON_RAW_EVENT_FN, 's2')).toEqual([0]);
 
-    for (const typeId of FEEDS) {
-      const frames = fake.feedFrames(typeId);
+    for (const functionId of FEEDS) {
+      const frames = fake.feedFrames(functionId);
       const epochs = new Set(frames.map((f) => f.epoch));
       expect(epochs.size).toBe(1);
       for (const f of frames) {
@@ -182,26 +177,102 @@ describe('agent feeds', () => {
     }
   });
 
-  it('uses a stable event id when one is given', async () => {
+  it('advances seq for frames nobody observes', async () => {
     const { fake, feeds } = setup();
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 's1');
-    await feeds.agent.emit('s1', { n: 1 }, 'stable-1');
-    expect(fake.feedFrames(AGENT_EVENT_TRIGGER)[0]).toMatchObject({ event_id: 'stable-1', seq: 0 });
+    await feeds.agent.emit('s1', { n: 0 });
+    await feeds.agent.emit('s1', { n: 1 });
+    await fake.observeFeed(ON_AGENT_EVENT_FN, 's1');
+    await feeds.agent.emit('s1', { n: 2 });
+    expect(fake.feedFrames(ON_AGENT_EVENT_FN)).toEqual([
+      expect.objectContaining({ seq: 2, event: { n: 2 } }),
+    ]);
   });
 
-  it('swallows a failing delivery and keeps delivering to the other bindings', async () => {
+  it('uses a stable event id when one is given', async () => {
     const { fake, feeds } = setup();
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 's1', { function_id: 'c::gone' });
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 's1', { function_id: 'c::ok' });
-    const real = fake.iii.trigger.bind(fake.iii);
-    (fake.iii as { trigger: unknown }).trigger = async (req: { function_id: string }) => {
-      if (req.function_id === 'c::gone') throw new Error('function_not_found');
+    await fake.observeFeed(ON_AGENT_EVENT_FN, 's1');
+    await feeds.agent.emit('s1', { n: 1 }, 'stable-1');
+    expect(fake.feedFrames(ON_AGENT_EVENT_FN)[0]).toMatchObject({ event_id: 'stable-1', seq: 0 });
+  });
+
+  it.each(
+    FEEDS,
+  )('%s: sends a copy of the event, so the caller keeps mutating its own objects', async (functionId) => {
+    const { fake, feedOf } = setup();
+    await fake.observeFeed(functionId, 's1');
+    // The SDK hands a private function's payload to its handler by reference
+    // and, under NODE_ENV=development, deep-freezes it.
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: { payload: unknown }) =>
+      real({ ...req, payload: deepFreeze(req.payload) } as never);
+
+    // pi-agent-core's message_update: the provider's live partial, and a
+    // shallow copy of it that shares its content array.
+    const output = { role: 'assistant', content: [{ type: 'text', text: 'a' }] };
+    const event = {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', partial: output },
+      message: { ...output },
+    };
+    await expect(feedOf(functionId).emit('s1', event)).resolves.toBe(true);
+
+    // pi-ai's next deltas mutate the same objects.
+    expect(Object.isFrozen(output)).toBe(false);
+    expect(Object.isFrozen(output.content)).toBe(false);
+    output.content[0].text += 'b';
+    output.content.push({ type: 'text', text: 'c' });
+    expect(event.message.content).toEqual([
+      { type: 'text', text: 'ab' },
+      { type: 'text', text: 'c' },
+    ]);
+
+    // The frame is the event as it was when emitted.
+    expect(fake.feedFrames(functionId).map((f) => f.event)).toEqual([
+      {
+        type: 'message_update',
+        assistantMessageEvent: {
+          type: 'text_delta',
+          partial: { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+        },
+        message: { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+      },
+    ]);
+  });
+
+  it('sends an event structuredClone refuses as its JSON form', async () => {
+    const { fake, feeds } = setup();
+    await fake.observeFeed(ON_RAW_EVENT_FN, 's1');
+    const event = { type: 'tool_execution_start', args: { path: 'a' }, abort: () => {} };
+    await expect(feeds.raw.emit('s1', event)).resolves.toBe(true);
+    expect(fake.feedFrames(ON_RAW_EVENT_FN)[0].event).toEqual({
+      type: 'tool_execution_start',
+      args: { path: 'a' },
+    });
+  });
+
+  it('logs an event it cannot copy and resolves false without throwing', async () => {
+    const { fake, feeds } = setup();
+    await fake.observeFeed(ON_RAW_EVENT_FN, 's1');
+    const event: Record<string, unknown> = { type: 'cyclic', abort: () => {} };
+    event.self = event;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(feeds.raw.emit('s1', event)).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(ON_RAW_EVENT_FN));
+    expect(fake.calls).toEqual([]);
+    warn.mockRestore();
+  });
+
+  it('logs a refused call and resolves false without throwing', async () => {
+    const { fake, feeds } = setup();
+    await fake.observeFeed(ON_AGENT_EVENT_FN, 's1');
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === ON_AGENT_EVENT_FN) throw new Error('OVERFLOW');
       return real(req as never);
     };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await expect(feeds.agent.emit('s1', { type: 'turn_end' })).resolves.toBe(1);
-    expect(fake.calls.map((c) => c.function_id)).toEqual(['c::ok']);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('c::gone'));
+    await expect(feeds.agent.emit('s1', { type: 'turn_end' })).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(ON_AGENT_EVENT_FN));
     warn.mockRestore();
   });
 });

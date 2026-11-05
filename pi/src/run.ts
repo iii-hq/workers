@@ -92,7 +92,7 @@ export { RunPayloadSchema };
 
 /**
  * A delegated task. Same shape as a run, except the work is named `task` and
- * required: an orchestrator firing a trigger has one thing to say, and a
+ * required: an orchestrator handing off work has one thing to say, and a
  * sub-agent with no task is a bug rather than an empty turn.
  */
 const TaskPayloadSchema = RunPayloadSchema.omit({ prompt: true, messages: true }).extend({
@@ -456,7 +456,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; publishes raw Pi events on the pi::raw-event trigger type and AgentEvent frames on pi::agent-event (bind with { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; publishes raw Pi events on pi::on-raw-event and AgentEvent frames on pi::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: RUN_RESPONSE_FORMAT,
     },
@@ -488,16 +488,17 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Start a Pi turn and return immediately; bind pi::agent-event with { session_id } for progress and turn_end.',
+        'Start a Pi turn and return immediately; observe pi::on-agent-event with args { session_id } for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
   );
 
-  // The sub-agent entrypoint an orchestrator FIRES rather than calls: a trigger
-  // bound to this id delivers a task, the ids come back at once, and the
-  // outcome arrives the way a harness sub-agent's does — on `pi::agent-event`,
-  // in the child session, never as a return value the caller waits for.
+  // The sub-agent entrypoint an orchestrator hands work to without waiting: a
+  // call (or an observer targeting this id) delivers a task, the ids come back
+  // at once, and the outcome arrives the way a harness sub-agent's does — on
+  // `pi::on-agent-event`, in the child session, never as a return value the
+  // caller waits for.
   iii.registerFunction(
     'pi::task',
     async (payload: unknown) => {
@@ -519,9 +520,9 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // Fire-and-forget, and REACTIVE: the caller is not held open for the
       // length of an agent run. When the task settles, its outcome is written
       // to state under `agent_tasks/<session id>`, which is what an
-      // orchestrator binds a `state` trigger to and gets woken by — the same
+      // orchestrator observes (`state::on-changed`) and gets woken by — the same
       // shape a harness sub-agent uses, with no polling and no blocking call.
-      // The turn is persisted as well as published. `pi::agent-event` is a
+      // The turn is persisted as well as published. `pi::on-agent-event` is a
       // live tape — a console window opened after the run has nothing to replay
       // from it, which is why a finished sub-agent rendered blank with
       // `message_count: 0`. The session manager is the durable side, so the
@@ -564,7 +565,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Delegate one task to Pi and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so bind a `state` trigger on that BEFORE calling and be woken by it; progress arrives on pi::agent-event (bind with { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
+        'Delegate one task to Pi and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so observe state::on-changed with filters on input.scope and input.key BEFORE calling and be woken by it; progress arrives on pi::on-agent-event (observe with args { session_id }). Pass `parent_session_id` to nest the child under the session that delegated it.',
       request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },

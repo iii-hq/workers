@@ -14,21 +14,19 @@ use tokio::sync::RwLock;
 
 use crate::adapters::{CompareAndSetOutcome, StateAdapter};
 use crate::config::StateConfig;
-use crate::events::{Invoker, fan_out_lazy};
 use crate::on_changed::{ChangeEmitter, emit_lazy};
 use crate::structs::{
     StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput, StateGetInput,
     StateListGroupsInput, StateListGroupsResult, StateListKeysResult, StateSetInput,
     StateUpdateInput,
 };
-use crate::trigger::TriggerTable;
 
 pub type ConfigCell = Arc<RwLock<Arc<StateConfig>>>;
 
 /// Control-plane state is not agent state. A worker CLAIMS its private
 /// namespace at runtime (`state::claim-namespace`): the claim reserves its
-/// scopes — public `state::*` calls must never read, mutate, list, or fan
-/// them out to state triggers — and registers internal accessors under the
+/// scopes — public `state::*` calls must never read, mutate, list, or emit
+/// them as `state::on-changed` events — and registers internal accessors under the
 /// claimant's own function-id prefix (`<prefix>::state::{get, list,
 /// compare-and-set}`).
 ///
@@ -321,10 +319,8 @@ pub struct BarrierInput {
 
 pub struct StateCtx {
     pub adapter: Arc<dyn StateAdapter>,
-    pub triggers: TriggerTable,
     pub config: ConfigCell,
-    pub invoker: Arc<dyn Invoker>,
-    /// `state::on-changed`, the observable function next to the trigger type.
+    /// `state::on-changed`, called after every committed change.
     pub on_changed: Arc<dyn ChangeEmitter>,
     /// Boot-time private-namespace snapshot (see [`PrivateNamespaces`]).
     pub private: Arc<PrivateNamespaces>,
@@ -346,7 +342,7 @@ impl StateCtx {
         if self.private.is_reserved(scope) {
             return;
         }
-        let enabled = self.snapshot().await.triggers_enabled.unwrap_or(true);
+        let enabled = self.snapshot().await.events_enabled.unwrap_or(true);
         let build = || {
             event(
                 kind.clone(),
@@ -356,17 +352,8 @@ impl StateCtx {
                 new_value.clone(),
             )
         };
-        fan_out_lazy(
-            self.invoker.clone(),
-            &self.triggers,
-            enabled,
-            scope,
-            key,
-            build,
-        )
-        .await;
-        // Additive: the trigger deliveries are already handed to their own
-        // task above. A local call, and a no-op unless someone observes it.
+        // A fire-and-forget local call, and a no-op unless someone observes
+        // it.
         emit_lazy(self.on_changed.as_ref(), enabled, build).await;
     }
 }
@@ -526,8 +513,8 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     let cfg = input.condition_config.ok_or_else(|| {
                         Error::Handler(
                             "BARRIER_CONFIG: state::barrier needs `condition_config` \
-                             { id, expect, key_from?, carry? } — as a binding it goes in \
-                             `conditions: [{ function_id, config }]`"
+                             { id, expect, key_from?, carry? } — on a harness::observe \
+                             observer it goes in `conditions: [{ function_id, config }]`"
                                 .to_string(),
                         )
                     })?;
@@ -540,7 +527,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 }
             })
             .description(
-                "Fan-in gate for a binding condition: record one arrival and answer `skip` until \
+                "Fan-in gate for an observer condition: record one arrival and answer `skip` until \
                  the expected set has arrived, then `allow` exactly once carrying every \
                  arrival's payload.",
             ),
@@ -779,7 +766,7 @@ fn caller_worker_id(stamped: Option<&str>, engine_observes: Option<bool>) -> Opt
 /// accepted too.
 async fn caller_worker_name(iii: &IIIClient, caller_worker_id: &str) -> Result<String, Error> {
     let workers = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "engine::workers::list".to_string(),
             payload: serde_json::json!({}),
             action: None,
@@ -885,7 +872,7 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
         })
         .description(
             "Reserve a private state namespace for the calling worker (its own worker name \
-             only): its scopes leave public state::* and trigger fan-out, and \
+             only): its scopes leave public state::* and state::on-changed, and \
              `<prefix>::state::{get, list, compare-and-set}` accessors are registered. \
              Idempotent.",
         ),
@@ -993,8 +980,9 @@ pub async fn restore_persisted_claims(
 }
 
 /// Private persistence primitives for the workers that claimed a namespace
-/// in `StateConfig::private_namespaces`. They skip trigger fan-out by design:
-/// a binding claim must not recursively fire a catch-all state subscription.
+/// in `StateConfig::private_namespaces`. They never emit `state::on-changed`
+/// by design: an observer claim must not recursively wake a catch-all state
+/// observer.
 /// Each accessor is hard-scoped to ITS namespace's own scopes — one tenant
 /// can never reach another tenant's bookkeeping.
 fn register_private_namespace_functions(
@@ -1238,42 +1226,6 @@ mod private_namespace_tests {
         }
     }
 
-    struct NullInvoker;
-
-    #[async_trait::async_trait]
-    impl Invoker for NullInvoker {
-        async fn call(
-            &self,
-            _function_id: &str,
-            _payload: Value,
-            _metadata: Option<Value>,
-        ) -> Result<Value, String> {
-            Ok(Value::Null)
-        }
-    }
-
-    /// Records trigger handler calls (condition calls are not made here).
-    #[derive(Default)]
-    struct RecordingInvoker {
-        calls: tokio::sync::Mutex<Vec<(String, Value)>>,
-    }
-
-    #[async_trait::async_trait]
-    impl Invoker for RecordingInvoker {
-        async fn call(
-            &self,
-            function_id: &str,
-            payload: Value,
-            _metadata: Option<Value>,
-        ) -> Result<Value, String> {
-            self.calls
-                .lock()
-                .await
-                .push((function_id.to_string(), payload));
-            Ok(Value::Null)
-        }
-    }
-
     /// `state::on-changed` with a switchable observer count.
     #[derive(Default)]
     struct RecordingEmitter {
@@ -1292,7 +1244,7 @@ mod private_namespace_tests {
     }
 
     fn test_ctx(adapter: Arc<dyn StateAdapter>) -> Arc<StateCtx> {
-        ctx_with(adapter, Arc::new(NullInvoker), Arc::default())
+        ctx_with(adapter, Arc::default())
     }
 
     #[tokio::test]
@@ -1344,85 +1296,49 @@ mod private_namespace_tests {
 
     fn ctx_with(
         adapter: Arc<dyn StateAdapter>,
-        invoker: Arc<dyn Invoker>,
         on_changed: Arc<RecordingEmitter>,
     ) -> Arc<StateCtx> {
         Arc::new(StateCtx {
             adapter,
-            triggers: crate::trigger::StateTriggerHandler::new().triggers,
             config: Arc::new(RwLock::new(Arc::new(StateConfig::default()))),
-            invoker,
             on_changed,
             private: Arc::new(PrivateNamespaces::default()),
         })
     }
 
-    async fn bind(ctx: &StateCtx, scope: Option<&str>) {
-        ctx.triggers.write().await.insert(
-            "t1".to_string(),
-            crate::trigger::StateTriggerEntry {
-                config: crate::trigger::StateTriggerSpec {
-                    scope: scope.map(String::from),
-                    key: None,
-                    condition_function_id: None,
-                },
-                function_id: "orders::on-change".to_string(),
-                metadata: None,
-            },
-        );
-    }
-
-    async fn settle() {
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-    }
-
     #[tokio::test]
-    async fn observers_get_the_document_trigger_handlers_get() {
-        let invoker = Arc::new(RecordingInvoker::default());
+    async fn every_committed_change_is_one_event() {
         let emitter = Arc::new(RecordingEmitter::default());
         emitter
             .observed
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let ctx = ctx_with(
-            Arc::new(FailFirstAdapter::default()),
-            invoker.clone(),
-            emitter.clone(),
-        );
-        bind(&ctx, Some("orders")).await;
+        let ctx = ctx_with(Arc::new(FailFirstAdapter::default()), emitter.clone());
         let old = serde_json::json!({"status": "pending"});
         let new = serde_json::json!({"status": "shipped"});
         ctx.emit_change(StateEventType::Updated, "orders", "o1", Some(&old), &new)
             .await;
         ctx.emit_change(StateEventType::Deleted, "orders", "o2", None, &Value::Null)
             .await;
-        settle().await;
 
-        let delivered = invoker.calls.lock().await;
         let emitted = emitter.emitted.lock().await;
-        assert_eq!(delivered.len(), 2);
-        assert_eq!(
-            delivered.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(),
-            *emitted,
-            "one document per change, the same on both paths"
-        );
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[0]["type"], "state");
         assert_eq!(emitted[0]["event_type"], "state:updated");
+        assert_eq!(emitted[0]["scope"], "orders");
+        assert_eq!(emitted[0]["key"], "o1");
         assert_eq!(emitted[0]["old_value"], old);
+        assert_eq!(emitted[0]["new_value"], new);
         assert_eq!(emitted[1]["event_type"], "state:deleted");
+        assert_eq!(emitted[1]["old_value"], Value::Null);
         assert_eq!(emitted[1]["new_value"], Value::Null);
     }
 
     #[tokio::test]
-    async fn every_change_is_emitted_whatever_the_bindings() {
-        // Observers filter for themselves: a scope no binding matches is
-        // still emitted, and bindings fire whether observed or not.
-        let invoker = Arc::new(RecordingInvoker::default());
+    async fn every_scope_is_emitted_while_observed_and_none_while_not() {
+        // Observers select with their own filters: the worker emits every
+        // scope while anyone observes, and nothing while nobody does.
         let emitter = Arc::new(RecordingEmitter::default());
-        let ctx = ctx_with(
-            Arc::new(FailFirstAdapter::default()),
-            invoker.clone(),
-            emitter.clone(),
-        );
-        bind(&ctx, Some("orders")).await;
+        let ctx = ctx_with(Arc::new(FailFirstAdapter::default()), emitter.clone());
         let v = serde_json::json!(1);
         ctx.emit_change(StateEventType::Created, "orders", "a", None, &v)
             .await;
@@ -1431,24 +1347,21 @@ mod private_namespace_tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         ctx.emit_change(StateEventType::Created, "users", "b", None, &v)
             .await;
-        settle().await;
-        assert_eq!(invoker.calls.lock().await.len(), 1, "orders only");
+        ctx.emit_change(StateEventType::Created, "orders", "c", None, &v)
+            .await;
         let emitted = emitter.emitted.lock().await;
-        assert_eq!(emitted.len(), 1, "unobserved write emitted nothing");
+        assert_eq!(emitted.len(), 2, "the unobserved write emitted nothing");
         assert_eq!(emitted[0]["scope"], "users");
+        assert_eq!(emitted[1]["scope"], "orders");
     }
 
     #[tokio::test]
-    async fn private_scopes_and_the_live_gate_silence_observers_too() {
+    async fn private_scopes_and_the_live_gate_emit_nothing() {
         let emitter = Arc::new(RecordingEmitter::default());
         emitter
             .observed
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let ctx = ctx_with(
-            Arc::new(FailFirstAdapter::default()),
-            Arc::new(NullInvoker),
-            emitter.clone(),
-        );
+        let ctx = ctx_with(Arc::new(FailFirstAdapter::default()), emitter.clone());
         ctx.private.claim("acme", &scopes(&["acme_ledger"]));
         let v = serde_json::json!(1);
         ctx.emit_change(StateEventType::Created, "acme_ledger", "k", None, &v)
@@ -1456,7 +1369,7 @@ mod private_namespace_tests {
         ctx.emit_change(StateEventType::Created, CLAIMS_SCOPE, "k", None, &v)
             .await;
         *ctx.config.write().await = Arc::new(StateConfig {
-            triggers_enabled: Some(false),
+            events_enabled: Some(false),
             ..StateConfig::default()
         });
         ctx.emit_change(StateEventType::Created, "orders", "k", None, &v)

@@ -15,7 +15,7 @@ use tracing::Instrument;
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, SwappableAdapter};
 use crate::boot::{ApplyLock, ConfigCell};
 use crate::config::QueueConfig;
-use crate::trigger::{Invoker, QueueTriggerHandler};
+use crate::subscribers::{Invoker, Subscribers};
 
 const MAX_RESTART_REDELIVERIES: u32 = 3;
 const DEFAULT_NAMESPACE: &str = "default";
@@ -391,20 +391,17 @@ impl FunctionQueueRuntime {
         &self,
         next: QueueConfig,
         replacement: Option<(Arc<dyn QueueAdapter>, String)>,
-        trigger_handler: &QueueTriggerHandler,
+        subscribers: &Subscribers,
     ) -> anyhow::Result<()> {
         let _guard = self.apply_lock.write().await;
-        self.apply_config_locked(next, replacement, trigger_handler)
+        self.apply_config_locked(next, replacement, subscribers)
             .await
     }
 
     /// Re-read and apply the newest stored configuration while holding the
     /// same lock used by `queue::define`. Fetching under the lock prevents an
     /// older configuration event from applying after a newer definition.
-    pub async fn refresh_config(
-        &self,
-        trigger_handler: &QueueTriggerHandler,
-    ) -> anyhow::Result<()> {
+    pub async fn refresh_config(&self, subscribers: &Subscribers) -> anyhow::Result<()> {
         let _guard = self.apply_lock.write().await;
         let next = crate::configuration::fetch_config(&self.iii)
             .await
@@ -419,7 +416,7 @@ impl FunctionQueueRuntime {
         } else {
             None
         };
-        self.apply_config_locked(next, replacement, trigger_handler)
+        self.apply_config_locked(next, replacement, subscribers)
             .await
     }
 
@@ -430,7 +427,7 @@ impl FunctionQueueRuntime {
     pub async fn reconnect_adapter(
         &self,
         lost: &Arc<dyn QueueAdapter>,
-        trigger_handler: &QueueTriggerHandler,
+        subscribers: &Subscribers,
     ) -> anyhow::Result<()> {
         // Connect before taking the lock, with a deadline: the broker client
         // has none of its own, and enqueue and define wait on this lock.
@@ -450,7 +447,7 @@ impl FunctionQueueRuntime {
             return Ok(());
         }
         let name = crate::boot::adapter_identity_name(&current).to_string();
-        self.apply_config_locked((*current).clone(), Some((adapter, name)), trigger_handler)
+        self.apply_config_locked((*current).clone(), Some((adapter, name)), subscribers)
             .await
     }
 
@@ -458,7 +455,7 @@ impl FunctionQueueRuntime {
         &self,
         next: QueueConfig,
         replacement: Option<(Arc<dyn QueueAdapter>, String)>,
-        trigger_handler: &QueueTriggerHandler,
+        subscribers: &Subscribers,
     ) -> anyhow::Result<()> {
         next.validate().map_err(anyhow::Error::msg)?;
         let old = self.config.read().await.clone();
@@ -492,7 +489,7 @@ impl FunctionQueueRuntime {
                 Ok(pending) => {
                     *self.config.write().await = Arc::new(next);
                     self.replace_all_consumers(pending).await?;
-                    trigger_handler.resubscribe_all().await;
+                    subscribers.resubscribe_all().await;
                     old_adapter.shutdown().await;
                     return Ok(());
                 }
@@ -1243,11 +1240,14 @@ fn scrub_relevance_tags(header: &str) -> Option<String> {
 
 /// Hold a delivery until its target is registered. Event-driven: the
 /// availability check runs once up front and then once per engine registry
-/// change (`engine::functions-available` / `engine::workers-available`, see
-/// [`crate::trigger::EngineEvents`]), never on a timer. The change
-/// subscription is taken before the first check, so a registration landing
-/// between a negative check and the wait is not missed. There is no overall
-/// deadline: a restored job waits as long as its worker takes to boot,
+/// change (`engine::on-functions-changed` / `engine::on-workers-changed`, see
+/// [`crate::subscribers::EngineEvents`]), never on a timer, with one exception:
+/// a check that failed (`Err`, such as a probe timeout) says nothing about the
+/// registry, and the target may already be registered with no further change
+/// coming, so it is retried after at most [`AVAILABILITY_RECHECK_AFTER`]. The
+/// change subscription is taken before the first check, so a registration
+/// landing between a negative check and the wait is not missed. There is no
+/// overall deadline: a restored job waits as long as its worker takes to boot,
 /// without spending retry budget.
 ///
 /// An invoker that [hands back](Invoker::hands_back_unavailable) unavailable
@@ -1263,7 +1263,7 @@ async fn wait_for_function(
     let mut changes = invoker.engine_changes();
     let mut waiting = false;
     loop {
-        match invoker.function_available(function_id, namespace).await {
+        let check_failed = match invoker.function_available(function_id, namespace).await {
             Ok(true) => {
                 if waiting {
                     tracing::info!(queue = %queue, function_id = %function_id, "function queue target became available");
@@ -1275,21 +1275,30 @@ async fn wait_for_function(
                     tracing::info!(queue = %queue, function_id = %function_id, "function queue target is not registered yet; holding delivery");
                     waiting = true;
                 }
+                false
             }
             Err(error) => {
                 if !waiting {
                     tracing::warn!(queue = %queue, function_id = %function_id, error = %error, "cannot check function queue target availability; holding delivery");
                     waiting = true;
                 }
+                true
             }
-        }
+        };
         if invoker.hands_back_unavailable() {
             let _ = tokio::time::timeout(HAND_BACK_AFTER, changes.changed()).await;
             return invoker.function_available(function_id, namespace).await == Ok(true);
         }
-        changes.changed().await;
+        if check_failed {
+            let _ = tokio::time::timeout(AVAILABILITY_RECHECK_AFTER, changes.changed()).await;
+        } else {
+            changes.changed().await;
+        }
     }
 }
+
+/// How long a held delivery waits for an engine change after a failed availability check.
+const AVAILABILITY_RECHECK_AFTER: Duration = Duration::from_secs(5);
 
 /// How long a worker keeps a job whose function it does not host before giving it back.
 // ponytail: a job that no live worker hosts bounces about once a second per worker; route jobs
@@ -1378,7 +1387,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     use crate::store::TopicStats;
-    use crate::trigger::EngineChanges;
+    use crate::subscribers::EngineChanges;
 
     type PublishedMessage = (
         String,
@@ -1408,17 +1417,16 @@ mod tests {
         ) {
         }
 
-        async fn subscribe_target(
+        async fn subscribe(
             &self,
             _topic: &str,
             _id: &str,
-            _target: crate::trigger::SubscriberTarget,
-            _condition_function_id: Option<String>,
+            _subscriber: crate::subscribers::Subscriber,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
         ) {
         }
 
-        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+        async fn unsubscribe(&self, _topic: &str, _id: &str, _retain: Duration) {}
 
         async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
             Ok(0)
@@ -1673,7 +1681,7 @@ mod tests {
         /// availability check is in flight, after it already read "missing".
         register_during_first_check: bool,
         checks: AtomicUsize,
-        events: crate::trigger::EngineEvents,
+        events: crate::subscribers::EngineEvents,
     }
 
     #[async_trait]
@@ -1751,6 +1759,46 @@ mod tests {
         )
         .await
         .expect("a registration racing the check must not be missed");
+        assert_eq!(concrete.checks.load(Ordering::SeqCst), 2);
+    }
+
+    /// The first availability check fails the way a probe timeout does.
+    #[derive(Default)]
+    struct FailedFirstCheckInvoker {
+        checks: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Invoker for FailedFirstCheckInvoker {
+        async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+
+        async fn function_available(
+            &self,
+            _function_id: &str,
+            _namespace: &str,
+        ) -> Result<bool, String> {
+            if self.checks.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("availability probe timed out".to_string())
+            } else {
+                Ok(true)
+            }
+        }
+    }
+
+    // One failed probe must not park a delivery until the next engine change,
+    // which may be hours away. This invoker's change feed never fires.
+    #[tokio::test(start_paused = true)]
+    async fn failed_availability_check_is_retried_without_an_engine_change() {
+        let concrete = Arc::new(FailedFirstCheckInvoker::default());
+        let invoker: Arc<dyn Invoker> = concrete.clone();
+        tokio::time::timeout(
+            AVAILABILITY_RECHECK_AFTER * 2,
+            wait_for_function(&invoker, "turns", "harness::turn", DEFAULT_NAMESPACE),
+        )
+        .await
+        .expect("a failed check must be retried on its own");
         assert_eq!(concrete.checks.load(Ordering::SeqCst), 2);
     }
 

@@ -7,10 +7,10 @@ VS Code as an iii worker. The worker runs the VS Code Server through the `code` 
 ## Install
 
 ```bash
-iii trigger compose::add worker=vscode
+iii call compose::add worker=vscode
 ```
 
-`iii trigger compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. The host needs the VS Code CLI: install VS Code and enable the `code` shell command, or download the [standalone CLI](https://code.visualstudio.com/docs/remote/vscode-server) and point `code_executable` at it. The first start of a workspace downloads the matching VS Code Server build; starting the worker accepts the [VS Code Server license terms](https://aka.ms/vscode-server-license).
+`iii call compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. The host needs the VS Code CLI: install VS Code and enable the `code` shell command, or download the [standalone CLI](https://code.visualstudio.com/docs/remote/vscode-server) and point `code_executable` at it. The first start of a workspace downloads the matching VS Code Server build; starting the worker accepts the [VS Code Server license terms](https://aka.ms/vscode-server-license).
 
 ## Quickstart
 
@@ -19,7 +19,7 @@ Open **VS Code** from the Console navigation, or press `⌘K` and run `Open VS C
 The same lifecycle is one function call away:
 
 ```bash
-iii trigger vscode::start workspace=/absolute/path/to/project
+iii call vscode::start workspace=/absolute/path/to/project
 ```
 
 ```json

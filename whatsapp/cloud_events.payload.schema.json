@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://whatsapp.invalid/cloud-events/payload.schema.json",
   "title": "WhatsApp Cloud event",
-  "description": "One verified message, delivery status, or explicitly subscribed administrative webhook event. Event delivery is best effort after durable deduplication.",
+  "description": "One verified message, delivery status, or administrative webhook event: the input and output of whatsapp::cloud::on-events. Event delivery is best effort after durable deduplication.",
   "type": "object",
   "additionalProperties": true,
   "required": ["kind", "business_account_id", "phone_number_id", "message_id", "chat_id", "timestamp_ms", "data"],

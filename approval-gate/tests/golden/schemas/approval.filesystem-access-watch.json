@@ -1,5 +1,5 @@
 {
-  "description": "post_trigger hook: watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.",
+  "description": "post_call hook (observer of harness::hook::on-post-call): watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.",
   "function_id": "approval::filesystem-access-watch",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -23,7 +23,7 @@
         "type": "object"
       },
       "HookResult": {
-        "description": "`post_trigger` payload: the function_result the harness is about to deliver to the model.",
+        "description": "`post_call` payload: the function_result the harness is about to deliver to the model.",
         "properties": {
           "content": {
             "default": [],
@@ -66,7 +66,7 @@
         "type": "object"
       },
       "HookResultError": {
-        "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md § post_trigger hook can now HOLD).",
+        "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md, the post-call hook's HOLD).",
         "properties": {
           "code": {
             "default": null,
@@ -110,7 +110,7 @@
             "type": "null"
           }
         ],
-        "description": "pre_trigger payload."
+        "description": "pre_call payload."
       },
       "depth": {
         "default": 0,
@@ -143,7 +143,7 @@
             "type": "null"
           }
         ],
-        "description": "post_trigger payload: the function_result about to be delivered."
+        "description": "post_call payload: the function_result about to be delivered."
       },
       "session_id": {
         "type": "string"

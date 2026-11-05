@@ -12,8 +12,8 @@ The hermes worker puts the Hermes agent on the iii bus. `hermes::run` runs one
 headless Hermes turn carrying the iii runtime context, so the agent discovers
 and drives the whole engine live. `hermes::send` delivers to any of Hermes's
 27+ messaging platforms. Inbound platform messages and webhook events arrive on
-the worker's HTTP sink (`hermes::inbound`) and republish so any iii worker can
-react. Hermes becomes iii's omnichannel front door: chat-platform reach wired to
+the worker's HTTP route (`hermes::inbound`) and republish on
+`hermes::on-raw-event` so any iii worker can react. Hermes becomes iii's omnichannel front door: chat-platform reach wired to
 the entire function registry.
 
 Requires pre-provisioned Hermes credentials (`~/.hermes/.env`). When a turn
@@ -24,7 +24,7 @@ on here.
 
 - Run a Hermes turn that can act on the whole backend: `hermes::run` with
   `prompt` and `cwd` — the agent discovers and calls any registered function
-  through the iii CLI (engine::functions::list, `iii trigger <fn> --help`).
+  through the iii CLI (engine::functions::list, `iii call <fn> --help`).
 - Reach a user on any platform: `hermes::send` with `{platform, message}` for
   Telegram, Discord, Slack, WhatsApp, Teams, and 20+ more.
 - React to inbound platform/webhook events: point a Hermes gateway route at the
@@ -39,11 +39,11 @@ on here.
 - `hermes::run` / `hermes::send` are not agent-callable without human approval
   (privilege + outbound messaging); read-only introspection is allowed (see
   iii-permissions.yaml).
-- Hermes one-shot returns only final text, so `hermes::agent-event` carries
-  whole-turn frames (`turn_end`, `agent_end`), not per-tool frames. Bind it (and
-  `hermes::raw-event` for the raw `result` frame and inbound deliveries) with
-  `{ session_id }`; frames are ephemeral, so use `hermes::status` /
-  `hermes::sessions::list` for history.
+- Hermes one-shot returns only final text, so `hermes::on-agent-event` carries
+  whole-turn frames (`turn_end`, `agent_end`), not per-tool frames. Observe it
+  (and `hermes::on-raw-event` for the raw `result` frame and inbound
+  deliveries) with args `{ session_id }`; frames are ephemeral, so use
+  `hermes::status` / `hermes::sessions::list` for history.
 - Hermes's own shell/code/web tools and MCP are intentionally not re-exposed —
   iii already has `shell`, `coder`, `web`.
 
@@ -56,13 +56,14 @@ on here.
 - `hermes::status` — session state + live flag.
 - `hermes::stop` — interrupt a live run.
 - `run::start_and_wait` — alias for `hermes::run`.
-- `hermes::inbound` (HTTP) — inbound gateway delivery sink; republishes each
-  delivery on `hermes::raw-event`.
+- `hermes::inbound` (HTTP) — inbound gateway delivery route (an observer of
+  `http::on-request`); republishes each delivery on `hermes::on-raw-event`.
 
-## Trigger types
+## Event functions
 
-- `hermes::agent-event` — normalized AgentEvent frames of one session; config
-  `{ session_id, metadata? }`; payload
-  `{ session_id, event_id, seq, epoch, source, event }`.
-- `hermes::raw-event` — raw Hermes frames (`result`, `inbound`), same config and
-  payload.
+- `hermes::on-agent-event` — normalized AgentEvent frames of one session;
+  private, observe it with args `{ session_id }`; event
+  `{ session_id, event_id, seq, epoch, source, event }`. At most 256
+  observers.
+- `hermes::on-raw-event` — raw Hermes frames (`result`, `inbound`), same args
+  and event.

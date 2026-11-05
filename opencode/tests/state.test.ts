@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import { listSessions, loadSession, saveSession } from '../src/state.js';
 import type { SessionRecord } from '../src/types.js';
 import { fakeIii } from './_helpers/fake-iii.js';
@@ -37,9 +37,9 @@ describe('session state', () => {
 
   it('handles state::get returning the value directly, without an envelope', async () => {
     const iii = {
-      trigger: async (req: { function_id: string }) =>
+      call: async (req: { function_id: string }) =>
         req.function_id === 'state::get' ? record('s1') : null,
-    } as unknown as ISdk;
+    } as unknown as IIIClient;
     await expect(loadSession(iii, 's1')).resolves.toMatchObject({ session_id: 's1' });
   });
 
@@ -49,7 +49,7 @@ describe('session state', () => {
     await saveSession(fake.iii, record('s2'));
     const sessions = await listSessions(fake.iii);
     expect(sessions.map((s) => s.session_id).sort()).toEqual(['s1', 's2']);
-    const iii = { trigger: async () => null } as unknown as ISdk;
+    const iii = { call: async () => null } as unknown as IIIClient;
     await expect(listSessions(iii)).resolves.toEqual([]);
   });
 });

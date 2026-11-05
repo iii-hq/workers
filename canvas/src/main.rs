@@ -10,8 +10,8 @@
 //!    failure here aborts rather than running on guessed limits
 //! 5. build the store, then register the functions, then the console UI they
 //!    drive
-//! 6. bind the configuration trigger LAST, so its handler closes over fully
-//!    built state
+//! 6. observe `configuration::on-updated` LAST, so its handler closes over
+//!    fully built state
 //! 7. wait for a signal, then shut the SDK down cleanly
 
 use std::sync::Arc;
@@ -47,8 +47,8 @@ struct Cli {
 /// Wait for either interrupt or terminate.
 ///
 /// A managed worker is stopped with SIGTERM, and a process that only listens
-/// for ctrl-c dies without running `shutdown_async`, which leaves its
-/// Message-path triggers registered against a function that no longer exists.
+/// for ctrl-c dies without running `shutdown_async`, so the engine sees a
+/// dropped connection instead of a clean disconnect.
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
     use tokio::signal::unix::{signal, SignalKind};
@@ -133,8 +133,7 @@ async fn main() -> anyhow::Result<()> {
     functions::register_all(&iii, &cell, &store);
     ui::register(&iii);
 
-    configuration::register_config_trigger(&iii, cell.clone())
-        .map_err(|e| anyhow::anyhow!("configuration trigger registration failed: {e}"))?;
+    configuration::register_config_observer(&iii, cell.clone());
 
     tracing::info!(url = %cli.url, "canvas worker ready");
 

@@ -31,7 +31,7 @@ export const ALL: Capabilities = new Set(OPTIONAL_FNS)
  */
 export async function probe(host: Host): Promise<Capabilities> {
   try {
-    const raw = await host.iii.trigger<unknown>('engine::functions::list', {})
+    const raw = await host.iii.call<unknown>('engine::functions::list', {})
     const ids = collectIds(raw)
     if (ids.size === 0) return ALL
     return new Set(OPTIONAL_FNS.filter((fn) => ids.has(fn)))
@@ -79,4 +79,4 @@ function collectIds(raw: unknown): Set<string> {
 
 /** Version hint for the empty state a hidden panel leaves behind. */
 export const MIN_VERSION_HINT =
-  'this needs a newer database worker — run `iii worker update database`'
+  'this needs a newer database worker — run `iii call compose::update worker=database`'

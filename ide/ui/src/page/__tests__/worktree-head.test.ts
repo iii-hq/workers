@@ -1,4 +1,4 @@
-import type { Host } from '@iii-dev/console-ui'
+import type { Host, ObserveSource } from '@iii-dev/console-ui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { publishWorktree, WORKTREE_COALESCE_MS } from '../git-watch'
 import { parseHead, readHead, useHead } from '../worktree-head'
@@ -56,7 +56,7 @@ describe('readHead', () => {
     const calls: string[] = []
     const host = {
       iii: {
-        trigger: async (_fn: string, { args, cwd }: { args: string[]; cwd: string }) => {
+        call: async (_fn: string, { args, cwd }: { args: string[]; cwd: string }) => {
           calls.push(`${cwd} ${args[0]}`)
           return args[0] === 'symbolic-ref' ? ok('refs/heads/main\n') : args[0] === 'rev-parse' ? MAIN : CLEAN
         },
@@ -78,16 +78,16 @@ describe('readHead', () => {
   })
 })
 
-// An engine client that answers the three gits and keeps the bindings the
+// An engine client that answers the three gits and keeps the observers the
 // chips make, so a test can fire what the ide worker would.
 function engine(answer: (args: string[]) => { exit_code: number; stdout: string }) {
   const calls: string[] = []
   const handlers = new Map<string, (payload: unknown) => void>()
-  const triggers: Array<{ type: string; function_id: string; config: Record<string, unknown> }> = []
+  const observers: Array<ObserveSource & { target: string }> = []
   const host = {
     iii: {
       browserId: 'tab',
-      trigger: async (_fn: string, { args }: { args: string[] }) => {
+      call: async (_fn: string, { args }: { args: string[] }) => {
         calls.push(args[0] === '--no-optional-locks' ? 'status' : args[0])
         return answer(args)
       },
@@ -95,17 +95,18 @@ function engine(answer: (args: string[]) => { exit_code: number; stdout: string 
         handlers.set(functionId, handler)
         return () => handlers.delete(functionId)
       },
-      registerTrigger: (input: (typeof triggers)[number]) => {
-        triggers.push(input)
-        return () => triggers.splice(triggers.indexOf(input), 1)
+      observe: (source: ObserveSource, target: string) => {
+        const observer = { ...source, target }
+        observers.push(observer)
+        return () => observers.splice(observers.indexOf(observer), 1)
       },
     },
   } as unknown as Host
-  const bound = (type: string) => triggers.filter((t) => t.type === type)
-  const fire = (type: string, payload: unknown) => {
-    for (const t of bound(type)) handlers.get(t.function_id.replace(/::tab$/, ''))?.(payload)
+  const observed = (functionId: string) => observers.filter((o) => o.function_id === functionId)
+  const fire = (functionId: string, payload: unknown) => {
+    for (const o of observed(functionId)) handlers.get(o.target.replace(/::tab$/, ''))?.(payload)
   }
-  return { host, calls, bound, fire }
+  return { host, calls, observed, fire }
 }
 
 describe('useHead', () => {
@@ -117,7 +118,7 @@ describe('useHead', () => {
   it('reads both chips on one folder again when the worker reports a switch, and never on focus', async () => {
     vi.useFakeTimers()
     let branch = 'main'
-    const { host, calls, bound, fire } = engine((args) =>
+    const { host, calls, observed, fire } = engine((args) =>
       args[0] === 'symbolic-ref' ? ok(`refs/heads/${branch}\n`) : args[0] === 'rev-parse' ? MAIN : CLEAN,
     )
     // The IDE's header and the chat's composer on the same folder.
@@ -126,9 +127,9 @@ describe('useHead', () => {
     await settle()
     expect(calls).toHaveLength(3)
     expect([header.result?.branch, composer.result?.branch]).toEqual(['main', 'main'])
-    // One repository binding for both chips, one worktree binding.
-    expect(bound('shell::git-changed').map((t) => t.config)).toEqual([{ path: '/switched' }])
-    expect(bound('shell::changed').map((t) => t.config)).toEqual([{ path: '/switched' }])
+    // One repository observer for both chips, one worktree observer.
+    expect(observed('shell::on-git-changed').map((o) => o.args)).toEqual([{ path: '/switched' }])
+    expect(observed('shell::on-changed').map((o) => o.args)).toEqual([{ path: '/switched' }])
 
     // Time passing reads nothing: there is no timer and no focus listener.
     await vi.advanceTimersByTimeAsync(60_000)
@@ -136,14 +137,14 @@ describe('useHead', () => {
 
     // A `git switch` in the terminal: one read, and both chips show it.
     branch = 'feat/x'
-    fire('shell::git-changed', { path: '/switched', changes: ['head', 'refs'] })
+    fire('shell::on-git-changed', { path: '/switched', changes: ['head', 'refs'] })
     await settle()
     expect(calls).toHaveLength(6)
     expect([header.result?.branch, composer.result?.branch]).toEqual(['feat/x', 'feat/x'])
     header.unmount()
     composer.unmount()
-    expect(bound('shell::git-changed')).toEqual([])
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-git-changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
   })
 
   it('reads only the dirty mark when files or the index change', async () => {
@@ -163,7 +164,7 @@ describe('useHead', () => {
 
     // A burst of saves is one status read, once the burst settles.
     dirty = true
-    for (const path of ['a.txt', 'b.txt', 'c.txt']) fire('shell::changed', { path, kind: 'modified', root: '/edited' })
+    for (const path of ['a.txt', 'b.txt', 'c.txt']) fire('shell::on-changed', { path, kind: 'modified', root: '/edited' })
     await settle()
     expect(calls).toEqual([])
     await vi.advanceTimersByTimeAsync(WORKTREE_COALESCE_MS)
@@ -172,7 +173,7 @@ describe('useHead', () => {
 
     // A commit in a terminal moves only the index here: status again.
     dirty = false
-    fire('shell::git-changed', { path: '/edited', changes: ['index'] })
+    fire('shell::on-git-changed', { path: '/edited', changes: ['index'] })
     await settle()
     expect(calls).toEqual(['status', 'status'])
     expect(chip.result?.dirty).toBe(false)
@@ -183,7 +184,7 @@ describe('useHead', () => {
     vi.useFakeTimers()
     let repo = false
     const fatal = { exit_code: 128, stdout: '' }
-    const { host, calls, bound, fire } = engine((args) =>
+    const { host, calls, observed, fire } = engine((args) =>
       !repo ? fatal : args[0] === 'symbolic-ref' ? ok('refs/heads/main\n') : args[0] === 'rev-parse' ? MAIN : CLEAN,
     )
     let key = 'idle'
@@ -192,7 +193,7 @@ describe('useHead', () => {
     expect(chip.result).toBeNull()
     expect(calls).toHaveLength(3)
     // No status reads for files in no repository, and a turn ending reads nothing.
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
     key = 'streaming'
     chip.rerender(null)
     await settle()
@@ -200,31 +201,31 @@ describe('useHead', () => {
 
     // `git init`: the worker watching the folder for a .git says so.
     repo = true
-    fire('shell::git-changed', { path: '/plain', changes: ['repository'] })
+    fire('shell::on-git-changed', { path: '/plain', changes: ['repository'] })
     await settle()
     expect(calls).toHaveLength(6)
     expect(chip.result?.branch).toBe('main')
-    expect(bound('shell::changed').map((t) => t.config)).toEqual([{ path: '/plain' }])
+    expect(observed('shell::on-changed').map((o) => o.args)).toEqual([{ path: '/plain' }])
     chip.unmount()
   })
 
-  it('takes the IDE page’s file events instead of binding a watch of its own', async () => {
+  it('takes the IDE page’s file events with no watch of its own', async () => {
     vi.useFakeTimers()
-    const { host, calls, bound } = engine((args) =>
+    const { host, calls, observed } = engine((args) =>
       args[0] === 'symbolic-ref' ? ok('refs/heads/main\n') : args[0] === 'rev-parse' ? MAIN : CLEAN,
     )
     const page = publishWorktree(host, '/ide-root')
     const chip = mount(() => useHead(host, '/ide-root', 'turn'), null)
     await settle()
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
     calls.length = 0
     page.note()
     await vi.advanceTimersByTimeAsync(WORKTREE_COALESCE_MS)
     expect(calls).toEqual(['status'])
-    // The page goes: the chip binds its own watch.
+    // The page goes: the chip observes a watch of its own.
     page.off()
-    expect(bound('shell::changed').map((t) => t.config)).toEqual([{ path: '/ide-root' }])
+    expect(observed('shell::on-changed').map((o) => o.args)).toEqual([{ path: '/ide-root' }])
     chip.unmount()
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
   })
 })

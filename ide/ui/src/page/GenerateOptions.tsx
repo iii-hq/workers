@@ -63,7 +63,7 @@ const asObject = (value: unknown): Record<string, unknown> =>
     (`<namespace>-ide`, from `III_CONFIG_NAME`); the worker marks it with the
     `ide` form, so that is what finds it. */
 async function ideConfigurationId(host: Host): Promise<string> {
-  const listed = await host.iii.trigger<{ configurations?: unknown }>('configuration::list', {})
+  const listed = await host.iii.call<{ configurations?: unknown }>('configuration::list', {})
   const entries = Array.isArray(listed?.configurations) ? listed.configurations.map(asObject) : []
   const own =
     entries.find((entry) => entry.id === CONFIGURATION_ID) ??
@@ -76,10 +76,10 @@ async function ideConfigurationId(host: Host): Promise<string> {
     the worker reads them live, so the next Generate uses the change. */
 async function saveCommitSetting(host: Host, patch: Partial<Pick<CommitMessageConfig, 'model' | 'thinking'>>) {
   const id = await ideConfigurationId(host)
-  const response = await host.iii.trigger<{ value?: unknown }>('configuration::get', { id, raw: true })
+  const response = await host.iii.call<{ value?: unknown }>('configuration::get', { id, raw: true })
   const current = asObject(response?.value)
   const next = { ...current, commit_messages: { ...asObject(current.commit_messages), ...patch } }
-  await host.iii.trigger('configuration::set', { id, value: next })
+  await host.iii.call('configuration::set', { id, value: next })
 }
 
 type Page = 'main' | 'model' | 'thinking'
@@ -129,7 +129,7 @@ export function GenerateOptions({
     if (!open || models !== null) return
     let live = true
     Promise.resolve()
-      .then(() => host.iii.trigger('router::models::list', {}, { timeoutMs: 10_000 }))
+      .then(() => host.iii.call('router::models::list', {}, { timeoutMs: 10_000 }))
       .then(modelChoices, () => [])
       .then((choices) => live && setModels(choices))
     return () => {

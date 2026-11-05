@@ -10,7 +10,8 @@ const CHANGED_FN = 'sentinel-ui::models-changed'
  * The router's catalog, re-read when the router says it changed.
  *
  * It changes only on operator action — a credential added or cleared, a
- * provider worker coming or going — so this subscribes instead of polling. An
+ * provider worker coming or going — so this observes
+ * `router::models::on-changed` instead of polling. An
  * unreachable router leaves the list empty and the form still works: the
  * stored model is shown as configured, and typing a raw id stays possible.
  */
@@ -22,7 +23,7 @@ export function useModelCatalog(host: Host): { catalog: ModelOption[]; loading: 
     let live = true
     const load = () => {
       host.iii
-        .trigger('router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS })
+        .call('router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS })
         .then((response) => {
           if (!live) return
           setCatalog(readCatalog(response))
@@ -37,25 +38,21 @@ export function useModelCatalog(host: Host): { catalog: ModelOption[]; loading: 
     load()
 
     let offHandler: (() => void) | undefined
-    let offTrigger: (() => void) | undefined
+    let offObserver: (() => void) | undefined
     try {
       offHandler = host.iii.on(CHANGED_FN, () => load())
-      offTrigger = host.iii.registerTrigger({
-        type: 'router::models::changed',
-        function_id: `${CHANGED_FN}::${host.iii.browserId}`,
-        config: {},
-      })
+      offObserver = host.iii.observe('router::models::on-changed', `${CHANGED_FN}::${host.iii.browserId}`)
     } catch {
-      // A console or router that does not offer the fan-out leaves the list
-      // as it was read once. Better than a picker that polls forever.
-      offTrigger?.()
+      // A console that refuses the observer leaves the list as it was read
+      // once. Better than a picker that polls forever.
+      offObserver?.()
       offHandler?.()
-      offTrigger = undefined
+      offObserver = undefined
       offHandler = undefined
     }
     return () => {
       live = false
-      offTrigger?.()
+      offObserver?.()
       offHandler?.()
     }
   }, [host])

@@ -15,9 +15,9 @@ Slack as an iii worker. Two surfaces in one worker:
 
 ```bash
 # API surface only:
-iii trigger compose::add worker=slack
+iii call compose::add worker=slack
 # For the bridge, also install the harness stack and console:
-iii trigger compose::add worker=harness worker=ade
+iii call compose::add worker=harness worker=ade
 ```
 
 ## Configure
@@ -54,9 +54,9 @@ Point the Slack app's **Event Subscriptions** request URL at
 `message.channels`, and `assistant_thread_started`. Every inbound request is
 HMAC-verified against `signing_secret`.
 
-**Triggering:** in channels the bot acts only when explicitly @mentioned; untagged
-messages are captured as thread context and folded into the next mention. DMs
-always trigger. Sessions are keyed per thread.
+**When the bot acts:** in channels the bot acts only when explicitly @mentioned;
+untagged messages are captured as thread context and folded into the next
+mention. DMs always run a turn. Sessions are keyed per thread.
 
 ## Functions
 
@@ -90,8 +90,40 @@ method by name, so every method is reachable even before it has a typed wrapper.
 Bridge — `slack::notify { session_id, text|blocks }` reaches the Slack thread
 bound to a session out-of-band (e.g. a scheduled reminder). `slack::events` and
 `slack::interactions` are the HMAC-verified HTTP ingress endpoints; the
-`slack::on-*` functions are internal bindings that stream harness output and post
+`slack::on-*` functions are observer targets that stream harness output and post
 approvals.
+
+The worker provides no observable event functions of its own.
+
+## Observers
+
+The bridge observes other workers' functions; each observer stays `pending`
+until that worker registers the function.
+
+| Observed function | Args / filters | Target | Target receives |
+|---|---|---|---|
+| `http::on-request` | args `{ method: "POST", path: "/slack/events" }` | `slack::events` | the HTTP request; streams the response |
+| `http::on-request` | args `{ method: "POST", path: "/slack/interactions" }` | `slack::interactions` | the HTTP request; streams the response |
+| `session::on-message-added` | filters `{ "input.message.role": { "$in": ["assistant"] } }` | `slack::on-message-added` | `MessageAddedEvent` (`deliver: output`) |
+| `session::on-message-updated` | filters as above | `slack::on-message-updated` | `MessageUpdatedEvent` (`deliver: output`) |
+| `harness::on-turn-completed` | none | `slack::on-turn-completed` | `TurnCompletedEvent` (`deliver: output`) |
+| `approval::on-pending-created` | none | `slack::on-pending-created` | `PendingApprovalRecord` (`deliver: output`) |
+| `approval::on-pending-resolved` | none | `slack::on-pending-resolved` | `PendingResolvedEvent` (`deliver: output`) |
+| `configuration::on-updated` | filters `{ "input.id": { "$eq": "<config id>" }, "input.event_type": { "$eq": "configuration:updated" } }` | `slack::on-config-change` | the configuration event (`deliver: output`) |
+
+The session, harness and approval observers exist from boot, so an
+approval-gate that connects later is observed with no extra step; each
+`approval::on-pending-created` event posts an inline approval into the
+session's thread. The two route observers exist while the HTTP bridge is
+enabled; a config reload that disables it disposes them. The route observer is, in code:
+
+```rust
+iii.observe(
+    Source::function("http::on-request")
+        .args(json!({ "method": "POST", "path": "/slack/events" })),
+    "slack::events",
+);
+```
 
 Typed functions accept the well-known parameters explicitly and pass any
 additional Slack parameters through. Each returns the full Slack response payload.

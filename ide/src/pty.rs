@@ -9,8 +9,8 @@ use std::time::Instant;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction, TriggerAction};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{CallAction, IIIClient, RegisterFunction};
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 #[cfg(test)]
@@ -1235,10 +1235,10 @@ async fn emit_output(iii: &IIIClient, function_id: &str, event: OutputEvent) -> 
         }
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.to_string(),
             payload,
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await

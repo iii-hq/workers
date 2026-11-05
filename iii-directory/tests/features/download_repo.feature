@@ -13,7 +13,7 @@ Feature: directory::skills::download repo= source (git clone --depth 1 --branch 
       | index.md                 | # frontend-design\nrouter\n      |
       | components.md            | # components\nleaf\n             |
       | layouts/grid.md          | # grid\nnested\n                 |
-    When I trigger directory::skills::download with repo=local skill="frontend-design"
+    When I call directory::skills::download with repo=local skill="frontend-design"
     Then the directory::skills::download call succeeds
     And  the file "frontend-design/index.md" exists in skills_folder
     And  the file "frontend-design/components.md" exists in skills_folder
@@ -26,7 +26,7 @@ Feature: directory::skills::download repo= source (git clone --depth 1 --branch 
       | path                  | body                                          |
       | index.md              | # with-prompts\nrouter\n                     |
       | prompts/say-hello.md  | ---\ndescription: say hi.\n---\nHello there. |
-    When I trigger directory::skills::download with repo=local skill="with-prompts"
+    When I call directory::skills::download with repo=local skill="with-prompts"
     Then the directory::skills::download call succeeds
     And  the download skills_written count is 1
     And  the file "with-prompts/prompts/say-hello.md" does not exist in skills_folder
@@ -36,10 +36,10 @@ Feature: directory::skills::download repo= source (git clone --depth 1 --branch 
     Given a local git repo with a folder skills/foo/ containing:
       | path         | body                |
       | index.md     | # foo v1\noriginal\n |
-    When I trigger directory::skills::download with repo=local skill="foo"
+    When I call directory::skills::download with repo=local skill="foo"
     Then the directory::skills::download call succeeds
     When I update the local repo file "skills/foo/index.md" to body "# foo v2\nupdated\n"
-    And  I trigger directory::skills::download with repo=local skill="foo"
+    And  I call directory::skills::download with repo=local skill="foo"
     Then the directory::skills::download call succeeds
     And  the file "foo/index.md" in skills_folder contains "v2"
 
@@ -47,9 +47,9 @@ Feature: directory::skills::download repo= source (git clone --depth 1 --branch 
     Given a local git repo with a folder skills/something-else/ containing:
       | path     | body          |
       | index.md | # other\nx\n |
-    When I trigger directory::skills::download with repo=local skill="missing-skill"
+    When I call directory::skills::download with repo=local skill="missing-skill"
     Then the directory::skills::download call fails with a message mentioning "skills/missing-skill"
 
   Scenario: download is rejected when both repo and worker are provided
-    When I trigger directory::skills::download with both repo="https://x" and worker="resend" and tag="latest"
+    When I call directory::skills::download with both repo="https://x" and worker="resend" and tag="latest"
     Then the directory::skills::download call fails with a message mentioning "not both"

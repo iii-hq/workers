@@ -16,8 +16,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use judge_contract::{EvaluateRequest, Evaluation};
 use serde::Deserialize;
 use serde_json::Value;
@@ -145,7 +144,7 @@ pub async fn evaluate(
     // The bus deadline sits past the judge's own so its `deadline` reply
     // wins over a bare bus timeout.
     let wait = timeout_ms + 1_000;
-    let call = iii.trigger(TriggerRequest {
+    let call = iii.call(CallRequest {
         function_id: judge_contract::FUNCTION_ID.into(),
         payload,
         action: None,

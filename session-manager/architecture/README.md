@@ -12,7 +12,7 @@ opening the source.
 | Document | Audience | Read it when |
 |---|---|---|
 | [internals.md](internals.md) | Maintainers of this worker | You are changing session-manager itself: fixing a bug, adding a function, adding a storage backend, touching the event pipeline. |
-| [integration.md](integration.md) | Authors of other workers / clients | You are building something that calls `session::*` or subscribes to its events — the harness, a chat UI, a bot bridge, a dashboard. This file is the handoff contract. |
+| [integration.md](integration.md) | Authors of other workers / clients | You are building something that calls `session::*` or observes its events — the harness, a chat UI, a bot bridge, a dashboard. This file is the handoff contract. |
 
 The BDD suite under [../tests/features/](../tests/features) is the executable
 companion to both: every behavioural claim made here is pinned by a scenario,
@@ -25,14 +25,18 @@ conversations. A session is an append-only log of typed message entries
 (user / assistant / function_result / custom) linked by a parent chain that
 supports branching and copy-on-fork, plus a small metadata record (title,
 description, coarse status, app-defined metadata, parked composer draft).
-Fifteen `session::*`
-functions mutate and read it; six custom trigger types announce every
-mutation so consumers render live without polling. It runs no agent logic,
-calls no LLMs, and binds no triggers of its own. Storage is pluggable behind
-one trait: a filesystem backend (one JSONL file per session) or a bridge
-backend that defers storage — and event fan-out — to a *main* session-manager
-on another iii instance, so many instances can share one durable store and
-every instance's subscribers see every mutation.
+Twenty-one `session::*`
+functions mutate and read it; six private event functions
+(`session::on-created`, `session::on-message-added`, ...) announce every
+mutation: each mutation calls the function for what changed, and every
+observer of that function whose filters match receives the event, so
+consumers render live without polling. It runs no agent logic, calls no
+LLMs, and observes only its own configuration entry and, on a bridged
+instance, the main instance's event feed. Storage is pluggable
+behind one trait: a filesystem backend (one JSONL file per session) or a
+bridge backend that defers storage — and event fan-out — to a *main*
+session-manager on another iii instance, so many instances can share one
+durable store and every instance's observers see every mutation.
 
 ## The system in one diagram
 
@@ -40,23 +44,23 @@ every instance's subscribers see every mutation.
 flowchart LR
   subgraph consumers [Consumers]
     harness[harness / chat UI / bots]
-    subs[trigger subscribers]
+    subs[observers]
   end
   subgraph worker [session-manager]
     fns["21 session::* functions"]
     svc["SessionService (domain logic, per-session locks)"]
-    emit["Emitter (6 trigger types, per-binding filters)"]
+    emit["Emitter (calls the 6 session::on-* functions while observed)"]
     storeTrait[SessionStore trait]
   end
   subgraph backends [Backends]
     fsStore["FsStore: data_dir/&lt;id&gt;.jsonl"]
     bridgeStore["BridgeStore: session::store::* on a main instance"]
   end
-  harness -->|"iii.trigger(session::*)"| fns
+  harness -->|"iii.call(session::*)"| fns
   fns --> svc --> storeTrait
   storeTrait --> fsStore
   storeTrait --> bridgeStore
-  fns --> emit -->|"filtered events"| subs
+  fns --> emit -->|"iii applies each observer's filters"| subs
 ```
 
 ## Vocabulary
@@ -74,4 +78,5 @@ flowchart LR
 | **Attachment** | An uploaded file's original bytes plus `AttachmentMeta`, stored per session outside the transcript (`session::put-attachment`). A message points at it with a `type: "file"` content block; the bytes are never inline. An `image` block may also carry an `attachment_id` linking its inline copy to the stored original, which lets readers ask `session::messages` for `include_image_data: false` and fetch pictures lazily. The composer's unsent chips are parked on the draft (`draft_attachments`). Deleted with the session. |
 | **Main instance** | An fs-backend instance that owns durable storage and is the single event fan-out point in a bridge topology. |
 | **Bridged instance** | A bridge-adapter instance: runs all domain logic locally, stores through the main, publishes its events to the main, and receives every participant's events back through a relay. |
-| **Envelope** | `EventEnvelope { trigger_type, payload, session_metadata }` — the wire form events travel in between instances, carrying session metadata so tenancy filters work at every edge. |
+| **Event function** | One of the six private `session::on-*` functions. Its handler returns the event it is called with, so its observers receive the event; it takes no args, and observers select events with filters on `input.session_id`, `input.message.role` and `input.session_metadata.<key>`. |
+| **Envelope** | `EventEnvelope { function_id, payload, session_metadata }` — the wire form events travel in between instances (`session::store::publish-events`, `session::store::on-events`), carrying session metadata so tenancy filters work at every edge. |

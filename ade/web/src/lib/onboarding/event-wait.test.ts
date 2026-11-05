@@ -3,8 +3,8 @@ import { onCancel, waitForEvents } from './event-wait'
 
 const subscribe = vi.fn()
 
-vi.mock('@/lib/engine-trigger', () => ({
-  subscribeEngineTrigger: (...args: unknown[]) => subscribe(...args),
+vi.mock('@/lib/observe-events', () => ({
+  subscribeObserved: (...args: unknown[]) => subscribe(...args),
 }))
 
 /** The handler of the most recent subscription. */
@@ -14,7 +14,11 @@ beforeEach(() => {
   vi.useFakeTimers()
   subscribe.mockReset()
   subscribe.mockImplementation(
-    async (_type: string, _config: unknown, onEvent: typeof deliver) => {
+    async (
+      _functionId: string,
+      _selection: unknown,
+      onEvent: typeof deliver,
+    ) => {
       deliver = onEvent
       return () => undefined
     },
@@ -36,7 +40,7 @@ describe('waitForEvents', () => {
     )
     void waitForEvents({
       handler: 'test',
-      triggers: [{ type: 't' }],
+      sources: [{ function_id: 't' }],
       check,
       timeoutMs: 60_000,
       onTimeout: () => undefined,
@@ -55,11 +59,11 @@ describe('waitForEvents', () => {
   })
 
   it('still checks at start and after a silence when it cannot subscribe', async () => {
-    subscribe.mockRejectedValue(new Error('no such trigger type'))
+    subscribe.mockRejectedValue(new Error('observe refused'))
     const check = vi.fn(async () => null)
     const done = waitForEvents({
       handler: 'test',
-      triggers: [{ type: 'missing' }],
+      sources: [{ function_id: 'missing' }],
       check,
       timeoutMs: 60_000,
       onTimeout: () => 'gave up',
@@ -77,7 +81,7 @@ describe('waitForEvents', () => {
   it('fails with the error an event handler throws', async () => {
     const done = waitForEvents({
       handler: 'test',
-      triggers: [{ type: 't' }],
+      sources: [{ function_id: 't' }],
       onEvent: () => {
         throw new Error('bad event')
       },

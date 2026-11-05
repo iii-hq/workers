@@ -1,0 +1,30 @@
+{
+  "args_format": null,
+  "description": "A desktop session ended (stopped or idle). No args; filter on input.session_id.",
+  "event_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What `computer::on-session-stopped` returns: a session ended; see `reason`.",
+    "properties": {
+      "reason": {
+        "description": "One of `stopped`, `idle`.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "reason",
+      "session_id",
+      "timestamp"
+    ],
+    "title": "SessionStoppedEvent",
+    "type": "object"
+  },
+  "function_id": "computer::on-session-stopped",
+  "private": true
+}

@@ -14,17 +14,18 @@ The `bridge` worker connects this iii engine to another iii instance over
 local/control WebSocket to this engine, selected by `--url`, `III_URL`, or the
 local default. A separate WebSocket connects to the remote target selected by
 `config.url` and reconnects when that value changes. Both connections stay
-open for the worker's lifetime. There are no trigger types.
+open for the worker's lifetime. Every function it provides is callable; it
+hosts no event functions.
 
 The worker is configuration-driven. The primary surface is two list-shaped
 config fields (`forward` and `expose`) that wire stable function ids on both
 sides; once configured, callers reach across the bridge by invoking those
-stable ids with the normal `iii.trigger({ function_id, payload })` — no
+stable ids with the normal `iii.call({ function_id, payload })` — no
 bridge-specific call shape. Two functions (`bridge.invoke`,
 `bridge.invoke_async`) are also registered as ad-hoc escape hatches for the
 rare case where the remote function id is dynamic at runtime.
 
-Install it with `iii trigger compose::add worker=bridge`. This is a standalone replacement for
+Install it with `iii call compose::add worker=bridge`. This is a standalone replacement for
 the engine’s legacy built-in bridge service: it must not run on the same
 engine, since both register the same `bridge.invoke` / `bridge.invoke_async`
 ids (plus any forward/expose ids) — the worker refuses to boot while

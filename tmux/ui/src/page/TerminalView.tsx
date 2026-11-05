@@ -65,7 +65,7 @@ export interface TerminalViewProps {
   terminal: TmuxTerminal
   sessionName: string | null
   windowLabel: string | null
-  /** `tmux::changed` pushes are arriving. */
+  /** `tmux::on-changed` overviews are arriving. */
   live: boolean
   /** tmux is missing or the server has no sessions. */
   empty: { title: string; description: string; action?: { label: string; onClick(): void } } | null

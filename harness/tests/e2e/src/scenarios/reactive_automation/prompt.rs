@@ -20,16 +20,17 @@ Namespace every other resource and session with `{run_label}`.
 
 Architecture rules:
 
-- A trigger binding never starts an agent. It either wakes its owner when `function_id` is omitted,
-  or calls one plain function without a model turn.
+- An observer created with `harness::observe` never starts an agent. It either wakes its owner when
+  `target` is omitted, or calls one plain function without a model turn.
 - Spawn writers and the finalizer directly with `harness::spawn`.
-- Do not target any `harness::*` function from a binding, and do not poll.
+- Do not target any `harness::*` function from an observer, and do not poll.
 - The Harness already applies a {watchdog_seconds}-second stuck-execution watchdog. Do not add a
   timer or cron.
 
-Phase 1 — bounded database-trigger probe:
+Phase 1 — bounded row-change probe:
 
-1. List the available trigger types and create the four tables. Use these columns:
+1. Read the `database::on-row-changed` contract with `engine::functions::info` and create the four
+   tables. Use these columns:
    - `{orders}`: `id TEXT PRIMARY KEY, writer TEXT, amount REAL, created_at TEXT`
    - `{writers}`: `writer TEXT PRIMARY KEY, status TEXT`
    - `{totals}`: `writer TEXT PRIMARY KEY, order_count INTEGER, amount_sum REAL`
@@ -38,13 +39,13 @@ Phase 1 — bounded database-trigger probe:
      reaction_function_id, reaction_event, mechanical_reaction, no_inline_waiting,
      finalizer_session_id`
 
-2. Register a one-shot wake-only `database::row-changed` binding on `{orders}`, label it
+2. Observe `database::on-row-changed` with a one-shot wake on `{orders}`, label it
    `{run_label}-probe`, insert one probe row, and END YOUR TURN. Do nothing else until that database
-   wake arrives. The scenario watchdog is the bounded failure path if the trigger is broken.
+   wake arrives. The scenario watchdog is the bounded failure path if the observer is broken.
 
 Phase 2 — arm reactions before fan-out:
 
-3. When the probe wake arrives, delete the probe row. Register a standing call binding, label
+3. When the probe wake arrives, delete the probe row. Observe a standing call reaction, label
    `{run_label}-aggregate`, on INSERT events for `{orders}`. Its target must be
    `database::execute` with `db: "primary"` and this idempotent aggregate SQL:
 
@@ -52,12 +53,12 @@ Phase 2 — arm reactions before fan-out:
     SELECT writer, COUNT(*), SUM(amount) FROM {orders}
     WHERE writer IN ('writer-1','writer-2','writer-3') GROUP BY writer`
 
-   Use a call-binding `lifecycle.max_fires` of 15. The event may be injected into an unused payload
+   Use a call-reaction `lifecycle.max_fires` of 15. The event may be injected into an unused payload
    field; `database::execute` ignores unknown fields. This reaction is deterministic and must not
    wake any model session.
 
-4. Register one wake-only `state` binding for scope `{run_label}`, key `writer_done`, label
-   `{run_label}-writers-complete`, `once: true`, with:
+4. Observe `state::on-changed` with one wake-only observer filtered on scope `{run_label}`, key
+   `writer_done`, label `{run_label}-writers-complete`, `once: true`, with:
 
    `conditions: [{{ function_id: "state::barrier", config: {{
      id: "{run_label}-writers", expect: ["writer-1","writer-2","writer-3"],
@@ -71,26 +72,27 @@ Phase 2 — arm reactions before fan-out:
    - after all five inserts, insert or replace `(writer-N, 'done')` in `{writers}`;
    - only after that database status write succeeds, call `state::set` with scope `{run_label}`,
      key `writer_done`, and value `{{"writer":"writer-N"}}`;
-   - stop without reads, sleeps, retries over time, trigger registration, or further delegation.
+   - stop without reads, sleeps, retries over time, observers, or further delegation.
 
 6. After the three spawn calls, END YOUR TURN. Do not query status, orders, totals, sessions, or
    children. Your next activity must come from the barrier wake.
 
 Phase 3 — barrier wake and direct finalization:
 
-7. When `{run_label}-writers-complete` wakes this root session, first register a one-shot wake-only
-   `database::row-changed` binding on INSERT into `{report}`, label `{run_label}-report-ready`.
+7. When `{run_label}-writers-complete` wakes this root session, first observe
+   `database::on-row-changed` with a one-shot wake on INSERT into `{report}`, label
+   `{run_label}-report-ready`.
    Then directly spawn exactly one finalizer in `{finalizer}` with only `database::query` and
    `database::execute`. The finalizer must:
    - recompute `{totals}` with the same idempotent SQL above;
    - verify exactly 15 unique orders, three done writers, and exact equality between `{totals}` and
      a direct `GROUP BY` over `{orders}`;
    - write exactly one row to `{report}` itself—never ask the root to write it—with
-     `run_id = '{run_label}'`, `watch_mechanism = 'database::row-changed'`,
+     `run_id = '{run_label}'`, `watch_mechanism = 'database::on-row-changed'`,
      a non-empty `fallback_reason` saying no fallback was needed because the probe fired,
      `events_received = 15`, `rows_written = 15`, positive `elapsed_ms`, all integrity booleans
      true, `reaction_function_id = 'database::execute'`,
-     `reaction_event = 'database::row-changed insert'`, `mechanical_reaction = true`,
+     `reaction_event = 'database::on-row-changed insert'`, `mechanical_reaction = true`,
      `no_inline_waiting = true`, and `finalizer_session_id = '{finalizer}'`;
    - stop immediately after the report insert.
 
@@ -99,8 +101,8 @@ Phase 3 — barrier wake and direct finalization:
 Phase 4 — report wake and cleanup:
 
 9. Only after `{run_label}-report-ready` wakes this root session, query the four tables and verify
-   the report. Unregister any still-active run binding, then list registered triggers and verify
-   none contains `{run_label}` or `{namespace}`. Report PASS or FAIL with the three writer totals,
+   the report. Unobserve any still-active run observer, then list this session's observers with
+   `harness::observers::list` and verify none contains `{run_label}` or `{namespace}`. Report PASS or FAIL with the three writer totals,
    order count, reaction delivery, finalizer session, and cleanup evidence.
 
 Report progress briefly and keep the final response factual."#,

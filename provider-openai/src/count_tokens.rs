@@ -357,7 +357,7 @@ mod tests {
         let mut req = request("gpt-5-nano", vec![with_image()]);
         req.system_prompt = Some("be brief".into());
         req.tools = Some(vec![AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "d".into(),
             parameters: json!({ "type": "object" }),
             label: None,
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(body["model"], "gpt-5-nano");
         assert_eq!(body["input"][0]["role"], "system");
         assert_eq!(body["input"][1]["content"][1]["type"], "input_image");
-        assert_eq!(body["tools"][0]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["name"], "agent__call");
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         for absent in [
             "stream",

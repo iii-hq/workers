@@ -35,7 +35,7 @@ Mantenha `state_path` em volume persistente privado e exclusivo por instância. 
 
 ## Contratos
 
-Todos os handlers registram descrição e schemas tipados via serde/schemars, SDK **`=0.22.1-alpha.25`**.
+Todos os handlers registram descrição e schemas tipados via serde/schemars, SDK **`=0.26.0`**.
 
 ### `quick-tunnel::acquire`
 
@@ -59,11 +59,23 @@ Entrada `{"lease_id":"uuid"}`; saída `{"released":true}`. Repetição/ID descon
 
 Entrada `{}` ou `{"tunnel_id":"webhooks"}`. Retorna snapshot acima **sem `lease_id` singular**, mais `leases:[{lease_id,consumer_id,tunnel_id,expires_at}]` e `prerequisites:{cloudflared:{found,path,version,error,install_url}}` (sondado com `cloudflared --version`, limitado a 5 s, fora da task dona das leases; o resultado de um binário inalterado — mesmo caminho e mtime — é reutilizado por 60 s, e um binário ausente é reavaliado a cada leitura sem executar processo). Nunca inclui secrets do cloudflared. O worker nunca baixa nem instala o cloudflared: `install_url` aponta a página oficial da Cloudflare.
 
-### `quick-tunnel::changed`
+### `quick-tunnel::on-changed`
 
-Config `{}` (todos os targets) ou `{"tunnel_id":"webhooks"}`. Evento `{tunnel_id,generation,status,public_url,error}`. Estados: `starting`, `ready`, `reconnecting`, `failed`, `stopped`. `public_url` só é não-nulo em `ready`; HTTPS estrito, exatamente um label DNS antes de `.trycloudflare.com`, sem credenciais, porta, caminho, query ou fragmento. Metadata e namespace resolvido do `TriggerConfig` são preservados no disparo; namespace legado ausente significa `default`, não o namespace do provider.
+Função observável e privada: só este worker a chama, qualquer worker a observa. Cada mudança de estado de um túnel é uma chamada dela, e o handler devolve o snapshot recebido. Não recebe args: selecione o túnel com um filtro em `input.tunnel_id` (sem filtro, todos os targets). Entrega padrão do iii: cada observer cujos filtros casam recebe a chamada.
 
-**Integração GitHub: assine o trigger ANTES de acquire e leia status DEPOIS.** Mudanças podem ocorrer antes da resposta do acquire. Geração é UUID opaco, não ordenável; em dúvida reconcilie status. Nova tentativa de processo/restart sempre ganha nova geração e obtém uma URL nova do serviço (não há garantia de que o serviço nunca reutilize um hostname). Reconexão interna do mesmo filho conserva geração. Eventos são best-effort, não uma fila durável: bindings/entregas podem falhar, consumidores devem reconciliar status após reconectar; overflow de 256 eventos provoca reenvio dos snapshots atuais. Callback lento não bloqueia leases/expiração, mas atrasa outros callbacks (timeout de 5 s por entrega).
+Evento `{tunnel_id,generation,status,public_url,error}`. Estados: `starting`, `ready`, `reconnecting`, `failed`, `stopped`. `public_url` só é não-nulo em `ready`; HTTPS estrito, exatamente um label DNS antes de `.trycloudflare.com`, sem credenciais, porta, caminho, query ou fragmento.
+
+```ts
+iii.observe(
+  { function_id: 'quick-tunnel::on-changed', filters: { 'input.tunnel_id': { $eq: 'webhooks' } }, deliver: 'output' },
+  'github::on-tunnel-change',
+  { metadata: { repo: 'owner/repo' } },
+)
+```
+
+Com `deliver: 'output'` o target recebe o snapshot. A metadata do observer e o namespace do target ficam com o engine, que os aplica a cada entrega.
+
+**Integração GitHub: observe `quick-tunnel::on-changed` ANTES de acquire e leia status DEPOIS.** Mudanças podem ocorrer antes da resposta do acquire. Geração é UUID opaco, não ordenável; em dúvida reconcilie status. Nova tentativa de processo/restart sempre ganha nova geração e obtém uma URL nova do serviço (não há garantia de que o serviço nunca reutilize um hostname). Reconexão interna do mesmo filho conserva geração. Eventos são best-effort, não uma fila durável: entregas podem falhar, consumidores devem reconciliar status após reconectar; overflow de 256 eventos provoca reenvio dos snapshots atuais. O worker chama a função sem esperar os targets: um target lento não bloqueia leases, expiração nem outros observers. Sem observers, nenhum evento é enviado.
 
 ## Ciclo de vida
 

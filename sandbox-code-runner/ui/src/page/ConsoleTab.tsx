@@ -37,7 +37,7 @@ import {
   BACKGROUND_TITLE,
   type ExecFormValues,
   exitPill,
-  formatTriggerCommand,
+  formatCallCommand,
   parseExecResult,
   parseJobStatus,
   SHELL_BG_FN,
@@ -88,7 +88,7 @@ function RecordCard({
   const copyCommand =
     record.source === 'run'
       ? null
-      : formatTriggerCommand('sandbox::exec', payloadFromRecord(sandboxId, record))
+      : formatCallCommand('sandbox::exec', payloadFromRecord(sandboxId, record))
   return (
     <article className="cr-page-record">
       <header className="cr-page-record-head">
@@ -102,7 +102,7 @@ function RecordCard({
         {copyCommand ? (
           <CopyButton
             text={copyCommand}
-            title="copy as an `iii trigger sandbox::exec …` command"
+            title="copy as an `iii call sandbox::exec …` command"
           />
         ) : null}
       </header>
@@ -199,7 +199,7 @@ function ProcessesSection({
   const fetchedRef = useRef(false)
 
   const exec = (argv: string[]) =>
-    host.iii.trigger(
+    host.iii.call(
       'sandbox::exec',
       { sandbox_id: sandbox.sandbox_id, argv },
       { timeoutMs: 60_000 },
@@ -418,7 +418,7 @@ export function ConsoleTab({
       // output, kill, status) where the setsid wrap gives fire-and-forget.
       // The wrap survives only as the shell-absent fallback.
       host.iii
-        .trigger(SHELL_BG_FN, buildShellBgPayload(sandbox.sandbox_id, form))
+        .call(SHELL_BG_FN, buildShellBgPayload(sandbox.sandbox_id, form))
         .then((value) => {
           const rec =
             value && typeof value === 'object'
@@ -475,7 +475,7 @@ export function ConsoleTab({
     host.iii
       // Give the transport headroom past the exec's own deadline, so the
       // daemon's timed_out verdict arrives instead of a client-side abort.
-      .trigger('sandbox::exec', payload, { timeoutMs: Math.max(60_000, requested + 15_000) })
+      .call('sandbox::exec', payload, { timeoutMs: Math.max(60_000, requested + 15_000) })
       .then((value) => {
         const result = parseExecResult(value)
         timeline.append({ ...base, ...result })
@@ -503,7 +503,7 @@ export function ConsoleTab({
   const patchJob = (record: ExecRecord) => {
     if (!record.job_id) return
     host.iii
-      .trigger(SHELL_STATUS_FN, { job_id: record.job_id })
+      .call(SHELL_STATUS_FN, { job_id: record.job_id })
       .then((value) => {
         const patch = parseJobStatus(value)
         if (patch) timeline.update(record.id, patch)
@@ -520,7 +520,7 @@ export function ConsoleTab({
   const killJob = (record: ExecRecord) => {
     if (!record.job_id) return
     host.iii
-      .trigger(SHELL_KILL_FN, { job_id: record.job_id })
+      .call(SHELL_KILL_FN, { job_id: record.job_id })
       .then(() => patchJob(record))
       .catch((err: unknown) => {
         timeline.update(record.id, {

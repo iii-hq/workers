@@ -1133,7 +1133,7 @@ dependencies = [
 name = "iii-config-client"
 version = "0.1.0"
 dependencies = [
- "iii-sdk 0.25.0",
+ "iii-sdk",
  "schemars",
  "serde",
  "serde_json",
@@ -1145,7 +1145,7 @@ dependencies = [
 name = "iii-console-ui"
 version = "0.1.0"
 dependencies = [
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "schemars",
  "serde",
  "serde_json",
@@ -1155,9 +1155,9 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.25.0"
+version = "0.26.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a3d4bb15e834619f1180c09b78bf40cb0eeaa87c99869b821081eecaf5e4b3f"
+checksum = "de9bfc852a3cf1d1c8626857eb778dc6d8314929ea1f51e9135f2d129d92ef4d"
 dependencies = [
  "serde",
  "serde_json",
@@ -1165,30 +1165,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.24.6"
+version = "0.26.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a6af460c1ecd277c99d375fb6b1c652639520148ddad304f424a3d9cd97b5d1"
-dependencies = [
- "futures-util",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry_sdk",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "sysinfo",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "iii-helpers"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1caa4741cf4ae1bd37c860a872f3b86f94e15ac5a5b1b16ba9507d313be5d2bb"
+checksum = "6b37daa0a583e362a52cb14ffb1c8fea7ead7f9390bad3d70d17ec54975a9470"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -1207,37 +1186,16 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.24.6"
+version = "0.26.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33696540e03a6d9650009c4091d1aee78f7caa3fbd8a2375d75032d83000604f"
-dependencies = [
- "async-trait",
- "futures-util",
- "hostname",
- "iii-helpers 0.24.6",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "iii-sdk"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ba3c91f524939ab1c980cf07786975dfdd16ffae90eed7345dd2a34c12643e8"
+checksum = "8e338fdac585db56961750a3ed848eb82687735ce082bf62f1d89111c84efff6"
 dependencies = [
  "arc-swap",
  "async-trait",
  "futures-util",
  "hostname",
  "iii-filter",
- "iii-helpers 0.25.0",
+ "iii-helpers",
  "reqwest",
  "schemars",
  "serde",
@@ -1404,13 +1362,13 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.4.42"
+version = "1.5.0"
 dependencies = [
  "async-trait",
  "clap",
  "futures",
- "iii-helpers 0.24.6",
- "iii-sdk 0.24.6",
+ "iii-helpers",
+ "iii-sdk",
  "regex",
  "reqwest",
  "schemars",
@@ -1785,11 +1743,11 @@ dependencies = [
 
 [[package]]
 name = "provider-anthropic"
-version = "1.2.29"
+version = "1.3.1"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -1802,11 +1760,11 @@ dependencies = [
 
 [[package]]
 name = "provider-claude-code"
-version = "0.1.25"
+version = "0.2.3"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -1819,11 +1777,11 @@ dependencies = [
 
 [[package]]
 name = "provider-command-code"
-version = "0.1.13"
+version = "0.2.0"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -1836,11 +1794,11 @@ dependencies = [
 
 [[package]]
 name = "provider-deepseek"
-version = "0.1.24"
+version = "0.2.0"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -1857,8 +1815,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "iii-sdk 0.24.6",
- "iii-sdk 0.25.0",
+ "iii-sdk",
  "llm-router",
  "provider-anthropic",
  "provider-claude-code",
@@ -1880,11 +1837,11 @@ dependencies = [
 
 [[package]]
 name = "provider-kimi"
-version = "1.1.19"
+version = "1.2.0"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -1897,13 +1854,13 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.30"
+version = "1.3.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
  "futures",
  "iii-console-ui",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "iii-worker-paths",
  "image",
  "llm-router",
@@ -1919,14 +1876,14 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.4.30"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
  "futures",
  "httpdate",
  "iii-console-ui",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "iii-worker-paths",
  "image",
  "llm-router",
@@ -1942,11 +1899,11 @@ dependencies = [
 
 [[package]]
 name = "provider-openrouter"
-version = "0.1.16"
+version = "0.2.0"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -1959,11 +1916,11 @@ dependencies = [
 
 [[package]]
 name = "provider-xai"
-version = "1.3.23"
+version = "1.4.0"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -1976,11 +1933,11 @@ dependencies = [
 
 [[package]]
 name = "provider-zai"
-version = "0.5.18"
+version = "0.6.0"
 dependencies = [
  "clap",
  "futures",
- "iii-sdk 0.24.6",
+ "iii-sdk",
  "llm-router",
  "reqwest",
  "schemars",
@@ -2387,10 +2344,9 @@ dependencies = [
 
 [[package]]
 name = "secrets"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
@@ -2398,7 +2354,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hmac",
  "iii-config-client",
- "iii-sdk 0.25.0",
+ "iii-sdk",
  "iii-worker-paths",
  "libc",
  "notify",

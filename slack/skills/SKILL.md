@@ -34,7 +34,7 @@ single configured bot token.
 - The **bridge** (inbound `app_mention`/DM → `harness::send`, streamed replies,
   approvals) activates only when `signing_secret` + `public_base_url` are set and
   the harness stack is connected. Without them the worker is API-surface-only.
-- In channels the bridge acts only on an explicit @mention; DMs always trigger.
+- In channels the bridge acts only on an explicit @mention; DMs always run a turn.
   Untagged messages are captured as context, never acted on alone.
 - Identity (team, workspace, bot user) is discovered via `auth.test`, never
   configured. Models/providers come from `router::models::list` — no vendor names

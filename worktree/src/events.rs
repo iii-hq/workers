@@ -1,28 +1,26 @@
-//! The six custom trigger types this worker emits, and the fan-out behind
-//! them. Consumers bind handlers with the standard two-step pattern; the
-//! engine routes each registration to our [`TriggerHandler`]s. Delivery is
-//! fire-and-forget (`TriggerAction::Void`) and at-least-once; per-binding
-//! `config` filters are evaluated here by the emitting worker, and malformed
-//! configs are rejected at registration time.
+//! The six event functions this worker hosts, and the emitter that calls
+//! them. Each is private (only this worker calls it), takes no args, and
+//! returns the event it is called with, which is what observers observe.
+//! iii delivers every call to each observer whose filters match: consumers
+//! select events with filters on `input.repo_path`, `input.worktree_id` and
+//! `input.session_id`. The emitter calls a function fire-and-forget
+//! (`CallAction::Void`), and only while something observes it.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const CREATED: &str = "worktree::created";
-pub const CLAIMED: &str = "worktree::claimed";
-pub const RELEASED: &str = "worktree::released";
-pub const REMOVED: &str = "worktree::removed";
-pub const LANDED: &str = "worktree::landed";
-pub const LAND_BLOCKED: &str = "worktree::land-blocked";
+pub const ON_CREATED_FN: &str = "worktree::on-created";
+pub const ON_CLAIMED_FN: &str = "worktree::on-claimed";
+pub const ON_RELEASED_FN: &str = "worktree::on-released";
+pub const ON_REMOVED_FN: &str = "worktree::on-removed";
+pub const ON_LANDED_FN: &str = "worktree::on-landed";
+pub const ON_LAND_BLOCKED_FN: &str = "worktree::on-land-blocked";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -35,14 +33,15 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub fn trigger_type(&self) -> &'static str {
+    /// The function that carries this event.
+    pub fn function_id(&self) -> &'static str {
         match self {
-            EventKind::Created => CREATED,
-            EventKind::Claimed => CLAIMED,
-            EventKind::Released => RELEASED,
-            EventKind::Removed => REMOVED,
-            EventKind::Landed => LANDED,
-            EventKind::LandBlocked => LAND_BLOCKED,
+            EventKind::Created => ON_CREATED_FN,
+            EventKind::Claimed => ON_CLAIMED_FN,
+            EventKind::Released => ON_RELEASED_FN,
+            EventKind::Removed => ON_REMOVED_FN,
+            EventKind::Landed => ON_LANDED_FN,
+            EventKind::LandBlocked => ON_LAND_BLOCKED_FN,
         }
     }
 
@@ -58,56 +57,11 @@ impl EventKind {
     }
 }
 
-/// Config accepted by every `worktree::*` trigger binding. All filters are
-/// optional equality matches; unknown fields fail at registration so a
-/// misspelled filter key fails loudly instead of silently receiving nothing.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BindingConfig {
-    /// Only deliver events for this repository path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo_path: Option<String>,
-    /// Only deliver events for this worktree.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_id: Option<String>,
-    /// Only deliver events for worktrees claimed by this session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-}
-
-/// The event-side facts a filter is evaluated against.
-#[derive(Debug, Clone, Copy)]
-pub struct EventCtx<'a> {
-    pub repo_path: &'a str,
-    pub worktree_id: &'a str,
-    pub session_id: Option<&'a str>,
-}
-
-pub fn binding_matches(filter: &BindingConfig, ctx: &EventCtx<'_>) -> bool {
-    if let Some(want) = &filter.repo_path {
-        if want != ctx.repo_path {
-            return false;
-        }
-    }
-    if let Some(want) = &filter.worktree_id {
-        if want != ctx.worktree_id {
-            return false;
-        }
-    }
-    if let Some(want) = &filter.session_id {
-        match ctx.session_id {
-            Some(sid) if sid == want => {}
-            _ => return false,
-        }
-    }
-    true
-}
-
 // ---------------------------------------------------------------------------
-// Event payloads (what subscribers receive)
+// Event payloads (what the functions return, and observers observe)
 // ---------------------------------------------------------------------------
 
-/// `worktree::created` — a new managed worktree exists.
+/// `worktree::on-created` — a new managed worktree exists.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreatedEvent {
     pub worktree_id: String,
@@ -121,7 +75,7 @@ pub struct CreatedEvent {
     pub timestamp: i64,
 }
 
-/// `worktree::claimed` — a session took ownership.
+/// `worktree::on-claimed` — a session took ownership.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimedEvent {
     pub worktree_id: String,
@@ -132,7 +86,7 @@ pub struct ClaimedEvent {
     pub timestamp: i64,
 }
 
-/// `worktree::released` — a claim was released.
+/// `worktree::on-released` — a claim was released.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReleasedEvent {
     pub worktree_id: String,
@@ -141,17 +95,20 @@ pub struct ReleasedEvent {
     pub timestamp: i64,
 }
 
-/// `worktree::removed` — a managed worktree was removed (remove or prune).
+/// `worktree::on-removed` — a managed worktree was removed (remove or prune).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RemovedEvent {
     pub worktree_id: String,
     pub repo_path: String,
     pub branch: String,
     pub branch_deleted: bool,
+    /// The session that held the worktree's claim, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub timestamp: i64,
 }
 
-/// `worktree::landed` — a land completed; the target branch was advanced.
+/// `worktree::on-landed` — a land completed; the target branch was advanced.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LandedEvent {
     pub worktree_id: String,
@@ -164,7 +121,7 @@ pub struct LandedEvent {
     pub timestamp: i64,
 }
 
-/// `worktree::land-blocked` — a land ended blocked; see `reason` and `code`.
+/// `worktree::on-land-blocked` — a land ended blocked; see `reason` and `code`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LandBlockedEvent {
     pub worktree_id: String,
@@ -188,173 +145,79 @@ pub struct LandBlockedEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Subscriber registry + trigger type registration
+// Registration
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct Binding {
-    pub id: String,
-    pub function_id: String,
-    pub namespace: Option<String>,
-    pub filter: BindingConfig,
-}
+const FILTERS: &str = "No args; filter on input.repo_path, input.worktree_id, input.session_id.";
 
-/// Thread-safe subscriber registry for one trigger type.
-#[derive(Clone)]
-pub struct SubscriberSet {
-    kind: EventKind,
-    inner: Arc<Mutex<HashMap<String, Binding>>>,
-}
-
-impl SubscriberSet {
-    pub fn new(kind: EventKind) -> Self {
-        Self {
-            kind,
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Parse + insert a binding. Rejects malformed configs at registration.
-    pub fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        let raw = if config.config.is_null() {
-            Value::Object(serde_json::Map::new())
-        } else {
-            config.config.clone()
-        };
-        let filter: BindingConfig = serde_json::from_value(raw)
-            .map_err(|e| format!("invalid {} config: {e}", self.kind.trigger_type()))?;
-        let binding = Binding {
-            id: config.id.clone(),
-            function_id: config.function_id,
-            namespace: config.namespace,
-            filter,
-        };
-        self.lock().insert(config.id, binding);
-        Ok(())
-    }
-
-    pub fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    /// Snapshot so the mutex is never held across awaits.
-    pub fn snapshot(&self) -> Vec<Binding> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-/// The six subscriber sets, one per trigger type.
-#[derive(Clone)]
-pub struct TriggerSets {
-    inner: HashMap<&'static str, SubscriberSet>,
-}
-
-impl TriggerSets {
-    pub fn new() -> Self {
-        let mut inner = HashMap::new();
-        for kind in EventKind::all() {
-            inner.insert(kind.trigger_type(), SubscriberSet::new(kind));
-        }
-        Self { inner }
-    }
-
-    pub fn for_kind(&self, kind: EventKind) -> &SubscriberSet {
-        self.inner
-            .get(kind.trigger_type())
-            .expect("all kinds are populated at construction")
-    }
-}
-
-impl Default for TriggerSets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-struct WorktreeTriggerHandler {
-    set: SubscriberSet,
-}
-
-#[async_trait]
-impl TriggerHandler for WorktreeTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        let function_id = config.function_id.clone();
-        self.set.add(config).map_err(Error::Handler)?;
-        tracing::info!(id = %id, function_id = %function_id, "trigger subscription registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::info!(id = %config.id, "trigger subscription unregistered");
-        self.set.remove(&config.id);
-        Ok(())
-    }
-}
-
-/// Register the six custom trigger types with the engine. Must run before
-/// `functions::register_all` so handlers can capture the subscriber sets.
-pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
-    let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 6] = [
-        (EventKind::Created, "A new managed worktree exists."),
-        (
-            EventKind::Claimed,
-            "A session took ownership of a worktree.",
-        ),
-        (EventKind::Released, "A worktree claim was released."),
-        (EventKind::Removed, "A managed worktree was removed."),
-        (
-            EventKind::Landed,
-            "A land completed; the target branch was fast-forwarded.",
-        ),
-        (
-            EventKind::LandBlocked,
-            "A land ended blocked (conflict, failed tests, dirty tree, moved target).",
-        ),
-    ];
-    for (kind, description) in descriptions {
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                kind.trigger_type(),
-                description,
-                WorktreeTriggerHandler {
-                    set: sets.for_kind(kind).clone(),
-                },
-            )
-            .trigger_request_format::<BindingConfig>(),
+/// Register the six event functions. Each handler returns the event it is
+/// called with.
+pub fn register_functions(iii: &IIIClient) {
+    fn source<E>(iii: &IIIClient, kind: EventKind, what: &str)
+    where
+        E: Serialize + for<'de> Deserialize<'de> + JsonSchema + Send + Sync + 'static,
+    {
+        iii.register_function(
+            kind.function_id(),
+            RegisterFunction::new(|event: E| Ok::<_, Error>(event))
+                .description(format!("{what} {FILTERS}"))
+                .private(),
         );
         tracing::info!(
-            trigger_type = kind.trigger_type(),
-            "registered trigger type"
+            function_id = kind.function_id(),
+            "registered event function"
         );
     }
-    sets
+    source::<CreatedEvent>(
+        iii,
+        EventKind::Created,
+        "Called when a new managed worktree exists.",
+    );
+    source::<ClaimedEvent>(
+        iii,
+        EventKind::Claimed,
+        "Called when a session took ownership of a worktree.",
+    );
+    source::<ReleasedEvent>(
+        iii,
+        EventKind::Released,
+        "Called when a worktree claim was released.",
+    );
+    source::<RemovedEvent>(
+        iii,
+        EventKind::Removed,
+        "Called when a managed worktree was removed.",
+    );
+    source::<LandedEvent>(
+        iii,
+        EventKind::Landed,
+        "Called when a land completed; the target branch was fast-forwarded.",
+    );
+    source::<LandBlockedEvent>(
+        iii,
+        EventKind::LandBlocked,
+        "Called when a land ended blocked (conflict, failed tests, dirty tree, moved target).",
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Emission
 // ---------------------------------------------------------------------------
 
-/// How a matched event reaches a subscriber. Production delivers over the
-/// bus; tests record.
+/// How an event reaches its function. Production calls it over the bus;
+/// tests record.
 #[async_trait]
 pub trait EventDeliverer: Send + Sync {
-    async fn deliver(
-        &self,
-        trigger_type: &str,
-        function_id: &str,
-        namespace: Option<String>,
-        payload: Value,
-    );
+    /// Whether anything observes `function_id`: the emitter builds no event
+    /// nobody wants.
+    fn is_observed(&self, function_id: &str) -> bool;
+
+    async fn deliver(&self, function_id: &str, payload: Value);
 }
 
-/// Fire-and-forget bus delivery so the mutation that produced the event is
-/// never blocked on subscriber latency. Failures are logged and swallowed.
+/// Fire-and-forget call of the event function, so the mutation that produced
+/// the event is never blocked on observers. Failures are logged and
+/// swallowed.
 pub struct IiiDeliverer {
     iii: Arc<IIIClient>,
 }
@@ -367,54 +230,42 @@ impl IiiDeliverer {
 
 #[async_trait]
 impl EventDeliverer for IiiDeliverer {
-    async fn deliver(
-        &self,
-        trigger_type: &str,
-        function_id: &str,
-        namespace: Option<String>,
-        payload: Value,
-    ) {
-        // Dispatch each matching binding on its own task so the mutation that
-        // produced the event (which still holds the per-repo lock) never waits
-        // on a bus round-trip, and a slow binding cannot delay its siblings.
+    fn is_observed(&self, function_id: &str) -> bool {
+        self.iii.is_observed(function_id)
+    }
+
+    async fn deliver(&self, function_id: &str, payload: Value) {
+        // On its own task so the mutation that produced the event (which
+        // still holds the per-repo lock) never waits on the call.
         let iii = self.iii.clone();
-        let trigger_type = trigger_type.to_string();
         let function_id = function_id.to_string();
         tokio::spawn(async move {
-            let request = TriggerRequest {
+            let request = CallRequest {
                 function_id: function_id.clone(),
                 payload,
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 timeout_ms: None,
             };
-            let namespace = namespace.as_deref().unwrap_or("default");
-            let res = iii.trigger(request.namespace(namespace)).await;
-            if let Err(e) = res {
-                tracing::warn!(trigger_type, function_id, error = %e, "event fan-out failed");
+            if let Err(e) = iii.call(request).await {
+                tracing::warn!(function_id, error = %e, "event call failed");
             }
         });
     }
 }
 
-/// Evaluates each binding's filter against each event and delivers the
-/// payload to every match.
+/// Calls each event's function while it is observed.
 pub struct Emitter {
-    sets: TriggerSets,
     deliverer: Arc<dyn EventDeliverer>,
 }
 
 impl Emitter {
-    pub fn new(sets: TriggerSets, deliverer: Arc<dyn EventDeliverer>) -> Self {
-        Self { sets, deliverer }
+    pub fn new(deliverer: Arc<dyn EventDeliverer>) -> Self {
+        Self { deliverer }
     }
 
-    pub fn sets(&self) -> &TriggerSets {
-        &self.sets
-    }
-
-    pub async fn emit<T: Serialize>(&self, kind: EventKind, ctx: EventCtx<'_>, payload: &T) {
-        let bindings = self.sets.for_kind(kind).snapshot();
-        if bindings.is_empty() {
+    pub async fn emit<T: Serialize>(&self, kind: EventKind, payload: &T) {
+        let function_id = kind.function_id();
+        if !self.deliverer.is_observed(function_id) {
             return;
         }
         let payload = match serde_json::to_value(payload) {
@@ -424,157 +275,36 @@ impl Emitter {
                 return;
             }
         };
-        for binding in bindings {
-            if binding_matches(&binding.filter, &ctx) {
-                self.deliverer
-                    .deliver(
-                        kind.trigger_type(),
-                        &binding.function_id,
-                        binding.namespace.clone(),
-                        payload.clone(),
-                    )
-                    .await;
-            }
-        }
+        self.deliverer.deliver(function_id, payload).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn empty_filter_matches_everything() {
-        let f = BindingConfig::default();
-        let ctx = EventCtx {
-            repo_path: "/repo",
-            worktree_id: "wt_1",
-            session_id: Some("s_1"),
-        };
-        assert!(binding_matches(&f, &ctx));
-    }
-
-    #[test]
-    fn each_filter_field_is_an_equality_match() {
-        let ctx = EventCtx {
-            repo_path: "/repo",
-            worktree_id: "wt_1",
-            session_id: None,
-        };
-        let by_repo = BindingConfig {
-            repo_path: Some("/repo".into()),
-            ..Default::default()
-        };
-        assert!(binding_matches(&by_repo, &ctx));
-        let wrong_repo = BindingConfig {
-            repo_path: Some("/other".into()),
-            ..Default::default()
-        };
-        assert!(!binding_matches(&wrong_repo, &ctx));
-        let by_session = BindingConfig {
-            session_id: Some("s_1".into()),
-            ..Default::default()
-        };
-        // Event without a session never matches a session filter.
-        assert!(!binding_matches(&by_session, &ctx));
-    }
-
-    #[test]
-    fn subscriber_set_rejects_unknown_fields() {
-        let set = SubscriberSet::new(EventKind::Created);
-        let err = set
-            .add(TriggerConfig {
-                id: "t1".into(),
-                function_id: "ui::recv".into(),
-                config: json!({ "sesion_id": "typo" }),
-                metadata: None,
-                namespace: None,
-            })
-            .unwrap_err();
-        assert!(err.contains("invalid worktree::created config"));
-        assert!(set.snapshot().is_empty());
-    }
-
-    #[test]
-    fn subscriber_set_accepts_null_and_empty_configs() {
-        let set = SubscriberSet::new(EventKind::Landed);
-        set.add(TriggerConfig {
-            id: "t1".into(),
-            function_id: "ui::recv".into(),
-            config: Value::Null,
-            metadata: None,
-            namespace: Some("project-a".into()),
-        })
-        .unwrap();
-        set.add(TriggerConfig {
-            id: "t2".into(),
-            function_id: "ui::recv".into(),
-            config: json!({}),
-            metadata: None,
-            namespace: None,
-        })
-        .unwrap();
-        let snapshot = set.snapshot();
-        assert_eq!(snapshot.len(), 2);
-        assert_eq!(
-            snapshot
-                .iter()
-                .find(|binding| binding.id == "t1")
-                .and_then(|binding| binding.namespace.as_deref()),
-            Some("project-a")
-        );
-        set.remove("t1");
-        assert_eq!(set.snapshot().len(), 1);
-    }
+    use std::sync::Mutex;
 
     struct RecordingDeliverer {
-        seen: Mutex<Vec<(String, String, Value)>>,
+        observed: bool,
+        seen: Mutex<Vec<(String, Value)>>,
     }
 
     #[async_trait]
     impl EventDeliverer for RecordingDeliverer {
-        async fn deliver(
-            &self,
-            trigger_type: &str,
-            function_id: &str,
-            _namespace: Option<String>,
-            payload: Value,
-        ) {
-            self.seen.lock().unwrap().push((
-                trigger_type.to_string(),
-                function_id.to_string(),
-                payload,
-            ));
+        fn is_observed(&self, _function_id: &str) -> bool {
+            self.observed
+        }
+
+        async fn deliver(&self, function_id: &str, payload: Value) {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((function_id.to_string(), payload));
         }
     }
 
-    #[tokio::test]
-    async fn emit_delivers_only_to_matching_bindings() {
-        let sets = TriggerSets::new();
-        sets.for_kind(EventKind::Landed)
-            .add(TriggerConfig {
-                id: "all".into(),
-                function_id: "recv::all".into(),
-                config: json!({}),
-                metadata: None,
-                namespace: None,
-            })
-            .unwrap();
-        sets.for_kind(EventKind::Landed)
-            .add(TriggerConfig {
-                id: "other-repo".into(),
-                function_id: "recv::other".into(),
-                config: json!({ "repo_path": "/other" }),
-                metadata: None,
-                namespace: None,
-            })
-            .unwrap();
-        let deliverer = Arc::new(RecordingDeliverer {
-            seen: Mutex::new(Vec::new()),
-        });
-        let emitter = Emitter::new(sets, deliverer.clone());
-        let event = LandedEvent {
+    fn landed() -> LandedEvent {
+        LandedEvent {
             worktree_id: "wt_1".into(),
             repo_path: "/repo".into(),
             branch: "iii/wt_1".into(),
@@ -582,21 +312,42 @@ mod tests {
             merged_sha: "abc".into(),
             session_id: None,
             timestamp: 1,
-        };
-        emitter
-            .emit(
-                EventKind::Landed,
-                EventCtx {
-                    repo_path: "/repo",
-                    worktree_id: "wt_1",
-                    session_id: None,
-                },
-                &event,
-            )
-            .await;
+        }
+    }
+
+    #[test]
+    fn every_kind_has_an_on_function() {
+        for kind in EventKind::all() {
+            assert!(kind.function_id().starts_with("worktree::on-"));
+        }
+        assert_eq!(
+            EventKind::LandBlocked.function_id(),
+            "worktree::on-land-blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn emit_calls_the_function_of_its_kind() {
+        let deliverer = Arc::new(RecordingDeliverer {
+            observed: true,
+            seen: Mutex::new(Vec::new()),
+        });
+        let emitter = Emitter::new(deliverer.clone());
+        emitter.emit(EventKind::Landed, &landed()).await;
         let seen = deliverer.seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].1, "recv::all");
-        assert_eq!(seen[0].2["merged_sha"], "abc");
+        assert_eq!(seen[0].0, "worktree::on-landed");
+        assert_eq!(seen[0].1["merged_sha"], "abc");
+    }
+
+    #[tokio::test]
+    async fn emit_skips_an_unobserved_function() {
+        let deliverer = Arc::new(RecordingDeliverer {
+            observed: false,
+            seen: Mutex::new(Vec::new()),
+        });
+        let emitter = Emitter::new(deliverer.clone());
+        emitter.emit(EventKind::Landed, &landed()).await;
+        assert!(deliverer.seen.lock().unwrap().is_empty());
     }
 }

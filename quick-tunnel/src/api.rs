@@ -81,10 +81,3 @@ pub struct StatusResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prerequisites: Option<crate::prerequisites::Prerequisites>,
 }
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ChangedConfig {
-    /// Omit to subscribe to all authorized targets.
-    pub tunnel_id: Option<String>,
-}

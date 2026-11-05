@@ -70,7 +70,7 @@ describe('readRefs', () => {
   const host = (probe: ReturnType<typeof exec>) =>
     ({
       iii: {
-        trigger: vi.fn(async (_fn: string, payload: { args: string[] }) =>
+        call: vi.fn(async (_fn: string, payload: { args: string[] }) =>
           payload.args[0] === 'rev-parse' ? probe : exec({ stdout: LISTING }),
         ),
       },

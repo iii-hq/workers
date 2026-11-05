@@ -580,3 +580,114 @@ fn assert_request(
     );
     Ok(())
 }
+
+/// First-boot registration of provider-claude-code against a fresh engine,
+/// where no registration token exists yet. Two concurrent first declares (as
+/// boot and `router::on-ready` issue them) must both be accepted. Then, in
+/// each boot order, the provider must register, persist its token, be
+/// accepted again with that token, and serve the stub's catalog.
+///
+/// `router::provider::register` does not accept observers, so the boot
+/// orders cannot count refused declares; the concurrent declares are the
+/// zero-refusal proof.
+#[cfg(all(test, feature = "provider-claude-code"))]
+pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> {
+    use provider_claude_code::register::{declare_once, DeclareLock};
+
+    let case = crate::case::enabled_cases()
+        .into_iter()
+        .find(|case| case.id == provider_claude_code::PROVIDER_ID)
+        .context("claude-code case")?;
+    let isolated_home = tempfile::tempdir()?;
+    std::env::set_var("HOME", isolated_home.path());
+    std::env::set_var("CLAUDE_CONFIG_DIR", isolated_home.path().join("claude"));
+
+    {
+        let engine = Engine::start().await?;
+        let router = register_worker(&engine.url, test_init_options());
+        register_router(router.clone())
+            .await
+            .context("register router")?;
+        let provider = register_worker(&engine.url, provider_init_options(case.id));
+        // One provider's lock, as register_provider shares it between its
+        // boot declare and its `router::on-ready` declare.
+        let lock = DeclareLock::default();
+        let (first, second) = tokio::join!(
+            declare_once(&provider, &lock),
+            declare_once(&provider, &lock)
+        );
+        first.context("first of two concurrent first declares")?;
+        second.context("second of two concurrent first declares")?;
+        wait_for_registration_token(&provider, case.id).await?;
+        provider.shutdown();
+        router.shutdown();
+    }
+
+    for provider_first in [true, false] {
+        let order = if provider_first {
+            "provider before router"
+        } else {
+            "provider after router"
+        };
+        let engine = Engine::start().await?;
+        eprintln!("first-boot registration: {order} on {}", engine.url);
+        let stub = StubUpstream::start(case).await?;
+
+        let router = register_worker(&engine.url, test_init_options());
+        let provider = register_worker(&engine.url, provider_init_options(case.id));
+        if provider_first {
+            (case.register)(provider.clone()).await?;
+        }
+        register_router(router.clone())
+            .await
+            .context("register router")?;
+        configure(&router, case, &stub.endpoint(case.generation_path)).await?;
+        if !provider_first {
+            (case.register)(provider.clone()).await?;
+        }
+        wait_for_provider(&router, case.id)
+            .await
+            .with_context(|| format!("{order}: provider listed"))?;
+        wait_for_registration_token(&provider, case.id).await?;
+        declare_once(&provider, &DeclareLock::default())
+            .await
+            .with_context(|| format!("{order}: declare with the persisted token"))?;
+
+        // Registration needs no credential. Until the synthetic vault exists
+        // a refresh finds none and lists nothing, without any HTTP; then the
+        // ordinary refresh serves the stub's catalog.
+        let vault = register_fake_vault(&engine.url, case.credential).await;
+        call(
+            &router,
+            &format!("provider::{}::refresh_models", case.id),
+            json!({}),
+        )
+        .await
+        .with_context(|| format!("{order}: refresh_models"))?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let list = call(
+                &router,
+                "router::models::list",
+                json!({ "provider": case.id }),
+            )
+            .await?;
+            if list["models"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|model| model["id"] == case.model))
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                bail!("{order}: catalog not served: {list}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        provider.shutdown();
+        router.shutdown();
+        if let Some(vault) = vault {
+            vault.shutdown();
+        }
+    }
+    Ok(())
+}

@@ -143,7 +143,7 @@ pub struct AssembleOptions {
     pub lease_key: Option<String>,
     /// Persisted summary from a prior compaction (see the spec's "The
     /// compaction round trip"); rendered into the system prompt and
-    /// used as the anchor if compaction triggers again.
+    /// used as the anchor if compaction runs again.
     #[serde(default)]
     pub previous_summary: Option<String>,
 }
@@ -932,7 +932,7 @@ mod tests {
         }))
         .unwrap();
         let tool: AgentFunction = serde_json::from_value(json!({
-            "name": "agent_trigger",
+            "name": "agent_call",
             "description": "Run an agent function",
             "parameters": {
                 "type": "object",
@@ -963,7 +963,7 @@ mod tests {
                 "limits": { "context_window": 1_000, "max_output_tokens": 100 }
             },
             "tools": [{
-                "name": "agent_trigger",
+                "name": "agent_call",
                 "description": "Run an agent function",
                 "parameters": { "type": "object" }
             }],

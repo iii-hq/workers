@@ -73,11 +73,11 @@ pub struct TelegramUser {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP trigger envelope
+// HTTP request (the `http::on-request` fields this worker reads)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct HttpTriggerRequest {
+pub struct HttpRequest {
     #[serde(default)]
     pub body: Value,
     #[serde(default)]

@@ -332,7 +332,7 @@ fn python_malformed_envelope_exits_nonzero_with_a_diagnostic_and_no_frame() {
         return;
     }
     // Completely missing envelope (empty stdin) rather than invalid JSON —
-    // covers a different real trigger (child stdin closed with no bytes)
+    // covers a different real cause (child stdin closed with no bytes)
     // than the Node test above (bytes present but not valid JSON).
     let out = spawn_runner(Lang::Python, "def handler(p):\n    return p\n", "");
     assert!(!out.exit_ok);
@@ -422,7 +422,7 @@ const log = (entry) => appendFileSync(process.env.FAKE_SDK_LOG, JSON.stringify(e
 export function registerWorker(url, options) {
   log({ event: 'register', url, workerName: options && options.workerName });
   return {
-    async trigger(req) { return { echoed: req }; },
+    async call(req) { return { echoed: req }; },
     async shutdown() { log({ event: 'shutdown' }); },
   };
 }
@@ -443,7 +443,7 @@ def _log(entry):
 
 
 class _Client:
-    def trigger(self, req):
+    def call(self, req):
         return {"echoed": req}
 
     def shutdown(self):
@@ -549,7 +549,8 @@ fn wait_bounded(mut child: std::process::Child, secs: u64) -> WrapperOutcome {
 
 /// Plant the run wrapper + iii library + the code file into `dir` and run
 /// `<interpreter> run.<ext> code.<ext>` with the given env — exactly the
-/// argv/env shape `run` execs inside the VM.
+/// argv/env shape `run` execs inside the VM. `III_URL` comes only from
+/// `envs`, as inside the VM, never from the shell running the tests.
 fn run_eval_wrapper(lang: Lang, code: &str, envs: &[(&str, &str)], dir: &Path) -> WrapperOutcome {
     std::fs::create_dir_all(dir).unwrap();
     let wrapper = dir.join(basename(lang.run_wrapper_path()));
@@ -563,6 +564,7 @@ fn run_eval_wrapper(lang: Lang, code: &str, envs: &[(&str, &str)], dir: &Path) -
     cmd.arg(&wrapper)
         .arg(&code_file)
         .env_remove("FORCE_COLOR")
+        .env_remove("III_URL")
         .env("NO_COLOR", "1");
     for (k, v) in envs {
         cmd.env(k, v);
@@ -603,7 +605,7 @@ fn node_eval_wrapper_is_lazy_and_connects_only_on_use() {
 
     let out = run_eval_wrapper(
         Lang::Node,
-        "const r = await iii.trigger({ function_id: 'x::y', payload: { n: 1 } });\n\
+        "const r = await iii.call({ function_id: 'x::y', payload: { n: 1 } });\n\
          console.log(JSON.stringify(r));\n",
         envs,
         &dir,
@@ -654,7 +656,7 @@ fn python_eval_wrapper_is_lazy_and_connects_only_on_use() {
     let out = run_eval_wrapper(
         Lang::Python,
         "import json\n\
-         r = iii.trigger({'function_id': 'x::y', 'payload': {'n': 1}})\n\
+         r = iii.call({'function_id': 'x::y', 'payload': {'n': 1}})\n\
          print(json.dumps(r))\n",
         envs,
         &dir,
@@ -717,15 +719,15 @@ fn node_iii_is_introspectable_without_connecting() {
 
     let out = run_eval_wrapper(
         Lang::Node,
-        "await iii.trigger({ function_id: 'x::y', payload: {} });\n\
+        "await iii.call({ function_id: 'x::y', payload: {} });\n\
          console.log('keys-after:', JSON.stringify(Object.keys(iii).sort()));\n\
-         console.log('has-after:', 'trigger' in iii);\n",
+         console.log('has-after:', 'call' in iii);\n",
         envs,
         &dir,
     );
     assert!(out.exit_ok, "stderr: {}", out.stderr);
     assert!(
-        out.stdout.contains(r#"keys-after: ["shutdown","trigger"]"#),
+        out.stdout.contains(r#"keys-after: ["call","shutdown"]"#),
         "after first use, keys must list the client surface: {}",
         out.stdout
     );
@@ -769,13 +771,13 @@ fn python_iii_is_introspectable_without_connecting() {
 
     let out = run_eval_wrapper(
         Lang::Python,
-        "iii.trigger({'function_id': 'x::y', 'payload': {}})\n\
-         print('has-trigger:', 'trigger' in dir(iii))\n",
+        "iii.call({'function_id': 'x::y', 'payload': {}})\n\
+         print('has-call:', 'call' in dir(iii))\n",
         envs,
         &dir,
     );
     assert!(out.exit_ok, "stderr: {}", out.stderr);
-    assert!(out.stdout.contains("has-trigger: True"), "{}", out.stdout);
+    assert!(out.stdout.contains("has-call: True"), "{}", out.stdout);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -790,7 +792,7 @@ fn node_iii_without_a_url_fails_fast_with_a_clear_error() {
     let log = dir.join("sdk.log");
     let out = run_eval_wrapper(
         Lang::Node,
-        "try { await iii.trigger({ function_id: 'x::y', payload: {} }); } \
+        "try { await iii.call({ function_id: 'x::y', payload: {} }); } \
          catch (e) { console.log('caught:', e.message); }\n",
         &[("FAKE_SDK_LOG", log.to_str().unwrap())],
         &dir,
@@ -814,7 +816,7 @@ fn node_iii_without_the_sdk_reports_it_clearly() {
     // No fake SDK planted; the bare import must fail and the error must say so.
     let out = run_eval_wrapper(
         Lang::Node,
-        "try { await iii.trigger({ function_id: 'x::y', payload: {} }); } \
+        "try { await iii.call({ function_id: 'x::y', payload: {} }); } \
          catch (e) { console.log('caught:', e.message); }\n",
         &[("III_URL", "ws://localhost:49134")],
         &dir,
@@ -837,7 +839,7 @@ fn python_iii_without_the_sdk_reports_it_clearly() {
     std::fs::create_dir_all(&dir).unwrap();
     let out = run_eval_wrapper(
         Lang::Python,
-        "try:\n    iii.trigger({'function_id': 'x::y', 'payload': {}})\n\
+        "try:\n    iii.call({'function_id': 'x::y', 'payload': {}})\n\
          except RuntimeError as e:\n    print('caught:', e)\n",
         &[("III_URL", "ws://localhost:49134")],
         &dir,
@@ -852,7 +854,7 @@ fn python_iii_without_the_sdk_reports_it_clearly() {
 }
 
 /// Handlers get the same lazy global THROUGH THE RUNNER: a handler that
-/// calls `iii.trigger` mid-invocation gets its answer, the client is shut
+/// calls `iii.call` mid-invocation gets its answer, the client is shut
 /// down before the frame, and the runner protocol (sentinel framing,
 /// result envelope) stays intact.
 #[test]
@@ -867,7 +869,7 @@ fn node_handlers_get_iii_through_the_runner() {
     let envelope = serde_json::json!({ "sentinel": SENTINEL, "payload": { "n": 1 } }).to_string();
     let out = spawn_runner_env(
         Lang::Node,
-        "export async function handler(p) { return await iii.trigger({ function_id: 'a::b', payload: p }); }",
+        "export async function handler(p) { return await iii.call({ function_id: 'a::b', payload: p }); }",
         &envelope,
         &[
             ("III_URL", "ws://localhost:49134"),
@@ -897,7 +899,7 @@ fn python_handlers_get_iii_through_the_runner() {
     let envelope = serde_json::json!({ "sentinel": SENTINEL, "payload": { "n": 1 } }).to_string();
     let out = spawn_runner_env(
         Lang::Python,
-        "def handler(p):\n    return iii.trigger({'function_id': 'a::b', 'payload': p})\n",
+        "def handler(p):\n    return iii.call({'function_id': 'a::b', 'payload': p})\n",
         &envelope,
         &[
             ("III_URL", "ws://localhost:49134"),

@@ -84,7 +84,7 @@ const registrationPayload = {
 let registration
 for (let attempt = 0; attempt < 20; attempt += 1) {
   try {
-    registration = await sdk.trigger(registrationPayload)
+    registration = await sdk.call(registrationPayload)
     break
   } catch (error) {
     if (

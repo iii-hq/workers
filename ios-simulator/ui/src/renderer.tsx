@@ -2,8 +2,8 @@ import {
   ActionLine,
   Badge,
   Chip,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   MetaRow,
 } from '@iii-dev/console-ui'
 import { Smartphone } from 'lucide-react'
@@ -51,7 +51,7 @@ function Target({ udid }: { udid: string }) {
   )
 }
 
-function ScreenshotView({ message }: { message: FunctionTriggerMessage }) {
+function ScreenshotView({ message }: { message: FunctionCallMessage }) {
   const udid = str(obj(message.input)?.udid)
   if (!udid) return null
 
@@ -96,7 +96,7 @@ function ScreenshotView({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
-function ScreenshotPreview({ message }: { message: FunctionTriggerMessage }) {
+function ScreenshotPreview({ message }: { message: FunctionCallMessage }) {
   const udid = str(obj(message.input)?.udid)
   if (!udid) return null
   return (
@@ -111,9 +111,9 @@ function ScreenshotPreview({ message }: { message: FunctionTriggerMessage }) {
 
 // Called as functions, not elements, so a result that isn't a screenshot
 // (an error, a capped result) returns null and falls through.
-const render = (message: FunctionTriggerMessage) => (message.pendingApproval ? null : ScreenshotView({ message }))
+const render = (message: FunctionCallMessage) => (message.pendingApproval ? null : ScreenshotView({ message }))
 
-export const screenshotRenderer: FunctionTriggerRenderer = {
+export const screenshotRenderer: FunctionCallRenderer = {
   id: 'ios-simulator/page.js#screenshot',
   isMatch: (functionId) => functionId === `${NS}screenshot`,
   tryRender: render,

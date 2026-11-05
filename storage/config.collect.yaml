@@ -1,8 +1,8 @@
 # Interface-collection config for the registry publish workflow.
 #
 # The CI interface-smoke job boots a throwaway
-# copy of this worker purely to read back the functions and trigger types it
-# registers with the engine — the published "interface". That interface is
+# copy of this worker purely to read back the functions it registers with
+# the engine — the published "interface". That interface is
 # static: it does NOT depend on which buckets are configured.
 #
 # This config declares a single cloud bucket with dummy static credentials so

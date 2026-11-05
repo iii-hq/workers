@@ -1,6 +1,6 @@
 //! Shared config-client atomic initialization and serialized authoritative hot reload.
 use crate::config::OpenAiConfig;
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::IIIClient;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -54,12 +54,13 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<OpenAiConfig, String> {
         None => Ok(OpenAiConfig::default()),
     }
 }
-/// Bind reload to authoritative storage, ignoring advisory event contents.
-/// Call the returned Reload::run once at boot to close the subscription gap.
-pub fn register_config_trigger(
+/// Observe this entry's `configuration::on-updated` events with a reload from
+/// authoritative storage, ignoring advisory event contents. Call the returned
+/// Reload::run once at boot to close the gap before the observer is active.
+pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     cell: SharedConfig,
-) -> Result<iii_config_client::Reload, Error> {
+) -> iii_config_client::Reload {
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,

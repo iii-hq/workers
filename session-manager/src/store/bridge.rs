@@ -13,8 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 use super::{CommitAppendResult, SessionStore, StoreError};
@@ -34,7 +33,7 @@ impl BridgeStore {
 
     async fn call(&self, function_id: &str, payload: Value) -> Result<Value, StoreError> {
         self.remote
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,

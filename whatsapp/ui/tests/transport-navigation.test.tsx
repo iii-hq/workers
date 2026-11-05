@@ -95,7 +95,7 @@ async function render(initial: Session[] = [session('support')]) {
   let sessions = initial
   let registeredCommands: readonly PageCommand[] = []
   const commands = { register(value: readonly PageCommand[]) { registeredCommands = value; return () => { registeredCommands = [] } } }
-  const trigger = vi.fn(async (id: string, input?: { session_id?: string }) => {
+  const call = vi.fn(async (id: string, input?: { session_id?: string }) => {
     if (id === 'whatsapp::sessions::list') return sessions
     if (id === 'whatsapp::sessions::create') {
       const created = session(input!.session_id!)
@@ -104,14 +104,15 @@ async function render(initial: Session[] = [session('support')]) {
     }
     throw new Error(`Unexpected function: ${id}`)
   })
-  const host = { iii: { trigger, on: () => () => {}, registerTrigger: () => () => {}, browserId: 'test' } } as unknown as Host
+  const observe = vi.fn((_source: unknown, _target: string) => () => {})
+  const host = { iii: { call, on: () => () => {}, observe, browserId: 'test' } } as unknown as Host
   const setDirty = vi.fn()
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   await act(async () => root.render(<WhatsAppPage host={host} configurationId="transport-test" paneId="pane" commands={commands} setDirty={setDirty} />))
   cleanups.push(() => { act(() => root.unmount()); container.remove() })
   return {
-    container, trigger, setDirty,
+    container, call, observe, setDirty,
     async click(label: string) {
       const button = Array.from(container.querySelectorAll('button')).find((item) => item.getAttribute('aria-label') === label || item.textContent === label)
       expect(button, `Missing button: ${label}`).toBeDefined()
@@ -132,7 +133,7 @@ async function render(initial: Session[] = [session('support')]) {
       await act(async () => { await command!.run() })
     },
     tabLabels() { return Array.from(container.querySelectorAll('[role="tab"]')).map((item) => item.textContent) },
-    mutationCalls() { return trigger.mock.calls.filter(([id]) => id !== 'whatsapp::sessions::list') },
+    mutationCalls() { return call.mock.calls.filter(([id]) => id !== 'whatsapp::sessions::list') },
   }
 }
 
@@ -146,6 +147,17 @@ beforeEach(() => {
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('WhatsApp transport navigation', () => {
+  it('re-reads the session list on the native kinds the worker emits for session status changes', async () => {
+    const view = await render()
+    expect(view.observe).toHaveBeenCalledTimes(1)
+    const [source, target] = view.observe.mock.calls[0]
+    expect(source).toEqual({
+      function_id: 'whatsapp::on-events',
+      filters: { 'input.kind': { $in: ['session.connected', 'session.disconnected', 'session.paired', 'session.failed', 'session.logged_out', 'pairing.qr'] } },
+    })
+    expect(target).toMatch(/^iii::whatsapp-ui::sessions::.+::test$/)
+  })
+
   it('opens session creation after the narrow menu closes and restores focus on cancel', async () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 390, height: 844, top: 0, left: 0, right: 390, bottom: 844, x: 0, y: 0, toJSON: () => ({}) })
     const view = await render()
@@ -160,7 +172,7 @@ describe('WhatsApp transport navigation', () => {
     await view.click('Session actions')
     await view.click('Refresh sessions')
     expect(view.container.querySelector('[role="menu"]')).toBeNull()
-    expect(view.trigger.mock.calls.filter(([id]) => id === 'whatsapp::sessions::list')).toHaveLength(2)
+    expect(view.call.mock.calls.filter(([id]) => id === 'whatsapp::sessions::list')).toHaveLength(2)
     expect(view.mutationCalls()).toHaveLength(0)
   })
 

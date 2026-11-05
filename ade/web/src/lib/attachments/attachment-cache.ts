@@ -22,7 +22,7 @@
  */
 
 import { getAttachment } from '@/lib/sessions/api'
-import type { TriggerFn } from './shared'
+import type { CallFn } from './shared'
 import {
   type AttachmentMeta,
   GET_ATTACHMENT_FUNCTION_ID,
@@ -70,20 +70,20 @@ export function peekAttachment(
  *
  * Rejects when the store no longer has the attachment or the call failed;
  * the entry is dropped first so a later call fetches again rather than
- * replaying the failure forever. `trigger` is the test seam, as in
+ * replaying the failure forever. `invoke` is the test seam, as in
  * `uploadAttachments`.
  */
 export function loadAttachment(
   sessionId: string,
   attachmentId: string,
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<CachedAttachment> {
   const key = attachmentCacheKey(sessionId, attachmentId)
   const existing = entries.get(key)
   if (existing) return existing.promise
 
   const entry: CacheEntry = {
-    promise: fetchStored(sessionId, attachmentId, trigger).then(
+    promise: fetchStored(sessionId, attachmentId, invoke).then(
       (value) => {
         entry.value = value
         return value
@@ -103,15 +103,15 @@ export function loadAttachment(
 async function fetchStored(
   sessionId: string,
   attachmentId: string,
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<CachedAttachment> {
   const request = {
     session_id: sessionId,
     attachment_id: attachmentId,
     include_data: true,
   }
-  const response = trigger
-    ? ((await trigger(GET_ATTACHMENT_FUNCTION_ID, request)) as
+  const response = invoke
+    ? ((await invoke(GET_ATTACHMENT_FUNCTION_ID, request)) as
         | GetAttachmentResponse
         | null
         | undefined)

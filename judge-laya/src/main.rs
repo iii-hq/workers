@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let config = configuration::new_cell(initial);
     #[cfg(feature = "console-ui")]
     register::register_console_ui(&iii);
-    configuration::register_config_trigger(&iii, config.clone())?
+    configuration::observe_config_changes(&iii, config.clone())
         .run()
         .await;
     let checkpoints = Checkpoints {

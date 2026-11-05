@@ -18,7 +18,7 @@ use crate::evidence::{
 };
 use crate::{ErrorSourceV1, Redactor};
 
-/// One ERROR log as the engine's `log` trigger delivers it.
+/// One ERROR log as `observability::on-log` delivers it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord {
     pub timestamp_unix_nano: u64,
@@ -38,7 +38,7 @@ impl AttributeSource for LogRecord {
 }
 
 impl LogRecord {
-    /// Parse the trigger payload. Log attributes are an object of arbitrary
+    /// Parse the event. Log attributes are an object of arbitrary
     /// JSON, unlike a span's array of string pairs.
     pub fn from_payload(payload: &Value) -> Option<Self> {
         Some(Self {
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trigger_payload_parses_including_non_string_attributes() {
+    fn an_on_log_event_parses_including_non_string_attributes() {
         let log = LogRecord::from_payload(&payload()).expect("parses");
         assert_eq!(log.service_name, "queue");
         assert!(log.is_error());

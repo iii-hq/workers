@@ -90,7 +90,7 @@ const TERMINAL_THEME = {
 let xtermLoad: Promise<XtermModule> | null = null
 
 /**
- * The emulator ships as its own console:module (ui/xterm.ts) so a tab that
+ * The emulator ships as its own `module` asset (ui/xterm.ts) so a tab that
  * never opens this page never downloads it. A failed import clears the memo
  * so the next attempt imports again.
  */

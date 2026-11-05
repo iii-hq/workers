@@ -10,9 +10,9 @@ export declare function formatDuration(ms: number): string
 export declare function formatBytes(n: number | null | undefined): string
 /** `{ content: [...], details }` harness result envelope → `details`; a flat payload passes through. */
 export declare function unwrapEnvelope(value: unknown): unknown
-/** The innermost error code a rejected `iii.trigger` carries. */
+/** The innermost error code a rejected `iii.call` carries. */
 export declare function errorCode(err: unknown): string | undefined
-/** One readable string out of whatever a rejected `iii.trigger` throws — never `[object Object]`. */
+/** One readable string out of whatever a rejected `iii.call` throws — never `[object Object]`. */
 export declare function errorMessage(err: unknown): string
 /** Clipboard write with the insecure-origin textarea fallback; true on success, never throws. */
 export declare function copyText(text: string): Promise<boolean>

@@ -15,7 +15,7 @@ import { getIiiClient } from './iii-client'
 
 const OPEN_FUNCTION_ID = 'editor::workspace::open'
 
-type TriggerFn = (
+type CallFn = (
   functionId: string,
   payload: Record<string, unknown>,
 ) => Promise<unknown>
@@ -28,18 +28,18 @@ let lastSyncedRoot: string | null = null
 
 export async function syncEditorWorkspace(
   root: string,
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<boolean> {
   if (!root || root === lastSyncedRoot) return false
   // Quiet failure is the contract, but "quiet" must include the engine log:
   // without the editor worker every root change wrote a `Function not found`
-  // line there. An injected `trigger` (tests) bypasses the catalog check.
-  if (!trigger && !(await functionRegistered(OPEN_FUNCTION_ID))) return false
+  // line there. An injected `invoke` (tests) bypasses the catalog check.
+  if (!invoke && !(await functionRegistered(OPEN_FUNCTION_ID))) return false
   const call =
-    trigger ??
+    invoke ??
     (async (functionId: string, payload: Record<string, unknown>) => {
       const client = await getIiiClient()
-      return client.trigger(functionId, payload, { timeoutMs: 15_000 })
+      return client.call(functionId, payload, { timeoutMs: 15_000 })
     })
   try {
     await call(OPEN_FUNCTION_ID, { root })

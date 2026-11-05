@@ -130,7 +130,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::create",
-        "Create a session at status idle; fires session::created.",
+        "Create a session at status idle; calls session::on-created.",
         true,
         |d, r| async move { create::handle(&d, r).await },
     );
@@ -138,7 +138,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::ensure",
-        "Idempotently ensure a session with a given id exists; fires session::created only when it creates.",
+        "Idempotently ensure a session with a given id exists; calls session::on-created only when it creates.",
         true,
         |d, r| async move { ensure::handle(&d, r).await },
     );
@@ -162,7 +162,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::set-meta",
-        "Update a session's title/description/metadata; fires session::meta-updated.",
+        "Update a session's title/description/metadata; calls session::on-meta-updated.",
         true,
         |d, r| async move { set_meta::handle(&d, r).await },
     );
@@ -178,7 +178,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::set-status",
-        "Set status idle/working/done/error; fires session::status-changed (no-op when unchanged).",
+        "Set status idle/working/done/error; calls session::on-status-changed (no-op when unchanged).",
         true,
         |d, r| async move { set_status::handle(&d, r).await },
     );
@@ -186,7 +186,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::delete",
-        "Delete a session and its entries; fires session::deleted.",
+        "Delete a session and its entries; calls session::on-deleted.",
         true,
         |d, r| async move { delete::handle(&d, r).await },
     );
@@ -194,7 +194,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::append",
-        "Append one entry (idempotent on entry_id); fires session::message-added.",
+        "Append one entry (idempotent on entry_id); calls session::on-message-added.",
         true,
         |d, r| async move { append::handle(&d, r).await },
     );
@@ -202,7 +202,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::append-many",
-        "Append several message entries in order; fires session::message-added per entry.",
+        "Append several message entries in order; calls session::on-message-added per entry.",
         true,
         |d, r| async move { append_many::handle(&d, r).await },
     );
@@ -210,7 +210,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::update-message",
-        "Replace a message entry's content (optimistic concurrency via expected_revision); fires session::message-updated.",
+        "Replace a message entry's content (optimistic concurrency via expected_revision); calls session::on-message-updated.",
         true,
         |d, r| async move { update_message::handle(&d, r).await },
     );
@@ -250,7 +250,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::fork",
-        "Copy history up to an entry into a new session (copy-on-fork); fires session::created.",
+        "Copy history up to an entry into a new session (copy-on-fork); calls session::on-created.",
         true,
         |d, r| async move { fork::handle(&d, r).await },
     );

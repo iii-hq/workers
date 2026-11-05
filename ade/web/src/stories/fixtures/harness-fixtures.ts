@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 
 const now = Date.now()
 
@@ -7,11 +7,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionTriggerMessage>,
-): FunctionTriggerMessage {
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input,
     ...(output !== undefined ? { output } : {}),
@@ -125,7 +125,7 @@ export const spawnJsonDone = base(
       functions: {
         allow: ['web::fetch', 'sandbox::exec'],
         deny: ['sandbox::fs::rm'],
-        expose: 'agent_trigger',
+        expose: 'agent_call',
       },
       max_children: 2,
       pending_timeout_ms: 300_000,

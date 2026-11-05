@@ -10,27 +10,26 @@
 //!      is a required boot dependency: a failed register/fetch aborts
 //!      startup — the gate must run on a known, authoritative policy
 //!      surface, never a guessed one.
-//!   4. Register the two custom trigger types (`approval::pending-created`,
-//!      `approval::pending-resolved`) — first, because the function
-//!      handlers capture the subscriber sets they fan out to.
+//!   4. Register the two event functions (`approval::on-pending-created`,
+//!      `approval::on-pending-resolved`) — first, because the function
+//!      handlers call them through the emitter.
 //!   5. Register the 13 `approval::*` functions (each reads the live config
 //!      snapshot per call).
-//!   6. Bind the fixed gate + filesystem-access-watch hooks + the session/turn
-//!      triggers, all best-effort (in a standalone deployment some of these
-//!      trigger types don't exist yet; the worker still boots and serves
-//!      its RPCs).
-//!   7. Bind the `configuration` change trigger LAST so its handler closes
-//!      over the fully-built snapshot cell.
+//!   6. Observe the harness hook functions (gate + filesystem-access-watch),
+//!      `session::on-deleted` and `harness::on-turn-completed`. An observer
+//!      of a sibling that is not running (yet) stays pending and becomes
+//!      active when the sibling registers its function; the worker boots and
+//!      serves its RPCs either way.
+//!   7. Observe `configuration::on-updated` LAST so its handler closes over
+//!      the fully-built snapshot cell.
 //!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
-use serde_json::json;
+use iii_sdk::{register_worker, Deliver, InitOptions, Source};
 use tokio::sync::RwLock;
 
 use approval_gate::configuration::{self, ConfigCell};
@@ -69,30 +68,9 @@ fn worker_metadata() -> WorkerMetadata {
     }
 }
 
-/// Best-effort binding: in standalone deployments the harness's and
-/// session-manager's trigger types may not exist (yet); a failed binding
-/// must not prevent boot. Registration is acked asynchronously — a
-/// missing trigger type surfaces later as an SDK-level
-/// `trigger_type_not_found` error log, never as an `Err` here. Restart
-/// the worker after the sibling appears to re-bind.
-fn bind_best_effort(
-    iii: &Arc<IIIClient>,
-    trigger_type: &str,
-    function_id: &str,
-    config: serde_json::Value,
-) {
-    let res = iii.register_trigger(RegisterTriggerInput::new(
-        trigger_type.to_string(),
-        function_id.to_string(),
-        config,
-    ));
-    match res {
-        Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed (sibling absent?)")
-        }
-    }
-}
+/// The siblings' events this worker cleans up after.
+const SESSION_ON_DELETED_FN: &str = "session::on-deleted";
+const HARNESS_ON_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -151,9 +129,9 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading approval-gate configuration")?;
 
-    // Trigger types first: the handlers capture the subscriber sets.
-    let sets = events::register_trigger_types(&iii);
-    let sink = Arc::new(Emitter::new(sets, iii.clone()));
+    // Event functions first: the handlers call them through the emitter.
+    events::register_functions(&iii);
+    let sink = Arc::new(Emitter::new(iii.clone()));
 
     // The hot-swappable snapshot shared with every handler.
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
@@ -165,30 +143,24 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    configuration::bind_hook(&iii);
-    configuration::bind_filesystem_access_watch_hook(&iii);
-    configuration::retry_hook_bindings(iii.as_ref().clone());
-
-    // These two carry no config and are never re-bound — best-effort only.
-    bind_best_effort(
-        &iii,
-        "session::deleted",
-        "approval::on-session-deleted",
-        json!({}),
+    // Observers live as long as the worker's connection; dropping a handle
+    // does not dispose it.
+    configuration::observe_hook(&iii);
+    configuration::observe_filesystem_access_watch_hook(&iii);
+    iii.observe(
+        Source::function(SESSION_ON_DELETED_FN).deliver(Deliver::Output),
+        functions::ON_SESSION_DELETED_ID,
     );
-    bind_best_effort(
-        &iii,
-        "harness::turn-completed",
-        "approval::on-turn-completed",
-        json!({}),
+    iii.observe(
+        Source::function(HARNESS_ON_TURN_COMPLETED_FN).deliver(Deliver::Output),
+        functions::ON_TURN_COMPLETED_ID,
     );
 
-    // LAST: bind the configuration-change trigger so its handler closes over
-    // the snapshot cell.
-    configuration::register_config_trigger(&iii, cell)
-        .context("registering the configuration change trigger")?;
+    // LAST: observe configuration changes so the handler closes over the
+    // snapshot cell.
+    configuration::observe_config_changes(&iii, cell);
 
-    tracing::info!("approval-gate ready: 13 approval::* functions + 2 custom trigger types");
+    tracing::info!("approval-gate ready: 13 approval::* functions + 2 event functions");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("approval-gate shutting down");

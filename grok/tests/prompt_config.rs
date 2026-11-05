@@ -97,9 +97,9 @@ fn config_merges_partial_file() {
 }
 
 #[test]
-fn retired_stream_keys_still_load_and_are_ignored() {
-    // A config stored before the move to owned trigger types still carries the
-    // stream names; it must keep loading and the keys are dropped on write.
+fn stream_name_keys_load_and_are_ignored() {
+    // A config with events_stream / raw_events_stream loads and the keys are
+    // dropped on write.
     let stored = json!({
         "defaults": { "model": "grok-4" },
         "events_stream": "agent::events",

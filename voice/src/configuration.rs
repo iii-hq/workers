@@ -8,8 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -35,6 +34,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "voice::on-config-change";
+/// The configuration worker's change event.
+const ON_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 /// Base backoff between configuration RPC retries, multiplied by the attempt
 /// number for a linear backoff.
@@ -66,7 +67,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -91,7 +92,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 
 /// `Ok(None)` only for a missing entry, never a missing service.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -105,8 +106,9 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Payload of the internal config-change handler. The handler re-fetches the
-/// authoritative value, so this carries only the advisory id.
+/// Payload of the internal config-change handler: the `configuration::on-updated`
+/// event, delivered as output. The handler re-fetches the authoritative value,
+/// so it reads only the advisory id.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
     /// Configuration id that changed (advisory; the handler re-fetches).
@@ -120,14 +122,16 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. The handler re-fetches via `configuration::get` and ignores the
-/// trigger payload, so a direct call can never inject config.
-pub fn register_config_trigger(
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` for this worker's entry with it. The handler
+/// re-fetches via `configuration::get` and ignores the event payload, so a
+/// direct call can never inject config. The observer stays `pending` while
+/// the configuration worker is absent; dropping the handle does not dispose it.
+pub fn observe_config_changes(
     iii: &IIIClient,
     cell: ConfigCell,
     on_reload: Arc<dyn Fn(Arc<WorkerConfig>) + Send + Sync>,
-) -> Result<(), Error> {
+) -> ObserverHandle {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -149,21 +153,26 @@ pub fn register_config_trigger(
         ),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .filters(config_update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn config_update_filters(id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Reload from the AUTHORITATIVE configuration. Returns the new snapshot when
 /// one was applied.
 ///
-/// The caller-supplied trigger payload is deliberately ignored:
+/// The caller-supplied event payload is deliberately ignored:
 /// `voice::on-config-change` is a bus function, so trusting a `new_value` in
 /// the payload would let any caller repoint the transcription endpoint.
 async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) -> Option<Arc<WorkerConfig>> {
@@ -202,7 +211,7 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -210,8 +219,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -267,6 +276,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn config_observer_selects_updates_of_this_entry() {
+        assert_eq!(
+            config_update_filters("voice"),
+            json!({
+                "input.id": { "$eq": "voice" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
+    }
 
     /// Only the entry's missing code short-circuits retries, never compound or message-only matches.
     #[test]

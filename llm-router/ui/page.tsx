@@ -40,7 +40,7 @@ function RouterConfigForm({
   useEffect(() => {
     let cancelled = false
     void host.iii
-      .trigger('router::provider::list', {})
+      .call('router::provider::list', {})
       .then((response) => {
         if (!cancelled) setCredentials(credentialsFromProviderList(response))
       })

@@ -2,8 +2,8 @@
 //!
 //! Boot: before any thread exists, turn off SDK payload tracing and take
 //! `III_SECRETS_KEY` out of the environment; connect; register the `secrets`
-//! configuration entry and read it; open the vault; register the
-//! `secrets::changed` trigger type and the `secrets::*` functions; follow
+//! configuration entry and read it; open the vault; register
+//! `secrets::on-changed` and the `secrets::*` functions; follow
 //! configuration changes and edits to `.env`; sleep until SIGINT/SIGTERM.
 use std::sync::Arc;
 
@@ -14,7 +14,6 @@ use tracing_subscriber::EnvFilter;
 
 use secrets::access::CallerDirectory;
 use secrets::detect::Detector;
-use secrets::events::Subscribers;
 use secrets::keys::EnvKey;
 use secrets::{configuration, Ctx, Store, StorePaths};
 
@@ -77,13 +76,12 @@ async fn run(cli: Cli, env_key: EnvKey) -> anyhow::Result<()> {
         iii: iii.clone(),
         store: store.clone(),
         callers: CallerDirectory::new(iii.clone()),
-        subscribers: Subscribers::default(),
         detector: Detector::from_env(),
         env_watch: Default::default(),
     });
     secrets::register(&ctx);
     secrets::envwatch::follow(&ctx).await;
-    configuration::bind_reload(&iii, ctx.clone())?.run().await;
+    configuration::bind_reload(&iii, ctx.clone()).run().await;
     let result = wait_for_shutdown().await;
     ctx.env_watch
         .lock()

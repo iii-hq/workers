@@ -4,15 +4,15 @@ Connects a local iii engine to a remote iii instance over a long-lived
 `iii-sdk` WebSocket connection so functions on either side can call across the
 boundary. `expose` entries make a local function callable *from* the remote
 engine; `forward`/`invoke` entries make a remote function callable *from* this
-engine. There are no trigger types.
+engine. Every function it provides is callable; it hosts no event functions.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=bridge
+iii call compose::add worker=bridge
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Function surface
@@ -23,6 +23,7 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 | `bridge.invoke_async` | `{ function_id, data?, timeout_ms? }` | `null`, immediately — fire-and-forget; `timeout_ms` is ignored |
 | forward entry (`local_function`) | whatever the remote `remote_function` expects | remote function's return value, waits up to the entry's `timeout_ms` (default `30000`) |
 | expose entry (registered on the remote, name defaults to `local_function`) | whatever the local `local_function` expects | local function's return value; a local failure's real `code`/`message`/`stacktrace` is forwarded untouched |
+| `bridge::on-config-change` | the `configuration::on-updated` event (ignored) | internal: observes `configuration::on-updated` for the `bridge` entry and reloads the configuration; returns `{ ok }` |
 
 `bridge.invoke`/`bridge.invoke_async`/forward calls collapse any remote-side
 failure to `code: "bridge_error"` — the underlying remote error code is never
@@ -69,8 +70,7 @@ The legacy built-in bridge worker registers the same function ids
 names). Two workers registering the same function id on one engine collide —
 whichever registers last wins — so this worker requires the legacy built-in to be
 absent: omit it from the engine's `config.yaml` (a config that doesn't list a
-worker won't run it). This is a duplicate-function-id collision, not a trigger
-type conflict — `bridge` registers no trigger types.
+worker won't run it). This is a duplicate-function-id collision.
 
 On boot, this worker queries the engine for connected workers and refuses to
 start with a clear error if the legacy built-in is still active, so a stale config
@@ -93,6 +93,5 @@ depended on the legacy built-in worker.
 | Expose functions | registered on the remote engine, name defaults to local, real error body forwarded | same |
 | Local/control URL | engine-managed | `--url` → `III_URL` → `ws://127.0.0.1:49134` |
 | Remote target URL | `config.url` → `III_URL` env → `ws://0.0.0.0:49134` | same legacy-compatible chain; set `config.url` explicitly under Compose |
-| Trigger types | none | none |
 | Config source | engine `config.yaml` (restart to change) | `configuration` worker entry `bridge`, hot-reload |
 | Removing forward/expose entries | restart re-registers cleanly | entry disabled (handler errors); full removal needs worker restart |

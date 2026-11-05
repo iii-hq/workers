@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BridgeRpcError, BridgeTransportError } from '../src/bridge.js';
-import { TriggerAction } from 'iii-sdk';
+import { CallAction } from 'iii-sdk';
 import { createAgentFeeds, releaseEmitterSequence } from '../src/agent-feed.js';
 import {
   CursorRunRequestSchema,
@@ -11,7 +11,7 @@ import {
 import type { RunStreamMessageWire, SessionRecord } from '../src/types.js';
 import {
   AGENT,
-  boundFeeds,
+  observedFeeds,
   clone,
   consumerFor,
   FakeBridgeClient,
@@ -24,10 +24,10 @@ import {
 } from './helpers.js';
 
 describe('CursorWorker run lifecycle', () => {
-  it('delivers to the binding namespace and starts a new epoch after a sequence reset', async () => {
+  it('calls the feed fire-and-forget and starts a new epoch after a sequence reset', async () => {
     const iii = new MockIII();
     const { emit } = createAgentFeeds(iii.asClient());
-    await iii.bind(AGENT, 'session-one', { namespace: 'tenant-a' });
+    await iii.addObserver(AGENT, 'session-one');
 
     await expect(emit('session-one', { type: 'message_update' })).resolves.toBe(true);
     await emit('session-one', { type: 'message_update' });
@@ -36,12 +36,12 @@ describe('CursorWorker run lifecycle', () => {
     await emit('session-one', { type: 'message_update' }, 'cursor-stable');
     const [first, second, third, fourth] = iii.feedPayloads(AGENT);
 
-    expect(iii.triggerCalls.at(-1)).toMatchObject({
-      function_id: consumerFor(AGENT),
-      namespace: 'tenant-a',
-      action: TriggerAction.Void(),
+    expect(iii.calls.at(-1)).toMatchObject({
+      function_id: AGENT,
+      action: CallAction.Void(),
     });
-    expect(iii.triggerCalls.some((call) => call.function_id === 'stream::set')).toBe(false);
+    expect(iii.deliveries.at(-1)?.target).toBe(consumerFor(AGENT));
+    expect(iii.calls.some((call) => call.function_id === 'stream::set')).toBe(false);
     expect([first.seq, second.seq, third.seq, fourth.seq]).toEqual([0, 1, 0, 1]);
     expect(second.epoch).toBe(first.epoch);
     expect(third.epoch).not.toBe(first.epoch);
@@ -57,8 +57,8 @@ describe('CursorWorker run lifecycle', () => {
   it('redacts credentials from event-delivery warnings', async () => {
     const iii = new MockIII();
     const { emit } = createAgentFeeds(iii.asClient());
-    await iii.bind(AGENT, 'session');
-    iii.trigger = async () => {
+    await iii.addObserver(AGENT, 'session');
+    iii.call = async () => {
       throw new Error('delivery failed for token_private_123');
     };
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -236,19 +236,19 @@ describe('CursorWorker run lifecycle', () => {
 
   it('allows only one local Send when two worker processes race the same new session', async () => {
     const iii = new MockIII();
-    const originalTrigger = iii.trigger.bind(iii);
+    const originalCall = iii.call.bind(iii);
     let initialGets = 0;
     let releaseGets: () => void = () => undefined;
     const bothLoaded = new Promise<void>((resolvePromise) => {
       releaseGets = resolvePromise;
     });
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'state::get' && initialGets < 2) {
         initialGets += 1;
         if (initialGets === 2) releaseGets();
         await bothLoaded;
       }
-      return originalTrigger(request);
+      return originalCall(request);
     };
     const firstClient = successfulClient('run-first');
     const secondClient = successfulClient('run-second');
@@ -274,7 +274,7 @@ describe('CursorWorker run lifecycle', () => {
 
   it('acknowledges only the background start that wins the durable session reservation', async () => {
     const iii = new MockIII();
-    const originalTrigger = iii.trigger.bind(iii);
+    const originalCall = iii.call.bind(iii);
     let reads = 0;
     let releasePreflight: () => void = () => undefined;
     const preflightLoaded = new Promise<void>((resolvePromise) => {
@@ -284,7 +284,7 @@ describe('CursorWorker run lifecycle', () => {
     const reservationLoaded = new Promise<void>((resolvePromise) => {
       releaseReservation = resolvePromise;
     });
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       const payload = request.payload as { key?: string };
       if (request.function_id === 'state::get' && payload.key === 'contended-background') {
         reads += 1;
@@ -299,7 +299,7 @@ describe('CursorWorker run lifecycle', () => {
           return null;
         }
       }
-      return originalTrigger(request);
+      return originalCall(request);
     };
     const firstClient = successfulClient('run-background-first');
     const secondClient = successfulClient('run-background-second');
@@ -351,12 +351,12 @@ describe('CursorWorker run lifecycle', () => {
 
   it('recovers an initial durable claim after a crash before agent creation', async () => {
     const iii = new MockIII();
-    const originalTrigger = iii.trigger.bind(iii);
+    const originalCall = iii.call.bind(iii);
     let crashInjected = false;
     let failCrashLoad = false;
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'state::compare-and-set' && !crashInjected) {
-        await originalTrigger(request);
+        await originalCall(request);
         crashInjected = true;
         failCrashLoad = true;
         throw new Error('process exited after persisting the initial claim');
@@ -365,7 +365,7 @@ describe('CursorWorker run lifecycle', () => {
         failCrashLoad = false;
         throw new Error('process is gone');
       }
-      return originalTrigger(request);
+      return originalCall(request);
     };
     const client = successfulClient('run-recovered');
     const factory = new FakeBridgeFactory(client);
@@ -689,7 +689,7 @@ describe('CursorWorker run lifecycle', () => {
 
   it('does not publish non-durable Send deltas and de-duplicates durable Observe replay', async () => {
     const iii = new MockIII();
-    const { emit, emitRaw } = await boundFeeds(iii, 'stream-replay');
+    const { emit, emitRaw } = await observedFeeds(iii, 'stream-replay');
     const firstClient = new FakeBridgeClient(unaryResponse, (call) => firstProcessStream(call));
     const firstWorker = new CursorWorker(
       iii.asClient(),
@@ -1126,13 +1126,13 @@ describe('CursorWorker run lifecycle', () => {
   it('persists terminal state before publishing terminal success events', async () => {
     const iii = new MockIII();
     const order: string[] = [];
-    const originalTrigger = iii.trigger.bind(iii);
-    iii.trigger = async (request: Record<string, unknown>) => {
+    const originalCall = iii.call.bind(iii);
+    iii.call = async (request: Record<string, unknown>) => {
       if (request.function_id === 'state::compare-and-set') {
         const value = (request.payload as { value: SessionRecord }).value;
         if (value.status === 'done') order.push('save-done');
       }
-      return originalTrigger(request);
+      return originalCall(request);
     };
     const client = successfulClient();
     const worker = new CursorWorker(
@@ -1557,24 +1557,20 @@ describe('CursorWorker run lifecycle', () => {
     });
   });
 
-  it('falls back to a complete body when a streamed delta cannot be delivered', async () => {
+  it('falls back to a complete body when a streamed delta cannot be sent', async () => {
     const iii = new MockIII();
-    const originalTrigger = iii.trigger.bind(iii);
+    const originalCall = iii.call.bind(iii);
     let rejected = false;
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       const payload = request.payload as { event?: { type?: string } };
-      if (
-        !rejected &&
-        request.function_id === consumerFor(AGENT) &&
-        payload.event?.type === 'message_update'
-      ) {
+      if (!rejected && request.function_id === AGENT && payload.event?.type === 'message_update') {
         rejected = true;
-        throw new Error('consumer unavailable');
+        throw new Error('OVERFLOW');
       }
-      return originalTrigger(request);
+      return originalCall(request);
     };
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const { emit, emitRaw } = await boundFeeds(iii, 'delivery-failure');
+    const { emit, emitRaw } = await observedFeeds(iii, 'delivery-failure');
     const worker = new CursorWorker(
       iii.asClient(),
       testConfig,
@@ -1599,9 +1595,9 @@ describe('CursorWorker run lifecycle', () => {
     warning.mockRestore();
   });
 
-  it('marks the body streamed only when a bound consumer received the deltas', async () => {
+  it('marks the body streamed only when the deltas were sent to an observer', async () => {
     const bound = new MockIII();
-    const feeds = await boundFeeds(bound, 'streamed');
+    const feeds = await observedFeeds(bound, 'streamed');
     await new CursorWorker(
       bound.asClient(),
       testConfig,
@@ -1628,7 +1624,7 @@ describe('CursorWorker run lifecycle', () => {
       bound.feedPayloads(RAW).map((_, index) => index),
     );
 
-    // Nobody bound: no trigger call at all, the turn still finishes.
+    // Nobody observes: no feed call at all, the turn still finishes.
     const unbound = new MockIII();
     const quiet = createAgentFeeds(unbound.asClient());
     const response = await new CursorWorker(
@@ -1645,7 +1641,9 @@ describe('CursorWorker run lifecycle', () => {
       session_id: 'quiet',
     });
     expect(response.status).toBe('FINISHED');
-    expect(unbound.triggerCalls.some((call) => call.action !== undefined)).toBe(false);
+    expect(
+      unbound.calls.some((call) => call.function_id === AGENT || call.function_id === RAW),
+    ).toBe(false);
   });
 });
 
@@ -1937,18 +1935,18 @@ function activeRecord(sessionId: string, prompt: string, runId: string): Session
 }
 
 function holdFirstStateReads(iii: MockIII, count: number): void {
-  const originalTrigger = iii.trigger.bind(iii);
+  const originalCall = iii.call.bind(iii);
   let reads = 0;
   let release: () => void = () => undefined;
   const ready = new Promise<void>((resolvePromise) => {
     release = resolvePromise;
   });
-  iii.trigger = async (request: Record<string, unknown>) => {
+  iii.call = async (request: Record<string, unknown>) => {
     if (request.function_id === 'state::get' && reads < count) {
       reads += 1;
       if (reads === count) release();
       await ready;
     }
-    return originalTrigger(request);
+    return originalCall(request);
   };
 }

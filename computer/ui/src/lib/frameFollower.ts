@@ -1,8 +1,8 @@
 /**
  * Notify-then-fetch follower for one session's newest screencast frame.
  *
- * The worker keeps exactly one frame per session and fires
- * `computer::frame-changed` (a small, image-free notification) after each
+ * The worker keeps exactly one frame per session and calls
+ * `computer::on-frame-changed` (a small, image-free notification) after each
  * one; this follower turns those notifications into `computer::frame` reads:
  *
  * - Ordering: frames are ordered by `(epoch, frame_seq)`. A notification or
@@ -62,7 +62,7 @@ export interface FrameFollowerStats {
 }
 
 export interface FrameFollower {
-  /** Feed one `computer::frame-changed` payload. Never throws, never awaits. */
+  /** Feed one `computer::on-frame-changed` payload. Never throws, never awaits. */
   notify(note: FrameChangeNote): void
   /** Read whatever is stored now (initial read, recovery). */
   resync(): Promise<void>

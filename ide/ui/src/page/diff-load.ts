@@ -67,7 +67,7 @@ interface ExecResponse {
 /** `git show <spec>` as text; null when the path is absent at that spec
     (a file added since, or removed by then). */
 async function gitSide(host: Host, root: string, spec: string): Promise<string | null> {
-  const out = await host.iii.trigger<ExecResponse>('shell::exec', {
+  const out = await host.iii.call<ExecResponse>('shell::exec', {
     command: 'git',
     args: ['show', spec],
     cwd: root,
@@ -352,7 +352,7 @@ export async function loadDiffContents(
       return imageOrText(path, before, after)
     }
     case 'change': {
-      const out = await host.iii.trigger<ChangeDiffResponse>('coder::change-diff', { change_id: source.changeId })
+      const out = await host.iii.call<ChangeDiffResponse>('coder::change-diff', { change_id: source.changeId })
       if (out.is_binary) {
         return {
           oldContents: '',

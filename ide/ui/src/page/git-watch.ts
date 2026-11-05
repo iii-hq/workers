@@ -1,24 +1,24 @@
 /* A folder's repository and worktree changes, pushed by the ide worker and
    shared: the IDE header's branch chip, the chat composer's and the Git
-   window on one folder hold one binding of each kind, not one apiece.
+   window on one folder hold one observer of each kind, not one apiece.
 
-   - `watchGit` binds `shell::git-changed`: HEAD, the index, refs and the
-     other worktrees of the repository the folder is in, and the repository
-     itself appearing or going (the worker watches a folder in none for a
-     `.git`). `shell::changed` leaves `.git` out, so this is how a
-     `git switch` typed in a terminal reaches the page.
-   - `watchWorktree` hears the folder's files change (`shell::changed`, the
-     changes git does not ignore), coalesced: what can make the worktree
-     dirty or clean. A view that already hears the folder (the IDE page's
-     own `shell::changed` binding) passes its events on with
-     `publishWorktree`, and while it does no second binding is made.
+   - `watchGit` observes `shell::on-git-changed`: HEAD, the index, refs and
+     the other worktrees of the repository the folder is in, and the
+     repository itself appearing or going (the worker watches a folder in
+     none for a `.git`). `shell::on-changed` leaves `.git` out, so this is
+     how a `git switch` typed in a terminal reaches the page.
+   - `watchWorktree` hears the folder's files change (`shell::on-changed`,
+     the changes git does not ignore), coalesced: what can make the
+     worktree dirty or clean. A view that already hears the folder (the IDE
+     page's own `shell::on-changed` observer) passes its events on with
+     `publishWorktree`, and while it does no second observer is made.
 
    Every event bumps a generation that reads of the folder key their shared
    results on: a read started before the event never answers after it. */
 
 import type { Host } from '@iii-dev/console-ui'
 
-/** `shell::git-changed`'s payload (ide/src/git_events.rs). */
+/** `shell::on-git-changed`'s event (ide/src/git_events.rs). */
 export interface GitChangedEvent {
   /** The watched folder, canonical. */
   path: string
@@ -36,13 +36,13 @@ interface Entry {
   listeners: Set<(event: GitChangedEvent) => void>
   /** Views passing the folder's worktree events on (worktree kind only). */
   publishers: number
-  /** The engine binding, while one is wanted. */
+  /** Disposes the engine observer, while one is wanted. */
   off: (() => void) | null
   /** A worktree burst waiting out its coalesce window. */
   timer: ReturnType<typeof setTimeout> | null
 }
 
-const TRIGGER: Record<Kind, string> = { git: 'shell::git-changed', worktree: 'shell::changed' }
+const SOURCE: Record<Kind, string> = { git: 'shell::on-git-changed', worktree: 'shell::on-changed' }
 // The `iii::` prefix keeps the per-event invocations span-suppressed.
 const FUNCTION: Record<Kind, string> = {
   git: 'iii::shell-ui::git-changed',
@@ -53,7 +53,7 @@ const FUNCTION: Record<Kind, string> = {
 export const WORKTREE_COALESCE_MS = 250
 
 const registries = new WeakMap<Host, Map<string, Entry>>()
-let bindings = 0
+let observers = 0
 // One counter for every folder and kind: a generation never repeats, so a
 // result keyed on one is never mistaken for a later one.
 let generations = 0
@@ -100,9 +100,9 @@ function noteWorktree(host: Host, dir: string, entry: Entry) {
   }, WORKTREE_COALESCE_MS)
 }
 
-function bind(host: Host, kind: Kind, dir: string, entry: Entry): () => void {
-  bindings += 1
-  const functionId = `${FUNCTION[kind]}::${bindings}`
+function observe(host: Host, kind: Kind, dir: string, entry: Entry): () => void {
+  observers += 1
+  const functionId = `${FUNCTION[kind]}::${observers}`
   const offHandler = host.iii.on<GitChangedEvent & { ignored?: boolean }>(functionId, (event) => {
     if (kind === 'git') {
       if (Array.isArray(event?.changes)) deliver(host, kind, dir, entry, event)
@@ -111,33 +111,32 @@ function bind(host: Host, kind: Kind, dir: string, entry: Entry): () => void {
     // Ignored paths never change what `git status` reports.
     if (event?.ignored !== true) noteWorktree(host, dir, entry)
   })
-  let offTrigger: () => void = () => {}
+  let offObserver: () => void = () => {}
   try {
-    offTrigger = host.iii.registerTrigger({
-      type: TRIGGER[kind],
-      function_id: `${functionId}::${host.iii.browserId}`,
-      config: { path: dir },
-    })
+    offObserver = host.iii.observe(
+      { function_id: SOURCE[kind], args: { path: dir } },
+      `${functionId}::${host.iii.browserId}`,
+    )
   } catch {
-    // No ide worker to bind: the views keep their last read.
+    // No engine to observe through: the views keep their last read.
   }
   return () => {
     try {
-      offTrigger()
+      offObserver()
     } finally {
       offHandler()
     }
   }
 }
 
-/** Bind while someone listens and nobody passes the events on already. */
+/** Observe while someone listens and nobody passes the events on already. */
 function sync(host: Host, kind: Kind, dir: string) {
   const map = registry(host)
   const key = keyOf(kind, dir)
   const entry = map.get(key)
   if (entry === undefined) return
   const wanted = entry.listeners.size > 0 && entry.publishers === 0
-  if (wanted && entry.off === null) entry.off = bind(host, kind, dir, entry)
+  if (wanted && entry.off === null) entry.off = observe(host, kind, dir, entry)
   else if (!wanted && entry.off !== null) {
     entry.off()
     entry.off = null
@@ -181,9 +180,9 @@ export function watchWorktree(host: Host, dir: string, listener: () => void): ()
   return listen(host, 'worktree', dir, () => listener())
 }
 
-/** For a view already bound to `dir`'s `shell::changed`: pass its changes
-    on with `note`, and the watchers of `dir` make no binding of their own
-    meanwhile. `off` when the view lets go of the folder. */
+/** For a view already observing `dir`'s `shell::on-changed`: pass its
+    changes on with `note`, and the watchers of `dir` make no observer of
+    their own meanwhile. `off` when the view lets go of the folder. */
 export function publishWorktree(host: Host, dir: string): { note: () => void; off: () => void } {
   const entry = entryFor(host, 'worktree', dir)
   entry.publishers += 1

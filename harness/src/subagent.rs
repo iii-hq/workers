@@ -3,13 +3,14 @@
 //! `harness::send`. Spawning is fire-and-forget: the caller gets the child's
 //! ids immediately and never its result — delegation flows one way, downward,
 //! and outcomes come back only through the state the child writes and the
-//! `harness::turn-completed` event its finalize emits. The `ParentLink` is
+//! `harness::on-turn-completed` event its finalize emits. The `ParentLink` is
 //! kept for event filters and console nesting, not for result delivery.
 
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use crate::call::ResultData;
 use crate::clients::SessionClient;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
@@ -19,7 +20,6 @@ use crate::functions::spawn::{SpawnRequest, SubagentDisplay};
 use crate::ids;
 use crate::policy;
 use crate::prompt;
-use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
 use crate::types::model::ThinkingLevel;
@@ -182,8 +182,8 @@ pub async fn spawn_child(
 /// options, else the read-only baseline. Then the capability wall: unless the
 /// spawn opted into `orchestrator: true`, the child's deny globs gain
 /// [`policy::CONTROL_PLANE_DENY`] — a leaf performs its assignment and updates
-/// the shared medium; it cannot spawn, message sessions, or touch trigger
-/// registrations, whatever its prompt says. Denies union through subsetting,
+/// the shared medium; it cannot spawn, message sessions, or remove
+/// observers, whatever its prompt says. Denies union through subsetting,
 /// so a leaf's own children stay leaves. Any real whitelist then keeps the
 /// contract-discovery pair ([`policy::CHILD_DISCOVERY_ALLOW`]) and the skills
 /// fetch ([`policy::CHILD_SKILLS_ALLOW`]): the sub-agent contract makes a
@@ -257,7 +257,7 @@ fn child_contract_ids(
     task: &str,
     profile_preloaded: Option<&BTreeMap<String, Option<String>>>,
 ) -> Vec<String> {
-    let Some(p) = policy.filter(|p| p.expose == ExposeMode::AgentTrigger && !p.allow.is_empty())
+    let Some(p) = policy.filter(|p| p.expose == ExposeMode::AgentCall && !p.allow.is_empty())
     else {
         return Vec::new();
     };
@@ -329,7 +329,7 @@ async fn seed_contracts(
         .into_iter()
         .filter(|id| {
             policy.allows(id)
-                && (crate::functions::subscribe::control_contract(id).is_some()
+                && (crate::functions::observe::control_contract(id).is_some()
                     || snapshot.functions.iter().any(|d| d.function_id == *id))
         })
         .collect();
@@ -648,8 +648,8 @@ async fn seed_child(
     // parentless spawn has no parent turn, but a caller-supplied
     // `parent_session_id` still writes a display-only link so the console
     // nests the child (no policy inheritance, no parent-call resolution).
-    // `spawned_by` is always "agent": every spawn is a direct call now —
-    // trigger delivery never creates an agent.
+    // `spawned_by` is always "agent": every spawn is a direct call — an
+    // observer delivery never creates an agent.
     let linkage = send::session_metadata_with_agent(
         child_session_metadata(
             parent,
@@ -1630,16 +1630,16 @@ mod tests {
         for id in [
             "harness::spawn",
             "harness::send",
-            "engine::unregister_trigger",
-            "engine::registered-triggers::list",
+            "harness::unobserve",
+            "engine::observers::list",
         ] {
             assert!(!compiled.allows(id), "{id} must be denied to a leaf child");
         }
-        // A leaf keeps registration so it can park on its own work instead of
-        // polling for it; `functions::subscribe` refuses the control-plane
-        // shapes of it. See MOT-4766.
+        // A leaf keeps `harness::observe` so it can park on its own work
+        // instead of polling for it; `functions::observe` refuses the
+        // control-plane shapes of it. See MOT-4766.
         assert!(
-            compiled.allows("engine::register_trigger"),
+            compiled.allows("harness::observe"),
             "a leaf must be able to arm its own wake"
         );
     }
@@ -1652,7 +1652,7 @@ mod tests {
         let orch = child_functions(&cfg, Some(&parent), None, true).policy;
         let compiled = policy::CompiledPolicy::from(orch.as_ref());
         assert!(compiled.allows("harness::spawn"));
-        assert!(compiled.allows("engine::register_trigger"));
+        assert!(compiled.allows("harness::observe"));
 
         // A narrow parent grants nothing extra, orchestrator or not.
         parent.options.functions = Some(FunctionPolicy {
@@ -1720,7 +1720,7 @@ mod tests {
         assert!(compiled.allows("directory::skills::get"));
         // The union grants the metadata plane only — the leaf wall and the
         // whitelist still hold.
-        assert!(!compiled.allows("engine::register_trigger"));
+        assert!(!compiled.allows("harness::observe"));
         assert!(!compiled.allows("database::execute"));
     }
 
@@ -1745,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_short_explicit_agent_trigger_allow_list_is_seeded_whole() {
+    fn only_a_short_explicit_agent_call_allow_list_is_seeded_whole() {
         let policy = |allow: Vec<String>, expose: ExposeMode| FunctionPolicy {
             allow,
             deny: vec![],
@@ -1755,10 +1755,10 @@ mod tests {
             .map(|i| format!("w::f{i}"))
             .collect();
         for p in [
-            policy(vec!["state::*".into()], ExposeMode::AgentTrigger),
-            policy(vec!["*".into()], ExposeMode::AgentTrigger),
-            policy(many, ExposeMode::AgentTrigger),
-            policy(vec![], ExposeMode::AgentTrigger),
+            policy(vec!["state::*".into()], ExposeMode::AgentCall),
+            policy(vec!["*".into()], ExposeMode::AgentCall),
+            policy(many, ExposeMode::AgentCall),
+            policy(vec![], ExposeMode::AgentCall),
             policy(vec!["state::set".into()], ExposeMode::Native),
         ] {
             assert!(
@@ -1802,7 +1802,7 @@ mod tests {
         let policy = FunctionPolicy {
             allow: [allow.clone(), vec!["x::*".into()]].concat(),
             deny: vec![],
-            expose: ExposeMode::AgentTrigger,
+            expose: ExposeMode::AgentCall,
         };
         // The glob disqualifies the allow-list; task ids fill up to the cap.
         let task = allow.join(" ");
@@ -2091,37 +2091,25 @@ mod tests {
 
     #[tokio::test]
     async fn final_leaf_policy_filters_profile_and_seed_without_granting_controls() {
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let deps = crate::functions::observe::tests::disconnected_deps();
         let cfg = WorkerConfig::default();
         let requested = FunctionPolicy {
-            allow: vec![
-                "engine::register_trigger".into(),
-                "engine::unregister_trigger".into(),
-            ],
+            allow: vec!["harness::observe".into(), "harness::unobserve".into()],
             ..Default::default()
         };
         for orchestrator in [false, true] {
             let child = child_functions(&cfg, None, Some(&requested), orchestrator);
             let policy = crate::policy::CompiledPolicy::from(child.policy.as_ref());
-            let ids = vec![
-                "engine::register_trigger".into(),
-                "engine::unregister_trigger".into(),
-            ];
+            let ids = vec!["harness::observe".into(), "harness::unobserve".into()];
             let (profile, unavailable, _) =
                 crate::agents::preload_contracts(&deps, &ids, &policy).await;
             assert_eq!(profile.len(), if orchestrator { 2 } else { 1 });
             assert_eq!(unavailable.is_empty(), orchestrator);
             let (seed, digests) = seed_contracts(&deps, ids, &policy).await;
             let seed = seed.unwrap();
-            assert!(seed.contains("### `engine::register_trigger`"));
-            assert_eq!(
-                seed.contains("### `engine::unregister_trigger`"),
-                orchestrator
-            );
-            assert_eq!(
-                digests.contains_key("engine::unregister_trigger"),
-                orchestrator
-            );
+            assert!(seed.contains("### `harness::observe`"));
+            assert_eq!(seed.contains("### `harness::unobserve`"), orchestrator);
+            assert_eq!(digests.contains_key("harness::unobserve"), orchestrator);
             assert!(policy.allows("engine::functions::info"));
             assert!(child
                 .dispatch_only
@@ -2129,7 +2117,7 @@ mod tests {
         }
         let denied = crate::policy::CompiledPolicy::from(None);
         assert_eq!(
-            seed_contracts(&deps, vec!["engine::register_trigger".into()], &denied).await,
+            seed_contracts(&deps, vec!["harness::observe".into()], &denied).await,
             (None, BTreeMap::new())
         );
         // A task-named id only the internal inventory knows is never seeded,

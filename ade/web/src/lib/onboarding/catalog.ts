@@ -285,7 +285,7 @@ export const PILLARS: readonly Pillar[] = [
   {
     id: 'observable',
     title: 'Observable',
-    line: 'Follow every model turn, function call, and trigger in one place.',
+    line: 'Follow every model turn, function call, and observer in one place.',
   },
   {
     id: 'discoverable',

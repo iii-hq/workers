@@ -15,7 +15,7 @@ import {
 
 /** Engine worker name for the worktree worker. */
 const WORKTREE_WORKER_NAME = 'worktree'
-/** Base id for the browser-local handler bound to the `worker` trigger. */
+/** Base id for the browser-local `engine::on-workers-changed` handler. */
 const WORKTREE_WATCH_FN = 'ade::worktree-watch'
 
 export type WorktreeStatus = WorkerPresence
@@ -35,7 +35,7 @@ export function useWorktreeStatus(enabled: boolean): WorktreeStatus {
 
 /**
  * Whether the worktree worker's registry functions are registered and safe
- * to trigger. False during the initial presence probe and while the worker
+ * to call. False during the initial presence probe and while the worker
  * is absent.
  */
 export function isWorktreeAvailable(status: WorktreeStatus): boolean {

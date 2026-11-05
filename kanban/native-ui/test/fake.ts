@@ -3,7 +3,7 @@
  * and activity, agents, projects and releases that the calls read and
  * change the way kanban/src/board.rs does (a move renumbers its column and
  * compacts the one it left; a create or a status change goes to the end),
- * the `kanban:change` events those writes fire, and a way to hold a call
+ * the `kanban::on-change` calls those writes make, and a way to hold a call
  * open or to answer it otherwise.
  */
 
@@ -79,7 +79,7 @@ export class FakeKanban {
   ]
   next = 1
   seq = 1
-  /** The host to send `kanban:change` to, when set (`emit`). */
+  /** The host that delivers `kanban::on-change` calls, when set (`emit`). */
   host: TestHost | null = null
   /** Answers by function id (without `kanban::`) that win over the fake's own. */
   overrides: Record<string, (payload: Payload) => unknown> = {}
@@ -195,10 +195,10 @@ export class FakeKanban {
   /** Deliveries in flight (`elsewhere` waits for them). */
   private sending: Promise<unknown>[] = []
 
-  /** The `kanban:change` of a write, sent to the host when one is attached. */
+  /** The `kanban::on-change` call of a write, delivered by the host when one is attached. */
   emit(event: string, t: FakeTicket, at = t.updated_at): Promise<void> {
     if (!this.host) return Promise.resolve()
-    const sent = this.host.emitTrigger('kanban:change', {
+    const sent = this.host.emitObserved('kanban::on-change', {
       event,
       ticket_id: t.id,
       ticket_key: t.key,
@@ -517,7 +517,7 @@ export async function start(
     ui?: TestHostOptions['ui']
     storage?: TestHostOptions['storage']
     mount?: boolean
-    /** Send the writes' `kanban:change` events to the host (default true). */
+    /** Deliver the writes' `kanban::on-change` calls through the host (default true). */
     live?: boolean
   } = {},
 ): Promise<Started> {

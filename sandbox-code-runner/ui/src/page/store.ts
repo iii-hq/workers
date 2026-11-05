@@ -7,14 +7,14 @@
  * exactly one initial fetch (retried with backoff until it lands) and
  * after that NO timers run: fleet changes arrive as events, and only
  * runtime-kind events — plus fleet events whose sandbox MEMBERSHIP
- * changed — trigger a single debounced `list_runtimes` re-read; the
+ * changed — cost a single debounced `list_runtimes` re-read; the
  * refresh button stays for humans.
  *
  * A `sandbox::list` failure that reads as function-not-found flips
  * `daemonAbsent` — rendered as its own empty state; the watcher emits the
  * transition back when the daemon appears.
  *
- * Framework-free on purpose: timers and the trigger transport are
+ * Framework-free on purpose: timers and the call transport are
  * injectable, so store.test.ts drives bootstrap, backoff, and event
  * application deterministically. useFleet.ts is the React face.
  */
@@ -246,7 +246,7 @@ export function backoffDelayMs(consecutiveErrors: number): number {
 
 /* ── the store ────────────────────────────────────────────────────────── */
 
-export type TriggerFn = (
+export type CallFn = (
   functionId: string,
   payload?: Record<string, unknown>,
 ) => Promise<unknown>
@@ -275,7 +275,7 @@ export interface FleetStore {
 }
 
 export function createFleetStore(
-  trigger: TriggerFn,
+  call: CallFn,
   deps: FleetStoreDeps = {},
 ): FleetStore {
   const setTimer =
@@ -341,14 +341,14 @@ export function createFleetStore(
     // that must not flicker the UI's loading affordances.
     set({ loading: state.lastUpdatedAt === null })
     try {
-      const sandboxes = parseSandboxList(await trigger(LIST_FN, {}))
+      const sandboxes = parseSandboxList(await call(LIST_FN, {}))
       if (gen !== generation) return
 
       // Runtimes ride along; the code-runner being absent or mid-restart
       // must not fail the fleet read.
       let runtimes: RuntimeInfo[] = []
       try {
-        runtimes = parseRuntimes(await trigger(RUNTIMES_FN, {}))
+        runtimes = parseRuntimes(await call(RUNTIMES_FN, {}))
       } catch {
         runtimes = []
       }
@@ -356,7 +356,7 @@ export function createFleetStore(
       let images = state.images
       if (withCatalog || !catalogLoaded) {
         try {
-          images = parseCatalog(await trigger(CATALOG_FN, {}))
+          images = parseCatalog(await call(CATALOG_FN, {}))
           catalogLoaded = true
         } catch {
           /* keep the previous catalog */
@@ -416,7 +416,7 @@ export function createFleetStore(
       const gen = generation
       void (async () => {
         try {
-          const runtimes = parseRuntimes(await trigger(RUNTIMES_FN, {}))
+          const runtimes = parseRuntimes(await call(RUNTIMES_FN, {}))
           // A stop() while the read was in flight must not write into
           // (or past) the stopped store.
           if (gen !== generation || !running) return

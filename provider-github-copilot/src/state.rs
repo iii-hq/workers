@@ -4,8 +4,7 @@
 //! Copilot bearer is deliberately NOT persisted — it lives ~25 minutes and
 //! is cheap to re-exchange on boot.
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 pub const STATE_SCOPE: &str = "provider-github-copilot";
@@ -33,7 +32,7 @@ impl ProbeResults {
 /// Load the cached verdicts, discarding an expired set.
 pub async fn load_probe_results(iii: &IIIClient) -> ProbeResults {
     let Ok(value) = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".into(),
             payload: json!({ "scope": STATE_SCOPE, "key": PROBE_RESULTS_KEY }),
             action: None,
@@ -58,7 +57,7 @@ pub async fn store_probe_results(iii: &IIIClient, results: &ProbeResults) {
         "value": serde_json::to_value(results).unwrap_or(Value::Null),
     });
     if let Err(e) = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::set".into(),
             payload,
             action: None,
@@ -83,7 +82,7 @@ pub async fn record_unavailable(iii: &IIIClient, upstream_model: &str) {
 
 pub async fn load_token(iii: &IIIClient) -> Option<String> {
     let value = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".into(),
             payload: json!({ "scope": STATE_SCOPE, "key": TOKEN_KEY }),
             action: None,
@@ -97,7 +96,7 @@ pub async fn load_token(iii: &IIIClient) -> Option<String> {
 }
 
 pub async fn store_token(iii: &IIIClient, token: &str) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".into(),
         payload: json!({ "scope": STATE_SCOPE, "key": TOKEN_KEY, "value": Value::from(token) }),
         action: None,

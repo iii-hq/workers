@@ -117,7 +117,7 @@
             "type": "integer"
           },
           "lost_before_capture": {
-            "description": "Traces that had already left the engine's ring when the job ran.",
+            "description": "Traces that had already left the engine's ring when the tick read them or the job ran, whether or not they held an error.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"

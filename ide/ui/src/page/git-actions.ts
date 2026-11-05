@@ -27,7 +27,7 @@ export async function git(
   timeoutMs = 30_000,
   options: { stdin?: string; env?: Record<string, string> } = {},
 ): Promise<ExecResponse> {
-  return host.iii.trigger<ExecResponse>(
+  return host.iii.call<ExecResponse>(
     'shell::exec',
     {
       command: 'git',

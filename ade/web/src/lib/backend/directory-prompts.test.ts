@@ -11,11 +11,11 @@ import {
 const TIMEOUT = { timeoutMs: 10_000 }
 
 function fakeClient(impl?: (fn: string, payload: unknown) => unknown) {
-  const trigger = vi.fn(async (fn: string, payload: unknown) =>
+  const call = vi.fn(async (fn: string, payload: unknown) =>
     impl ? impl(fn, payload) : undefined,
   )
   return {
-    trigger: trigger as unknown as <T>(fn: string, p?: object) => Promise<T>,
+    call: call as unknown as <T>(fn: string, p?: object) => Promise<T>,
     // biome-ignore lint/suspicious/noExplicitAny: test double
   } as any
 }
@@ -25,7 +25,7 @@ describe('client calls', () => {
     const entries = [{ name: 'pirate', description: 'P.', modified_at: 't' }]
     const client = fakeClient(() => ({ prompts: entries }))
     expect(await listPrompts(client)).toEqual(entries)
-    expect(client.trigger).toHaveBeenCalledWith(
+    expect(client.call).toHaveBeenCalledWith(
       'directory::system-prompts::list',
       {},
       TIMEOUT,
@@ -58,7 +58,7 @@ describe('client calls', () => {
       },
       { kit: 'acme/team', current: '1.4.0', available: '2.0.0', major: true },
     ])
-    expect(client.trigger).toHaveBeenCalledWith(
+    expect(client.call).toHaveBeenCalledWith(
       'directory::kits::list',
       {},
       TIMEOUT,
@@ -73,7 +73,7 @@ describe('client calls', () => {
       modified_at: 't',
     }))
     expect((await getPrompt(client, 'pirate')).body).toBe('Arr.')
-    expect(client.trigger).toHaveBeenCalledWith(
+    expect(client.call).toHaveBeenCalledWith(
       'directory::system-prompts::get',
       { name: 'pirate' },
       TIMEOUT,
@@ -100,7 +100,7 @@ describe('client calls', () => {
         disable_model_invocation: false,
       },
     ])
-    expect(client.trigger).toHaveBeenCalledWith(
+    expect(client.call).toHaveBeenCalledWith(
       'directory::skills::list',
       { include_description: true },
       TIMEOUT,
@@ -119,7 +119,7 @@ describe('client calls', () => {
       body: 'Skill.',
       disable_model_invocation: false,
     })
-    expect(client.trigger).toHaveBeenCalledWith(
+    expect(client.call).toHaveBeenCalledWith(
       'directory::skills::get',
       { id: 'coder/index' },
       TIMEOUT,

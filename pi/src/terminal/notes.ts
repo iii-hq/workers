@@ -30,13 +30,13 @@ export function engineNotes(options: NotesOptions): string {
     ? options.context.trim()
     : `_The iii context is unavailable: ${
         options.detail || 'the `iii-directory` worker did not answer'
-      }. Discover everything from the engine itself with \`iii trigger engine::functions::list\`, and tell the operator the directory is missing._`;
+      }. Discover everything from the engine itself with \`iii call engine::functions::list\`, and tell the operator the directory is missing._`;
 
   return `# You run inside an iii engine
 
 This workspace belongs to the \`pi\` iii worker: a terminal page on the iii
 console runs you, and the \`shell\` worker owns the session. You have direct
-access to the running engine and can create functions, triggers, and workers
+access to the running engine and can create functions, observers, and workers
 that outlive this terminal.
 
 - Engine WebSocket address: \`${options.engineUrl}\` (also in \`$III_URL\`).
@@ -45,7 +45,7 @@ that outlive this terminal.
   the second runs it. Restarting either kills the session you are typing in,
   mid-command.
 - Your work is on the record: \`.pi/extensions/iii-activity.ts\` reports every
-  prompt you answer and every tool you run onto \`pi::agent-event\`, which is how
+  prompt you answer and every tool you run onto \`pi::on-agent-event\`, which is how
   the console shows this terminal's turns. Leave that extension in place.
 
 ${context}

@@ -8,33 +8,33 @@ describe('syncEditorWorkspace', () => {
   })
 
   it('opens the editor workspace at the given root', async () => {
-    const trigger = vi.fn().mockResolvedValue({})
-    await expect(syncEditorWorkspace('/repo', trigger)).resolves.toBe(true)
-    expect(trigger).toHaveBeenCalledWith('editor::workspace::open', {
+    const call = vi.fn().mockResolvedValue({})
+    await expect(syncEditorWorkspace('/repo', call)).resolves.toBe(true)
+    expect(call).toHaveBeenCalledWith('editor::workspace::open', {
       root: '/repo',
     })
   })
 
   it('dedupes consecutive calls for the same root', async () => {
-    const trigger = vi.fn().mockResolvedValue({})
-    await syncEditorWorkspace('/repo', trigger)
-    await syncEditorWorkspace('/repo', trigger)
-    expect(trigger).toHaveBeenCalledTimes(1)
-    await syncEditorWorkspace('/other', trigger)
-    expect(trigger).toHaveBeenCalledTimes(2)
+    const call = vi.fn().mockResolvedValue({})
+    await syncEditorWorkspace('/repo', call)
+    await syncEditorWorkspace('/repo', call)
+    expect(call).toHaveBeenCalledTimes(1)
+    await syncEditorWorkspace('/other', call)
+    expect(call).toHaveBeenCalledTimes(2)
   })
 
   it('swallows failures and retries on the next call', async () => {
-    const trigger = vi.fn().mockRejectedValue(new Error('function_not_found'))
-    await expect(syncEditorWorkspace('/repo', trigger)).resolves.toBe(false)
+    const call = vi.fn().mockRejectedValue(new Error('function_not_found'))
+    await expect(syncEditorWorkspace('/repo', call)).resolves.toBe(false)
     // The failed root was not recorded, so the same root retries.
-    await syncEditorWorkspace('/repo', trigger)
-    expect(trigger).toHaveBeenCalledTimes(2)
+    await syncEditorWorkspace('/repo', call)
+    expect(call).toHaveBeenCalledTimes(2)
   })
 
   it('ignores empty roots', async () => {
-    const trigger = vi.fn()
-    await expect(syncEditorWorkspace('', trigger)).resolves.toBe(false)
-    expect(trigger).not.toHaveBeenCalled()
+    const call = vi.fn()
+    await expect(syncEditorWorkspace('', call)).resolves.toBe(false)
+    expect(call).not.toHaveBeenCalled()
   })
 })

@@ -211,7 +211,7 @@ impl SecurityRuntime for IiiRuntime {
         self.call(
             EXECUTE_ID,
             serialize(&request, "queue request")?,
-            Some(TriggerAction::Enqueue {
+            Some(CallAction::Enqueue {
                 queue: RUN_QUEUE.into(),
             }),
             None,
@@ -389,7 +389,7 @@ impl SecurityRuntime for IiiRuntime {
         self.call(
             ACTION_EXECUTE_ID,
             serialize(&request, "action queue request")?,
-            Some(TriggerAction::Enqueue {
+            Some(CallAction::Enqueue {
                 queue: ACTION_QUEUE.into(),
             }),
             None,

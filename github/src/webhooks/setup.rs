@@ -392,7 +392,7 @@ impl Service {
             env("III_COMPOSE_FILE").as_deref(),
         );
         let status = self
-            .invoke_target("compose::status", payload, namespace.as_deref(), None)
+            .invoke_target("compose::status", payload, namespace.as_deref())
             .await
             .ok()?;
         let containers = status["containers"].as_array()?;
@@ -402,7 +402,7 @@ impl Service {
     /// Configuration is a shared engine service registered in `default`, not
     /// in this project's worker namespace.
     async fn invoke_configuration(&self, function_id: &str, payload: Value) -> Result<Value> {
-        self.invoke_target(function_id, payload, Some("default"), None)
+        self.invoke_target(function_id, payload, Some("default"))
             .await
     }
 
@@ -586,7 +586,7 @@ impl Service {
         value["webhooks"]["enabled"] = json!(req.enabled);
         self.invoke_configuration("configuration::set", json!({"id": id, "value": value}))
             .await?;
-        // The live cell refreshes from the configuration trigger; report the
+        // The live cell refreshes from configuration::on-updated; report the
         // value just written so the caller knows a restart is due.
         let mut status = self.setup_status(SetupStatusRequest {}).await?;
         status.enabled = req.enabled;

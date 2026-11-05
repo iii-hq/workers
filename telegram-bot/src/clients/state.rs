@@ -1,5 +1,5 @@
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -9,7 +9,7 @@ pub async fn get(
     key: &str,
     timeout_ms: Option<u64>,
 ) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::get".into(),
         payload: json!({ "scope": scope, "key": key }),
         action: None,
@@ -25,7 +25,7 @@ pub async fn set(
     value: Value,
     timeout_ms: Option<u64>,
 ) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".into(),
         payload: json!({ "scope": scope, "key": key, "value": value }),
         action: None,
@@ -40,7 +40,7 @@ pub async fn delete(
     key: &str,
     timeout_ms: Option<u64>,
 ) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::delete".into(),
         payload: json!({ "scope": scope, "key": key }),
         action: None,

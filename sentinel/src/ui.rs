@@ -50,12 +50,21 @@ mod tests {
             "sentinel::investigate",
             "sentinel::investigations::cancel",
             "sentinel::diagnosis::record",
-            "sentinel::group-changed",
-            "sentinel::investigation-changed",
         ] {
             assert!(
                 PAGE_JS.contains(function_id),
                 "{function_id} is not called by the page"
+            );
+        }
+        // The list and the open group refresh when this worker's change
+        // functions run.
+        for function_id in [
+            "sentinel::on-group-changed",
+            "sentinel::on-investigation-changed",
+        ] {
+            assert!(
+                PAGE_JS.contains(function_id),
+                "{function_id} is not observed by the page"
             );
         }
         // What the page shows is the frozen bundle. Reading the live engine
@@ -71,7 +80,7 @@ mod tests {
         // One deliberate exception to "this worker's functions": the model
         // picker is fed by the router's catalog and re-read when the router
         // says it changed, the same way `security-scan` feeds its own.
-        for function_id in ["router::models::list", "router::models::changed"] {
+        for function_id in ["router::models::list", "router::models::on-changed"] {
             assert!(
                 PAGE_JS.contains(function_id),
                 "the model picker needs {function_id}"

@@ -4,10 +4,7 @@ import { forwardRef, useContext, useRef, useState } from 'react'
 import { Hint } from '@/components/ui/Hint'
 import { AskInSideChatContext } from '@/lib/chat-aside'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import {
-  messagesToMarkdown,
-  triggerMarkdownDownload,
-} from '@/lib/export-session'
+import { messagesToMarkdown, startMarkdownDownload } from '@/lib/export-session'
 import { cn } from '@/lib/utils'
 import type { AssistantMessage } from '@/types/chat'
 import { DrawnCheck } from './ChatGlyphs'
@@ -136,7 +133,7 @@ export function downloadReply(message: AssistantMessage): void {
     .toISOString()
     .slice(0, 16)
     .replace(/[:T]/g, '-')
-  triggerMarkdownDownload(
+  startMarkdownDownload(
     messagesToMarkdown([message]),
     `iii-reply-${message.id.slice(0, 8)}-${stamp}.md`,
   )

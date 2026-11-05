@@ -1,6 +1,6 @@
 //! Dictation sessions: one open recognizer stream per caller, fed by
 //! `voice::dictation::push`, delivering transcript events straight to the
-//! caller's function and to every `voice::transcript` subscriber.
+//! caller's function and as calls of `voice::on-transcript` to its observers.
 //!
 //! Each session keeps the audio of the utterance in progress. When the
 //! streaming recognizer ends an utterance, that audio goes through the
@@ -388,7 +388,6 @@ impl Sessions {
         self.emitter
             .emit(
                 EventKind::SessionStarted,
-                Some(&id),
                 &SessionStartedEvent {
                     session_id: id.clone(),
                     model,
@@ -486,7 +485,6 @@ impl Sessions {
         self.emitter
             .emit(
                 EventKind::SessionStopped,
-                Some(id),
                 &SessionStoppedEvent {
                     session_id: id.to_string(),
                     reason: reason.to_string(),
@@ -613,9 +611,7 @@ pub fn validate_output_function_id(id: &str) -> Result<(), String> {
 
 async fn deliver(emitter: &Emitter, output_function_id: &str, event: &TranscriptEvent) {
     emitter.deliver_direct(output_function_id, event).await;
-    emitter
-        .emit(EventKind::Transcript, Some(&event.session_id), event)
-        .await;
+    emitter.emit(EventKind::Transcript, event).await;
 }
 
 #[cfg(test)]

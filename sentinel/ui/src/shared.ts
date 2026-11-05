@@ -21,9 +21,10 @@ export const FN = {
   record: 'sentinel::diagnosis::record',
 } as const
 
+/** The worker's event functions the page observes. */
 export const EVENT = {
-  groupChanged: 'sentinel::group-changed',
-  investigationChanged: 'sentinel::investigation-changed',
+  groupChanged: 'sentinel::on-group-changed',
+  investigationChanged: 'sentinel::on-investigation-changed',
 } as const
 
 /** Every page call is a local RPC; ten seconds is already generous. */

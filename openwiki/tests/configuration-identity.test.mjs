@@ -17,7 +17,7 @@ for (const [index, scenario] of configurationCases.entries()) {
         makeError: (body) => new InvocationError(body),
         register: config.registerConfig,
         fetch: config.fetchConfig,
-        bind: config.bindConfigTrigger,
+        bind: config.observeConfigChanges,
         expectedId: scenario.env?.trim() || 'openwiki',
         formId: 'openwiki',
         value: config.defaults(),

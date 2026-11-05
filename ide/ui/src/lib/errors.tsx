@@ -1,6 +1,6 @@
 /* The error cards — how a normalised `ErrorDisplay` (lib/error-display)
    renders. Ported from the console's sandbox/ErrorView.tsx when the shell
-   function-trigger family moved into this worker's injected UI. */
+   function-call family moved into this worker's injected UI. */
 
 import { Badge, Eyebrow, TerminalStream } from '@iii-dev/console-ui'
 import * as z from 'zod/mini'

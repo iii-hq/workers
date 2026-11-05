@@ -26,9 +26,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request()
-                    .system_prompt_regex("agent_trigger")
+                    .system_prompt_regex("agent_call")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_subset([Tool::named("agent_trigger")]),
+                    .tools_subset([Tool::named("agent_call")]),
             )
             .respond(Response::streamed_text(
                 TEXT,

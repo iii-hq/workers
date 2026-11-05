@@ -4,7 +4,7 @@ import { KanbanConfigForm } from './src/overlays'
 import { ProjectsPage } from './src/projects'
 import { ReleasesPage } from './src/releases'
 import {
-  createKanbanTriggerRenderer,
+  createKanbanObserverRenderer,
   createPlanRenderer,
   createTicketMentionRenderer,
   createTicketRenderer,
@@ -63,9 +63,9 @@ export default function setup(host: Host) {
   }
 
   host.configForms.register(COLUMNS_CONFIGURATION_ID, KanbanConfigForm)
-  host.functionTriggers.register(createTicketRenderer(host))
-  host.functionTriggers.register(createPlanRenderer(host))
-  host.triggerRenderers?.register(createKanbanTriggerRenderer(host))
+  host.functionCalls.register(createTicketRenderer(host))
+  host.functionCalls.register(createPlanRenderer(host))
+  host.observerRenderers?.register(createKanbanObserverRenderer(host))
   // `@kanban(id="…")` chat mentions preview as the ticket card.
   host.mentions?.registerRenderer(createTicketMentionRenderer(host))
 }

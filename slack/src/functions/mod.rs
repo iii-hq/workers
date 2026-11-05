@@ -111,8 +111,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     assistant::register(iii, deps);
     admin::register(iii, deps);
     call::register(iii, deps);
-    // Bridge functions (harmless when the harness stack is absent; their sibling
-    // triggers simply fail to bind and the HTTP routes stay unregistered).
+    // Bridge functions (harmless when the harness stack is absent; their
+    // observers stay pending until the sibling workers register).
     notify::register(iii, deps);
     events::register(iii, deps);
     interactions::register(iii, deps);

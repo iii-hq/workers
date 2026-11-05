@@ -1,7 +1,7 @@
 /**
  * Downloads for the selected session: what a browser's downloads panel
- * shows. Seeded from `browser::downloads::list`, refreshed on the
- * session-filtered `browser::download-changed` event. Each row can go to the
+ * shows. Seeded from `browser::downloads::list`, refreshed on every call of
+ * `browser::on-download-changed` for the session. Each row can go to the
  * chat, save to disk, or be removed.
  */
 
@@ -15,7 +15,7 @@ import { formatBytes } from '@iii-dev/console-ui/format'
 import { Download, MessageSquarePlus, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  BROWSER_DOWNLOAD_CHANGED_TRIGGER,
+  BROWSER_ON_DOWNLOAD_CHANGED_FUNCTION_ID,
   type BrowserDownload,
   downloadFile,
   errorMessage,
@@ -73,7 +73,7 @@ export function DownloadsPanel({
   useBrowserSessionEvent({
     host,
     enabled,
-    triggerType: BROWSER_DOWNLOAD_CHANGED_TRIGGER,
+    functionId: BROWSER_ON_DOWNLOAD_CHANGED_FUNCTION_ID,
     sessionId,
     fnId: DOWNLOADS_FEED_FN,
     onEvent: () => refresh(),
@@ -202,7 +202,7 @@ export function useDownloadCount(
   useBrowserSessionEvent({
     host,
     enabled,
-    triggerType: BROWSER_DOWNLOAD_CHANGED_TRIGGER,
+    functionId: BROWSER_ON_DOWNLOAD_CHANGED_FUNCTION_ID,
     sessionId,
     fnId: `${DOWNLOADS_FEED_FN}-count`,
     onEvent: () => refresh(),

@@ -3,7 +3,7 @@ import { useWorkerPresence, type WorkerPresence } from './use-worker-presence'
 /**
  * Presence probe for the `session-manager` worker — the durable transcript
  * store behind `session::list` / `session::get` / `session::messages` and the
- * `session::*` live triggers. It is OPTIONAL: a project that runs the engine
+ * `session::on-*` live events. It is OPTIONAL: a project that runs the engine
  * with `http`, `state` and a console but no agent stack has no
  * session-manager, and every conversation read the console made there
  * answered `function_not_found` — then retried on a fixed timer, forever. The

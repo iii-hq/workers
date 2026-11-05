@@ -31,14 +31,22 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
 }
 
 /// The catalog must cover exactly the registered functions, in registration
-/// order (store protocol, then session::*, then the configuration handlers —
-/// kept in lockstep with the boot sequence in `main.rs`).
+/// order (event functions, then the store protocol, then session::*, then the
+/// configuration handlers — kept in lockstep with the boot sequence in
+/// `main.rs`).
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
         vec![
+            "session::on-created",
+            "session::on-message-added",
+            "session::on-message-updated",
+            "session::on-status-changed",
+            "session::on-meta-updated",
+            "session::on-deleted",
+            "session::store::on-events",
             "session::store::get-meta",
             "session::store::put-meta",
             "session::store::delete-meta",

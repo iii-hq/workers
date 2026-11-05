@@ -67,8 +67,8 @@ type Tab = 'preview' | 'changes' | 'props'
 const NARROW_BELOW = 760
 const WIDE_FROM = 1080
 
-/** `stories:changed` re-runs every fetch; `stories:build` is bound by the page. */
-const LIVE = ['stories:changed'] as const
+/** `stories::on-changed` re-runs every fetch; the page observes `stories::on-build` itself. */
+const LIVE = ['stories::on-changed'] as const
 
 const isChanged = (kind: ChangeKind | undefined) => kind !== undefined && kind !== 'unchanged'
 
@@ -170,7 +170,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
 
   const workspacesLive = useWorkerLive({
     iii,
-    triggers: LIVE,
+    sources: LIVE,
     handlerId: 'iii::stories-ui::workspaces',
     fetch: () => api.workspaces(iii).then((result) => result.workspaces),
   })
@@ -183,7 +183,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
   /** The sidebar's listing: the tree in explorer mode, the changes in compare. */
   const listing = useWorkerLive<{ tree?: FsTree; compare?: CompareOutput } | null>({
     iii,
-    triggers: LIVE,
+    sources: LIVE,
     handlerId: 'iii::stories-ui::listing',
     fetch: async () => {
       if (!ws) return null
@@ -209,8 +209,9 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
     if (wide && tab === 'props') setTab('preview')
   }, [wide, tab])
 
-  // `stories:build` carries the banner's payload, so it keeps its own binding;
-  // only ref-line builds need its refresh (`stories:changed` covers the tree).
+  // `stories::on-build` carries the banner's payload, so it has its own
+  // observer; only ref-line builds need its refresh (`stories::on-changed`
+  // covers the tree).
   const wsRef = useRef(ws)
   wsRef.current = ws
   useEffect(() => {
@@ -221,7 +222,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
         setBuilding(event.status === 'done' ? null : event)
         if (event.status === 'done') refresh()
       }),
-      iii.registerTrigger({ type: 'stories:build', function_id: `${id}::${iii.browserId}`, config: {} }),
+      iii.observe('stories::on-build', `${id}::${iii.browserId}`),
     ]
     return () => {
       for (const off of offs) off()

@@ -93,37 +93,81 @@
     }
   },
   {
-    "description": "Attach an allowlisted live state, stream, or shell event binding to a surface.",
+    "description": "Attach a declarative live binding to a surface: a worker's private event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.",
     "name": "a2ui::binding::set",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "definitions": {
+        "BindingQuery": {
+          "additionalProperties": false,
+          "description": "Read-only query the worker that hosts an observed event source exposes for the current data. The function must be registered by the same worker as the observed function with metadata `{\"read_only\": true}`.",
+          "properties": {
+            "function_id": {
+              "description": "Provider function that returns the current value.",
+              "type": "string"
+            },
+            "payload": {
+              "description": "Fixed request payload, validated against the function's request schema."
+            },
+            "result_path": {
+              "description": "JSON Pointer inside the query result to apply. Defaults to the whole result.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "function_id"
+          ],
+          "type": "object"
+        },
         "LiveBinding": {
           "additionalProperties": false,
+          "description": "Declarative live-data binding rendered by the Console: the page observes `function_id` (with `args` and `filters`) for its own view and writes delivered values to `target_path`. Bindings cannot invoke arbitrary functions.",
           "properties": {
-            "config": true,
+            "args": {
+              "description": "Args for a function that takes them, validated against the function's registered `args_format`."
+            },
             "event_path": {
+              "description": "JSON Pointer inside the event to apply (event mode only).",
               "type": [
                 "string",
                 "null"
               ]
             },
-            "id": {
+            "filters": {
+              "description": "Filters selecting which calls are delivered, each with an explicit operator: `{ \"input.status\": { \"$eq\": \"open\" } }`."
+            },
+            "function_id": {
+              "description": "Function to observe: a worker's event source (for example `orders::on-changed`), `state::on-changed`, or `shell::on-changed`. `stream::on-changed` is accepted only as deprecated legacy compatibility.",
               "type": "string"
+            },
+            "id": {
+              "description": "Stable binding id within the surface.",
+              "type": "string"
+            },
+            "query": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BindingQuery"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional provider query for a worker's event source: run for the initial read, after every notification, and on reconnect."
             },
             "target_path": {
-              "type": "string"
-            },
-            "trigger_type": {
+              "description": "JSON Pointer in the surface data model that receives the value.",
               "type": "string"
             }
           },
           "required": [
-            "config",
+            "function_id",
             "id",
-            "target_path",
-            "trigger_type"
+            "target_path"
           ],
           "type": "object"
         }
@@ -209,7 +253,7 @@
     }
   },
   {
-    "description": "Internal: stamp the authoritative Harness session onto A2UI calls before dispatch.",
+    "description": "Internal: stamp authoritative Harness context onto A2UI function arguments before dispatch.",
     "name": "a2ui::stamp-session",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -223,7 +267,7 @@
           "type": "object"
         }
       },
-      "description": "Trusted pre-trigger envelope supplied by the Harness hook runner.",
+      "description": "Trusted pre-call hook input supplied by the Harness hook runner.",
       "properties": {
         "call": {
           "anyOf": [
@@ -1127,7 +1171,7 @@
     }
   },
   {
-    "description": "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before binding a trigger to an ordinary function, since a trigger-fired call runs outside any turn and cannot ask a human.",
+    "description": "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before an agent observes a function with an ordinary function as the target, since an observer's target runs outside any turn and cannot ask a human.",
     "name": "approval::evaluate",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1154,7 +1198,7 @@
     }
   },
   {
-    "description": "post_trigger hook: watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.",
+    "description": "post_call hook (observer of harness::hook::on-post-call): watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.",
     "name": "approval::filesystem-access-watch",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1178,7 +1222,7 @@
           "type": "object"
         },
         "HookResult": {
-          "description": "`post_trigger` payload: the function_result the harness is about to deliver to the model.",
+          "description": "`post_call` payload: the function_result the harness is about to deliver to the model.",
           "properties": {
             "content": {
               "default": [],
@@ -1221,7 +1265,7 @@
           "type": "object"
         },
         "HookResultError": {
-          "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md § post_trigger hook can now HOLD).",
+          "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md, the post-call hook's HOLD).",
           "properties": {
             "code": {
               "default": null,
@@ -1265,7 +1309,7 @@
               "type": "null"
             }
           ],
-          "description": "pre_trigger payload."
+          "description": "pre_call payload."
         },
         "depth": {
           "default": 0,
@@ -1298,7 +1342,7 @@
               "type": "null"
             }
           ],
-          "description": "post_trigger payload: the function_result about to be delivered."
+          "description": "post_call payload: the function_result about to be delivered."
         },
         "session_id": {
           "type": "string"
@@ -1324,7 +1368,7 @@
     }
   },
   {
-    "description": "pre_trigger hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.",
+    "description": "pre_call hook (observer of harness::hook::on-pre-call): evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.",
     "name": "approval::gate",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1348,7 +1392,7 @@
           "type": "object"
         },
         "HookResult": {
-          "description": "`post_trigger` payload: the function_result the harness is about to deliver to the model.",
+          "description": "`post_call` payload: the function_result the harness is about to deliver to the model.",
           "properties": {
             "content": {
               "default": [],
@@ -1391,7 +1435,7 @@
           "type": "object"
         },
         "HookResultError": {
-          "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md § post_trigger hook can now HOLD).",
+          "description": "`result.details.error` on a dispatch failure. New harness versions fill `code`; older/plain remote errors can arrive without one, so consumers may recover it from the `filesystem_access_request` tail (contracts.md, the post-call hook's HOLD).",
           "properties": {
             "code": {
               "default": null,
@@ -1435,7 +1479,7 @@
               "type": "null"
             }
           ],
-          "description": "pre_trigger payload."
+          "description": "pre_call payload."
         },
         "depth": {
           "default": 0,
@@ -1468,7 +1512,7 @@
               "type": "null"
             }
           ],
-          "description": "post_trigger payload: the function_result about to be delivered."
+          "description": "post_call payload: the function_result about to be delivered."
         },
         "session_id": {
           "type": "string"
@@ -1583,7 +1627,7 @@
     "name": "approval::on-config-change",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Internal `approval::on-config-change` trigger payload. The handler re-fetches the authoritative configuration, so this carries only the (advisory) configuration id; a struct (not `Value`) keeps the request schema concrete and unknown fields are ignored.",
+      "description": "The `configuration::on-updated` event, delivered as output to the internal `approval::on-config-change`. The handler re-fetches the authoritative configuration, so only the (advisory) configuration id is read; a struct (not `Value`) keeps the request schema concrete and unknown fields are ignored.",
       "properties": {
         "id": {
           "default": null,
@@ -1599,11 +1643,11 @@
     }
   },
   {
-    "description": "Internal: session::deleted handler (purge the session's settings and pending records).",
+    "description": "Internal: observer of session::on-deleted (purge the session's settings and pending records).",
     "name": "approval::on-session-deleted",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "`session::deleted` payload (only the field we read).",
+      "description": "`session::on-deleted` event (only the field we read).",
       "properties": {
         "session_id": {
           "type": "string"
@@ -1617,11 +1661,11 @@
     }
   },
   {
-    "description": "Internal: harness::turn-completed handler (purge the turn's pending records).",
+    "description": "Internal: observer of harness::on-turn-completed (purge the turn's pending records).",
     "name": "approval::on-turn-completed",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "`harness::turn-completed` payload (only the field we read).",
+      "description": "`harness::on-turn-completed` event (only the field we read).",
       "properties": {
         "turn_id": {
           "type": "string"
@@ -1767,13 +1811,13 @@
     }
   },
   {
-    "description": "Interact with the page: click (left/right/middle, single or double), hover, type, press, scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
+    "description": "Interact with the page: click (left/right/middle, single or double), hover, type, select a native <select> option, press, scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with a ref from browser::elements (`n4`), browser::snapshot (`e3`) or a pick, or raw viewport coordinates. A ref is scrolled into view first, and a click, type or select on a disabled, hidden or covered element is refused instead of landing on whatever is on top. Typing into an input or textarea by ref replaces its value. Returns once the page had a moment to react.",
     "name": "browser::act",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "action": {
-          "description": "`click`, `hover`, `type`, `press`, `scroll`, or `drag`.",
+          "description": "`click`, `hover`, `type`, `select`, `press`, `scroll`, or `drag`.",
           "type": "string"
         },
         "button": {
@@ -1786,7 +1830,7 @@
         },
         "click_count": {
           "default": null,
-          "description": "Clicks in the gesture: 2 double-clicks (`click` only, default 1).",
+          "description": "Clicks in the gesture: 2 double-clicks, 3 triple-clicks (`click` only; default 1, held to 1..3).",
           "format": "uint32",
           "minimum": 0.0,
           "type": [
@@ -1794,12 +1838,29 @@
             "null"
           ]
         },
-        "delta_y": {
+        "delta_x": {
           "default": null,
-          "description": "Scroll distance in pixels; positive scrolls down (`scroll`).",
+          "description": "Horizontal scroll distance in pixels; positive scrolls right (`scroll`). Default 0.",
           "format": "double",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "delta_y": {
+          "default": null,
+          "description": "Scroll distance in pixels; positive scrolls down (`scroll`). Default 600, or 0 when `delta_x` is given.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ghost_cursor": {
+          "default": null,
+          "description": "Draw the agent's ghost cursor where the action lands, for whoever watches the live view. Default true; false for a person's own input from a viewer, so the page shows no agent cursor.",
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -1811,9 +1872,17 @@
             "null"
           ]
         },
+        "option": {
+          "default": null,
+          "description": "Option to choose (`select`, native `<select>` only): its value or visible label.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ref": {
           "default": null,
-          "description": "Element ref from `browser::snapshot` (`e3`) or `browser::picked` (`p1`). Refs die on navigation; re-snapshot after.",
+          "description": "Element ref from `browser::elements` (`n4`), `browser::snapshot` (`e3`), `browser::dom::read` (`d7`) or `browser::on-picked` (`p1`). A click, type or select by ref is refused when the element is disabled, hidden or covered. Refs die on navigation; re-read the page after.",
           "type": [
             "string",
             "null"
@@ -1824,7 +1893,7 @@
         },
         "text": {
           "default": null,
-          "description": "Text to insert (`type`).",
+          "description": "Text to insert (`type`). With a ref to an `<input>` or `<textarea>` it replaces the current value; otherwise it is inserted at the caret.",
           "type": [
             "string",
             "null"
@@ -1987,7 +2056,7 @@
     }
   },
   {
-    "description": "List the cookies on the session's current page (name, value, domain, path, flags).",
+    "description": "List the cookies on the session's current page (name, value, domain, path, flags). Cookie values are credentials (logged-in sessions), so the function is not observable.",
     "name": "browser::cookies::list",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2004,7 +2073,7 @@
     }
   },
   {
-    "description": "Set cookies on the session, like importing a cookie file. A cookie without a domain is scoped to the current page's URL. same_site is Strict, Lax, or None.",
+    "description": "Set cookies on the session, like importing a cookie file. A cookie without a domain is scoped to the current page's URL. same_site is Strict, Lax, or None. Cookie values are credentials (logged-in sessions), so the function is not observable.",
     "name": "browser::cookies::set",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4531,7 +4600,7 @@
     }
   },
   {
-    "description": "Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.",
+    "description": "Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; publishes raw Claude Code messages on claude::on-raw-event and AgentEvent frames on claude::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.",
     "name": "claude::run",
     "parameters": {
       "additionalProperties": false,
@@ -4660,7 +4729,7 @@
     }
   },
   {
-    "description": "Start a Claude Code turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Claude Code turn and return immediately; observe claude::on-agent-event with args { session_id } for progress and turn_end.",
     "name": "claude::start",
     "parameters": {
       "additionalProperties": false,
@@ -4889,12 +4958,12 @@
       },
       "properties": {
         "code": {
-          "description": "Node: the body of an async function — `return x` yields the result, top-level `await` works. Python: a module — assign `result = x`. Both get a global `iii` that can trigger any bus function; node's can also register functions for the life of the runtime and reach its private scratch directory via `iii.files`, python's is synchronous and gets `/work` instead.",
+          "description": "Node: an async function body (`return x` sets `result`; `await` works). Python: a module (assign `result = x`). A global `iii` is in scope.",
           "type": "string"
         },
         "keep": {
           "default": false,
-          "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — create a runtime, run `code`, return the result, destroy it. Nothing persists. `true`: leave it running; the response's `runtime_id` addresses it for later runs and is the capability `code-runner::teardown` needs to stop it.",
+          "description": "When `runtime_id` is omitted: `true` leaves the runtime running and returns its `runtime_id`; `false` destroys it after the run.",
           "type": "boolean"
         },
         "lang": {
@@ -4907,11 +4976,11 @@
             }
           ],
           "default": null,
-          "description": "Required when `runtime_id` is omitted — picks the engine (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime."
+          "description": "Required when `runtime_id` is omitted; on an existing runtime omit it or pass the runtime's own language."
         },
         "runtime_id": {
           "default": null,
-          "description": "Run in a SPECIFIC runtime, sharing its scratch directory and its globals: the run lands in that runtime and it is NOT destroyed afterwards — you own it. Omit this to run one-shot (see `keep`).",
+          "description": "Run in this existing runtime (from a keep: true run), sharing its globals and scratch; it is not destroyed afterwards. Omit to run one-shot.",
           "type": [
             "string",
             "null"
@@ -5733,7 +5802,7 @@
     }
   },
   {
-    "description": "Run a Codex coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array plus a `codex_config` pass-through; streams Codex events to codex::events, AgentEvent frames to agent::events, and returns {session_id, result, usage}.",
+    "description": "Run a Codex coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array plus a `codex_config` pass-through; delivers raw Codex events on codex::on-raw-event and AgentEvent frames on codex::on-agent-event, and returns {session_id, result, usage}.",
     "name": "codex::run",
     "parameters": {
       "definitions": {
@@ -5890,7 +5959,7 @@
     }
   },
   {
-    "description": "Start a Codex turn and return immediately; watch codex::events / agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Codex turn and return immediately; observe codex::on-agent-event (or codex::on-raw-event) with args { session_id } for progress and turn_end, or poll codex::status.",
     "name": "codex::start",
     "parameters": {
       "definitions": {
@@ -6118,7 +6187,7 @@
     }
   },
   {
-    "description": "Declare one or more workers and their registry dependencies in the compose file, pin resolved versions, then reconcile changed workers once.",
+    "description": "Accept an observable operation that declares one or more workers and their registry dependencies in the compose file, locks resolved packages, then reconciles changed workers once. Explicit selectors remain in the compose file.",
     "name": "compose::add",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -6134,7 +6203,238 @@
           ]
         }
       ],
-      "description": "Request fields used by `compose::add`.",
+      "definitions": {
+        "EnvironmentValueSchema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Schema-only representation of YAML environment scalars. The parser keeps `Option<String>` so serde_yaml still converts booleans and numbers to strings."
+        },
+        "RawContainer": {
+          "additionalProperties": false,
+          "properties": {
+            "config_name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "config_override": {
+              "default": null
+            },
+            "env_file": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "environment": {
+              "additionalProperties": {
+                "$ref": "#/definitions/EnvironmentValueSchema"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "required": {
+              "description": "Absent inherits the file's `required_default`. Deserialization keeps the absence visible until the container is validated.",
+              "type": "boolean"
+            },
+            "restart": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RawRestart"
+                }
+              ],
+              "default": "no",
+              "description": "Absent means `no`: a file written before this field existed keeps the behaviour it was written against, which is that a ready container that exits stays down."
+            },
+            "scripts": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/RawScripts"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "start_after": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "startup_timeout": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "working_dir": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "worker"
+          ],
+          "type": "object"
+        },
+        "RawRestart": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RestartPolicy"
+            },
+            {
+              "$ref": "#/definitions/RawRestartConfig"
+            }
+          ]
+        },
+        "RawRestartConfig": {
+          "additionalProperties": false,
+          "properties": {
+            "condition": {
+              "$ref": "#/definitions/RestartPolicy"
+            },
+            "delay": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max_attempts": {
+              "default": null,
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_delay": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "window": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "condition"
+          ],
+          "type": "object"
+        },
+        "RawScripts": {
+          "additionalProperties": false,
+          "properties": {
+            "post_run": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pre_run": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pre_run_timeout": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "RestartPolicy": {
+          "description": "What Compose does when a start fails or a ready container exits.\n\n[`Container::required`] still controls the operation outcome: after the retry budget is spent, a required failure fails and rolls back `up`, while a non-required failure is reported and lets the rest of the graph start.",
+          "oneOf": [
+            {
+              "description": "Leave it down and take its transitive dependents with it. The default, and what compose did before this field existed.",
+              "enum": [
+                "no"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Restart it when it exited with a non-zero status.",
+              "enum": [
+                "on-failure"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Restart it whenever it exits, a clean exit included. For a worker that is only correct while it is running, exit code 0 is still an outage.",
+              "enum": [
+                "always"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "WorkerInput": {
+          "anyOf": [
+            {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "$ref": "#/definitions/RawContainer"
+            }
+          ],
+          "description": "An add request accepts the short worker spec or a container declaration."
+        }
+      },
+      "description": "Request fields used by batch worker mutations.",
       "properties": {
         "file": {
           "description": "Compose file on the daemon host. Defaults to `worker-compose.yaml` in the daemon working directory.",
@@ -6144,24 +6444,30 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "Caller-selected operation id for race-free progress subscription.",
           "type": [
             "string",
             "null"
           ]
         },
         "worker": {
-          "description": "Backward-compatible form for adding one worker.",
+          "description": "Backward-compatible form for mutating one worker.",
           "pattern": "\\S",
           "type": [
             "string"
           ]
         },
         "workers": {
-          "description": "Canonical list of worker names, `name@version` references, registry references, or local paths to add in one edit and one restart.",
+          "description": "Canonical list of workers to mutate together. Add accepts worker names, `name@version` references, registry references, local paths, or container objects with scripts, dependencies, and configuration fields. Update accepts package names or `name@version` references. Remove accepts declared worker keys.",
           "items": {
-            "pattern": "\\S",
-            "type": "string"
+            "$ref": "#/definitions/WorkerInput"
           },
           "minItems": 1,
           "type": [
@@ -6169,7 +6475,7 @@
           ]
         }
       },
-      "title": "AddOptions",
+      "title": "BatchWorkerOptions_for_String",
       "type": "object"
     }
   },
@@ -6195,7 +6501,7 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
           "type": [
             "string",
             "null"
@@ -6214,7 +6520,7 @@
       "description": "Request fields used by daemon-wide operations.",
       "properties": {
         "namespace": {
-          "description": "Which daemon the caller believed it reached. This is a guard, not a route; use the trigger `--namespace` flag to select the daemon.",
+          "description": "Which daemon the caller believed it reached. This is a guard, not a route; use the `iii call --namespace` flag to select the daemon.",
           "type": [
             "string",
             "null"
@@ -6285,7 +6591,7 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
           "type": [
             "string",
             "null"
@@ -6333,11 +6639,23 @@
     }
   },
   {
-    "description": "Remove one declared worker and dependency references to it, stop only that worker, then reconcile anything already missing.",
+    "description": "Accept an observable operation that removes one or more declared workers and dependency references to them, stops only those workers, then reconciles anything already missing.",
     "name": "compose::remove",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Request fields used by single-worker compose-file edits.",
+      "anyOf": [
+        {
+          "required": [
+            "workers"
+          ]
+        },
+        {
+          "required": [
+            "worker"
+          ]
+        }
+      ],
+      "description": "Request fields used by batch worker mutations.",
       "properties": {
         "file": {
           "description": "Compose file on the daemon host. Defaults to `worker-compose.yaml` in the daemon working directory.",
@@ -6347,21 +6665,39 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "Caller-selected operation id for race-free progress subscription.",
           "type": [
             "string",
             "null"
           ]
         },
         "worker": {
-          "description": "Worker name, `name@version`, registry reference, or local path. The accepted form depends on the operation.",
-          "type": "string"
+          "description": "Backward-compatible form for mutating one worker.",
+          "pattern": "\\S",
+          "type": [
+            "string"
+          ]
+        },
+        "workers": {
+          "description": "Canonical list of workers to mutate together. Add accepts worker names, `name@version` references, registry references, local paths, or container objects with scripts, dependencies, and configuration fields. Update accepts package names or `name@version` references. Remove accepts declared worker keys.",
+          "items": {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": [
+            "array"
+          ]
         }
       },
-      "required": [
-        "worker"
-      ],
-      "title": "WorkerOptions",
+      "title": "BatchWorkerOptions_for_String",
       "type": "object"
     }
   },
@@ -6387,7 +6723,7 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
           "type": [
             "string",
             "null"
@@ -6420,7 +6756,7 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
           "type": [
             "string",
             "null"
@@ -6432,7 +6768,7 @@
     }
   },
   {
-    "description": "Report the project namespace, state directory, daemon pid, and current state of every declared container.",
+    "description": "Report the project namespace, state directory, daemon pid, and current state of every declared container. A container declaring a 'restart' policy reports as 'restarting' while it waits for the supervisor's next attempt.",
     "name": "compose::status",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -6446,7 +6782,7 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
           "type": [
             "string",
             "null"
@@ -6465,7 +6801,7 @@
       "description": "Request fields used by daemon-wide operations.",
       "properties": {
         "namespace": {
-          "description": "Which daemon the caller believed it reached. This is a guard, not a route; use the trigger `--namespace` flag to select the daemon.",
+          "description": "Which daemon the caller believed it reached. This is a guard, not a route; use the `iii call --namespace` flag to select the daemon.",
           "type": [
             "string",
             "null"
@@ -6477,14 +6813,14 @@
     }
   },
   {
-    "description": "Start a compose project, or one container and its dependencies. Repeated calls leave ready containers running.",
+    "description": "Start a compose project, or one container and its dependencies. Repeated calls leave ready containers running. A container whose effective required value is false is named in not_required_failures when it fails, and the operation still returns ok. Frozen mode requires worker-compose.lock to match and skips package resolution.",
     "name": "compose::up",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Request fields used by project lifecycle operations.",
+      "description": "Request fields used by `compose::up`.",
       "properties": {
         "container": {
-          "description": "Restrict the lifecycle operation to one container.",
+          "description": "Restrict startup to one container and its dependencies.",
           "type": [
             "string",
             "null"
@@ -6497,24 +6833,31 @@
             "null"
           ]
         },
+        "frozen": {
+          "description": "Require the compose file and existing lock to match. Package selectors are not resolved, but missing cached artifacts are downloaded from the lock.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
           "type": [
             "string",
             "null"
           ]
         }
       },
-      "title": "LifecycleOptions",
+      "title": "UpOptions",
       "type": "object"
     }
   },
   {
-    "description": "Move one declared package worker to a requested or latest version, then restart the project.",
+    "description": "Accept an observable operation that refreshes declared package selectors or moves workers to requested versions, including their dependency graphs. Omit worker and workers to move all declared packages to latest; path workers are skipped. The project restarts only when runtime content or topology changes.",
     "name": "compose::update",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Request fields used by single-worker compose-file edits.",
+      "description": "Omit worker and workers to update all declared package workers to latest. Path workers are skipped.",
       "properties": {
         "file": {
           "description": "Compose file on the daemon host. Defaults to `worker-compose.yaml` in the daemon working directory.",
@@ -6524,21 +6867,39 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "Caller-selected operation id for race-free progress subscription.",
           "type": [
             "string",
             "null"
           ]
         },
         "worker": {
-          "description": "Worker name, `name@version`, registry reference, or local path. The accepted form depends on the operation.",
-          "type": "string"
+          "description": "Backward-compatible form for mutating one worker.",
+          "pattern": "\\S",
+          "type": [
+            "string"
+          ]
+        },
+        "workers": {
+          "description": "Canonical list of workers to mutate together. Add accepts worker names, `name@version` references, registry references, local paths, or container objects with scripts, dependencies, and configuration fields. Update accepts package names or `name@version` references. Remove accepts declared worker keys.",
+          "items": {
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": [
+            "array"
+          ]
         }
       },
-      "required": [
-        "worker"
-      ],
-      "title": "WorkerOptions",
+      "title": "BatchWorkerOptions_for_String",
       "type": "object"
     }
   },
@@ -6557,7 +6918,7 @@
           ]
         },
         "namespace": {
-          "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+          "description": "Optional daemon guard. Use the `iii call --namespace` flag to route.",
           "type": [
             "string",
             "null"
@@ -6575,7 +6936,7 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
         "AgentFunction": {
-          "description": "An invocation-surface schema entry (README.md § AgentFunction) — accepted by `context::count-tokens` so callers can include the `agent_trigger` schema in their estimate.",
+          "description": "An invocation-surface schema entry (README.md § AgentFunction) — accepted by `context::count-tokens` so callers can include the `agent_call` schema in their estimate.",
           "properties": {
             "description": {
               "type": "string"
@@ -6597,7 +6958,7 @@
               ]
             },
             "name": {
-              "description": "Invocation surface name (`agent_trigger`, `submit_result`, or a function id in native exposure mode).",
+              "description": "Invocation surface name (`agent_call`, `submit_result`, or a function id in native exposure mode).",
               "type": "string"
             },
             "parameters": {
@@ -6832,6 +7193,13 @@
             },
             {
               "properties": {
+                "attachment_id": {
+                  "description": "Optional link to the stored original in the session-manager attachment store. Transcript bookkeeping for lazy readers; the context manager neither reads nor strips it — it only has to ride through compaction untouched, and stay absent on the wire when the block never carried one.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "data": {
                   "description": "Base64-encoded image bytes.",
                   "type": "string"
@@ -6850,6 +7218,39 @@
               "required": [
                 "data",
                 "mime",
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Reference to an attachment kept in the session-manager's attachment store. Carries no bytes and no model-visible text; the harness strips these before assembling context, so here it only has to deserialize (a transcript with attachments must never fail `count-tokens`). It contributes nothing to estimates, pruning or summaries.",
+              "properties": {
+                "attachment_id": {
+                  "type": "string"
+                },
+                "mime": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "size": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "type": {
+                  "enum": [
+                    "file"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "attachment_id",
+                "mime",
+                "name",
+                "size",
                 "type"
               ],
               "type": "object"
@@ -7124,7 +7525,7 @@
         },
         "tools": {
           "default": null,
-          "description": "Invocation schema(s) to include in the estimate (typically the single `agent_trigger` entry).",
+          "description": "Invocation schema(s) to include in the estimate (typically the single `agent_call` entry).",
           "items": {
             "$ref": "#/definitions/AgentFunction"
           },
@@ -7698,15 +8099,6 @@
     }
   },
   {
-    "description": "Internal: reload cron configuration from the authoritative store on change.",
-    "name": "cron::on-config-change",
-    "parameters": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "ConfigChangeRequest",
-      "type": "object"
-    }
-  },
-  {
     "description": "Check whether the official Cursor Agent CLI can reuse an existing cursor-agent login. Account details and credentials are never returned.",
     "name": "cursor::auth::status",
     "parameters": {
@@ -8010,7 +8402,7 @@
     }
   },
   {
-    "description": "Start a Cursor agent turn and return immediately. Watch agent::events with group_id equal to session_id.",
+    "description": "Start a Cursor agent turn and return immediately. Observe cursor::on-agent-event with args { session_id } for progress frames.",
     "name": "cursor::start",
     "parameters": {
       "oneOf": [
@@ -8891,7 +9283,7 @@
     }
   },
   {
-    "description": "List recent queries run against a database, newest first. Best effort — recording never blocks or fails a query, so it is a convenience, not an audit log. For an audit trail bind database::row-changed.",
+    "description": "List recent queries run against a database, newest first. Best effort — recording never blocks or fails a query, so it is a convenience, not an audit log. For an audit trail observe database::on-row-changed.",
     "name": "database::history",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -9552,7 +9944,7 @@
     }
   },
   {
-    "description": "Run one Devin CLI turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw CLI stdout onto devin::events, terminal AgentEvent frames onto agent::events, and returns {session_id, devin_session_id, url, result, stop_reason, is_error}.",
+    "description": "Run one Devin CLI turn and wait for the result. Accepts `prompt` or a `messages` array; records the turn as a session-manager session (listed in the console, nested under `parent_session_id` when given), delivers raw CLI stdout on devin::on-raw-event and terminal AgentEvent frames on devin::on-agent-event, and returns {session_id, devin_session_id, url, result, stop_reason, is_error}.",
     "name": "devin::run",
     "parameters": {
       "definitions": {
@@ -9844,7 +10236,7 @@
     }
   },
   {
-    "description": "Start a Devin CLI turn and return immediately; watch devin::events / agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Devin CLI turn and return immediately; follow the session-manager session (session::messages, session_id) or observe devin::on-agent-event / devin::on-raw-event with args { session_id } for progress and turn_end.",
     "name": "devin::start",
     "parameters": {
       "definitions": {
@@ -10045,7 +10437,7 @@
     }
   },
   {
-    "description": "Read full detail for one engine function: schemas, owning worker, and registered triggers that target it. Proxies to the engine's native engine::functions::info.",
+    "description": "Read full detail for one engine function: schemas, owning worker, the args its observers pass (args_format), its observer count, and whether it is private or observable. Proxies to the engine's native engine::functions::info.",
     "name": "directory::engine::functions::info",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10063,7 +10455,7 @@
     }
   },
   {
-    "description": "Fetch full registry metadata for one worker: worker envelope (same core fields as the engine's `engine::workers::list` row shape, plus registry-only `type` / `config` / `supported_targets` / `total_downloads` / `dependencies` / `image`), readme, full API reference (functions + triggers schemas), and the tree of skill file paths fetched from the registry's /w/{slug}/skills endpoint. Pass either `version` or `tag` (defaults to tag=\"latest\"). Results are cached for `registry_cache_ttl_ms`.",
+    "description": "Preview one registry worker before installing: envelope (version, kind, dependencies, config), its public function names with descriptions (the event sources it hosts included), and skill file paths. Schemas are omitted — install, then read contracts with engine::functions::info. Pass `readme: true` for the README prose; `version` or `tag` (default tag \"latest\").",
     "name": "directory::registry::workers::info",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10072,6 +10464,11 @@
         "name": {
           "description": "Worker name in the registry (e.g. `\"resend\"`).",
           "type": "string"
+        },
+        "readme": {
+          "default": false,
+          "description": "Include the README markdown (10–25 KB for most workers). Off by default: the card is for judging fit before `compose::add`; the README is for setup prose and examples.",
+          "type": "boolean"
         },
         "tag": {
           "default": null,
@@ -10327,7 +10724,7 @@
     }
   },
   {
-    "description": "List skills as one row PER SKILL (id, title, type, function_id, disable_model_invocation, description, bytes, modified_at) from skills_folder — use this when you need individual skill ids. A worker overview row's `id` is the bare worker name (e.g. `iii-sandbox`); pass it straight to directory::skills::get. For a per-WORKER overview instead, call directory::skills::index. Filters: `search` (case-insens. substring vs id+title+description), `prefix` (worker-namespace prefix; matches the overview row and its sub-skills), `type` (exact frontmatter type match). Pass `include_description: false` for token-light id+title+type rows (default: descriptions included). `title` prefers frontmatter `title:` over the body H1. Each row's `function_id` is the callable bus id (e.g. `sandbox::create`) — pass THAT to agent_trigger, not the row's `id` (which is a documentation address).",
+    "description": "List skills, one row per skill (id, title, type, function_id, description, bytes, modified_at). Filters: `search` (substring on id/title/description), `prefix` (worker namespace), `type`; `include_description: false` for lighter rows. Pass a row's `function_id`, not its `id`, to agent_call.",
     "name": "directory::skills::list",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10416,7 +10813,7 @@
     }
   },
   {
-    "description": "Permanently delete one EXISTING filesystem-backed system prompt by name. Resolves against the same merged scan as directory::system-prompts::list, removes only that prompt's markdown file, and fans out directory::system-prompts::on-change with { op: \"delete\" }.",
+    "description": "Permanently delete one EXISTING filesystem-backed system prompt by name. Resolves against the same merged scan as directory::system-prompts::list, removes only that prompt's markdown file, and calls directory::system-prompts::on-change with { op: \"delete\" }.",
     "name": "directory::system-prompts::delete",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -13394,421 +13791,6 @@
     }
   },
   {
-    "description": "Start a durable same-model A/B evaluation. Exactly one dimension may change: `prompt` or `system_prompt`. Returns evaluation_id immediately; use eval::status, eval::result, or the eval::completed trigger instead of polling in a tight loop.",
-    "name": "eval::start",
-    "parameters": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "definitions": {
-        "ComparisonDimensionV1": {
-          "enum": [
-            "prompt",
-            "system_prompt"
-          ],
-          "type": "string"
-        },
-        "EvalLimitsV1": {
-          "additionalProperties": false,
-          "properties": {
-            "evaluation": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/EvaluationLimitsV1"
-                }
-              ],
-              "default": {}
-            },
-            "execution": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/ExecutionLimitsV1"
-                }
-              ],
-              "default": {
-                "invocation_timeout_seconds": 120,
-                "max_output_tokens_per_call": 8192,
-                "max_turns": 1000,
-                "scenario_timeout_seconds": 600
-              }
-            }
-          },
-          "type": "object"
-        },
-        "EvalModelConfigV1": {
-          "additionalProperties": false,
-          "properties": {
-            "mode": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/Mode"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "model": {
-              "type": "string"
-            },
-            "provider": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "provider_options": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "system_prompt_strategy": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/SystemPromptStrategy"
-                }
-              ],
-              "default": "enrich"
-            },
-            "thinking_level": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/ThinkingLevel"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "model"
-          ],
-          "type": "object"
-        },
-        "EvalVariantV1": {
-          "additionalProperties": false,
-          "properties": {
-            "label": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "prompt": {
-              "type": "string"
-            },
-            "system_prompt": {
-              "description": "`null` disables the system prompt for this variant. An empty string keeps the harness behavior of resolving the provider or built-in prompt.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "prompt"
-          ],
-          "type": "object"
-        },
-        "EvaluationLimitsV1": {
-          "additionalProperties": false,
-          "properties": {
-            "max_error_spans": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "max_function_call_errors": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "EvaluatorSpecV1": {
-          "additionalProperties": false,
-          "properties": {
-            "arguments": {
-              "default": {}
-            },
-            "function_id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "function_id"
-          ],
-          "type": "object"
-        },
-        "ExecutionLimitsV1": {
-          "additionalProperties": false,
-          "properties": {
-            "invocation_timeout_seconds": {
-              "default": 120,
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": "integer"
-            },
-            "max_cost_usd": {
-              "format": "double",
-              "type": [
-                "number",
-                "null"
-              ]
-            },
-            "max_output_tokens_per_call": {
-              "default": 8192,
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": "integer"
-            },
-            "max_total_tokens": {
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "max_turns": {
-              "default": 1000,
-              "format": "uint32",
-              "minimum": 0.0,
-              "type": "integer"
-            },
-            "scenario_timeout_seconds": {
-              "default": 600,
-              "format": "uint64",
-              "minimum": 0.0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
-        "ExecutionOrderV1": {
-          "enum": [
-            "balanced_control_first",
-            "balanced_treatment_first"
-          ],
-          "type": "string"
-        },
-        "ExposeMode": {
-          "description": "How allowed functions reach the model (harness.md § Exposure modes).",
-          "enum": [
-            "agent_trigger",
-            "native"
-          ],
-          "type": "string"
-        },
-        "FunctionPolicy": {
-          "description": "The fail-closed dispatch policy (harness.md § Functions). Absent on the send => every call denied (a plain chat loop).",
-          "properties": {
-            "allow": {
-              "default": [],
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "deny": {
-              "default": [],
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "expose": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/ExposeMode"
-                }
-              ],
-              "default": "agent_trigger"
-            }
-          },
-          "type": "object"
-        },
-        "Mode": {
-          "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
-          "enum": [
-            "ask",
-            "agent"
-          ],
-          "type": "string"
-        },
-        "OutputContract": {
-          "description": "Free text by default; `json` constrains the final answer to a JSON value, validated against `schema` when supplied.",
-          "oneOf": [
-            {
-              "properties": {
-                "type": {
-                  "enum": [
-                    "text"
-                  ],
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "schema": true,
-                "type": {
-                  "enum": [
-                    "json"
-                  ],
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "SystemPromptStrategy": {
-          "description": "How a caller-supplied system prompt combines with the built-in identity prompt.",
-          "oneOf": [
-            {
-              "description": "Caller prompt replaces the built-in prompt verbatim.",
-              "enum": [
-                "override"
-              ],
-              "type": "string"
-            },
-            {
-              "description": "Caller prompt is appended to the built-in identity prompt.",
-              "enum": [
-                "enrich"
-              ],
-              "type": "string"
-            },
-            {
-              "description": "No system prompt is sent to the model.",
-              "enum": [
-                "disabled"
-              ],
-              "type": "string"
-            }
-          ]
-        },
-        "ThinkingLevel": {
-          "enum": [
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ],
-          "type": "string"
-        }
-      },
-      "properties": {
-        "control": {
-          "$ref": "#/definitions/EvalVariantV1"
-        },
-        "dimension": {
-          "$ref": "#/definitions/ComparisonDimensionV1"
-        },
-        "evaluator": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/EvaluatorSpecV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "execution_order": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ExecutionOrderV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "functions": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/FunctionPolicy"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Shared function policy for both variants. Omitted means deny all."
-        },
-        "limits": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/EvalLimitsV1"
-            }
-          ],
-          "default": {
-            "evaluation": {},
-            "execution": {
-              "invocation_timeout_seconds": 120,
-              "max_output_tokens_per_call": 8192,
-              "max_turns": 1000,
-              "scenario_timeout_seconds": 600
-            }
-          }
-        },
-        "metadata": {
-          "description": "Shared harness metadata, including an optional filesystem scope."
-        },
-        "model": {
-          "$ref": "#/definitions/EvalModelConfigV1"
-        },
-        "output": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/OutputContract"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Shared output contract for both variants. Omitted means text."
-        },
-        "runs": {
-          "format": "uint32",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "treatment": {
-          "$ref": "#/definitions/EvalVariantV1"
-        }
-      },
-      "required": [
-        "control",
-        "dimension",
-        "model",
-        "treatment"
-      ],
-      "title": "EvalStartRequestV1",
-      "type": "object"
-    }
-  },
-  {
     "description": "Read evaluation progress without loading the complete report.",
     "name": "eval::status",
     "parameters": {
@@ -13844,17 +13826,17 @@
     }
   },
   {
-    "description": "Trigger-binding guard: compare a JSON pointer inside the fired event and answer the condition contract ({ decision: \"allow\" | \"skip\", reason }). Config is { path?, op, to?, negate? } with the fp::when ops (==, !=, >, >=, <, <=, exists, not_empty); a pointer that resolves to nothing SKIPS rather than erroring, so \"not there yet\" is an ordinary answer. Use it as a binding's `conditions` entry so a reaction fires only on events that matter — it is not a fan-in gate (that is state::barrier), it filters one event at a time.",
+    "description": "Harness observer guard: compare a JSON pointer inside the observed event and answer { decision: \"allow\" | \"skip\", reason }; config is { path?, op, to?, negate? } with the fp::when ops. A pointer that resolves to nothing SKIPS rather than erroring.",
     "name": "fp::condition",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
         "ConditionConfig": {
-          "description": "The caller-authored half, out of the binding's `conditions[].config`.",
+          "description": "The caller-authored half, out of the observer's `conditions[].config`.",
           "properties": {
             "negate": {
               "default": false,
-              "description": "Invert the verdict. The only way to say \"fire when this is ABSENT\", since a pointer miss fails the guard and there is no `not_exists` op. Note the footgun that comes with it: a path that never resolves then fires on EVERY event.",
+              "description": "Invert the verdict — the only way to fire when the path is ABSENT (a path that never resolves then fires on every event).",
               "type": "boolean"
             },
             "op": {
@@ -13863,11 +13845,11 @@
                   "$ref": "#/definitions/WhenOp"
                 }
               ],
-              "description": "One of \"==\", \"!=\", \">\", \">=\", \"<\", \"<=\", \"exists\", \"not_empty\"."
+              "description": "Comparison to run."
             },
             "path": {
               "default": null,
-              "description": "JSON pointer into the EVENT (default: the whole event). Almost always wanted — comparing a whole event object is rarely what you mean.",
+              "description": "JSON pointer into the event; defaults to the whole event.",
               "type": [
                 "string",
                 "null"
@@ -13898,7 +13880,7 @@
           "type": "string"
         }
       },
-      "description": "The condition envelope. `binding` and `context` are accepted and ignored so the same function also works as a direct call.",
+      "description": "The condition envelope; `binding` and `context` are accepted and ignored.",
       "properties": {
         "condition_config": {
           "anyOf": [
@@ -14274,7 +14256,7 @@
     }
   },
   {
-    "description": "Run a short worker-side pipeline in one call: each step triggers a function and its result lands in the next step's payload at `into` (default \"/value\") — large values flow worker→worker and never enter the chat. fp::* transform steps (get/pick/omit/take/drop/map/filter/split/join/uniq/size/compact/nth/getOr/flatten/sortBy/reverse/when, lodash semantics) run inline and thread the transformed value itself — the {value} wrapper they return when called directly never appears between steps. A failing fp::when guard STOPS the pipe (`short_circuited: true`), so a trailing write step runs only when its condition holds. The FIRST step receives no threaded value: start with a producing function (a fetch, a state::get) or seed a leading transform via payload.value. Example: fetch an article and persist it trimmed: through=[{function:'browser::fetch', payload:{url,format:'markdown'}}, {function:'fp::get', payload:{path:'/content'}}, {function:'fp::take', payload:{n:20000}}, {function:'state::set', payload:{scope,key}}]. Returns per-step sizes and a preview, not the value. shell::*/coder::* steps run under the session's harness-stamped filesystem scope; without one (no working directory, or a non-harness caller) they are refused — call them directly instead. Database write steps are refused only while `approval::gate` is registered.",
+    "description": "Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default \"/value\"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value.",
     "name": "fp::pipe",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -14283,12 +14265,12 @@
           "additionalProperties": false,
           "properties": {
             "function": {
-              "description": "Function id to trigger (e.g. `browser::fetch`, `fp::get`, `state::set`).",
+              "description": "Function id to call.",
               "type": "string"
             },
             "into": {
               "default": null,
-              "description": "JSON pointer in THIS step's payload where the previous step's value lands (default `/value`). Object keys only (`~0`/`~1` escapes are decoded); indexing into arrays is unsupported.",
+              "description": "JSON pointer in this step's payload where the previous value lands (default `/value`); object keys only, no array indexing.",
               "type": [
                 "string",
                 "null"
@@ -14606,32 +14588,79 @@
   },
   {
     "description": "",
-    "name": "gantry::on-trigger-registration",
+    "name": "gantry::on-observer-registration",
     "parameters": {
-      "additionalProperties": false,
+      "additionalProperties": {},
       "properties": {
+        "args": {
+          "additionalProperties": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "filters": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "function_id": {
           "type": "string"
-        }
-      },
-      "required": [
-        "function_id"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "",
-    "name": "gantry::on-trigger-type-registration",
-    "parameters": {
-      "additionalProperties": false,
-      "properties": {
-        "type_id": {
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "observer_id": {
+          "type": "string"
+        },
+        "target_function_id": {
+          "type": "string"
+        },
+        "target_namespace": {
           "type": "string"
         }
       },
       "required": [
-        "type_id"
+        "observer_id",
+        "function_id",
+        "target_function_id"
       ],
       "type": "object"
     }
@@ -15958,7 +15987,7 @@
     }
   },
   {
-    "description": "Run a Grok coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array; streams Grok events to grok::events, AgentEvent frames to agent::events; returns {session_id, result, stop_reason}.",
+    "description": "Run a Grok coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array; delivers raw Grok events on grok::on-raw-event and AgentEvent frames on grok::on-agent-event; returns {session_id, result, stop_reason}.",
     "name": "grok::run",
     "parameters": {
       "definitions": {
@@ -16061,7 +16090,7 @@
     }
   },
   {
-    "description": "Start a Grok turn and return immediately; watch grok::events / agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Grok turn and return immediately; observe grok::on-agent-event (or grok::on-raw-event) with args { session_id } for progress and turn_end, or poll grok::status.",
     "name": "grok::start",
     "parameters": {
       "definitions": {
@@ -16271,7 +16300,7 @@
     }
   },
   {
-    "description": "Start a Hermes turn and return immediately; watch agent::events (group_id = session_id) for the result. Returns {session_id, started}.",
+    "description": "Start a Hermes turn and return immediately; observe hermes::on-agent-event with args { session_id } for the turn_end / agent_end frames, or poll hermes::status. Returns {session_id, started}.",
     "name": "hermes::start",
     "parameters": {
       "properties": {
@@ -17021,7 +17050,7 @@
     }
   },
   {
-    "description": "Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw events onto opencode::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.",
+    "description": "Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; delivers raw events on opencode::on-raw-event and AgentEvent frames on opencode::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.",
     "name": "opencode::run",
     "parameters": {
       "additionalProperties": false,
@@ -17108,7 +17137,7 @@
     }
   },
   {
-    "description": "Start an OpenCode turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start an OpenCode turn and return immediately; observe opencode::on-agent-event with args { session_id } for progress and turn_end.",
     "name": "opencode::start",
     "parameters": {
       "additionalProperties": false,
@@ -17773,7 +17802,7 @@
     }
   },
   {
-    "description": "Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw Pi events onto pi::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.",
+    "description": "Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; publishes raw Pi events on pi::on-raw-event and AgentEvent frames on pi::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.",
     "name": "pi::run",
     "parameters": {
       "additionalProperties": false,
@@ -17875,7 +17904,7 @@
     }
   },
   {
-    "description": "Start a Pi turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Pi turn and return immediately; observe pi::on-agent-event with args { session_id } for progress and turn_end.",
     "name": "pi::start",
     "parameters": {
       "additionalProperties": false,
@@ -21144,17 +21173,17 @@
     }
   },
   {
-    "description": "Publishes an event",
+    "description": "Publish an event to a pubsub topic. Subscribers observe this function with a filter on input.topic and deliver: 'input', and receive { topic, data }. Returns null.",
     "name": "publish",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Input of the `publish` function — exact field parity with the builtin (engine/src/workers/pubsub/pubsub.rs:78-84).",
       "properties": {
         "data": {
-          "description": "JSON payload delivered to each subscriber."
+          "description": "JSON payload delivered to each observer."
         },
         "topic": {
-          "description": "Topic to publish to. Subscribers registered for this topic receive the event.",
+          "description": "Topic to publish to. Observers filtered on this topic receive the event.",
           "type": "string"
         }
       },
@@ -21428,7 +21457,7 @@
     }
   },
   {
-    "description": "Publish a bus function whose handler executes inside a microVM. No runtime_id needed: sandbox-code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language — the first registration in a namespace boots it, later ones in the same namespace and lang reuse it automatically. `source` must DEFINE handler(payload) in `lang` — `export function handler(payload) {...}` (node) or `def handler(payload): ...` (python); each call runs it in a fresh interpreter process with the trigger payload and returns its JSON-serialized result. The first registered id in a namespace claims it; later ids must share both the namespace and its lang. `description` is what engine::functions::info shows a caller — write one. Handlers get the same global `iii` that run code gets (the real iii-sdk client, lazily connected) — but a handler that triggers a function registered on ITS OWN runtime waits on the runtime's one-exec-at-a-time slot and can only time out; call across runtimes or workers instead. Functions stop resolving when their namespace is torn down (sandbox-code-runner::teardown namespace=...) or its runtime is reaped for idleness.",
+    "description": "Publish a bus function whose handler runs in a microVM; no runtime_id needed. source must define handler(payload) in lang; each call runs it and returns its JSON result. The namespace (function_id before `::`) shares one runtime per lang; its functions stop resolving once torn down or idle-reaped.",
     "name": "sandbox-code-runner::register_function",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -21444,14 +21473,14 @@
       "properties": {
         "description": {
           "default": null,
-          "description": "What engine::functions::info shows a caller — write one.",
+          "description": "What `engine::functions::info` shows a caller — write one.",
           "type": [
             "string",
             "null"
           ]
         },
         "function_id": {
-          "description": "e.g. \"my-app::greet\". The first registration in a namespace (the segment before `::`) claims it; later ids must share it. sandbox-code-runner keeps ONE persistent runtime per (namespace, lang) — the first registration creates it, later ones reuse it — as an implementation detail you never see or manage.",
+          "description": "Bus id, e.g. `my-app::greet`; the segment before the first `::` is the namespace, which holds one persistent runtime per lang.",
           "type": "string"
         },
         "lang": {
@@ -21460,10 +21489,10 @@
               "$ref": "#/definitions/Lang"
             }
           ],
-          "description": "Which runner backs this namespace: \"node\" or \"python\". A namespace's language is fixed by its first registration; a later id under the same namespace but a different lang is refused."
+          "description": "Language of the namespace runtime this handler runs in."
         },
         "source": {
-          "description": "Source that DEFINES `handler(payload)` in `lang`: `export function handler(payload) {…}` (node) or `def handler(payload): …` (python). The runner loads the file, calls `handler`, and JSON-serializes the return value.",
+          "description": "Source that defines `handler(payload)` in `lang`: `export function handler(payload) {…}` (node) or `def handler(payload): …` (python).",
           "type": "string"
         }
       },
@@ -21477,7 +21506,7 @@
     }
   },
   {
-    "description": "Run code in an isolated microVM. Pass lang (\"node\" or \"python\"). By default run is ONE-SHOT: it boots a fresh VM, runs code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it, and is the capability sandbox-code-runner::teardown needs to stop it later. Pass runtime_id on a later call to reuse that same VM (same filesystem, fresh interpreter process each time) — that runtime is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a reaped reuse fails with sandbox-code-runner::expired (retry without runtime_id to boot a fresh one). Every VM boots with outbound network, so npm/pip installs work on any path. Code you run gets a global `iii` — the real iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id, payload })` (Node) / `iii.trigger({'function_id': ..., 'payload': ...})` (Python, synchronous) invokes any bus function, and the full SDK surface is available. Functions registered with iii.registerFunction die when the run process exits — register through sandbox-code-runner::register_function (via iii.trigger) for one that persists. stdout, stderr and exit_code come back verbatim — a failing script is a response, not an error.",
+    "description": "Run code in an isolated microVM with outbound network. One-shot by default: nothing persists and no runtime_id is returned. keep: true keeps the VM and returns its runtime_id to reuse until sandbox-code-runner::teardown or the idle TTL reaps it. A failing script is a response, not an error.",
     "name": "sandbox-code-runner::run",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -21492,12 +21521,12 @@
       },
       "properties": {
         "code": {
-          "description": "Source run as a whole file by a fresh interpreter process. Variables do NOT survive between runs; whether files and installed packages do depends on the path below. A global `iii` is in scope — the real iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id, payload })` in Node, `iii.trigger({'function_id': ..., 'payload': ...})` in Python. Functions registered with `iii.registerFunction` live only until this process exits — use sandbox-code-runner::register_function (callable through `iii.trigger`) for one that persists.",
+          "description": "Source run as a file by a fresh interpreter process; variables do not survive between runs. A global `iii` (iii-sdk client) is in scope.",
           "type": "string"
         },
         "keep": {
           "default": false,
-          "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — boot a VM, run `code`, return the result, destroy the VM. Nothing persists: no files, no installed packages. `true`: boot a VM and leave it running; the response's `runtime_id` addresses it for later runs (pass it back to keep working in the same filesystem) and is the capability `sandbox-code-runner::teardown` needs to stop it. Every runtime boots with outbound network (the `iii` global's engine link needs it), so npm/pip installs work on any path.",
+          "description": "When `runtime_id` is omitted: `true` leaves the VM running and returns its `runtime_id`; `false` destroys it after the run.",
           "type": "boolean"
         },
         "lang": {
@@ -21510,11 +21539,11 @@
             }
           ],
           "default": null,
-          "description": "Required when `runtime_id` is omitted — picks the sandbox image (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime."
+          "description": "Required when `runtime_id` is omitted; on an existing runtime omit it or pass the runtime's own language."
         },
         "runtime_id": {
           "default": null,
-          "description": "Run in a SPECIFIC runtime, sharing its filesystem: the write and the run land in that VM, and it is NOT stopped afterwards — you own it. Omit this to run one-shot (see `keep`).",
+          "description": "Run in this existing runtime (from a keep: true run), sharing its filesystem; it is not stopped afterwards. Omit to run one-shot.",
           "type": [
             "string",
             "null"
@@ -21874,7 +21903,7 @@
     }
   },
   {
-    "description": "Spawn a command as a background job; returns { job_id, argv } immediately. Same payload as shell::exec (command + args, do NOT pass argv as an array), including the optional host-only `cwd` (jail-confined; escape is S215), `env` (any key except PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup and interpreter-startup keys, rejected unconditionally), and `stdin` (string written to the job's stdin); violations and cwd/env/stdin on a sandbox target reject with an S210 message. Poll with shell::status, terminate with shell::kill, list with shell::list. Host background jobs ignore the per-call timeout_ms and run until they exit or shell::kill terminates them; set the operator config `max_bg_timeout_ms` (0 = unbounded, the default) to force-kill a runaway job after that long. Spawn-time failures (argv-parse, denylist, cwd/env gating, spawn, concurrency cap) are plain-string messages naming the violation; once spawned, per-job failures surface through shell::status (the job record's status/stderr), not this call's return.",
+    "description": "Spawn a background job; returns { job_id, argv } immediately. Accepts the shell::exec payload plus optional job_id. Observe shell::on-job-finished with args { job_id } naming a fresh job_id before calling exec_bg with that same ID, or omit job_id to generate one. Duplicate retained IDs reject before execution. Host jobs ignore timeout_ms and use the configured background hard cap; read output with shell::status, list jobs with shell::list. Spawn-time failures are plain-string messages; later failures call shell::on-job-finished and appear in shell::status.",
     "name": "shell::exec_bg",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -23088,7 +23117,7 @@
     }
   },
   {
-    "description": "Fan-in gate: record one arrival against a barrier and answer the typed condition decision — `skip` until the expected set has arrived, then `allow` EXACTLY ONCE carrying every arrival's payload. Use as a binding condition so a coordinator wakes once when N producers finish instead of once per producer.",
+    "description": "Fan-in gate for a binding condition: record one arrival and answer `skip` until the expected set has arrived, then `allow` exactly once carrying every arrival's payload.",
     "name": "state::barrier",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -23118,7 +23147,7 @@
             },
             "key_from": {
               "default": null,
-              "description": "JSON pointer into the event for the arrival key (default `/key`, the state event's own key). A missing pointer is an error, not a silent unnamed arrival: two arrivals that both resolve to nothing would collapse into one and the barrier would never complete.",
+              "description": "JSON pointer into the event for the arrival key (default `/key`); a pointer that resolves to nothing is an error.",
               "type": [
                 "string",
                 "null"
@@ -23172,11 +23201,11 @@
     }
   },
   {
-    "description": "Reserve a PRIVATE state namespace for the calling worker: its scopes become invisible to public state::* and to trigger fan-out, and internal accessors `<functions_prefix>::state::{get, list, compare-and-set}` are registered. A worker may only claim the namespace matching its own worker name (engine-stamped caller identity). Idempotent; claims survive a state restart.",
+    "description": "Reserve a private state namespace for the calling worker (its own worker name only): its scopes leave public state::* and state::on-changed, and `<prefix>::state::{get, list, compare-and-set}` accessors are registered. Idempotent.",
     "name": "state::claim-namespace",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Input for [`CLAIM_NAMESPACE_ID`]. `_caller_worker_id` is engine-stamped (overwritten on every dispatch, so a caller cannot forge it); the handler resolves it to the caller's worker NAME and requires it to equal `functions_prefix`.",
+      "description": "Input for [`CLAIM_NAMESPACE_ID`]. The handler resolves the caller (see `caller_worker_id`) to its worker NAME and requires it to equal `functions_prefix`. `_caller_worker_id` is kept for 0.24 engines, which identify the caller only there, and is read only on such an engine.",
       "properties": {
         "_caller_worker_id": {
           "default": null,
@@ -24956,7 +24985,7 @@
     }
   },
   {
-    "description": "Internal pre_generate hook: appends workflow orchestration guidance to the agent system prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.",
+    "description": "Internal pre_generate hook: appends workflow orchestration guidance to the agent system prompt. The target of the worker's harness::hook::on-pre-generate observer; not called directly.",
     "name": "workflow::inject-guidance",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -24972,7 +25001,7 @@
           "type": "object"
         }
       },
-      "description": "The slice of the `pre_generate` hook envelope we read (lenient: ignores every other field the harness sends). The harness nests the live generation context under `generate` (see harness `HookRunner::run_pre_generate`).",
+      "description": "The `pre_generate` hook envelope slice we read; the generation context is nested under `generate`.",
       "properties": {
         "generate": {
           "$ref": "#/definitions/GenerateContext"
@@ -25006,7 +25035,7 @@
     }
   },
   {
-    "description": "Internal pre_trigger hook on workflow::start: stamps the caller's session (and, when the call sets `reply_to`, the caller's model/provider/policy) into the arguments so the run nests under the orchestrator and can deliver its outcome. Always continues — never blocks the call. Bound to harness::hook::pre-trigger; not called directly.",
+    "description": "Internal pre_call hook on workflow::start: stamps the caller's session (and, for `reply_to`, model/provider/policy) into the arguments. Always continues; not called directly.",
     "name": "workflow::stamp-reply",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -25027,7 +25056,7 @@
           "type": "object"
         }
       },
-      "description": "The slice of the `pre_trigger` hook envelope we need (lenient: ignores the other envelope fields the harness sends).",
+      "description": "The slice of the `pre_call` hook envelope we need (lenient: ignores the other envelope fields the harness sends).",
       "properties": {
         "call": {
           "anyOf": [
@@ -25041,7 +25070,7 @@
         },
         "functions": {
           "default": null,
-          "description": "Caller turn's dispatch policy from the hook envelope, captured into a stamped `reply_to` so reply delivery can wake the caller with its own reach."
+          "description": "Caller turn's dispatch policy, captured into the stamped `reply_to` so the reply can wake the caller with its own reach."
         },
         "model": {
           "default": null,
@@ -25087,24 +25116,24 @@
           "description": "The sub-agent that runs a node (one harness session).",
           "properties": {
             "functions": {
-              "description": "Allow-list of function ids the child may call, e.g. `[\"web::fetch\"]`. A bare array is the shorthand and is wrapped into the harness `{ \"allow\": [...] }` policy; a single string and a full FunctionPolicy object (`{ \"allow\": [...], \"deny\": [...] }`) are also accepted. INHERITS BY DEFAULT: omit this and the node inherits the run's default reach — the def-level `default_functions`, or `[\"*\"]` (everything) when that is also unset. So a node can call anything the main agent could without listing it. Set this to NARROW one node (e.g. `[\"web::fetch\"]`), or to an empty allow-list (`{ \"allow\": [] }`) to lock the node down to nothing. Use the narrow form for least-privilege nodes; omit for the common case."
+              "description": "Child dispatch policy: an allow-list array, a single string, or `{ \"allow\": [...], \"deny\": [...] }`; omit to inherit `default_functions`."
             },
             "model": {
-              "description": "Model id, e.g. `\"claude-sonnet-4-6\"`. Required and non-empty. MUST be a model registered on this engine — discover the valid ids with `router::models::list`; an unregistered id is rejected up front by `workflow::start`. Do not guess model ids from memory.",
+              "description": "Model id registered on this engine (discover them with `router::models::list`); an unregistered id is rejected at start.",
               "type": "string"
             },
             "output": {
-              "description": "Output contract passed to the harness. MUST be `{ \"type\": \"json\", \"schema\": { ... } }` on any node that another node reads via `input.from = \"node:<id>\"` or fans out over (a consumed node has to emit JSON). The `schema` MUST declare every field a downstream node reaches — each `fanout.over` path and each dotted `input.from` path. If some node has `fanout.over = \"node:X.items\"`, node X's schema must declare `items` as an array; an undeclared field tends not to be emitted and the fanout fails at runtime. The `schema` must be a real JSON Schema with a top-level `type` (e.g. `\"object\"`); an empty `{}` is rejected at `workflow::start`. The final `output` node may be plain text — omit this, or set `{ \"type\": \"text\" }`."
+              "description": "Output contract; any node another node reads or fans out over must be `{\"type\":\"json\",\"schema\":{...}}` declaring every field read downstream."
             },
             "provider": {
-              "description": "Optional provider override (e.g. `\"anthropic\"`); defaults to the routed provider for the model.",
+              "description": "Provider override; defaults to the routed provider for the model.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "system_prompt": {
-              "description": "Optional system prompt; appended to the child's built-in identity prompt.",
+              "description": "System prompt appended to the child's built-in identity prompt.",
               "type": [
                 "string",
                 "null"
@@ -25121,7 +25150,7 @@
           "description": "Per-item parallelism: expand a node into one child per element of an array.",
           "properties": {
             "over": {
-              "description": "`\"node:<dep_id>.<path.to.array>\"` — points at an array inside a dependency's JSON result (the dep must declare JSON output). The fanout path must name a field the dependency's `agent.output` schema actually declares and emits, otherwise the run fails at expansion time with a message naming what the dep DID produce. One child runs per element, each reading its element via `input.from = \"fanout_item\"`. The group's result is the array of child results, in order.",
+              "description": "`\"node:<dep>.<path>\"` to an array the dependency's `agent.output` schema declares; one child runs per element, reading it as `\"fanout_item\"`.",
               "type": "string"
             }
           },
@@ -25133,18 +25162,18 @@
         "InputFrom": {
           "anyOf": [
             {
-              "description": "A single source: - `\"run_input\"` / `\"workflow.input\"` — the run's top-level `input`. - `\"node:<id>\"` — that dependency's JSON result. - `\"fanout_item\"` — on a fanout child, its single array element.",
+              "description": "`\"run_input\"` (the run's top-level input), `\"node:<id>\"` (that dependency's result), or `\"fanout_item\"` (this fanout child's array element).",
               "type": "string"
             },
             {
-              "description": "Several `\"node:<id>\"` sources joined into one object: each entry becomes a field keyed by its node id (e.g. `[\"node:write\",\"node:reviews\"]` → `{ \"write\": <write result>, \"reviews\": <reviews result> }`). A fanout dep resolves to its array of child results. Every entry MUST be a `\"node:<id>\"` reference and MUST appear in the node's `depends_on`.",
+              "description": "Several `\"node:<id>\"` sources, each also listed in `depends_on`, joined into one object keyed by node id.",
               "items": {
                 "type": "string"
               },
               "type": "array"
             }
           ],
-          "description": "Where a node's input value comes from. Either a single source, or — for a join/synthesis node that must read MORE THAN ONE dependency — an array of `\"node:<id>\"` references that are gathered into one keyed object."
+          "description": "Where a node's input comes from: one source, or an array of `\"node:<id>\"` refs gathered into one object keyed by node id."
         },
         "InputSpec": {
           "additionalProperties": false,
@@ -25156,10 +25185,10 @@
                   "$ref": "#/definitions/InputFrom"
                 }
               ],
-              "description": "Source of the input value — a single source or, for a join node, an array of `\"node:<id>\"` references gathered into a keyed object. See `InputFrom`."
+              "description": "Source of the input value: a single source or, for a join node, an array of `\"node:<id>\"` refs."
             },
             "template": {
-              "description": "Optional text prepended to the (JSON-serialized) input as the opening message — use it to instruct the agent what to do with the input.",
+              "description": "Text prepended to the JSON-serialized input as the node's opening message.",
               "type": [
                 "string",
                 "null"
@@ -25180,7 +25209,7 @@
             },
             "depends_on": {
               "default": [],
-              "description": "Prerequisite node ids. This node fires only once ALL of them are Done — this is the barrier / join. Empty means it can start immediately.",
+              "description": "Prerequisite node ids; the node fires only once all of them are Done (the barrier / join).",
               "items": {
                 "type": "string"
               },
@@ -25195,7 +25224,7 @@
                   "type": "null"
                 }
               ],
-              "description": "When set, this node fans out: one child agent runs per item of the referenced array. Omit for a normal single-run node."
+              "description": "Fan out: one child agent runs per item of the referenced array."
             },
             "input": {
               "$ref": "#/definitions/InputSpec"
@@ -25209,14 +25238,14 @@
         },
         "NotifySpec": {
           "additionalProperties": false,
-          "description": "Caller-supplied completion callback. When a run reaches a terminal state the worker triggers `function_id` once with `{run_id, status, result, result_error}` so the caller is pushed the outcome instead of polling `workflow::status`. Delivery is durable (enqueued) and at-least-once — the handler must dedup on `run_id`.",
+          "description": "Completion callback: `function_id` is called once on terminal state with `{run_id, status, result, result_error}`; at-least-once, dedup on `run_id`.",
           "properties": {
             "function_id": {
-              "description": "Function id to trigger on terminal state, e.g. `\"myworker::wf-done\"`.",
+              "description": "Function id to call on terminal state, e.g. `\"myworker::wf-done\"`.",
               "type": "string"
             },
             "queue": {
-              "description": "Queue for durable delivery; defaults to `\"default\"` when omitted.",
+              "description": "Queue for durable delivery; defaults to `\"default\"`.",
               "type": [
                 "string",
                 "null"
@@ -25233,7 +25262,7 @@
           "description": "Selects the node whose result becomes the run's `result`.",
           "properties": {
             "from": {
-              "description": "`\"node:<id>\"` (a bare `<id>` is also accepted) of an existing node. If that node is a fanout group, the run's result is the array of its children's results, in order.",
+              "description": "`\"node:<id>\"` of an existing node; for a fanout group the result is the array of its children's results, in order.",
               "type": "string"
             }
           },
@@ -25244,34 +25273,34 @@
         },
         "ReplySpec": {
           "additionalProperties": false,
-          "description": "Deliver the run outcome into a session as a new message on terminal state (via `harness::send`), so the calling agent never has to poll `workflow::status`. An AGENT caller sends `reply_to: {}` (optionally a `template`) and leaves the rest unset: the worker's pre_trigger hook auto-stamps the caller's real `session_id` / `model` / `provider`, OVERWRITING anything supplied — so an agent cannot direct a run's result into another session. A trusted worker caller (not going through the agent turn loop) may set these explicitly.\n\nAfter calling `workflow::start` with `reply_to`, END YOUR TURN — do NOT claim the result was delivered and do NOT produce or guess a result this turn. The outcome arrives as a SEPARATE message when the run finishes.",
+          "description": "Push the outcome into the caller's session as a message; agents send `{}` (optionally `template`) — the rest is auto-stamped from the caller's turn.",
           "properties": {
             "functions": {
-              "description": "Caller turn's dispatch policy, auto-stamped by the pre_trigger hook so the reply can WAKE an idle caller with its original reach (`run: true`) instead of a deny-all turn. Absent → delivery falls back to a passive transcript append (`run: false`). A `FunctionPolicy` object (`{allow, deny}`); carried as a `Value` since the worker only passes it through to `harness::send`."
+              "description": "Caller turn's dispatch policy (`{allow, deny}`), auto-stamped so the reply can wake an idle caller with its original reach."
             },
             "model": {
-              "description": "Model for the reply turn — `harness::send` requires one and does NOT inherit the session's model. Auto-stamped from the caller's turn.",
+              "description": "Model for the reply turn; auto-stamped from the caller's turn.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "provider": {
-              "description": "Optional provider override, auto-stamped from the caller's turn.",
+              "description": "Provider override; auto-stamped from the caller's turn.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "session_id": {
-              "description": "Target session. Auto-stamped from the caller's turn by the pre_trigger hook.",
+              "description": "Target session; auto-stamped from the caller's turn.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "template": {
-              "description": "Optional text prepended to the formatted outcome.",
+              "description": "Text prepended to the formatted outcome.",
               "type": [
                 "string",
                 "null"
@@ -25282,16 +25311,16 @@
         },
         "WorkflowDef": {
           "additionalProperties": false,
-          "description": "A declarative multi-agent DAG. Nodes are sub-agents, `depends_on` are the edges, `fanout` runs a node once per item of an upstream array (with a `depends_on` join acting as the barrier), and `output` picks which node's result the run returns. Each node runs as its own harness session, so a run is durable and crash-resumable. Submit via `workflow::start`, which returns a run_id immediately; supply `notify` to be pushed the outcome when the run finishes, or poll `workflow::status`.",
+          "description": "Declarative multi-agent DAG, durable and crash-resumable: nodes are sub-agent sessions, `depends_on` the edges, `output` the returned node.",
           "properties": {
             "default_functions": {
-              "description": "Default dispatch policy for every node that omits its own `agent.functions` — the run-wide reach inherited by un-narrowed nodes. Same shape as `agent.functions` (a bare allow-list array, a single string, or a `{ allow, deny }` object). Omit and un-narrowed nodes get `[\"*\"]` (everything), so by default a node can do anything the main agent could. Set this to mirror a narrower main-agent policy run-wide (e.g. `{ \"allow\": [\"*\"], \"deny\": [\"approval::*\",\"configuration::*\"] }`), then narrow individual nodes further with their own `agent.functions`."
+              "description": "Dispatch policy inherited by every node that omits `agent.functions` (same shape); when unset those nodes get `[\"*\"]`, everything."
             },
             "nodes": {
               "additionalProperties": {
                 "$ref": "#/definitions/NodeDef"
               },
-              "description": "Nodes keyed by node id. A node id must not contain `#`, `.`, or `/` (reserved for fanout-item / over-path parsing and result-key composition). The graph formed by every node's `depends_on` must be acyclic.",
+              "description": "Nodes keyed by node id; an id must not contain `#`, `.`, or `/`, and the `depends_on` graph must be acyclic.",
               "type": "object"
             },
             "output": {
@@ -25304,7 +25333,7 @@
             },
             "version": {
               "default": 1,
-              "description": "Schema version. Defaults to `1` (the only supported version) when omitted, so callers never need to send it.",
+              "description": "Schema version; only `1` is supported.",
               "format": "uint32",
               "minimum": 0.0,
               "type": "integer"
@@ -25320,7 +25349,7 @@
       "properties": {
         "caller_session_id": {
           "default": null,
-          "description": "The orchestrator session, stamped by the `workflow::stamp-reply` pre_trigger hook from the caller's turn (never trusted from the agent). Recorded on the run so node sessions can nest under it in the console.",
+          "description": "Orchestrator session, stamped by the `workflow::stamp-reply` hook from the caller's turn; never trusted from the agent.",
           "type": [
             "string",
             "null"
@@ -25332,11 +25361,11 @@
               "$ref": "#/definitions/WorkflowDef"
             }
           ],
-          "description": "The workflow DAG to run. See `WorkflowDef`. (`workflow` is accepted as an alias for the wrapper key.)"
+          "description": "The workflow DAG to run (`workflow` is accepted as an alias key)."
         },
         "idempotency_key": {
           "default": null,
-          "description": "Optional dedupe key: a repeated key returns the original `run_id` instead of launching a duplicate run.",
+          "description": "Dedupe key; a repeated key returns the original `run_id` instead of launching a duplicate run.",
           "type": [
             "string",
             "null"
@@ -25344,7 +25373,7 @@
         },
         "input": {
           "default": null,
-          "description": "Top-level input made available to nodes whose `input.from` is `\"run_input\"` / `\"workflow.input\"`. Any JSON value."
+          "description": "Any JSON value; read by nodes whose `input.from` is `\"run_input\"`."
         },
         "notify": {
           "anyOf": [
@@ -25356,7 +25385,7 @@
             }
           ],
           "default": null,
-          "description": "Optional completion callback: a function the worker triggers once when the run reaches a terminal state, so the caller is pushed the outcome instead of polling `workflow::status`."
+          "description": "Completion callback called once when the run reaches a terminal state, instead of polling `workflow::status`."
         },
         "reply_to": {
           "anyOf": [
@@ -25368,7 +25397,7 @@
             }
           ],
           "default": null,
-          "description": "Optional: deliver the run outcome into a session as a new message on terminal state (via `harness::send`), so an agent caller never polls `workflow::status`. Send `reply_to: {}` and the worker auto-stamps your session/model; add a `template` to prefix the message. See `ReplySpec`.\n\nAfter calling with `reply_to` (or `notify`), END YOUR TURN — do NOT claim the result was delivered or produce one this turn; it arrives as a separate message when the run finishes."
+          "description": "Deliver the outcome into your session as a new message: send `{}` (optionally `template`), then end your turn — it arrives when the run finishes."
         }
       },
       "required": [
@@ -25458,11 +25487,11 @@
     }
   },
   {
-    "description": "Internal: on a harness turn-completed event, wake the owning run with a tick. Best-effort latency optimization; the cron sweep is the durable backstop. Not called directly.",
+    "description": "Internal: on a harness::on-turn-completed event, wake the owning run with a tick. Best-effort latency optimization; the cron sweep is the durable backstop. Not called directly.",
     "name": "workflow::wake",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Lenient view of the `harness::turn-completed` payload — we only need the session id. The event also carries turn_id/status/result/timestamp/parent, which we ignore (no `deny_unknown_fields`).",
+      "description": "The `harness::on-turn-completed` event (delivered as output); only `session_id` is read.",
       "properties": {
         "session_id": {
           "default": "",
@@ -25668,11 +25697,11 @@
     }
   },
   {
-    "description": "Internal: hot-reload the worktree worker from the authoritative configuration when it changes — swaps the per-call snapshot and re-binds the prune cron on a schedule change.",
+    "description": "Internal: hot-reload the worktree worker from the authoritative configuration when it changes — swaps the per-call snapshot and observes the new prune schedule on a schedule change.",
     "name": "worktree::on-config-change",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Internal `worktree::on-config-change` trigger payload. The handler re-fetches the authoritative configuration and ignores this payload, so a direct call can never inject config.",
+      "description": "The `configuration::on-updated` event, delivered as output to the internal `worktree::on-config-change`. The handler re-fetches the authoritative configuration and ignores this payload, so a direct call can never inject config.",
       "properties": {
         "id": {
           "default": null,

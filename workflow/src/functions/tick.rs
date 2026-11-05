@@ -91,7 +91,7 @@ fn normalize_functions(functions: Option<Value>) -> Option<Value> {
 /// is already running INSIDE a workflow, so the implicit default denies the
 /// control plane a leaf LLM node could use to escalate or reshape the engine:
 /// `workflow::*` (recursive sub-workflow launches → unbounded nesting),
-/// `configuration::*` (worker reconfiguration, incl. pre-trigger hooks),
+/// `configuration::*` (worker reconfiguration, incl. pre-call hooks),
 /// `approval::*` (approval flows), and `harness::hook::*` (rebinding hooks).
 /// This matters because upstream LLM output is fed verbatim into a downstream
 /// node's prompt, so an un-narrowed node is a cross-node prompt-injection target;
@@ -258,14 +258,14 @@ pub(crate) async fn fire_node(
 
     let resp = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "harness::send".into(),
             payload: send_payload,
             action: None,
             timeout_ms: Some(dispatch_timeout_ms),
         })
         .await
-        .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
+        .map_err(|e| WorkflowError::Call(e.to_string()))?;
 
     let turn_id = resp
         .get("turn_id")
@@ -379,16 +379,16 @@ async fn finalize(
     // otherwise show as "running" in workflow::status forever.
     cancel_running_checkpoints(&mut record.nodes);
 
-    // Emit terminal callbacks CONCURRENTLY (independent best-effort triggers — was
+    // Emit terminal callbacks CONCURRENTLY (independent best-effort calls — was
     // serial awaits holding the per-run lock for their sum). This stays BEFORE
     // `put_run` persists the terminal status (in tick::handle) on purpose: emit-first
     // is at-least-once — a crash before persist re-ticks and re-fires, and consumers
-    // dedup on run_id (notify/run-completed carry it; reply is keyed/idempotent).
+    // dedup on run_id (notify/on-run-completed carry it; reply is keyed/idempotent).
     // Persisting first would instead risk a LOST delivery on a crash mid-emit, which
     // is strictly worse for a delivery guarantee.
     let rec: &WorkflowRunRecord = record;
     tokio::join!(
-        crate::events::emit_run_completed(deps, rec),
+        crate::events::emit_run_completed(deps.events.as_ref(), rec),
         crate::events::emit_notify(deps, rec),
         crate::events::emit_reply(deps, rec),
     );
@@ -725,14 +725,14 @@ mod tests {
     fn normalize_functions_passes_through_policy_object_and_drops_null() {
         // An existing policy object gets the router deny unioned into its deny list.
         let got = normalize_functions(Some(
-            json!({ "allow": ["web::fetch"], "deny": [], "expose": "agent_trigger" }),
+            json!({ "allow": ["web::fetch"], "deny": [], "expose": "agent_call" }),
         ));
         assert_eq!(
             got,
             Some(json!({
                 "allow": ["web::fetch"],
                 "deny": ["router::chat", "router::complete"],
-                "expose": "agent_trigger"
+                "expose": "agent_call"
             }))
         );
         assert_eq!(normalize_functions(None), None);
@@ -1011,5 +1011,124 @@ mod tests {
         let mut nodes = BTreeMap::new();
         nodes.insert("a".to_string(), done_cp());
         assert_eq!(summarize_failure(&nodes), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // finalize — one `workflow::on-run-completed` call per terminal run.
+    // -----------------------------------------------------------------------
+
+    use crate::events::test_support::RecordingDeliverer;
+    use crate::events::{RunCompletedEvent, ON_RUN_COMPLETED_FN};
+    use std::sync::Arc;
+
+    /// Deps whose client never connects. Finalizing a run with no Running
+    /// node, no `notify` and no `reply_to` makes no bus call, so the event
+    /// deliverer sees every call finalize makes.
+    fn recording_deps(observed: bool) -> (Deps, Arc<RecordingDeliverer>) {
+        let events = Arc::new(RecordingDeliverer::new(observed));
+        let deps = Deps {
+            iii: Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
+            cfg: Arc::new(tokio::sync::RwLock::new(Arc::new(
+                crate::config::WorkerConfig::default(),
+            ))),
+            locks: crate::locks::WorkflowLocks::default(),
+            events: events.clone(),
+        };
+        (deps, events)
+    }
+
+    fn one_node_def() -> WorkflowDef {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "only".to_string(),
+            NodeDef {
+                agent: AgentSpec {
+                    model: "m".to_string(),
+                    provider: None,
+                    system_prompt: None,
+                    functions: None,
+                    output: None,
+                },
+                input: InputSpec {
+                    from: "run_input".into(),
+                    template: None,
+                },
+                depends_on: vec![],
+                fanout: None,
+            },
+        );
+        WorkflowDef {
+            version: 1,
+            nodes,
+            output: OutputRef {
+                from: "node:only".into(),
+            },
+            default_functions: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn finalize_calls_the_event_function_once_per_terminal_run() {
+        let def = one_node_def();
+        let cases = [
+            (
+                RunStatus::Completed,
+                done_cp(),
+                Some(json!({ "answer": 42 })),
+                None,
+            ),
+            (
+                RunStatus::Failed,
+                failed_cp(Some("boom")),
+                None,
+                Some("node 'only': boom".to_string()),
+            ),
+            (RunStatus::Cancelled, done_cp(), None, None),
+        ];
+        for (status, checkpoint, result, result_error) in cases {
+            let (deps, events) = recording_deps(true);
+            let mut record = fresh_record();
+            record.nodes.insert("only".into(), checkpoint);
+            let results = BTreeMap::from([("only".to_string(), json!({ "answer": 42 }))]);
+
+            finalize(&deps, &def, &mut record, status, &results)
+                .await
+                .expect("finalize");
+
+            let calls = events.calls();
+            assert_eq!(calls.len(), 1, "{status:?}: one event call");
+            assert_eq!(calls[0].function_id, ON_RUN_COMPLETED_FN);
+            assert!(
+                matches!(calls[0].action, Some(iii_sdk::CallAction::Void)),
+                "{status:?}: fire-and-forget"
+            );
+            let event: RunCompletedEvent =
+                serde_json::from_value(calls[0].payload.clone()).expect("event shape");
+            assert_eq!(
+                event,
+                RunCompletedEvent {
+                    run_id: "run_test".into(),
+                    status,
+                    result,
+                    result_error,
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn finalize_skips_the_event_while_unobserved() {
+        let def = one_node_def();
+        let (deps, events) = recording_deps(false);
+        let mut record = fresh_record();
+        record.nodes.insert("only".into(), done_cp());
+        let results = BTreeMap::from([("only".to_string(), json!({ "answer": 42 }))]);
+
+        finalize(&deps, &def, &mut record, RunStatus::Completed, &results)
+            .await
+            .expect("finalize");
+
+        assert_eq!(record.status, RunStatus::Completed);
+        assert!(events.calls().is_empty());
     }
 }

@@ -51,7 +51,7 @@ export function deleteSessionTree(
     const eventKey = (value: SessionTreeDeletionSnapshot) =>
       JSON.stringify([value.operation_id, value.attempt])
     let offHandler: (() => void) | undefined
-    let offTrigger: (() => void) | undefined
+    let offObserver: (() => void) | undefined
     // A terminal event can beat the command's acceptance response. It is
     // usable only after that response identifies this attempt's operation.
     const earlyTerminals = new Map<string, SessionTreeDeletionSnapshot>()
@@ -60,7 +60,7 @@ export function deleteSessionTree(
       signal?.removeEventListener('abort', abort)
       earlyTerminals.clear()
       try {
-        offTrigger?.()
+        offObserver?.()
       } finally {
         offHandler?.()
       }
@@ -125,12 +125,14 @@ export function deleteSessionTree(
       if (settled) return
       const handlerId = `iii::console::session_tree_deletion_${++subscriptionSequence}`
       offHandler = client.on(handlerId, accept)
-      offTrigger = client.registerTrigger({
-        type: 'harness::session-tree-deletion',
-        function_id: `${handlerId}::${client.browserId}`,
-        config: { session_id: sessionId },
-      })
-      const accepted = await client.trigger<SessionTreeDeletionSnapshot>(
+      offObserver = client.observe(
+        {
+          function_id: 'harness::on-session-tree-deletion',
+          filters: { 'input.session_id': { $eq: sessionId } },
+        },
+        `${handlerId}::${client.browserId}`,
+      )
+      const accepted = await client.call<SessionTreeDeletionSnapshot>(
         'harness::delete-session-tree',
         { session_id: sessionId },
       )
@@ -144,7 +146,7 @@ export function deleteSessionTree(
       attempt = accepted.attempt
       // Always start the single recovery read after acceptance. Do not wait
       // for it before accepting a terminal event (the read may be slow).
-      const recovery = client.trigger<SessionTreeDeletionSnapshot | null>(
+      const recovery = client.call<SessionTreeDeletionSnapshot | null>(
         'harness::delete-session-tree-status',
         { operation_id: operationId },
       )

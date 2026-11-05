@@ -10986,7 +10986,7 @@
   },
   {
     "id": "whatsapp::cloud::messages::request_location",
-    "description": "Ask the recipient to share their location within the customer service window. The response arrives in the existing message.received webhook trigger. Returns acceptance only; no automatic retry.",
+    "description": "Ask the recipient to share their location within the customer service window. The response arrives as a message.received event of whatsapp::cloud::on-events. Returns acceptance only; no automatic retry.",
     "request_format": {
       "type": "object",
       "additionalProperties": false,

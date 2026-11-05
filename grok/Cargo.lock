@@ -68,6 +68,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -432,10 +441,9 @@ dependencies = [
 
 [[package]]
 name = "grok"
-version = "0.1.18"
+version = "0.2.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "clap",
  "iii-helpers",
  "iii-sdk",
@@ -692,10 +700,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-helpers"
-version = "0.24.6"
+name = "iii-filter"
+version = "0.26.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a6af460c1ecd277c99d375fb6b1c652639520148ddad304f424a3d9cd97b5d1"
+checksum = "de9bfc852a3cf1d1c8626857eb778dc6d8314929ea1f51e9135f2d129d92ef4d"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "iii-helpers"
+version = "0.26.0-rc.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b37daa0a583e362a52cb14ffb1c8fea7ead7f9390bad3d70d17ec54975a9470"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -714,13 +732,15 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.24.6"
+version = "0.26.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33696540e03a6d9650009c4091d1aee78f7caa3fbd8a2375d75032d83000604f"
+checksum = "8e338fdac585db56961750a3ed848eb82687735ce082bf62f1d89111c84efff6"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "futures-util",
  "hostname",
+ "iii-filter",
  "iii-helpers",
  "reqwest",
  "schemars",
@@ -1254,9 +1274,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",

@@ -8,9 +8,10 @@ description: >-
 
 # PR webhook monitoring (opt-in)
 
-For durable PR monitoring, use `github::pr::event`, NOT `github::called`.
-First arm the trigger with a caller-chosen `watch_id`, then call
-`github::pr::watch` with that same ID, `pr_url` OR `repo` + `number`, optional
+For durable PR monitoring, observe `github::pr::on-event`, NOT
+`github::on-called`. First observe it with args `{ watch_id }` (a caller-chosen
+ID; agents use `harness::observe`), then call `github::pr::watch` with that
+same ID, `pr_url` OR `repo` + `number`, optional
 `events: [ci,comments,reviews,pr]`, `stop_on: merged|closed` (default merged),
 and mandatory future RFC3339 `expires_at`. Read `github::pr::watch-status`
 once after watch to close the initial race. Never interval-poll PRs.
@@ -18,8 +19,9 @@ once after watch to close the initial race. Never interval-poll PRs.
 Inspect `status` and `health.last_error`: `preparing` is not active ingress;
 `cleanup_pending` is not successful cleanup. `unwatch` and manual `recover`
 are mutations requiring approval. Internal `github::webhooks::*` functions
-must not be called by an agent. Event callbacks must dedupe `event_id`;
-namespace and metadata are preserved, errors propagate to the durable queue.
+must not be called by an agent. Observer targets must dedupe `event_id`; the
+observer's metadata reaches its target, and a target's error keeps the
+notification in the durable queue for retry.
 A single passing check is NOT aggregate CI success. Closed without merge
 remains watched until expiry when stop_on is merged.
 
@@ -130,17 +132,18 @@ payload; extra items are counted in `omitted_items`.
 
 ## Watch lifetime follows its listeners
 
-A watch is kept alive by the `github::pr::event` bindings that listen to it
-(same `watch_id`, or a repo/number filter that matches it).
+A watch is kept alive by the `github::pr::on-event` observers that listen to it
+(same `watch_id` in their args, or a `repo`/`number` that matches it).
 
-- When the last listening binding goes away (its chat was deleted, or it
-  unregistered), the watch is marked orphaned. If no binding listens again
+- When the last listening observer goes away (its chat was deleted, or it was
+  disposed), the watch is marked orphaned. If no observer listens again
   within `webhooks.orphan_grace_minutes` (default 60), maintenance stops it,
   releases its quick-tunnel lease and deletes the repository hook once no live
   watch remains there; the tunnel stops with its last lease. One-shot wakes are
-  unregistered right after they fire, so re-arm before the grace period ends.
-- Bindings removed while the worker was offline are reconciled against the
-  engine at most every five minutes.
+  disposed right after they fire, so observe again before the grace period ends.
+- Observers disposed while the worker was offline are reconciled at most every
+  five minutes: a subscriber with no observer at two reconciliations in a row
+  is dropped.
 - Calling `github::pr::watch` again with the same `watch_id` and spec resumes a
   stopped watch; completed (merged/closed) and expired watches stay terminal.
 - `expires_at` must be within `webhooks.max_watch_days` (1..=30, default 30):

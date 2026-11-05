@@ -58,7 +58,7 @@ Public runtime and Registry metadata remain in `<worker>/iii.worker.yaml`:
 identity, deploy kind, package manifest, binary name, description, license,
 tags, semver dependencies, non-secret configuration, resources, environment,
 and scripts. `iii.worker.yaml` remains supported by local development,
-scaffolding, `iii worker`, and package consumers.
+scaffolding, Compose, and package consumers.
 
 ## Compilation boundary
 

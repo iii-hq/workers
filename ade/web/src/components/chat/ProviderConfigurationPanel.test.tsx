@@ -27,7 +27,7 @@ const transport = vi.hoisted(() => ({
   setError: null as unknown,
   pendingSet: null as { promise: Promise<unknown> } | null,
   pendingGets: new Map<string, { promise: Promise<unknown> }>(),
-  trigger: vi.fn(),
+  call: vi.fn(),
 }))
 
 const conversationContext = vi.hoisted(() => ({
@@ -43,7 +43,7 @@ vi.mock('@/lib/conversations-context', () => ({
 }))
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: () => Promise.resolve({ trigger: transport.trigger }),
+  getIiiClient: () => Promise.resolve({ call: transport.call }),
 }))
 
 const schemaFor = (providerIds: string[] = ['openai-codex']): JsonSchema => ({
@@ -104,8 +104,8 @@ function resetTransport() {
   transport.setError = null
   transport.pendingSet = null
   transport.pendingGets.clear()
-  transport.trigger.mockReset()
-  transport.trigger.mockImplementation(
+  transport.call.mockReset()
+  transport.call.mockImplementation(
     async (functionId: string, payload: Record<string, unknown> = {}) => {
       if (functionId === 'configuration::list') {
         if (transport.listError) throw transport.listError
@@ -142,7 +142,7 @@ function resetTransport() {
         }
         return apply()
       }
-      throw new Error(`unexpected trigger: ${functionId}`)
+      throw new Error(`unexpected call: ${functionId}`)
     },
   )
 }
@@ -258,7 +258,7 @@ async function waitForText(text: string, timeoutMs = 1000) {
 }
 
 function callsFor(functionId: string) {
-  return transport.trigger.mock.calls.filter(
+  return transport.call.mock.calls.filter(
     ([calledId]) => calledId === functionId,
   )
 }

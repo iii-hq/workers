@@ -1,15 +1,15 @@
 /**
  * The console's and the network's feed (design §8.4, the web panels'
- * pattern): bind the tab's event first, then seed with a read of the newest
- * 200; drop entries at or below the last seq seen, keep the newest 500.
- * Bound only while visible; visible again catches up from the last seq. A
- * filter change seeds again. The worker's data is not trusted: an entry
+ * pattern): observe the tab's event first, then seed with a read of the
+ * newest 200; drop entries at or below the last seq seen, keep the newest
+ * 500. Observed only while visible; visible again catches up from the last
+ * seq. A filter change seeds again. The worker's data is not trusted: an entry
  * without a numeric seq is skipped, a repeated seq keeps its last entry, and
  * a row that cannot be drawn is left out instead of failing the list.
  */
 
 import { createEffect, createList, createSignal, iii, type ListSource, onCleanup, untrack } from '@iii-dev/native-ui'
-import { type LogRead, listen } from './api'
+import { forSession, type LogRead, listen } from './api'
 import { readable } from './format'
 
 export const SEED_LIMIT = 200
@@ -31,7 +31,8 @@ export interface Feed<R extends object> {
 
 export function createFeed<E extends { seq: number }, R extends { key: string; kind: number }>(options: {
   session: string
-  trigger: string
+  /** The event function whose calls append live entries. */
+  event: string
   /** Reads with the current filters; `sinceSeq` for a catch-up. */
   read: (sinceSeq: number | undefined) => Promise<LogRead<E>>
   /** Whether a live entry passes the current filters. */
@@ -133,7 +134,7 @@ export function createFeed<E extends { seq: number }, R extends { key: string; k
 
   createEffect(() => {
     if (!iii.env.visible) return
-    const off = listen<{ session_id?: string; entry?: E }>(options.trigger, { session_id: options.session }, live)
+    const off = listen<{ session_id?: string; entry?: E }>(options.event, forSession(options.session), live)
     let alive = true
     onCleanup(() => {
       alive = false

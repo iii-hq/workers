@@ -6,30 +6,29 @@ registry; agents work inside it through their turn's filesystem scope
 (`metadata.fs_scope.root`); `worktree::land`
 rebases the branch onto a target, runs an optional test gate through the
 [shell](https://github.com/iii-hq/workers/tree/main/ide) worker, fast-forwards the target with an atomic
-compare-and-swap, and cleans up. Every lifecycle change emits a trigger type
-sibling workers can subscribe to, so a Slack bot can announce lands or a
-harness can react when a sibling's branch merges.
+compare-and-swap, and cleans up. Every lifecycle change is a call of a
+`worktree::on-*` function that sibling workers observe, so a Slack bot can
+announce lands or a harness can react when a sibling's branch merges.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=worktree
+iii call compose::add worker=worktree
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 The land test gate delegates to `shell::exec`, so install the shell
 worker alongside it:
 
 ```bash
-iii trigger compose::add worker=ide
+iii call compose::add worker=ide
 ```
 
 ## Quickstart
 
 ```rust
-use iii_sdk::{register_worker, InitOptions};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
@@ -37,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
     // 1. Mint an isolated worktree and hand its path to an agent.
-    let wt = iii.trigger(TriggerRequest {
+    let wt = iii.call(CallRequest {
         function_id: "worktree::create".into(),
         payload: json!({ "repo_path": "/home/me/project", "session_id": "sess_1" }),
         action: None,
@@ -48,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     // 2. ... the agent commits work inside the worktree ...
 
     // 3. Land it: rebase onto main, gate on tests, ff-merge, clean up.
-    let job = iii.trigger(TriggerRequest {
+    let job = iii.call(CallRequest {
         function_id: "worktree::land".into(),
         payload: json!({
             "worktree_id": wt["worktree_id"],
@@ -63,13 +62,14 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The land completes asynchronously; subscribe to `worktree::landed` /
-`worktree::land-blocked` (below) or poll `worktree::get` for the outcome.
+The land completes asynchronously; observe `worktree::on-landed` /
+`worktree::on-land-blocked` (below) or poll `worktree::get` for the outcome.
 
 ## Configuration
 
 Runtime settings live in the `configuration` worker under id `worktree` and
-hot-reload on change (a `prune_schedule` change re-binds the cron live).
+hot-reload on change (a `prune_schedule` change observes `cron::on-tick` with
+the new expression, then disposes the previous observer).
 
 ```yaml
 worktree_root: "worktrees"          # relative to III_COMPOSE_DIR
@@ -206,43 +206,52 @@ instance.
 - `worktree::remove` — guarded removal (`W220` dirty, `W221` unmerged,
   `W222` busy), instant trash staging with background delete, optional
   branch deletion.
-- `worktree::prune` — reconcile sweep, cron-bound; `{}` payload works.
+- `worktree::prune` — reconcile sweep, run on every `cron::on-tick` of
+  `prune_schedule`; `{}` payload works.
 - `worktree::land` — queue a land job; returns `{ job_id, queued }`.
 - `worktree::land-step` — internal queue consumer; not agent-callable.
+- `worktree::rest`: internal target of the HTTP routes (below).
 
 Errors carry stable `W###` codes (`src/error.rs`). One instance per engine:
 state has no compare-and-set, so run a single worktree worker (shard by
 repo if you need more).
 
-## Custom trigger types
+## Lifecycle events
 
-| Trigger type | Fires when | Payload highlights |
+Six private functions carry the lifecycle events: only this worker calls
+them, any worker observes them, and each handler returns the event it is
+called with. None takes args; iii delivers every call to each observer whose
+filters match. Every event carries `repo_path` and `worktree_id`, and
+`session_id` when a session is involved, so observers select with filters on
+`input.repo_path`, `input.worktree_id` and `input.session_id`. The worker
+calls a function only while it has observers.
+
+| Function | Called when | Event |
 |---|---|---|
-| `worktree::created` | A worktree was minted | `worktree_id`, `path`, `branch`, `base_sha` |
-| `worktree::claimed` | A session took ownership | `session_id`, `previous_session_id` |
-| `worktree::released` | A claim was released | `session_id` |
-| `worktree::removed` | A worktree was removed or pruned | `branch_deleted` |
-| `worktree::landed` | A land fast-forwarded the target | `target_branch`, `merged_sha` |
-| `worktree::land-blocked` | A land ended blocked | `reason`, `code`, `conflict_files`, `exit_code` |
-
-Bindings accept optional equality filters: `repo_path`, `worktree_id`,
-`session_id`.
+| `worktree::on-created` | A worktree was minted | `CreatedEvent { worktree_id, repo_path, path, branch, base_ref, base_sha, session_id?, timestamp }` |
+| `worktree::on-claimed` | A session took ownership | `ClaimedEvent { worktree_id, repo_path, session_id, previous_session_id?, timestamp }` |
+| `worktree::on-released` | A claim was released | `ReleasedEvent { worktree_id, repo_path, session_id, timestamp }` |
+| `worktree::on-removed` | A worktree was removed or pruned | `RemovedEvent { worktree_id, repo_path, branch, branch_deleted, session_id?, timestamp }` |
+| `worktree::on-landed` | A land fast-forwarded the target | `LandedEvent { worktree_id, repo_path, branch, target_branch, merged_sha, session_id?, timestamp }` |
+| `worktree::on-land-blocked` | A land ended blocked | `LandBlockedEvent { worktree_id, repo_path, target_branch, reason, code, conflict_files?, exit_code?, session_id?, timestamp }` |
 
 ```rust
-use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::{Deliver, Source};
+use serde_json::json;
 
-iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "worktree::landed".to_string(),
-    function_id: "notify::on-land".to_string(),
-    config: serde_json::json!({ "repo_path": "/home/me/project" }),
-    metadata: None,
-})?;
+// every land in one repository, the event itself as the target's input
+iii.observe(
+    Source::function("worktree::on-landed")
+        .filters(json!({ "input.repo_path": { "$eq": "/home/me/project" } }))
+        .deliver(Deliver::Output),
+    "notify::on-land",
+);
 ```
 
 ## Conflict resolution flow
 
 When a land's rebase hits conflicts, the rebase is left IN PROGRESS inside
-the worktree and a `worktree::land-blocked` event fires with
+the worktree and `worktree::on-land-blocked` is called with
 `reason: "rebase_conflict"` and the conflicted paths. The owning agent
 resolves in place (its filesystem scope already roots at the worktree),
 finishes with `git rebase --continue`, and reruns `worktree::land`. A rerun
@@ -251,11 +260,33 @@ while the rebase is still unresolved returns `W402`; pass
 
 ## HTTP endpoints
 
-With the `http` worker (or any provider of the `http` trigger type)
-installed, the read surface is also served over HTTP: `worktree/list`,
-`worktree/get`, `worktree/status`, and `worktree/validate` (POST, JSON
-bodies matching the function schemas). Registration is best-effort; without
-an http provider the worker logs a warning and keeps serving the bus.
+With the `http` worker installed, the read surface is also served over HTTP:
+the worker observes `http::on-request` with `{ method: "POST", path }` for
+`/worktree/list`, `/worktree/get`, `/worktree/status` and
+`/worktree/validate`, each targeting `worktree::rest`. It runs the function
+the path names (`/worktree/get` is `worktree::get`) with the request's JSON
+body as its input (an empty body is `{}`) and answers with the function's
+result as the response body, status `200`. A body that is not JSON answers
+`400` `W001` and runs no function. An error answers
+`{ "error": { "code", "message" } }` with the status of its code:
+
+| Status | `code` |
+|---|---|
+| 400 | `W001` (also a body that is not JSON or does not fit the function's input), `W110`, `W111`, `W112` |
+| 403 | `W500`-`W504` |
+| 404 | `W200`, `W201` |
+| 409 | `W120`, `W210`-`W222`, `W401`-`W413` |
+| 503 | `W300` |
+| 504 | `W101` |
+| 500 | any other code |
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/worktree/get \
+  -H 'content-type: application/json' -d '{"worktree_id":"wt_..."}'
+```
+
+Without an http worker those observers stay pending and the worker keeps
+serving the bus; a rejected route logs a warning.
 
 ## Local development and testing
 
@@ -264,5 +295,7 @@ cargo run --release -- --url ws://127.0.0.1:49134
 cargo test
 ```
 
-The end-to-end test boots a real engine and self-skips when `iii` is not on
-PATH. Regenerate wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
+The end-to-end tests boot a real engine and self-skip when `iii` is not on
+PATH (`III_ENGINE_BIN` names another binary). The REST test also runs the
+http worker, `III_HTTP_BIN` (`cargo build --manifest-path ../http/Cargo.toml`).
+Regenerate wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.

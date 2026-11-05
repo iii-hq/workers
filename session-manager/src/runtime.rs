@@ -2,7 +2,8 @@
 //!
 //! Everything the worker derives from the `adapter` half of the config —
 //! the [`SessionStore`], the [`SessionService`] over it, the event
-//! [`EventSink`], and (bridge mode) the remote connection plus its relay —
+//! [`EventSink`], and (bridge mode) the remote connection plus its relay
+//! observer —
 //! lives in one [`SessionRuntime`]. [`build_runtime`] constructs it from a
 //! [`WorkerConfig`]; [`configuration`](crate::configuration) keeps the live
 //! one behind an `Arc<RwLock<_>>` and swaps a freshly-built one in when the
@@ -22,8 +23,7 @@ use iii_sdk::{register_worker, IIIClient, InitOptions};
 use crate::config::{StorageAdapter, WorkerConfig};
 use crate::configuration::ConfigCell;
 use crate::events::{
-    attach_bridge_relay, BridgeSubscribers, Emitter, EventSink, IiiDeliverer, RemotePublisher,
-    TriggerSets,
+    attach_bridge_relay, BridgeRelay, Emitter, EventSink, IiiDeliverer, RemotePublisher,
 };
 use crate::service::SessionService;
 use crate::store::{BridgeStore, FsStore, SessionStore};
@@ -34,7 +34,8 @@ use crate::store::{BridgeStore, FsStore, SessionStore};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterMode {
     /// Authoritative local fs store; serves the raw store protocol and is the
-    /// single event fan-out point for any attached bridges.
+    /// single event fan-out point for any attached bridges (it calls
+    /// `session::store::on-events`).
     FsMain,
     /// Defers storage and event publishing to a main instance over `remote`.
     Bridge,
@@ -52,25 +53,40 @@ pub struct SessionRuntime {
     /// Where a mutation's events go: the local [`Emitter`] (fs) or a
     /// [`RemotePublisher`] to the main (bridge).
     pub sink: Arc<dyn EventSink>,
-    /// Local trigger fan-out. In fs mode this IS the `sink`; in bridge mode the
-    /// relay feeds it and the post-reload resync replays through it.
+    /// Calls the local `session::on-*` event functions. In fs mode this IS the
+    /// `sink`; in bridge mode the relay feeds it and the post-reload resync
+    /// replays through it.
     pub local_emitter: Arc<Emitter>,
     pub mode: AdapterMode,
     /// The remote engine connection (bridge mode only); shut down when this
     /// runtime is retired.
     pub bridge_remote: Option<Arc<IIIClient>>,
+    /// The relay observing the main's `session::store::on-events` (bridge
+    /// mode only); disposed when this runtime is retired.
+    pub bridge_relay: Option<BridgeRelay>,
+}
+
+impl SessionRuntime {
+    /// Retire the bridge plumbing, if any: dispose the relay's observer so
+    /// the main stops delivering to it, then shut the remote connection down.
+    pub async fn close_bridge(&self) {
+        if let Some(relay) = &self.bridge_relay {
+            relay.detach().await;
+        }
+        if let Some(remote) = &self.bridge_remote {
+            remote.shutdown_async().await;
+        }
+    }
 }
 
 /// The boot-time wiring `build_runtime` reuses on every rebuild: the engine
-/// handle, the six subscriber sets, the bridge relay registry, and the shared
-/// config snapshot the service reads list limits from.
+/// handle that hosts the event functions and the shared config snapshot the
+/// service reads list limits from.
 pub struct SessionBuildContext {
     pub iii: Arc<IIIClient>,
     /// This instance's own engine url; a bridge whose `url` equals it would
     /// defer storage to itself, so that is rejected.
     pub local_url: String,
-    pub sets: TriggerSets,
-    pub bridge_subscribers: BridgeSubscribers,
     pub config_cell: ConfigCell,
 }
 
@@ -103,13 +119,11 @@ pub fn build_runtime(
                     .map_err(|e| format!("open data_dir {}: {e}", data_dir.display()))?,
             );
 
-            // Main mode: the local emitter fans out to subscribers AND to every
-            // attached bridge, and doubles as the mutation sink.
-            let emitter = Arc::new(Emitter::with_bridges(
-                ctx.sets.clone(),
-                Arc::new(IiiDeliverer::new(ctx.iii.clone())),
-                ctx.bridge_subscribers.clone(),
-            ));
+            // Main mode: the local emitter calls the event functions AND the
+            // bridge feed, and doubles as the mutation sink.
+            let emitter = Arc::new(Emitter::feeding_bridges(Arc::new(IiiDeliverer::new(
+                ctx.iii.clone(),
+            ))));
             let service = Arc::new(SessionService::with_config_cell(
                 store.clone(),
                 ctx.config_cell.clone(),
@@ -124,6 +138,7 @@ pub fn build_runtime(
                 local_emitter: emitter,
                 mode: AdapterMode::FsMain,
                 bridge_remote: None,
+                bridge_relay: None,
             })
         }
         StorageAdapter::Bridge(bridge_cfg) => {
@@ -148,12 +163,10 @@ pub fn build_runtime(
             let store: Arc<dyn SessionStore> =
                 Arc::new(BridgeStore::new(remote.clone(), bridge_cfg.timeout_ms));
 
-            // Local emitter serves local subscribers; it is fed by the relay
+            // Local emitter serves local observers; it is fed by the relay
             // (events coming back from the main), never directly by the handlers.
-            let local_emitter = Arc::new(Emitter::new(
-                ctx.sets.clone(),
-                Arc::new(IiiDeliverer::new(ctx.iii.clone())),
-            ));
+            let local_emitter =
+                Arc::new(Emitter::new(Arc::new(IiiDeliverer::new(ctx.iii.clone()))));
             let relay = attach_bridge_relay(&remote, local_emitter.clone());
 
             let service = Arc::new(SessionService::with_config_cell(
@@ -162,7 +175,7 @@ pub fn build_runtime(
             ));
             let sink: Arc<dyn EventSink> =
                 Arc::new(RemotePublisher::new(remote.clone(), bridge_cfg.timeout_ms));
-            tracing::info!(main = %bridge_cfg.url, relay = %relay, "adapter: bridge");
+            tracing::info!(main = %bridge_cfg.url, relay = %relay.function_id, "adapter: bridge");
             Ok(SessionRuntime {
                 config: Arc::new(cfg.clone()),
                 service,
@@ -171,6 +184,7 @@ pub fn build_runtime(
                 local_emitter,
                 mode: AdapterMode::Bridge,
                 bridge_remote: Some(remote),
+                bridge_relay: Some(relay),
             })
         }
     }
@@ -190,8 +204,6 @@ mod tests {
         SessionBuildContext {
             iii,
             local_url: local_url.to_string(),
-            sets: TriggerSets::new(),
-            bridge_subscribers: BridgeSubscribers::new(),
             config_cell,
         }
     }
@@ -208,6 +220,11 @@ mod tests {
         let rt = build_runtime(&cfg, &ctx("ws://127.0.0.1:59621")).expect("fs runtime builds");
         assert_eq!(rt.mode, AdapterMode::FsMain);
         assert!(rt.bridge_remote.is_none());
+        assert!(rt.bridge_relay.is_none());
+        assert!(
+            rt.local_emitter.feeds_bridges(),
+            "the main feeds every bridge"
+        );
     }
 
     #[test]
@@ -238,5 +255,14 @@ mod tests {
         let rt = build_runtime(&cfg, &ctx("ws://127.0.0.1:59623")).expect("bridge runtime builds");
         assert_eq!(rt.mode, AdapterMode::Bridge);
         assert!(rt.bridge_remote.is_some());
+        let relay = rt
+            .bridge_relay
+            .as_ref()
+            .expect("a bridge observes the main's feed");
+        assert!(relay.function_id.starts_with("session::bridge::recv::"));
+        assert!(
+            !rt.local_emitter.feeds_bridges(),
+            "a bridged instance's events reach the others through the main"
+        );
     }
 }

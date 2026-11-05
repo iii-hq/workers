@@ -1,6 +1,7 @@
-//! End-to-end coverage against a running engine: `state::*` functions and the
-//! `state` trigger type invoked through the REAL bus path (`IIIClient::trigger`
-//! / `register_trigger`), the same path every other worker uses.
+//! End-to-end coverage against a running engine: `state::*` functions called
+//! and `state::on-changed` observed through the REAL bus path
+//! (`IIIClient::call` / `IIIClient::observe`), the same path every other
+//! worker uses.
 //!
 //! Connect-or-skip like every e2e suite (see `common::engine`). Every test
 //! uses a DEDICATED connection (`engine::connect_fresh`), never the shared
@@ -8,25 +9,17 @@
 //! `state::get`, ...) on every call, and the SDK panics if the same id is
 //! registered twice on one client.
 
-// The suite binds the `state` trigger type the way old consumers do, with
-// `register_trigger`, deprecated in iii-sdk 0.25 and served by 0.24 and 0.25
-// engines.
-#![allow(deprecated)]
-
 mod common;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use common::engine;
-use iii_sdk::RegisterFunction;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_state::config::StateConfig;
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_state::config::{EARLIER_EVENTS_KEY, StateConfig};
 use iii_state::configuration;
 use iii_state::functions::ConfigCell;
-use iii_state::trigger::TriggerTable;
+use iii_state::on_changed::ON_CHANGED_FN;
 use serde_json::{Value, json};
 use serial_test::serial;
 use uuid::Uuid;
@@ -41,7 +34,7 @@ fn unique(prefix: &str) -> String {
 /// unpinned boot would write `./data/state` in the test cwd and leak state
 /// across tests and runs. Every boot here pins in_memory.
 fn in_memory_config() -> StateConfig {
-    // Extend the default (keeping triggers_enabled etc.) rather than building
+    // Extend the default (keeping events_enabled etc.) rather than building
     // from bare JSON, which would drop the default knobs to None.
     StateConfig {
         adapter: Some(
@@ -52,8 +45,8 @@ fn in_memory_config() -> StateConfig {
     }
 }
 
-async fn call(iii: &iii_sdk::IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
@@ -62,31 +55,37 @@ async fn call(iii: &iii_sdk::IIIClient, function_id: &str, payload: Value) -> Re
     .await
 }
 
-/// Poll the trigger fan-out table until it holds `n` bindings — trigger
-/// registration propagates asynchronously (engine -> handler -> table), so a
-/// fixed sleep before firing an event would be racy.
-async fn wait_for_trigger_count(triggers: &TriggerTable, n: usize) {
-    for _ in 0..50 {
-        if triggers.read().await.len() >= n {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("state trigger registration never propagated to the fan-out table");
+/// Register `target` as a sink that forwards every event it receives.
+fn event_sink(iii: &IIIClient, target: &str) -> tokio::sync::mpsc::UnboundedReceiver<Value> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    iii.register_function(
+        target,
+        RegisterFunction::new_async(move |payload: Value| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(payload);
+                Ok::<Value, Error>(json!({"ok": true}))
+            }
+        }),
+    );
+    rx
 }
 
-/// Poll an `AtomicUsize` call counter until it reaches `n`.
-async fn wait_for_calls(counter: &AtomicUsize, n: usize) {
-    for _ in 0..50 {
-        if counter.load(Ordering::SeqCst) >= n {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!(
-        "expected {n} call(s), got {}",
-        counter.load(Ordering::SeqCst)
+/// Observe `state::on-changed` with `filters`, delivering the event itself to
+/// `target`, and wait until the observer is active: observing is
+/// asynchronous (engine -> host -> ack), so a write before that would race.
+async fn observe_changes(iii: &IIIClient, filters: Value, target: &str) -> ObserverHandle {
+    let handle = iii.observe(
+        Source::function(ON_CHANGED_FN)
+            .filters(filters)
+            .deliver(Deliver::Output),
+        target,
     );
+    tokio::time::timeout(Duration::from_secs(5), handle.ready())
+        .await
+        .expect("observer never became active")
+        .expect("observing state::on-changed");
+    handle
 }
 
 /// Poll the live config cell until `max_value_bytes` matches `expected`.
@@ -100,15 +99,15 @@ async fn wait_for_max_value_bytes(config: &ConfigCell, expected: Option<usize>) 
     panic!("max_value_bytes reload never propagated to the config cell");
 }
 
-/// Poll the live config cell until `triggers_enabled` matches `expected`.
-async fn wait_for_triggers_enabled(config: &ConfigCell, expected: Option<bool>) {
+/// Poll the live config cell until `events_enabled` matches `expected`.
+async fn wait_for_events_enabled(config: &ConfigCell, expected: Option<bool>) {
     for _ in 0..40 {
-        if config.read().await.triggers_enabled == expected {
+        if config.read().await.events_enabled == expected {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("triggers_enabled reload never propagated to the config cell");
+    panic!("events_enabled reload never propagated to the config cell");
 }
 
 #[tokio::test]
@@ -369,7 +368,7 @@ async fn list_and_list_groups() {
 
 #[tokio::test]
 #[serial]
-async fn state_trigger_fires_with_event_payload() {
+async fn observers_receive_each_change_event() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
@@ -380,25 +379,13 @@ async fn state_trigger_fires_with_event_payload() {
     let scope = unique("events");
     let key = "k";
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    iii.register_function(
+    let mut rx = event_sink(&iii, "e2e::on_state");
+    let observer = observe_changes(
+        &iii,
+        json!({"input.scope": {"$eq": scope}}),
         "e2e::on_state",
-        RegisterFunction::new_async(move |payload: Value| {
-            let tx = tx.clone();
-            async move {
-                let _ = tx.send(payload);
-                Ok::<Value, Error>(json!({"ok": true}))
-            }
-        }),
-    );
-
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_state::TRIGGER_TYPE.to_string(),
-        "e2e::on_state".to_string(),
-        json!({"scope": scope}),
-    ))
-    .expect("register state trigger");
-    wait_for_trigger_count(&boot.triggers, 1).await;
+    )
+    .await;
 
     call(
         &iii,
@@ -443,13 +430,33 @@ async fn state_trigger_fires_with_event_payload() {
     assert_eq!(deleted["old_value"], json!({"name": "Bob"}));
     assert_eq!(deleted["new_value"], Value::Null);
 
+    // `state::on-changed` is private: another worker cannot forge a change.
+    // The other worker has its own name: the engine refuses a second live
+    // worker under this process's default name.
+    if let Some(other) = engine::connect_fresh_named(&unique("e2e-forger")).await {
+        let err = call(
+            &other,
+            ON_CHANGED_FN,
+            json!({"type": "state", "event_type": "state:created", "scope": scope,
+                   "key": "forged", "old_value": null, "new_value": 1}),
+        )
+        .await
+        .expect_err("a call from another worker must be refused")
+        .to_string();
+        assert!(err.contains("FORBIDDEN"), "{err}");
+        other.shutdown_async().await;
+    }
+    let forged = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
+    assert!(forged.is_err(), "a refused call reaches no observer");
+
+    observer.dispose().await.expect("dispose observer");
     boot.shutdown().await;
     iii.shutdown_async().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn condition_false_blocks_null_passes() {
+async fn filters_select_events_by_key_and_event_type() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
@@ -457,80 +464,67 @@ async fn condition_false_blocks_null_passes() {
         .await
         .expect("state worker should boot");
 
-    let scope = unique("condition");
+    let scope = unique("filters");
 
-    iii.register_function(
-        "e2e::cond_false",
-        RegisterFunction::new_async(
-            |_payload: Value| async move { Ok::<Value, Error>(json!(false)) },
-        ),
-    );
-    iii.register_function(
-        "e2e::cond_null",
-        RegisterFunction::new_async(
-            |_payload: Value| async move { Ok::<Value, Error>(Value::Null) },
-        ),
-    );
-
-    let calls_false = Arc::new(AtomicUsize::new(0));
-    {
-        let calls_false = calls_false.clone();
-        iii.register_function(
-            "e2e::backend_false",
-            RegisterFunction::new_async(move |_payload: Value| {
-                let calls_false = calls_false.clone();
-                async move {
-                    calls_false.fetch_add(1, Ordering::SeqCst);
-                    Ok::<Value, Error>(json!({"ok": true}))
-                }
-            }),
-        );
-    }
-
-    let calls_null = Arc::new(AtomicUsize::new(0));
-    {
-        let calls_null = calls_null.clone();
-        iii.register_function(
-            "e2e::backend_null",
-            RegisterFunction::new_async(move |_payload: Value| {
-                let calls_null = calls_null.clone();
-                async move {
-                    calls_null.fetch_add(1, Ordering::SeqCst);
-                    Ok::<Value, Error>(json!({"ok": true}))
-                }
-            }),
-        );
-    }
-
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_state::TRIGGER_TYPE.to_string(),
-        "e2e::backend_false".to_string(),
-        json!({"scope": scope, "condition_function_id": "e2e::cond_false"}),
-    ))
-    .expect("register false-condition trigger");
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_state::TRIGGER_TYPE.to_string(),
-        "e2e::backend_null".to_string(),
-        json!({"scope": scope, "condition_function_id": "e2e::cond_null"}),
-    ))
-    .expect("register null-condition trigger");
-    wait_for_trigger_count(&boot.triggers, 2).await;
+    let mut status_rx = event_sink(&iii, "e2e::on_status");
+    let mut deleted_rx = event_sink(&iii, "e2e::on_deleted");
+    let by_key = observe_changes(
+        &iii,
+        json!({"input.scope": {"$eq": scope}, "input.key": {"$eq": "status"}}),
+        "e2e::on_status",
+    )
+    .await;
+    let by_type = observe_changes(
+        &iii,
+        json!({"input.scope": {"$eq": scope}, "input.event_type": {"$eq": "state:deleted"}}),
+        "e2e::on_deleted",
+    )
+    .await;
 
     call(
         &iii,
         "state::set",
-        json!({"scope": scope, "key": "k", "value": 1}),
+        json!({"scope": scope, "key": "status", "value": "pending"}),
     )
     .await
-    .expect("set");
+    .expect("set status");
+    call(
+        &iii,
+        "state::set",
+        json!({"scope": scope, "key": "other", "value": 1}),
+    )
+    .await
+    .expect("set other");
+    call(
+        &iii,
+        "state::delete",
+        json!({"scope": scope, "key": "other"}),
+    )
+    .await
+    .expect("delete other");
 
-    wait_for_calls(&calls_null, 1).await;
-    assert_eq!(
-        calls_false.load(Ordering::SeqCst),
-        0,
-        "explicit `false` condition must block its binding"
-    );
+    let status = tokio::time::timeout(Duration::from_secs(3), status_rx.recv())
+        .await
+        .expect("status event timed out")
+        .expect("channel closed");
+    assert_eq!(status["key"], "status");
+    assert_eq!(status["event_type"], "state:created");
 
+    let deleted = tokio::time::timeout(Duration::from_secs(3), deleted_rx.recv())
+        .await
+        .expect("deleted event timed out")
+        .expect("channel closed");
+    assert_eq!(deleted["key"], "other");
+    assert_eq!(deleted["old_value"], json!(1));
+
+    // Nothing else matched either observer.
+    let extra_status = tokio::time::timeout(Duration::from_millis(300), status_rx.recv()).await;
+    assert!(extra_status.is_err(), "only key `status` reaches by_key");
+    let extra_deleted = tokio::time::timeout(Duration::from_millis(100), deleted_rx.recv()).await;
+    assert!(extra_deleted.is_err(), "only deletes reach by_type");
+
+    by_key.dispose().await.expect("dispose observer");
+    by_type.dispose().await.expect("dispose observer");
     boot.shutdown().await;
     iii.shutdown_async().await;
 }
@@ -548,32 +542,25 @@ async fn max_value_bytes_rejects_oversized_set() {
     configuration::register_config(&iii, None)
         .await
         .expect("register state configuration schema");
-    configuration::register_config_trigger(&iii, boot.ctx.clone(), boot.apply_lock.clone())
-        .expect("bind configuration reload trigger");
+    let config_observer =
+        configuration::observe_config_changes(&iii, boot.ctx.clone(), boot.apply_lock.clone());
+    tokio::time::timeout(Duration::from_secs(5), config_observer.ready())
+        .await
+        .expect("configuration observer never became active")
+        .expect("observing configuration::on-updated");
 
     let scope = unique("config");
 
-    // A listener wired up before any config changes, so the trigger-disable
+    // A listener wired up before any config changes, so the events-disabled
     // assertion later actually proves something (rather than being
     // vacuously true because nothing was listening).
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    iii.register_function(
+    let mut rx = event_sink(&iii, "e2e::on_state_cfg");
+    let observer = observe_changes(
+        &iii,
+        json!({"input.scope": {"$eq": scope}}),
         "e2e::on_state_cfg",
-        RegisterFunction::new_async(move |payload: Value| {
-            let tx = tx.clone();
-            async move {
-                let _ = tx.send(payload);
-                Ok::<Value, Error>(json!({"ok": true}))
-            }
-        }),
-    );
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_state::TRIGGER_TYPE.to_string(),
-        "e2e::on_state_cfg".to_string(),
-        json!({"scope": scope}),
-    ))
-    .expect("register state trigger");
-    wait_for_trigger_count(&boot.triggers, 1).await;
+    )
+    .await;
 
     // Flip `max_value_bytes` to 10 via the bus and wait for the reload to
     // land on the live config cell.
@@ -610,23 +597,23 @@ async fn max_value_bytes_rejects_oversized_set() {
     .await
     .expect("small value should still be written");
 
-    // Drain the events produced by the trigger-enabled sets above before
-    // asserting silence under the disabled gate.
+    // Drain the events produced by the sets above before asserting silence
+    // under the disabled gate.
     while tokio::time::timeout(Duration::from_millis(50), rx.recv())
         .await
         .is_ok()
     {}
 
-    // Disable fan-out entirely via the bus; the running worker must apply it
-    // live (no restart).
+    // Disable the change events entirely via the bus; the running worker
+    // must apply it live (no restart).
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::config_id(), "value": {"triggers_enabled": false}}),
+        json!({"id": configuration::config_id(), "value": {"events_enabled": false}}),
     )
     .await
-    .expect("configuration::set triggers_enabled=false");
-    wait_for_triggers_enabled(&boot.config, Some(false)).await;
+    .expect("configuration::set events_enabled=false");
+    wait_for_events_enabled(&boot.config, Some(false)).await;
 
     call(
         &iii,
@@ -634,11 +621,11 @@ async fn max_value_bytes_rejects_oversized_set() {
         json!({"scope": scope, "key": "silent", "value": 1}),
     )
     .await
-    .expect("set while triggers are disabled");
+    .expect("set while events are disabled");
     let silence = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
     assert!(
         silence.is_err(),
-        "no event should fire while triggers_enabled=false"
+        "no event should be emitted while events_enabled=false"
     );
 
     // Restore defaults so a subsequent run against the same engine process
@@ -650,11 +637,205 @@ async fn max_value_bytes_rejects_oversized_set() {
     )
     .await
     .expect("restore default configuration");
-    wait_for_triggers_enabled(&boot.config, Some(true)).await;
+    wait_for_events_enabled(&boot.config, Some(true)).await;
     wait_for_max_value_bytes(&boot.config, None).await;
 
+    observer.dispose().await.expect("dispose observer");
+    config_observer
+        .dispose()
+        .await
+        .expect("dispose configuration observer");
     boot.shutdown().await;
     iii.shutdown_async().await;
+}
+
+/// An entry an earlier release left in the configuration worker: its own
+/// schema, and the events knob under [`EARLIER_EVENTS_KEY`].
+async fn store_earlier_release_entry(iii: &IIIClient, id: &str, value: Value) {
+    call(
+        iii,
+        "configuration::ensure",
+        json!({
+            "id": id,
+            "name": "State",
+            "description": "the entry as an earlier state release registered it",
+            "schema": {"type": "object"},
+            "initial_value": value,
+        }),
+    )
+    .await
+    .expect("configuration::ensure the earlier entry");
+}
+
+#[tokio::test]
+#[serial]
+async fn an_entry_stored_by_an_earlier_release_loads_through_the_configuration_worker() {
+    let Some(iii) = engine::connect_fresh().await else {
+        return;
+    };
+
+    // The knob under its earlier name only: it becomes `events_enabled`.
+    let id = unique("state-upgrade");
+    store_earlier_release_entry(
+        &iii,
+        &id,
+        json!({ EARLIER_EVENTS_KEY: false, "max_value_bytes": 64 }),
+    )
+    .await;
+    configuration::register_config_as(&iii, &id, None)
+        .await
+        .expect("registering over the earlier entry");
+    let loaded = configuration::fetch_config_from(&iii, &id)
+        .await
+        .expect("the earlier entry loads through configuration::get");
+    assert_eq!(loaded.events_enabled, Some(false));
+    assert_eq!(loaded.max_value_bytes, Some(64));
+    let stored = call(&iii, "configuration::get", json!({"id": id, "raw": true}))
+        .await
+        .expect("raw configuration::get");
+    assert_eq!(
+        stored["value"],
+        json!({"events_enabled": false, "max_value_bytes": 64}),
+        "the stored entry is rewritten to the published schema"
+    );
+    let schema = call(&iii, "configuration::schema", json!({"id": id}))
+        .await
+        .expect("configuration::schema");
+    assert_eq!(
+        schema["schema"]["additionalProperties"],
+        json!(false),
+        "the published schema stays closed: {schema}"
+    );
+
+    // Both names: `events_enabled` wins and the earlier key goes.
+    let both = unique("state-upgrade-both");
+    store_earlier_release_entry(
+        &iii,
+        &both,
+        json!({ EARLIER_EVENTS_KEY: true, "events_enabled": false }),
+    )
+    .await;
+    configuration::register_config_as(&iii, &both, None)
+        .await
+        .expect("registering over an entry naming both knobs");
+    let loaded = configuration::fetch_config_from(&iii, &both)
+        .await
+        .expect("an entry naming both knobs loads");
+    assert_eq!(loaded.events_enabled, Some(false));
+
+    // A current entry stays as stored.
+    let current = unique("state-current");
+    store_earlier_release_entry(&iii, &current, json!({"events_enabled": false})).await;
+    configuration::register_config_as(&iii, &current, None)
+        .await
+        .expect("registering over a current entry");
+    let stored = call(
+        &iii,
+        "configuration::get",
+        json!({"id": current, "raw": true}),
+    )
+    .await
+    .expect("raw configuration::get");
+    assert_eq!(stored["value"], json!({"events_enabled": false}));
+
+    iii.shutdown_async().await;
+}
+
+/// The `## Functions` section of the worker's README.
+fn readme_functions_section() -> &'static str {
+    const README: &str = include_str!("../README.md");
+    let start = README
+        .find("\n## Functions\n")
+        .expect("the README has a Functions section");
+    let rest = &README[start + 1..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |at| at + 3);
+    &rest[..end]
+}
+
+#[tokio::test]
+#[serial]
+async fn the_readme_lists_every_function_the_worker_registers() {
+    // A named connection: the engine lists each function with the name of
+    // the worker hosting it, and a claim is granted to that name only.
+    let name = unique("e2e-readme");
+    let Some(iii) = engine::connect_fresh_named(&name).await else {
+        return;
+    };
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
+        .await
+        .expect("state worker should boot");
+    let config_observer =
+        configuration::observe_config_changes(&iii, boot.ctx.clone(), boot.apply_lock.clone());
+    // A claim registers the namespace's accessors.
+    call(
+        &iii,
+        "state::claim-namespace",
+        json!({"functions_prefix": name, "scopes": [unique("readme-private")]}),
+    )
+    .await
+    .expect("claim a namespace");
+
+    let section = readme_functions_section();
+    let accessor_prefix = format!("{name}::");
+    let mut registered = Vec::new();
+    for _ in 0..40 {
+        // Internal functions (`metadata.internal`) are listed on request.
+        let listed = call(
+            &iii,
+            "engine::functions::list",
+            json!({"worker": name, "include_internal": true}),
+        )
+        .await
+        .expect("engine::functions::list");
+        registered = listed["functions"]
+            .as_array()
+            .expect("functions array")
+            .iter()
+            .filter(|function| function["worker_name"] == json!(name))
+            .filter_map(|function| function["function_id"].as_str())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if registered.iter().any(|id| id.starts_with(&accessor_prefix)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Shut down before asserting: a failed assertion would leave this
+    // connection hosting state::* for every later test.
+    config_observer
+        .dispose()
+        .await
+        .expect("dispose configuration observer");
+    boot.shutdown().await;
+    iii.shutdown_async().await;
+
+    for expected in [
+        "state::set",
+        "state::ui-content",
+        "state::compare-and-set",
+        "state::barrier",
+        "state::claim-namespace",
+        "state::on-config-change",
+    ] {
+        assert!(
+            registered.iter().any(|id| id == expected),
+            "{expected} is registered: {registered:?}"
+        );
+    }
+    // Boot also restores the accessors of namespaces claimed earlier in this
+    // process: every `<prefix>::state::*` is one README row.
+    let missing: Vec<String> = registered
+        .iter()
+        .map(|id| match id.split_once("::state::") {
+            Some((_, accessor)) => format!("`<prefix>::state::{accessor}`"),
+            None => format!("`{id}`"),
+        })
+        .filter(|listed| !section.contains(listed.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the README Functions table leaves out {missing:?}"
+    );
 }
 
 /// Assert a public `state::*` call is locked out of a reserved scope.
@@ -744,26 +925,15 @@ async fn claim_namespace_lifecycle() {
         .collect();
     assert_eq!(functions, vec![&get_id, &list_id, &cas_id]);
 
-    // A trigger bound to the private scope: private writes must NEVER reach
-    // state-trigger fan-out (asserted at the end).
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    iii.register_function(
+    // An observer of the private scope: private writes must NEVER reach
+    // `state::on-changed` (asserted at the end).
+    let mut rx = event_sink(&iii, "e2e::on_private");
+    let observer = observe_changes(
+        &iii,
+        json!({"input.scope": {"$eq": private_scope}}),
         "e2e::on_private",
-        RegisterFunction::new_async(move |payload: Value| {
-            let tx = tx.clone();
-            async move {
-                let _ = tx.send(payload);
-                Ok::<Value, Error>(json!({"ok": true}))
-            }
-        }),
-    );
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_state::TRIGGER_TYPE.to_string(),
-        "e2e::on_private".to_string(),
-        json!({"scope": private_scope}),
-    ))
-    .expect("register trigger on the private scope");
-    wait_for_trigger_count(&boot.triggers, 1).await;
+    )
+    .await;
 
     // Every public verb is locked out of the claimed scope.
     expect_reserved(
@@ -889,13 +1059,14 @@ async fn claim_namespace_lifecycle() {
     assert!(!groups.contains(&private_scope.as_str()));
     assert!(!groups.contains(&iii_state::functions::CLAIMS_SCOPE));
 
-    // And none of the private writes above fanned out to the trigger.
+    // And none of the private writes above reached the observer.
     let silence = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
     assert!(
         silence.is_err(),
-        "private writes must not fire state triggers"
+        "private writes must not emit state::on-changed"
     );
 
+    observer.dispose().await.expect("dispose observer");
     boot.shutdown().await;
     iii.shutdown_async().await;
 }

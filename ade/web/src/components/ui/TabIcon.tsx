@@ -33,7 +33,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import type * as React from 'react'
-import { TriggerIcon } from './TriggerIcon'
+import { ObserverIcon } from './ObserverIcon'
 
 const TAB_ICONS: Readonly<Record<string, LucideIcon>> = {
   activity: Activity,
@@ -85,8 +85,8 @@ const TAB_ICONS: Readonly<Record<string, LucideIcon>> = {
   system_prompt: Shield,
   tags: Tags,
   terminal: Terminal,
-  trigger: TriggerIcon,
-  triggers: TriggerIcon,
+  observer: ObserverIcon,
+  observers: ObserverIcon,
   viewport: Eye,
 }
 

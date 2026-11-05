@@ -2,7 +2,7 @@
 
 /* The ide worker's console stylesheet (asset ide/styles.css): every rule
    nests under [data-iii-ui="ide"], the wrapper the console mounts around
-   the page and the shell::* function-trigger cards. Console design tokens
+   the page and the shell::* function-call cards. Console design tokens
    only, so light and dark come for free; the shared components style themselves. */
 
 [data-iii-ui="ide"] {
@@ -89,7 +89,7 @@
     cursor: pointer;
   }
 
-  /* ── function-trigger cards ───────────────────────────────────────── */
+  /* ── function-call cards ───────────────────────────────────────── */
   .shui-card {
     overflow: hidden;
     border-radius: var(--radius-xl);

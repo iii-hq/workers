@@ -3,7 +3,7 @@
  * came with it, the agents, projects and releases, the filters, the last
  * visit and this app's own writes, the lane on screen and the ticket open in
  * the root's detail; and the actions on them: reading the board and its
- * pages, the live `kanban:change` binding, moving a card. One VM per worker,
+ * pages, the live `kanban::on-change` observer, moving a card. One VM per worker,
  * so module state is the app's.
  */
 
@@ -300,16 +300,16 @@ function onEvent(event: ChangeEvent): void {
   }
 }
 
-/** Binds `kanban:change`, then reads the board (bind first, read after `ready`). The cleanup unbinds. */
+/** Observes `kanban::on-change`, then reads the board (observe first, read after `ready`). The cleanup disposes the observer. */
 export function goLive(): () => void {
   // An event the app cannot read still says the board changed: read it again, after the burst.
   const off = listen(onEvent, planSoon)
-  let bound = true
+  let live = true
   void off.ready.then(() => {
-    if (bound) void load(!!meta())
+    if (live) void load(!!meta())
   })
   return () => {
-    bound = false
+    live = false
     off()
   }
 }

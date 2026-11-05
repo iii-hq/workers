@@ -3,14 +3,13 @@
  * injected console page.
  *
  * Ported from the console's `lib/memory.ts`: the function ids, payload
- * shapes, and zod parsing are verbatim; only the transport changed — every
- * call now takes the tab's `host` and routes through `host.iii.trigger(...)`
- * instead of a console-internal iii client. The memory functions return
+ * shapes, and zod parsing are verbatim; every call takes the tab's `host`
+ * and routes through `host.iii.call(...)`. The memory functions return
  * their result object directly (no `{ value }` envelope), so reads parse the
  * response as-is.
  *
  * Conventions: zod schemas with optional fields for cross-version tolerance,
- * `safeParse` + drop unparseable rows on reads, plain `trigger` on mutations
+ * `safeParse` + drop unparseable rows on reads, plain `call` on mutations
  * (errors propagate to the page hook).
  */
 
@@ -83,7 +82,7 @@ function parseMemory(raw: unknown): MemoryItem | null {
 }
 
 export async function listBanks(host: Host): Promise<MemoryBank[]> {
-  const res = await host.iii.trigger<unknown>('memory::bank::list', {})
+  const res = await host.iii.call<unknown>('memory::bank::list', {})
   const parsed = bankListSchema.safeParse(res)
   if (!parsed.success) return []
   return parsed.data.banks
@@ -97,7 +96,7 @@ export async function createBank(
   name: string,
   description?: string,
 ): Promise<void> {
-  await host.iii.trigger('memory::bank::create', { name, description })
+  await host.iii.call('memory::bank::create', { name, description })
 }
 
 export const MEMORIES_PAGE_SIZE = 100
@@ -110,7 +109,7 @@ export async function listMemories(
   limit = MEMORIES_PAGE_SIZE,
   tag: string | null = null,
 ): Promise<{ memories: MemoryItem[]; total: number }> {
-  const res = await host.iii.trigger<unknown>('memory::list', {
+  const res = await host.iii.call<unknown>('memory::list', {
     bank,
     limit,
     offset,
@@ -133,7 +132,7 @@ export async function saveMemory(
   text: string,
   pinned: boolean,
 ): Promise<void> {
-  await host.iii.trigger('memory::save', { bank, text, pinned })
+  await host.iii.call('memory::save', { bank, text, pinned })
 }
 
 export async function updateMemory(
@@ -142,7 +141,7 @@ export async function updateMemory(
   id: string,
   text: string,
 ): Promise<void> {
-  await host.iii.trigger('memory::update', { bank, id, text })
+  await host.iii.call('memory::update', { bank, id, text })
 }
 
 export async function pinMemory(
@@ -151,7 +150,7 @@ export async function pinMemory(
   id: string,
   pinned: boolean,
 ): Promise<void> {
-  await host.iii.trigger('memory::pin', { bank, id, pinned })
+  await host.iii.call('memory::pin', { bank, id, pinned })
 }
 
 export async function deleteMemory(
@@ -159,14 +158,14 @@ export async function deleteMemory(
   bank: string,
   id: string,
 ): Promise<void> {
-  await host.iii.trigger('memory::delete', { bank, id })
+  await host.iii.call('memory::delete', { bank, id })
 }
 
 export async function listRules(
   host: Host,
   bank: string,
 ): Promise<MemoryRule[]> {
-  const res = await host.iii.trigger<unknown>('memory::rule::list', { bank })
+  const res = await host.iii.call<unknown>('memory::rule::list', { bank })
   const parsed = ruleListSchema.safeParse(res)
   if (!parsed.success) return []
   return parsed.data.rules
@@ -181,7 +180,7 @@ export async function setRule(
   name: string,
   content: string,
 ): Promise<void> {
-  await host.iii.trigger('memory::rule::set', { bank, name, content })
+  await host.iii.call('memory::rule::set', { bank, name, content })
 }
 
 const tagsSchema = z.object({
@@ -195,7 +194,7 @@ export async function listTags(
   host: Host,
   bank: string,
 ): Promise<{ tag: string; count: number }[]> {
-  const res = await host.iii.trigger<unknown>('memory::tags', { bank })
+  const res = await host.iii.call<unknown>('memory::tags', { bank })
   const parsed = tagsSchema.safeParse(res)
   return parsed.success ? parsed.data.tags : []
 }
@@ -203,7 +202,7 @@ export async function listTags(
 /** Drop the worker's RAM state and re-read every bank from disk — picks
  * up hand-edited rule/memory files. */
 export async function reloadStore(host: Host): Promise<void> {
-  await host.iii.trigger('memory::reload', {})
+  await host.iii.call('memory::reload', {})
 }
 
 const previewSchema = z.object({
@@ -240,7 +239,7 @@ export async function preview(
   bank: string,
   query: string,
 ): Promise<TurnPreview> {
-  const res = await host.iii.trigger<unknown>('memory::preview', { bank, query })
+  const res = await host.iii.call<unknown>('memory::preview', { bank, query })
   const parsed = previewSchema.safeParse(res)
   if (!parsed.success) {
     return {
@@ -275,7 +274,7 @@ export async function recall(
   query: string,
   limit = 20,
 ): Promise<{ retrieval: string; memories: RecalledMemory[] }> {
-  const res = await host.iii.trigger<unknown>('memory::recall', {
+  const res = await host.iii.call<unknown>('memory::recall', {
     bank,
     query,
     limit,

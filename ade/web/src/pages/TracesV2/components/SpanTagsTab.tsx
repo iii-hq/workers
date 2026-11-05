@@ -11,8 +11,8 @@ import { useCopyToClipboard } from '../lib/traceUtils'
 interface SpanTagsTabProps {
   span: VisualizationSpan
   /**
-   * The span's function-trigger redactor (`spanRawRedactor` in
-   * functionTriggerFromSpan.ts), when the info tab's card has one. Attribute
+   * The span's function-call redactor (`spanRawRedactor` in
+   * functionCallFromSpan.ts), when the info tab's card has one. Attribute
    * values (`tool.arguments` among them) run through it before they render
    * OR are copied — the identical payload the info tab's card already hides
    * is one tab-click away here otherwise.

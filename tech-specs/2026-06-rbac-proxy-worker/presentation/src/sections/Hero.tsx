@@ -49,7 +49,7 @@ export function Hero() {
           <Terminal title="the boundary, in two frames">
             <div className="flex flex-col gap-y-2.5">
               <TerminalRow
-                command="iii trigger compose::add worker=rbac-proxy"
+                command="iii call compose::add worker=rbac-proxy"
                 output={
                   <span className="flex items-center gap-x-2">
                     <StatusDot pulse />

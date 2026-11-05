@@ -26,7 +26,7 @@ import {
   shipTargets,
   suggestName,
   topLabels,
-  triggerScope,
+  observerScope,
   willAdd,
 } from './src/plan-rules.ts'
 
@@ -254,24 +254,24 @@ assert.equal(formatStamp('2026-10-14T12:00:00', today), 'Oct 14', 'this year: no
 assert.equal(formatStamp('2025-12-31T12:00:00', today), 'Dec 31, 2025')
 assert.equal(formatStamp('nope'), '')
 
-// what a trigger binding fires on
-assert.equal(triggerScope('kanban:change', {}), 'any ticket')
-assert.equal(triggerScope('kanban:change', { ticket_id: 'KAN-3' }), 'KAN-3')
-assert.equal(triggerScope('kanban:change', { parent_id: 'KAN-20' }), 'KAN-20 and its subtasks')
-assert.equal(triggerScope('kanban:change', { release_id: 'Phase 2' }), 'tickets in Phase 2')
+// what an observer's args select
+assert.equal(observerScope('kanban::on-change', {}), 'any ticket')
+assert.equal(observerScope('kanban::on-change', { ticket_id: 'KAN-3' }), 'KAN-3')
+assert.equal(observerScope('kanban::on-change', { parent_id: 'KAN-20' }), 'KAN-20 and its subtasks')
+assert.equal(observerScope('kanban::on-change', { release_id: 'Phase 2' }), 'tickets in Phase 2')
 assert.equal(
-  triggerScope('kanban:change', { parent_id: 'KAN-20', release_id: 'Phase 2' }),
+  observerScope('kanban::on-change', { parent_id: 'KAN-20', release_id: 'Phase 2' }),
   'KAN-20 and its subtasks · tickets in Phase 2',
 )
 assert.equal(
-  triggerScope('kanban:comment', { parent_id: 'KAN-30', release_id: 'Phase 2' }),
+  observerScope('kanban::on-comment', { parent_id: 'KAN-30', release_id: 'Phase 2' }),
   'KAN-30 and its subtasks',
-  'comments have no release filter',
+  'comments take no release arg',
 )
 assert.equal(
-  triggerScope('kanban:change', { ticket_id: '  ', release_id: 7 }),
+  observerScope('kanban::on-change', { ticket_id: '  ', release_id: 7 }),
   'any ticket',
-  'blank and non-string filters are no filter',
+  'blank and non-string args select nothing out',
 )
 
 // canceled tickets: out of `total`, so not open; still live, so still counted for a delete

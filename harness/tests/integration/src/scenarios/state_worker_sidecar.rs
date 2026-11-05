@@ -1,12 +1,12 @@
-//! INT-006 — a wake bound to a `state` key fires through the standalone
-//! state worker, carrying the registration-metadata sidecar.
+//! INT-006 — a wake observing a `state` key fires through the standalone
+//! state worker, carrying the observer's metadata sidecar.
 //!
 //! This is the cross-worker seam every rctest run turned on (MOT-4209): the
 //! state worker's fan-out must invoke the harness delivery hop WITH the
 //! binding's `__binding` metadata, or the fire resolves nothing and silently
 //! no-ops. This run's stack includes the real `state` worker (see
 //! `stack/config.rs`); the engine builtin is disabled, so the standalone
-//! worker owns the `state` trigger type exactly as in production.
+//! worker hosts `state::on-changed` exactly as in production.
 //!
 //! Shape note: the binding is a STANDING wake bounded by `max_fires: 1`
 //! rather than a `once` wake. A once-wake would PARK turn 1 (no terminal
@@ -23,7 +23,7 @@ use super::dsl::{
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 const SCOPE: &str = "e2e-006";
 const KEY: &str = "go";
 
@@ -44,8 +44,8 @@ pub(super) fn scenario() -> ScenarioFixture {
     // A wake (no `function_id`): the fire notifies THIS session. Standing +
     // max_fires keeps turn 1 terminal for the probe boundary (see module doc).
     let register_args = json!({
-        "trigger_type": "state",
-        "config": { "scope": SCOPE, "key": KEY },
+        "function_id": "state::on-changed",
+        "filters": { "input.scope": { "$eq": SCOPE }, "input.key": { "$eq": KEY } },
         "once": false,
         "lifecycle": { "max_fires": 1 }
     });
@@ -60,7 +60,9 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-006")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
+            // An agent observes only what its policy allows.
+            .allow_id("state::on-changed")
             .allow_function(&record),
     )
     // Main turn (1) + the state-fired wake turn (2).
@@ -81,11 +83,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
-                REGISTER,
+                OBSERVE,
                 register_args,
                 8,
                 4,
@@ -100,12 +102,12 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("armed", 10, 2)),
     )
@@ -119,7 +121,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
@@ -136,7 +138,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(1)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("state wake recorded", 12, 3)),
     )
@@ -177,7 +179,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             item.get("custom")
                 .and_then(|c| c.get("custom_type"))
                 .and_then(Value::as_str)
-                == Some("trigger_fired")
+                == Some("observer_fired")
                 && item
                     .get("custom")
                     .and_then(|c| c.get("data"))

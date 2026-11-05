@@ -26,7 +26,7 @@ const TEST_TIMEOUT_MS = 10_000
 
 export async function testRequest(host: Host, name: string, bucket: JsonObject): Promise<Record<string, unknown>> {
   try {
-    const stored = await host.iii.trigger<{ bucket?: JsonObject } | null>(
+    const stored = await host.iii.call<{ bucket?: JsonObject } | null>(
       'storage::getBucket',
       { name },
       { timeoutMs: 10_000 },
@@ -42,7 +42,7 @@ export async function testRequest(host: Host, name: string, bucket: JsonObject):
 export async function runBucketTest(host: Host, name: string, bucket: JsonObject): Promise<TestState> {
   try {
     const request = await testRequest(host, name, bucket)
-    const raw = await host.iii.trigger<unknown>('storage::testBucket', request, { timeoutMs: 40_000 })
+    const raw = await host.iii.call<unknown>('storage::testBucket', request, { timeoutMs: 40_000 })
     const outcome = parseTestOutcome(raw)
     if (!outcome) return { status: 'done', ok: false, text: 'Unexpected answer from storage::testBucket' }
     const draftTemplates = request.bucket !== undefined && hasTemplates(bucket)

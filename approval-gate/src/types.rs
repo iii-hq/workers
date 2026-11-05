@@ -14,14 +14,13 @@ pub type JsonMap = serde_json::Map<String, Value>;
 pub const DENIAL_SCHEMA_VERSION: u32 = 1;
 
 /// Subset-equality metadata match: every key in `want` must equal the
-/// stored value (the tenancy filter convention shared with
-/// session-manager's trigger configs).
+/// stored value (the tenancy filter `approval::list-pending` applies).
 pub fn metadata_matches(want: &JsonMap, have: Option<&JsonMap>) -> bool {
     want.iter()
         .all(|(key, value)| have.and_then(|m| m.get(key)) == Some(value))
 }
 
-/// Acknowledgement returned by the internal trigger-bound handlers
+/// Acknowledgement returned by the internal observer targets
 /// (`on-config-change`, `on-session-deleted`, `on-turn-completed`) whose result
 /// is not consumed by callers — kept typed so the response schema is concrete
 /// rather than the permissive `AnyValue` ("unknown") schema a `Value` return
@@ -165,7 +164,7 @@ pub struct AccessRequest {
 // Pending inbox
 // ---------------------------------------------------------------------------
 
-/// The inbox payload — shared by both triggers, `list_pending`, and
+/// The inbox payload — shared by both event functions, `list_pending`, and
 /// `get_pending`. Self-describing (all ids inside the value) and
 /// notification-safe (arguments pass through redaction).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -186,7 +185,8 @@ pub struct PendingApprovalRecord {
     pub session_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_description: Option<String>,
-    /// Tenancy + routing (trigger config filter target).
+    /// Tenancy + routing (what observers filter on as
+    /// `input.session_metadata.<key>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_metadata: Option<JsonMap>,
 
@@ -195,7 +195,7 @@ pub struct PendingApprovalRecord {
     pub depth: i64,
 
     /// First text block of the assistant message that contained this
-    /// function_call. Best-effort; not derivable from `pre_trigger`
+    /// function_call. Best-effort; not derivable from the `pre_call`
     /// `HookInput` in v1, so always omitted today.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_excerpt: Option<String>,
@@ -207,6 +207,31 @@ pub struct PendingApprovalRecord {
     pub access_request: Option<AccessRequest>,
 }
 
+/// Event of `approval::on-pending-created` — the inbox record just written,
+/// with `status: "pending"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingCreatedEvent {
+    #[serde(flatten)]
+    pub record: PendingApprovalRecord,
+    pub status: PendingStatus,
+}
+
+impl PendingCreatedEvent {
+    pub fn pending(record: PendingApprovalRecord) -> Self {
+        Self {
+            record,
+            status: PendingStatus::Pending,
+        }
+    }
+}
+
+/// A record in the inbox is pending until it is resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PendingStatus {
+    Pending,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ResolvedOutcome {
@@ -215,8 +240,8 @@ pub enum ResolvedOutcome {
     Aborted,
 }
 
-/// Payload of `approval::pending-resolved` — a pending call left the
-/// inbox. Emitted exactly once per record (gated on the record delete).
+/// Event of `approval::on-pending-resolved` — a pending call left the
+/// inbox. Called exactly once per record (gated on the record delete).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PendingResolvedEvent {
     pub session_id: String,
@@ -250,8 +275,8 @@ pub struct HookCall {
 
 /// `result.details.error` on a dispatch failure. New harness versions fill
 /// `code`; older/plain remote errors can arrive without one, so consumers may
-/// recover it from the `filesystem_access_request` tail (contracts.md § post_trigger hook can
-/// now HOLD).
+/// recover it from the `filesystem_access_request` tail (contracts.md, the
+/// post-call hook's HOLD).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct HookResultError {
     #[serde(default)]
@@ -265,7 +290,7 @@ pub struct HookResultDetails {
     pub error: Option<HookResultError>,
 }
 
-/// `post_trigger` payload: the function_result the harness is about to
+/// `post_call` payload: the function_result the harness is about to
 /// deliver to the model.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct HookResult {
@@ -296,10 +321,10 @@ pub struct HookInput {
     /// user-picked session workspace, absolute + canonical).
     #[serde(default)]
     pub metadata: Option<JsonMap>,
-    /// pre_trigger payload.
+    /// pre_call payload.
     #[serde(default)]
     pub call: Option<HookCall>,
-    /// post_trigger payload: the function_result about to be delivered.
+    /// post_call payload: the function_result about to be delivered.
     #[serde(default)]
     pub result: Option<HookResult>,
 }
@@ -467,7 +492,7 @@ pub enum EvaluateVerdict {
     Allow,
     /// Refused outright.
     Deny,
-    /// Would hold for human approval — which a trigger-fired call, running
+    /// Would hold for human approval — which an observer's target, running
     /// outside any turn, has no way to obtain.
     NeedsApproval,
 }
@@ -539,7 +564,7 @@ mod tests {
     #[test]
     fn hook_input_tolerates_unknown_and_missing_optional_fields() {
         let input: HookInput = serde_json::from_value(json!({
-            "point": "pre_trigger",
+            "point": "pre_call",
             "session_id": "s_1",
             "turn_id": "t_1",
             "step": 3,

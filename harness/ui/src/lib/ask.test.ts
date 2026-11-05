@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage } from '@iii-dev/console-ui'
+import type { FunctionCallMessage } from '@iii-dev/console-ui'
 import { describe, expect, it } from 'vitest'
 import {
   askCardState,
@@ -13,17 +13,17 @@ import {
 
 /**
  * The row the console hands a renderer: the host contract plus the extra
- * fields ade/web's entry-mapper sets on it (`functionTriggerId`,
+ * fields ade/web's entry-mapper sets on it (`functionCallId`,
  * `sessionId`, `resultEntryId`, `unloaded`).
  */
-type ConsoleRow = FunctionTriggerMessage & {
-  functionTriggerId?: string
+type ConsoleRow = FunctionCallMessage & {
+  functionCallId?: string
   sessionId?: string
   resultEntryId?: string
   unloaded?: boolean
 }
 
-/** The model's arguments (the `payload` inside agent_trigger). */
+/** The model's arguments (the `payload` inside agent_call). */
 const REQUEST = {
   questions: [
     {
@@ -64,20 +64,20 @@ function okOutput(details: unknown): unknown {
   return { content: [{ type: 'text', text: AWAITING_TEXT }], details }
 }
 
-/** A settled row for an agent_trigger-wrapped call: `unwrapFunctionTrigger`
+/** A settled row for an agent_call-wrapped call: `unwrapFunctionCall`
  *  lifts `function`/`payload`/`description`; the result pairing sets
  *  `output`, `running: false`, `pendingApproval: false`, `resultEntryId`. */
 function wrappedRow(output: unknown): ConsoleRow {
   return {
     id: 'e_asst_3:1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'harness::ask',
     description: 'Ask which approach to take',
     input: REQUEST,
     output,
     running: false,
     pendingApproval: false,
-    functionTriggerId: 'call_ask_1',
+    functionCallId: 'call_ask_1',
     sessionId: 'sess_1',
     resultEntryId: 'e_res_4',
     createdAt: 1_790_000_000_000,
@@ -108,20 +108,20 @@ const VIEW: AskView = {
 }
 
 describe('parseAsk', () => {
-  it('builds the view from an accepted ask wrapped in agent_trigger', () => {
+  it('builds the view from an accepted ask wrapped in agent_call', () => {
     expect(parseAsk(wrappedRow(okOutput(DETAILS)))).toStrictEqual(VIEW)
   })
 
   it('builds the view from a native call (input is the raw arguments)', () => {
     const row: ConsoleRow = {
       id: 'e_asst_3:0',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'harness::ask',
       input: REQUEST,
       output: okOutput(DETAILS),
       running: false,
       pendingApproval: false,
-      functionTriggerId: 'call_ask_1',
+      functionCallId: 'call_ask_1',
       createdAt: 1_790_000_000_000,
     }
     expect(parseAsk(row)).toStrictEqual(VIEW)

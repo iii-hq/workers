@@ -3,13 +3,13 @@
 import { act, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { MessageList } from './MessageList'
 
-const placeholder: FunctionTriggerMessage = {
+const placeholder: FunctionCallMessage = {
   id: 'e_assistant:2',
-  role: 'function-trigger',
-  functionTriggerId: 'call-list',
+  role: 'function-call',
+  functionCallId: 'call-list',
   functionId: 'engine::functions::list',
   input: undefined,
   createdAt: 0,
@@ -17,7 +17,7 @@ const placeholder: FunctionTriggerMessage = {
   unloaded: true,
   resultEntryId: 'e_result',
 }
-const hydrated: FunctionTriggerMessage = {
+const hydrated: FunctionCallMessage = {
   ...placeholder,
   unloaded: false,
   input: { worker: 'code-runner' },
@@ -29,8 +29,8 @@ const hydrated: FunctionTriggerMessage = {
 }
 const title = '[data-message-action="toggle"]'
 const caret = '[data-message-action="toggle-caret"]'
-const skeleton = '[data-function-trigger-skeleton]'
-const failed = '[data-function-trigger-load-failed]'
+const skeleton = '[data-function-call-skeleton]'
+const failed = '[data-function-call-load-failed]'
 const retry = '[data-message-action="retry-load"]'
 const card = '[data-message-role="function-call"]'
 
@@ -61,7 +61,7 @@ const settle = () =>
   act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
 
 async function render(
-  messages: FunctionTriggerMessage[],
+  messages: FunctionCallMessage[],
   onLoadActivityEntries?: (ids: string[]) => Promise<boolean> | undefined,
   defaultOpenCalls = false,
 ) {
@@ -136,7 +136,7 @@ describe('historical call details hydration', () => {
     const hidden = {
       ...placeholder,
       id: 'e_older:0',
-      functionTriggerId: 'older-call',
+      functionCallId: 'older-call',
       resultEntryId: 'e_older_result',
     }
     await render([hidden, placeholder], load)

@@ -27,7 +27,8 @@ through the router leave the schema out and assume the default effort.
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The declaration ships a static curated `models` slice (no cold-catalog
   hole) and `credential_env_var: XAI_API_KEY`.
 - **Identity binding:** the router returns a `registration_token` on first

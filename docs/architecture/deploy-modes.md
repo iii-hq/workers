@@ -48,7 +48,6 @@ binary worker the request has this shape:
   "dependencies": [],
   "config": {},
   "functions": [],
-  "triggers": [],
   "repo": "https://github.com/iii-hq/workers",
   "binaries": {}
 }

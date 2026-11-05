@@ -1,5 +1,5 @@
-//! HTTP request/response types, trigger configuration, and control messages
-//! exchanged between the worker and the function it invokes.
+//! HTTP request/response types, route args, and control messages exchanged
+//! between the worker and the function it invokes.
 
 use std::collections::HashMap;
 
@@ -13,30 +13,39 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// Metadata describing the trigger that produced an `HttpRequest`.
+/// One HTTP request as the server received it: the input of
+/// `http::on-request` and its output (the handler returns its input). An
+/// observer's filters read it as `input`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TriggerMetadata {
-    #[serde(rename = "type")]
-    pub trigger_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
+pub struct InboundRequest {
+    pub method: String,
+    /// The request's path, e.g. `/orders/42`.
+    pub path: String,
+    pub query_params: HashMap<String, String>,
+    pub headers: HashMap<String, String>,
+    /// The body parsed as JSON; `null` when it is empty, not JSON, or over
+    /// the server's body limit.
+    pub body: Value,
 }
 
-/// Request payload sent to the invoked function over the wire.
+/// What the target of the matched route's observer receives: the request,
+/// with the route's template as `path`, the values of its `:param` segments,
+/// and the request-body and response channels.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRequest {
     pub query_params: HashMap<String, String>,
+    /// Values of the matched route's `:param` segments.
     pub path_params: HashMap<String, String>,
     pub headers: HashMap<String, String>,
+    /// The matched route's path template, e.g. `/orders/:id`.
     pub path: String,
     pub method: String,
+    /// The body parsed as JSON; `null` when it is empty or not JSON.
     pub body: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<TriggerMetadata>,
 
+    /// The exact request bytes, for the target to read.
     pub request_body: StreamChannelRef,
+    /// A streamed response, for the target to write.
     pub response: StreamChannelRef,
 }
 
@@ -141,10 +150,6 @@ fn parse_header_line(line: &str) -> Option<(String, String)> {
     Some((name.to_string(), value.trim().to_string()))
 }
 
-fn default_http_method() -> String {
-    "GET".to_string()
-}
-
 /// Normalizes OpenAPI-style whole-segment path parameters (`/tasks/{tid}`) to
 /// the internal colon format (`/tasks/:tid`).
 pub fn normalize_api_path(path: &str) -> String {
@@ -170,46 +175,27 @@ where
     Ok(normalize_api_path(&s))
 }
 
-/// Configuration carried by an `http` trigger instance, as read from the
-/// trigger's `config` value.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct HttpTriggerConfig {
-    /// Also expose this route on the restricted webhook listener. Explicit
-    /// opt-in only; the default keeps existing routes on the normal listener.
-    #[serde(default)]
-    pub public_webhook: bool,
-    #[serde(deserialize_with = "deserialize_api_path")]
-    pub api_path: String,
-    #[serde(default = "default_http_method")]
-    pub http_method: String,
-    #[serde(default)]
-    pub condition_function_id: Option<String>,
-    #[serde(default)]
-    pub middleware_function_ids: Vec<String>,
-}
-
-/// Args of an `http::on-request` observer: [`HttpTriggerConfig`] with iii
-/// lang's names (`http_method` → `method`, `api_path` → `path`). `method` and
+/// Args of an `http::on-request` observer: the route it serves. `method` and
 /// `path` are required and unknown fields are refused, so the engine answers
-/// a typo with `INVALID_ARGS`; `path` is normalized like `api_path`.
+/// a typo with `INVALID_ARGS`; `path` is normalized (`/tasks/{tid}` becomes
+/// `/tasks/:tid`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HttpRouteArgs {
     /// HTTP method of the route (`GET`, `POST`, …), case insensitive.
     pub method: String,
-    /// Route template, e.g. `/users/:id` or `/users/{id}`.
+    /// Route template, e.g. `/users/:id` or `/users/{id}`. `:name` segments
+    /// arrive in `path_params`.
     #[serde(deserialize_with = "deserialize_api_path")]
     pub path: String,
-    /// Also expose this route on the restricted webhook listener.
+    /// Also expose this route on the restricted webhook listener. Explicit
+    /// opt-in only; the default keeps the route on the normal listener.
     #[serde(default)]
     pub public_webhook: bool,
-    /// Functions run before the target, as for an `http` trigger.
+    /// Functions run before the target, in list order, after any global
+    /// middleware.
     #[serde(default)]
     pub middleware_function_ids: Vec<String>,
-    /// Deprecated: prefer observer filters, evaluated in-process. Kept for
-    /// parity with the `http` trigger config.
-    #[serde(default)]
-    pub condition_function_id: Option<String>,
 }
 
 /// Out-of-band control messages a function can send on the response channel
@@ -247,29 +233,38 @@ mod tests {
     use serde_json::json;
 
     // =========================================================================
-    // TriggerMetadata
+    // HttpRequest
     // =========================================================================
 
     #[test]
-    fn trigger_metadata_serialize_skips_none() {
-        let meta = TriggerMetadata {
-            trigger_type: "cron".to_string(),
-            path: None,
-            method: None,
-        };
-        let json = serde_json::to_value(&meta).unwrap();
-        assert_eq!(json["type"], "cron");
-        assert!(json.get("path").is_none());
-        assert!(json.get("method").is_none());
+    fn http_request_schema_lists_the_request_fields() {
+        let schema = serde_json::to_value(schemars::schema_for!(HttpRequest)).unwrap();
+        let mut fields: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            [
+                "body",
+                "headers",
+                "method",
+                "path",
+                "path_params",
+                "query_params",
+                "request_body",
+                "response"
+            ]
+        );
     }
 
     #[test]
-    fn trigger_metadata_deserialize() {
-        let json = json!({"type": "http", "path": "/events", "method": "POST"});
-        let meta: TriggerMetadata = serde_json::from_value(json).unwrap();
-        assert_eq!(meta.trigger_type, "http");
-        assert_eq!(meta.path, Some("/events".to_string()));
-        assert_eq!(meta.method, Some("POST".to_string()));
+    fn inbound_request_schema_lists_what_the_server_received() {
+        let schema = serde_json::to_value(schemars::schema_for!(InboundRequest)).unwrap();
+        let mut fields: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            ["body", "headers", "method", "path", "query_params"]
+        );
     }
 
     // =========================================================================
@@ -346,42 +341,8 @@ mod tests {
     }
 
     // =========================================================================
-    // HttpTriggerConfig
+    // normalize_api_path
     // =========================================================================
-
-    #[test]
-    fn http_trigger_config_defaults_method_to_get() {
-        let cfg: HttpTriggerConfig = serde_json::from_value(json!({"api_path": "/foo"})).unwrap();
-        assert!(!cfg.public_webhook);
-        let schema = serde_json::to_value(schemars::schema_for!(HttpTriggerConfig)).unwrap();
-        assert_eq!(schema["properties"]["public_webhook"]["default"], false);
-        assert_eq!(cfg.api_path, "/foo");
-        assert_eq!(cfg.http_method, "GET");
-        assert!(cfg.condition_function_id.is_none());
-        assert!(cfg.middleware_function_ids.is_empty());
-    }
-
-    #[test]
-    fn http_trigger_config_parses_all_fields() {
-        let cfg: HttpTriggerConfig = serde_json::from_value(json!({
-            "api_path": "/foo",
-            "http_method": "POST",
-            "public_webhook": true,
-            "condition_function_id": "fn-1",
-            "middleware_function_ids": ["mw-1", "mw-2"],
-        }))
-        .unwrap();
-        assert!(cfg.public_webhook);
-        assert_eq!(cfg.http_method, "POST");
-        assert_eq!(cfg.condition_function_id, Some("fn-1".to_string()));
-        assert_eq!(cfg.middleware_function_ids, vec!["mw-1", "mw-2"]);
-    }
-
-    #[test]
-    fn http_trigger_config_requires_api_path() {
-        let result: Result<HttpTriggerConfig, _> = serde_json::from_value(json!({}));
-        assert!(result.is_err());
-    }
 
     #[test]
     fn normalize_api_path_converts_openapi_brace_parameters() {
@@ -409,17 +370,17 @@ mod tests {
     }
 
     #[test]
-    fn http_trigger_config_deserialization_normalizes_brace_path() {
-        let cfg: HttpTriggerConfig =
-            serde_json::from_value(json!({"api_path": "/tasks/{tid}"})).unwrap();
-        assert_eq!(cfg.api_path, "/tasks/:tid");
+    fn http_route_args_normalize_a_brace_path() {
+        let args: HttpRouteArgs =
+            serde_json::from_value(json!({"method": "GET", "path": "/tasks/{tid}"})).unwrap();
+        assert_eq!(args.path, "/tasks/:tid");
     }
 
     #[test]
-    fn http_trigger_config_deserialization_preserves_path_without_leading_slash() {
-        let cfg: HttpTriggerConfig =
-            serde_json::from_value(json!({"api_path": "tasks/{tid}"})).unwrap();
-        assert_eq!(cfg.api_path, "tasks/:tid");
+    fn http_route_args_preserve_a_path_without_leading_slash() {
+        let args: HttpRouteArgs =
+            serde_json::from_value(json!({"method": "GET", "path": "tasks/{tid}"})).unwrap();
+        assert_eq!(args.path, "tasks/:tid");
     }
 
     // =========================================================================
@@ -437,14 +398,14 @@ mod tests {
         assert_eq!(args.path, "/a");
         assert!(!args.public_webhook);
         assert!(args.middleware_function_ids.is_empty());
-        assert!(args.condition_function_id.is_none());
     }
 
     #[test]
-    fn http_route_args_refuse_unknown_fields_and_trigger_config_names() {
+    fn http_route_args_refuse_unknown_fields() {
         for args in [
             json!({"method": "GET", "path": "/a", "typo": true}),
             json!({"http_method": "GET", "api_path": "/a"}),
+            json!({"method": "GET", "path": "/a", "condition_function_id": "app::check"}),
         ] {
             assert!(serde_json::from_value::<HttpRouteArgs>(args).is_err());
         }
@@ -457,14 +418,12 @@ mod tests {
             "path": "/users/{userId}/tasks/{tid}",
             "public_webhook": true,
             "middleware_function_ids": ["mw-1"],
-            "condition_function_id": "cond-1",
         }))
         .unwrap();
         assert_eq!(args.method, "post");
         assert_eq!(args.path, "/users/:userId/tasks/:tid");
         assert!(args.public_webhook);
         assert_eq!(args.middleware_function_ids, vec!["mw-1"]);
-        assert_eq!(args.condition_function_id.as_deref(), Some("cond-1"));
     }
 
     #[test]

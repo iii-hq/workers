@@ -40,6 +40,11 @@ func TestInterfaceCaptureRegistersWithoutBackendsOrStorage(t *testing.T) {
 			return
 		}
 		defer conn.CloseNow()
+		// Greet as an engine with observe.v2, which the private event sources need.
+		greeting, _ := json.Marshal(map[string]any{"type": "workerregistered", "worker_id": "00000000-0000-4000-8000-000000000001", "features": []string{"observe.v1", "observe.v2"}})
+		if conn.Write(r.Context(), websocket.MessageText, greeting) != nil {
+			return
+		}
 		for {
 			_, body, err := conn.Read(r.Context())
 			if err != nil {
@@ -101,7 +106,7 @@ func TestInterfaceCaptureRegistersWithoutBackendsOrStorage(t *testing.T) {
 	for _, entry := range NewRegistry(nil).Catalog() {
 		want[entry.ID] = true
 	}
-	for _, id := range []string{"whatsapp::configuration-id", "whatsapp::config-status", "whatsapp::on-config-change", "whatsapp::ui-content", "whatsapp::cloud::webhook::verify", "whatsapp::cloud::webhook::receive", "whatsapp::cloud::flows::endpoint", "whatsapp::cloud::tunnel::changed"} {
+	for _, id := range []string{"whatsapp::on-events", "whatsapp::cloud::on-events", "whatsapp::configuration-id", "whatsapp::config-status", "whatsapp::on-config-change", "whatsapp::ui-content", "whatsapp::cloud::webhook::verify", "whatsapp::cloud::webhook::receive", "whatsapp::cloud::flows::endpoint", "whatsapp::cloud::tunnel::changed"} {
 		want[id] = true
 	}
 	for len(want) > 0 {

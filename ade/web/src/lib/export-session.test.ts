@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mockTrigger = vi.hoisted(() => vi.fn())
+const mockCall = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: () => Promise.resolve({ trigger: mockTrigger }),
+  getIiiClient: () => Promise.resolve({ call: mockCall }),
 }))
 
 import type {
   AssistantMessage,
   Conversation,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   Message,
   SystemMessage,
   ThoughtMessage,
@@ -64,16 +64,16 @@ describe('conversationToMarkdown', () => {
       durationMs: 100,
       createdAt: 3,
     }
-    const fcallNoOutput: FunctionTriggerMessage = {
+    const fcallNoOutput: FunctionCallMessage = {
       id: 'f1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'search',
       input: { query: 'foo' },
       createdAt: 4,
     }
-    const fcallWithOutput: FunctionTriggerMessage = {
+    const fcallWithOutput: FunctionCallMessage = {
       id: 'f2',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'search',
       input: { query: 'bar' },
       output: { hits: 3 },
@@ -102,7 +102,7 @@ describe('conversationToMarkdown', () => {
     expect(out).toContain('## User\nhello')
     expect(out).toContain('## Assistant (openai::gpt-5)\nworld')
     expect(out).toContain('## Thought\nthinking…')
-    expect(out).toContain('## Trigger — search')
+    expect(out).toContain('## Call — search')
     expect(out).toContain('"query": "foo"')
     expect(out).toContain('"query": "bar"')
     expect(out).toContain('"hits": 3')
@@ -110,9 +110,9 @@ describe('conversationToMarkdown', () => {
   })
 
   it('omits the Output block when output is undefined', () => {
-    const fcall: FunctionTriggerMessage = {
+    const fcall: FunctionCallMessage = {
       id: 'f1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'search',
       input: { q: 'x' },
       createdAt: 1,
@@ -174,15 +174,15 @@ describe('conversationToMarkdown', () => {
   it('falls back to String(value) for non-serialisable tool input', () => {
     const circular: { self?: unknown } = {}
     circular.self = circular
-    const fcall: FunctionTriggerMessage = {
+    const fcall: FunctionCallMessage = {
       id: 'f1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'broken',
       input: circular,
       createdAt: 1,
     }
     const out = conversationToMarkdown(baseConversation([fcall]))
-    expect(out).toContain('## Trigger — broken')
+    expect(out).toContain('## Call — broken')
     // Either '[object Object]' from the toString fallback or the markdown
     // simply didn't throw — both signal graceful handling.
     expect(out).toContain('[object Object]')
@@ -216,17 +216,17 @@ describe('conversationToMarkdown', () => {
     expect(thirdIdx).toBeGreaterThan(secondIdx)
   })
 
-  it('annotates a pending-approval trigger in the heading', () => {
-    const fcall: FunctionTriggerMessage = {
+  it('annotates a pending-approval call in the heading', () => {
+    const fcall: FunctionCallMessage = {
       id: 'f1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'delete_file',
       input: { path: '/tmp/x' },
       pendingApproval: true,
       createdAt: 1,
     }
     const out = conversationToMarkdown(baseConversation([fcall]))
-    expect(out).toContain('## Trigger — delete_file (pending approval)')
+    expect(out).toContain('## Call — delete_file (pending approval)')
   })
 })
 
@@ -292,11 +292,11 @@ describe('buildExportFilename', () => {
 
 describe('fetchWorkerVersions', () => {
   beforeEach(() => {
-    mockTrigger.mockReset()
+    mockCall.mockReset()
   })
 
   it('calls engine::workers::list with a 2s timeout and maps name/version', async () => {
-    mockTrigger.mockResolvedValue({
+    mockCall.mockResolvedValue({
       workers: [
         { id: 'w1', name: 'harness', version: '1.5.2', status: 'connected' },
         { id: 'w2', name: null, version: '0.2.4', status: 'connected' },
@@ -304,7 +304,7 @@ describe('fetchWorkerVersions', () => {
       ],
     })
     const out = await fetchWorkerVersions()
-    expect(mockTrigger).toHaveBeenCalledWith(
+    expect(mockCall).toHaveBeenCalledWith(
       'engine::workers::list',
       {},
       { timeoutMs: 2000 },
@@ -316,18 +316,18 @@ describe('fetchWorkerVersions', () => {
     ])
   })
 
-  it('returns null when the trigger rejects (timeout or error)', async () => {
-    mockTrigger.mockRejectedValue(new Error('timeout'))
+  it('returns null when the call rejects (timeout or error)', async () => {
+    mockCall.mockRejectedValue(new Error('timeout'))
     await expect(fetchWorkerVersions()).resolves.toBeNull()
   })
 
   it('returns null when the response has no workers array', async () => {
-    mockTrigger.mockResolvedValue({ nope: true })
+    mockCall.mockResolvedValue({ nope: true })
     await expect(fetchWorkerVersions()).resolves.toBeNull()
   })
 
   it('skips malformed entries but keeps valid ones', async () => {
-    mockTrigger.mockResolvedValue({
+    mockCall.mockResolvedValue({
       workers: [null, 42, { version: '9.9.9' }, { id: 'ok', version: '1.0.0' }],
     })
     await expect(fetchWorkerVersions()).resolves.toEqual([

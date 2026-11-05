@@ -33,14 +33,14 @@ export const SCENARIOS: PlaygroundScenario[] = [
   {
     id: 'happy-ask',
     label: 'happy · ask',
-    description: 'assistant body only, no thought, no function triggers.',
+    description: 'assistant body only, no thought, no function calls.',
     group: 'happy paths',
     backend: happyAsk,
   },
   {
     id: 'happy-agent',
     label: 'happy · agent',
-    description: 'thought + one function trigger + assistant body.',
+    description: 'thought + one function call + assistant body.',
     group: 'happy paths',
     backend: happyAgent,
   },
@@ -87,7 +87,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
     id: 'error-on-fcall',
     label: 'error on fcall',
     description:
-      'function trigger ends with an error payload (rate_limited) instead of data.',
+      'function call ends with an error payload (rate_limited) instead of data.',
     group: 'failure modes',
     backend: errorOnFcall,
   },
@@ -95,7 +95,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
     id: 'multi-function-agent',
     label: 'multi-function agent',
     description:
-      'three sequential function triggers before the assistant body — surfaces fcall pointer reuse.',
+      'three sequential function calls before the assistant body — surfaces fcall pointer reuse.',
     group: 'agent',
     backend: multiFunctionAgent,
   },

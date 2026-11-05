@@ -1,7 +1,8 @@
 //! The `browser::*` surface: scrapling's parse-only functions,
-//! natively. `register_all` binds the 19 parse functions and the guidance hook
-//! function on the iii bus; `apply_guidance` binds the guidance hook to
-//! `harness::hook::pre-generate`.
+//! natively. `register_all` registers the 19 parse functions, the guidance
+//! hook function and `browser::on-crawl-item` on the iii bus;
+//! `apply_guidance` observes `harness::hook::on-pre-generate` with the
+//! guidance hook.
 //!
 //! Wire contract: schemas byte-identical to scrapling/src/schemas.py modulo the
 //! `browser::` id prefix (golden-pinned); behavior differential-pinned against
@@ -103,7 +104,8 @@ pub fn dispatch_op(function_id: &str, payload: &Value) -> Result<Value, String> 
 }
 
 /// Register all 19 `browser::*` functions plus the internal
-/// guidance hook on the iii bus.
+/// guidance hook on the iii bus, after the `browser::on-crawl-item` event
+/// function the crawl calls.
 ///
 /// The catalog is served by two handler families and every entry belongs to
 /// exactly one: the ten parse ops are sync and stateless
@@ -114,9 +116,9 @@ pub fn dispatch_op(function_id: &str, payload: &Value) -> Result<Value, String> 
 /// carrying `schemas::catalog()`'s Python-mirrored literals are mandatory.
 /// The guidance hook uses real typed structs and relies on derivation.
 pub fn register_all(iii: &Arc<iii_sdk::IIIClient>, ctx: &Arc<net::Ctx>) {
-    // Before the functions, so a consumer binding as soon as browser::crawl
-    // appears already finds the trigger type.
-    crawl_feed::register_trigger_type(iii, &ctx.crawl_feed);
+    // Before the functions, so a consumer observing as soon as browser::crawl
+    // appears finds browser::on-crawl-item registered.
+    crawl_feed::register_function(iii, &ctx.crawl_feed);
     let mut registered: Vec<&str> = Vec::new();
     for spec in crate::scrapling::schemas::catalog() {
         registered.push(spec.function_id);
@@ -182,39 +184,42 @@ pub fn register_all(iii: &Arc<iii_sdk::IIIClient>, ctx: &Arc<net::Ctx>) {
     tracing::info!("browser::* functions registered");
 }
 
-/// The live pre-generate guidance binding, if any. Shared with the
-/// configuration change handler so a `browser.scrapling.inject_guidance`
-/// flip binds/unbinds at runtime — no worker restart (mirrors
-/// fp/src/guidance.rs).
-pub type GuidanceState = iii_config_client::BindingSlot;
+/// The harness hook point the guidance hook observes.
+pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
 
-/// Reconcile the guidance binding with the configured `inject_guidance`
-/// value: on → bind once; off → unregister and drop the handle. Idempotent
-/// under repeated config events; a failed bind retries on the next event.
-/// The hook FUNCTION stays registered either way (`register_all`) — an
-/// unbound function is inert, and keeping it registered is what lets a
-/// config flip enable injection without a restart.
-///
-/// `on_error: fail_open` is MANDATORY: pre_generate defaults fail-CLOSED,
-/// and a missing guidance line must never abort a turn.
-/// `metadata.inject_prompt` carries the guidance statically so the harness
-/// appends it without an RPC per generate step; without it every model-call
-/// step makes a live call to this worker and blocks generation on the answer
-/// (and the guidance vanishes from the frozen-prompt preview).
+/// The live pre-generate guidance observer, if any. Shared with the
+/// configuration change handler so a `browser.scrapling.inject_guidance`
+/// flip observes/disposes at runtime — no worker restart (mirrors
+/// fp/src/guidance.rs).
+pub type GuidanceState = iii_config_client::ObserverSlot;
+
+/// The args of the guidance observer. `on_error: fail_open` is MANDATORY:
+/// pre-generate defaults fail-CLOSED, and a missing guidance line must never
+/// abort a turn. `inject_prompt` carries the guidance statically so the
+/// harness appends it without an RPC per generate step; without it every
+/// model-call step makes a live call to this worker and blocks generation on
+/// the answer (and the guidance vanishes from the frozen-prompt preview).
+pub fn guidance_observer_args() -> Value {
+    serde_json::json!({
+        "on_error": "fail_open",
+        "inject_prompt": inject_guidance::GUIDANCE,
+    })
+}
+
+/// Reconcile the guidance observer with the configured `inject_guidance`
+/// value: on → observe once; off → dispose the observer and drop the handle.
+/// Idempotent under repeated config events. The observer stays `pending`
+/// while the harness is not running. The hook FUNCTION stays registered
+/// either way (`register_all`) — an unobserved function is inert, and keeping
+/// it registered is what lets a config flip enable injection without a
+/// restart.
 pub fn apply_guidance(iii: &iii_sdk::IIIClient, state: &GuidanceState, enabled: bool) {
     state.reconcile(
         enabled,
         || {
-            iii_config_client::try_bind(
-                iii,
-                iii_sdk::protocol::RegisterTriggerInput::new(
-                    "harness::hook::pre-generate",
-                    inject_guidance::GUIDANCE_HOOK_ID,
-                    serde_json::json!({ "on_error": "fail_open" }),
-                )
-                .with_metadata(serde_json::json!({
-                    "inject_prompt": inject_guidance::GUIDANCE
-                })),
+            iii.observe(
+                iii_sdk::Source::function(PRE_GENERATE_HOOK_FN).args(guidance_observer_args()),
+                inject_guidance::GUIDANCE_HOOK_ID,
             )
         },
         "inject_guidance on: appending browser::* scraping guidance to agent system prompts",
@@ -261,5 +266,15 @@ mod tests {
         for id in &catalog_net {
             assert!(net::NET_IDS.contains(id), "{id} missing from NET_IDS");
         }
+    }
+
+    /// The guidance observer fails open and carries the guidance as an arg:
+    /// the harness never sees observer metadata.
+    #[test]
+    fn guidance_observer_fails_open_and_carries_the_prompt() {
+        let args = guidance_observer_args();
+        assert_eq!(args["on_error"], "fail_open");
+        assert_eq!(args["inject_prompt"], inject_guidance::GUIDANCE);
+        assert_eq!(args.as_object().unwrap().len(), 2);
     }
 }

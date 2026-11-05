@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 use iii_sdk::errors::Error as IiiError;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -107,16 +106,9 @@ impl Engine {
     #[cfg(feature = "provider-openai-codex")]
     async fn start_secrets(&mut self) -> anyhow::Result<()> {
         use std::sync::Arc;
-        let iii = Arc::new(secrets_iii_sdk::register_worker(
-            &self.url,
-            secrets_iii_sdk::InitOptions {
-                metadata: Some(secrets_iii_sdk::runtime::WorkerMetadata {
-                    name: "secrets".into(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        ));
+        let mut options = test_init_options();
+        options.metadata.as_mut().context("worker metadata")?.name = "secrets".into();
+        let iii = Arc::new(register_worker(&self.url, options));
         let ctx = Arc::new(secrets::Ctx {
             iii: iii.clone(),
             store: Arc::new(secrets::Store::new(
@@ -134,7 +126,6 @@ impl Engine {
                 )),
             )),
             callers: secrets::access::CallerDirectory::new(iii.clone()),
-            subscribers: secrets::events::Subscribers::default(),
             detector: secrets::detect::Detector {
                 process_env: false,
                 dotenv: None,
@@ -147,13 +138,7 @@ impl Engine {
         self.secrets = Some(ctx);
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                let status = iii.trigger(secrets_iii_sdk::protocol::TriggerRequest {
-                    function_id: "secrets::status".into(),
-                    payload: json!({}),
-                    action: None,
-                    timeout_ms: Some(30_000),
-                });
-                if status.await.is_ok() {
+                if call(&iii, "secrets::status", json!({})).await.is_ok() {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -282,7 +267,7 @@ pub(crate) async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, IiiError> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,

@@ -1,4 +1,4 @@
-import type { Host } from '@iii-dev/console-ui'
+import type { Host, ObserveSource } from '@iii-dev/console-ui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   type GitChangedEvent,
@@ -11,7 +11,7 @@ import {
 
 function engine() {
   const handlers = new Map<string, (payload: unknown) => void>()
-  const triggers: Array<{ type: string; function_id: string; config: Record<string, unknown> }> = []
+  const observers: Array<ObserveSource & { target: string }> = []
   const host = {
     iii: {
       browserId: 'tab',
@@ -19,40 +19,41 @@ function engine() {
         handlers.set(functionId, handler)
         return () => handlers.delete(functionId)
       },
-      registerTrigger: (input: (typeof triggers)[number]) => {
-        triggers.push(input)
-        return () => triggers.splice(triggers.indexOf(input), 1)
+      observe: (source: ObserveSource, target: string) => {
+        const observer = { ...source, target }
+        observers.push(observer)
+        return () => observers.splice(observers.indexOf(observer), 1)
       },
     },
   } as unknown as Host
-  const bound = (type: string) => triggers.filter((t) => t.type === type)
-  const fire = (type: string, payload: unknown) => {
-    for (const t of bound(type)) handlers.get(t.function_id.replace(/::tab$/, ''))?.(payload)
+  const observed = (functionId: string) => observers.filter((o) => o.function_id === functionId)
+  const fire = (functionId: string, payload: unknown) => {
+    for (const o of observed(functionId)) handlers.get(o.target.replace(/::tab$/, ''))?.(payload)
   }
-  return { host, handlers, bound, fire }
+  return { host, handlers, observed, fire }
 }
 
 describe('watchGit', () => {
-  it('binds one shell::git-changed per folder for every listener, until the last goes', () => {
-    const { host, handlers, bound, fire } = engine()
+  it('observes shell::on-git-changed once per folder for every listener, until the last goes', () => {
+    const { host, handlers, observed, fire } = engine()
     const heard: string[][] = []
     const a = watchGit(host, '/repo', (event) => heard.push(event.changes))
     const b = watchGit(host, '/repo', (event) => heard.push(event.changes))
     const other = watchGit(host, '/other', () => {})
-    expect(bound('shell::git-changed').map((t) => t.config)).toEqual([{ path: '/repo' }, { path: '/other' }])
-    const [repo] = bound('shell::git-changed')
-    expect(repo.function_id).toMatch(/^iii::shell-ui::git-changed::\d+::tab$/)
+    expect(observed('shell::on-git-changed').map((o) => o.args)).toEqual([{ path: '/repo' }, { path: '/other' }])
+    const [repo] = observed('shell::on-git-changed')
+    expect(repo.target).toMatch(/^iii::shell-ui::git-changed::\d+::tab$/)
 
     const before = generation(host, 'git', '/repo')
-    fire('shell::git-changed', { path: '/repo', changes: ['head'] } satisfies GitChangedEvent)
+    fire('shell::on-git-changed', { path: '/repo', changes: ['head'] } satisfies GitChangedEvent)
     // Both listeners on the folder hear it; the other folder's does not.
     expect(heard).toEqual([['head'], ['head']])
     expect(generation(host, 'git', '/repo')).toBeGreaterThan(before)
     a()
-    expect(bound('shell::git-changed')).toHaveLength(2)
+    expect(observed('shell::on-git-changed')).toHaveLength(2)
     b()
     other()
-    expect(bound('shell::git-changed')).toEqual([])
+    expect(observed('shell::on-git-changed')).toEqual([])
     expect(handlers.size).toBe(0)
   })
 
@@ -60,8 +61,8 @@ describe('watchGit', () => {
     const { host, fire } = engine()
     const heard: unknown[] = []
     const off = watchGit(host, '/junk', (event) => heard.push(event))
-    fire('shell::git-changed', { path: '/junk' })
-    fire('shell::git-changed', null)
+    fire('shell::on-git-changed', { path: '/junk' })
+    fire('shell::on-git-changed', null)
     expect(heard).toEqual([])
     off()
   })
@@ -74,45 +75,45 @@ describe('watchWorktree', () => {
 
   it('folds a burst of file events into one notice, ignored paths left out', async () => {
     vi.useFakeTimers()
-    const { host, bound, fire } = engine()
+    const { host, observed, fire } = engine()
     let notices = 0
     const off = watchWorktree(host, '/tree', () => {
       notices += 1
     })
-    expect(bound('shell::changed').map((t) => t.config)).toEqual([{ path: '/tree' }])
-    fire('shell::changed', { path: 'target/x.o', kind: 'modified', root: '/tree', ignored: true })
+    expect(observed('shell::on-changed').map((o) => o.args)).toEqual([{ path: '/tree' }])
+    fire('shell::on-changed', { path: 'target/x.o', kind: 'modified', root: '/tree', ignored: true })
     await vi.advanceTimersByTimeAsync(WORKTREE_COALESCE_MS)
     expect(notices).toBe(0)
-    for (const path of ['a', 'b', 'c']) fire('shell::changed', { path, kind: 'modified', root: '/tree' })
+    for (const path of ['a', 'b', 'c']) fire('shell::on-changed', { path, kind: 'modified', root: '/tree' })
     await vi.advanceTimersByTimeAsync(WORKTREE_COALESCE_MS - 1)
     expect(notices).toBe(0)
     await vi.advanceTimersByTimeAsync(1)
     expect(notices).toBe(1)
     off()
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
   })
 
-  it('makes no binding while a view passes the folder’s events on, and one once it stops', async () => {
+  it('makes no observer while a view passes the folder’s events on, and one once it stops', async () => {
     vi.useFakeTimers()
-    const { host, bound } = engine()
+    const { host, observed } = engine()
     let notices = 0
     const page = publishWorktree(host, '/page')
     const off = watchWorktree(host, '/page', () => {
       notices += 1
     })
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
     page.note()
     page.note()
     await vi.advanceTimersByTimeAsync(WORKTREE_COALESCE_MS)
     expect(notices).toBe(1)
     page.off()
     page.off()
-    expect(bound('shell::changed').map((t) => t.config)).toEqual([{ path: '/page' }])
+    expect(observed('shell::on-changed').map((o) => o.args)).toEqual([{ path: '/page' }])
     // A view that comes back takes over again.
     const again = publishWorktree(host, '/page')
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
     again.off()
     off()
-    expect(bound('shell::changed')).toEqual([])
+    expect(observed('shell::on-changed')).toEqual([])
   })
 })

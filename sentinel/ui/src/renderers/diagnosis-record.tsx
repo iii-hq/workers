@@ -1,5 +1,5 @@
 import { Badge, Chip, MetaRow } from '@iii-dev/console-ui'
-import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 import { FN } from '../shared'
 
 interface RecordInput {
@@ -14,12 +14,12 @@ interface RecordInput {
 /**
  * How a recorded diagnosis reads in the transcript.
  *
- * The call is visible there like any other `triggered ƒ`, and unrendered it
+ * The call is visible there like any other function call, and unrendered it
  * is a wall of JSON in the middle of a conversation somebody is following.
  * This turns it into the one line that matters plus its confidence.
  */
-export function diagnosisRecordRenderer(_host: Host): FunctionTriggerRenderer {
-  const render = (message: FunctionTriggerMessage) => {
+export function diagnosisRecordRenderer(_host: Host): FunctionCallRenderer {
+  const render = (message: FunctionCallMessage) => {
     const input = (message.input ?? {}) as RecordInput
     const diagnosis = input.diagnosis ?? {}
     if (!diagnosis.summary) return null

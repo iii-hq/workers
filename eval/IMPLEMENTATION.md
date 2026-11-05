@@ -17,8 +17,8 @@ Manter o monitor dentro do worker `eval`, usando o bus do Engine e as dependênc
 | `src/state.rs` | Persistência dos registros, evidências e índice de observações. |
 | `src/ids.rs` | Identidade da observação, da análise e da sessão de investigação. |
 | `src/diagnostics.rs` | Detectores determinísticos e preparação de prévias. |
-| `src/functions.rs` e `src/surface.rs` | Registrar a nova superfície e seus schemas. |
-| `src/main.rs` | Inicialização, triggers, readiness e recuperação. |
+| `src/functions.rs` e `src/surface.rs` | Registrar a nova superfície, seus schemas e os observers. |
+| `src/main.rs` | Inicialização, readiness e recuperação. |
 | `src/queue.rs`, `src/locks.rs` e `src/events.rs` | Reutilizar fila e locks; ajustar eventos ao novo resultado. |
 | `src/comparison.rs` | Preservar comparação objetiva de sessões. |
 | `src/ui.rs`, `src/manifest.rs` e `iii.worker.yaml` | Atualizar descrição, integração e dependências. |
@@ -152,7 +152,7 @@ flowchart LR
 
 `collecting` permanece pendente quando o encerramento ou a árvore ainda não estão completos. `investigating` inclui lançamento e espera da LLM. `completed` significa que o monitor concluiu seu processamento, inclusive sem sugestões; não significa que a tarefa foi correta ou que uma melhoria foi validada.
 
-Cada avanço incrementa `step`. Jobs terminais e requests com step antigo são ignorados. Os eventos `eval::completed` carregam ID, status e timestamp; remover `eligible`, específico do experimento antigo.
+Cada avanço incrementa `step`. Jobs terminais e requests com step antigo são ignorados. A função privada `eval::on-completed` é chamada com ID, status e timestamp (o evento que seus observers recebem); remover `eligible`, específico do experimento antigo.
 
 Manter o lock durante leitura, decisão e persistência da intenção, liberando-o antes de aguardar uma inferência longa. Ao receber a resposta, readquirir o lock e conferir o step e o cancelamento antes de avançar. Steps concorrentes devem reconhecer a chamada já iniciada e aguardar seu resultado/deadline, sem lançá-la novamente. Uma resposta tardia pode conservar uso conhecido, mas não sobrescrever um cancelamento.
 
@@ -168,7 +168,7 @@ Para a LLM, uma retomada pode consultar a sessão de investigação e reenviar o
 
 ### 4.1 Eventos
 
-O handler de `harness::turn-completed` deve apenas validar elegibilidade, persistir a admissão e enfileirar. Não chamar modelos dentro dele.
+O handler que observa `harness::on-turn-completed` deve apenas validar elegibilidade, persistir a admissão e enfileirar. Não chamar modelos dentro dele.
 
 Aplicar nesta ordem:
 
@@ -222,12 +222,12 @@ Não marcar resultado com contratos novos, origem ausente ou resultado de erro c
 
 ### 5.2 `repeated_tool_error`
 
-- Normalizar chamada direta ou `agent_trigger` para alvo e payload; ignorar o texto descritivo do wrapper.
+- Normalizar chamada direta ou `agent_call` para alvo e payload; ignorar o texto descritivo do wrapper.
 - Comparar payloads JSON estruturalmente, sem depender da ordem das chaves.
 - Usar pares consecutivos de chamadas, ligados aos resultados por call ID e alvo.
 - Exigir resultado do primeiro erro antes da segunda chamada, erro nas duas respostas e mesmo código explícito.
 - Não comparar tentativas independentes ou turnos que não pertencem à mesma sequência de recuperação.
-- Tratar sondagens previstas pelo protocolo separadamente. Exemplo conhecido: `engine::triggers::info` com `NOT_FOUND` no namespace padrão.
+- Tratar sondagens previstas pelo protocolo separadamente. Exemplo conhecido: em transcrições gravadas com uma engine 0.25, `engine::triggers::info` com `NOT_FOUND` no namespace padrão.
 
 A observação é uma repetição com o mesmo erro, com causa inicialmente desconhecida. Código de erro idêntico não prova que a falha seja permanente.
 
@@ -348,7 +348,7 @@ Substituir o conteúdo de experimentos de prompt por:
 
 Preservar `SessionComparison.tsx`, `sessionComparison.ts` e seus testes. Atualizar `api.ts`, `types.ts`, `events.ts`, comandos e palette. Remover `NewEvaluationForm.tsx`, o detalhe antigo de A/B, `form.ts` e tipos obsoletos; reaproveitar componentes visuais existentes.
 
-Usar `eval::completed` para atualização e polling moderado somente enquanto houver análise pendente. Renderizar erro, cobertura insuficiente e conclusão sem sugestões de formas distintas. Uma badge de `completed` descreve o monitor; não serve como badge de melhoria validada.
+Observar `eval::on-completed` para atualização e usar polling moderado somente enquanto houver análise pendente. Renderizar erro, cobertura insuficiente e conclusão sem sugestões de formas distintas. Uma badge de `completed` descreve o monitor; não serve como badge de melhoria validada.
 
 ### 9.2 Associação de resultados
 
@@ -395,7 +395,7 @@ Manter os escopos antigos `eval_job` e `eval_session` separados. Resultados A/B 
 
 ### Passo 2 — Admissão e recuperação
 
-Implementar configuração, índice de observações, persistência compacta, locks, step e sweep. Ligar os triggers e validar deduplicação antes de chamar modelos.
+Implementar configuração, índice de observações, persistência compacta, locks, step e sweep. Criar os observers e validar deduplicação antes de chamar modelos.
 
 **Check:** evento duplicado, enqueue perdido, gravação interrompida e reinício não produzem outra análise da mesma observação. Pausa bloqueia novas admissões automáticas; cancelamento afeta apenas o monitor.
 
@@ -439,11 +439,11 @@ Executar o roteiro da seção 9.3 e revisar a qualidade do monitor separadamente
 
 Atualizar `README.md`, descrição, tags e manifesto. Adicionar `judge` às dependências do worker, reaproveitando seu provider TypeSafe. Confirmar o grafo resolvido de instalação. O manifesto atual omite `harness` por uma restrição histórica documentada em testes; verificar o comportamento do installer antes de mudar isso.
 
-Confirmar presença de state, queue, cron, Harness e providers escolhidos. A ausência do E2E só impede a associação de validações. Um trigger de observação que não conseguiu registrar precisa aparecer como monitor indisponível; startup recovery não substitui essa ligação.
+Confirmar presença de state, queue, cron, Harness e providers escolhidos. A ausência do E2E só impede a associação de validações. Um observer de `harness::on-turn-completed` que não está ativo precisa aparecer como monitor indisponível; startup recovery não substitui esse observer.
 
 Manter a configuração inativa após instalação. Ativar em uma stack de teste quando a implementação e os checks anteriores estiverem concluídos; depois validar chamadas reais aos modelos configurados e medir custo/qualidade. Só ampliar uso após esses resultados.
 
-**Check:** funções e triggers registrados, assets da nova UI servidos, análise real rastreável e consumo separado da tarefa. Registrar explicitamente qualquer etapa testada apenas com mocks.
+**Check:** funções registradas e observers ativos, assets da nova UI servidos, análise real rastreável e consumo separado da tarefa. Registrar explicitamente qualquer etapa testada apenas com mocks.
 
 ## 11. Comandos previstos para os checks locais
 

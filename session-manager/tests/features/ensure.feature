@@ -2,20 +2,17 @@
 Feature: session::ensure — idempotently ensure a session exists
 
   Contract (session-manager.md § session::ensure): ensure creates the
-  session with the caller-chosen id when missing (firing
-  session::created) and is a pure read when it already exists — no
+  session with the caller-chosen id when missing (calling
+  session::on-created) and is a pure read when it already exists — no
   mutation, no event, `created: false`. title/description/metadata are
   applied ONLY on creation. This is what lets webhook-driven consumers
   (Telegram, Slack) map a platform chat id onto a session without
   racing themselves.
 
   # Prevents: ensure failing to create, or creating without announcing —
-  # a consumer that binds session::created must see ensured sessions too.
+  # a consumer that observes session::on-created must see ensured sessions too.
   Scenario: ensure creates a missing session and fires created
-    Given a binding "b1" on "session::created" delivering to "obs::created" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-created" delivering to "obs::created"
     When I call "session::ensure" with:
       """
       { "session_id": "chat-42", "title": "TG chat", "metadata": { "telegram_chat_id": 42 } }
@@ -25,16 +22,13 @@ Feature: session::ensure — idempotently ensure a session exists
     And the response field "meta.session_id" is "chat-42"
     And the response field "meta.title" is "TG chat"
     And the response field "meta.status" is "idle"
-    And function "obs::created" received 1 "session::created" delivery
+    And function "obs::created" received 1 "session::on-created" delivery
     And delivery 0 to "obs::created" has "session_id" = "chat-42"
 
   # Prevents: a redelivered webhook overwriting an existing session's
   # title/metadata or double-firing created (duplicate UI entries).
   Scenario: ensure of an existing session mutates nothing and fires nothing
-    Given a binding "b1" on "session::created" delivering to "obs::created" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-created" delivering to "obs::created"
     Given I call "session::ensure" with:
       """
       { "session_id": "chat-42", "title": "original", "metadata": { "owner": "u_1" } }
@@ -47,7 +41,7 @@ Feature: session::ensure — idempotently ensure a session exists
     And the response field "created" is false
     And the response field "meta.title" is "original"
     And the response field "meta.metadata.owner" is "u_1"
-    And function "obs::created" received 1 "session::created" delivery
+    And function "obs::created" received 1 "session::on-created" delivery
 
   # Prevents: ensure quietly accepting an unusable empty id.
   Scenario: ensure with an empty session_id is rejected

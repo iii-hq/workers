@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
+import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import { spawnDepthError } from '@/stories/fixtures/harness-fixtures'
 import { SandboxErrorView } from './ErrorView'
 
@@ -48,7 +48,7 @@ export const InvocationDenied: Story = {
           'The request could not continue because the approval gate is unavailable.',
         functionId: 'sandbox::fs::write',
         deniedBy: 'gate_unavailable',
-        detailText: 'trigger_failed: approval gate unreachable',
+        detailText: 'call_failed: approval gate unreachable',
       },
     },
   },
@@ -71,5 +71,5 @@ export const DispatchPolicy: Story = {
 
 export const InFunctionCard: Story = {
   name: 'inside function card',
-  render: () => <FunctionTriggerCard message={spawnDepthError} defaultOpen />,
+  render: () => <FunctionCallCard message={spawnDepthError} defaultOpen />,
 }

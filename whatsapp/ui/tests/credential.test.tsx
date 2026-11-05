@@ -21,8 +21,8 @@ afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup() })
 
 type Backend = (id: string, payload: Record<string, unknown>) => unknown
 async function render(value: string | undefined, backend: Backend) {
-  const trigger = vi.fn(async (id: string, payload: Record<string, unknown>) => backend(id, payload))
-  const host = { iii: { trigger } } as unknown as Host
+  const call = vi.fn(async (id: string, payload: Record<string, unknown>) => backend(id, payload))
+  const host = { iii: { call } } as unknown as Host
   const onChange = vi.fn()
   const container = document.createElement('div')
   document.body.appendChild(container)
@@ -30,23 +30,23 @@ async function render(value: string | undefined, backend: Backend) {
   await act(async () => root.render(<CredentialControl host={host} control={{ id: 'token', 'data-field': 'cloud.access_token' }} label="Access token"
     value={value} target="WHATSAPP_CLOUD_ACCESS_TOKEN" onChange={onChange} />))
   cleanups.push(() => { act(() => root.unmount()); container.remove() })
-  return { container, trigger, onChange }
+  return { container, call, onChange }
 }
 const button = (container: HTMLElement, text: string) => [...container.querySelectorAll('button')].find((b) => b.textContent === text)
 const missing = () => { throw Object.assign(new Error('function secrets::get not found'), { code: 'function_not_found' }) }
 
 describe('Cloud credential field', () => {
   it('flags a plain-text value and moves it into the secrets store for WhatsApp', async () => {
-    const { container, trigger, onChange } = await render(TOKEN, (id) => id === 'secrets::get' ? { name: 'WHATSAPP_CLOUD_ACCESS_TOKEN', consumers: ['ade'] } : {})
+    const { container, call, onChange } = await render(TOKEN, (id) => id === 'secrets::get' ? { name: 'WHATSAPP_CLOUD_ACCESS_TOKEN', consumers: ['ade'] } : {})
     expect(container.textContent).toContain('Plain text')
     expect(container.innerHTML).not.toContain(TOKEN)
     await act(async () => button(container, 'Move to secrets')!.click())
-    expect(trigger).toHaveBeenCalledWith('secrets::set', expect.objectContaining({ name: 'WHATSAPP_CLOUD_ACCESS_TOKEN', value: TOKEN, consumers: ['ade', 'whatsapp'] }), expect.anything())
+    expect(call).toHaveBeenCalledWith('secrets::set', expect.objectContaining({ name: 'WHATSAPP_CLOUD_ACCESS_TOKEN', value: TOKEN, consumers: ['ade', 'whatsapp'] }), expect.anything())
     expect(onChange).toHaveBeenCalledWith('secret://WHATSAPP_CLOUD_ACCESS_TOKEN')
   })
 
   it('saves a new value to secrets instead of configuration', async () => {
-    const { container, trigger, onChange } = await render(undefined, (id) => id === 'secrets::get' ? null : {})
+    const { container, call, onChange } = await render(undefined, (id) => id === 'secrets::get' ? null : {})
     const input = container.querySelector('input')!
     expect(input.type).toBe('password')
     await act(async () => {
@@ -54,7 +54,7 @@ describe('Cloud credential field', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => button(container, 'Save to secrets')!.click())
-    expect(trigger).toHaveBeenCalledWith('secrets::set', expect.objectContaining({ value: TOKEN, consumers: ['whatsapp'] }), expect.anything())
+    expect(call).toHaveBeenCalledWith('secrets::set', expect.objectContaining({ value: TOKEN, consumers: ['whatsapp'] }), expect.anything())
     expect(onChange).toHaveBeenCalledWith('secret://WHATSAPP_CLOUD_ACCESS_TOKEN')
     expect(onChange).not.toHaveBeenCalledWith(TOKEN)
   })

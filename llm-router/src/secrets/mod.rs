@@ -8,7 +8,7 @@
 //! snapshot, logs or traces — and are wiped from memory when replaced or
 //! evicted (copies handed to a resolve response are ordinary strings). The
 //! cache is keyed by the canonical reference ([`SecretRef::key`]). An entry
-//! is re-read on `secrets::changed`, on a configuration change of a slice
+//! is re-read on `secrets::on-changed`, on a configuration change of a slice
 //! that references it, after [`RESOLVED_TTL`] / [`FAILED_TTL`] on demand,
 //! and when new functions register while the secrets worker was unreachable
 //! — so the router keeps working when the secrets worker starts after it.
@@ -20,8 +20,7 @@ use std::time::Duration;
 
 use futures::future::{join_all, BoxFuture};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
@@ -34,16 +33,16 @@ pub const SCHEME: &str = "secret://";
 /// Reference scheme for an environment variable kept by the secrets worker.
 pub const ENV_SCHEME: &str = "env://";
 pub const RESOLVE_ID: &str = "secrets::resolve";
-/// Trigger type the `secrets` worker fires on create / rotate / delete /
-/// access change. Payload: `{name, ref, action, fingerprint?, updated_at}`.
-pub const CHANGED_TRIGGER_TYPE: &str = "secrets::changed";
+/// The `secrets` worker's event function, called on create / rotate / delete
+/// / access change. Event: `{name, ref, action, fingerprint?, updated_at}`.
+pub const ON_CHANGED_FN: &str = "secrets::on-changed";
 /// The worker name a secret's `consumers` must list for this router to read it.
 pub const CONSUMER: &str = "llm-router";
 /// A missing secrets worker answers `function_not_found` at once; this only
 /// bounds a hung one, which every caller of an uncached reference waits on.
 pub const RESOLVE_TIMEOUT_MS: u64 = 3_000;
 /// Re-read a resolved value at least this often, bounding staleness when a
-/// `secrets::changed` event is missed.
+/// `secrets::on-changed` event is missed.
 pub const RESOLVED_TTL: Duration = Duration::from_secs(300);
 /// Retry a failed resolution on demand after this long.
 pub const FAILED_TTL: Duration = Duration::from_secs(10);
@@ -258,7 +257,7 @@ pub fn bus_fetch(iii: IIIClient) -> Fetch {
         let iii = iii.clone();
         Box::pin(async move {
             let response = iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: RESOLVE_ID.into(),
                     payload: json!({ "ref": reference }),
                     action: None,

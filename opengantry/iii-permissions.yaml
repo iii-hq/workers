@@ -5,5 +5,4 @@ version: 1
 
 rules:
   - "!gantry::on-function-registration"
-  - "!gantry::on-trigger-registration"
-  - "!gantry::on-trigger-type-registration"
+  - "!gantry::on-observer-registration"

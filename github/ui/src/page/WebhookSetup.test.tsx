@@ -250,17 +250,17 @@ const installQuickTunnelStatus = {
   ],
 } as const
 
-function mountSetup(trigger: Host['iii']['trigger']) {
+function mountSetup(call: Host['iii']['call']) {
   const container = document.body.appendChild(document.createElement('div'))
   root = createRoot(container)
-  act(() => root!.render(<WebhookSetup host={{ iii: { trigger } } as Host} />))
+  act(() => root!.render(<WebhookSetup host={{ iii: { call } } as Host} />))
   return container
 }
 
 describe('WebhookSetup worker updates', () => {
   it('installs quick-tunnel with compose::add, then follows and re-checks the operation', async () => {
     const operation = deferred<{ status: string }>()
-    const trigger = vi.fn((functionId: string) => {
+    const call = vi.fn((functionId: string) => {
       if (functionId === 'github::setup::webhooks-status') {
         return Promise.resolve(installQuickTunnelStatus)
       }
@@ -268,7 +268,7 @@ describe('WebhookSetup worker updates', () => {
       if (functionId === 'compose::operation') return operation.promise
       return Promise.reject(new Error(`Unexpected function: ${functionId}`))
     })
-    const container = mountSetup(trigger as Host['iii']['trigger'])
+    const container = mountSetup(call as Host['iii']['call'])
 
     await settle(550)
     act(() => button(container, 'Install quick-tunnel').click())
@@ -278,7 +278,7 @@ describe('WebhookSetup worker updates', () => {
     act(() => button(container, 'Install').click())
     await settle()
 
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'compose::add',
       expect.objectContaining({
         workers: ['quick-tunnel'],
@@ -286,25 +286,25 @@ describe('WebhookSetup worker updates', () => {
       }),
       { timeoutMs: 60_000 },
     )
-    expect(trigger.mock.calls.some(([functionId]) => functionId === 'compose::install')).toBe(false)
+    expect(call.mock.calls.some(([functionId]) => functionId === 'compose::install')).toBe(false)
 
     operation.resolve({ status: 'succeeded' })
     await settle(550)
     expect(
-      trigger.mock.calls.filter(([functionId]) => functionId === 'github::setup::webhooks-status'),
+      call.mock.calls.filter(([functionId]) => functionId === 'github::setup::webhooks-status'),
     ).toHaveLength(2)
   })
 
   it('confirms and installs a missing http worker with compose::add', async () => {
     const operation = deferred<{ status: string }>()
-    const trigger = vi.fn((functionId: string) => {
+    const call = vi.fn((functionId: string) => {
       if (functionId === 'github::setup::webhooks-status') return Promise.resolve(installHttpStatus)
       if (functionId === 'compose::add') return Promise.resolve({ changed: true })
       if (functionId === 'compose::operation') return operation.promise
       return Promise.reject(new Error(`Unexpected function: ${functionId}`))
     })
     mocks.confirm.mockResolvedValue(true)
-    const container = mountSetup(trigger as Host['iii']['trigger'])
+    const container = mountSetup(call as Host['iii']['call'])
 
     await settle(550)
     act(() => button(container, 'Install http').click())
@@ -318,7 +318,7 @@ describe('WebhookSetup worker updates', () => {
     expect(button(container, 'Installing…').disabled).toBe(true)
     expect(button(container, 'Installing…').getAttribute('aria-busy')).toBe('true')
     expect(container.textContent).not.toContain('I have installed cloudflared')
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'compose::add',
       expect.objectContaining({
         workers: ['http'],
@@ -330,20 +330,20 @@ describe('WebhookSetup worker updates', () => {
     operation.resolve({ status: 'succeeded' })
     await settle(550)
     expect(
-      trigger.mock.calls.filter(([functionId]) => functionId === 'github::setup::webhooks-status'),
+      call.mock.calls.filter(([functionId]) => functionId === 'github::setup::webhooks-status'),
     ).toHaveLength(2)
   })
 
   it('offers and follows an http update, then re-checks the prerequisites', async () => {
     const operation = deferred<{ status: string }>()
-    const trigger = vi.fn((functionId: string) => {
+    const call = vi.fn((functionId: string) => {
       if (functionId === 'github::setup::webhooks-status') return Promise.resolve(updateHttpStatus)
       if (functionId === 'compose::update') return Promise.resolve({ changed: true })
       if (functionId === 'compose::operation') return operation.promise
       return Promise.reject(new Error(`Unexpected function: ${functionId}`))
     })
     mocks.confirm.mockResolvedValue(true)
-    const container = mountSetup(trigger as Host['iii']['trigger'])
+    const container = mountSetup(call as Host['iii']['call'])
 
     await settle(550)
     const update = button(container, 'Update http')
@@ -360,7 +360,7 @@ describe('WebhookSetup worker updates', () => {
     })
     expect(button(container, 'Updating…').disabled).toBe(true)
     expect(button(container, 'Updating…').getAttribute('aria-busy')).toBe('true')
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'compose::update',
       expect.objectContaining({
         workers: ['http'],
@@ -372,26 +372,26 @@ describe('WebhookSetup worker updates', () => {
     operation.resolve({ status: 'succeeded' })
     await settle(550)
     expect(
-      trigger.mock.calls.filter(([functionId]) => functionId === 'github::setup::webhooks-status'),
+      call.mock.calls.filter(([functionId]) => functionId === 'github::setup::webhooks-status'),
     ).toHaveLength(2)
     expect(button(container, 'Update http').disabled).toBe(false)
   })
 
 
   it('does not start an update when confirmation is cancelled', async () => {
-    const trigger = vi.fn((functionId: string) => {
+    const call = vi.fn((functionId: string) => {
       if (functionId === 'github::setup::webhooks-status') return Promise.resolve(updateHttpStatus)
       return Promise.reject(new Error(`Unexpected function: ${functionId}`))
     })
     mocks.confirm.mockResolvedValue(false)
-    const container = mountSetup(trigger as Host['iii']['trigger'])
+    const container = mountSetup(call as Host['iii']['call'])
 
     await settle(550)
     act(() => button(container, 'Update http').click())
     await settle()
 
     expect(mocks.confirm).toHaveBeenCalledOnce()
-    expect(trigger).not.toHaveBeenCalledWith(
+    expect(call).not.toHaveBeenCalledWith(
       'compose::update',
       expect.anything(),
       expect.anything(),
@@ -400,7 +400,7 @@ describe('WebhookSetup worker updates', () => {
   })
 
   it.each(['failed', 'cancelled'])('reports a %s update outcome', async (status) => {
-    const trigger = vi.fn((functionId: string) => {
+    const call = vi.fn((functionId: string) => {
       if (functionId === 'github::setup::webhooks-status') return Promise.resolve(updateHttpStatus)
       if (functionId === 'compose::update') return Promise.resolve({ changed: true })
       if (functionId === 'compose::operation') {
@@ -409,7 +409,7 @@ describe('WebhookSetup worker updates', () => {
       return Promise.reject(new Error(`Unexpected function: ${functionId}`))
     })
     mocks.confirm.mockResolvedValue(true)
-    const container = mountSetup(trigger as Host['iii']['trigger'])
+    const container = mountSetup(call as Host['iii']['call'])
 
     await settle(550)
     act(() => button(container, 'Update http').click())
@@ -422,7 +422,7 @@ describe('WebhookSetup worker updates', () => {
 
   it('stops polling and reports when the update times out', async () => {
     const clock = { now: 0 }
-    const trigger = vi.fn((functionId: string) => {
+    const call = vi.fn((functionId: string) => {
       if (functionId === 'github::setup::webhooks-status') return Promise.resolve(updateHttpStatus)
       if (functionId === 'compose::update') return Promise.resolve({ changed: true })
       if (functionId === 'compose::operation') {
@@ -432,7 +432,7 @@ describe('WebhookSetup worker updates', () => {
       return Promise.reject(new Error(`Unexpected function: ${functionId}`))
     })
     mocks.confirm.mockResolvedValue(true)
-    const container = mountSetup(trigger as Host['iii']['trigger'])
+    const container = mountSetup(call as Host['iii']['call'])
 
     await settle(550)
     vi.spyOn(Date, 'now').mockImplementation(() => clock.now)

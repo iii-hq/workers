@@ -4,7 +4,7 @@
 //! HTTP requests: the permissive fallback (no `cors` config) on an actual
 //! request, and the configured-origins/methods path on a preflight `OPTIONS`
 //! request. Each test skips (early-returns) when no engine is reachable, and
-//! tests are serialized so their trigger registrations don't race (mirrors
+//! tests are serialized so their route observers don't race (mirrors
 //! `e2e_methods.rs`).
 
 mod common;

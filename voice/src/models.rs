@@ -347,8 +347,9 @@ pub fn find(id: &str) -> Option<&'static ModelSpec> {
     catalog().iter().find(|m| m.id == id)
 }
 
-/// Download progress, one report per megabyte and a final `done`.
-#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+/// Download progress, one report per megabyte and a final `done`; the
+/// `voice::on-model-progress` event.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Progress {
     pub id: String,
     pub file: String,

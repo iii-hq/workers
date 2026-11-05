@@ -1,9 +1,10 @@
 //! `kanban` binary entry.
 //!
-//! Boot: parse the CLI, connect to the engine, register the trigger types and
-//! the `kanban::*` functions, register the `kanban` configuration entry and
-//! load its authoritative value, bind the reload trigger, inject the console
-//! UI, publish the native app for the iii app, then sleep until SIGINT/SIGTERM.
+//! Boot: parse the CLI, connect to the engine, register the event functions
+//! (`kanban::on-change`, `kanban::on-comment`) and the `kanban::*` functions,
+//! register the `kanban` configuration entry and load its authoritative value,
+//! observe its updates, inject the console UI, publish the native app for the
+//! iii app, then sleep until SIGINT/SIGTERM.
 //! The optional `--config` YAML seeds the configuration entry the first time
 //! only; afterwards the configuration worker is the source of truth.
 
@@ -14,7 +15,6 @@ use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{InitOptions, register_worker};
 
-use iii_kanban::events::Subscribers;
 use iii_kanban::functions::{self, Ctx};
 use iii_kanban::store::BoardStore;
 use iii_kanban::{configuration, native_ui, ui};
@@ -80,14 +80,12 @@ async fn main() -> Result<()> {
     ));
 
     let config = Arc::new(RwLock::new(iii_kanban::config::KanbanConfig::default()));
-    let subscribers = Subscribers::default();
-    iii_kanban::events::register_trigger_types(&iii, &subscribers);
+    iii_kanban::events::register(&iii);
 
     let ctx = Arc::new(Ctx {
         iii: iii.clone(),
         store: BoardStore::new(config.clone()),
         config: config.clone(),
-        subscribers,
     });
     functions::register_functions(&ctx);
 
@@ -95,9 +93,7 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("registering kanban configuration schema")?;
-    let reload = configuration::bind_reload(&iii, config.clone(), ctx.subscribers.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    let reload = configuration::observe_reload(&iii, config.clone());
     // Closes the boot gap: fetch the authoritative value through the same
     // serialized path every later update takes.
     reload.run().await;

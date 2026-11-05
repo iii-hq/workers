@@ -1,36 +1,100 @@
 use crate::analyzer::CompletionContext;
-use crate::engine_client::EngineClient;
-use crate::engine_introspection::{FunctionInfo, TriggerTypeInfo};
+use crate::engine_client::{EngineClient, ENGINE_SOURCES};
+use crate::engine_introspection::FunctionInfo;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
 
-/// Trigger types served by the deprecated iii-stream builtin. Engines still
-/// register them, so they stay completable, but editors render them as
-/// deprecated so new code does not adopt them.
-const DEPRECATED_TRIGGER_TYPES: &[&str] = &["stream", "stream:join", "stream:leave"];
-
-/// Short deprecation note shown in completion details and hovers.
-pub const DEPRECATED_TRIGGER_NOTE: &str = "deprecated: iii-stream";
-
-pub fn is_deprecated_trigger_type(id: &str) -> bool {
-    DEPRECATED_TRIGGER_TYPES.contains(&id)
+/// Which functions a function-id position offers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FunctionKind {
+    /// Anything to call.
+    Callable,
+    /// Anything observable, engine sources included.
+    Observable,
+    /// Anything an observer may deliver to: not private.
+    Target,
 }
 
-fn trigger_type_item(tt: &TriggerTypeInfo) -> CompletionItem {
-    let deprecated = is_deprecated_trigger_type(&tt.id);
-    let detail = if deprecated {
-        format!("{} ({DEPRECATED_TRIGGER_NOTE})", tt.description)
-    } else {
-        tt.description.clone()
-    };
+impl FunctionKind {
+    fn admits(self, func: &FunctionInfo) -> bool {
+        match self {
+            FunctionKind::Callable => true,
+            FunctionKind::Observable => func.observable,
+            FunctionKind::Target => !func.private,
+        }
+    }
+}
+
+fn function_item(func: &FunctionInfo, kind: FunctionKind) -> CompletionItem {
+    // An event source (a function observers pass args to, or that only its
+    // worker calls) reads as an event when it is being observed.
+    let event = kind == FunctionKind::Observable && (func.args_format.is_some() || func.private);
     CompletionItem {
-        label: tt.id.clone(),
-        kind: Some(CompletionItemKind::ENUM),
-        detail: Some(detail),
-        tags: deprecated.then(|| vec![CompletionItemTag::DEPRECATED]),
-        insert_text: Some(tt.id.clone()),
+        label: func.function_id.clone(),
+        kind: Some(if event {
+            CompletionItemKind::EVENT
+        } else {
+            CompletionItemKind::FUNCTION
+        }),
+        detail: func.description.clone(),
+        insert_text: Some(func.function_id.clone()),
         ..Default::default()
     }
+}
+
+fn engine_source_item(id: &str, description: &str) -> CompletionItem {
+    CompletionItem {
+        label: id.to_string(),
+        kind: Some(CompletionItemKind::EVENT),
+        detail: Some(description.to_string()),
+        insert_text: Some(id.to_string()),
+        ..Default::default()
+    }
+}
+
+/// The functions `kind` admits whose id starts with the namespace typed in
+/// `current_text` (`todos::` → `todos::*`).
+fn function_items(
+    current_text: &str,
+    kind: FunctionKind,
+    engine: &Arc<EngineClient>,
+) -> Vec<CompletionItem> {
+    let namespace_filter = if current_text.contains("::") {
+        current_text.split("::").next()
+    } else {
+        None
+    };
+    let in_namespace =
+        |id: &str| namespace_filter.is_none_or(|ns| id.starts_with(&format!("{ns}::")));
+
+    let mut items = Vec::new();
+    for entry in engine.functions.iter() {
+        let func: &FunctionInfo = entry.value();
+        if in_namespace(&func.function_id) && kind.admits(func) {
+            items.push(function_item(func, kind));
+        }
+    }
+    if kind == FunctionKind::Observable {
+        for &(id, description) in ENGINE_SOURCES {
+            if in_namespace(id) && !engine.functions.contains_key(id) {
+                items.push(engine_source_item(id, description));
+            }
+        }
+    }
+    items
+}
+
+fn value_items(values: Vec<String>, detail: &str) -> Vec<CompletionItem> {
+    values
+        .into_iter()
+        .map(|value| CompletionItem {
+            label: value.clone(),
+            kind: Some(CompletionItemKind::VALUE),
+            detail: Some(detail.to_string()),
+            insert_text: Some(value),
+            ..Default::default()
+        })
+        .collect()
 }
 
 pub fn get_completions(
@@ -40,39 +104,15 @@ pub fn get_completions(
 ) -> Vec<CompletionItem> {
     match context {
         CompletionContext::FunctionId => {
-            // If user typed a namespace prefix like "todos::", filter to that namespace
-            let namespace_filter = if current_text.contains("::") {
-                current_text.split("::").next()
-            } else {
-                None
-            };
-
-            let mut items = Vec::new();
-            for entry in engine.functions.iter() {
-                let func: &FunctionInfo = entry.value();
-                if let Some(ns) = namespace_filter {
-                    if !func.function_id.starts_with(&format!("{}::", ns)) {
-                        continue;
-                    }
-                }
-                items.push(CompletionItem {
-                    label: func.function_id.clone(),
-                    kind: Some(CompletionItemKind::FUNCTION),
-                    detail: func.description.clone(),
-                    insert_text: Some(func.function_id.clone()),
-                    ..Default::default()
-                });
-            }
-            items
+            function_items(current_text, FunctionKind::Callable, engine)
         }
 
-        CompletionContext::TriggerType => {
-            let mut items = Vec::new();
-            for entry in engine.trigger_types.iter() {
-                let tt: &TriggerTypeInfo = entry.value();
-                items.push(trigger_type_item(tt));
-            }
-            items
+        CompletionContext::ObservableFunctionId => {
+            function_items(current_text, FunctionKind::Observable, engine)
+        }
+
+        CompletionContext::TargetFunctionId => {
+            function_items(current_text, FunctionKind::Target, engine)
         }
 
         CompletionContext::PayloadProperty { function_id } => {
@@ -84,31 +124,54 @@ pub fn get_completions(
             Vec::new()
         }
 
-        CompletionContext::TriggerConfigProperty { trigger_type } => {
-            if let Some(tt) = engine.get_trigger_type(trigger_type) {
-                if let Some(schema) = &tt.trigger_request_format {
+        CompletionContext::ArgsProperty { function_id } => {
+            if let Some(func) = engine.get_function(function_id) {
+                if let Some(schema) = &func.args_format {
                     return extract_properties_from_schema(schema);
                 }
             }
             Vec::new()
         }
 
+        CompletionContext::ArgValue { function_id, arg } => {
+            let mut values = engine
+                .get_function(function_id)
+                .and_then(|func| func.args_format)
+                .map(|schema| enum_values(&schema, arg))
+                .unwrap_or_default();
+            for value in engine.get_arg_values(function_id, arg) {
+                if !values.contains(&value) {
+                    values.push(value);
+                }
+            }
+            if values.is_empty() {
+                values = engine.get_known_values(arg);
+            }
+            value_items(values, arg)
+        }
+
         CompletionContext::KnownValue { field_name } => {
-            let values = engine.get_known_values(field_name);
-            values
-                .into_iter()
-                .map(|value| CompletionItem {
-                    label: value.clone(),
-                    kind: Some(CompletionItemKind::VALUE),
-                    detail: Some(field_name.clone()),
-                    insert_text: Some(value),
-                    ..Default::default()
-                })
-                .collect()
+            value_items(engine.get_known_values(field_name), field_name)
         }
 
         CompletionContext::None => Vec::new(),
     }
+}
+
+/// The string `enum` values a JSON Schema allows for `property`.
+fn enum_values(schema: &serde_json::Value, property: &str) -> Vec<String> {
+    schema
+        .get("properties")
+        .and_then(|p| p.get(property))
+        .and_then(|p| p.get("enum"))
+        .and_then(|e| e.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Extract property names from a JSON Schema and return them as completion items.
@@ -154,6 +217,13 @@ mod tests {
     use super::*;
     use dashmap::DashMap;
 
+    fn function(id: &str) -> FunctionInfo {
+        FunctionInfo {
+            function_id: id.to_string(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn filters_engine_functions() {
         let functions: DashMap<String, FunctionInfo> = DashMap::new();
@@ -165,6 +235,7 @@ mod tests {
                 request_format: None,
                 response_format: None,
                 metadata: None,
+                ..Default::default()
             },
         );
         functions.insert(
@@ -175,6 +246,7 @@ mod tests {
                 request_format: None,
                 response_format: None,
                 metadata: None,
+                ..Default::default()
             },
         );
 
@@ -191,68 +263,66 @@ mod tests {
     }
 
     #[test]
-    fn filters_engine_trigger_types() {
-        let trigger_types: DashMap<String, TriggerTypeInfo> = DashMap::new();
-        trigger_types.insert(
-            "http".to_string(),
-            TriggerTypeInfo {
-                id: "http".to_string(),
-                description: "HTTP trigger".to_string(),
-                trigger_request_format: None,
-                call_request_format: None,
-            },
+    fn private_functions_are_observable_but_not_targets() {
+        let source = FunctionInfo {
+            private: true,
+            ..function("cron::on-tick")
+        };
+        assert!(FunctionKind::Callable.admits(&source));
+        assert!(FunctionKind::Observable.admits(&source));
+        assert!(!FunctionKind::Target.admits(&source));
+        assert_eq!(
+            function_item(&source, FunctionKind::Observable).kind,
+            Some(CompletionItemKind::EVENT)
         );
-        trigger_types.insert(
-            "engine::functions-available".to_string(),
-            TriggerTypeInfo {
-                id: "engine::functions-available".to_string(),
-                description: "Internal".to_string(),
-                trigger_request_format: None,
-                call_request_format: None,
-            },
+        assert_eq!(
+            function_item(&source, FunctionKind::Callable).kind,
+            Some(CompletionItemKind::FUNCTION)
         );
+    }
 
-        let mut items = Vec::new();
-        for entry in trigger_types.iter() {
-            let tt: &TriggerTypeInfo = entry.value();
-            if !tt.id.starts_with("engine::") {
-                items.push(tt.id.clone());
+    #[test]
+    fn unobservable_functions_are_not_observe_sources() {
+        let secret = FunctionInfo {
+            observable: false,
+            ..function("secrets::resolve")
+        };
+        assert!(!FunctionKind::Observable.admits(&secret));
+        assert!(FunctionKind::Target.admits(&secret));
+        assert_eq!(
+            function_item(&function("orders::create"), FunctionKind::Observable).kind,
+            Some(CompletionItemKind::FUNCTION)
+        );
+    }
+
+    #[test]
+    fn engine_source_items_are_events() {
+        let item = engine_source_item(
+            "configuration::on-updated",
+            "A configuration entry changed.",
+        );
+        assert_eq!(item.kind, Some(CompletionItemKind::EVENT));
+        assert_eq!(
+            item.insert_text.as_deref(),
+            Some("configuration::on-updated")
+        );
+    }
+
+    #[test]
+    fn enum_values_of_an_args_property() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "enum": ["script", "style", "module"] },
+                "path": { "type": "string" }
             }
-        }
-
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0], "http");
-    }
-
-    fn trigger_type(id: &str, description: &str) -> TriggerTypeInfo {
-        TriggerTypeInfo {
-            id: id.to_string(),
-            description: description.to_string(),
-            trigger_request_format: None,
-            call_request_format: None,
-        }
-    }
-
-    #[test]
-    fn stream_trigger_types_are_tagged_deprecated() {
-        for id in ["stream", "stream:join", "stream:leave"] {
-            let item = trigger_type_item(&trigger_type(id, "Stream trigger"));
-            assert_eq!(item.tags, Some(vec![CompletionItemTag::DEPRECATED]), "{id}");
-            assert_eq!(
-                item.detail.as_deref(),
-                Some("Stream trigger (deprecated: iii-stream)"),
-                "{id}"
-            );
-        }
-    }
-
-    #[test]
-    fn other_trigger_types_are_not_tagged() {
-        for id in ["http", "state", "stream::custom", "my-worker::stream"] {
-            let item = trigger_type_item(&trigger_type(id, "Some trigger"));
-            assert_eq!(item.tags, None, "{id}");
-            assert_eq!(item.detail.as_deref(), Some("Some trigger"), "{id}");
-        }
+        });
+        assert_eq!(
+            enum_values(&schema, "kind"),
+            vec!["script", "style", "module"]
+        );
+        assert!(enum_values(&schema, "path").is_empty());
+        assert!(enum_values(&schema, "missing").is_empty());
     }
 
     #[test]

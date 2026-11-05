@@ -32,14 +32,18 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 20 registered functions, in registration
-/// order (kept in lockstep with `register::register_router`).
+/// The catalog must cover exactly the 23 registered functions, in registration
+/// order (kept in lockstep with `register::register_router`, which registers
+/// the three event functions first).
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
         vec![
+            "router::on-ready",
+            "router::models::on-changed",
+            "router::provider::on-changed",
             "router::chat",
             "router::complete",
             "router::abort",

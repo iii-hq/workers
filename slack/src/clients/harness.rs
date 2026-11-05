@@ -1,7 +1,7 @@
 //! `harness::send` / `stop` / `status` — turn execution.
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -51,7 +51,7 @@ pub async fn send(
     timeout_ms: u64,
 ) -> Result<SendResponse, Error> {
     let value = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "harness::send".into(),
             payload: serde_json::to_value(&req).unwrap_or(Value::Null),
             action: None,
@@ -62,7 +62,7 @@ pub async fn send(
 }
 
 pub async fn stop(iii: &IIIClient, session_id: &str, timeout_ms: u64) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "harness::stop".into(),
         payload: json!({ "session_id": session_id }),
         action: None,

@@ -29,6 +29,15 @@ SCHEMA_DEFINING_KEYS = frozenset(
 # exits ~5 s later when no queue worker answers.
 SAMPLE_INTERVAL_SECONDS = 0.5
 
+# An observer `engine::observers::list` reports in this state is failed for
+# good: the observed function's host rejected it or did not ack it in time, or
+# a registration made it invalid (its args against the function's
+# `args_format`, a private function or target).
+OBSERVER_ERROR_STATE = "error"
+# The reason of a `pending` observer whose function is hosted and whose target
+# function is not registered.
+TARGET_UNAVAILABLE = "TARGET_UNAVAILABLE"
+
 
 def _schema_is_typed(schema: object) -> bool:
     return isinstance(schema, dict) and any(k in schema for k in SCHEMA_DEFINING_KEYS)
@@ -48,39 +57,12 @@ def _typed_schema_violations(functions: list[dict[str, object]]) -> list[str]:
     return violations
 
 
-def _untyped_trigger_names(triggers: list[dict[str, object]]) -> list[str]:
-    """Trigger names whose `invocation_schema` is the empty/AnyValue ('unknown')
-    schema. Unlike functions, a schema-less trigger is NOT a hard publish blocker:
-    some trigger types legitimately take no binding config (e.g. iii-directory's
-    `directory::*::on-change`), so callers warn rather than fail."""
-    names: list[str] = []
-    for trigger in triggers:
-        if not isinstance(trigger, dict):
-            continue
-        if not _schema_is_typed(trigger.get("invocation_schema")):
-            names.append(str(trigger.get("name") or "<unknown>"))
-    return names
-
-
-def _warn_untyped_triggers(triggers: list[dict[str, object]], source: str) -> None:
-    untyped = _untyped_trigger_names(triggers)
-    if untyped:
-        print(
-            f"::warning::triggers in {source} publishing without a typed "
-            f"invocation_schema (renders 'unknown' in the registry): "
-            f"{', '.join(untyped)}. If the trigger takes a binding config, "
-            "register it with .trigger_request_format::<T>() "
-            "(see session-manager/src/events.rs).",
-            file=sys.stderr,
-        )
-
-
 def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]:
-    command = ["iii", "trigger", function_path, "--json", json.dumps(payload)]
-    if port := os.environ.get("III_TRIGGER_PORT"):
+    command = ["iii", "call", function_path, "--json", json.dumps(payload)]
+    if port := os.environ.get("III_ENGINE_PORT"):
         if not port.isdigit() or not (1 <= int(port) <= 65535):
-            raise ValueError("III_TRIGGER_PORT must be an integer from 1 to 65535")
-        command.extend(["--port", port])
+            raise ValueError("III_ENGINE_PORT must be an integer from 1 to 65535")
+        command.extend(["--engine", f"ws://127.0.0.1:{port}"])
     completed = subprocess.run(
         command,
         check=True,
@@ -94,10 +76,11 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
 def _fetch_function_detail(function_id: str) -> dict[str, object] | None:
     """`engine::functions::info` for one function, or None on any failure.
 
-    Unlike `engine::functions::list` (a `FunctionSummary`: id + worker_name +
-    description), `::info` returns the `FunctionDetail` that carries the typed
-    `request_schema`/`response_schema`. Best-effort: a failed lookup leaves the
-    row schema-less, which the `--assert-typed-schemas` check then flags."""
+    `engine::functions::list` returns a `FunctionSummary` (id, worker_name,
+    description and the observe fields); `::info` returns the `FunctionDetail`,
+    which also carries the typed `request_schema`/`response_schema`.
+    Best-effort: a failed lookup leaves the row schema-less, which the
+    `--assert-typed-schemas` check then flags."""
     try:
         return run_iii("engine::functions::info", {"function_id": function_id})
     except (
@@ -123,7 +106,9 @@ def enrich_functions_with_schemas(
     `engine::functions::list` omits request/response schemas; only
     `engine::functions::info` exposes them (as `request_schema`/`response_schema`,
     plus `metadata`). Without this enrichment every collected schema normalizes
-    to the empty `{}` that blocks publish."""
+    to the empty `{}` that blocks publish. The detail's observe fields
+    (`args_format`, `private`, `observable`) replace the list row's, so the
+    row describes the function as `::info` does."""
     rows_by_id = {
         f.get("function_id"): f for f in functions if isinstance(f, dict)
     }
@@ -134,78 +119,76 @@ def enrich_functions_with_schemas(
         detail = fetch_detail(function_id)
         if not isinstance(detail, dict):
             continue
-        for key in ("request_schema", "response_schema", "metadata", "description"):
+        for key in (
+            "request_schema",
+            "response_schema",
+            "metadata",
+            "description",
+            "args_format",
+            "private",
+            "observable",
+        ):
             value = detail.get(key)
             if value is not None:
                 row[key] = value
     return functions
 
 
-def _fetch_trigger_detail(
-    trigger_id: str, namespace: str | None = None
-) -> dict[str, object] | None:
-    """`engine::triggers::info` for one trigger type, or None on any failure.
-
-    `engine::triggers::list` returns a `TriggerTypeSummary` (id + namespace +
-    worker_name + description only); only `::info` returns the
-    `TriggerTypeDetail` carrying the typed `configuration_schema`/
-    `request_schema`/`response_schema`. The namespace must be passed in the
-    payload because `::info` otherwise looks in `default`. Best-effort: a failed
-    lookup leaves the row schema-less, which publishes the empty ("unknown")
-    schema."""
-    payload: dict[str, object] = {"id": trigger_id}
-    if namespace:
-        payload["namespace"] = namespace
-    try:
-        return run_iii("engine::triggers::info", payload)
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        json.JSONDecodeError,
-    ) as exc:
-        print(
-            f"::warning::could not fetch engine::triggers::info for {trigger_id}: {exc}",
-            file=sys.stderr,
-        )
-        return None
-
-
-def enrich_trigger_types_with_schemas(
-    trigger_types: list[dict[str, object]],
-    target_trigger_ids: list[str],
+def collect_worker_observers(
+    worker_names: set[str] | frozenset[str],
     *,
-    fetch_detail=_fetch_trigger_detail,
+    run=run_iii,
 ) -> list[dict[str, object]]:
-    """Merge each target trigger type's typed schemas into its `::list` row in place.
+    """The observers the named workers created, sorted by id.
 
-    `engine::triggers::list` omits the schemas; only `engine::triggers::info`
-    exposes them (`configuration_schema`/`request_schema`/`response_schema`).
-    Without this enrichment every collected trigger schema normalizes to the
-    empty `{}` that surfaces as 'unknown' in the registry. Mirrors
-    `enrich_functions_with_schemas` for the trigger-type surface."""
-    target_ids = set(target_trigger_ids)
-    for row in trigger_types:
-        if not isinstance(row, dict):
-            continue
-        trigger_id = row.get("id")
-        if not isinstance(trigger_id, str) or trigger_id not in target_ids:
-            continue
-        namespace = row.get("namespace")
-        detail = fetch_detail(
-            trigger_id, namespace if isinstance(namespace, str) else None
-        )
-        if not isinstance(detail, dict):
-            continue
-        for key in (
-            "configuration_schema",
-            "request_schema",
-            "response_schema",
-            "description",
-        ):
-            value = detail.get(key)
-            if value is not None:
-                row[key] = value
-    return trigger_types
+    `engine::observers::list` with `worker` lists the observers one worker
+    created (by its name or connection id), with their function, target,
+    state and reason."""
+    observers: dict[str, dict[str, object]] = {}
+    for worker_name in sorted(worker_names):
+        listed = run("engine::observers::list", {"worker": worker_name})
+        rows = listed.get("observers") if isinstance(listed, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"engine::observers::list for {worker_name!r} returned no observers array"
+            )
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("id"), str):
+                observers[row["id"]] = row
+    return [observers[observer_id] for observer_id in sorted(observers)]
+
+
+def _describe_observer(observer: dict[str, object]) -> str:
+    target = observer.get("target")
+    target_id = target.get("function_id") if isinstance(target, dict) else None
+    description = f"{observer.get('id')} ({observer.get('function_id')} -> {target_id})"
+    reason = observer.get("reason")
+    if isinstance(reason, dict):
+        description += f": {reason.get('code')}: {reason.get('message')}"
+    return description
+
+
+def _observer_violations(observers: list[dict[str, object]]) -> list[str]:
+    """`"<id> (<function> -> <target>): <code>: <message>"` for every observer in
+    state `error`."""
+    return [
+        _describe_observer(observer)
+        for observer in observers
+        if isinstance(observer, dict) and observer.get("state") == OBSERVER_ERROR_STATE
+    ]
+
+
+def _observer_warnings(observers: list[dict[str, object]]) -> list[str]:
+    """The same description for every `pending` observer whose function is
+    hosted and whose target is not registered."""
+    return [
+        _describe_observer(observer)
+        for observer in observers
+        if isinstance(observer, dict)
+        and observer.get("state") == "pending"
+        and isinstance(observer.get("reason"), dict)
+        and observer["reason"].get("code") == TARGET_UNAVAILABLE
+    ]
 
 
 def wait_for_worker(
@@ -220,7 +203,7 @@ def wait_for_worker(
     if wait_seconds <= 0:
         return workers_json, functions_json
 
-    def target_registration_ids() -> frozenset[tuple[str, str]]:
+    def target_function_ids() -> frozenset[str]:
         workers = workers_json.get("workers", [])
         functions = functions_json.get("functions", [])
         if not isinstance(workers, list) or not isinstance(functions, list):
@@ -233,37 +216,22 @@ def wait_for_worker(
             )
         except ValueError:
             return frozenset()
-        function_ids = _function_ids_for_workers(functions, target_names)
-        if function_ids:
-            return frozenset(("function", identifier) for identifier in function_ids)
-        trigger_types = collect_trigger_types()
-        triggers = trigger_types.get("triggers", []) if isinstance(trigger_types, dict) else []
-        if not isinstance(triggers, list):
-            return frozenset()
-        return frozenset(
-            ("trigger", trigger["id"])
-            for trigger in triggers
-            if isinstance(trigger, dict)
-            and isinstance(trigger.get("worker_name"), str)
-            and trigger["worker_name"] in target_names
-            and isinstance(trigger.get("id"), str)
-            and trigger["id"]
-            and not trigger["id"].startswith("engine::")
-        )
+        return frozenset(_function_ids_for_workers(functions, target_names))
 
-    previous_ids: frozenset[tuple[str, str]] = frozenset()
-    current_ids: frozenset[tuple[str, str]] = frozenset()
+    previous_ids: frozenset[str] = frozenset()
     stable_samples = 0
-    # SDKs can register their functions asynchronously. A connected worker with
-    # one registration is not enough: require three unchanged, non-empty snapshots
-    # so release capture does not publish the first partial batch.
+    # SDKs can register their functions asynchronously, and a v2 SDK holds the
+    # functions that need observe.v2 until the engine has advertised it. A
+    # connected worker with one registration is not enough: require three
+    # unchanged, non-empty snapshots so release capture does not publish the
+    # first partial batch.
     while time.monotonic() < deadline:
-        current_ids = target_registration_ids()
+        current_ids = target_function_ids()
         if current_ids and current_ids == previous_ids:
             stable_samples += 1
         else:
             stable_samples = 1 if current_ids else 0
-        if stable_samples >= 3 and any(kind == "function" for kind, _ in current_ids):
+        if stable_samples >= 3:
             return workers_json, functions_json
         previous_ids = current_ids
         remaining = deadline - time.monotonic()
@@ -275,31 +243,45 @@ def wait_for_worker(
         workers_json = run_iii("engine::workers::list", {})
         functions_json = run_iii("engine::functions::list", {"include_internal": True})
 
-    # A trigger-only worker retains the prior full wait period: triggers can
-    # register before a slow worker finishes initializing its functions.
-    if stable_samples >= 3 and current_ids and all(kind == "trigger" for kind, _ in current_ids):
-        workers_json = run_iii("engine::workers::list", {})
-        functions_json = run_iii("engine::functions::list", {"include_internal": True})
-        if target_registration_ids() == current_ids:
-            return workers_json, functions_json
     raise TimeoutError(
         f"{worker_name}: interface registrations did not stabilize within {wait_seconds} seconds"
     )
 
 
-def collect_trigger_types() -> dict[str, object] | None:
-    try:
-        return run_iii("engine::triggers::list", {"include_internal": False})
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        json.JSONDecodeError,
-    ) as exc:
+def _assert_interface(data: dict[str, object], source: str, args: argparse.Namespace) -> int:
+    functions = data.get("functions") or []
+    if args.assert_non_empty and not functions:
+        print(f"::error::no worker functions in {source} (empty)", file=sys.stderr)
+        return 1
+    if args.assert_typed_schemas:
+        violations = _typed_schema_violations(functions)
+        if violations:
+            print(
+                f"::error::untyped (AnyValue/empty) schemas in {source}: "
+                f"{', '.join(violations)}. Register the handler with a typed "
+                "struct deriving schemars::JsonSchema (see "
+                "docs/sops/binary-worker.md).",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
+
+
+def _assert_observers(data: object, source: str) -> int:
+    observers = data.get("observers") if isinstance(data, dict) else None
+    if not isinstance(observers, list):
+        print(f"::error::no observers array in {source}", file=sys.stderr)
+        return 1
+    for warning in _observer_warnings(observers):
+        print(f"::warning::observer target is not registered: {warning}", file=sys.stderr)
+    violations = _observer_violations(observers)
+    if violations:
         print(
-            f"::warning::could not collect trigger types; publishing triggers=[]: {exc}",
+            f"::error::observers in state error in {source}: {'; '.join(violations)}",
             file=sys.stderr,
         )
-        return None
+        return 1
+    return 0
 
 
 def main() -> int:
@@ -307,12 +289,11 @@ def main() -> int:
     parser.add_argument("--worker", required=False)
     parser.add_argument("--out", default="worker-interface.json")
     parser.add_argument("--wait-seconds", type=int, default=0)
-    parser.add_argument("--trigger-types-baseline", default="")
     parser.add_argument("--workers-baseline", default="")
     parser.add_argument(
         "--assert-non-empty",
         action="store_true",
-        help="after writing --out, assert functions or triggers is non-empty",
+        help="after writing --out, assert functions is non-empty",
     )
     parser.add_argument(
         "--assert-typed-schemas",
@@ -324,52 +305,47 @@ def main() -> int:
         "--assert-file",
         help="path to an already-written interface JSON to assert; bypasses collection",
     )
+    parser.add_argument(
+        "--observers-out",
+        help="also write the observers the worker created (engine::observers::list) "
+        "to this path as {\"observers\": [...]}",
+    )
+    parser.add_argument(
+        "--assert-observers",
+        metavar="OBSERVERS_JSON",
+        help="path to an observers JSON written by --observers-out to assert: no "
+        "observer is in state error; bypasses collection",
+    )
     args = parser.parse_args()
 
     # Standalone assertion mode — bypass collection entirely.
-    if args.assert_file:
-        if not (args.assert_non_empty or args.assert_typed_schemas):
-            print(
-                "--assert-file requires --assert-non-empty and/or --assert-typed-schemas",
-                file=sys.stderr,
-            )
-            return 1
-        try:
-            data = json.loads(pathlib.Path(args.assert_file).read_text())
-        except Exception as e:
-            print(f"could not read {args.assert_file}: {e}", file=sys.stderr)
-            return 1
-        functions = data.get("functions") or []
-        triggers = data.get("triggers") or []
-        if args.assert_non_empty and not functions and not triggers:
-            print(
-                f"::error::no worker functions or triggers in {args.assert_file} (empty)",
-                file=sys.stderr,
-            )
-            return 1
-        if args.assert_typed_schemas:
-            violations = _typed_schema_violations(functions)
-            if violations:
+    if args.assert_file or args.assert_observers:
+        status = 0
+        if args.assert_file:
+            if not (args.assert_non_empty or args.assert_typed_schemas):
                 print(
-                    "::error::untyped (AnyValue/empty) schemas in "
-                    f"{args.assert_file}: {', '.join(violations)}. Register the "
-                    "handler with a typed struct deriving schemars::JsonSchema "
-                    "(see docs/sops/binary-worker.md).",
+                    "--assert-file requires --assert-non-empty and/or --assert-typed-schemas",
                     file=sys.stderr,
                 )
                 return 1
-            _warn_untyped_triggers(data.get("triggers") or [], args.assert_file)
-        return 0
+            try:
+                data = json.loads(pathlib.Path(args.assert_file).read_text())
+            except Exception as e:
+                print(f"could not read {args.assert_file}: {e}", file=sys.stderr)
+                return 1
+            status = _assert_interface(data, args.assert_file, args)
+        if args.assert_observers:
+            try:
+                observers = json.loads(pathlib.Path(args.assert_observers).read_text())
+            except Exception as e:
+                print(f"could not read {args.assert_observers}: {e}", file=sys.stderr)
+                return 1
+            status = _assert_observers(observers, args.assert_observers) or status
+        return status
 
     if not args.worker:
-        print("--worker is required unless --assert-file is given", file=sys.stderr)
+        print("--worker is required unless --assert-file or --assert-observers is given", file=sys.stderr)
         return 1
-
-    baseline_json = None
-    if args.trigger_types_baseline:
-        baseline_path = pathlib.Path(args.trigger_types_baseline)
-        if baseline_path.exists():
-            baseline_json = json.loads(baseline_path.read_text(encoding="utf-8"))
 
     workers_baseline_json = None
     if args.workers_baseline:
@@ -408,67 +384,50 @@ def main() -> int:
         if target_function_ids:
             enrich_functions_with_schemas(all_functions, target_function_ids)
 
-    trigger_types_json = collect_trigger_types()
-
-    # `engine::triggers::list` carries no schemas — pull each publishable trigger
-    # type's typed schemas from `engine::triggers::info` and merge them into the
-    # rows before normalizing. Skip engine built-ins and trigger types already in
-    # the pre-worker baseline (they're dropped from the payload anyway), so we
-    # only spend `::info` calls on the worker's own trigger types.
-    if isinstance(trigger_types_json, dict):
-        collected_triggers = trigger_types_json.get("triggers")
-        if isinstance(collected_triggers, list):
-            baseline_trigger_ids = {
-                tt.get("id")
-                for tt in (
-                    baseline_json.get("triggers", [])
-                    if isinstance(baseline_json, dict)
-                    else []
-                )
-                if isinstance(tt, dict) and isinstance(tt.get("id"), str)
-            }
-            target_trigger_ids = [
-                tid
-                for t in collected_triggers
-                if isinstance(t, dict)
-                and isinstance((tid := t.get("id")), str)
-                and not tid.startswith("engine::")
-                and tid not in baseline_trigger_ids
-            ]
-            if target_trigger_ids:
-                enrich_trigger_types_with_schemas(collected_triggers, target_trigger_ids)
-
     interface = normalize_worker_interface(
         worker_name=args.worker,
         workers_json=workers_json,
         functions_json=functions_json,
-        trigger_types_json=trigger_types_json,
-        baseline_trigger_types_json=baseline_json,
         baseline_workers_json=workers_baseline_json,
     )
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))
 
-    if (args.assert_non_empty or args.assert_typed_schemas) and not args.assert_file:
+    if args.observers_out:
+        target_worker_names = _resolve_target_worker_names(
+            workers=workers_json.get("workers") or [],
+            worker_name=args.worker,
+            baseline_workers_json=workers_baseline_json,
+        )
+        try:
+            observers = collect_worker_observers(target_worker_names)
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+            ValueError,
+        ) as error:
+            detail = getattr(error, "stderr", None) or ""
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", "replace")
+            detail = detail.strip()
+            print(
+                f"::error::could not read engine::observers::list: {error}"
+                + (f": {detail}" if detail else ""),
+                file=sys.stderr,
+            )
+            return 1
+        pathlib.Path(args.observers_out).write_text(
+            json.dumps({"observers": observers}, indent=2) + "\n", encoding="utf-8"
+        )
+        print(f"{len(observers)} observer(s) created by {', '.join(sorted(target_worker_names))}:")
+        for observer in observers:
+            print(f"  [{observer.get('state')}] {_describe_observer(observer)}")
+
+    if args.assert_non_empty or args.assert_typed_schemas:
         with open(args.out) as f:
             data = json.load(f)
-        functions = data.get("functions") or []
-        triggers = data.get("triggers") or []
-        if args.assert_non_empty and not functions and not triggers:
-            print(f"::error::no worker functions or triggers in {args.out} (empty)", file=sys.stderr)
-            return 1
-        if args.assert_typed_schemas:
-            violations = _typed_schema_violations(functions)
-            if violations:
-                print(
-                    f"::error::untyped (AnyValue/empty) schemas in {args.out}: "
-                    f"{', '.join(violations)}. Register the handler with a typed "
-                    "struct deriving schemars::JsonSchema (see "
-                    "docs/sops/binary-worker.md).",
-                    file=sys.stderr,
-                )
-                return 1
-            _warn_untyped_triggers(data.get("triggers") or [], args.out)
+        return _assert_interface(data, args.out, args)
 
     return 0
 

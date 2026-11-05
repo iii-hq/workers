@@ -1,0 +1,40 @@
+{
+  "description": "Called after a run's GitHub alert reconciliation snapshot was saved. Event { run_id, repository }; re-read security-scan::reconciliation. No args; filter on input.repository or input.run_id.",
+  "function_id": "security-scan::on-reconciliation-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`security-scan::on-reconciliation-changed` event.",
+    "properties": {
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "repository",
+      "run_id"
+    ],
+    "title": "ReconciliationChangedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`security-scan::on-reconciliation-changed` event.",
+    "properties": {
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "repository",
+      "run_id"
+    ],
+    "title": "ReconciliationChangedEventV1",
+    "type": "object"
+  }
+}

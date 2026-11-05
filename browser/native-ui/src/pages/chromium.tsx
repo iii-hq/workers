@@ -1,7 +1,8 @@
 /**
  * Chromium missing on the engine's host (design §8.4): the root checks
  * `chromium::status` once, and without one shows the install, its progress
- * (bound to `chromium-install-progress` only while installing and visible)
+ * (observed on `browser::on-chromium-install-progress` only while
+ * installing and visible)
  * and its failure with the worker's hint.
  */
 
@@ -19,7 +20,7 @@ import {
   StatusPanel,
   Text,
 } from '@iii-dev/native-ui'
-import { browser, type ChromiumStatus, type InstallProgress, listen, TRIGGER } from '../api'
+import { browser, type ChromiumStatus, EVENT, type InstallProgress, listen } from '../api'
 import { megabytes, readable } from '../format'
 
 /** `unknown` until the status answers; the tab list shows meanwhile (the usual case is a Chromium). */
@@ -39,7 +40,7 @@ export function useChromium(onReady: () => void): Chromium {
   const [state, setState] = createSignal<ChromiumState>('unknown')
   const [progress, setProgress] = createSignal<InstallProgress | null>(null)
   const [status, setStatus] = createSignal<ChromiumStatus | null>(null)
-  /** Install pressed: the call goes out once the progress binding is ready. */
+  /** Install pressed: the call goes out once the progress observer is ready. */
   let wanted = false
 
   const apply = (s: ChromiumStatus | null) => {
@@ -83,7 +84,7 @@ export function useChromium(onReady: () => void): Chromium {
 
   createEffect(() => {
     if (state() !== 'installing' || !iii.env.visible) return
-    const off = listen<InstallProgress>(TRIGGER.installProgress, {}, onProgress)
+    const off = listen<InstallProgress>(EVENT.installProgress, {}, onProgress)
     let alive = true
     onCleanup(() => {
       alive = false

@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{codes, WError};
-use crate::events::{CreatedEvent, EventCtx, EventKind};
+use crate::events::{CreatedEvent, EventKind};
 use crate::functions::Deps;
 use crate::git::{canonical_or_self, ops, validate_abs_path, validate_ref_name};
 use crate::ids;
@@ -175,11 +175,6 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     deps.emitter
         .emit(
             EventKind::Created,
-            EventCtx {
-                repo_path: &record.repo_path,
-                worktree_id: &worktree_id,
-                session_id: record.session_id.as_deref(),
-            },
             &CreatedEvent {
                 worktree_id: worktree_id.clone(),
                 repo_path: record.repo_path.clone(),

@@ -2,7 +2,7 @@
 
 [package]
 name = "sentinel"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 publish = false
 
@@ -21,8 +21,8 @@ clap = { version = "4", features = ["derive", "env"] }
 cron = "0.12"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
-iii-helpers = "=0.24.6"
-iii-sdk = "=0.24.6"
+iii-helpers = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0-rc.5"
 libc = "=0.2.189"
 regex = "1"
 schemars = "0.8"

@@ -2,8 +2,9 @@
 title: Exposing a service that runs inside a worker microVM
 type: how-to
 description: >-
-  Locally-added workers run in libkrun microVMs whose network is egress-only: the
-  guest cannot reach its own TCP loopback and the host cannot dial in at all.
+  Workers that Compose runs in sandbox-libkrun's microVMs have an
+  egress-only network: the guest cannot reach its own TCP loopback and the host
+  cannot dial in at all.
   This is the verified networking map plus the guest-initiated tunnel pattern for
   publishing any in-VM HTTP/WebSocket service to a browser, and the console
   injectable-UI contract for embedding it.
@@ -13,29 +14,29 @@ description: >-
 
 When a worker runs a long-lived server of its own — an editor, a dev server, a
 notebook, a database console, a preview renderer — the hard part is not starting
-it, it is *reaching* it. A locally-added worker runs inside a libkrun microVM with
+it, it is *reaching* it. A worker that runs in a libkrun microVM has
 **egress-only** networking, so most of the obvious approaches fail silently. Read
 the map below before writing any code that binds a port inside a worker.
 
 ## 1. Is this worker in a VM?
 
 `engine::workers::info { name }` → `isolation: "libkrun"` with `os: "linux … (arm64)"`
-means yes, whatever the host OS is. Workers added from a local project directory
-(`worker::add { source: { kind: "local" } }`) and other managed Node/Python workers
-get a VM; the always-on Rust workers (ade, state, shell, cron, …) run natively
-on the host. Consequences that bite immediately:
+means yes, whatever the host OS is. Compose runs a worker in a VM, through the
+`sandbox-libkrun` worker, when it is a bundle package or a `path://` worker whose
+`iii.worker.yaml` sets `runtime.base_image`; binary workers (ade, state, shell,
+cron, …) run natively on the host. Consequences that bite immediately:
 
 * `process.platform` / `process.arch` are the **guest's** — on an Apple-silicon host
   a worker must download `linux-arm64` artifacts, not `darwin-arm64`;
-* `process.cwd()` is `/workspace` (the worker's own source, bind-mounted from the
-  host — writes there are real host edits and trip the source watcher), `$HOME` is
-  `/`, and everything else the worker writes lands in the VM's overlay;
+* `process.cwd()` is `/workspace` (a copy of a `path://` worker's source that host
+  edits keep in sync, or a bundle's install directory), `$HOME` is `/`, and
+  everything else the worker writes lands in the VM's overlay;
 * whatever the worker installs is installed **in the VM** — usually the point:
   heavy, untrusted, or OS-specific payloads never touch the host.
 
 ## 2. The networking map (verified, not assumed)
 
-The launcher (`iii worker __vm-boot --network`) runs a **userspace smoltcp stack on
+The launcher (`sandbox-libkrun __vm-boot --network`) runs a **userspace smoltcp stack on
 the host** that proxies guest TCP **outward only**. The guest learns its addressing
 from env vars: `III_INIT_IP` (e.g. `100.96.0.2`), `III_INIT_GW` (`100.96.0.1`),
 `III_INIT_CIDR` (`30`), `III_INIT_DNS`.
@@ -48,7 +49,6 @@ from env vars: `III_INIT_IP` (e.g. `100.96.0.2`), `III_INIT_GW` (`100.96.0.1`),
 | guest → its own `III_INIT_IP` | **no** | the userspace stack does not hairpin |
 | host → guest, any address/port | **no** | no route, no ARP entry, no port publishing — `--network` is egress-only |
 | guest → engine `ws://localhost:49134` | yes | pre-wired; the engine sees the worker as `127.0.0.1` |
-| host → guest via `iii worker exec` | yes | multiplexed virtio-console channel, not TCP — the only ingress that exists |
 
 Two traps worth real time:
 
@@ -106,13 +106,13 @@ host paths, no manual setup step, no separate install instructions:
 
 ```js
 // write it: stdin carries the source, bash writes it on the HOST
-await worker.trigger({ function_id: "shell::exec", payload: {
+await worker.call({ function_id: "shell::exec", payload: {
   command: "bash",
   args: ["-lc", `PID=$(cat ${PIDFILE} 2>/dev/null || true); [ -n "$PID" ] && kill "$PID" 2>/dev/null; cat > ${REMOTE}`],
   stdin: await fs.readFile(pumpSourceInsideTheVM, "utf8"),
 }});
 // run it: exec_bg outlives the call; env carries ports + a per-boot secret
-const { job_id } = await worker.trigger({ function_id: "shell::exec_bg", payload: {
+const { job_id } = await worker.call({ function_id: "shell::exec_bg", payload: {
   command: "bash", args: ["-lc", `exec node ${REMOTE}`],
   env: { PUBLIC_PORT: "3210", TUNNEL_PORT: "3211", SECRET: secret, PIDFILE },
 }});
@@ -128,14 +128,12 @@ const { job_id } = await worker.trigger({ function_id: "shell::exec_bg", payload
 
 ## 4. Debugging playbook
 
-* `iii worker exec <worker> --no-tty -- /usr/bin/curl -sS -m 4 http://$GW:PORT/` — a
-  shell **inside** the VM; the only host→guest path.
-* `cat /proc/net/route` (only `eth0` rows ⇒ no loopback) and `cat /proc/net/tcp`
-  (hex ports — `0C8A` = 3210, state `0A` = LISTEN) when `ip`/`ss` are missing from
-  the image.
-* `worker::status { name }` → `stderr_tail` carries VM boot + dependency install;
-  the boot line also reveals mounts (`/mnt/host-src`, `/opt/iii`) and the erofs
-  overlay. `worker::logs` for more.
+* `compose::logs { worker: "<worker>" }` carries the VM boot and the dependency
+  install; the boot lines also reveal mounts (`/mnt/host-src`, `/opt/iii`) and the
+  erofs overlay.
+* From inside the VM (a `<worker>::diag` function, below), `cat /proc/net/route`
+  (only `eth0` rows ⇒ no loopback) and `cat /proc/net/tcp` (hex ports — `0C8A` =
+  3210, state `0A` = LISTEN) when `ip`/`ss` are missing from the image.
 * Ship a `<worker>::diag` function returning guest addressing, routes, DNS, egress
   status, socket listing and both probes. Cheaper than guessing, and it keeps the
   VM's internals observable from the bus.
@@ -146,20 +144,20 @@ const { job_id } = await worker.trigger({ function_id: "shell::exec_bg", payload
 
 A worker ships console UI as assets; no console rebuild:
 
-* register `console:script` with `config { path: "<worker>/page.js" }` and
-  `console:style` with `"<worker>/styles.css"`. The trigger's `function_id` is a
+* observe `ade::ui::asset` with `args { kind: "script", path: "<worker>/page.js" }`
+  and `{ kind: "style", path: "<worker>/styles.css" }`. The observer's target is a
   content function returning `{ content, content_type }` — read from disk per call
-  and the dev loop is edit + reload the tab. Re-registering a path overrides it.
+  and the dev loop is edit + reload the tab. A later observer of a path supersedes it.
 * the script is **ESM with `export default function setup(host)`**, optionally
   returning a cleanup function. Bare imports resolve through the console's static
   import map — `react`, `react-dom`, `react-dom/client`, `react/jsx-runtime`,
   `@iii-dev/console-ui` — so hand-written `createElement` needs **no bundler**.
-* `host` = `{ iii: { trigger(fnId, payload), on, registerTrigger, browserId,
-  addConnectionStateListener }, components, useTheme, path, pages, functionTriggers,
+* `host` = `{ iii: { call(fnId, payload), on, observe, browserId,
+  addConnectionStateListener }, components, useTheme, path, pages, functionCalls,
   configForms }`.
 * `host.pages.register({ id, title, render })` → a console page, opened through `host.panels.open` or `ade::workspace::open`, or alone at `#/worker/<scope>/<id>`;
   `host.configForms.register(configId, Component)` overrides a worker's config form;
-  `host.functionTriggers.register(renderer)` adds trigger-specific UI.
+  `host.functionCalls.register(renderer)` adds UI for calls of your functions.
 * verify with `ade::ui-manifest` (paths, hashes, style-lint warnings, per-worker
   enable state); users can disable a worker's UI via the console config
   (`injectableUi.disabledWorkers`).

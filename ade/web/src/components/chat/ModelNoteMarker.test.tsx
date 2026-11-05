@@ -109,7 +109,7 @@ describe('model note row', () => {
       },
       createdAt: 1,
     })
-    // The @ sits where a settled trigger draws its Check: the status slot,
+    // The @ sits where a settled call draws its Check: the status slot,
     // with no extra spacer or kind glyph before the text.
     const glyph = container.querySelector('[data-note-glyph="mentions"]')
     expect(glyph?.classList.contains('activity-status-icon')).toBe(true)

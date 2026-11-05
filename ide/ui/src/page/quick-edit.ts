@@ -89,7 +89,7 @@ interface ProviderList {
 export async function resolveQuickEditModel(host: Host, conversationId: string | null | undefined): Promise<string> {
   const chosen = host.chat?.composerModel?.(conversationId ?? null)
   if (chosen) return chosen
-  const list = await host.iii.trigger<ProviderList>('router::provider::list', {}, { timeoutMs: PROVIDER_LIST_TIMEOUT_MS })
+  const list = await host.iii.call<ProviderList>('router::provider::list', {}, { timeoutMs: PROVIDER_LIST_TIMEOUT_MS })
   const provider = list.providers?.find((p) => p.configured && p.available && p.id && p.default_model)
   if (!provider?.id || !provider.default_model) {
     throw new Error('No model is configured. Add a provider key in Settings, or pick a model in chat.')
@@ -131,7 +131,7 @@ export async function runQuickEdit(
   if (request.signal.aborted) throw abortError()
   const original = request.scope === 'file' ? request.value : request.selection.text
   const { provider, model: modelId } = splitModel(model)
-  const call = host.iii.trigger<CompleteReply>(
+  const call = host.iii.call<CompleteReply>(
     'router::complete',
     {
       model: modelId,

@@ -90,7 +90,7 @@ export function useModelCatalog(host: Host | null): { options: ModelOption[]; lo
       const request = ++latest
       // `resolve().then` turns a synchronous throw (no connection yet) into the same empty list.
       Promise.resolve()
-        .then(() => host.iii.trigger('router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS }))
+        .then(() => host.iii.call('router::models::list', {}, { timeoutMs: RPC_TIMEOUT_MS }))
         .then(modelOptionsFromCatalog, () => [])
         .then((options) => {
           // A slower, older response must not overwrite a newer one.
@@ -101,24 +101,20 @@ export function useModelCatalog(host: Host | null): { options: ModelOption[]; lo
 
     const handlerId = `${MODELS_CHANGED_FN}::${++subscriptions}`
     let offHandler: (() => void) | undefined
-    let offTrigger: (() => void) | undefined
+    let offObserver: (() => void) | undefined
     try {
       offHandler = host.iii.on(handlerId, load)
-      offTrigger = host.iii.registerTrigger({
-        type: 'router::models::changed',
-        function_id: `${handlerId}::${host.iii.browserId}`,
-        config: {},
-      })
+      offObserver = host.iii.observe('router::models::on-changed', `${handlerId}::${host.iii.browserId}`)
     } catch {
-      // A console without the fan-out keeps the list it read once.
-      offTrigger?.()
+      // A console that cannot observe keeps the list it read once.
+      offObserver?.()
       offHandler?.()
-      offTrigger = undefined
+      offObserver = undefined
       offHandler = undefined
     }
     return () => {
       live = false
-      offTrigger?.()
+      offObserver?.()
       offHandler?.()
     }
   }, [host])

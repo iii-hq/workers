@@ -3,14 +3,13 @@ pub mod engine;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::Value;
 
 /// Function registration is async (the SDK sends RegisterFunction frames in
-/// the background), so retry a trigger until the function is routable — up
+/// the background), so retry a call until the function is routable — up
 /// to ~5s — instead of sleeping a fixed amount.
-pub async fn trigger_until_ready(
+pub async fn call_until_ready(
     iii: &Arc<IIIClient>,
     function_id: &str,
     payload: Value,
@@ -18,7 +17,7 @@ pub async fn trigger_until_ready(
     let mut last_err = String::new();
     for _ in 0..25 {
         match iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload: payload.clone(),
                 action: None,

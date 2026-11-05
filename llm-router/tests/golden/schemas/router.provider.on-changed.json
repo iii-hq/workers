@@ -1,0 +1,44 @@
+{
+  "description": "The provider registry changed: a declaration (op register), a discovery result (discovery) or an availability flip (available, unavailable). Event: { provider, op }. Takes no args; filter on input.provider and input.op.",
+  "function_id": "router::provider::on-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What `router::provider::on-changed` returns: the provider registry changed.",
+    "properties": {
+      "op": {
+        "description": "`register`, `discovery`, `available` or `unavailable`.",
+        "type": "string"
+      },
+      "provider": {
+        "description": "The provider the change is about.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "op",
+      "provider"
+    ],
+    "title": "ProviderChangedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What `router::provider::on-changed` returns: the provider registry changed.",
+    "properties": {
+      "op": {
+        "description": "`register`, `discovery`, `available` or `unavailable`.",
+        "type": "string"
+      },
+      "provider": {
+        "description": "The provider the change is about.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "op",
+      "provider"
+    ],
+    "title": "ProviderChangedEvent",
+    "type": "object"
+  }
+}

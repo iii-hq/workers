@@ -11,7 +11,7 @@
 //! the engine's environment checks (see
 //! `engine/src/workers/telemetry/environment.rs`) but cannot see its config.
 
-use iii_sdk::{protocol::TriggerRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -44,8 +44,8 @@ const CI_ENV_VARS: &[&str] = &[
 pub async fn runtime(iii: Option<&IIIClient>) -> Value {
     let answer = match iii {
         Some(iii) => iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: SETTINGS_FN.to_string(),
                     payload: json!({}),
                     action: None,

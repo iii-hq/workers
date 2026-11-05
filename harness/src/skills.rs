@@ -3,8 +3,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -17,7 +17,8 @@ use crate::types::turn::{SkillAck, SkillContext};
 pub(crate) const SKILLS_GET_ID: &str = "directory::skills::get";
 const SKILLS_LIST_ID: &str = "directory::skills::list";
 const SKILLS_CHANGE_FN_ID: &str = "harness::on-skills-change";
-const SKILLS_CHANGE_TRIGGER: &str = "directory::skills::on-change";
+/// iii-directory calls it when a skill is added, changed or removed.
+const SKILLS_ON_CHANGE_FN: &str = "directory::skills::on-change";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Skill {
@@ -417,7 +418,7 @@ struct DirectoryClient {
 impl DirectoryClient {
     async fn skills_list(&self) -> Result<Value, String> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: SKILLS_LIST_ID.to_string(),
                 payload: json!({ "include_description": true }),
                 action: None,
@@ -479,7 +480,10 @@ pub async fn refresh(iii: &Arc<IIIClient>, cell: &SkillsCell, timeout_ms: u64) {
     reload(iii, cell, timeout_ms).await;
 }
 
-pub fn register_trigger(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms: u64) {
+/// Register the internal refresh handler and observe
+/// `directory::skills::on-change` with it. The observer stays `pending` while
+/// iii-directory is away; worker announces refresh the catalog as well.
+pub fn observe_skill_changes(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms: u64) {
     let handler_iii = iii.clone();
     iii.register_function(
         SKILLS_CHANGE_FN_ID,
@@ -496,13 +500,10 @@ pub fn register_trigger(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms: u64)
         .metadata(json!({ "internal": true })),
     );
 
-    if let Err(error) = iii.register_trigger(RegisterTriggerInput::new(
-        SKILLS_CHANGE_TRIGGER.to_string(),
-        SKILLS_CHANGE_FN_ID.to_string(),
-        json!({}),
-    )) {
-        tracing::warn!(error = %error, "binding directory::skills::on-change failed; relying on worker-announce refreshes");
-    }
+    let _observer = iii.observe(
+        Source::function(SKILLS_ON_CHANGE_FN).deliver(Deliver::Output),
+        SKILLS_CHANGE_FN_ID,
+    );
 }
 
 #[cfg(test)]

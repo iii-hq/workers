@@ -4,7 +4,7 @@
 //! Browsers never see a bare fn: Chromium and WebKit drop the
 //! `flagsChanged` event for keyCode 63 before the page gets it. So on macOS
 //! this worker listens for it with a listen-only Quartz event tap and
-//! publishes `voice::hotkey` (`down`, `up`, or `chord` when another key is
+//! calls `voice::on-hotkey` (`down`, `up`, or `chord` when another key is
 //! pressed while fn is held, as in fn+arrow). No key codes leave the
 //! worker: only fn's own state.
 //!
@@ -16,12 +16,12 @@
 use std::sync::{Mutex, OnceLock};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// What the console needs to know about the fn key.
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct HotkeyStatus {
-    /// fn presses are being published as `voice::hotkey`.
+    /// fn presses are being called as `voice::on-hotkey`.
     pub available: bool,
     /// Why not, when not: another OS, or the permission is missing.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -29,7 +29,7 @@ pub struct HotkeyStatus {
 }
 
 /// One change of the fn key.
-#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyAction {
     Down,
@@ -38,10 +38,11 @@ pub enum HotkeyAction {
     Chord,
 }
 
-/// `voice::hotkey` — the fn key changed.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+/// `voice::on-hotkey` — the fn key changed.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HotkeyEvent {
-    pub key: &'static str,
+    /// Always `fn`.
+    pub key: String,
     pub action: HotkeyAction,
     pub timestamp_ms: i64,
 }

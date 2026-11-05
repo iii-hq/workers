@@ -165,7 +165,7 @@ function StorageExplorer({
   const loadBuckets = useCallback(() => {
     setBucketError(null)
     host.iii
-      .trigger<unknown>('storage::listBuckets', {})
+      .call<unknown>('storage::listBuckets', {})
       .then((response) => {
         const list = parseBucketList(response)
         setBuckets(list)
@@ -193,7 +193,7 @@ function StorageExplorer({
       else setListing(null)
       setListingError(null)
       host.iii
-        .trigger<Listing>('storage::listObjects', {
+        .call<Listing>('storage::listObjects', {
           bucket: currentBucket,
           prefix: currentPrefix,
           delimiter: '/',
@@ -238,7 +238,7 @@ function StorageExplorer({
     setMetadata(null)
     setMetadataError(null)
     host.iii
-      .trigger<ObjectMetadata>('storage::headObject', {
+      .call<ObjectMetadata>('storage::headObject', {
         bucket: currentBucket,
         key: currentObject,
       })
@@ -314,7 +314,7 @@ function StorageExplorer({
     setActionError(null)
     try {
       if (selectedBucket.provider === 'local') {
-        const signed = await host.iii.trigger<{
+        const signed = await host.iii.call<{
           url: string
           fields: Record<string, string>
         }>('storage::presignPost', {
@@ -331,7 +331,7 @@ function StorageExplorer({
       } else if (selectedBucket.direct_downloads === false) {
         // No signed links for this bucket: small files go through the worker.
         if (file.size > INLINE_CAP) throw new Error(RELAY_UPLOAD_TOO_LARGE)
-        await host.iii.trigger(
+        await host.iii.call(
           'storage::putObject',
           {
             bucket: bucketName,
@@ -342,7 +342,7 @@ function StorageExplorer({
           { timeoutMs: 120_000 },
         )
       } else {
-        const signed = await host.iii.trigger<{ url: string }>('storage::presignUrl', {
+        const signed = await host.iii.call<{ url: string }>('storage::presignUrl', {
           bucket: bucketName,
           key,
           method: 'PUT',
@@ -376,7 +376,7 @@ function StorageExplorer({
       const head =
         metadata && objectRef.current === key
           ? metadata
-          : await host.iii.trigger<ObjectMetadata>('storage::headObject', {
+          : await host.iii.call<ObjectMetadata>('storage::headObject', {
               bucket,
               key,
             })
@@ -402,7 +402,7 @@ function StorageExplorer({
     setTransfer(`preparing ${leafName(objectKey)}`)
     setActionError(null)
     try {
-      const signed = await host.iii.trigger<{ url: string }>('storage::presignUrl', {
+      const signed = await host.iii.call<{ url: string }>('storage::presignUrl', {
         bucket: bucketName,
         key: objectKey,
         method: 'GET',
@@ -434,7 +434,7 @@ function StorageExplorer({
     setTransfer(`deleting ${leafName(key)}`)
     setActionError(null)
     try {
-      await host.iii.trigger('storage::deleteObject', {
+      await host.iii.call('storage::deleteObject', {
         bucket: bucketName,
         key,
       })

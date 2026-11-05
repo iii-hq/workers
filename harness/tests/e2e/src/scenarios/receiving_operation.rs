@@ -95,7 +95,7 @@ to its seq-2 shipment), then signal that it is finished.
 
 Requirements:
 
-- The ONLY shared medium in this run is database `primary` plus trigger machinery on top of it.
+- The ONLY shared medium in this run is database `primary`, plus observers of its row changes.
   State functions are not granted. Do not use timers or cron.
 - Maintain a live ledger in database `primary` — per supplier: shipment count and total value —
   kept current as data lands WITHOUT running a model turn for each change.
@@ -103,7 +103,7 @@ Requirements:
 - Learn that the whole run is complete FROM THE DATABASE ITSELF, waking as few times as possible
   — ideally exactly once — and never by polling.
 - When complete, verify the ledger matches the shipment data (expected: acme 3 / 19.0,
-  globex 3 / 15.0, initech 3 / 16.0), clean up any standing trigger machinery, and report
+  globex 3 / 15.0, initech 3 / 16.0), clean up any standing observers and database triggers, and report
   PASS or FAIL with the evidence.
 
 Use this run-isolated database contract so the result can be evaluated:
@@ -114,8 +114,8 @@ Use this run-isolated database contract so the result can be evaluated:
 - completion signal: `{completion}` (exactly one row when the run is complete)
 - courier sessions: `{acme_session}`, `{globex_session}`, `{initech_session}`
 
-Namespace any additional database object, trigger label, or session with `{run_label}`. Keep the
-four result relations for verification; cleanup means retiring bindings and database triggers,
+Namespace any additional database object, observer label, or session with `{run_label}`. Keep the
+four result relations for verification; cleanup means removing observers and database triggers,
 not deleting the evidence tables. Finish in this root session only after its database wake."#,
         shipments = names.shipments,
         ledger = names.ledger,
@@ -225,7 +225,7 @@ fn evaluate<'a>(
                 .iter()
                 .any(|call| call.entry < spawn && is_completion_wake(call, &names))
         });
-        let wake_records = common::trigger_fired_records(&observation.transcript)
+        let wake_records = common::observer_fired_records(&observation.transcript)
             .into_iter()
             .filter(|record| {
                 matches!(
@@ -348,7 +348,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
                     continue;
                 }
                 let _: Value = context
-                    .trigger(
+                    .call(
                         "database::execute",
                         json!({
                             "db": DATABASE,
@@ -480,10 +480,10 @@ fn no_forbidden_calls(calls: &[CallAt]) -> bool {
     calls.iter().all(|call| {
         !call.function_id.starts_with("state::")
             && !call.function_id.starts_with("cron::")
-            && !(call.function_id == "engine::register_trigger"
+            && !(call.function_id == common::OBSERVE
                 && matches!(
-                    call.arguments.get("trigger_type").and_then(Value::as_str),
-                    Some("timer" | "cron")
+                    call.arguments.get("function_id").and_then(Value::as_str),
+                    Some("harness::on-timer" | "cron::on-tick")
                 ))
     })
 }
@@ -516,13 +516,11 @@ fn live_ledger_setup_before(
     });
     let mechanical_binding = calls.iter().any(|call| {
         call.entry < first_spawn
-            && call.function_id == "engine::register_trigger"
-            && call.arguments.get("trigger_type").and_then(Value::as_str)
-                == Some("database::row-changed")
-            && call.arguments.pointer("/config/db").and_then(Value::as_str) == Some(DATABASE)
+            && observes_rows(call)
+            && call.arguments.pointer("/args/db").and_then(Value::as_str) == Some(DATABASE)
             && call
                 .arguments
-                .pointer("/config/table")
+                .pointer("/args/table")
                 .and_then(Value::as_str)
                 == Some(names.shipments.as_str())
             && target_function(&call.arguments)
@@ -531,14 +529,19 @@ fn live_ledger_setup_before(
     ledger_is_view || database_trigger || mechanical_binding
 }
 
+/// Whether `call` observes `database::on-row-changed`.
+fn observes_rows(call: &CallAt) -> bool {
+    call.function_id == common::OBSERVE
+        && call.arguments.get("function_id").and_then(Value::as_str)
+            == Some("database::on-row-changed")
+}
+
 fn is_completion_wake(call: &CallAt, names: &Names) -> bool {
-    call.function_id == "engine::register_trigger"
-        && call.arguments.get("trigger_type").and_then(Value::as_str)
-            == Some("database::row-changed")
-        && call.arguments.pointer("/config/db").and_then(Value::as_str) == Some(DATABASE)
+    observes_rows(call)
+        && call.arguments.pointer("/args/db").and_then(Value::as_str) == Some(DATABASE)
         && call
             .arguments
-            .pointer("/config/table")
+            .pointer("/args/table")
             .and_then(Value::as_str)
             == Some(names.completion.as_str())
         && wake_is_once(&call.arguments)
@@ -556,13 +559,8 @@ fn wake_is_once(arguments: &Value) -> bool {
 
 fn target_function(arguments: &Value) -> Option<&str> {
     arguments
-        .get("function_id")
+        .pointer("/target/function_id")
         .and_then(Value::as_str)
-        .or_else(|| {
-            arguments
-                .pointer("/target/function_id")
-                .and_then(Value::as_str)
-        })
 }
 
 fn is_polling_call(function_id: &str) -> bool {
@@ -645,7 +643,7 @@ fn normalize_call(entry: usize, block: &Value) -> Option<CallAt> {
     }
     let function_id = block.get("function_id")?.as_str()?;
     let arguments = block.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    if function_id == "agent_trigger" {
+    if function_id == "agent_call" {
         return Some(CallAt {
             entry,
             function_id: arguments.get("function")?.as_str()?.to_string(),
@@ -804,7 +802,7 @@ async fn count_rows(context: &E2eContext, table: &str) -> anyhow::Result<i64> {
 
 async fn query_rows(context: &E2eContext, sql: &str) -> anyhow::Result<Vec<Value>> {
     context
-        .trigger_value("database::query", json!({ "db": DATABASE, "sql": sql }))
+        .call_value("database::query", json!({ "db": DATABASE, "sql": sql }))
         .await?
         .get("rows")
         .and_then(Value::as_array)
@@ -814,7 +812,7 @@ async fn query_rows(context: &E2eContext, sql: &str) -> anyhow::Result<Vec<Value
 
 async fn available_databases(context: &E2eContext) -> anyhow::Result<BTreeSet<String>> {
     Ok(context
-        .trigger_value("database::listDatabases", json!({}))
+        .call_value("database::listDatabases", json!({}))
         .await?
         .get("databases")
         .and_then(Value::as_array)

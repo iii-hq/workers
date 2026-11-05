@@ -80,7 +80,7 @@ export function ObjectPreview({
     setFailure(null)
     const load: Promise<string> = direct
       ? host.iii
-          .trigger<{ url: string }>('storage::presignUrl', {
+          .call<{ url: string }>('storage::presignUrl', {
             bucket: bucket.name,
             key: objectKey,
             method: 'GET',

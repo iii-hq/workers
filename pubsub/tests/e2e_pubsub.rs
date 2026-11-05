@@ -2,10 +2,10 @@ mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::RegisterFunction;
+use iii_sdk::{CallRequest, Deliver, RegisterFunction, Source};
 use serde_json::json;
 use serial_test::serial;
 
@@ -13,7 +13,7 @@ use common::engine;
 
 #[tokio::test]
 #[serial]
-async fn publish_fans_out_raw_data_to_subscribe_triggers() {
+async fn publish_reaches_the_observers_of_its_topic() {
     let Some(iii) = engine::get_or_init().await else {
         return; // skip: engine absent
     };
@@ -41,21 +41,24 @@ async fn publish_fans_out_raw_data_to_subscribe_triggers() {
         );
     }
 
+    let mut observers = Vec::new();
     for fn_id in ["e2e::pubsub-listener-a", "e2e::pubsub-listener-b"] {
-        iii.register_trigger(RegisterTriggerInput::new(
-            "subscribe".to_string(),
-            fn_id.to_string(),
-            json!({"topic": "e2e.orders"}),
-        ))
-        .expect("trigger registration");
+        let observer = iii.observe(
+            Source::function(iii_pubsub::PUBLISH_FUNCTION_ID)
+                .filters(json!({"input.topic": {"$eq": "e2e.orders"}}))
+                .deliver(Deliver::Input),
+            fn_id,
+        );
+        tokio::time::timeout(Duration::from_secs(5), observer.ready())
+            .await
+            .expect("observer never became active")
+            .expect("observing publish");
+        observers.push(observer);
     }
 
-    // Give the engine a beat to route the trigger bindings to this worker.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Call `publish` over the bus — the EXACT path external callers use today.
+    // Call `publish` over the bus — the EXACT path external callers use.
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "publish".to_string(),
             payload: json!({"topic": "e2e.orders", "data": {"id": 42}}),
             action: None,
@@ -68,26 +71,39 @@ async fn publish_fans_out_raw_data_to_subscribe_triggers() {
         "publish returns a null result (builtin parity)"
     );
 
+    // Another topic reaches neither observer.
+    iii.call(CallRequest {
+        function_id: "publish".to_string(),
+        payload: json!({"topic": "e2e.invoices", "data": {"id": 7}}),
+        action: None,
+        timeout_ms: Some(5000),
+    })
+    .await
+    .expect("publish to another topic should succeed");
+
     common::wait_for_deliveries(&deliveries, 2).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(deliveries.load(Ordering::SeqCst), 2, "one delivery each");
     let seen = seen.lock().await;
     for payload in seen.iter() {
-        // Parity: the subscriber receives the RAW published data, no envelope.
-        // The engine additionally stamps cross-worker invocation payloads with
-        // caller metadata (e.g. `_caller_worker_id`) — identical for the
-        // builtin's `engine.call` — so assert the published field is present
-        // rather than exact-equal.
-        assert_eq!(payload.get("id"), Some(&json!(42)));
+        // `deliver: input` hands each observer the call's input.
+        assert_eq!(payload["topic"], json!("e2e.orders"));
+        assert_eq!(payload["data"], json!({"id": 42}));
     }
 
+    for observer in observers {
+        observer.dispose().await.expect("dispose observer");
+    }
     boot.shutdown().await;
 }
 
 #[tokio::test]
 #[serial]
 async fn publish_with_empty_topic_fails_with_topic_not_set() {
-    // Own client (connect_fresh) so booting the worker here doesn't collide
-    // with the first test's `publish` registration on the shared client.
-    let Some(iii) = engine::connect_fresh().await else {
+    // Own client so booting the worker here doesn't collide with the first
+    // test's `publish` registration on the shared client, under its own
+    // worker name: the shared client still holds this process's default name.
+    let Some(iii) = engine::connect_fresh_named(&engine::unique_name("pubsub-e2e")).await else {
         return; // skip: engine absent
     };
 
@@ -96,7 +112,7 @@ async fn publish_with_empty_topic_fails_with_topic_not_set() {
         .expect("pubsub worker should boot");
 
     let err = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "publish".to_string(),
             payload: json!({"topic": "", "data": {}}),
             action: None,

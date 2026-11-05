@@ -13,7 +13,7 @@ pub async fn handle(
 ) -> Result<ExecResponse, iii_sdk::errors::Error> {
     // Field-level type errors (wrong-type `command`, non-string `args[i]`,
     // bad `target.kind`) come from the per-field deserializers in
-    // `functions::types`; they surface here as the trigger `Err` carrying
+    // `functions::types`; they surface here as the call's `Err` carrying
     // the actionable text the LLM needs to self-correct.
     // `args.as_ref()` preserves the legacy two-mode contract on `parse_argv`:
     //   None → tokenize `command` via shell-words (single-string path)
@@ -93,8 +93,8 @@ fn timeout_note(requested: Option<u64>, effective: u64) -> String {
         _ => format!("shell::exec exceeded its {effective}ms timeout and the command was killed"),
     };
     format!(
-        "{cause}. For work that runs longer, start it with shell::exec_bg and bind the \
-         shell::job-finished trigger to that job_id to be woken when it ends, instead of \
+        "{cause}. For work that runs longer, start it with shell::exec_bg and observe \
+         shell::on-job-finished with args {{ job_id }} to be woken when it ends, instead of \
          waiting or re-running it."
     )
 }
@@ -112,7 +112,7 @@ mod tests {
         assert!(clamped.contains("60000ms was clamped"), "{clamped}");
         assert!(clamped.contains("capped at 30000ms"), "{clamped}");
         assert!(clamped.contains("shell::exec_bg"), "{clamped}");
-        assert!(clamped.contains("shell::job-finished"), "{clamped}");
+        assert!(clamped.contains("shell::on-job-finished"), "{clamped}");
 
         // Asking for exactly the cap, or not asking at all, is an honest
         // timeout — do not accuse the runtime of clamping.

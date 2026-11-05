@@ -2,7 +2,7 @@
 # Runs the e2e harness against a given engine binary and worker binary on a
 # port of your choosing, without docker: SQLite always, Postgres when
 # TEST_POSTGRES_URL points at a reachable server (MySQL cases need
-# TEST_MYSQL_URL). Used for the observe transition (0.24 / 0.25 engines).
+# TEST_MYSQL_URL). Used to run the suite against a locally built engine.
 #
 #   run-local.sh <engine-bin> <database-bin> [sqlite_db|pg_db|mysql_db] [full|no-bypass|bypass-only]
 #
@@ -51,7 +51,7 @@ for _ in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/$PORT) 2>/dev/null && break;
 PIDS+=($!)
 ok=0
 for _ in $(seq 1 60); do
-  if "$ENGINE_BIN" trigger --engine "$URL" database::query db=sqlite_db sql='SELECT 1' > /dev/null 2>&1; then ok=1; break; fi
+  if "$ENGINE_BIN" call --engine "$URL" database::query db=sqlite_db sql='SELECT 1' > /dev/null 2>&1; then ok=1; break; fi
   sleep 0.5
 done
 [[ $ok == 1 ]] || { echo "database worker not ready"; tail -30 "$OUT/database.log"; exit 1; }

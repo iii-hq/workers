@@ -116,7 +116,7 @@ export function CloudComposer({ host, chat, ready, onDirty, onSent, onCheckConve
     try { cloudAttachmentSpec(next) } catch (cause) { setFileError(errorMessage(cause)); return }
     setCheckingFile(true)
     try {
-      const status = await host.iii.trigger<ConfigStatus>('whatsapp::config-status')
+      const status = await host.iii.call<ConfigStatus>('whatsapp::config-status')
       if (!current()) return
       const limit = status.active.max_media_bytes
       if (typeof limit !== 'number') throw new Error('The active upload limit could not be verified. Check the worker configuration before uploading.')
@@ -131,7 +131,7 @@ export function CloudComposer({ host, chat, ready, onDirty, onSent, onCheckConve
     const current = templateScope.current.begin()
     setLoadingTemplates(true); setTemplateError(null)
     try {
-      const page = await host.iii.trigger<TemplatePage>('whatsapp::cloud::templates::list', { limit: 50, after: more ? templateCursor ?? undefined : undefined })
+      const page = await host.iii.call<TemplatePage>('whatsapp::cloud::templates::list', { limit: 50, after: more ? templateCursor ?? undefined : undefined })
       if (!current()) return
       setTemplates((previous) => [...new Map([...(more ? previous : []), ...page.templates].map((item) => [item.id, item])).values()])
       setTemplateCursor(page.next_cursor); setTemplatesLoaded(true)
@@ -174,18 +174,18 @@ export function CloudComposer({ host, chat, ready, onDirty, onSent, onCheckConve
           uploadStage = true; setUploading(true)
           const dataBase64 = await readCloudAttachment(file!)
           if (!current()) return
-          media = await host.iii.trigger<CloudUploadedAttachment>('whatsapp::cloud::media::upload', { media_type: attachment!.mediaType, data_base64: dataBase64, mimetype: attachment!.mimetype, file_name: file!.name })
+          media = await host.iii.call<CloudUploadedAttachment>('whatsapp::cloud::media::upload', { media_type: attachment!.mediaType, data_base64: dataBase64, mimetype: attachment!.mimetype, file_name: file!.name })
           if (!current()) return
           if (!/^[0-9]{1,128}$/.test(media.media_id)) throw new Error('The upload did not return a valid media ID. No message was sent.')
           setUploaded(media); setUploading(false); uploadStage = false
         }
         const fields = { ...target, media_id: media.media_id, ...(attachment!.mediaType === 'document' ? { file_name: file!.name } : {}), ...(attachment!.caption && caption ? { caption } : {}) }
         result = groupId !== null
-          ? await host.iii.trigger<CloudSent>(`${messageNamespace}::send_media`, { ...fields, media_type: attachment!.mediaType })
-          : await host.iii.trigger<CloudSent>(`${messageNamespace}::send_${attachment!.mediaType}`, fields)
+          ? await host.iii.call<CloudSent>(`${messageNamespace}::send_media`, { ...fields, media_type: attachment!.mediaType })
+          : await host.iii.call<CloudSent>(`${messageNamespace}::send_${attachment!.mediaType}`, fields)
       } else result = mode === 'text'
-        ? await host.iii.trigger<CloudSent>(`${messageNamespace}::send_text`, { ...target, text })
-        : await host.iii.trigger<CloudSent>(`${messageNamespace}::send_template`, { ...target, name: selected!.name, language: selected!.language, components: parameters })
+        ? await host.iii.call<CloudSent>(`${messageNamespace}::send_text`, { ...target, text })
+        : await host.iii.call<CloudSent>(`${messageNamespace}::send_template`, { ...target, name: selected!.name, language: selected!.language, components: parameters })
       if (!current()) return
       if (mode === 'template' && selected) setPreferredTemplateId(selected.id)
       clearDraft(); setRecipientTouched(false); setTouchedParameters({}); if (fileInput.current) fileInput.current.value = ''; setSent(result); onSent(result, mode)

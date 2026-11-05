@@ -22,7 +22,7 @@ export const SEQ_STEPS: SeqStep[] = [
   {
     from: 'proxy',
     to: 'auth',
-    label: 'iii.trigger(auth)',
+    label: 'iii.call(auth)',
     title: 'authenticate, once',
     desc: "the proxy calls the operator's auth function on its control connection, with an authinput built from the upgrade request.",
   },
@@ -31,7 +31,7 @@ export const SEQ_STEPS: SeqStep[] = [
     to: 'proxy',
     label: 'build session',
     title: 'derive boundaries',
-    desc: 'from the authresult the proxy builds a per-connection session: allowed, forbidden, expose, prefix, context, and trigger permissions.',
+    desc: 'from the authresult the proxy builds a per-connection session: allowed, forbidden, expose, prefix, and context.',
   },
   {
     from: 'proxy',
@@ -132,7 +132,7 @@ export const OVERRIDE_STAGES: RevealStage[] = [
       { k: 'workers', v: '3' },
       { k: 'leaked', v: 'none' },
     ],
-    note: 'all eight discovery functions, rewritten client-side',
+    note: 'all six discovery functions, rewritten client-side',
   },
 ]
 
@@ -152,28 +152,8 @@ export const OVERRIDE_TABLE: OverrideRow[] = [
   },
   {
     fn: 'engine::functions::info',
-    rewrite: 'error if !A(function_id); strip ids; drop registered_triggers whose target fails A',
+    rewrite: 'error if !A(function_id); strip ids (observer_count is a count, no foreign ids)',
     policy: 'FORBIDDEN on denied · NOT_FOUND on missing',
-  },
-  {
-    fn: 'engine::triggers::list',
-    rewrite: 'capability metadata, pass through; optional hardening hides types serving only denied fns',
-    policy: 'unchanged (or hardened)',
-  },
-  {
-    fn: 'engine::triggers::info',
-    rewrite: 'recompute instance_count to the accessible subset via the binding index; keep schemas',
-    policy: 'visible by default',
-  },
-  {
-    fn: 'engine::registered-triggers::list',
-    rewrite: 'drop entries where !A(function_id); strip function_id prefix',
-    policy: 'filtered list',
-  },
-  {
-    fn: 'engine::registered-triggers::info',
-    rewrite: 'deny if !A(function_id); null out nested function/trigger envelopes for denied fns',
-    policy: 'FORBIDDEN on denied',
   },
   {
     fn: 'engine::workers::list',
@@ -182,7 +162,17 @@ export const OVERRIDE_TABLE: OverrideRow[] = [
   },
   {
     fn: 'engine::workers::info',
-    rewrite: 'filter nested functions / trigger_types / registered_triggers to accessible; strip envelope internals',
+    rewrite: 'filter nested functions to accessible; observers stay opaque ids; strip envelope internals',
     policy: 'NOT_FOUND when zero accessible',
+  },
+  {
+    fn: 'engine::observers::list',
+    rewrite: 'keep rows the connection created, or where A(function_id) and A(target); strip both ids',
+    policy: 'filtered list',
+  },
+  {
+    fn: 'engine::observers::get',
+    rewrite: 'as one row of engine::observers::list',
+    policy: 'OBSERVER_NOT_FOUND when hidden',
   },
 ]

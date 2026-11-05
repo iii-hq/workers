@@ -2,11 +2,12 @@ iii: v1
 name: database
 language: rust
 deploy: binary
+iii_engine_version: ">=0.26.0"
 manifest: Cargo.toml
 license: Apache-2.0
 bin: database
 tags: [sql, sqlite, postgres, mysql, db]
-description: Talk to PostgreSQL, MySQL, and SQLite from iii — query, execute, transactions, prepared statements, and change feeds.
+description: Talk to PostgreSQL, MySQL, and SQLite from iii — query, execute, transactions, prepared statements, and database::on-row-changed for observing committed writes.
 
 dependencies:
   # The database configuration entry lives in the configuration worker.

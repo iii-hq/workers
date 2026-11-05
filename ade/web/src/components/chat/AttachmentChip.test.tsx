@@ -118,14 +118,14 @@ describe('AttachmentChip · lazy image', () => {
   /* A chip mounting for the second time must draw the picture on its first
      paint, from the cache, with no placeholder and no request. */
   it('shows the cached thumbnail immediately when the bytes are already here', async () => {
-    const trigger = vi.fn(async () => stored('BBBB'))
-    await loadAttachment('s-1', 'a_1', trigger)
+    const call = vi.fn(async () => stored('BBBB'))
+    await loadAttachment('s-1', 'a_1', call)
     const html = renderToStaticMarkup(
       <AttachmentChip attachment={lazyShot} sessionId="s-1" />,
     )
     expect(html).toContain('data-lazy-image="ready"')
     expect(html).toContain('<img src="data:image/png;base64,BBBB"')
-    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('renders an inline chip exactly as before, without the lazy marker', () => {
@@ -192,11 +192,11 @@ describe('downloadStoredAttachment', () => {
   /* The thumbnail already fetched IS the original; the arrow must not ask
      the store for a second copy. */
   it('hands out the cached bytes without a new request', async () => {
-    const trigger = vi.fn(async () => stored('AAAA'))
-    await loadAttachment('s-1', 'a_1', trigger)
+    const call = vi.fn(async () => stored('AAAA'))
+    await loadAttachment('s-1', 'a_1', call)
     const save = vi.fn()
     await downloadStoredAttachment('s-1', 'a_1', 'shot.png', save)
-    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledTimes(1)
     expect(save).toHaveBeenCalledTimes(1)
     const [blob, filename] = save.mock.calls[0] as [Blob, string]
     expect(filename).toBe('original.png')
@@ -205,11 +205,11 @@ describe('downloadStoredAttachment', () => {
   })
 
   it('falls back to the chip name when the store kept none', async () => {
-    const trigger = vi.fn(async () => ({
+    const call = vi.fn(async () => ({
       ...stored('AAAA'),
       attachment: { ...stored().attachment, name: '' },
     }))
-    await loadAttachment('s-1', 'a_1', trigger)
+    await loadAttachment('s-1', 'a_1', call)
     const save = vi.fn()
     await downloadStoredAttachment('s-1', 'a_1', 'shot.png', save)
     expect(save.mock.calls[0][1]).toBe('shot.png')

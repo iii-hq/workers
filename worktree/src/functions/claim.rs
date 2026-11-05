@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{codes, WError};
-use crate::events::{ClaimedEvent, EventCtx, EventKind};
+use crate::events::{ClaimedEvent, EventKind};
 use crate::functions::create::require_record;
 use crate::functions::Deps;
 use crate::state;
@@ -76,11 +76,6 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     deps.emitter
         .emit(
             EventKind::Claimed,
-            EventCtx {
-                repo_path: &record.repo_path,
-                worktree_id: &record.worktree_id,
-                session_id: Some(&req.session_id),
-            },
             &ClaimedEvent {
                 worktree_id: record.worktree_id.clone(),
                 repo_path: record.repo_path.clone(),

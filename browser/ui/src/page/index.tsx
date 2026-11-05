@@ -7,7 +7,7 @@
  * tab, drives the page directly, and pins elements for the chat.
  *
  * Tabs are the worker's: `browser::sessions::list` is the strip, re-read on
- * every lifecycle trigger (opened, closed, slept, woke, navigated). A tab
+ * every lifecycle event (opened, closed, slept, woke, navigated). A tab
  * the worker put to sleep is still listed; selecting it starts its
  * screencast, which wakes it. The selected tab is page-local state kept per
  * workspace tab, so a reload lands where it left off.

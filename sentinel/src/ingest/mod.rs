@@ -10,6 +10,7 @@ pub mod ring;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -24,6 +25,10 @@ use crate::{
     fingerprint, ids, normalize, Counters, ErrorSourceV1, GroupChangeReasonV1, GroupStatusV1,
     Normalizer, Redactor, SentinelError, TraceStoreStateV1, WorkerConfig,
 };
+
+/// One span-coalesce window of the engine, which broadcasts a span before it
+/// stores it: a read right on the tick can miss the very span that raised it.
+const TICK_READ_DELAY: Duration = Duration::from_millis(300);
 
 /// One unit of ingest work. `trace_id` is a field of every variant because
 /// the queue groups by it: the span job and the log job of one trace are
@@ -108,6 +113,10 @@ impl TraceSummary {
     fn session_id(&self) -> Option<&str> {
         self.trace_tags.get("iii.session.id").map(String::as_str)
     }
+
+    fn holds_error(&self) -> bool {
+        self.error_count > 0 || self.status.eq_ignore_ascii_case("error")
+    }
 }
 
 /// Where a worker's source lives, for the version fallback.
@@ -175,7 +184,7 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             self.counters.add_lost_before_capture(1);
             return Ok(report);
         };
-        if summary.error_count == 0 && !summary.status.eq_ignore_ascii_case("error") {
+        if !summary.holds_error() {
             return Ok(report);
         }
 
@@ -316,15 +325,13 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             worker_version: None,
             message: event.message.clone(),
             evidence: serde_json::to_string(&bundle).ok(),
-            join_deadline_ms: event.at_ms + config.sources.log.join_window_ms as i64,
+            // From arrival: `at_ms` is the emitter's clock, and only the sweep ends this wait.
+            join_deadline_ms: ids::now_ms() + config.sources.log.join_window_ms as i64,
             session_unknown,
         };
-        if let Some(occurrence_id) = self.store.insert_pending_log(&pending).await? {
-            report.follow_up.push(IngestJob::Promote {
-                trace_id: log.trace_id.clone().unwrap_or_else(|| "-".into()),
-                occurrence_id,
-            });
-        } else {
+        // The sweep promotes it when the wait runs out; queued from here, the
+        // promotion would run ahead of the span job this wait is for.
+        if self.store.insert_pending_log(&pending).await?.is_none() {
             self.counters.add_deduped(1);
             report.deduped += 1;
         }
@@ -710,11 +717,41 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         }
     }
 
-    /// The trace ids of a tick that are worth queueing.
-    pub fn filter_tick(&self, trace_ids: &[String]) -> (Vec<String>, u64) {
+    /// The trace ids of a tick that are worth queueing, and how many were this
+    /// worker's own.
+    pub async fn filter_tick(&self, trace_ids: &[String]) -> (Vec<String>, u64) {
         let (kept, dropped) = self.ring.filter(trace_ids.iter());
         self.counters.add_phantom_ticks_dropped(dropped);
-        (kept, dropped)
+        (self.errored_traces(kept).await, dropped)
+    }
+
+    /// The traces of a tick that hold an error, read in one call so a clean
+    /// trace costs no job. A failed read keeps them all, for the job to re-read
+    /// and the queue to retry: losing an error silently is worse than extra jobs.
+    async fn errored_traces(&self, trace_ids: Vec<String>) -> Vec<String> {
+        if trace_ids.is_empty() {
+            return trace_ids;
+        }
+        tokio::time::sleep(TICK_READ_DELAY).await;
+        let summaries = match self.telemetry.traces(&trace_ids).await {
+            Ok(summaries) => summaries,
+            Err(error) if is_store_disabled(&error) => {
+                self.counters.set_trace_store(TraceStoreStateV1::Disabled);
+                return Vec::new();
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not read a tick's traces; queueing them all");
+                return trace_ids;
+            }
+        };
+        self.counters.set_trace_store(TraceStoreStateV1::Memory);
+        self.counters
+            .add_lost_before_capture(trace_ids.len().saturating_sub(summaries.len()) as u64);
+        summaries
+            .into_iter()
+            .filter(TraceSummary::holds_error)
+            .map(|summary| summary.trace_id)
+            .collect()
     }
 }
 
@@ -732,7 +769,7 @@ fn reason_for(status: GroupStatusV1) -> GroupChangeReasonV1 {
 /// The engine reports a disabled span store as an error on every read. It is
 /// a state, not a failure: the worker keeps running on logs alone.
 fn is_store_disabled(error: &SentinelError) -> bool {
-    error.to_string().to_lowercase().contains("memory exporter")
+    error.to_string().contains("memory_exporter_not_enabled")
 }
 
 #[cfg(test)]
@@ -772,9 +809,14 @@ mod tests {
 
     #[test]
     fn a_disabled_span_store_reads_as_a_state_not_a_failure() {
-        assert!(is_store_disabled(&SentinelError::dependency(
-            "memory exporter not enabled"
-        )));
+        let answer = iii_sdk::errors::Error::Remote {
+            code: "memory_exporter_not_enabled".into(),
+            message: "In-memory span storage is not available.".into(),
+            stacktrace: None,
+        };
+        assert!(is_store_disabled(&SentinelError::dependency(format!(
+            "engine::traces::list: {answer}"
+        ))));
         assert!(!is_store_disabled(&SentinelError::dependency(
             "connection refused"
         )));

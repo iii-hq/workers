@@ -50,7 +50,7 @@ async fn create_locks_registers_and_emits() {
     assert_eq!(record.lifecycle, Lifecycle::Active);
     assert_eq!(record.path, resp.path);
 
-    let created = env.deliverer.events_of("worktree::created");
+    let created = env.deliverer.events_of("worktree::on-created");
     assert_eq!(created.len(), 1);
     assert_eq!(created[0]["worktree_id"], resp.worktree_id.as_str());
 }
@@ -205,8 +205,8 @@ async fn claim_and_release_enforce_ownership() {
         .unwrap();
     assert_eq!(record.lifecycle, Lifecycle::Active);
     assert_eq!(record.session_id, None);
-    assert_eq!(env.deliverer.events_of("worktree::claimed").len(), 2);
-    assert_eq!(env.deliverer.events_of("worktree::released").len(), 1);
+    assert_eq!(env.deliverer.events_of("worktree::on-claimed").len(), 2);
+    assert_eq!(env.deliverer.events_of("worktree::on-released").len(), 1);
 }
 
 #[tokio::test]
@@ -261,7 +261,7 @@ async fn remove_guards_dirty_and_unmerged_work() {
         .await
         .unwrap()
         .is_none());
-    let removed_events = env.deliverer.events_of("worktree::removed");
+    let removed_events = env.deliverer.events_of("worktree::on-removed");
     assert_eq!(removed_events.len(), 1);
     assert_eq!(removed_events[0]["branch_deleted"], true);
 }

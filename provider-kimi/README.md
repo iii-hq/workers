@@ -26,7 +26,8 @@ to compare it with what chat bills.
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The declaration carries no static `models` slice — `GET /v1/models` is the
   source of truth and a refresh fires right after registration. Defaults:
   `api_url: https://api.moonshot.ai/v1/chat/completions`,

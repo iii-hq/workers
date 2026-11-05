@@ -28,7 +28,7 @@ export interface BuildOptions {
   entry: string
   /** Where the bundle goes, e.g. `dist/native.js`. */
   outfile: string
-  /** The worker's function namespace (`browser`): calls and triggers are limited to it. */
+  /** The worker's function namespace (`browser`): calls and observers are limited to it. */
   ns: string
   /** Default true. */
   minify?: boolean

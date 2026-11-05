@@ -125,19 +125,18 @@ export function ScanRequestForm({
       if (!event || event.session_id !== sessionId) return
       void loadComposerModel(host, sessionId).then(setComposerModel)
     })
-    const offMetaTrigger = host.iii.registerTrigger({
-      type: 'session::meta-updated',
-      function_id: `${metaFn}::${host.iii.browserId}`,
-      config: {},
-    })
-    const offCreatedTrigger = host.iii.registerTrigger({
-      type: 'session::created',
-      function_id: `${createdFn}::${host.iii.browserId}`,
-      config: {},
-    })
+    const filters = { 'input.session_id': { $eq: sessionId } }
+    const offMetaObserver = host.iii.observe(
+      { function_id: 'session::on-meta-updated', filters },
+      `${metaFn}::${host.iii.browserId}`,
+    )
+    const offCreatedObserver = host.iii.observe(
+      { function_id: 'session::on-created', filters },
+      `${createdFn}::${host.iii.browserId}`,
+    )
     return () => {
-      offMetaTrigger()
-      offCreatedTrigger()
+      offMetaObserver()
+      offCreatedObserver()
       offMeta()
       offCreated()
     }

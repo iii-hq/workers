@@ -29,6 +29,7 @@ fn catalog_matches_the_registered_surface() {
             "eval::step",
             "eval::on-turn-completed",
             "eval::sweep",
+            "eval::on-completed",
         ]
     );
 }

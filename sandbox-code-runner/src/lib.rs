@@ -2,7 +2,7 @@
 //! functions whose handlers execute inside them, tear them down.
 //!
 //! This worker executes nothing itself — every run and every handler call is
-//! delegated over the bus to the iii-sandbox daemon's `sandbox::*` triggers.
+//! delegated over the bus to the iii-sandbox daemon's `sandbox::*` functions.
 
 pub mod config;
 pub mod configuration;

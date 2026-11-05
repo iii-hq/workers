@@ -12,7 +12,7 @@ Facts about the Slack platform the implementation depends on.
 ## Ingress: Events API over HTTP (no Socket Mode)
 
 - Slack delivers events to a public HTTPS request URL (Events API) and
-  interactivity to a separate request URL. We register both on the engine.
+  interactivity to a separate request URL. We serve both as `http::on-request` routes.
 - Socket Mode (a worker→Slack WebSocket via `apps.connections.open` + an app
   token) is intentionally not used: it exists only to avoid a public URL, and the
   engine already provides the public HTTP surface.

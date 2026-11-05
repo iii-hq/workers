@@ -133,7 +133,7 @@ async fn custom_header_passes_through() {
 
 #[tokio::test]
 #[serial]
-async fn route_serves_then_404s_after_unregister() {
+async fn route_serves_then_404s_after_its_observer_is_disposed() {
     let Some(iii) = engine::get_or_init().await else {
         return;
     };
@@ -142,7 +142,7 @@ async fn route_serves_then_404s_after_unregister() {
     let url = format!("http://{}/removable", boot.local_addr);
 
     // Register the route, wait for it to land, and confirm it serves (200).
-    let trigger = backend::register_removable_echo_backend(&iii, "/removable", "GET").await;
+    let route = backend::register_removable_echo_backend(&iii, "/removable", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/removable").await;
 
     let resp = client.get(&url).send().await.unwrap();
@@ -152,12 +152,12 @@ async fn route_serves_then_404s_after_unregister() {
         "GET"
     );
 
-    // Unregister the trigger; the route must disappear and now 404.
-    trigger.unregister();
+    // Dispose the observer; the route must disappear and now 404.
+    route.dispose().await.expect("dispose the route's observer");
     common::wait_for_no_route(&boot.routes, "GET", "/removable").await;
 
     let resp = client.get(&url).send().await.unwrap();
-    assert_eq!(resp.status(), 404, "route should 404 after unregister");
+    assert_eq!(resp.status(), 404, "route should 404 after dispose");
     let v: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(v["error"]["code"], "NOT_FOUND");
 

@@ -14,15 +14,15 @@ const outcome = (status: string, extra: Record<string, unknown> = {}) => ({
 })
 
 describe('realBackend.compactSession', () => {
-  const trigger = vi.fn()
+  const call = vi.fn()
 
   beforeEach(() => {
-    trigger.mockReset()
-    vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+    call.mockReset()
+    vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
   })
 
   it('compacts on the harness and returns every row it wrote', async () => {
-    trigger.mockResolvedValue(
+    call.mockResolvedValue(
       outcome('ok', { tokens_before: 9, tokens_after: 3, summary: 'S' }),
     )
     const result = await realBackend.compactSession?.(
@@ -41,7 +41,7 @@ describe('realBackend.compactSession', () => {
     })
     // No catalog window and no made-up output allowance: the router resolves
     // the summariser's real limits on the server.
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'harness::compact',
       {
         session_id: 's-1',
@@ -51,7 +51,7 @@ describe('realBackend.compactSession', () => {
       },
       { timeoutMs: 330_000 },
     )
-    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('maps every other outcome', async () => {
@@ -60,7 +60,7 @@ describe('realBackend.compactSession', () => {
       ['empty', { status: 'empty' }],
       ['failed', { status: 'error', message: 'outcome failed' }],
     ] as const) {
-      trigger.mockResolvedValueOnce(outcome(status))
+      call.mockResolvedValueOnce(outcome(status))
       expect(
         await realBackend.compactSession?.(
           's-1',
@@ -71,7 +71,7 @@ describe('realBackend.compactSession', () => {
   })
 
   it('reports a transport failure as an error', async () => {
-    trigger.mockRejectedValue(new Error('TIMEOUT: invocation timed out'))
+    call.mockRejectedValue(new Error('TIMEOUT: invocation timed out'))
     expect(
       await realBackend.compactSession?.('s-1', 'anthropic::claude-x' as never),
     ).toEqual({
@@ -82,16 +82,16 @@ describe('realBackend.compactSession', () => {
 })
 
 describe('realBackend.sendCompactCommand', () => {
-  const trigger = vi.fn()
+  const call = vi.fn()
 
   beforeEach(() => {
-    trigger.mockReset().mockResolvedValue({
+    call.mockReset().mockResolvedValue({
       session_id: 's-1',
       turn_id: 't-1',
       accepted: true,
       compaction: { compaction_id: 'cmp_1', entry_id: 'e_idem_msg-1' },
     })
-    vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+    vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
   })
 
   // The command rides the ordinary send, so the harness's one parser decides
@@ -104,7 +104,7 @@ describe('realBackend.sendCompactCommand', () => {
       '/compact keep the ids',
       'msg-1',
     )
-    expect(trigger).toHaveBeenCalledWith('harness::send', {
+    expect(call).toHaveBeenCalledWith('harness::send', {
       session_id: 's-1',
       message: '/compact keep the ids',
       model: 'claude-x',
@@ -114,7 +114,7 @@ describe('realBackend.sendCompactCommand', () => {
   })
 
   it('surfaces a rejected send', async () => {
-    trigger.mockRejectedValue(new Error('harness/invalid_request: read-only'))
+    call.mockRejectedValue(new Error('harness/invalid_request: read-only'))
     await expect(
       realBackend.sendCompactCommand?.(
         's-1',

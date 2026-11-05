@@ -10,6 +10,9 @@ import (
 
 func TestPublicOperationsRemainVisibleInTraces(t *testing.T) {
 	peer := newCallbackPeer(t, nil)
+	// The credential operations are not observable, which the SDK registers
+	// only with an observe.v2 engine.
+	peer.registerWorker(t)
 	registry := NewRegistry(nil)
 	if err := registry.Install(peer.client); err != nil {
 		t.Fatal(err)

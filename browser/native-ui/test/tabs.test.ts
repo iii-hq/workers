@@ -1,12 +1,12 @@
 /** The tab list (design §8.2, §8.4): rows, groups, sleeping tabs, new and close, live re-reads, visibility. */
 import { describe, expect, it } from 'vitest'
-import { callsOf, exists, FakeBrowser, rows, start, subsOf, TABS } from './fake'
+import { callsOf, EVERY_CALL, exists, FakeBrowser, rows, start, subsOf, TABS } from './fake'
 
 const LIFECYCLE = [
-  'browser::session-started',
-  'browser::session-stopped',
-  'browser::session-updated',
-  'browser::navigated',
+  'browser::on-session-started',
+  'browser::on-session-stopped',
+  'browser::on-session-updated',
+  'browser::on-navigated',
 ]
 
 describe('the tab list', () => {
@@ -183,24 +183,24 @@ describe('the tab list', () => {
 })
 
 describe('live', () => {
-  it('binds the four lifecycle triggers unfiltered, then reads; each event re-reads 150 ms later', async () => {
+  it('observes the four lifecycle functions unfiltered, then reads; each event re-reads 150 ms later', async () => {
     const { host, fake } = await start({ tabs: TABS })
-    for (const t of LIFECYCLE) expect(subsOf(host, t)).toEqual([{}])
+    for (const t of LIFECYCLE) expect(subsOf(host, t)).toEqual([EVERY_CALL])
     expect(callsOf(host, 'browser::sessions::list')).toHaveLength(1)
-    // The read comes after the bindings (bind first, read after ready).
+    // The read comes after the observers (observe first, read after ready).
     const firstList = host.requests.findIndex((r) => r.args.fn === 'browser::sessions::list')
     const lastOn = host.requests.map((r) => r.method).lastIndexOf('on')
     expect(firstList).toBeGreaterThan(lastOn)
 
     fake.tabs[1].active = true
     fake.tabs[1].title = 'iii'
-    await host.emitTrigger('browser::session-updated', {
+    await host.emitObserved('browser::on-session-updated', {
       session_id: 't2',
       active: true,
       url: 'https://iii.dev/',
       title: 'iii',
     })
-    await host.emitTrigger('browser::navigated', { session_id: 't1', url: 'https://example.com/a' })
+    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/a' })
     await host.tick(100)
     expect(callsOf(host, 'browser::sessions::list')).toHaveLength(1)
     await host.tick(50)
@@ -214,7 +214,7 @@ describe('live', () => {
     for (const t of LIFECYCLE) expect(subsOf(host, t)).toEqual([])
     fake.tabs.push({ session_id: 't4', url: 'https://later.example/', title: 'Later' })
     await host.env({ visible: true })
-    for (const t of LIFECYCLE) expect(subsOf(host, t)).toEqual([{}])
+    for (const t of LIFECYCLE) expect(subsOf(host, t)).toEqual([EVERY_CALL])
     expect(callsOf(host, 'browser::sessions::list')).toHaveLength(2)
     expect(rows(host).map((r) => r.key)).toContain('t4')
   })

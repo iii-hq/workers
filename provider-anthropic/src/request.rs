@@ -3,7 +3,8 @@
 use crate::config::{AnthropicConfig, AuthMode};
 use crate::thinking::ThinkingConfig;
 use crate::wire::cache::{
-    apply_messages_cache_anchor, apply_tools_cache_control, build_system_blocks, build_system_field,
+    apply_messages_cache_anchor, apply_tools_cache_control, build_system_blocks,
+    build_system_field, messages_ttl,
 };
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
@@ -38,6 +39,9 @@ pub struct BodyArgs {
     /// TTL for the shared-prefix markers on the sectioned path (`None` = the
     /// 5-minute default); see `wire::cache::cache_ttl`.
     pub cache_ttl: Option<&'static str>,
+    /// Opt-in TTL for the per-turn messages anchor, applied only on top of a
+    /// 1-hour prefix; see `wire::cache::messages_cache_ttl`.
+    pub messages_cache_ttl: Option<&'static str>,
 }
 
 /// Claude 4.6+/Sonnet 5/Fable/Mythos reject any request whose final message
@@ -71,7 +75,6 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
                 .to_string(),
         );
     }
-    apply_messages_cache_anchor(&mut wire_messages, args.cache_enabled);
     let mut wire_tools = functions_to_wire(&args.tools);
     // The long TTL only makes sense when there is a shared prefix to keep warm.
     let sectioned = args
@@ -79,6 +82,11 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
         .as_deref()
         .is_some_and(|s| !s.is_empty());
     let ttl = if sectioned { args.cache_ttl } else { None };
+    apply_messages_cache_anchor(
+        &mut wire_messages,
+        args.cache_enabled,
+        messages_ttl(ttl, args.messages_cache_ttl),
+    );
     apply_tools_cache_control(&mut wire_tools, args.cache_enabled, ttl);
 
     let mut body = json!({
@@ -164,6 +172,7 @@ mod tests {
             prefix_mismatch: None,
             cache_enabled: false,
             cache_ttl: None,
+            messages_cache_ttl: None,
         }
     }
 
@@ -240,6 +249,54 @@ mod tests {
         assert_eq!(body["thinking"]["display"], "summarized");
         assert!(body["thinking"].get("budget_tokens").is_none());
         assert_eq!(body["output_config"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn the_messages_anchor_ttl_follows_the_prefix() {
+        let mut a = args();
+        a.cache_enabled = true;
+        a.cache_ttl = Some("1h");
+        a.messages_cache_ttl = Some("1h");
+        a.messages.push(assistant_msg(vec![ContentBlock::Text {
+            text: "done".into(),
+        }]));
+        a.messages.push(AgentMessage::User(UserMessage {
+            role: UserRoleTag::User,
+            content: vec![ContentBlock::Text {
+                text: "next".into(),
+            }],
+            timestamp: 3,
+        }));
+        a.system_sections = Some(vec![PromptSection {
+            text: "s".repeat(crate::wire::cache::CACHE_MIN_CHARS),
+            cache_boundary: true,
+        }]);
+        let anchor = |body: &serde_json::Value| {
+            body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
+                .find_map(|b| b.get("cache_control").cloned())
+                .expect("a messages anchor")
+        };
+        // a sectioned 1-hour prefix: the messages anchor takes the 1-hour TTL
+        assert_eq!(anchor(&build_body(&a, &mut Vec::new()))["ttl"], "1h");
+        // a flat prompt's system marker is 5 minutes, so the anchor stays at 5 minutes
+        a.system_sections = None;
+        a.system_prompt = "p".repeat(crate::wire::cache::CACHE_MIN_CHARS);
+        assert!(anchor(&build_body(&a, &mut Vec::new()))
+            .get("ttl")
+            .is_none());
+        // a 5-minute prefix (PROVIDER_*_CACHE_TTL=5m) keeps it at 5 minutes too
+        a.system_sections = Some(vec![PromptSection {
+            text: "s".repeat(crate::wire::cache::CACHE_MIN_CHARS),
+            cache_boundary: true,
+        }]);
+        a.cache_ttl = None;
+        assert!(anchor(&build_body(&a, &mut Vec::new()))
+            .get("ttl")
+            .is_none());
     }
 
     fn assistant_msg(content: Vec<ContentBlock>) -> AgentMessage {

@@ -34,7 +34,7 @@ let emit: (event: unknown) => void
 let client: IiiClient
 let accepted: ReturnType<typeof deferred<SessionTreeDeletionSnapshot>>
 const offHandler = vi.fn()
-const offTrigger = vi.fn()
+const offObserver = vi.fn()
 const order: string[] = []
 
 beforeEach(() => {
@@ -49,11 +49,11 @@ beforeEach(() => {
       emit = handler
       return offHandler
     }),
-    registerTrigger: vi.fn(() => {
-      order.push('subscription')
-      return offTrigger
+    observe: vi.fn(() => {
+      order.push('observer')
+      return offObserver
     }),
-    trigger: vi.fn((id) => {
+    call: vi.fn((id) => {
       order.push(id)
       return id === 'harness::delete-session-tree'
         ? accepted.promise
@@ -78,32 +78,33 @@ async function start(options?: Parameters<typeof deleteSessionTree>[1]) {
 }
 
 function cleaned() {
-  expect(offTrigger).toHaveBeenCalledTimes(1)
+  expect(offObserver).toHaveBeenCalledTimes(1)
   expect(offHandler).toHaveBeenCalledTimes(1)
   expect(vi.getTimerCount()).toBe(0)
 }
 
 describe('deleteSessionTree', () => {
-  it('subscribes before one selected-id command, reads once and waits without polling', async () => {
+  it('observes before one selected-id command, reads once and waits without polling', async () => {
     const { result } = await start()
     expect(order).toEqual([
       'handler',
-      'subscription',
+      'observer',
       'harness::delete-session-tree',
     ])
-    expect(client.registerTrigger).toHaveBeenCalledWith({
-      type: 'harness::session-tree-deletion',
-      function_id: expect.stringMatching(/::test-browser$/),
-      config: { session_id: 'child2' },
-    })
-    expect(client.trigger).toHaveBeenCalledWith(
-      'harness::delete-session-tree',
-      { session_id: 'child2' },
+    expect(client.observe).toHaveBeenCalledWith(
+      {
+        function_id: 'harness::on-session-tree-deletion',
+        filters: { 'input.session_id': { $eq: 'child2' } },
+      },
+      expect.stringMatching(/::test-browser$/),
     )
+    expect(client.call).toHaveBeenCalledWith('harness::delete-session-tree', {
+      session_id: 'child2',
+    })
     accepted.resolve(snapshot())
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(client.trigger).toHaveBeenCalledTimes(2)
-    expect(client.trigger).toHaveBeenLastCalledWith(
+    expect(client.call).toHaveBeenCalledTimes(2)
+    expect(client.call).toHaveBeenLastCalledWith(
       'harness::delete-session-tree-status',
       { operation_id: 'op-new' },
     )
@@ -124,14 +125,14 @@ describe('deleteSessionTree', () => {
     expect(offHandler).not.toHaveBeenCalled()
     accepted.resolve(snapshot())
     await expect(result).resolves.toEqual(snapshot('completed'))
-    expect(client.trigger).toHaveBeenCalledTimes(2)
+    expect(client.call).toHaveBeenCalledTimes(2)
     cleaned()
   })
 
   it('ignores a previous attempt failure before and after retry acceptance', async () => {
     const { result } = await start()
     emit(snapshot('failed', 'op-new', 1))
-    vi.mocked(client.trigger).mockResolvedValueOnce(
+    vi.mocked(client.call).mockResolvedValueOnce(
       snapshot('failed', 'op-new', 1),
     )
     accepted.resolve(snapshot('deleting', 'op-new', 2))
@@ -167,7 +168,7 @@ describe('deleteSessionTree', () => {
 
   it('recovers a missed terminal event with the single catch-up snapshot', async () => {
     const { result } = await start()
-    vi.mocked(client.trigger).mockResolvedValueOnce(snapshot('completed'))
+    vi.mocked(client.call).mockResolvedValueOnce(snapshot('completed'))
     accepted.resolve(snapshot())
     await expect(result).resolves.toEqual(snapshot('completed'))
     cleaned()
@@ -176,7 +177,7 @@ describe('deleteSessionTree', () => {
   it('does not regress a terminal event when a stale catch-up read arrives', async () => {
     const recovery = deferred<SessionTreeDeletionSnapshot>()
     const { result } = await start()
-    vi.mocked(client.trigger).mockReturnValueOnce(recovery.promise)
+    vi.mocked(client.call).mockReturnValueOnce(recovery.promise)
     accepted.resolve(snapshot())
     await Promise.resolve()
     emit(snapshot('completed'))
@@ -190,15 +191,13 @@ describe('deleteSessionTree', () => {
     const { result } = await start()
     accepted.resolve(snapshot('completed'))
     await expect(result).resolves.toEqual(snapshot('completed'))
-    expect(client.trigger).toHaveBeenCalledTimes(2)
+    expect(client.call).toHaveBeenCalledTimes(2)
     cleaned()
   })
 
   it('keeps waiting for the correlated operation after a mismatched catch-up', async () => {
     const { result } = await start()
-    vi.mocked(client.trigger).mockResolvedValueOnce(
-      snapshot('completed', 'old'),
-    )
+    vi.mocked(client.call).mockResolvedValueOnce(snapshot('completed', 'old'))
     accepted.resolve(snapshot())
     await vi.advanceTimersByTimeAsync(1)
     expect(offHandler).not.toHaveBeenCalled()
@@ -219,7 +218,7 @@ describe('deleteSessionTree', () => {
     accepted.resolve(snapshot('completed'))
     await expect(second.result).resolves.toEqual(snapshot('completed'))
     const commands = vi
-      .mocked(client.trigger)
+      .mocked(client.call)
       .mock.calls.filter(([id]) => id === 'harness::delete-session-tree')
     expect(commands.map(([, payload]) => payload)).toEqual([
       { session_id: 'child2' },
@@ -231,28 +230,26 @@ describe('deleteSessionTree', () => {
     const { result } = await start()
     accepted.reject(new Error('function_not_found'))
     await expect(result).rejects.toThrow('function_not_found')
-    expect(client.trigger).toHaveBeenCalledTimes(1)
+    expect(client.call).toHaveBeenCalledTimes(1)
     cleaned()
   })
 
   it('cleans up a failed catch-up read', async () => {
     const { result } = await start()
-    vi.mocked(client.trigger).mockRejectedValueOnce(
-      new Error('read unavailable'),
-    )
+    vi.mocked(client.call).mockRejectedValueOnce(new Error('read unavailable'))
     accepted.resolve(snapshot())
     await expect(result).rejects.toThrow('read unavailable')
     cleaned()
   })
 
-  it('cleans the local handler when binding fails, without sending a command', async () => {
-    vi.mocked(client.registerTrigger).mockImplementationOnce(() => {
-      throw new Error('trigger unavailable')
+  it('cleans the local handler when observing fails, without sending a command', async () => {
+    vi.mocked(client.observe).mockImplementationOnce(() => {
+      throw new Error('observe unavailable')
     })
     const { result } = await start()
-    await expect(result).rejects.toThrow('trigger unavailable')
+    await expect(result).rejects.toThrow('observe unavailable')
     expect(offHandler).toHaveBeenCalledTimes(1)
-    expect(client.trigger).not.toHaveBeenCalled()
+    expect(client.call).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -261,7 +258,7 @@ describe('deleteSessionTree', () => {
     accepted.resolve(snapshot())
     await vi.advanceTimersByTimeAsync(DELETE_TREE_WAIT_MS)
     await expect(result).rejects.toThrow('backend may still be running')
-    expect(client.trigger).toHaveBeenCalledTimes(2)
+    expect(client.call).toHaveBeenCalledTimes(2)
     cleaned()
   })
 
@@ -274,7 +271,7 @@ describe('deleteSessionTree', () => {
     )
     accepted.resolve(snapshot())
     await Promise.resolve()
-    expect(client.trigger).toHaveBeenCalledTimes(1)
+    expect(client.call).toHaveBeenCalledTimes(1)
     cleaned()
   })
 
@@ -286,7 +283,7 @@ describe('deleteSessionTree', () => {
     controller.abort()
     loading.resolve(client)
     await expect(result).rejects.toThrow('Stopped waiting')
-    expect(client.trigger).not.toHaveBeenCalled()
+    expect(client.call).not.toHaveBeenCalled()
     expect(client.on).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })

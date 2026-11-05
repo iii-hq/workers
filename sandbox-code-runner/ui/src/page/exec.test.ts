@@ -11,7 +11,7 @@ import {
   buildExecPayload,
   decodeBase64,
   exitPill,
-  formatTriggerCommand,
+  formatCallCommand,
   parseExecResult,
   quoteShellArg,
   buildShellBgPayload,
@@ -104,22 +104,22 @@ describe('buildExecPayload', () => {
   })
 })
 
-describe('formatTriggerCommand', () => {
+describe('formatCallCommand', () => {
   it('single-quotes the JSON payload for a paste-able CLI line', () => {
     expect(
-      formatTriggerCommand('sandbox::exec', { sandbox_id: 'sbx-1', cmd: 'ls' }),
-    ).toBe(`iii trigger sandbox::exec '{"sandbox_id":"sbx-1","cmd":"ls"}'`)
+      formatCallCommand('sandbox::exec', { sandbox_id: 'sbx-1', cmd: 'ls' }),
+    ).toBe(`iii call sandbox::exec '{"sandbox_id":"sbx-1","cmd":"ls"}'`)
   })
 
   it("escapes embedded single quotes via the POSIX '\\'' dance", () => {
-    const command = formatTriggerCommand('sandbox::exec', {
+    const command = formatCallCommand('sandbox::exec', {
       sandbox_id: 'sbx-1',
       argv: ['sh', '-c', "echo 'hi'"],
     })
     expect(command).toContain("'\\''")
     // The round-trip stays intact: undoing the quoting yields the JSON.
     const inner = command
-      .slice('iii trigger sandbox::exec '.length)
+      .slice('iii call sandbox::exec '.length)
       .replace(/^'|'$/g, '')
       .replaceAll(`'\\''`, `'`)
     expect(JSON.parse(inner)).toEqual({

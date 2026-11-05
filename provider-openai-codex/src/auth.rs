@@ -12,7 +12,7 @@ const AUTH_CLAIM: &str = "https://api.openai.com/auth";
 /// Refresh proactively when the token expires within this margin.
 const EXPIRY_MARGIN_SECS: i64 = 60;
 
-/// Function id the vault stores in the credential record and triggers on
+/// Function id the vault stores in the credential record and calls on
 /// refresh-when-expiring.
 pub const REFRESH_FN_ID: &str = "oauth::openai-codex::refresh";
 

@@ -65,11 +65,11 @@ async fn main() -> anyhow::Result<()> {
     register(&iii, config.clone());
     if cli.mentions {
         judge::mentions::register(&iii);
-        judge::mentions::bind(&iii);
+        judge::mentions::observe(&iii);
     }
     #[cfg(feature = "console-ui")]
     judge::ui::register(&iii);
-    configuration::register_config_trigger(&iii, config)?
+    configuration::observe_config_changes(&iii, config)
         .run()
         .await;
     let result = wait_for_shutdown().await;

@@ -60,7 +60,7 @@ flowchart LR
   end
   leases[("lease_dir: one file per lease")]
   cfg["configuration worker: schema + value"]
-  harness -->|"iii.trigger(context::*)"| fns
+  harness -->|"iii.call(context::*)"| fns
   fns --> pipe --> core
   pipe --> ports
   ports -->|model limits + summariser| router

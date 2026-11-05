@@ -59,7 +59,8 @@ pub struct RestApiConfig {
     pub concurrency_request_limit: usize,
 
     /// Global middleware run on every route before the handler, in ascending
-    /// `priority` order. Per-route middleware is set on the trigger instead.
+    /// `priority` order. A route adds its own in its observer args
+    /// (`middleware_function_ids`).
     #[serde(default)]
     pub middleware: Vec<MiddlewareConfig>,
 }
