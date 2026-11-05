@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, Observed, RegisterFunction,
+    Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, RwLock};
@@ -237,15 +238,17 @@ async fn run_completed_is_private_returns_the_event_and_reaches_matching_observe
     let (tx, mut rx) = mpsc::unbounded_channel::<RunCompletedEvent>();
     observer.register_function(
         TARGET_FN,
-        RegisterFunction::new(move |event: RunCompletedEvent| {
-            let _ = tx.send(event);
+        RegisterFunction::new(move |event: Observed<Value, RunCompletedEvent>| {
+            if let Some(event) = event.output {
+                let _ = tx.send(event);
+            }
             Ok::<_, Error>(json!({}))
         }),
     );
     let handle = observer.observe(
         Source::function(ON_RUN_COMPLETED_FN)
             .filters(json!({ "input.status": { "$eq": "failed" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         TARGET_FN,
     );
     timeout(Duration::from_secs(10), handle.ready())
