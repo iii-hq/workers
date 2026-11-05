@@ -199,16 +199,14 @@ describe('namespaced browser connection', () => {
     ])
   })
 
-  it('observes with deliver output and resolves engine sources in default', () => {
+  it('observes with capture, never deliver, and resolves engine sources in default', () => {
     const { sdk, observed } = fakeSdk()
     const client = wrapSdk(sdk, BROWSER_ID)
 
     client.observe('session::on-created', `${FN}::${BROWSER_ID}`)
     client.observe(
-      {
-        function_id: 'observability::on-span',
-        deliver: 'input',
-      },
+      // An injected UI built against an older console still passes deliver.
+      { function_id: 'observability::on-span', deliver: 'input' },
       `${FN}::${BROWSER_ID}`,
     )
     client.observe(
@@ -218,21 +216,117 @@ describe('namespaced browser connection', () => {
       },
       `${FN}::${BROWSER_ID}`,
     )
+    client.observe(
+      { function_id: 'payments::charge', capture: ['input', 'error'] },
+      `${FN}::${BROWSER_ID}`,
+    )
 
     expect(observed.map(({ source }) => source)).toEqual([
-      { function_id: 'session::on-created', deliver: 'output' },
+      { function_id: 'session::on-created', capture: ['output'] },
       {
         function_id: 'observability::on-span',
-        deliver: 'input',
+        capture: ['input'],
         namespace: 'default',
       },
       {
         function_id: 'harness::on-turn-completed',
         filters: { 'input.session_id': { $eq: 's1' } },
-        deliver: 'output',
+        capture: ['output'],
       },
+      { function_id: 'payments::charge', capture: ['input', 'error'] },
     ])
+    expect(observed.some(({ source }) => 'deliver' in source)).toBe(false)
     expect(observed.every(({ target }) => target === SDK_ID)).toBe(true)
+  })
+
+  function envelope(observerId: string, fields: Record<string, unknown>) {
+    return {
+      observer_id: observerId,
+      activation_id: `act-${observerId}`,
+      function_id: 'session::on-created',
+      invocation_id: 'inv-1',
+      status: 'success',
+      started_at_ms: 1,
+      duration_ms: 2,
+      ...fields,
+    }
+  }
+
+  it('hands a default observer the observed output, as it always did', async () => {
+    const { sdk, functions } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+    const seen: unknown[] = []
+    client.on(FN, (p) => void seen.push(p))
+    client.observe('session::on-created', SDK_ID)
+
+    await functions.get(SDK_ID)?.(
+      envelope('obs-1', { output: { session_id: 's1' } }),
+    )
+    expect(seen).toEqual([{ session_id: 's1' }])
+  })
+
+  it('hands a legacy deliver-input observer the observed input', async () => {
+    const { sdk, functions } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+    const seen: unknown[] = []
+    client.on(FN, (p) => void seen.push(p))
+    client.observe(
+      { function_id: 'observability::on-span', deliver: 'input' },
+      SDK_ID,
+    )
+
+    await functions.get(SDK_ID)?.(envelope('obs-1', { input: { span: 1 } }))
+    expect(seen).toEqual([{ span: 1 }])
+  })
+
+  it('hands an observer that names its capture the whole envelope', async () => {
+    const { sdk, functions } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+    const seen: unknown[] = []
+    client.on(FN, (p) => void seen.push(p))
+    client.observe({ function_id: 'payments::charge', capture: ['input'] }, SDK_ID)
+
+    const event = envelope('obs-1', { input: { amount: 3 } })
+    await functions.get(SDK_ID)?.(event)
+    expect(seen).toEqual([event])
+  })
+
+  it('projects per observer when observers share one target', async () => {
+    const { sdk, functions } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+    const seen: unknown[] = []
+    client.on(FN, (p) => void seen.push(p))
+    client.observe('session::on-created', SDK_ID)
+    client.observe({ function_id: 'payments::charge', capture: ['input'] }, SDK_ID)
+
+    const raw = envelope('obs-2', { input: { amount: 3 } })
+    await functions.get(SDK_ID)?.(envelope('obs-1', { output: 'o' }))
+    await functions.get(SDK_ID)?.(raw)
+    expect(seen).toEqual(['o', raw])
+  })
+
+  it('an output observer whose call carried no output receives null', async () => {
+    const { sdk, functions } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+    const seen: unknown[] = []
+    client.on(FN, (p) => void seen.push(p))
+    client.observe('session::on-created', SDK_ID)
+
+    await functions.get(SDK_ID)?.(envelope('obs-1', { status: 'error' }))
+    expect(seen).toEqual([null])
+  })
+
+  it('passes a payload that is not an envelope of its observers through', async () => {
+    const { sdk, functions } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+    const seen: unknown[] = []
+    client.on(FN, (p) => void seen.push(p))
+    client.observe('session::on-created', SDK_ID)
+
+    await functions.get(SDK_ID)?.({ session_id: 'direct' })
+    const foreign = envelope('obs-other', { output: 'x' })
+    await functions.get(SDK_ID)?.(foreign)
+    expect(seen).toEqual([{ session_id: 'direct' }, foreign])
   })
 
   it('disposes every observer on dispose, once', async () => {

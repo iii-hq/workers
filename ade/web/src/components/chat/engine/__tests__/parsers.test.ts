@@ -13,6 +13,7 @@ import {
   isEngineListFunction,
   observeRequestSchema,
   observeResponseSchema,
+  observerFiresOn,
   observerIdRequestSchema,
   observersListRequestSchema,
   observersListResponseSchema,
@@ -30,6 +31,7 @@ import {
   workersRegisterRequestSchema,
   workersRegisterResponseSchema,
 } from '../parsers'
+import { observerPolicy } from '../ObserverInfoView'
 import { UnobserveView } from '../UnobserveView'
 
 function wrap<T>(details: T) {
@@ -249,6 +251,61 @@ describe('engine::observers::list', () => {
 
   it('rejects payloads missing the `observers` array', () => {
     expect(safeParseResponse(observersListResponseSchema, {})).toBeNull()
+  })
+})
+
+// An `observe.capture` engine lists which outcomes fire the target as
+// `fires_on`; `fires` stays the numeric activation count. Older engines
+// report the legacy `on` / `deliver` instead.
+const captureObserver = {
+  id: 'obs-2',
+  function_id: 'payments::charge',
+  target: { function_id: 'alerts::payment-failed' },
+  capture: ['input', 'error'],
+  fires_on: ['error'],
+  state: 'active',
+  fires: 3,
+}
+
+describe('observer outcomes', () => {
+  it('keeps fires_on and the numeric fires count from the listing', () => {
+    const resp = safeParseResponse(observersListResponseSchema, {
+      observers: [captureObserver],
+    })
+    expect(resp?.observers[0].fires_on).toEqual(['error'])
+    expect(resp?.observers[0].fires).toBe(3)
+  })
+
+  it('reads fires_on, never capture', () => {
+    expect(observerFiresOn({ ...captureObserver, fires_on: ['success'] })).toEqual(['success'])
+    expect(observerFiresOn({ ...captureObserver, fires_on: ['error', 'success'] })).toEqual([
+      'success',
+      'error',
+    ])
+  })
+
+  it('falls back to the legacy on when fires_on is absent or unusable', () => {
+    expect(observerFiresOn(observer)).toEqual(['success'])
+    expect(observerFiresOn({ ...captureObserver, fires_on: undefined, on: 'error' })).toEqual([
+      'error',
+    ])
+    expect(observerFiresOn({ ...captureObserver, fires_on: ['bogus'], on: 'complete' })).toEqual([
+      'success',
+      'error',
+    ])
+    expect(observerFiresOn({ ...captureObserver, fires_on: undefined })).toEqual(['success'])
+  })
+
+  it('the policy block shows fires_on, and deliver only for a legacy raw delivery', () => {
+    const policy = observerPolicy(captureObserver)
+    expect(policy.fires_on).toEqual(['error'])
+    expect(policy).not.toHaveProperty('on')
+    expect(policy).not.toHaveProperty('deliver')
+    const legacy = observerPolicy(observer)
+    expect(legacy.fires_on).toEqual(['success'])
+    expect(legacy).not.toHaveProperty('on')
+    expect(legacy.deliver).toBe('output')
+    expect(observerPolicy({ ...observer, deliver: 'envelope' })).not.toHaveProperty('deliver')
   })
 })
 
