@@ -181,7 +181,26 @@ impl SnapshotRepo {
                 let _ = self.git(Some(&index), &["read-tree", tree.trim()]).await;
             }
         }
-        self.git(Some(&index), &["add", "-A"]).await?;
+        // A path git cannot index (a nested repository with no commit checked
+        // out) made `add -A` abort without writing the index, so every later
+        // snapshot of the session hashed the whole tree again: 1-2.5 s per
+        // hook on a large checkout. `--ignore-errors` writes the index anyway
+        // and exits 1; the tree then lacks only the paths git skipped.
+        let added = self
+            .command(Some(&index))
+            .args(["add", "-A", "--ignore-errors"])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|e| format!("git failed to start: {e}"))?;
+        let stderr = String::from_utf8_lossy(&added.stderr);
+        match added.status.code() {
+            Some(0) => {}
+            Some(1) => {
+                tracing::debug!(skipped = %stderr.trim(), "turn snapshot: paths git could not index")
+            }
+            _ => return Err(stderr.trim().to_string()),
+        }
         let tree = self.git(Some(&index), &["write-tree"]).await?;
         Ok(String::from_utf8_lossy(&tree).trim().to_string())
     }
@@ -421,5 +440,38 @@ mod tests {
         );
         assert!(listed.contains(&".iii/project.ini"), "{listed:?}");
         assert!(listed.contains(&"notes.md"), "{listed:?}");
+    }
+
+    /// A nested repository with no commit checked out cannot be indexed. The
+    /// snapshot still succeeds, keeps every other file, and writes the
+    /// session's index so the next snapshot only stats the tree.
+    #[tokio::test]
+    async fn a_path_git_cannot_index_does_not_fail_the_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(root.join(".tmp/nested")).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(root.join("notes.md"), "kept\n").unwrap();
+
+        let Some(repo) = SnapshotRepo::open(&store.join("repos"), &root, &store).await else {
+            eprintln!("git is not available; skipping");
+            return;
+        };
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root.join(".tmp/nested"))
+            .status()
+            .await
+            .unwrap();
+        assert!(init.success());
+
+        let tree = repo.snapshot("s1").await.unwrap();
+        let listed = repo
+            .git(None, &["ls-tree", "-r", "--name-only", &tree])
+            .await
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&listed).unwrap().trim(), "notes.md");
+        assert!(repo.git_dir.join("index-s1").is_file());
     }
 }
