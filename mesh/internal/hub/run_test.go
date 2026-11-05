@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +39,8 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 					return
 				}
 				defer conn.CloseNow()
+				greet, _ := json.Marshal(map[string]any{"type": "workerregistered", "worker_id": "run-wire", "features": []string{"observe.v1", "observe.v2", "local-dispatch.v1"}})
+				conn.Write(ctx, websocket.MessageText, greet)
 				connectionNamespace := ""
 				workerName := ""
 				var pending []map[string]json.RawMessage
@@ -62,7 +65,7 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 						}
 						pending = nil
 					}
-					if connectionNamespace == "" && (string(frame["type"]) == `"registerfunction"` || string(frame["type"]) == `"registertriggertype"`) {
+					if connectionNamespace == "" && (string(frame["type"]) == `"registerfunction"`) {
 						pending = append(pending, frame)
 						continue
 					}
@@ -127,16 +130,15 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 				select {
 				case f := <-frames:
 					switch string(f["type"]) {
-					case `"registertriggertype"`:
-						if string(f["id"]) == `"mesh::node-changed"` {
-							if string(f["connection_namespace"]) != `"`+ns+`"` {
-								t.Fatalf("event type namespace: %s", f)
-							}
-							nodeEventsRegistered = true
-						}
 					case `"registerfunction"`:
 						var id string
 						json.Unmarshal(f["id"], &id)
+						if id == "mesh::on-node-changed" {
+							nodeEventsRegistered = true
+							if string(f["private"]) != "true" {
+								t.Fatal("public node source")
+							}
+						}
 						var connectionNS string
 						json.Unmarshal(f["connection_namespace"], &connectionNS)
 						t.Logf("registration %s namespace=%q", id, connectionNS)
@@ -146,40 +148,56 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 						if connectionNS == "default" {
 							defaultNames[id] = true
 						}
-						if strings.HasPrefix(id, "mesh::") && (id == "mesh::auth" || id == "mesh::middleware" || id == "mesh::on-trigger-registration") {
+						if strings.HasPrefix(id, "mesh::") && (id == "mesh::auth" || id == "mesh::middleware" || id == "mesh::on-observer-registration") {
 							var md map[string]any
 							json.Unmarshal(f["metadata"], &md)
 							if md["internal"] != true {
 								t.Fatal("proxy function is not internal")
 							}
 						}
-					case `"registertrigger"`:
-						if string(f["trigger_type"]) == `"console:script"` || string(f["trigger_type"]) == `"console:style"` {
-							var asset map[string]string
-							if err := json.Unmarshal(f["config"], &asset); err != nil {
-								t.Fatal(err)
-							}
-							path := asset["path"]
-							kind := string(f["trigger_type"])
-							if string(f["namespace"]) != `"`+ns+`"` || string(f["function_id"]) != `"mesh::ui-content"` ||
-								!(path == "mesh/page.js" && kind == `"console:script"` || path == "mesh/styles.css" && kind == `"console:style"`) {
-								t.Fatalf("invalid UI binding: %s", f)
+					case `"observe"`:
+						var source struct {
+							FunctionID string                                `json:"function_id"`
+							Namespace  string                                `json:"namespace"`
+							Args       map[string]string                     `json:"args"`
+							Filters    map[string]map[string]json.RawMessage `json:"filters"`
+							Deliver    string                                `json:"deliver"`
+						}
+						var target struct {
+							FunctionID string `json:"function_id"`
+							Namespace  string `json:"namespace"`
+						}
+						if err := json.Unmarshal(f["source"], &source); err != nil {
+							t.Fatal(err)
+						}
+						json.Unmarshal(f["target"], &target)
+						if target.Namespace != ns {
+							t.Fatalf("observer target namespace: %s", f)
+						}
+						if source.FunctionID == "ade::ui::asset" {
+							path, kind := source.Args["path"], source.Args["kind"]
+							if source.Namespace != ns || target.FunctionID != "mesh::ui-content" || !(path == "mesh/page.js" && kind == "script" || path == "mesh/styles.css" && kind == "style") {
+								t.Fatalf("invalid asset observer: %s", f)
 							}
 							uiAssets[path] = true
 							continue
 						}
-						bound = true
-						var gotNS string
-						json.Unmarshal(f["namespace"], &gotNS)
-						if gotNS != ns {
-							t.Fatalf("trigger namespace: %s", f["namespace"])
+						if source.FunctionID != "configuration::on-updated" || source.Namespace != "default" || source.Deliver != "output" || target.FunctionID != "mesh::on-config-change" {
+							t.Fatalf("invalid configuration observer: %s", f)
 						}
-						var c map[string]any
-						json.Unmarshal(f["config"], &c)
-						if c["configuration_id"] == "rbac-proxy" {
+						var id string
+						json.Unmarshal(source.Filters["input.id"]["$eq"], &id)
+						var events []string
+						json.Unmarshal(source.Filters["input.event_type"]["$in"], &events)
+						if len(events) != 3 {
+							t.Fatalf("missing event filter: %s", f)
+						}
+						if id == "rbac-proxy" {
 							proxyBound = true
-						} else if c["configuration_id"] != "project_mesh" {
-							t.Fatalf("trigger filter: %+v", c)
+						} else if id == "project_mesh" {
+							bound = true
+						} else {
+							t.Fatalf("configuration filter: %s", f)
 						}
 					case `"invokefunction"`:
 						id := string(f["function_id"])
@@ -220,12 +238,12 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 					t.Fatalf("%v primary=%v default=%v", ctx.Err(), names, defaultNames)
 				}
 			}
-			for _, id := range []string{"mesh::ui-content", "mesh::status", "mesh::nodes::list", "mesh::nodes::get", "mesh::nodes::remove", "mesh::join::code", "mesh::join::cycle", "mesh::configuration-id", "mesh::on-config-change", "mesh::auth", "mesh::middleware", "mesh::on-trigger-registration"} {
+			for _, id := range []string{"mesh::ui-content", "mesh::status", "mesh::nodes::list", "mesh::nodes::get", "mesh::nodes::remove", "mesh::join::code", "mesh::join::cycle", "mesh::configuration-id", "mesh::on-config-change", "mesh::auth", "mesh::middleware", "mesh::on-observer-registration"} {
 				if !names[id] {
 					t.Fatalf("missing %s", id)
 				}
 			}
-			if !defaultNames["mesh::middleware"] || !defaultNames["mesh::on-trigger-registration"] {
+			if !defaultNames["mesh::middleware"] || !defaultNames["mesh::on-observer-registration"] {
 				t.Fatal("missing shared default handlers")
 			}
 			if ns != "default" && defaultNames["mesh::auth"] {
@@ -241,5 +259,55 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestRunDoesNotExportTelemetry(t *testing.T) {
+	t.Setenv("III_NAMESPACE", "project")
+	t.Setenv("OTEL_ENABLED", "true")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	var telemetry atomic.Int32
+	registered := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/otel" {
+			telemetry.Add(1)
+		}
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		for {
+			_, raw, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var frame map[string]json.RawMessage
+			json.Unmarshal(raw, &frame)
+			if string(frame["id"]) == `"mesh::ui-content"` {
+				select {
+				case registered <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}))
+	defer server.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Options{URL: "ws" + strings.TrimPrefix(server.URL, "http"), CollectInterface: true})
+	}()
+	select {
+	case <-registered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := telemetry.Load(); got != 0 {
+		t.Fatalf("Mesh opened %d telemetry export connections", got)
 	}
 }

@@ -31,14 +31,14 @@ type nodeCallRPC struct {
 	fail     string
 }
 
-func (r *nodeCallRPC) Trigger(_ context.Context, req iii.TriggerRequest) (json.RawMessage, error) {
+func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
 	if req.Namespace != "default" || !strings.HasPrefix(req.FunctionID, "laptop::mesh-node::") {
 		return nil, errors.New("incorrect control namespace or prefix")
 	}
 	fn := strings.TrimPrefix(req.FunctionID, "laptop::")
 	var signed node.Signed
 	var wire any
-	json.Unmarshal(req.Data, &wire)
+	json.Unmarshal(req.Payload, &wire)
 	b, _ := json.Marshal(wire)
 	json.Unmarshal(b, &signed)
 	payload, err := r.verifier.Verify(fn, signed, time.Now())

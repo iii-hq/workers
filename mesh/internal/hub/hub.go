@@ -46,7 +46,7 @@ func Run(ctx context.Context, o Options) (err error) {
 	if namespace == "" {
 		namespace = "default"
 	}
-	client := iii.New(o.URL, iii.WithName("mesh"), iii.WithNamespace(namespace))
+	client := iii.New(o.URL, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh"), iii.WithNamespace(namespace))
 	defer client.Close()
 
 	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

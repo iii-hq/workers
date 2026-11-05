@@ -37,7 +37,7 @@ func (h *Hub) callNode(ctx context.Context, name, fn string, payload any) (json.
 	if fn == "mesh-node::status" {
 		timeout = 5 * time.Second
 	}
-	return client.Trigger(ctx, iii.TriggerRequest{FunctionID: name + "::" + fn, Namespace: "default", Data: raw, Timeout: timeout})
+	return client.Call(ctx, iii.CallRequest{FunctionID: name + "::" + fn, Namespace: "default", Payload: raw, Timeout: timeout})
 }
 func (h *Hub) fetchNodeStatus(ctx context.Context, name string) (node.Status, error) {
 	var status node.Status

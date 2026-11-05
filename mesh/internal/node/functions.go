@@ -92,7 +92,7 @@ func (n *Node) workerStatus() []WorkerStatus {
 
 func (n *Node) Register(client *iii.Client) error {
 	for _, fn := range []string{"mesh-node::status", "mesh-node::update", "mesh-node::workers::apply", "mesh-node::drives::apply"} {
-		if err := iii.RegisterFunctionTyped(client, fn, func(ctx context.Context, s Signed) (json.RawMessage, error) { return n.handle(ctx, fn, s) }, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}); err != nil {
+		if _, err := iii.RegisterFunctionTyped(client, fn, func(ctx context.Context, s Signed) (json.RawMessage, error) { return n.handle(ctx, fn, s) }, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}); err != nil {
 			return err
 		}
 	}

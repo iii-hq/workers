@@ -16,6 +16,7 @@ import (
 )
 
 func TestRunWaitsForGatewayAndReconnectsWorkers(t *testing.T) {
+	t.Setenv("OTEL_ENABLED", "true")
 	n, k, m, w := testNode(t)
 	m.port = 0
 	w.runtimes = make(chan Runtime, 8)

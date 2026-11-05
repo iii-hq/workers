@@ -113,8 +113,8 @@ type driveWatchRPC struct {
 	updates chan struct{}
 }
 
-func (r driveWatchRPC) Trigger(ctx context.Context, req iii.TriggerRequest) (json.RawMessage, error) {
-	raw, err := r.rpc.Trigger(ctx, req)
+func (r driveWatchRPC) Call(ctx context.Context, req iii.CallRequest) (json.RawMessage, error) {
+	raw, err := r.rpc.Call(ctx, req)
 	if strings.HasSuffix(req.FunctionID, "::drives::apply") {
 		select {
 		case r.updates <- struct{}{}:

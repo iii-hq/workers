@@ -20,13 +20,13 @@ type nodeEvent struct {
 }
 
 type nodeBinding struct {
-	function, namespace, node string
-	ctx                       context.Context
-	cancel                    context.CancelFunc
-	stop                      func() bool
+	node     string
+	observer *iii.Observer
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
-func (b *nodeBinding) close() { b.stop(); b.cancel() }
+func (b *nodeBinding) close() { b.cancel() }
 
 type nodeDelivery struct {
 	binding *nodeBinding
@@ -34,14 +34,15 @@ type nodeDelivery struct {
 }
 
 type nodeEvents struct {
-	mu       sync.Mutex
-	bindings map[string]*nodeBinding
-	queue    chan nodeDelivery
-	ctx      context.Context
-	cancel   context.CancelFunc
-	done     chan struct{}
-	client   *iii.Client
-	version  string
+	mu          sync.Mutex
+	bindings    map[string]*nodeBinding
+	queue       chan nodeDelivery
+	ctx         context.Context
+	cancel      context.CancelFunc
+	done        chan struct{}
+	client      *iii.Client
+	version     string
+	unsubscribe func()
 }
 
 func (h *Hub) registerNodeEvents(ctx context.Context, client *iii.Client) error {
@@ -52,14 +53,47 @@ func (h *Hub) registerNodeEvents(ctx context.Context, client *iii.Client) error 
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	e := &nodeEvents{bindings: make(map[string]*nodeBinding), queue: make(chan nodeDelivery, nodeEventCapacity), ctx: ctx, cancel: cancel, done: make(chan struct{}), client: client, version: h.Version}
-	err := client.RegisterTriggerType("mesh::node-changed", "Mesh node lifecycle changes", e, iii.RegisterTriggerTypeOptions{
-		TriggerRequestFormat: json.RawMessage(`{"type":"object","properties":{"node":{"type":"string","minLength":1}},"additionalProperties":false}`),
-		CallRequestFormat:    json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"event":{"enum":["joined","online","offline","removed","outdated"]},"at":{"type":"string","format":"date-time"}},"required":["name","event","at"],"additionalProperties":false}`),
+	client.OnObserverAddedFor("mesh::on-node-changed", e.addObserver)
+	client.OnObserverRemovedFor("mesh::on-node-changed", func(_ context.Context, obs *iii.Observer) { e.removeObserver(obs) })
+	client.OnObservationMatchFor("mesh::on-node-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+		var meta struct {
+			ForObserver string `json:"for_observer"`
+		}
+		_ = json.Unmarshal(call.Metadata, &meta)
+		return meta.ForObserver == obs.ID
+	}))
+	client.OnObservationDeliverFor("mesh::on-node-changed", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+		for _, obs := range observers {
+			if obs.Matches(call) {
+				_, _ = client.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input, Timeout: 5 * time.Second})
+			}
+		}
+		return json.RawMessage(call.Input), nil
+	})
+	_, err := iii.RegisterFunctionTyped(client, "mesh::on-node-changed", func(_ context.Context, event nodeEvent) (nodeEvent, error) { return event, nil }, iii.RegisterFunctionOptions{
+		Private: true, Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`),
+		ArgsFormat: json.RawMessage(`{"type":"object","properties":{"node":{"type":"string","minLength":1}},"additionalProperties":false}`),
 	})
 	if err != nil {
 		cancel()
 		return err
 	}
+	e.unsubscribe = client.AddConnectionStateListener(func(state iii.ConnectionState) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for id, b := range e.bindings {
+			if state != iii.StateConnected {
+				b.close()
+				continue
+			}
+			if b.ctx.Err() != nil && e.ctx.Err() == nil {
+				// A resumed observer starts a new generation. Queued deliveries still
+				// hold the canceled generation and can never turn into replayed history.
+				bindingCtx, cancel := context.WithCancel(e.ctx)
+				e.bindings[id] = &nodeBinding{node: b.node, observer: b.observer, ctx: bindingCtx, cancel: cancel}
+			}
+		}
+	})
 	h.events = e
 	go e.run()
 	if h.Coordinator != nil {
@@ -68,9 +102,9 @@ func (h *Hub) registerNodeEvents(ctx context.Context, client *iii.Client) error 
 	return nil
 }
 
-func (e *nodeEvents) RegisterTrigger(ctx context.Context, cfg iii.TriggerConfig) error {
+func (e *nodeEvents) addObserver(_ context.Context, obs *iii.Observer) error {
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(cfg.Config, &fields) != nil || fields == nil {
+	if obs.DecodeArgs(&fields) != nil || fields == nil {
 		return errors.New("node event config must be an object")
 	}
 	filter := ""
@@ -82,12 +116,9 @@ func (e *nodeEvents) RegisterTrigger(ctx context.Context, cfg iii.TriggerConfig)
 			return errors.New("invalid node event filter")
 		}
 	}
-	if cfg.ID == "" || cfg.FunctionID == "" {
-		return errors.New("node event binding requires id and function")
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.ctx.Err() != nil || ctx.Err() != nil {
+	if e.ctx.Err() != nil {
 		return errors.New("node events closed")
 	}
 	for id, b := range e.bindings {
@@ -96,29 +127,24 @@ func (e *nodeEvents) RegisterTrigger(ctx context.Context, cfg iii.TriggerConfig)
 			delete(e.bindings, id)
 		}
 	}
-	old := e.bindings[cfg.ID]
+	old := e.bindings[obs.ID]
 	if old == nil && len(e.bindings) >= nodeEventCapacity {
 		return errors.New("too many node event bindings")
 	}
 	if old != nil {
 		old.close()
 	}
-	bindingCtx, cancel := context.WithCancel(ctx)
-	e.bindings[cfg.ID] = &nodeBinding{function: cfg.FunctionID, namespace: cfg.Namespace, node: filter, ctx: bindingCtx, cancel: cancel, stop: context.AfterFunc(e.ctx, cancel)}
+	bindingCtx, cancel := context.WithCancel(e.ctx)
+	e.bindings[obs.ID] = &nodeBinding{observer: obs, node: filter, ctx: bindingCtx, cancel: cancel}
 	return nil
 }
-func (e *nodeEvents) UnregisterTrigger(ctx context.Context, cfg iii.TriggerConfig) error {
+func (e *nodeEvents) removeObserver(obs *iii.Observer) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	// SDK callbacks can outlive their originating connection.
-	if ctx.Err() != nil {
-		return nil
-	}
-	if b := e.bindings[cfg.ID]; b != nil {
+	if b := e.bindings[obs.ID]; b != nil && b.observer == obs {
 		b.close()
-		delete(e.bindings, cfg.ID)
+		delete(e.bindings, obs.ID)
 	}
-	return nil
 }
 
 func (e *nodeEvents) publish(change coordinator.NodeChange) {
@@ -130,7 +156,7 @@ func (e *nodeEvents) publish(change coordinator.NodeChange) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.ctx.Err() != nil {
+	if e.ctx.Err() != nil || e.client.ConnectionState() != iii.StateConnected {
 		return
 	}
 	for _, b := range e.bindings {
@@ -151,15 +177,20 @@ func (e *nodeEvents) run() {
 		case <-e.ctx.Done():
 			return
 		case d := <-e.queue:
-			if d.binding.ctx.Err() != nil || e.client.State() != iii.StateConnected {
+			if d.binding.ctx.Err() != nil || e.client.ConnectionState() != iii.StateConnected {
+				continue
+			}
+			if d.binding.observer.Accepted(d.binding.ctx) != nil {
 				continue
 			}
 			data, _ := json.Marshal(d.event)
-			_, _ = e.client.Trigger(d.binding.ctx, iii.TriggerRequest{FunctionID: d.binding.function, Namespace: d.binding.namespace, Data: data, Timeout: 5 * time.Second})
+			meta, _ := json.Marshal(map[string]string{"for_observer": d.binding.observer.ID})
+			_, _ = e.client.Call(d.binding.ctx, iii.CallRequest{FunctionID: "mesh::on-node-changed", Payload: data, Metadata: meta, Timeout: 5 * time.Second})
 		}
 	}
 }
 func (e *nodeEvents) close() {
+	e.unsubscribe()
 	e.cancel()
 	e.mu.Lock()
 	for id, b := range e.bindings {

@@ -11,24 +11,24 @@ import (
 
 type configRPC struct {
 	t                 *testing.T
-	calls             []iii.TriggerRequest
+	calls             []iii.CallRequest
 	ensureErr, getErr error
 	raw               json.RawMessage
 	value             json.RawMessage
 }
 
-func (f *configRPC) Trigger(ctx context.Context, r iii.TriggerRequest) (json.RawMessage, error) {
+func (f *configRPC) Call(ctx context.Context, r iii.CallRequest) (json.RawMessage, error) {
 	f.t.Helper()
 	f.calls = append(f.calls, r)
 	if r.Namespace != "default" {
 		f.t.Fatal("configuration routed outside default")
 	}
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(r.Data, &payload); err != nil {
+	if err := json.Unmarshal(r.Payload, &payload); err != nil {
 		f.t.Fatal(err)
 	}
 	if string(payload["id"]) != `"project_mesh"` {
-		f.t.Fatalf("wrong config ID: %s", r.Data)
+		f.t.Fatalf("wrong config ID: %s", r.Payload)
 	}
 	switch r.FunctionID {
 	case "configuration::ensure":
@@ -79,9 +79,9 @@ func TestConfigurationInitialization(t *testing.T) {
 				if call.FunctionID == "configuration::register" {
 					found = true
 					var p map[string]json.RawMessage
-					json.Unmarshal(call.Data, &p)
+					json.Unmarshal(call.Payload, &p)
 					if _, ok := p["initial_value"]; ok != tc.seed {
-						t.Fatalf("legacy seed: %s", call.Data)
+						t.Fatalf("legacy seed: %s", call.Payload)
 					}
 				}
 			}
@@ -89,7 +89,7 @@ func TestConfigurationInitialization(t *testing.T) {
 				t.Fatalf("legacy registration=%v", found)
 			}
 			var p map[string]json.RawMessage
-			json.Unmarshal(f.calls[0].Data, &p)
+			json.Unmarshal(f.calls[0].Payload, &p)
 			if string(p["metadata"]) != `{"ui_form":"mesh"}` {
 				t.Fatal("missing form identity")
 			}

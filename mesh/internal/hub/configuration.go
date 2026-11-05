@@ -14,7 +14,7 @@ import (
 )
 
 type rpc interface {
-	Trigger(context.Context, iii.TriggerRequest) (json.RawMessage, error)
+	Call(context.Context, iii.CallRequest) (json.RawMessage, error)
 }
 
 func configCall(ctx context.Context, client rpc, id string, payload any) (json.RawMessage, error) {
@@ -22,7 +22,7 @@ func configCall(ctx context.Context, client rpc, id string, payload any) (json.R
 	if err != nil {
 		return nil, err
 	}
-	return client.Trigger(ctx, iii.TriggerRequest{FunctionID: id, Namespace: "default", Data: b, Timeout: 15 * time.Second})
+	return client.Call(ctx, iii.CallRequest{FunctionID: id, Namespace: "default", Payload: b, Timeout: 15 * time.Second})
 }
 func remoteCode(err error, code string) bool {
 	var remote *iii.InvocationError
@@ -118,12 +118,12 @@ func (h *Hub) onConfigChange(ctx context.Context, client rpc, event ConfigChange
 }
 func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, local bool) error {
 	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if err := iii.RegisterFunctionTyped(client, "mesh::configuration-id", func(context.Context, struct{}) (ConfigurationIdentity, error) {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::configuration-id", func(context.Context, struct{}) (ConfigurationIdentity, error) {
 		return ConfigurationIdentity{ID: h.ConfigID}, nil
 	}, internal); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::on-config-change", func(ctx context.Context, e ConfigChangeEvent) (ConfigChangeResult, error) {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::on-config-change", func(ctx context.Context, e ConfigChangeEvent) (ConfigChangeResult, error) {
 		if local {
 			return ConfigChangeResult{}, errors.New("configuration reload is unavailable in interface mode")
 		}
@@ -134,15 +134,18 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 	if local {
 		return nil
 	}
-	binding, _ := json.Marshal(map[string]any{"configuration_id": h.ConfigID, "event_types": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}})
-	if err := client.RegisterTriggerNamespaced("mesh-config-"+h.ConfigID, "configuration", "mesh::on-config-change", h.Namespace, binding); err != nil {
-		return err
-	}
-	if h.proxyReady {
-		proxyBinding, _ := json.Marshal(map[string]any{"configuration_id": "rbac-proxy", "event_types": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}})
-		if err := client.RegisterTriggerNamespaced("mesh-proxy-config", "configuration", "mesh::on-config-change", h.Namespace, proxyBinding); err != nil {
+	for _, id := range []string{h.ConfigID, "rbac-proxy"} {
+		if id == "rbac-proxy" && !h.proxyReady {
+			continue
+		}
+		if _, err := client.Observe(iii.Source{FunctionID: "configuration::on-updated", Namespace: "default", Deliver: iii.DeliverOutput, Filters: iii.Filters{
+			"input.id":         iii.Op{"$eq": id},
+			"input.event_type": iii.Op{"$in": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}},
+		}}, "mesh::on-config-change", iii.ObserverOptions{ID: "mesh-config-" + id, TargetNamespace: h.Namespace}); err != nil {
 			return err
 		}
+	}
+	if h.proxyReady {
 		h.refreshProxy(ctx)
 	}
 	_, err := h.onConfigChange(ctx, client, ConfigChangeEvent{ID: h.ConfigID})

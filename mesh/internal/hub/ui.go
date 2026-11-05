@@ -32,12 +32,11 @@ func uiContent(_ context.Context, request UIRequest) (UIResponse, error) {
 }
 
 func (h *Hub) registerUI(client *iii.Client) error {
-	if err := iii.RegisterFunctionTyped(client, "mesh::ui-content", uiContent, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::ui-content", uiContent, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}); err != nil {
 		return err
 	}
-	for _, asset := range []struct{ path, kind string }{{"mesh/page.js", "console:script"}, {"mesh/styles.css", "console:style"}} {
-		cfg, _ := json.Marshal(map[string]string{"path": asset.path})
-		if err := client.RegisterTriggerNamespaced("mesh:ui:"+asset.path, asset.kind, "mesh::ui-content", h.Namespace, cfg); err != nil {
+	for _, asset := range []struct{ path, kind string }{{"mesh/page.js", "script"}, {"mesh/styles.css", "style"}} {
+		if _, err := client.Observe(iii.Source{FunctionID: "ade::ui::asset", Namespace: h.Namespace, Args: iii.Args{"path": asset.path, "kind": asset.kind}}, "mesh::ui-content", iii.ObserverOptions{ID: "mesh:ui:" + asset.path, TargetNamespace: h.Namespace}); err != nil {
 			return err
 		}
 	}

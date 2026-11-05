@@ -51,7 +51,7 @@ func (n *Node) Run(ctx context.Context) error {
 		if url == "" {
 			return nil
 		}
-		client = iii.New(url, iii.WithName("mesh-node"), iii.WithNamespace("default"))
+		client = iii.New(url, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-node"), iii.WithNamespace("default"))
 		if err := n.Register(client); err != nil {
 			return err
 		}

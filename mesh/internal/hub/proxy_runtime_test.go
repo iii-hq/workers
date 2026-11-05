@@ -23,10 +23,10 @@ type proxyRPC struct {
 	writes     int
 }
 
-func (f *proxyRPC) Trigger(_ context.Context, req iii.TriggerRequest) (json.RawMessage, error) {
+func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
 	f.t.Helper()
 	var p map[string]any
-	if err := json.Unmarshal(req.Data, &p); err != nil {
+	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		f.t.Fatal(err)
 	}
 	if req.FunctionID == "rbac-proxy::on-config-change" {
@@ -229,5 +229,45 @@ func TestProxyClaimUsesConfiguredLoopbackEndpoint(t *testing.T) {
 	}
 	if f.value["port"] != float64(50123) {
 		t.Fatal("rewrote operator-owned listener")
+	}
+}
+
+func TestLegacyProxyUpgradeNeverRepairsEndpointsOrConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		allow  bool
+	}{
+		{"owned hook", func(map[string]any) {}, true},
+		{"foreign bus", func(c map[string]any) { c["engine_url"] = "ws://127.0.0.1:59998" }, false},
+		{"foreign listener", func(c map[string]any) { c["port"] = float64(59998) }, false},
+		{"conflicting hook", func(c map[string]any) {
+			c["rbac"].(map[string]any)["on_observer_registration_function_id"] = "other::hook"
+		}, false},
+		{"exposed shared grants", func(c map[string]any) { c["rbac"].(map[string]any)["expose_functions"] = []any{"state::*"} }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := authHub()
+			current := map[string]any{"host": "127.0.0.1", "port": float64(49200), "engine_url": "ws://127.0.0.1:49134", "middleware_function_id": "mesh::middleware", "operator_limit": float64(7), "rbac": map[string]any{"auth_function_id": "mesh::auth", "on_trigger_registration_function_id": "mesh::on-trigger-registration"}}
+			tc.mutate(current)
+			before, _ := json.Marshal(current)
+			f := &proxyRPC{t: t, value: current}
+			h.proxyClient = f
+			h.proxyReady = true
+			err := h.reconcileProxy(t.Context())
+			if (err == nil) != tc.allow {
+				t.Fatalf("allow=%v err=%v", tc.allow, err)
+			}
+			if tc.allow {
+				if f.writes != 1 || f.applyCalls != 1 || f.value["operator_limit"] != float64(7) {
+					t.Fatal("owned upgrade not applied exactly once")
+				}
+				return
+			}
+			after, _ := json.Marshal(f.value)
+			if f.writes != 0 || f.applyCalls != 0 || string(before) != string(after) {
+				t.Fatal("conflicting legacy config changed")
+			}
+		})
 	}
 }

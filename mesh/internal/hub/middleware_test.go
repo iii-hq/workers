@@ -12,11 +12,11 @@ import (
 )
 
 type forwardingRPC struct {
-	calls []iii.TriggerRequest
+	calls []iii.CallRequest
 	err   error
 }
 
-func (f *forwardingRPC) Trigger(_ context.Context, r iii.TriggerRequest) (json.RawMessage, error) {
+func (f *forwardingRPC) Call(_ context.Context, r iii.CallRequest) (json.RawMessage, error) {
 	f.calls = append(f.calls, r)
 	return json.RawMessage(`{"target":"result"}`), f.err
 }
@@ -74,11 +74,11 @@ func TestMiddlewareConfigurationRules(t *testing.T) {
 			}
 			if tc.id == "configuration::get" {
 				var p map[string]any
-				json.Unmarshal(call.Data, &p)
+				json.Unmarshal(call.Payload, &p)
 				if p["raw"] != true {
 					t.Fatal("expanded get")
 				}
-			} else if string(call.Data) != tc.payload {
+			} else if string(call.Payload) != tc.payload {
 				t.Fatal("changed ordinary payload")
 			}
 		})

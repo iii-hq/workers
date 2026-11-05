@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"reflect"
 	"slices"
 	"testing"
@@ -23,14 +24,20 @@ func TestAuthGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.FunctionRegistrationPrefix != "laptop" || !got.AllowTriggerTypeRegistration {
+	if got.FunctionRegistrationPrefix != "laptop" {
 		t.Fatalf("identity: %+v", got)
 	}
-	if !reflect.DeepEqual(got.Namespaces["default"], []string{"configuration::get", "configuration::ensure", "configuration::register", "configuration::set"}) || !reflect.DeepEqual(got.Namespaces["proj"], []string{"shell::exec"}) {
+	if !reflect.DeepEqual(got.Namespaces["default"], []string{"configuration::get", "configuration::ensure", "configuration::register", "configuration::set", "configuration::on-updated"}) || !reflect.DeepEqual(got.Namespaces["proj"], []string{"shell::exec"}) {
 		t.Fatalf("namespaces: %+v", got.Namespaces)
 	}
-	if !slices.Contains(got.AllowedTriggerTypes, "laptop::*") || !slices.Contains(got.AllowedTriggerTypes, "configuration") {
-		t.Fatal(got.AllowedTriggerTypes)
+
+	wire, _ := json.Marshal(got)
+	var auth map[string]json.RawMessage
+	json.Unmarshal(wire, &auth)
+	for _, removed := range []string{"allow_trigger_type_registration", "allowed_trigger_types"} {
+		if _, ok := auth[removed]; ok {
+			t.Fatalf("removed auth field %s", removed)
+		}
 	}
 	if got.Context.MeshNode != "laptop" || len(got.Context.SessionKey) != 64 {
 		t.Fatal("bad session identity")

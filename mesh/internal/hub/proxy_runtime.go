@@ -54,7 +54,7 @@ func fetchProxyConfig(ctx context.Context, client rpc) (map[string]any, error) {
 }
 func validProxyHooks(cfg map[string]any) bool {
 	rbac, ok := cfg["rbac"].(map[string]any)
-	if !ok || cfg["middleware_function_id"] != "mesh::middleware" || rbac["on_trigger_registration_function_id"] != "mesh::on-trigger-registration" {
+	if !ok || cfg["middleware_function_id"] != "mesh::middleware" || rbac["on_observer_registration_function_id"] != "mesh::on-observer-registration" {
 		return false
 	}
 	if exposed, ok := rbac["expose_functions"]; ok && exposed != nil {
@@ -63,7 +63,7 @@ func validProxyHooks(cfg map[string]any) bool {
 			return false
 		}
 	}
-	for _, key := range []string{"on_function_registration_function_id", "on_trigger_type_registration_function_id", "on_observer_registration_function_id"} {
+	for _, key := range []string{"on_function_registration_function_id", "on_trigger_type_registration_function_id", "on_trigger_registration_function_id"} {
 		if value := rbac[key]; value != nil && value != "" {
 			return false
 		}
@@ -100,8 +100,16 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 		return errors.New(status)
 	}
 	if write {
-		next["engine_url"] = h.proxyEngineURL()
-		next["host"], next["port"] = host, port
+		rbac, _ := current["rbac"].(map[string]any)
+		if rbac["auth_function_id"] == "mesh::auth" {
+			// A legacy hook upgrade never repairs endpoints or changes ownership.
+			if !validProxyHooks(next) || next["host"] != host || next["port"] != float64(port) || next["engine_url"] != h.proxyEngineURL() {
+				return errors.New("legacy proxy listener or engine URL does not match Mesh")
+			}
+		} else {
+			next["engine_url"] = h.proxyEngineURL()
+			next["host"], next["port"] = host, port
+		}
 		if current == nil {
 			_, err = configCall(ctx, h.proxyClient, "configuration::ensure", map[string]any{"id": "rbac-proxy", "name": "RBAC Proxy", "description": "Mesh gateway proxy", "schema": map[string]any{}, "initial_value": next})
 		} else {
@@ -145,22 +153,23 @@ func (h *Hub) registerProxyFunctions(ctx context.Context, url string) error {
 		return errors.New("hub is closed")
 	}
 	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if err := iii.RegisterFunctionTyped(h.Client, "mesh::auth", h.Auth, internal); err != nil {
+	if _, err := iii.RegisterFunctionTyped(h.Client, "mesh::auth", h.Auth, internal); err != nil {
 		return err
 	}
 	register := func(client *iii.Client) error {
-		if err := iii.RegisterFunctionTyped(client, "mesh::middleware", func(ctx context.Context, r MiddlewareRequest) (json.RawMessage, error) {
+		if _, err := iii.RegisterFunctionTyped(client, "mesh::middleware", func(ctx context.Context, r MiddlewareRequest) (json.RawMessage, error) {
 			return h.middleware(ctx, client, r)
 		}, internal); err != nil {
 			return err
 		}
-		return iii.RegisterFunctionTyped(client, "mesh::on-trigger-registration", h.TriggerHook, internal)
+		_, err := iii.RegisterFunctionTyped(client, "mesh::on-observer-registration", h.ObserverHook, internal)
+		return err
 	}
 	if err := register(h.Client); err != nil {
 		return err
 	}
 	if h.Namespace != "default" {
-		h.DefaultClient = iii.New(url, iii.WithName("mesh-default"), iii.WithNamespace("default"))
+		h.DefaultClient = iii.New(url, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-default"), iii.WithNamespace("default"))
 		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := h.DefaultClient.Connect(connectCtx)
 		cancel()
@@ -199,7 +208,7 @@ type proxyApplyResult struct {
 }
 
 func (h *Hub) applyProxy(ctx context.Context, desired map[string]any) error {
-	raw, err := h.proxyClient.Trigger(ctx, iii.TriggerRequest{FunctionID: "rbac-proxy::on-config-change", Namespace: h.Namespace, Data: json.RawMessage(`{"id":"rbac-proxy"}`), Timeout: 15 * time.Second})
+	raw, err := h.proxyClient.Call(ctx, iii.CallRequest{FunctionID: "rbac-proxy::on-config-change", Namespace: h.Namespace, Payload: json.RawMessage(`{"id":"rbac-proxy"}`), Timeout: 15 * time.Second})
 	if err != nil {
 		return fmt.Errorf("apply proxy configuration: %w", err)
 	}

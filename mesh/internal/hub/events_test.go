@@ -24,6 +24,7 @@ type eventWire struct {
 	conn        *websocket.Conn
 	frames      chan map[string]json.RawMessage
 	connections chan *websocket.Conn
+	revision    int
 }
 
 func newEventWire(t *testing.T, h *Hub) *eventWire {
@@ -40,6 +41,8 @@ func newEventWire(t *testing.T, h *Hub) *eventWire {
 		}
 		defer conn.CloseNow()
 		connected <- conn
+		greet, _ := json.Marshal(map[string]any{"type": "workerregistered", "worker_id": "event-wire", "features": []string{"observe.v1", "observe.v2", "local-dispatch.v1"}})
+		conn.Write(ctx, websocket.MessageText, greet)
 		for {
 			_, raw, err := conn.Read(ctx)
 			if err != nil {
@@ -49,7 +52,14 @@ func newEventWire(t *testing.T, h *Hub) *eventWire {
 			if json.Unmarshal(raw, &frame) != nil {
 				return
 			}
-			if string(frame["function_id"]) == `"engine::workers::register"` {
+			if string(frame["function_id"]) == `"engine::workers::register"` || string(frame["type"]) == `"reattach"` {
+				continue
+			}
+			if string(frame["type"]) == `"registerfunction"` {
+				confirm, _ := json.Marshal(map[string]any{"type": "functionregistered", "id": "mesh::on-node-changed", "namespace": "hub-project", "revision": 0, "local_dispatch": true, "observers": []any{}})
+				conn.Write(ctx, websocket.MessageText, confirm)
+			}
+			if string(frame["type"]) == `"invocationsobserved"` || string(frame["type"]) == `"localinvocationstats"` {
 				continue
 			}
 			select {
@@ -60,7 +70,7 @@ func newEventWire(t *testing.T, h *Hub) *eventWire {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := iii.New("ws"+strings.TrimPrefix(server.URL, "http"), iii.WithNamespace("hub-project"))
+	client := iii.New("ws"+strings.TrimPrefix(server.URL, "http"), iii.WithNamespace("hub-project"), iii.WithReconnectConfig(iii.ReconnectConfig{InitialDelay: 2 * time.Second, MaxDelay: 2 * time.Second, MaxRetries: -1}))
 	t.Cleanup(func() { client.Close() })
 	if err := client.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -70,9 +80,12 @@ func newEventWire(t *testing.T, h *Hub) *eventWire {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { h.Close() })
-	f := e.next("registertriggertype")
-	if string(f["id"]) != `"mesh::node-changed"` {
+	f := e.next("registerfunction")
+	if string(f["id"]) != `"mesh::on-node-changed"` {
 		t.Fatalf("type: %s", f)
+	}
+	if string(f["private"]) != "true" {
+		t.Fatalf("node event is not private: %s", f)
 	}
 	return e
 }
@@ -101,8 +114,9 @@ func (e *eventWire) next(kind string) map[string]json.RawMessage {
 }
 func (e *eventWire) bind(id, cfg string) bool {
 	e.t.Helper()
-	e.send(map[string]any{"type": "registertrigger", "id": id, "trigger_type": "mesh::node-changed", "function_id": "audit::" + id, "namespace": "events-project", "config": json.RawMessage(cfg)})
-	f := e.next("triggerregistrationresult")
+	e.revision++
+	e.send(map[string]any{"type": "observeradded", "function_id": "mesh::on-node-changed", "namespace": "hub-project", "revision": e.revision, "observer": map[string]any{"id": id, "args": json.RawMessage(cfg), "filters": map[string]any{}, "target": "audit::" + id, "capture": []string{"input", "output", "caller"}, "on": "success", "deliver": "output"}})
+	f := e.next("observerack")
 	return len(f["error"]) == 0 || string(f["error"]) == "null"
 }
 func (e *eventWire) ack(f map[string]json.RawMessage) {
@@ -119,8 +133,8 @@ func (e *eventWire) delivery(name, event string) map[string]json.RawMessage {
 	if json.Unmarshal(payload["at"], &at) != nil || at.IsZero() {
 		e.t.Fatal("missing timestamp")
 	}
-	if string(f["namespace"]) != `"events-project"` {
-		e.t.Fatalf("namespace %s", f["namespace"])
+	if len(f["activation"]) == 0 {
+		e.t.Fatalf("delivery lacks observer activation: %s", f)
 	}
 	return f
 }
@@ -133,12 +147,12 @@ func eventVersion(t *testing.T, h *Hub, version string) {
 func TestBindingRejectsUnknownKeys(t *testing.T) {
 	h := &Hub{}
 	e := newEventWire(t, h)
-	for _, cfg := range []string{`{"unknown":true}`, `{"condition_function_id":"evil::call"}`, `{"node":"laptop","extra":0}`, `{"node":null}`, `{"node":3}`, `[]`, `null`, `{"node":""}`} {
+	for _, cfg := range []string{`{"unknown":true}`, `{"condition_function_id":"evil::call"}`, `{"node":"laptop","extra":0}`, `{"node":null}`, `{"node":3}`, `[]`, `{"node":""}`} {
 		if e.bind("bad", cfg) {
 			t.Fatalf("accepted %s", cfg)
 		}
 	}
-	for i, cfg := range []string{`{}`, `{"node":"laptop"}`} {
+	for i, cfg := range []string{`{}`, `null`, `{"node":"laptop"}`} {
 		if !e.bind(fmt.Sprint(i), cfg) {
 			t.Fatalf("refused %s", cfg)
 		}
@@ -152,7 +166,7 @@ func TestDeliversOnlyForBoundNode(t *testing.T) {
 	}
 	eventVersion(t, h, "0.1.0")
 	f := e.delivery("laptop", "outdated")
-	if string(f["function_id"]) != `"audit::laptop"` {
+	if string(f["activation"]) != `{"observer_id":"laptop"}` {
 		t.Fatalf("filter leaked: %s", f)
 	}
 	e.ack(f)
@@ -162,7 +176,7 @@ func TestDeliversOnlyForBoundNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	f = e.delivery("laptop", "removed")
-	if string(f["function_id"]) != `"audit::laptop"` {
+	if string(f["activation"]) != `{"observer_id":"laptop"}` {
 		t.Fatalf("filter leaked: %s", f)
 	}
 	e.ack(f)
@@ -187,7 +201,7 @@ func TestNoReplayForLateBinding(t *testing.T) {
 	}
 	e.ack(first)
 	second := e.delivery("laptop", "outdated")
-	if string(second["function_id"]) != `"audit::early"` {
+	if string(second["activation"]) != `{"observer_id":"early"}` {
 		t.Fatalf("queued history reached late binding: %s", second)
 	}
 	e.ack(second)
@@ -202,7 +216,7 @@ func TestNoReplayForLateBinding(t *testing.T) {
 	seen := map[string]bool{}
 	for range 2 {
 		f := e.delivery("laptop", "removed")
-		seen[string(f["function_id"])] = true
+		seen[string(f["activation"])] = true
 		e.ack(f)
 	}
 	if len(seen) != 2 {
@@ -228,7 +242,8 @@ func TestNodeEventsUnregisterReplacementAndClose(t *testing.T) {
 		t.Fatalf("replacement received queued history %s", f)
 	case <-time.After(30 * time.Millisecond):
 	}
-	e.send(map[string]any{"type": "unregistertrigger", "id": "binding", "trigger_type": "mesh::node-changed"})
+	e.revision++
+	e.send(map[string]any{"type": "observerremoved", "function_id": "mesh::on-node-changed", "namespace": "hub-project", "revision": e.revision, "id": "binding"})
 	deadline := time.Now().Add(time.Second)
 	for {
 		h.events.mu.Lock()
@@ -371,18 +386,17 @@ func TestNodeEventsReconnectDropsOldBindingsAndKeepsNamespace(t *testing.T) {
 	case <-e.ctx.Done():
 		t.Fatal("no SDK reconnect")
 	}
-	f := e.next("registertriggertype")
-	if string(f["id"]) != `"mesh::node-changed"` {
+	f := e.next("registerfunction")
+	if string(f["id"]) != `"mesh::on-node-changed"` {
 		t.Fatalf("reconnected type %s", f)
 	}
 	eventVersion(t, h, "before-rebinding")
-	e.send(map[string]any{"type": "registertrigger", "id": "same", "trigger_type": "mesh::node-changed", "function_id": "audit::reconnected", "namespace": "another-project", "config": json.RawMessage(`{}`)})
-	if f = e.next("triggerregistrationresult"); len(f["error"]) > 0 && string(f["error"]) != "null" {
-		t.Fatalf("rebind %s", f)
+	if !e.bind("same", `{}`) {
+		t.Fatal("rebind")
 	}
 	eventVersion(t, h, "after-rebinding")
 	f = e.next("invokefunction")
-	if string(f["namespace"]) != `"another-project"` || string(f["function_id"]) != `"audit::reconnected"` || string(f["data"]) == "" {
+	if string(f["activation"]) != `{"observer_id":"same"}` || string(f["data"]) == "" {
 		t.Fatalf("reconnected delivery %s", f)
 	}
 	if string(f["invocation_id"]) == string(first["invocation_id"]) {
@@ -415,32 +429,16 @@ func TestNodeEventsBindingCapacityAllowsReplacement(t *testing.T) {
 func TestNodeEventsStaleUnregisterPreservesReconnectedBinding(t *testing.T) {
 	h, _ := nodeCallHub(t)
 	e := newEventWire(t, h)
-	oldConnection, disconnect := context.WithCancel(e.ctx)
-	defer disconnect()
-	cfg := iii.TriggerConfig{ID: "same", FunctionID: "audit::old", Namespace: "events-project", Config: json.RawMessage(`{"node":"laptop"}`)}
-	if err := h.events.RegisterTrigger(oldConnection, cfg); err != nil {
-		t.Fatal(err)
+	if !e.bind("same", `{}`) {
+		t.Fatal("bind")
 	}
-	disconnect()
-	freshConnection, cancel := context.WithCancel(e.ctx)
-	defer cancel()
-	cfg.FunctionID = "audit::fresh"
-	if err := h.events.RegisterTrigger(freshConnection, cfg); err != nil {
-		t.Fatal(err)
+	e.revision++
+	e.send(map[string]any{"type": "observerremoved", "function_id": "mesh::on-node-changed", "namespace": "hub-project", "revision": e.revision, "id": "same"})
+	if !e.bind("same", `{"node":"laptop"}`) {
+		t.Fatal("replacement")
 	}
-	h.events.mu.Lock()
-	fresh := h.events.bindings[cfg.ID]
-	h.events.mu.Unlock()
-	if err := h.events.UnregisterTrigger(oldConnection, iii.TriggerConfig{ID: cfg.ID}); err != nil {
-		t.Fatal(err)
-	}
-	if fresh.ctx.Err() != nil {
-		t.Fatal("stale disconnected unregister canceled the fresh binding")
-	}
-	eventVersion(t, h, "after-stale-unregister")
-	f := e.delivery("laptop", "outdated")
-	if string(f["function_id"]) != `"audit::fresh"` {
-		t.Fatalf("fresh transition target: %s", f)
-	}
-	e.ack(f)
+	// An old revision cannot remove the new generation.
+	e.send(map[string]any{"type": "observerremoved", "function_id": "mesh::on-node-changed", "namespace": "hub-project", "revision": e.revision - 1, "id": "same"})
+	eventVersion(t, h, "fresh")
+	e.ack(e.delivery("laptop", "outdated"))
 }

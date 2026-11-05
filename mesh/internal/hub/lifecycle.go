@@ -82,7 +82,7 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 		o.DataDir = filepath.Join(os.Getenv("III_COMPOSE_DIR"), "data", "mesh")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	h = &Hub{Version: o.Version, Namespace: namespace(), ConfigID: configID(), Client: client, config: cloneConfig(cfg), defaults: GrantDefaults{Allow: DefaultAllow(), TriggerTypes: DefaultTriggerTypes()}, limit: join.NewLimit(10, 10*time.Minute, time.Now), cancel: cancel}
+	h = &Hub{Version: o.Version, Namespace: namespace(), ConfigID: configID(), Client: client, config: cloneConfig(cfg), defaults: GrantDefaults{Allow: DefaultAllow()}, limit: join.NewLimit(10, 10*time.Minute, time.Now), cancel: cancel}
 	defer func() {
 		if err != nil {
 			h.Close()

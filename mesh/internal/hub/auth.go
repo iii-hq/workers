@@ -18,18 +18,13 @@ type SessionContext struct {
 	SessionKey string `json:"session_key"`
 }
 type AuthResult struct {
-	FunctionRegistrationPrefix   string              `json:"function_registration_prefix"`
-	Namespaces                   map[string][]string `json:"namespaces"`
-	AllowTriggerTypeRegistration bool                `json:"allow_trigger_type_registration"`
-	AllowedTriggerTypes          []string            `json:"allowed_trigger_types"`
-	Context                      SessionContext      `json:"context"`
+	FunctionRegistrationPrefix string              `json:"function_registration_prefix"`
+	Namespaces                 map[string][]string `json:"namespaces"`
+	Context                    SessionContext      `json:"context"`
 }
 
-// Additional grants never bypass the payload and binding confinement checks.
-type GrantDefaults struct {
-	Allow        []string
-	TriggerTypes []string
-}
+// Additional call grants never bypass observer confinement.
+type GrantDefaults struct{ Allow []string }
 
 func (h *Hub) SetGrantDefaults(defaults GrantDefaults) {
 	h.reload.Lock()
@@ -37,7 +32,7 @@ func (h *Hub) SetGrantDefaults(defaults GrantDefaults) {
 	if reflect.DeepEqual(h.defaults, defaults) {
 		return
 	}
-	h.defaults = GrantDefaults{Allow: slices.Clone(defaults.Allow), TriggerTypes: slices.Clone(defaults.TriggerTypes)}
+	h.defaults = GrantDefaults{Allow: slices.Clone(defaults.Allow)}
 	if h.MeshGateway != nil {
 		h.MeshGateway.CloseConnections()
 	}
@@ -80,8 +75,8 @@ func (h *Hub) Auth(_ context.Context, req AuthRequest) (AuthResult, error) {
 	}
 	h.queueNode(node)
 	grants := map[string][]string{h.Namespace: union(h.defaults.Allow, h.Config().Nodes[node].Allow)}
-	grants["default"] = union(grants["default"], configurationCalls())
-	return AuthResult{FunctionRegistrationPrefix: node, Namespaces: grants, AllowTriggerTypeRegistration: true, AllowedTriggerTypes: union([]string{node + "::*", "configuration"}, h.defaults.TriggerTypes), Context: SessionContext{MeshNode: node, SessionKey: key}}, nil
+	grants["default"] = union(grants["default"], append(configurationCalls(), "configuration::on-updated"))
+	return AuthResult{FunctionRegistrationPrefix: node, Namespaces: grants, Context: SessionContext{MeshNode: node, SessionKey: key}}, nil
 }
 func (h *Hub) sessionNode(ctx SessionContext) (string, error) {
 	node, ok := h.Sessions.Valid(ctx.SessionKey)

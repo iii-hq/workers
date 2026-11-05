@@ -12,11 +12,11 @@ import (
 )
 
 type MiddlewareRequest struct {
-	FunctionID string             `json:"function_id"`
-	Payload    json.RawMessage    `json:"payload"`
-	Action     *iii.TriggerAction `json:"action"`
-	Context    SessionContext     `json:"context"`
-	Namespace  string             `json:"namespace"`
+	FunctionID string          `json:"function_id"`
+	Payload    json.RawMessage `json:"payload"`
+	Action     *iii.CallAction `json:"action"`
+	Context    SessionContext  `json:"context"`
+	Namespace  string          `json:"namespace"`
 }
 
 var configurationIDPattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
@@ -79,5 +79,5 @@ func (h *Hub) middleware(ctx context.Context, client rpc, req MiddlewareRequest)
 		return nil, errors.New("mesh forwarding is unavailable")
 	}
 	metadata, _ := iii.MetadataFromContext(ctx)
-	return client.Trigger(ctx, iii.TriggerRequest{FunctionID: req.FunctionID, Data: req.Payload, Metadata: metadata, Action: req.Action, Namespace: req.Namespace, Timeout: 610 * time.Second})
+	return client.Call(ctx, iii.CallRequest{FunctionID: req.FunctionID, Payload: req.Payload, Metadata: metadata, Action: req.Action, Namespace: req.Namespace, Timeout: 610 * time.Second})
 }

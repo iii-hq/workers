@@ -46,7 +46,8 @@ fn mesh_internal_handlers_are_denied_in_root_and_worker_permissions() {
         for id in [
             "mesh::auth",
             "mesh::middleware",
-            "mesh::on-trigger-registration",
+            "mesh::on-observer-registration",
+            "mesh::on-node-changed",
             "mesh::on-config-change",
             "mesh::ui-content",
             "mesh::configuration-id",

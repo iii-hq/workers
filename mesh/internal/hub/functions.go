@@ -250,7 +250,7 @@ func (h *Hub) GetNode(ctx context.Context, r NodeRequest) (NodeDetails, error) {
 	return NodeDetails{}, fmt.Errorf("unknown node %q", r.Name)
 }
 func (h *Hub) refreshNames(ctx context.Context) error {
-	raw, err := h.Client.Trigger(ctx, iii.TriggerRequest{FunctionID: "engine::functions::list", Namespace: "default", Data: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
+	raw, err := h.Client.Call(ctx, iii.CallRequest{FunctionID: "engine::functions::list", Namespace: "default", Payload: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
 	if err != nil {
 		return fmt.Errorf("list engine function prefixes: %w", err)
 	}
@@ -262,26 +262,27 @@ func (h *Hub) refreshNames(ctx context.Context) error {
 	return nil
 }
 func (h *Hub) registerFunctions(client *iii.Client) error {
-	if err := iii.RegisterFunctionTyped(client, "mesh::status", func(context.Context, struct{}) (StatusResult, error) { return h.Status(), nil }); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::status", func(context.Context, struct{}) (StatusResult, error) { return h.Status(), nil }); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::nodes::list", h.ListNodes); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::nodes::list", h.ListNodes); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::nodes::get", h.GetNode); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::nodes::get", h.GetNode); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::nodes::remove", h.RemoveNode); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::nodes::remove", h.RemoveNode); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::join::code", h.JoinCode); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::join::code", h.JoinCode); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::join::token", h.JoinToken); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::join::token", h.JoinToken); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::join::revoke", h.RevokeToken); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::join::revoke", h.RevokeToken); err != nil {
 		return err
 	}
-	return iii.RegisterFunctionTyped(client, "mesh::join::cycle", h.CycleCode)
+	_, err := iii.RegisterFunctionTyped(client, "mesh::join::cycle", h.CycleCode)
+	return err
 }

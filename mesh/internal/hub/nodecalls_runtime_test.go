@@ -131,7 +131,7 @@ func (r *registeredNodeRPC) serve(ctx context.Context, w http.ResponseWriter, re
 		r.mu.Unlock()
 	}
 }
-func (r *registeredNodeRPC) Trigger(ctx context.Context, req iii.TriggerRequest) (json.RawMessage, error) {
+func (r *registeredNodeRPC) Call(ctx context.Context, req iii.CallRequest) (json.RawMessage, error) {
 	if req.Namespace != "default" {
 		return nil, fmt.Errorf("wrong control namespace %s", req.Namespace)
 	}
@@ -156,7 +156,7 @@ func (r *registeredNodeRPC) Trigger(ctx context.Context, req iii.TriggerRequest)
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.replies, id); r.mu.Unlock() }()
 	var payload any
-	json.Unmarshal(req.Data, &payload)
+	json.Unmarshal(req.Payload, &payload)
 	raw, _ := json.Marshal(map[string]any{"type": "invokefunction", "invocation_id": id, "function_id": fn, "data": payload})
 	if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
 		return nil, err
