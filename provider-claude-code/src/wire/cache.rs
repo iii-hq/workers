@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 pub const CACHE_MIN_CHARS: usize = 4096;
 const CACHE_FLAG_ENV: &str = "PROVIDER_CLAUDE_CODE_CACHE";
 const CACHE_TTL_ENV: &str = "PROVIDER_CLAUDE_CODE_CACHE_TTL";
+const MESSAGES_TTL_ENV: &str = "PROVIDER_CLAUDE_CODE_CACHE_MESSAGES_TTL";
 
 /// Kill switch: unset or anything but 0/false/FALSE/False = enabled.
 pub fn cache_enabled() -> bool {
@@ -21,12 +22,41 @@ pub fn cache_enabled() -> bool {
 /// TTL for the shared-prefix markers (tools + the boundary block): unset or
 /// `1h` = the 1-hour cache (2x base on the one write, reads unchanged, so a
 /// profile stays warm across sessions an hour apart); `5m` = the default
-/// 5-minute cache. The per-turn messages anchor always stays at 5 minutes:
-/// it changes every turn, and longer TTLs must precede shorter ones.
+/// 5-minute cache. The per-turn messages anchor stays at 5 minutes (it moves
+/// every turn, and longer TTLs must precede shorter ones) unless the opt-in
+/// [`messages_cache_ttl`] asks for one hour on top of a 1-hour prefix.
 pub fn cache_ttl() -> Option<&'static str> {
     match std::env::var(CACHE_TTL_ENV).as_deref() {
         Ok("5m") => None,
         _ => Some("1h"),
+    }
+}
+
+/// Opt-in TTL for the per-turn messages anchor: `1h`, or `None` (unset or any
+/// other value) for the 5-minute cache. An agent that sleeps between turns (an
+/// orchestrator waiting on its children's wakes) comes back after more than
+/// five minutes and writes its whole conversation again at every wake; at one
+/// hour it reads it back instead. Each turn's new tail then takes the 1-hour
+/// write, so it pays for agents that pause, not for chat. See [`messages_ttl`]
+/// for when it applies.
+pub fn messages_cache_ttl() -> Option<&'static str> {
+    match std::env::var(MESSAGES_TTL_ENV).as_deref() {
+        Ok("1h") => Some("1h"),
+        _ => None,
+    }
+}
+
+/// The messages anchor's TTL for this request: the opt-in one only on top of a
+/// 1-hour prefix, since a longer TTL may not follow a shorter one (a flat
+/// prompt, or `PROVIDER_CLAUDE_CODE_CACHE_TTL=5m`, keeps it at 5 minutes).
+pub fn messages_ttl(
+    prefix_ttl: Option<&str>,
+    wanted: Option<&'static str>,
+) -> Option<&'static str> {
+    if prefix_ttl == Some("1h") {
+        wanted
+    } else {
+        None
     }
 }
 
@@ -105,7 +135,7 @@ pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool, ttl: Option
 /// fall back to the last stable assistant turn. Anthropic rejects cache_control
 /// on thinking/redacted_thinking blocks, which can trail a turn under
 /// interleaved thinking.
-pub fn apply_messages_cache_anchor(wire: &mut [Value], enabled: bool) {
+pub fn apply_messages_cache_anchor(wire: &mut [Value], enabled: bool, ttl: Option<&str>) {
     if !enabled || wire.is_empty() {
         return;
     }
@@ -122,7 +152,7 @@ pub fn apply_messages_cache_anchor(wire: &mut [Value], enabled: bool) {
         })
     {
         if let Some(obj) = block.as_object_mut() {
-            obj.insert("cache_control".into(), ephemeral());
+            obj.insert("cache_control".into(), ephemeral_ttl(ttl));
             return;
         }
     }
@@ -144,7 +174,7 @@ pub fn apply_messages_cache_anchor(wire: &mut [Value], enabled: bool) {
             continue;
         }
         if let Some(obj) = block.as_object_mut() {
-            obj.insert("cache_control".into(), ephemeral());
+            obj.insert("cache_control".into(), ephemeral_ttl(ttl));
         }
         return;
     }
@@ -264,7 +294,7 @@ mod tests {
             ] }),
             json!({ "role": "user", "content": [{ "type": "text", "text": "q2" }] }),
         ];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         let content = wire[1]["content"].as_array().unwrap();
         assert_eq!(
             content[0]["cache_control"]["type"], "ephemeral",
@@ -284,7 +314,7 @@ mod tests {
             json!({ "role": "assistant", "content": [{ "type": "text", "text": "latest stable" }] }),
             json!({ "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t2", "content": "fresh" }] }),
         ];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert!(wire[1]["content"][0].get("cache_control").is_none());
         assert!(wire[2]["content"][0].get("cache_control").is_none());
@@ -301,7 +331,7 @@ mod tests {
                 { "type": "text", "text": "trailing" },
             ] }),
         ];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert!(wire[1]["content"][0].get("cache_control").is_none());
         assert_eq!(wire[1]["content"][1]["cache_control"]["type"], "ephemeral");
@@ -314,7 +344,7 @@ mod tests {
             json!({ "role": "assistant", "content": [{ "type": "text", "text": "stable" }] }),
             json!({ "role": "user", "content": [{ "type": "text", "text": "next" }] }),
         ];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         assert_eq!(wire[0]["content"][0]["cache_control"]["type"], "ephemeral");
     }
 
@@ -323,7 +353,7 @@ mod tests {
         let mut wire = vec![json!({ "role": "user", "content": [
             { "type": "tool_result", "tool_use_id": "t1", "content": "fresh" },
         ] })];
-        apply_messages_cache_anchor(&mut wire, false);
+        apply_messages_cache_anchor(&mut wire, false, None);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
     }
 
@@ -335,7 +365,7 @@ mod tests {
                 { "type": "tool_use", "id": "t1", "name": "f", "input": {} },
             ] }),
         ];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         // anchor falls back to the earlier stable assistant
         assert_eq!(wire[0]["content"][0]["cache_control"]["type"], "ephemeral");
         assert!(wire[1]["content"][0].get("cache_control").is_none());
@@ -351,7 +381,7 @@ mod tests {
                 { "type": "tool_result", "tool_use_id": "t1", "content": "ok" },
             ] }),
         ];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert_eq!(wire[1]["content"][0]["cache_control"]["type"], "ephemeral");
     }
@@ -360,7 +390,7 @@ mod tests {
     fn disabled_flag_is_a_no_op() {
         let mut wire =
             vec![json!({ "role": "assistant", "content": [{ "type": "text", "text": "a" }] })];
-        apply_messages_cache_anchor(&mut wire, false);
+        apply_messages_cache_anchor(&mut wire, false, None);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
     }
 
@@ -376,7 +406,7 @@ mod tests {
                 { "type": "tool_result", "tool_use_id": "t1", "content": "ok" },
             ] }),
         ];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert!(wire[1]["content"][0].get("cache_control").is_none());
         assert!(wire[1]["content"][1].get("cache_control").is_none());
@@ -390,9 +420,34 @@ mod tests {
             { "type": "thinking", "thinking": "t", "signature": "s" },
             { "type": "redacted_thinking" },
         ] })];
-        apply_messages_cache_anchor(&mut wire, true);
+        apply_messages_cache_anchor(&mut wire, true, None);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert!(wire[0]["content"][1].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn the_messages_anchor_takes_the_opt_in_ttl() {
+        let mut wire = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"f","input":{}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}),
+        ];
+        apply_messages_cache_anchor(&mut wire, true, Some("1h"));
+        assert_eq!(
+            wire[1]["content"][0]["cache_control"],
+            json!({"type":"ephemeral","ttl":"1h"})
+        );
+        let mut wire = vec![json!({"role":"assistant","content":[{"type":"text","text":"done"}]})];
+        apply_messages_cache_anchor(&mut wire, true, Some("1h"));
+        assert_eq!(wire[0]["content"][0]["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn the_messages_ttl_applies_only_on_a_one_hour_prefix() {
+        assert_eq!(messages_ttl(Some("1h"), Some("1h")), Some("1h"));
+        // A longer TTL may not follow a shorter one: a 5-minute or flat prefix keeps 5 minutes.
+        assert_eq!(messages_ttl(None, Some("1h")), None);
+        assert_eq!(messages_ttl(Some("5m"), Some("1h")), None);
+        assert_eq!(messages_ttl(Some("1h"), None), None);
     }
 
     #[test]

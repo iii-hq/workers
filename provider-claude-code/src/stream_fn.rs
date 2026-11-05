@@ -10,7 +10,7 @@ use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::thinking::build_thinking_config;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
-use crate::wire::cache::{cache_enabled, cache_ttl};
+use crate::wire::cache::{cache_enabled, cache_ttl, messages_cache_ttl};
 use crate::{auth, router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
@@ -167,6 +167,7 @@ async fn run_stream_call(
             effort: thinking_build.effort,
             cache_enabled: cache_enabled(),
             cache_ttl: cache_ttl(),
+            messages_cache_ttl: messages_cache_ttl(),
         },
         &mut warnings,
     );
