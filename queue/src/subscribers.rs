@@ -747,6 +747,36 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
 
+    #[test]
+    fn engine_change_observers_ship_only_the_output() {
+        for source in [FUNCTIONS_CHANGED_FN, WORKERS_CHANGED_FN] {
+            assert_eq!(
+                engine_change_source(source),
+                Source::function(source).capture([iii_sdk::Capture::Output])
+            );
+        }
+    }
+
+    /// The target receives the activation envelope; the change's tag is
+    /// its `output.event`, never a root field.
+    #[test]
+    fn the_engine_change_target_reads_the_event_from_the_observed_envelope() {
+        let event: EngineChangeEvent = serde_json::from_value(json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": FUNCTIONS_CHANGED_FN,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "event": "function_registered", "functions": ["a::b"] },
+        }))
+        .unwrap();
+        assert_eq!(event.event(), Some("function_registered"));
+        let empty: EngineChangeEvent = serde_json::from_value(json!({ "status": "error" })).unwrap();
+        assert_eq!(empty.event(), None);
+    }
+
     // A change recorded after subscribing but before waiting is not lost; an
     // unbound feed never fires.
     #[tokio::test(start_paused = true)]
