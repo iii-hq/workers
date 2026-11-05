@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
 use serde_json::json;
 use tokio::sync::RwLock;
 
@@ -75,7 +75,7 @@ const HEARTBEAT_READY_WAIT: Duration = Duration::from_secs(300);
 fn heartbeat_source() -> Source {
     Source::function(CRON_ON_TICK_FN)
         .args(json!({ "expression": CRON_EXPRESSION }))
-        .deliver(Deliver::Output)
+        .capture([Capture::Output])
 }
 
 /// Register the internal tick handler and observe `cron::on-tick` with it.
@@ -237,7 +237,7 @@ mod tests {
             heartbeat_source(),
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "0 0 * * * *" }))
-                .capture([iii_sdk::Capture::Output])
+                .capture([Capture::Output])
         );
     }
 
