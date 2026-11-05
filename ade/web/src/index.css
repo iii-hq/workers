@@ -2058,3 +2058,28 @@
   --sidebar-border: var(--color-edge);
   --sidebar-ring: var(--color-rule-focus);
 }
+
+/* Monaco's in-page button tooltips (the find widget's "Close (Escape)",
+   match case, regex) open inside the editor's clipped box: above a find
+   bar at the top of an editor they were cut down to a sliver and covered
+   ✕, so a click there closed nothing. The buttons carry native titles
+   instead (CodeEditor `titleFindButtons`). Editor content hovers (types,
+   docs) are not `workbench-hover` and are untouched. Unlayered, so
+   Monaco's own (unlayered) stylesheet cannot win. */
+.context-view:has(.monaco-hover.workbench-hover) {
+  display: none !important;
+}
+
+/* The find widget's ✕ is absolutely placed at Monaco's `top: 5px`, which
+   sits it 2.5px above the row it closes (the field, the count and the
+   arrows all centre 15.5px down). Centre it on that row; it stays on the
+   first row when the replace row opens beneath. `.visible` outranks
+   Monaco's own rule, which is injected after this sheet. */
+.monaco-editor .find-widget.visible .button.codicon-widget-close {
+  top: 7.5px;
+}
+
+/* Its replace toggle (›, far left) sits 1px low on the same row. */
+.monaco-editor .find-widget.visible > .button.toggle {
+  margin-top: 3px;
+}

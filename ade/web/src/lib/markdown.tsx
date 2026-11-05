@@ -3,13 +3,19 @@ import type { Element, Root, RootContent, Text } from 'hast'
 import { ArrowUpRight, ImageIcon, ImageOff } from 'lucide-react'
 import {
   type ComponentPropsWithoutRef,
+  memo,
+  type ReactElement,
   type ReactNode,
   useId,
+  useMemo,
   useState,
 } from 'react'
-import ReactMarkdown, {
+// The synchronous renderer is a plain function (no hooks): options in, a
+// React element out, which is what lets a parsed reply be kept and reused.
+import renderMarkdownTree, {
   type Components,
   defaultUrlTransform,
+  type UrlTransform,
 } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
@@ -725,29 +731,61 @@ const components: Components = {
   ),
 }
 
+const urlTransform: UrlTransform = (url, key) =>
+  key === 'href' && (parseMarkdownFileLink(url) || markdownFileLinkError(url))
+    ? url
+    : defaultUrlTransform(url)
+const remarkPlugins = [remarkGfm]
+const rehypePlugins = [rehypeFnMention]
+
+/** Parsed replies kept between renders and mounts; the oldest leave first. */
+const MAX_CACHED = 400
+const parsed = new Map<string, ReactElement>()
+
+/**
+ * Parse once per text. Opening a long chat parsed every reply, and every
+ * later update to the chat (a streamed token, a status change) parsed them
+ * all again; the element tree for a given text never changes, so it is kept
+ * and shared. A reply still streaming changes every token and is not kept.
+ */
+export function markdownTree(source: string, keep: boolean): ReactElement {
+  const hit = parsed.get(source)
+  if (hit) {
+    // Refresh its place so the replies in view stay cached.
+    parsed.delete(source)
+    parsed.set(source, hit)
+    return hit
+  }
+  const tree = renderMarkdownTree({
+    children: source,
+    urlTransform,
+    remarkPlugins,
+    rehypePlugins,
+    components,
+  })
+  if (keep) {
+    parsed.set(source, tree)
+    if (parsed.size > MAX_CACHED) {
+      const oldest = parsed.keys().next().value
+      if (oldest !== undefined) parsed.delete(oldest)
+    }
+  }
+  return tree
+}
+
 /** Render sanitized Markdown, routing local references through the enclosing chat when available. */
-export function Markdown({
+export const Markdown = memo(function Markdown({
   children,
   className,
   streaming = false,
 }: MarkdownProps) {
+  const tree = useMemo(
+    () => markdownTree(children, !streaming),
+    [children, streaming],
+  )
   return (
     <MermaidStreamingContext.Provider value={streaming}>
-      <div className={cn('text-ink', className)}>
-        <ReactMarkdown
-          urlTransform={(url, key) =>
-            key === 'href' &&
-            (parseMarkdownFileLink(url) || markdownFileLinkError(url))
-              ? url
-              : defaultUrlTransform(url)
-          }
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeFnMention]}
-          components={components}
-        >
-          {children}
-        </ReactMarkdown>
-      </div>
+      <div className={cn('text-ink', className)}>{tree}</div>
     </MermaidStreamingContext.Provider>
   )
-}
+})

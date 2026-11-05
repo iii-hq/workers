@@ -1,5 +1,84 @@
 import { Highlight, Prism, type PrismTheme } from 'prism-react-renderer'
+import { type RefObject, useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
+
+/** How far outside the viewport a block starts highlighting. */
+const HIGHLIGHT_MARGIN = '800px 0px'
+
+/**
+ * Highlight only what is about to be seen. A token-coloured block is one
+ * span per token (a 25-line snippet is ~1,200 nodes); a long transcript
+ * mounting every one of them at once was most of the cost of opening a
+ * chat. Until a block comes within `HIGHLIGHT_MARGIN` of its scroll
+ * viewport it renders as plain text in the same font, size and leading, so
+ * nothing moves when the colour arrives. Without IntersectionObserver
+ * (tests, server rendering) it highlights straight away.
+ */
+function useHighlightWhenNear(): [RefObject<HTMLPreElement | null>, boolean] {
+  const ref = useRef<HTMLPreElement | null>(null)
+  const [near, setNear] = useState(
+    () => typeof IntersectionObserver === 'undefined',
+  )
+  useEffect(() => {
+    const el = ref.current
+    if (near || !el) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          observer.disconnect()
+          setNear(true)
+        }
+      },
+      // The margin must be measured from the pane that scrolls (the chat
+      // transcript), not the viewport: a scrolling ancestor clips the block
+      // before a viewport margin could ever count.
+      { root: scrollParent(el), rootMargin: HIGHLIGHT_MARGIN },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [near])
+  return [ref, near]
+}
+
+/** The nearest ancestor that scrolls vertically, or the viewport (`null`). */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node)
+    if (overflowY === 'auto' || overflowY === 'scroll') return node
+  }
+  return null
+}
+
+/** The not-yet-highlighted stand-in: the same chrome, the source as text. */
+function PlainCode({
+  preRef,
+  code,
+  language,
+  className,
+  wrap,
+}: {
+  preRef: RefObject<HTMLPreElement | null>
+  code: string
+  language: string
+  className?: string
+  wrap?: boolean
+}) {
+  return (
+    <pre
+      ref={preRef}
+      className={cn(
+        'bg-bg overflow-x-auto px-3 py-2 font-code text-[12.5px] leading-[1.55]',
+        wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
+        `prism-code language-${language}`,
+        className,
+      )}
+      style={syntaxTheme.plain}
+      data-highlight-pending=""
+    >
+      <code>{code}</code>
+    </pre>
+  )
+}
 
 /* prism-react-renderer bundles only a handful of languages. JSON isn't among
    them, so we register it directly on the shared Prism instance. The grammar
@@ -173,6 +252,17 @@ export function CodeHighlight({
   wrap,
   linePrompt,
 }: CodeHighlightProps) {
+  const [preRef, near] = useHighlightWhenNear()
+  if (!near)
+    return (
+      <PlainCode
+        preRef={preRef}
+        code={code}
+        language={language}
+        className={className}
+        wrap={wrap}
+      />
+    )
   return (
     <Highlight
       prism={Prism}
@@ -182,6 +272,7 @@ export function CodeHighlight({
     >
       {({ tokens, getLineProps, getTokenProps, className: hlClass, style }) => (
         <pre
+          ref={preRef}
           className={cn(
             'bg-bg overflow-x-auto px-3 py-2 font-code text-[12.5px] leading-[1.55]',
             wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
@@ -224,10 +315,22 @@ export function CodeHighlight({
 }
 
 export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
+  const [preRef, near] = useHighlightWhenNear()
+  if (!near)
+    return (
+      <PlainCode
+        preRef={preRef}
+        code={code}
+        language="json"
+        className={className}
+        wrap={wrap}
+      />
+    )
   return (
     <Highlight prism={Prism} theme={syntaxTheme} language="json" code={code}>
       {({ tokens, getLineProps, getTokenProps, className: hlClass, style }) => (
         <pre
+          ref={preRef}
           className={cn(
             'bg-bg overflow-x-auto px-3 py-2 font-code text-[12.5px] leading-[1.55]',
             wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
