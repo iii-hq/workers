@@ -215,6 +215,7 @@ describe('engine::functions::info', () => {
 // A legacy engine's listing row reports the raw delivery it used; this is
 // a listing row, not an observe source.
 const LEGACY_RAW_DELIVERY = 'output'
+const LEGACY_ENVELOPE_DELIVERY = 'envelope'
 
 const observer = {
   id: 'obs-1',
@@ -316,7 +317,7 @@ describe('observer outcomes', () => {
     expect(legacy).not.toHaveProperty('on')
     expect(legacy.deliver).toBe('output')
     expect(
-      observerPolicy({ ...observer, deliver: 'envelope' }),
+      observerPolicy({ ...observer, deliver: LEGACY_ENVELOPE_DELIVERY }),
     ).not.toHaveProperty('deliver')
   })
 })
