@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, ObserverHandle,
+    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, ObserverHandle,
     RegisterFunction, Source,
 };
 use serde_json::{json, Value};
@@ -156,7 +156,7 @@ fn observe(iii: &IIIClient, counter: &str) -> ObserverHandle {
     iii.observe(
         Source::function(ON_COUNTER_CHANGED_FN)
             .args(json!({ "counter": counter }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         SINK_FN,
     )
 }
