@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -152,7 +152,7 @@ pub fn observe_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelReso
 
     // The observer lives as long as the worker's connection.
     iii.observe(
-        Source::function(ROUTER_MODELS_ON_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ROUTER_MODELS_ON_CHANGED_FN).capture([Capture::Output]),
         MODELS_CHANGED_FN_ID,
     );
 }
