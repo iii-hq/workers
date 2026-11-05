@@ -1,7 +1,8 @@
 //! Bridge observers: drive Slack streaming and approvals from the events of
 //! session-manager (`session::on-message-*`), the harness
 //! (`harness::on-turn-completed`) and approval-gate (`approval::on-pending-*`).
-//! Each target receives the event itself (`deliver: output`). The observers
+//! Each observer captures `[output]`: its target receives the Observed
+//! envelope and reads the event from its `output`. The observers
 //! are created at boot and stay `pending` while their worker is absent; an
 //! `approval::on-pending-created` event comes from a connected approval-gate,
 //! so the prompt it posts can be answered.
@@ -9,7 +10,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, Source};
+use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -42,7 +43,7 @@ pub struct BindingAck {
 }
 
 pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    super::register(
+    super::register_observed(
         iii,
         deps,
         ON_MESSAGE_ADDED_ID,
@@ -60,7 +61,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         },
     );
 
-    super::register(
+    super::register_observed(
         iii,
         deps,
         ON_MESSAGE_UPDATED_ID,
@@ -78,7 +79,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         },
     );
 
-    super::register(
+    super::register_observed(
         iii,
         deps,
         ON_TURN_COMPLETED_ID,
@@ -109,7 +110,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         },
     );
 
-    super::register(
+    super::register_observed(
         iii,
         deps,
         ON_PENDING_CREATED_ID,
@@ -122,7 +123,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         },
     );
 
-    super::register(
+    super::register_observed(
         iii,
         deps,
         ON_PENDING_RESOLVED_ID,
@@ -226,11 +227,7 @@ pub fn observe_events(iii: &Arc<IIIClient>) {
 /// The observer lives as long as the worker's connection; dropping the
 /// handle does not dispose it.
 fn observe(iii: &Arc<IIIClient>, source: &str, target: &str, filters: Option<Value>) {
-    let mut src = Source::function(source).deliver(Deliver::Output);
-    if let Some(filters) = filters {
-        src = src.filters(filters);
-    }
-    let handle = iii.observe(src, target);
+    let handle = iii.observe(super::event_source(source, filters), target);
     tracing::info!(
         function_id = source,
         observer_target = target,
@@ -243,7 +240,7 @@ fn observe(iii: &Arc<IIIClient>, source: &str, target: &str, filters: Option<Val
 mod tests {
     use super::*;
     use crate::functions::{event_source, observed_output};
-    use iii_sdk::{Capture, Observed};
+    use iii_sdk::{Capture, Observed, Source};
 
     /// What a `capture: [output]` observer target receives.
     fn envelope(function_id: &str, output: Value) -> Value {
