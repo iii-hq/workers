@@ -1000,6 +1000,57 @@ mod tests {
         assert_missing_entry_contract(super::is_not_found);
     }
 
+    fn observed(function_id: &str, output: Option<Value>) -> Value {
+        let mut envelope = json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": function_id,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+        });
+        if let Some(output) = output {
+            envelope["output"] = output;
+        }
+        envelope
+    }
+
+    /// The secret watcher's target reads the advisory event from the
+    /// envelope's `output`; without one there is nothing to re-read.
+    #[test]
+    fn the_secret_watcher_reads_the_event_from_the_observed_envelope() {
+        let expected = crate::secrets::event_reference(&json!({ "ref": "secret://bucket-key" }));
+        assert!(expected.is_some(), "fixture ref must parse");
+        let event: super::ObservedSecretChange = serde_json::from_value(observed(
+            crate::secrets::ON_CHANGED_FN,
+            Some(json!({ "name": "bucket-key", "ref": "secret://bucket-key", "action": "rotated" })),
+        ))
+        .unwrap();
+        assert_eq!(super::secret_change_reference(event), expected);
+        let event: super::ObservedSecretChange =
+            serde_json::from_value(observed(crate::secrets::ON_CHANGED_FN, None)).unwrap();
+        assert_eq!(super::secret_change_reference(event), None);
+    }
+
+    #[test]
+    fn the_watchers_capture_the_output() {
+        use iii_sdk::{Capture, Source};
+        assert_eq!(
+            super::secret_change_source(),
+            Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
+        );
+        assert_eq!(
+            super::config_change_source(),
+            Source::function(super::CONFIG_UPDATED_FN)
+                .filters(json!({
+                    "input.id": { "$eq": super::config_id() },
+                    "input.event_type": { "$eq": "configuration:updated" },
+                }))
+                .capture([Capture::Output])
+        );
+    }
+
     use super::*;
     use crate::error::StorageError;
     use iii_sdk::IIIClient;
