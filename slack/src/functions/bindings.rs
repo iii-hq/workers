@@ -242,6 +242,89 @@ fn observe(iii: &Arc<IIIClient>, source: &str, target: &str, filters: Option<Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::{event_source, observed_output};
+    use iii_sdk::{Capture, Observed};
+
+    /// What a `capture: [output]` observer target receives.
+    fn envelope(function_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": "obs_1",
+            "activation_id": "act_1",
+            "function_id": function_id,
+            "invocation_id": "inv_1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": output,
+        })
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(payload: Value) -> Result<T, Error> {
+        let observed: Observed<Value, T> =
+            serde_json::from_value(payload).expect("an Observed envelope");
+        observed_output(observed)
+    }
+
+    #[test]
+    fn event_observers_capture_the_output() {
+        for (source, _, filters) in boot_observers() {
+            let mut expected = Source::function(source).capture([Capture::Output]);
+            if let Some(filters) = filters.clone() {
+                expected = expected.filters(filters);
+            }
+            assert_eq!(event_source(source, filters), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn binding_targets_read_the_event_from_the_observed_envelope() {
+        let added: MessageAddedEvent = decode(envelope(
+            SESSION_MESSAGE_ADDED_FN,
+            json!({ "session_id": "s1", "entry_id": "e1",
+                    "message": { "role": "assistant", "content": [] } }),
+        ))
+        .unwrap();
+        assert_eq!(added.session_id, "s1");
+        assert_eq!(added.message.unwrap().role, "assistant");
+
+        let updated: MessageUpdatedEvent = decode(envelope(
+            SESSION_MESSAGE_UPDATED_FN,
+            json!({ "session_id": "s1", "entry_id": "e1", "revision": 4,
+                    "message": { "role": "assistant", "content": [] } }),
+        ))
+        .unwrap();
+        assert_eq!(updated.revision, 4);
+
+        let turn: TurnCompletedEvent = decode(envelope(
+            HARNESS_TURN_COMPLETED_FN,
+            json!({ "session_id": "s1", "turn_id": "t1", "status": "failed",
+                    "terminal": false }),
+        ))
+        .unwrap();
+        assert_eq!((turn.turn_id.as_str(), turn.terminal), ("t1", false));
+
+        let pending: PendingApprovalRecord = decode(envelope(
+            APPROVAL_PENDING_CREATED_FN,
+            json!({ "session_id": "s1", "function_call_id": "c1", "function_id": "shell::exec" }),
+        ))
+        .unwrap();
+        assert_eq!(pending.function_id, "shell::exec");
+
+        let resolved: PendingResolvedEvent = decode(envelope(
+            APPROVAL_PENDING_RESOLVED_FN,
+            json!({ "session_id": "s1", "function_call_id": "c1", "outcome": "approved" }),
+        ))
+        .unwrap();
+        assert_eq!(resolved.function_call_id, "c1");
+    }
+
+    #[test]
+    fn an_envelope_without_output_is_an_error() {
+        let mut payload = envelope(HARNESS_TURN_COMPLETED_FN, Value::Null);
+        payload.as_object_mut().unwrap().remove("output");
+        let err = decode::<TurnCompletedEvent>(payload).unwrap_err();
+        assert!(err.to_string().contains(HARNESS_TURN_COMPLETED_FN), "{err}");
+    }
 
     #[test]
     fn message_observers_select_assistant_messages() {
