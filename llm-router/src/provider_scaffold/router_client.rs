@@ -27,10 +27,12 @@ pub async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<
 /// llm-router is down; the router sends it the ready event once it is ready,
 /// whenever the observer is added. Dropping the handle keeps the observer.
 pub fn observe_router_ready(iii: &IIIClient, target: &str) -> ObserverHandle {
-    iii.observe(
-        Source::function(ON_READY_FN).deliver(Deliver::Output),
-        target,
-    )
+    iii.observe(router_ready_source(), target)
+}
+
+/// Every `router::on-ready` call; the target ignores the event.
+fn router_ready_source() -> Source {
+    Source::function(ON_READY_FN).deliver(Deliver::Output)
 }
 
 /// `router::provider::resolve` — credential + effective settings.
@@ -133,8 +135,33 @@ pub fn apply_credential_env_fallback(
 
 #[cfg(test)]
 mod observe_tests {
-    use super::observe_router_ready;
-    use iii_sdk::{IIIClient, ObserverState};
+    use super::{observe_router_ready, router_ready_source, ON_READY_FN};
+    use crate::types::router::RouterReadyEvent;
+    use iii_sdk::{Capture, IIIClient, ObserverState, Source};
+    use serde_json::json;
+
+    /// `provider::<id>::on_router_ready` ignores the event: the Observed
+    /// envelope is accepted (the router's direct `{}` nudge still is), and
+    /// the observer captures the output instead of setting `deliver`.
+    #[test]
+    fn router_ready_arrives_as_an_observed_envelope() {
+        let envelope = json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": ON_READY_FN,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": {},
+        });
+        serde_json::from_value::<RouterReadyEvent>(envelope).expect("envelope accepted");
+        serde_json::from_value::<RouterReadyEvent>(json!({})).expect("direct nudge accepted");
+        assert_eq!(
+            router_ready_source(),
+            Source::function(ON_READY_FN).capture([Capture::Output])
+        );
+    }
 
     /// `observe` returns at once: without a router (here, without an engine)
     /// the observer waits `pending`.

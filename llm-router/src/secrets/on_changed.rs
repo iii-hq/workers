@@ -212,4 +212,31 @@ mod tests {
         assert!(ack.ok);
         assert!(fake.calls().is_empty());
     }
+
+    /// The observer captures the event as output: the target reads it from
+    /// the Observed envelope.
+    #[tokio::test]
+    async fn an_observed_envelope_refreshes_the_secret_named_in_its_output() {
+        let config = new_config_cell(json!({ "providers": {
+            "anthropic": { "api_key": "secret://SHARED" },
+        }}));
+        let fake = FakeSecrets::default();
+        fake.set("secret://SHARED", Ok("v2"));
+        let handler = make_on_secret_changed(config, Arc::new(fake.cache()));
+        let envelope = json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": "secrets::on-changed",
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "name": "SHARED", "action": "rotated", "fingerprint": "f" },
+        });
+        let ack = handler(serde_json::from_value(envelope).unwrap())
+            .await
+            .unwrap();
+        assert!(ack.ok);
+        assert_eq!(fake.calls(), vec!["secret://SHARED".to_string()]);
+    }
 }
