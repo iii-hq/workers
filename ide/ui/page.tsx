@@ -50,7 +50,7 @@ export default function setup(host: Host) {
   host.functionCalls.register(createAgentRunRenderer(host))
   host.functionCalls.register(createFileChangesRenderer(host))
   host.functionCalls.register(createScaffoldRenderer(host))
-  host.functionCalls.register(createShellCallRenderer())
+  host.functionCalls.register(createShellCallRenderer(host))
 
   host.chat?.registerTurnSummary?.({
     id: 'shell-last-turn',

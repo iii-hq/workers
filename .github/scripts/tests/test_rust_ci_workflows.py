@@ -349,6 +349,14 @@ def test_sandbox_libkrun_vm_linux_is_a_required_shaped_kvm_job() -> None:
     assert "sandbox-libkrun-macos" in workflow("ci.yml")["jobs"]
 
 
+def test_ide_is_tested_on_macos_because_it_ships_darwin_builds() -> None:
+    job = workflow("ci.yml")["jobs"]["ide-macos"]
+    assert job["runs-on"] == "macos-latest"
+    assert job["defaults"]["run"]["working-directory"] == "ide"
+    assert '"ide"' in job["if"]
+    assert "cargo test --locked --all-features" in str(job["steps"])
+
+
 def test_sandbox_libkrun_rust_steps_build_init_first() -> None:
     rust = str(workflow("ci.yml")["jobs"]["rust"]["steps"])
     assert "cargo test --locked --lib fails_closed" in rust

@@ -15,6 +15,7 @@
 import type {
   FunctionCallMessage,
   FunctionCallRenderer,
+  Host,
 } from '@iii-dev/console-ui'
 import { ErrorDisplayView } from '../lib/errors'
 import { ShellConfigStatusView } from './ConfigStatusView'
@@ -41,7 +42,10 @@ import {
 import { FunctionIdLabel } from './shared'
 import { ShellStatusView } from './StatusView'
 
-function render(message: FunctionCallMessage): React.ReactNode | null {
+function render(
+  host: Host,
+  message: FunctionCallMessage,
+): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -64,7 +68,14 @@ function render(message: FunctionCallMessage): React.ReactNode | null {
     case 'shell::exec':
       return <ShellExecView input={input} output={output} running={running} />
     case 'shell::exec_bg':
-      return <ShellExecBgView input={input} output={output} running={running} />
+      return (
+        <ShellExecBgView
+          host={host}
+          input={input}
+          output={output}
+          running={running}
+        />
+      )
     case 'shell::status':
       return <ShellStatusView input={input} output={output} running={running} />
     case 'shell::kill':
@@ -115,13 +126,14 @@ function tryRenderPreview(
   }
 }
 
-export function createShellCallRenderer(): FunctionCallRenderer {
+export function createShellCallRenderer(host: Host): FunctionCallRenderer {
+  const renderCall = (message: FunctionCallMessage) => render(host, message)
   return {
     id: 'ide/page.js#shell',
     isMatch: isShellFunction,
-    tryRender: render,
+    tryRender: renderCall,
     /** Alias kept deliberately; running state lives inside `render`. */
-    tryRenderRunning: render,
+    tryRenderRunning: renderCall,
     tryRenderPreview,
     FunctionIdLabel: FunctionIdLabel,
   }

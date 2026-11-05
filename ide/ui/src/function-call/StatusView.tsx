@@ -60,7 +60,7 @@ export function ShellStatusView({
   )
 }
 
-function StatusFooter({ job }: { job: JobRecord }) {
+export function StatusFooter({ job }: { job: JobRecord }) {
   const status = jobStatusPill(job.status)
   const exit = pillForExit(job.exit_code)
   const duration = jobDurationMs(job)
