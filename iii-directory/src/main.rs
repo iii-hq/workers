@@ -477,14 +477,16 @@ fn setup_auto_download(
     // Every event, unfiltered: each one invalidates the installed set. The
     // observer stays `pending` until the engine source is registered, and
     // lives as long as the worker's connection.
-    let handle = iii.observe(
-        Source::function(WORKERS_ON_CHANGED_FN).deliver(Deliver::Output),
-        "directory::__on_workers_changed",
-    );
+    let handle = iii.observe(workers_changed_source(), "directory::__on_workers_changed");
     tracing::info!(
         observer_id = handle.id(),
         "observing worker connections for auto-download"
     );
+}
+
+/// Every `engine::on-workers-changed` call, unfiltered.
+fn workers_changed_source() -> Source {
+    Source::function(WORKERS_ON_CHANGED_FN).deliver(Deliver::Output)
 }
 
 /// The `(container, version)` pairs of a `compose::status` reply; the
@@ -700,17 +702,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The `engine::on-workers-changed` event: only a connection runs a
-    /// worker pass.
+    /// The `engine::on-workers-changed` event, captured as the `output` of an
+    /// Observed envelope: only a connection runs a worker pass.
     #[test]
     fn only_a_worker_connection_runs_a_worker_pass() {
         let change = |event: &str| {
-            serde_json::from_value::<WorkersChanged>(json!({ "event": event, "worker_id": "w-1" }))
-                .unwrap()
+            serde_json::from_value::<WorkersChanged>(json!({
+                "observer_id": "obs-1",
+                "activation_id": "act-1",
+                "function_id": WORKERS_ON_CHANGED_FN,
+                "invocation_id": "inv-1",
+                "status": "success",
+                "started_at_ms": 1,
+                "duration_ms": 0.5,
+                "output": { "event": event, "worker_id": "w-1" },
+            }))
+            .unwrap()
         };
         assert!(change("worker_connected").is_connect());
         assert!(!change("worker_disconnected").is_connect());
         assert!(!change("worker_metadata_updated").is_connect());
+    }
+
+    /// The observer captures the event (the output) and sets no `deliver`.
+    #[test]
+    fn worker_connections_are_observed_capturing_output() {
+        assert_eq!(
+            workers_changed_source(),
+            Source::function(WORKERS_ON_CHANGED_FN).capture([iii_sdk::Capture::Output])
+        );
     }
 
     /// A connection's worker pass downloads the skills of a worker Compose
