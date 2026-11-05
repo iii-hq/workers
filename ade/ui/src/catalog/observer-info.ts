@@ -9,13 +9,13 @@ export type Outcome = 'success' | 'error'
 const OUTCOMES: readonly Outcome[] = ['success', 'error']
 
 /**
- * The outcomes that fire an observer's target: the engine's `fires` list
- * when it reports one (an array; a number is the legacy activation count),
- * else the legacy `on`.
+ * The outcomes that fire an observer's target: the engine's `fires_on` list
+ * when it reports one (`observe.capture` engines), else the legacy `on`.
+ * `fires` is the numeric activation count and is never read here.
  */
-export function observerOutcomes(fires: unknown, on: unknown): Outcome[] {
-  if (Array.isArray(fires)) {
-    const listed = OUTCOMES.filter((outcome) => fires.includes(outcome))
+export function observerOutcomes(firesOn: unknown, on: unknown): Outcome[] {
+  if (Array.isArray(firesOn)) {
+    const listed = OUTCOMES.filter((outcome) => firesOn.includes(outcome))
     if (listed.length) return listed
   }
   if (on === 'error') return ['error']
@@ -72,7 +72,7 @@ export interface ObserverInfo {
   target: { function_id: string; namespace: string }
   capture: string[]
   /**
-   * Which outcomes call the target. Read from the engine's `fires` list
+   * Which outcomes call the target. Read from the engine's `fires_on` list
    * (`observe.capture` engines); older engines report the legacy `on`
    * instead (absent = success, `error`, `complete` = both). Never derived
    * from `capture`.
@@ -140,7 +140,7 @@ export function observerInfo(row: unknown): ObserverInfo | null {
     capture: Array.isArray(row.capture)
       ? row.capture.filter((c): c is string => typeof c === 'string')
       : [],
-    outcomes: observerOutcomes(row.fires, row.on),
+    outcomes: observerOutcomes(row.fires_on, row.on),
     deliver: str(row.deliver) ?? 'envelope',
     worker: {
       worker_id: str(worker.worker_id) ?? '',
