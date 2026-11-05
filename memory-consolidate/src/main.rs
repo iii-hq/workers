@@ -237,7 +237,7 @@ mod tests {
             heartbeat_source(),
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "0 0 * * * *" }))
-                .deliver(Deliver::Output)
+                .capture([iii_sdk::Capture::Output])
         );
     }
 
