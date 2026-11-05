@@ -1,5 +1,5 @@
 use iii_sdk::{
-    Call, CallRequest, Deliver, Match, ObserveRejection, Observer, ObserverOptions,
+    Call, CallRequest, Capture, Match, ObserveRejection, Observed, Observer, ObserverOptions,
     RegisterFunction, Source,
 };
 
@@ -360,9 +360,16 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
     let s = service.clone();
     iii.register_function(
         "github::webhooks::tunnel-changed",
-        RegisterFunction::new_async(move |req: TunnelSnapshot| {
+        RegisterFunction::new_async(move |event: Observed<Value, TunnelSnapshot>| {
             let s = s.clone();
             async move {
+                // capture [output]: the snapshot is the envelope's output.
+                let req = event.output.ok_or_else(|| {
+                    iii_sdk::Error::Handler(format!(
+                        "observed call of {} carried no tunnel snapshot",
+                        event.function_id
+                    ))
+                })?;
                 let task_service = s.clone();
                 let response =
                     storage_task(async move { task_service.tunnel_changed(req).await }).await?;
@@ -494,14 +501,14 @@ pub(super) fn observed_sources(
         (
             Source::function("quick-tunnel::on-changed")
                 .filters(json!({ "input.tunnel_id": { "$eq": config.tunnel_id } }))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             "github::webhooks::tunnel-changed",
             ObserverOptions::default(),
         ),
         (
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "*/10 * * * * *" }))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             "github::webhooks::maintain",
             ObserverOptions::default(),
         ),
