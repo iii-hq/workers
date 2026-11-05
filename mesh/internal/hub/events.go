@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -23,7 +24,7 @@ type nodeBinding struct {
 	generation uint64
 	delivery   sync.Mutex
 	node       string
-	observer   *iii.Observer
+	observer   *iii.Observer // Initial lifetime handle; SDK views can refresh without hooks.
 	ctx        context.Context
 	cancel     context.CancelFunc
 }
@@ -136,7 +137,11 @@ func (e *nodeEvents) deliver(ctx context.Context, call *iii.Call, observers []*i
 		}
 		binding.delivery.Lock()
 		e.mu.Lock()
-		valid := e.bindings[obs.ID] == binding && binding.observer == obs && meta.ForObserver == obs.ID && meta.Generation == binding.generation && binding.ctx.Err() == nil && e.ctx.Err() == nil && ctx.Err() == nil && e.client.ConnectionState() == iii.StateConnected
+		// Same-args SDK reacks can refresh the view without lifecycle hooks.
+		// Admit only the SDK's current view, not the initial binding handle or a
+		// stale view captured by an earlier local invocation.
+		currentView := slices.Contains(e.client.Observers("mesh::on-node-changed"), obs)
+		valid := e.bindings[obs.ID] == binding && currentView && meta.ForObserver == obs.ID && meta.Generation == binding.generation && binding.ctx.Err() == nil && e.ctx.Err() == nil && ctx.Err() == nil && e.client.ConnectionState() == iii.StateConnected
 		var callCtx context.Context
 		var cancel context.CancelFunc
 		var stop func() bool
@@ -201,11 +206,11 @@ func (e *nodeEvents) addObserver(_ context.Context, obs *iii.Observer) error {
 func (e *nodeEvents) removeObserver(obs *iii.Observer) {
 	e.mu.Lock()
 	b := e.bindings[obs.ID]
-	if b != nil && b.observer == obs {
+	// SDK lifecycle hooks are serialized per function. Removal names the
+	// binding lifetime by ID even when a no-hook reack changed its view pointer.
+	if b != nil {
 		b.close()
 		delete(e.bindings, obs.ID)
-	} else {
-		b = nil
 	}
 	e.mu.Unlock()
 	if b != nil {

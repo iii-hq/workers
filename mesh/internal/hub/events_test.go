@@ -120,8 +120,12 @@ func (e *eventWire) next(kind string) map[string]json.RawMessage {
 }
 func (e *eventWire) bind(id, cfg string) bool {
 	e.t.Helper()
+	return e.announceObserver(iii.ObserverInfo{ID: id, Args: json.RawMessage(cfg), Filters: json.RawMessage(`{}`), Target: "audit::" + id, Capture: []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureCaller}, On: iii.OnSuccess})
+}
+func (e *eventWire) announceObserver(info iii.ObserverInfo) bool {
+	e.t.Helper()
 	e.revision++
-	e.send(map[string]any{"type": "observeradded", "function_id": "mesh::on-node-changed", "namespace": "hub-project", "revision": e.revision, "observer": map[string]any{"id": id, "args": json.RawMessage(cfg), "filters": map[string]any{}, "target": "audit::" + id, "capture": []string{"input", "output", "caller"}, "on": "success", "deliver": "output"}})
+	e.send(map[string]any{"type": "observeradded", "function_id": "mesh::on-node-changed", "namespace": "hub-project", "revision": e.revision, "observer": info})
 	f := e.next("observerack")
 	return len(f["error"]) == 0 || string(f["error"]) == "null"
 }
