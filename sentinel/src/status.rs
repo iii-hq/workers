@@ -4,8 +4,8 @@
 //! a counter incremented on the path that does the thing — there is no
 //! separate bookkeeping pass to drift out of sync. Two of them are the ones
 //! that matter when something is wrong: `lost_before_capture` says the
-//! engine's ring dropped a trace before the job ran, and `redactions` says
-//! the value redactor is actually firing.
+//! engine's ring dropped a trace before it could be read, and `redactions`
+//! says the value redactor is actually firing.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};

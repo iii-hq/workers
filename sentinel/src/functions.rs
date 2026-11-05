@@ -62,7 +62,7 @@ pub const INGEST_ID: &str = "sentinel::ingest";
 pub const INGEST_DESC: &str =
     "Internal durable queue step: reads one trace or log and records what failed.";
 pub const ON_TRACE_ACTIVITY_ID: &str = "sentinel::on-trace-activity";
-pub const ON_TRACE_ACTIVITY_DESC: &str = "Internal observer of observability::on-span; queues the traces worth reading, and the ingest records only those that hold an error.";
+pub const ON_TRACE_ACTIVITY_DESC: &str = "Internal observer of observability::on-span; reads the tick's traces in one call and queues those that hold an error.";
 pub const ON_LOG_ID: &str = "sentinel::on-log";
 pub const ON_LOG_DESC: &str =
     "Internal observer of observability::on-log, filtered to ERROR records and above.";
@@ -538,8 +538,10 @@ async fn status<E: EngineRegistry>(deps: &Deps<E>) -> StatusResponseV1 {
         .snapshot(&config, ids::now_ms(), groups, investigations, config_error)
 }
 
-/// The tick handler does as little as possible: the engine ignores its
-/// result, and anything slow here holds up the source's own loop.
+/// The tick handler does as little as possible: the engine ignores its result,
+/// and a slow one holds an in-flight slot of the observer. Its one read is worth
+/// it because nearly every trace that ticks is clean, and a durable job for each
+/// costs far more than reading them all together.
 async fn on_trace_activity<E: EngineRegistry>(
     deps: &Deps<E>,
     event: TraceActivityEventV1,
@@ -551,7 +553,7 @@ async fn on_trace_activity<E: EngineRegistry>(
             phantom_dropped: 0,
         };
     }
-    let (wanted, phantom_dropped) = deps.ingest.filter_tick(&event.trace_ids);
+    let (wanted, phantom_dropped) = deps.ingest.filter_tick(&event.trace_ids).await;
     let mut queued = 0;
     for trace_id in wanted {
         let job = IngestJob::Trace { trace_id };

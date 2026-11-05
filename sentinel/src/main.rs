@@ -38,7 +38,8 @@ use tokio::sync::RwLock;
 
 /// How often the observers are reconciled and stale work is swept.
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
-/// How often parked logs are checked for an expired wait.
+/// How long the parked-log sweep waits to try again while the store is not
+/// ready or cannot be read.
 const JOIN_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
 /// Parked logs promoted per sweep.
 const JOIN_SWEEP_BATCH: usize = 100;
@@ -239,20 +240,16 @@ async fn sweep_parked_logs(
     queue: Arc<IngestQueue>,
     counters: Arc<Counters>,
 ) {
-    let mut interval = tokio::time::interval(JOIN_SWEEP_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        interval.tick().await;
         if !counters.is_ready() {
+            tokio::time::sleep(JOIN_SWEEP_INTERVAL).await;
             continue;
         }
-        let due = match store
-            .due_pending_logs(sentinel::ids::now_ms(), JOIN_SWEEP_BATCH)
-            .await
-        {
+        let due = match store.next_due_pending_logs(JOIN_SWEEP_BATCH).await {
             Ok(due) => due,
             Err(error) => {
                 tracing::warn!(%error, "could not read the parked logs");
+                tokio::time::sleep(JOIN_SWEEP_INTERVAL).await;
                 continue;
             }
         };

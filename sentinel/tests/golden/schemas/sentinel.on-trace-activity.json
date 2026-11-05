@@ -1,5 +1,5 @@
 {
-  "description": "Internal observer of observability::on-span; queues the traces worth reading, and the ingest records only those that hold an error.",
+  "description": "Internal observer of observability::on-span; reads the tick's traces in one call and queues those that hold an error.",
   "function_id": "sentinel::on-trace-activity",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
