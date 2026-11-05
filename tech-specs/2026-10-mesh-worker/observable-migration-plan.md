@@ -19,6 +19,7 @@
 - Explicitly disable new SDK telemetry export on Mesh-owned clients; a test-only environment override must not conceal production defaults.
 - No compatibility shim or fallback to the removed trigger wire protocol. Historical original specs/evidence stay historical; update active README, permissions/skills and current tests as needed.
 - Real protocol regression tests must cover observable deliveries and refusals. Do not weaken assertions or skip required tests to obtain green.
+- Node-event no-history applies to queued/unadmitted events. Logical callback admission occurs at the post-match live-binding/generation check under its delivery lock. An already-admitted SDK local invocation can enqueue its callback after reconnection to the same retained observer; the SDK exposes no atomic epoch-pinned cancellation. Keep this limit explicit; changed/removed generations must still fail validation before admission and drain before replacement acknowledgements.
 - Follow TDD, meaningful focused checks during iteration; run Go fmt/vet/tests/build and affected Rust/UI checks once at completion of relevant source changes. Use CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=readonly GOTOOLCHAIN=local TS_NO_LOGS_NO_SUPPORT=true for normal Go checks.
 
 ## Review Focus
