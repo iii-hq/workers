@@ -166,6 +166,106 @@ pub fn observe_webhook_route(iii: &IIIClient) -> ObserverHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        MessageAddedEvent, MessageUpdatedEvent, PendingApprovalRecord, PendingResolvedEvent,
+        StatusChangedEvent, TurnCompletedEvent,
+    };
+    use iii_sdk::{Capture, Observed};
+
+    /// What a `capture: [output]` observer target receives.
+    fn envelope(function_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": "obs_1",
+            "activation_id": "act_1",
+            "function_id": function_id,
+            "invocation_id": "inv_1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": output,
+        })
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(payload: Value) -> Result<T, Error> {
+        let observed: Observed<Value, T> =
+            serde_json::from_value(payload).expect("an Observed envelope");
+        observed_output(observed)
+    }
+
+    #[test]
+    fn event_observers_capture_the_output() {
+        let filters = json!({ "input.message.role": { "$in": ["assistant"] } });
+        assert_eq!(
+            event_source(SESSION_MESSAGE_UPDATED_FN, Some(filters.clone())),
+            Source::function(SESSION_MESSAGE_UPDATED_FN)
+                .capture([Capture::Output])
+                .filters(filters)
+        );
+        assert_eq!(
+            event_source(APPROVAL_PENDING_CREATED_FN, None),
+            Source::function(APPROVAL_PENDING_CREATED_FN).capture([Capture::Output])
+        );
+    }
+
+    #[test]
+    fn binding_targets_read_the_event_from_the_observed_envelope() {
+        let added: MessageAddedEvent = decode(envelope(
+            SESSION_MESSAGE_ADDED_FN,
+            json!({ "session_id": "s1", "entry_id": "e1",
+                    "message": { "role": "assistant", "content": [] } }),
+        ))
+        .unwrap();
+        assert_eq!(
+            (added.session_id.as_str(), added.entry_id.as_str()),
+            ("s1", "e1")
+        );
+        assert_eq!(added.message.unwrap().role, "assistant");
+
+        let updated: MessageUpdatedEvent = decode(envelope(
+            SESSION_MESSAGE_UPDATED_FN,
+            json!({ "session_id": "s1", "entry_id": "e1", "revision": 4,
+                    "message": { "role": "assistant", "content": [] } }),
+        ))
+        .unwrap();
+        assert_eq!(updated.revision, 4);
+
+        let status: StatusChangedEvent = decode(envelope(
+            SESSION_STATUS_CHANGED_FN,
+            json!({ "session_id": "s1", "status": "idle" }),
+        ))
+        .unwrap();
+        assert_eq!(status.status, "idle");
+
+        let turn: TurnCompletedEvent = decode(envelope(
+            HARNESS_TURN_COMPLETED_FN,
+            json!({ "session_id": "s1", "turn_id": "t1", "status": "failed",
+                    "terminal": false }),
+        ))
+        .unwrap();
+        assert_eq!((turn.turn_id.as_str(), turn.terminal), ("t1", false));
+
+        let pending: PendingApprovalRecord = decode(envelope(
+            APPROVAL_PENDING_CREATED_FN,
+            json!({ "session_id": "s1", "function_call_id": "c1", "function_id": "shell::exec" }),
+        ))
+        .unwrap();
+        assert_eq!(pending.function_id, "shell::exec");
+
+        let resolved: PendingResolvedEvent = decode(envelope(
+            APPROVAL_PENDING_RESOLVED_FN,
+            json!({ "session_id": "s1", "function_call_id": "c1", "outcome": "approved" }),
+        ))
+        .unwrap();
+        assert_eq!(resolved.outcome, "approved");
+    }
+
+    #[test]
+    fn an_envelope_without_output_is_an_error() {
+        let mut payload = envelope(HARNESS_TURN_COMPLETED_FN, Value::Null);
+        payload.as_object_mut().unwrap().remove("output");
+        let err = decode::<TurnCompletedEvent>(payload).unwrap_err();
+        assert!(err.to_string().contains(HARNESS_TURN_COMPLETED_FN), "{err}");
+    }
 
     #[test]
     fn routes_are_posts_under_the_worker_prefix() {

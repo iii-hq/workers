@@ -193,6 +193,35 @@ async fn list_workers(iii: &IIIClient) -> Result<Vec<EngineWorker>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::Capture;
+
+    #[test]
+    fn watch_observer_captures_the_output() {
+        assert_eq!(
+            watch_source(),
+            Source::function(ON_WORKERS_CHANGED_FN)
+                .filters(lifecycle_filters())
+                .capture([Capture::Output])
+        );
+    }
+
+    #[test]
+    fn watch_target_reads_the_event_from_the_observed_envelope() {
+        let envelope = serde_json::json!({
+            "observer_id": "obs_1",
+            "activation_id": "act_1",
+            "function_id": ON_WORKERS_CHANGED_FN,
+            "invocation_id": "inv_1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "event": "worker_connected", "worker_id": "w1" },
+        });
+        let wake: WorkersChangedWake = serde_json::from_value(envelope).unwrap();
+        let event = wake.output.expect("output captured");
+        assert_eq!(event.event.as_deref(), Some("worker_connected"));
+        assert_eq!(event.worker_id.as_deref(), Some("w1"));
+    }
 
     fn status_with(present: bool, loading: bool) -> ApprovalGateStatus {
         let s = ApprovalGateStatus::new();
