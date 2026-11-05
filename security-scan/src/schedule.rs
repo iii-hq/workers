@@ -334,7 +334,7 @@ mod tests {
             schedule_source(schedule),
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "0 0 3 * * *" }))
-                .deliver(Deliver::Output)
+                .capture([iii_sdk::Capture::Output])
         );
         assert_eq!(
             schedule_metadata(repository),
