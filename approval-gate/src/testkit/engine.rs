@@ -41,9 +41,20 @@ impl Drop for Engine {
     }
 }
 
+/// A path-like binary made absolute: the stack's processes start in its own
+/// directory, which would re-base a relative one. A bare name stays a `PATH`
+/// lookup.
+fn anchored(bin: std::path::PathBuf) -> std::path::PathBuf {
+    if bin.components().count() > 1 {
+        std::path::absolute(&bin).unwrap_or(bin)
+    } else {
+        bin
+    }
+}
+
 pub fn engine_bin() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("III_ENGINE_BIN") {
-        return Some(p.into());
+        return Some(anchored(p.into()));
     }
     let on_path = std::process::Command::new("iii")
         .arg("--version")
@@ -57,7 +68,7 @@ pub fn engine_bin() -> Option<std::path::PathBuf> {
 
 /// The standalone `state` worker binary (`III_STATE_BIN`).
 pub fn state_bin() -> Option<std::path::PathBuf> {
-    std::env::var_os("III_STATE_BIN").map(Into::into)
+    std::env::var_os("III_STATE_BIN").map(|p| anchored(p.into()))
 }
 
 /// Why the engine-backed stack cannot run here, or `None` when it can.
@@ -684,7 +695,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::stack_dir;
+    use super::{anchored, stack_dir};
+
+    #[test]
+    fn a_relative_binary_survives_the_stacks_working_directory() {
+        assert_eq!(anchored("state".into()), std::path::Path::new("state"));
+        let relative = anchored("../state/target/debug/state".into());
+        assert!(relative.is_absolute(), "{}", relative.display());
+        assert!(relative.ends_with("state/target/debug/state"));
+    }
 
     #[test]
     fn every_stack_gets_its_own_directory() {
