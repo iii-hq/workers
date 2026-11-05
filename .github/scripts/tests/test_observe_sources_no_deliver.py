@@ -32,7 +32,21 @@ PATTERNS[".tsx"] = PATTERNS[".mjs"] = PATTERNS[".js"] = PATTERNS[".ts"]
 # Files that mention `deliver` without creating an observer: readers of
 # observer listings / views from engines that still report the legacy
 # field, and validators of what a client sends. Each entry says why.
-ALLOWED: dict[str, str] = {}
+ALLOWED: dict[str, str] = {
+    "code-runner/src/node_bus.rs": (
+        "forwards a guest JS observe `deliver` (deprecated) to the engine as the "
+        "legacy source field, which the 0.26 engine translates, with a warning "
+        "naming `capture`; it creates no `deliver` observer of its own"
+    ),
+    "crates/node-core/src/engine.rs": (
+        "defines and parses GuestDeliver, the deprecated guest JS `deliver` that "
+        "code-runner forwards as the legacy source field"
+    ),
+    "rbac-proxy/src/interceptor.rs": (
+        "reads `source.deliver` from client observe frames it proxies; it is a "
+        "validator of what a client sends, not an observe source"
+    ),
+}
 
 COMMENT = re.compile(r"^\s*(?://|\*|/\*|#)")
 
