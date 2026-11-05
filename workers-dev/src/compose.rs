@@ -1170,6 +1170,36 @@ async fn terminate_group(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_progress_feed_ships_only_the_output() {
+        assert_eq!(
+            progress_source(),
+            Source::function(PROGRESS_FN).capture([iii_sdk::Capture::Output])
+        );
+    }
+
+    /// The feed's target receives the activation envelope; the progress
+    /// event is its `output`.
+    #[test]
+    fn the_progress_target_reads_the_event_from_the_observed_envelope() {
+        let event = progress_event(json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": PROGRESS_FN,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "operation_id": "op-1", "container": "state", "phase": "starting", "terminal": false },
+        }))
+        .expect("the event is read from output");
+        assert_eq!(event.operation_id, "op-1");
+        assert_eq!(event.container.as_deref(), Some("state"));
+        assert_eq!(event.phase, "starting");
+        assert!(!event.terminal);
+        assert!(progress_event(json!({ "status": "error", "operation_id": "op-1" })).is_none());
+    }
+
 
     #[test]
     fn compose_payload_routes_by_namespace_and_absolute_file() {
