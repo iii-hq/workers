@@ -12,6 +12,7 @@ import {
 import { Fact, FactList } from '@/components/ui/FactCard'
 import { Hint } from '@/components/ui/Hint'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
+import { useRelativeClock } from '@/hooks/use-relative-clock'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
@@ -19,6 +20,7 @@ import {
   onDismissedTriggersChange,
   saveDismissedTriggers,
 } from '@/lib/dismissed-triggers'
+import { formatElapsed } from '@/lib/relative-time'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
@@ -143,6 +145,29 @@ export function lifecycleNote(observer: SessionObserverInfo): string | null {
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
+/** How long a live observer has been waiting, for the strip and its rows. */
+function waitingFor(observer: SessionObserverInfo, now: number): string | null {
+  const elapsed = formatElapsed(observer.createdAt, now)
+  return elapsed === null || elapsed === 'just now' ? elapsed : `for ${elapsed}`
+}
+
+/**
+ * What the strip's header names: the oldest live one-shot observer, the likeliest
+ * to be stuck (a recurring one is healthy however old it is), and how long it has
+ * been waiting.
+ */
+export function topObserverSummary(
+  live: SessionObserverInfo[],
+  now: number,
+): { waiting: string | null; title: string } | null {
+  const top = live.find((observer) => observer.once) ?? live[0]
+  if (!top) return null
+  return {
+    waiting: waitingFor(top, now),
+    title: top.label ?? top.functionId,
+  }
+}
+
 /**
  * What "clear all" is about to do, from the counts alone. Live observers are
  * removed on the backend; inactive ghosts only leave this view.
@@ -239,6 +264,7 @@ function CopyableId({ value }: { value: string }) {
 
 interface ObserverRowProps {
   observer: SessionObserverInfo
+  now: number
   busy: boolean
   onOpen: () => void
   onDispose: () => void
@@ -253,6 +279,7 @@ interface ObserverRowProps {
  */
 function ObserverRow({
   observer,
+  now,
   busy,
   onOpen,
   onDispose,
@@ -262,6 +289,7 @@ function ObserverRow({
   const title = observer.label ?? observer.functionId
   const summary = stateNote ?? summarizeObserver(observer)
   const meta = [
+    inactive ? null : waitingFor(observer, now),
     title === observer.functionId ? null : observer.functionId,
     deliveryLabel(observer),
     summary,
@@ -474,6 +502,8 @@ export function SessionObservers({
   )
   const activeCount = liveObservers.length
   const inactiveCount = inactiveObservers.length
+  const now = useRelativeClock(liveObservers[0]?.createdAt)
+  const topSummary = topObserverSummary(liveObservers, now)
 
   // Whether each keyed state observer's watched key exists yet — the
   // row-level diagnosis for a wake armed on a key nothing ever writes.
@@ -585,11 +615,18 @@ export function SessionObservers({
                 </span>
                 active
               </span>
+              {/* Name last: a narrow strip truncates it, not the numbers. */}
+              {topSummary?.waiting ? (
+                <span className="text-ink-faint"> · {topSummary.waiting}</span>
+              ) : null}
               {inactiveCount > 0 ? (
                 <span className="text-ink-faint">
                   {' '}
                   · {inactiveCount} inactive
                 </span>
+              ) : null}
+              {topSummary ? (
+                <span className="text-ink-faint"> · {topSummary.title}</span>
               ) : null}
             </span>
             <ChevronRight
@@ -643,6 +680,7 @@ export function SessionObservers({
                   <ObserverRow
                     key={observer.id}
                     observer={observer}
+                    now={now}
                     stateNote={stateNote(observer)}
                     busy={busyId === observer.id}
                     onOpen={() => setSelectedId(observer.id)}
@@ -715,6 +753,7 @@ export function SessionObservers({
                         <ObserverRow
                           key={observer.id}
                           observer={observer}
+                          now={now}
                           stateNote={stateNote(observer)}
                           busy={busyId === observer.id}
                           onOpen={() => setSelectedId(observer.id)}
