@@ -3,6 +3,62 @@
  * without React or host imports so it can be unit-tested on its own.
  */
 
+/** An outcome of the observed call that fires the target. */
+export type Outcome = 'success' | 'error'
+
+const OUTCOMES: readonly Outcome[] = ['success', 'error']
+
+/**
+ * The outcomes that fire an observer's target: the engine's `fires` list
+ * when it reports one (an array; a number is the legacy activation count),
+ * else the legacy `on`.
+ */
+export function observerOutcomes(fires: unknown, on: unknown): Outcome[] {
+  if (Array.isArray(fires)) {
+    const listed = OUTCOMES.filter((outcome) => fires.includes(outcome))
+    if (listed.length) return listed
+  }
+  if (on === 'error') return ['error']
+  if (on === 'complete') return ['success', 'error']
+  return ['success']
+}
+
+/** One row of the observer's delivery facts. */
+export interface DeliveryFact {
+  label: string
+  value: string
+}
+
+/**
+ * What the Observers screen lists under Delivery: the outcomes that fire
+ * the target, the legacy raw delivery when an older engine reports one,
+ * what is captured, and the policy.
+ */
+export function observerDeliveryFacts(observer: ObserverInfo): DeliveryFact[] {
+  const facts: DeliveryFact[] = [{ label: 'fires on', value: observer.outcomes.join(', ') }]
+  if (observer.deliver !== 'envelope') facts.push({ label: 'deliver', value: observer.deliver })
+  facts.push(
+    {
+      label: 'capture',
+      value: observer.capture.length ? observer.capture.join(', ') : 'nothing',
+    },
+    {
+      label: 'max fires',
+      value: observer.max_fires !== undefined ? String(observer.max_fires) : 'unlimited',
+    },
+    {
+      label: 'expires in',
+      value: observer.expires_in_ms !== undefined ? `${observer.expires_in_ms} ms` : 'never',
+    },
+    {
+      label: 'max in flight',
+      value:
+        observer.max_in_flight !== undefined ? String(observer.max_in_flight) : 'engine default',
+    },
+  )
+  return facts
+}
+
 /** One observer, as `engine::observers::list` / `get` report it. */
 export interface ObserverInfo {
   id: string
@@ -15,12 +71,23 @@ export interface ObserverInfo {
   filters: Record<string, unknown>
   target: { function_id: string; namespace: string }
   capture: string[]
-  on: string
+  /**
+   * Which outcomes call the target. Read from the engine's `fires` list
+   * (`observe.capture` engines); older engines report the legacy `on`
+   * instead (absent = success, `error`, `complete` = both). Never derived
+   * from `capture`.
+   */
+  outcomes: Outcome[]
+  /**
+   * Legacy raw delivery an older engine reports (`input` / `output`);
+   * `envelope` otherwise, the only delivery an `observe.capture` engine has.
+   */
   deliver: string
   /** The worker that created the observer. */
   worker: { worker_id: string; worker_name?: string }
   state: string
   reason?: { code: string; message: string }
+  /** Activations so far (the listing's numeric `fires`; 0 when absent). */
   fires: number
   /** Activations dropped, by reason. */
   dropped: Record<string, number>
@@ -73,7 +140,7 @@ export function observerInfo(row: unknown): ObserverInfo | null {
     capture: Array.isArray(row.capture)
       ? row.capture.filter((c): c is string => typeof c === 'string')
       : [],
-    on: str(row.on) ?? 'success',
+    outcomes: observerOutcomes(row.fires, row.on),
     deliver: str(row.deliver) ?? 'envelope',
     worker: {
       worker_id: str(worker.worker_id) ?? '',

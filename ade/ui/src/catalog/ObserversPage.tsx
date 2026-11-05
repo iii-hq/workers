@@ -52,6 +52,7 @@ import {
   useLiveSignals,
   useResource,
 } from './engine'
+import { observerDeliveryFacts } from './observer-info'
 import { HttpTester } from './HttpTester'
 import { InvokePanel } from './InvokePanel'
 import {
@@ -903,39 +904,7 @@ function ObserverDocument({
             </TabsContent>
 
             <TabsContent value="delivery">
-              <Facts
-                items={[
-                  { label: 'on', value: observer.on },
-                  { label: 'deliver', value: observer.deliver },
-                  {
-                    label: 'capture',
-                    value: observer.capture.length
-                      ? observer.capture.join(', ')
-                      : 'nothing',
-                  },
-                  {
-                    label: 'max fires',
-                    value:
-                      observer.max_fires !== undefined
-                        ? String(observer.max_fires)
-                        : 'unlimited',
-                  },
-                  {
-                    label: 'expires in',
-                    value:
-                      observer.expires_in_ms !== undefined
-                        ? `${observer.expires_in_ms} ms`
-                        : 'never',
-                  },
-                  {
-                    label: 'max in flight',
-                    value:
-                      observer.max_in_flight !== undefined
-                        ? String(observer.max_in_flight)
-                        : 'engine default',
-                  },
-                ]}
-              />
+              <Facts items={observerDeliveryFacts(observer)} />
             </TabsContent>
           </Tabs>
         </div>
