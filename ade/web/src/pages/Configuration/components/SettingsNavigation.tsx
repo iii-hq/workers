@@ -222,7 +222,7 @@ export function SettingsNavigation({
             aria-keyshortcuts="/"
             autoComplete="off"
             spellCheck={false}
-            className="h-9 rounded-md border-neutral-200 bg-white pl-8 pr-8 text-[15px] shadow-none placeholder:text-neutral-400 pointer-coarse:h-11 dark:border-neutral-800 dark:bg-neutral-900/60 dark:placeholder:text-neutral-500 [&::-webkit-search-cancel-button]:hidden"
+            className="h-9 rounded-md border-neutral-200 bg-white pl-8 pr-8 text-[15px] shadow-none placeholder:text-neutral-400 pointer-coarse:h-11 dark:border-neutral-900 dark:bg-black dark:placeholder:text-neutral-500 [&::-webkit-search-cancel-button]:hidden"
             onKeyDown={(event) => {
               if (event.key === 'Escape' && query) {
                 // Clear first; a second Escape closes settings.
@@ -260,7 +260,7 @@ export function SettingsNavigation({
             </button>
           ) : (
             <kbd
-              className="pointer-events-none absolute right-2 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-100 bg-neutral-50 px-1 font-inter text-xs text-neutral-400 pointer-coarse:hidden dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-500"
+              className="pointer-events-none absolute right-2 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-100 bg-neutral-50 px-1 font-inter text-xs text-neutral-400 pointer-coarse:hidden dark:border-neutral-900 dark:bg-black dark:text-neutral-500"
               aria-hidden
             >
               /

@@ -1,5 +1,5 @@
 import { ShadcnButton } from '@iii-dev/console-ui'
-import { CircleDashed, Folder, GitBranch, Milestone } from 'lucide-react'
+import { CircleDashed, FolderOpen, GitBranch, Milestone } from 'lucide-react'
 import { forwardRef, type ReactNode, useMemo } from 'react'
 import { statusStep } from '../board-state'
 import { type AgentProfile, type Brief, type Column, priorityLabel, type ProjectView, type ReleaseView, statusLabel, type TicketSummary } from '../shared'
@@ -178,7 +178,7 @@ export function ProjectPicker({
         ...option,
         icon: (
           <span className="kb-project-dot" data-tone={projects?.find((p) => p.id === option.value)?.color ?? undefined}>
-            <Folder size={16} />
+            <FolderOpen size={16} />
           </span>
         ),
       })),
@@ -196,7 +196,7 @@ export function ProjectPicker({
       trigger={
         <PropertyButton empty={!value} quiet={quiet}>
           <span className="kb-project-dot" data-tone={current?.color ?? undefined}>
-            <Folder size={16} />
+            <FolderOpen size={16} />
           </span>
           {projects ? (current?.name ?? (value ? 'Unknown project' : 'Project')) : 'Loading…'}
         </PropertyButton>

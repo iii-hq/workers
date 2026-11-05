@@ -65,6 +65,9 @@ const CONVERSATIONS: Conversation[] = [
     workingDir: '/home/me/workers/ade',
     title: 'Console UX revamp',
     updatedAt: NOW - 5 * HOUR,
+    // The agent asked a question (`harness::ask`) and waits on the answer.
+    status: 'done',
+    statusReason: 'awaiting answer',
     agentProfile: {
       id: 'p-design',
       name: 'Design',

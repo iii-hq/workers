@@ -967,7 +967,7 @@ export function Composer({
       <div
         ref={card}
         className={cn(
-          'composer-card relative transition-shadow',
+          'composer-card relative',
           composerCardClass,
           dragging && 'ring-2 ring-rule-focus',
         )}
@@ -984,7 +984,7 @@ export function Composer({
               worktrees={worktreePicker}
               triggerAppearance="chip"
               popoverAlign="start"
-              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-xl [&>button]:border [&>button]:border-neutral-200 [&>button]:bg-white [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-neutral-50 dark:[&>button]:border-neutral-800 dark:[&>button]:bg-neutral-900 dark:[&>button:hover]:bg-neutral-800"
+              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-xl [&>button]:border [&>button]:border-neutral-200 [&>button]:bg-white [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-neutral-50 dark:[&>button]:border-neutral-900 dark:[&>button]:bg-transparent dark:[&>button:hover]:bg-neutral-900"
             />
             {projectControls}
             <Hint
@@ -1182,7 +1182,7 @@ export function Composer({
             <button
               key={label}
               type="button"
-              className="inline-flex items-center gap-2 rounded-lg bg-surface/50 px-3 py-2.5 font-inter text-xs text-ink-faint transition-[background-color,color,scale] duration-150 ease-out hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus motion-safe:active:scale-96"
+              className="group/starter inline-flex h-9 items-center gap-2 rounded-full border border-neutral-200 bg-transparent pr-4 pl-3.5 font-inter text-sm text-ink-faint transition-[background-color,border-color,color,scale] duration-150 ease-out hover:border-neutral-300 hover:bg-neutral-100 hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus motion-safe:active:scale-96 dark:border-neutral-900 dark:hover:border-neutral-800 dark:hover:bg-neutral-900"
               onClick={() => {
                 if (textRef.current.trim()) return
                 const target = lexicalEditorRef.current
@@ -1198,7 +1198,10 @@ export function Composer({
                 target?.focus()
               }}
             >
-              <Icon aria-hidden className="size-4" />
+              <Icon
+                aria-hidden
+                className="size-4 text-ink-ghost transition-colors duration-150 group-hover/starter:text-ink"
+              />
               {label}
             </button>
           ))}

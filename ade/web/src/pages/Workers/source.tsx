@@ -3,7 +3,7 @@ import { useDebounce } from '@iii-dev/console-ui/hooks'
 import {
   ChevronDown,
   ChevronRight,
-  Folder,
+  FolderOpen,
   GitBranch,
   Package,
 } from 'lucide-react'
@@ -58,7 +58,7 @@ type Props = {
 const FILE = 'worker-compose.yaml'
 const KINDS = [
   { value: 'package' as const, label: 'Registry package', icon: <Package /> },
-  { value: 'path' as const, label: 'Local path', icon: <Folder /> },
+  { value: 'path' as const, label: 'Local path', icon: <FolderOpen /> },
 ]
 
 export function SourceTab(props: Props) {

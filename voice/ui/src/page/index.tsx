@@ -8,11 +8,8 @@
  */
 
 import {
-  Chip,
   type Host,
   IconButton,
-  List,
-  ListItem,
   PageBody,
   PageHeader,
   PageMain,
@@ -35,18 +32,27 @@ import { DictateSection } from './DictateSection'
 import { ModelsSection } from './ModelsSection'
 import { type Notice, Overview } from './Overview'
 import { ReadAloudSection } from './ReadAloudSection'
+import { SectionNav } from '../ui/section-nav'
 import { LoadingRows } from './shared'
 import { TranscribeSection } from './TranscribeSection'
 
 type SectionId = 'overview' | 'dictate' | 'transcribe' | 'models' | 'speak'
 
-const SECTIONS: { id: SectionId; label: string; description: string; icon: LucideIcon }[] = [
-  { id: 'overview', label: 'Overview', description: 'Engines and sessions', icon: Activity },
-  { id: 'dictate', label: 'Dictate', description: 'Speak, then send', icon: Mic },
-  { id: 'transcribe', label: 'Transcribe', description: 'A recording to text', icon: FileMusic },
-  { id: 'models', label: 'Models', description: 'Listening and reading voices', icon: Layers },
-  { id: 'speak', label: 'Read aloud', description: 'Text to speech', icon: Volume2 },
+const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
+  { id: 'overview', label: 'Overview', icon: Activity },
+  { id: 'dictate', label: 'Dictate', icon: Mic },
+  { id: 'transcribe', label: 'Transcribe', icon: FileMusic },
+  { id: 'models', label: 'Models', icon: Layers },
+  { id: 'speak', label: 'Read aloud', icon: Volume2 },
 ]
+
+/** The read-aloud engine in a person's words, for the header line. */
+const TTS_NAMES: Record<string, string> = {
+  piper: 'Piper voice',
+  host: 'System voice',
+  router: 'Provider voice',
+  openai: 'OpenAI-compatible voice',
+}
 
 export function VoicePage({
   host,
@@ -115,31 +121,42 @@ export function VoicePage({
     }
   }, [panelContext])
 
+  // What listens and what speaks, by name: the transcript model (or the live
+  // one alone) and the read-aloud engine, never raw model ids.
   const description = useMemo(() => {
     if (!report) return 'Speech to text and text to speech'
-    const parts = [report.stt.model]
-    if (report.stt.final_state === 'loaded' || report.stt.final_state === 'installed')
-      parts.push(report.stt.final_model)
-    if (report.tts.available && report.tts.command) parts.push(report.tts.command)
-    return <span className="voice-mono">{parts.join(' + ')}</span>
-  }, [report])
+    const nameOf = (id: string) => models?.models.find((m) => m.id === id)?.name ?? id
+    const { stt, tts } = report
+    const finalReady = stt.final_state === 'loaded' || stt.final_state === 'installed'
+    const listens =
+      stt.backend === 'local'
+        ? nameOf(finalReady && stt.final_model ? stt.final_model : stt.live_model)
+        : nameOf(stt.model)
+    const speaks = tts.backend === 'off' ? 'Read aloud off' : (TTS_NAMES[tts.backend] ?? tts.backend)
+    return `${listens} · ${speaks}`
+  }, [report, models])
 
   const sectionMeta = (id: SectionId) => {
     switch (id) {
-      case 'overview':
-        return report ? <StatusDot tone={report.stt.loaded ? 'accent' : 'ink'} /> : null
       case 'dictate':
-        return listening ? <Chip tone="accent">live</Chip> : null
-      case 'models': {
-        const installed = models?.models.filter((m) => m.installed).length
-        return models ? (
-          <Chip tone="neutral">
-            {installed}/{models.models.length}
-          </Chip>
+        // The dot is aria-hidden; the words carry the state to a screen reader.
+        return listening ? (
+          <>
+            <StatusDot tone="accent" pulse />
+            <span className="voice-sr-only">listening</span>
+          </>
         ) : null
-      }
+      case 'models':
+        return models ? (
+          <span className="voice-nav-count">{models.models.filter((m) => m.installed).length}</span>
+        ) : null
       case 'speak':
-        return report && !report.tts.available && report.tts.backend !== 'off' ? <StatusDot tone="warn" /> : null
+        return report && !report.tts.available && report.tts.backend !== 'off' ? (
+          <>
+            <StatusDot tone="warn" />
+            <span className="voice-sr-only">engine not ready</span>
+          </>
+        ) : null
       default:
         return null
     }
@@ -202,7 +219,8 @@ export function VoicePage({
       />
       <PageBody side={panelSide}>
         <PageSidebar
-          label="sections"
+          label="Sections"
+          header={<span className="voice-side-label">Sections</span>}
           side={panelSide}
           collapsible
           resizable
@@ -213,23 +231,12 @@ export function VoicePage({
           narrowBelow={640}
           narrowMode="drawer"
         >
-          <List className="voice-side-list" aria-label="Voice sections">
-            {SECTIONS.map((item) => {
-              const Icon = item.icon
-              return (
-                <ListItem
-                  key={item.id}
-                  selected={section === item.id}
-                  aria-current={section === item.id ? 'page' : undefined}
-                  leading={<Icon className={host.uiClasses.icon} />}
-                  label={item.label}
-                  description={item.description}
-                  trailing={sectionMeta(item.id)}
-                  onClick={() => setSection(item.id)}
-                />
-              )
-            })}
-          </List>
+          <SectionNav
+            aria-label="Voice sections"
+            items={SECTIONS.map((item) => ({ ...item, meta: sectionMeta(item.id) }))}
+            current={section}
+            onSelect={setSection}
+          />
         </PageSidebar>
         <PageMain className="voice-main">
           {reportError ? <StatusPanel variant="alert" headline="voice::doctor failed" detail={reportError} /> : null}

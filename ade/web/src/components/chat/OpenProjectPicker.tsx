@@ -1,7 +1,6 @@
 import {
   AlertCircle,
   ChevronRight,
-  Folder,
   FolderGit2,
   FolderOpen,
   FolderPlus,
@@ -783,7 +782,7 @@ export function OpenProjectPicker({
                 {targetIsProject ? (
                   <FolderGit2 className="size-4 shrink-0" aria-hidden />
                 ) : (
-                  <Folder className="size-4 shrink-0" aria-hidden />
+                  <FolderOpen className="size-4 shrink-0" aria-hidden />
                 )}
                 <span className="truncate font-mono text-[13px] text-foreground">
                   {tildify(target, home)}
@@ -846,7 +845,7 @@ function FolderRow({
   onOpen: () => void
   onAdd: () => void
 }) {
-  const Icon = busy ? Loader2 : row.git ? FolderGit2 : Folder
+  const Icon = busy ? Loader2 : row.git ? FolderGit2 : FolderOpen
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the path field owns the keys (aria-activedescendant); the row only takes the pointer
     <div

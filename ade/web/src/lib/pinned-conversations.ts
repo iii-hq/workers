@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 /**
  * Pinned chats: a per-browser list of conversation ids the reader keeps at
@@ -41,10 +41,30 @@ export function togglePinnedId(ids: readonly string[], id: string): string[] {
   return ids.includes(id) ? ids.filter((x) => x !== id) : [id, ...ids]
 }
 
+/**
+ * Move `id` to land just before or after `targetId` (a drag dropped on a
+ * row's upper or lower half). Unknown ids, or a drop on itself, change
+ * nothing.
+ */
+export function movePinnedId(
+  ids: readonly string[],
+  id: string,
+  targetId: string,
+  place: 'before' | 'after',
+): readonly string[] {
+  if (id === targetId || !ids.includes(id) || !ids.includes(targetId))
+    return ids
+  const rest = ids.filter((x) => x !== id)
+  const at = rest.indexOf(targetId) + (place === 'after' ? 1 : 0)
+  const next = [...rest.slice(0, at), id, ...rest.slice(at)]
+  return next.every((x, i) => x === ids[i]) ? ids : next
+}
+
 export function usePinnedConversations(): {
   pinnedIds: readonly string[]
   pinned: ReadonlySet<string>
   togglePin: (id: string) => void
+  movePin: (id: string, targetId: string, place: 'before' | 'after') => void
 } {
   const [pinnedIds, setPinnedIds] = useState<readonly string[]>(
     loadPinnedConversationIds,
@@ -55,5 +75,12 @@ export function usePinnedConversations(): {
   const togglePin = useCallback((id: string) => {
     setPinnedIds((current) => togglePinnedId(current, id))
   }, [])
-  return { pinnedIds, pinned: new Set(pinnedIds), togglePin }
+  const movePin = useCallback(
+    (id: string, targetId: string, place: 'before' | 'after') => {
+      setPinnedIds((current) => movePinnedId(current, id, targetId, place))
+    },
+    [],
+  )
+  const pinned = useMemo(() => new Set(pinnedIds), [pinnedIds])
+  return { pinnedIds, pinned, togglePin, movePin }
 }

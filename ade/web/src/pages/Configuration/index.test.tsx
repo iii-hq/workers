@@ -34,6 +34,8 @@ vi.mock('@/hooks/use-container-narrow', () => ({
 }))
 
 vi.mock('@/hooks/use-hash-route', () => ({
+  hashForWorkersConfiguration: (id: string) => `#/configuration/${id}`,
+  replaceHash: vi.fn(),
   useWorkersConfigurationRoute: () => [
     harness.route,
     harness.navigateWorker,
@@ -188,6 +190,44 @@ describe('Configuration settings workspace', () => {
     expect(html).toContain('data-testid="worker-editor"')
     expect(html).toContain('data-worker-id="browser"')
     expect(html).not.toContain('data-testid="general-settings"')
+  })
+
+  it('opens a stack-named entry from its form family (All settings on a worker page)', () => {
+    // A compose stack names the entry `<stack>-voice`; the voice page asks
+    // for `voice`, its form family.
+    harness.entries = [
+      {
+        id: 'hangzhou-voice',
+        name: 'Voice',
+        description: 'Speech to text.',
+        schema: { type: 'object' },
+        metadata: { ui_form: 'voice' },
+      },
+    ]
+    harness.formIds = ['voice']
+    harness.route = { open: true, configurationId: 'voice', fieldPath: [] }
+
+    const html = renderConfiguration()
+
+    expect(html).toContain('data-worker-id="hangzhou-voice"')
+    expect(html).not.toContain('Worker settings unavailable')
+  })
+
+  it('leaves a family with two live instances unresolved', () => {
+    harness.entries = ['alpha-voice', 'beta-voice'].map((id) => ({
+      id,
+      name: 'Voice',
+      description: 'Speech to text.',
+      schema: { type: 'object' },
+      metadata: { ui_form: 'voice' },
+    }))
+    harness.formIds = ['voice']
+    harness.route = { open: true, configurationId: 'voice', fieldPath: [] }
+
+    const html = renderConfiguration()
+
+    expect(html).not.toContain('data-testid="worker-editor"')
+    expect(html).toContain('Worker settings unavailable')
   })
 
   it('uses the worker root route as the narrow navigation landing page', () => {

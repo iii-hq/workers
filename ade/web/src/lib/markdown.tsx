@@ -304,7 +304,7 @@ function MarkdownLink({
 }
 
 const INLINE_CODE_CLASS =
-  'font-code text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5'
+  'font-code text-[12.5px] rounded-md border border-rule-2 bg-paper-2 text-ink px-1 py-0.5'
 
 /** A file's language mark (Material, as the IDE tree draws it), 16px. */
 function InlineFileMark({ icon }: { icon: string }) {

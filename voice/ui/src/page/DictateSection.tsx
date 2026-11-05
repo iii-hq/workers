@@ -5,13 +5,14 @@
  * composer, copy, clear.
  */
 
-import { Button, Chip, EmptyState, type Host, IconButton, StatusDot } from '@iii-dev/console-ui'
+import { type Host, IconButton, ShadcnButton, StatusDot } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Copy, Mic, Send, Square, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DictationController } from '../lib/dictation'
 import { useDictation } from '../lib/dictation'
-import { SectionCard } from './shared'
+import { StatusBadge } from '../ui/status'
+import { PanelBody, PanelEmpty, SectionCard } from './shared'
 
 const COPIED_MS = 2000
 
@@ -74,15 +75,15 @@ export function DictateSection({
   const statusLabel = (() => {
     switch (state.status) {
       case 'starting':
-        return 'starting'
+        return 'Starting'
       case 'listening':
-        return 'listening'
+        return 'Listening'
       case 'stopping':
-        return 'finishing'
+        return 'Finishing'
       case 'error':
-        return 'error'
+        return 'Error'
       default:
-        return 'ready'
+        return 'Ready'
     }
   })()
   const statusTone: 'accent' | 'alert' | 'ink' = (() => {
@@ -95,44 +96,36 @@ export function DictateSection({
     <>
       <SectionCard
         title="Dictate"
+        description="Speak in whole sentences; each pause commits one, and the final text is re-decoded for punctuation."
         actions={
-          <span className="voice-fact-line">
+          <span className="voice-choice">
             <StatusDot tone={statusTone} pulse={listening} />
-            <span className="voice-sub">{statusLabel}</span>
+            <span className="voice-row-hint">{statusLabel}</span>
           </span>
         }
       >
         <div className="voice-hero">
           {listening ? (
-            <Button variant="primary" size="lg" className="voice-hero-btn" onClick={onStop}>
+            <ShadcnButton size="lg" onClick={onStop}>
               <Square />
               Stop and keep text
-            </Button>
+            </ShadcnButton>
           ) : (
-            <Button
-              variant="primary"
-              size="lg"
-              className="voice-hero-btn"
-              onClick={onStart}
-              disabled={state.status === 'stopping'}
-            >
+            <ShadcnButton size="lg" onClick={onStart} disabled={state.status === 'stopping'}>
               <Mic />
               Start dictation
-            </Button>
+            </ShadcnButton>
           )}
-          <p className="voice-note">
-            Speak in whole sentences. Each pause commits an utterance; the final text is re-decoded for punctuation. In
-            chat, hold the mic beside attach to talk and release to insert.
-          </p>
+          <p className="voice-row-hint">In chat, hold the mic beside attach to talk and release to insert.</p>
         </div>
-        {state.status === 'error' && state.error ? <p className="voice-note voice-alert">{state.error}</p> : null}
+        {state.status === 'error' && state.error ? <p className="voice-panel-note voice-alert">{state.error}</p> : null}
       </SectionCard>
 
       <SectionCard
         title="Transcript"
         actions={
-          <span className="voice-card-actions">
-            {copyState === 'copied' ? <Chip tone="success">copied</Chip> : null}
+          <>
+            {copyState === 'copied' ? <StatusBadge tone="ok">Copied</StatusBadge> : null}
             <IconButton label="Copy transcript" variant="ghost" onClick={copy} disabled={!hasText}>
               <Copy />
             </IconButton>
@@ -140,17 +133,16 @@ export function DictateSection({
               <Trash2 />
             </IconButton>
             {host.chat?.compose ? (
-              <Button variant="primary" size="sm" onClick={sendToChat} disabled={!hasText}>
+              <ShadcnButton variant="secondary" size="sm" onClick={sendToChat} disabled={!hasText}>
                 <Send />
                 Send to chat
-              </Button>
+              </ShadcnButton>
             ) : null}
-          </span>
+          </>
         }
       >
         {!hasText ? (
-          <EmptyState
-            icon={Mic}
+          <PanelEmpty
             title={listening ? 'Listening' : 'Nothing dictated yet'}
             description={
               listening
@@ -159,14 +151,16 @@ export function DictateSection({
             }
           />
         ) : (
-          <output className="voice-transcript" aria-live="polite">
-            {entries.map((entry) => (
-              <p key={entry.id} className="voice-transcript-line">
-                {entry.text}
-              </p>
-            ))}
-            {listening && state.partial ? <p className="voice-transcript-partial">{state.partial}</p> : null}
-          </output>
+          <PanelBody>
+            <output className="voice-transcript" aria-live="polite">
+              {entries.map((entry) => (
+                <p key={entry.id} className="voice-transcript-line">
+                  {entry.text}
+                </p>
+              ))}
+              {listening && state.partial ? <p className="voice-transcript-partial">{state.partial}</p> : null}
+            </output>
+          </PanelBody>
         )}
       </SectionCard>
     </>

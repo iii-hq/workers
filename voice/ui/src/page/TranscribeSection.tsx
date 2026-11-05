@@ -6,20 +6,17 @@
  */
 
 import {
-  Button,
-  Chip,
   type Host,
   IconButton,
-  Input,
+  ShadcnButton,
+  ShadcnInput,
+  ShadcnTable,
+  ShadcnTableBody,
+  ShadcnTableCell,
+  ShadcnTableHead,
+  ShadcnTableHeader,
+  ShadcnTableRow,
   StatusPanel,
-  Table,
-  TableBody,
-  TableCell,
-  TableFrame,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TableViewport,
 } from '@iii-dev/console-ui'
 import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
@@ -29,7 +26,8 @@ import { useEffect, useRef, useState } from 'react'
 import { transcribe } from '../lib/client'
 import { formatSeconds } from '../lib/format'
 import type { TranscribeResponse } from '../lib/types'
-import { formatDuration, SectionCard } from './shared'
+import { StatusBadge } from '../ui/status'
+import { formatDuration, PanelBody, SectionCard } from './shared'
 
 const MAX_BYTES = 10 * 1024 * 1024
 
@@ -127,71 +125,78 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
 
   return (
     <>
-      <SectionCard title="Audio">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".wav,audio/wav"
-          onChange={onInput}
-          className="voice-file-input"
-          aria-label="choose a WAV file"
-          tabIndex={-1}
-        />
-        <button
-          ref={dropRef}
-          type="button"
-          className={dragging ? 'voice-dropzone dragging' : 'voice-dropzone'}
-          onClick={() => fileInputRef.current?.click()}
-          onDragOver={(event) => {
-            event.preventDefault()
-            setDragging(true)
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
-          aria-label="choose or drop a WAV file"
-        >
-          <Upload size={16} className="voice-dropzone-icon" />
-          {file ? (
-            <span className="voice-dropzone-file">
-              <FileMusic size={16} />
-              <span className="voice-dropzone-name">{file.name}</span>
-              <span className="voice-sub">{formatBytes(file.size)}</span>
-            </span>
-          ) : (
-            <span className="voice-dropzone-copy">
-              <span className="voice-strong">Drop a WAV file or click to choose</span>
-              <span className="voice-sub">Any sample rate or channel count, up to 10 MiB inline</span>
-            </span>
-          )}
-        </button>
-        {file ? (
-          <div className="voice-inline-actions">
-            <IconButton
-              label="Remove file"
-              variant="ghost"
-              onClick={() => {
-                readGenerationRef.current += 1
-                setFile(null)
-                setFileError(null)
-                setReading(false)
+      <SectionCard title="Audio" description="A WAV recording, from this browser or a path on the worker's machine.">
+        <PanelBody>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".wav,audio/wav"
+            onChange={onInput}
+            className="voice-file-input"
+            aria-label="choose a WAV file"
+            tabIndex={-1}
+          />
+          <div className="voice-drop-row">
+            <button
+              ref={dropRef}
+              type="button"
+              className={dragging ? 'voice-dropzone dragging' : 'voice-dropzone'}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(event) => {
+                event.preventDefault()
+                setDragging(true)
               }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              aria-label="choose or drop a WAV file"
             >
-              <Trash2 />
-            </IconButton>
+              {file ? (
+                <span className="voice-dropzone-file">
+                  <FileMusic size={16} className="voice-dropzone-icon" />
+                  <span className="voice-dropzone-name">{file.name}</span>
+                  <span className="voice-row-hint">{formatBytes(file.size)}</span>
+                </span>
+              ) : (
+                <span className="voice-dropzone-file">
+                  <Upload size={16} className="voice-dropzone-icon" />
+                  <span className="voice-dropzone-copy">
+                    <span className="voice-row-label">Drop a WAV file or click to choose</span>
+                    <span className="voice-row-hint">Any sample rate or channel count, up to 10 MiB inline</span>
+                  </span>
+                </span>
+              )}
+            </button>
+            {file ? (
+              <IconButton
+                label="Remove file"
+                variant="ghost"
+                onClick={() => {
+                  readGenerationRef.current += 1
+                  setFile(null)
+                  setFileError(null)
+                  setReading(false)
+                }}
+              >
+                <Trash2 />
+              </IconButton>
+            ) : null}
           </div>
-        ) : null}
-        <div className="voice-fields">
           <div className="voice-field">
-            <span className="voice-field-label">Or a path on the worker's machine</span>
-            <Input value={path} onChange={setPath} placeholder="/recordings/meeting.wav" aria-label="audio file path" />
+            <span className="voice-row-label">Or a path on the worker's machine</span>
+            <span className="voice-field-line">
+              <ShadcnInput
+                value={path}
+                onChange={(event) => setPath(event.target.value)}
+                placeholder="/recordings/meeting.wav"
+                aria-label="audio file path"
+              />
+              <ShadcnButton onClick={run} disabled={result.phase === 'loading' || reading}>
+                {result.phase === 'loading' ? 'Transcribing…' : reading ? 'Reading file…' : 'Transcribe'}
+              </ShadcnButton>
+            </span>
           </div>
-          <div className="voice-field-actions">
-            <Button variant="primary" onClick={run} disabled={result.phase === 'loading' || reading}>
-              {result.phase === 'loading' ? 'transcribing…' : reading ? 'reading file…' : 'Transcribe'}
-            </Button>
-          </div>
-        </div>
-        {fileError ? <StatusPanel variant="warn" headline="Cannot use that input" detail={fileError} /> : null}
+          {fileError ? <StatusPanel variant="warn" headline="Cannot use that input" detail={fileError} /> : null}
+        </PanelBody>
       </SectionCard>
 
       {result.phase === 'error' ? (
@@ -200,56 +205,52 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
 
       {result.phase === 'ready' ? (
         <SectionCard
-          title={
-            <span className="voice-fact-line">
-              <span>Transcript</span>
-              <Chip tone="neutral">{result.data.backend === 'local' ? result.data.model : 'openai'}</Chip>
-              <span className="voice-sub">
-                {formatDuration(result.data.duration_secs)} · {result.source}
-              </span>
-            </span>
+          title="Transcript"
+          description={
+            <>
+              {result.data.backend === 'local' ? result.data.model : 'OpenAI-compatible'} ·{' '}
+              {formatDuration(result.data.duration_secs)} · {result.source}
+            </>
           }
           actions={
-            <span className="voice-card-actions">
-              {copyState === 'copied' ? <Chip tone="success">copied</Chip> : null}
+            <>
+              {copyState === 'copied' ? <StatusBadge tone="ok">Copied</StatusBadge> : null}
               <IconButton label="Copy transcript" variant="ghost" onClick={copy}>
                 <Copy />
               </IconButton>
               {host.chat?.compose ? (
-                <Button variant="primary" size="sm" onClick={sendToChat}>
+                <ShadcnButton variant="secondary" size="sm" onClick={sendToChat}>
                   <Send />
                   Send to chat
-                </Button>
+                </ShadcnButton>
               ) : null}
-            </span>
+            </>
           }
         >
-          <p className="voice-transcript-text">{result.data.text || 'The recognizer heard no speech.'}</p>
+          <PanelBody>
+            <p className="voice-transcript-text">{result.data.text || 'The recognizer heard no speech.'}</p>
+          </PanelBody>
           {result.data.segments.length > 1 ? (
-            <TableViewport>
-              <TableFrame>
-                <Table density="compact">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>#</TableHead>
-                      <TableHead>start</TableHead>
-                      <TableHead>end</TableHead>
-                      <TableHead>text</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {result.data.segments.map((segment) => (
-                      <TableRow key={segment.segment}>
-                        <TableCell>{segment.segment + 1}</TableCell>
-                        <TableCell className="voice-mono">{formatSeconds(segment.start_secs)}</TableCell>
-                        <TableCell className="voice-mono">{formatSeconds(segment.end_secs)}</TableCell>
-                        <TableCell>{segment.text}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableFrame>
-            </TableViewport>
+            <ShadcnTable className="voice-table">
+              <ShadcnTableHeader>
+                <ShadcnTableRow>
+                  <ShadcnTableHead>#</ShadcnTableHead>
+                  <ShadcnTableHead>Start</ShadcnTableHead>
+                  <ShadcnTableHead>End</ShadcnTableHead>
+                  <ShadcnTableHead>Text</ShadcnTableHead>
+                </ShadcnTableRow>
+              </ShadcnTableHeader>
+              <ShadcnTableBody>
+                {result.data.segments.map((segment) => (
+                  <ShadcnTableRow key={segment.segment}>
+                    <ShadcnTableCell>{segment.segment + 1}</ShadcnTableCell>
+                    <ShadcnTableCell className="voice-mono">{formatSeconds(segment.start_secs)}</ShadcnTableCell>
+                    <ShadcnTableCell className="voice-mono">{formatSeconds(segment.end_secs)}</ShadcnTableCell>
+                    <ShadcnTableCell className="voice-wrap">{segment.text}</ShadcnTableCell>
+                  </ShadcnTableRow>
+                ))}
+              </ShadcnTableBody>
+            </ShadcnTable>
           ) : null}
         </SectionCard>
       ) : null}

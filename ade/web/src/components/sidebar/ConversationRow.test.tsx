@@ -47,6 +47,24 @@ describe('ConversationRow row actions', () => {
     expect(html).toContain('title="working"')
   })
 
+  it('marks a chat waiting on the reader’s answer to its question', () => {
+    const html = renderRow('Pick a stack', {
+      status: 'done',
+      statusReason: 'awaiting answer',
+    })
+    const mark = html.indexOf('data-awaiting-answer')
+    expect(mark).toBeGreaterThan(0)
+    expect(mark).toBeLessThan(html.indexOf('Pick a stack</'))
+    expect(html).toContain('bg-warn')
+    expect(html).toContain('waiting for your answer')
+  })
+
+  it('draws no waiting mark once a chat is just done', () => {
+    const html = renderRow('Shipped', { status: 'done' })
+    expect(html).not.toContain('data-awaiting-answer')
+    expect(html).not.toContain('conversation-row__status')
+  })
+
   it('exposes a named menu trigger and a pin shortcut', () => {
     const html = renderRow('Mobile chat')
     expect(html).toContain('aria-label="more actions for Mobile chat"')
@@ -57,7 +75,8 @@ describe('ConversationRow row actions', () => {
 
   it('keeps the pin shortcut off coarse pointers', () => {
     const html = renderRow('Mobile chat')
-    const pin = html.slice(html.indexOf('aria-label="pin Mobile chat"') - 400)
+    const label = html.indexOf('aria-label="pin Mobile chat"')
+    const pin = html.slice(html.lastIndexOf('<button', label), label)
     expect(pin).toContain('data-pointer="fine"')
     expect(pin).not.toContain('pointer-coarse:min-h-12')
   })
@@ -85,16 +104,59 @@ describe('ConversationRow row actions', () => {
     expect(html).toContain('aria-label="unpin Pinned chat"')
   })
 
-  it('wraps the actions in the cluster that leaves the row flow', () => {
-    /* The cluster is what lets a hidden action hold no width; loose actions
-       under the trailing span reserve 26 px each and gutter the whole list. */
-    const html = renderRow('Mobile chat')
+  it('keeps the pin left of the cell the time and the ⋯ share', () => {
+    /* The ⋯ takes the time's place at the far right on hover; the pin has
+       its own place before that cell, so it never moves under the pointer. */
+    const html = renderToStaticMarkup(
+      <ConversationRow
+        conversation={conversation('Pinned chat')}
+        active={false}
+        onSelect={vi.fn()}
+        onRename={vi.fn()}
+        onRemove={vi.fn()}
+        pinned
+        onTogglePin={vi.fn()}
+      />,
+    )
+    const pin = html.indexOf('aria-label="unpin Pinned chat"')
+    const slot = html.indexOf('class="conversation-row__slot"')
     const meta = html.indexOf('class="iii-ui-tree-item__meta"')
-    const cluster = html.indexOf('class="iii-ui-tree-item__actions"')
-    const trigger = html.indexOf('aria-label="more actions for Mobile chat"')
+    const trigger = html.indexOf('aria-label="more actions for Pinned chat"')
 
-    expect(cluster).toBeGreaterThan(meta)
-    expect(cluster).toBeLessThan(trigger)
+    expect(pin).toBeGreaterThan(-1)
+    expect(slot).toBeGreaterThan(pin)
+    expect(meta).toBeGreaterThan(slot)
+    expect(trigger).toBeGreaterThan(meta)
+  })
+
+  it('is draggable only when it can be rearranged', () => {
+    const reorder = {
+      dragging: false,
+      dropEdge: 'before' as const,
+      onDragStart: vi.fn(),
+      onDragOver: vi.fn(),
+      onDrop: vi.fn(),
+      onDragEnd: vi.fn(),
+      onMove: vi.fn(),
+      canMoveUp: true,
+      canMoveDown: false,
+    }
+    const row = (withReorder: boolean) =>
+      renderToStaticMarkup(
+        <ConversationRow
+          conversation={conversation('Pinned chat')}
+          active={false}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onRemove={vi.fn()}
+          pinned
+          onTogglePin={vi.fn()}
+          reorder={withReorder ? reorder : undefined}
+        />,
+      )
+    expect(row(true)).toContain('draggable="true"')
+    expect(row(true)).toContain('data-drop="before"')
+    expect(row(false)).not.toContain('draggable')
   })
 
   it('puts the sub-agent caret last, so hover actions never slide into its place', () => {
@@ -160,6 +222,7 @@ describe('ConversationRow menu', () => {
     onTogglePin: () => void
     onSelect: () => void
     pinned?: boolean
+    reorder?: Parameters<typeof ConversationRow>[0]['reorder']
   }) {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     root = createRoot(document.body.appendChild(document.createElement('div')))
@@ -229,5 +292,36 @@ describe('ConversationRow menu', () => {
     ].find((el) => el.textContent?.trim() === 'Delete') as HTMLElement
     act(() => del.click())
     expect(onRemove).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers Move up and Move down for a pinned chat that can be rearranged', () => {
+    const onMove = vi.fn()
+    mount({
+      onRemove: vi.fn(),
+      onTogglePin: vi.fn(),
+      onSelect: vi.fn(),
+      pinned: true,
+      reorder: {
+        dragging: false,
+        onDragStart: vi.fn(),
+        onDragOver: vi.fn(),
+        onDrop: vi.fn(),
+        onDragEnd: vi.fn(),
+        onMove,
+        canMoveUp: true,
+        canMoveDown: false,
+      },
+    })
+    open()
+    expect(items()).toEqual(expect.arrayContaining(['Move up', 'Move down']))
+    const item = (text: string) =>
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          '[data-slot="dropdown-menu-item"]',
+        ),
+      ].find((el) => el.textContent?.trim() === text)
+    expect(item('Move down')?.hasAttribute('data-disabled')).toBe(true)
+    act(() => item('Move up')?.click())
+    expect(onMove).toHaveBeenCalledWith(-1)
   })
 })

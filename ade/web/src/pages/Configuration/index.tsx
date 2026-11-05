@@ -36,12 +36,19 @@ import {
   Workflow,
 } from 'lucide-react'
 import { MotionConfig } from 'motion/react'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
-import { useWorkersConfigurationRoute } from '@/hooks/use-hash-route'
+import {
+  hashForWorkersConfiguration,
+  replaceHash,
+  useWorkersConfigurationRoute,
+} from '@/hooks/use-hash-route'
 import type { ThemePreference } from '@/hooks/use-theme'
-import { configurationFormFamily } from '@/lib/configuration-family'
+import {
+  configurationFormFamily,
+  resolveConfigurationFamily,
+} from '@/lib/configuration-family'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { useExtConfigForms, useUiAssetsStatus } from '@/lib/ui-slots'
@@ -215,10 +222,13 @@ export function Configuration({
     () => new Set(configForms.map((form) => form.configurationId)),
     [configForms],
   )
+  const liveEntries = useMemo(
+    () => (configurationsQuery.data ?? []).filter(isOperatorConfiguration),
+    [configurationsQuery.data],
+  )
   const entries = useMemo(
     () =>
-      (configurationsQuery.data ?? [])
-        .filter(isOperatorConfiguration)
+      liveEntries
         .filter(
           (entry) =>
             configFormIds.has(entry.id) ||
@@ -227,13 +237,50 @@ export function Configuration({
         .sort((left, right) =>
           configurationName(left).localeCompare(configurationName(right)),
         ),
-    [configurationsQuery.data, configFormIds],
+    [liveEntries, configFormIds],
   )
   const settingsLoading =
     configurationsQuery.isLoading || uiAssetsStatus === 'loading'
-  const selectedEntry = route.configurationId
-    ? (entries.find((entry) => entry.id === route.configurationId) ?? null)
+  // A worker page asks for its settings by form family (`voice`), but a
+  // compose stack registers the entry under its own name (`hangzhou-voice`,
+  // `metadata.ui_form: "voice"`). Resolve a family to the one live entry
+  // that owns it, the way the pane header's settings action does; several
+  // instances stay unresolved rather than editing an arbitrary one.
+  // The family resolves against every live entry, not only those whose form
+  // has loaded: a second instance still loading its form must keep the
+  // family ambiguous instead of letting the first one win.
+  const selectedId = useMemo(() => {
+    const requested = route.configurationId
+    if (!requested) return null
+    if (entries.some((entry) => entry.id === requested)) return requested
+    const resolution = resolveConfigurationFamily(requested, liveEntries)
+    return resolution.kind === 'resolved' &&
+      entries.some((entry) => entry.id === resolution.id)
+      ? resolution.id
+      : null
+  }, [route.configurationId, entries, liveEntries])
+  const selectedEntry = selectedId
+    ? (entries.find((entry) => entry.id === selectedId) ?? null)
     : null
+  // Then name the entry in the URL, in place: the sidebar marks it, and Back
+  // never lands on the family link only to be sent forward again.
+  // Only from a settled list: cached data shown during a refetch could name
+  // one instance before the fresh list reveals a second, and once the hash
+  // holds an instance id the family route cannot come back.
+  const listSettled =
+    !configurationsQuery.isFetching && uiAssetsStatus !== 'loading'
+  useEffect(() => {
+    if (!listSettled) return
+    if (!selectedId || selectedId === route.configurationId) return
+    replaceHash(hashForWorkersConfiguration(selectedId, route.fieldPath))
+    navigateWorker(selectedId, route.fieldPath)
+  }, [
+    listSettled,
+    selectedId,
+    route.configurationId,
+    route.fieldPath,
+    navigateWorker,
+  ])
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
 
   const workerMenuOpen = route.open && route.configurationId === null

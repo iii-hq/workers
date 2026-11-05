@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, Folder, RadioTower } from 'lucide-react'
+import { BookOpen, ChevronDown, FolderOpen, RadioTower } from 'lucide-react'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 
 export type TimelineActivityKind =
@@ -34,7 +34,10 @@ export function TimelineActivityTrail({ kind }: TimelineActivityTrailProps) {
       ) : kind === 'observer-registration' ? (
         <RadioTower aria-hidden="true" className="size-4 shrink-0 stroke-ok" />
       ) : kind === 'working-dir' ? (
-        <Folder aria-hidden="true" className="size-4 shrink-0 stroke-workdir" />
+        <FolderOpen
+          aria-hidden="true"
+          className="size-4 shrink-0 stroke-workdir"
+        />
       ) : kind === 'skills' ? (
         <BookOpen
           aria-hidden="true"

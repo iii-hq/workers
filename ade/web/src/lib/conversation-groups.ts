@@ -194,6 +194,13 @@ export function groupConversationRoots(
   for (const node of roots) {
     ;(pinned.has(node.conversation.id) ? pinnedRoots : rest).push(node)
   }
+  // The set iterates in pin order, which the reader arranges by dragging.
+  const pinOrder = new Map([...pinned].map((id, index) => [id, index]))
+  pinnedRoots.sort(
+    (a, b) =>
+      (pinOrder.get(a.conversation.id) ?? 0) -
+      (pinOrder.get(b.conversation.id) ?? 0),
+  )
   const head: ConversationGroup[] =
     pinnedRoots.length > 0
       ? [{ key: PINNED_GROUP_KEY, label: 'Pinned', roots: pinnedRoots }]

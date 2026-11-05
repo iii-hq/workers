@@ -5,7 +5,7 @@
 
 import { Badge, Chip, EmptyState, MetaRow, Table, TableBody, TableCell, TableRow } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
-import { File, FileText, Folder, Link as LinkIcon } from 'lucide-react'
+import { File, FileText, FolderOpen, Link as LinkIcon } from 'lucide-react'
 import { formatMode, truncateMiddle } from '../lib/format'
 import { formatEpochMs } from './format'
 import {
@@ -68,7 +68,7 @@ export function FsEntriesTable({ entries }: { entries: FsEntry[] }) {
           const Icon = e.is_symlink
             ? LinkIcon
             : e.is_dir
-              ? Folder
+              ? FolderOpen
               : iconForFile(e.name)
           return (
             <TableRow key={`${e.name}:${e.size}:${e.mtime}`}>

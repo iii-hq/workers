@@ -194,7 +194,7 @@ describe('sorting', () => {
     expect(ids(byTitle)).toEqual(['newer', 'mid', 'older'])
   })
 
-  it('reorders roots only; children keep their spawn order', () => {
+  it('reorders roots only; children keep the tree order (newest first)', () => {
     const roots = buildConversationTree([
       conv('b-root', { title: 'B', updatedAt: NOW - 1 }),
       conv('a-root', { title: 'A', updatedAt: NOW - 2 }),
@@ -204,8 +204,8 @@ describe('sorting', () => {
     const sorted = sortConversationRoots(roots, 'title')
     expect(sorted.map((n) => n.conversation.id)).toEqual(['a-root', 'b-root'])
     expect(sorted[0]?.children.map((n) => n.conversation.id)).toEqual([
-      'z-child',
       'c-child',
+      'z-child',
     ])
     /* The input array is left alone: sorting is a view, not a mutation. */
     expect(roots.map((n) => n.conversation.id)).toEqual(['b-root', 'a-root'])

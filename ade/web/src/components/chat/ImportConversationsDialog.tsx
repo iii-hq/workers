@@ -6,7 +6,7 @@ import {
   Copy,
   FilePen,
   FileText,
-  Folder,
+  FolderOpen,
   FolderX,
   Globe,
   Info,
@@ -728,7 +728,7 @@ export function PreviewPane({
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-inter text-[13px] leading-5 text-ink-faint">
             <Hint label={conversation.cwd ?? 'No project recorded'}>
               <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-md bg-surface px-1.5 py-0.5 text-xs font-medium text-ink-faint">
-                <Folder className="size-4 shrink-0" aria-hidden />
+                <FolderOpen className="size-4 shrink-0" aria-hidden />
                 <span className="truncate">{project ?? 'No project'}</span>
               </span>
             </Hint>
@@ -1482,7 +1482,7 @@ export function ImportConversationsDialog({
                   <p className="flex h-8 shrink-0 items-center gap-1.5 border-t border-border px-3 font-inter text-xs text-ink-faint">
                     <Hint label={`${discovery.directory} on the ADE host`}>
                       <span className="flex min-w-0 items-center gap-1.5">
-                        <Folder className="size-4 shrink-0" aria-hidden />
+                        <FolderOpen className="size-4 shrink-0" aria-hidden />
                         <span className="truncate font-geist-mono">
                           {homePath(discovery.directory)}
                         </span>

@@ -89,8 +89,10 @@
      every line in neutral-100 — a hairline, never a gray rule. */
   --color-edge: var(--color-neutral-100);
   /* The 1px ring on cards, popovers and dialogs (shadcn's
-     `ring-foreground/10`): neutral-100 in light, ink at 10% in dark. */
+     `ring-foreground/10`): neutral-100 in light, neutral-900 in dark. */
   --color-card-edge: var(--color-neutral-100);
+  /* shadcn's `bg-card`: the raised panel in light, black in dark. */
+  --color-card-surface: var(--color-panel-raised);
   /* Every popover, menu and select list: a white sheet with a neutral-200
      line in light, black with neutral-900 in dark (`bg-popover`). */
   --color-popover-surface: var(--color-white);
@@ -296,9 +298,10 @@
   --iii-ui-lift-ring: rgba(255, 255, 255, 0.02);
   --iii-ui-lift-edge: rgba(0, 0, 0, 0.12);
   --iii-ui-lift-drop: rgba(0, 0, 0, 0.18);
-  --color-bg: #0a0a0a;
-  --color-sidebar: #0e0e0e;
-  --color-panel: #111111;
+  /* Dark mode is black: the canvas, the sidebars and the chat surface. */
+  --color-bg: var(--color-black);
+  --color-sidebar: var(--color-black);
+  --color-panel: var(--color-black);
   --color-panel-raised: #171717;
   --color-paper-2: #171717;
   --color-surface: rgba(255, 255, 255, 0.055);
@@ -319,11 +322,12 @@
   --color-rule-strong: transparent;
   --color-rule-focus: rgba(212, 212, 212, 0.7);
   --color-edge: rgba(255, 255, 255, 0.07);
-  --color-card-edge: color-mix(in oklab, var(--color-ink) 10%, transparent);
+  --color-card-edge: var(--color-neutral-900);
+  --color-card-surface: var(--color-black);
   --color-popover-surface: var(--color-black);
   --color-popover-edge: var(--color-neutral-900);
   --color-dialog-surface: var(--color-black);
-  --color-dialog-edge: var(--color-neutral-800);
+  --color-dialog-edge: var(--color-neutral-900);
   --color-control-edge: rgba(255, 255, 255, 0.07);
   --color-accent: #dedede;
   --color-accent-fg: #070909;
@@ -2026,7 +2030,7 @@
   --radius: 0.5rem;
   --background: var(--color-bg);
   --foreground: var(--color-ink);
-  --card: var(--color-panel-raised);
+  --card: var(--color-card-surface);
   --card-foreground: var(--color-ink);
   --popover: var(--color-popover-surface);
   --popover-foreground: var(--color-ink);

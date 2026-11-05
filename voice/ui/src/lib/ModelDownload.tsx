@@ -1,7 +1,8 @@
-import { Button, Chip } from '@iii-dev/console-ui'
+import { ShadcnButton } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
 import { Download } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { StatusBadge } from '../ui/status'
 import { percent } from './progress'
 import type { ModelInfo, ModelProgressEvent } from './types'
 
@@ -21,10 +22,10 @@ export function ModelDownload({
   const downloading = busy || Boolean(progress && !progress.done)
   const pct = percent(progress)
   const status = downloading
-    ? <Chip tone="accent">{pct === null ? 'Downloading…' : `Downloading ${pct}%`}</Chip>
+    ? <StatusBadge tone="busy">{pct === null ? 'Downloading…' : `Downloading ${pct}%`}</StatusBadge>
     : model.installed
-      ? <Chip tone="success">installed</Chip>
-      : <Chip tone="warning">not downloaded</Chip>
+      ? <StatusBadge tone="ok">Installed</StatusBadge>
+      : <StatusBadge tone="off">Not downloaded</StatusBadge>
   const canDownload = !downloading && !model.installed
 
   return (
@@ -34,11 +35,11 @@ export function ModelDownload({
         <span className="voice-model-actions">
           {actions}
           {canDownload ? (
-            <Button variant="primary" size="sm" disabled={disabled} onClick={onDownload}
+            <ShadcnButton variant="secondary" size="sm" disabled={disabled} onClick={onDownload}
               aria-label={`Download ${model.name}`}>
               <Download />
               Download {formatBytes(model.size_bytes)}
-            </Button>
+            </ShadcnButton>
           ) : null}
         </span>
       ) : null}

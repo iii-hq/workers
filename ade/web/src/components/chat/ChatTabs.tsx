@@ -10,6 +10,7 @@ import {
 } from '@/components/shadcn/dropdown-menu'
 import { Hint } from '@/components/ui/Hint'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { isAwaitingAnswer } from '@/lib/chat-activity'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 
@@ -30,6 +31,19 @@ function relative(ts: number): string {
 function StatusMark({ conversation }: { conversation: Conversation }) {
   if (conversation.status === 'working') {
     return <StatusDot tone="accent" pulse title="working" />
+  }
+  if (isAwaitingAnswer(conversation)) {
+    // The dot is aria-hidden; the words carry the state to a screen reader.
+    return (
+      <>
+        <StatusDot
+          tone="warn"
+          title="waiting for your answer"
+          data-awaiting-answer=""
+        />
+        <span className="sr-only">waiting for your answer</span>
+      </>
+    )
   }
   if (conversation.status === 'error') {
     return (

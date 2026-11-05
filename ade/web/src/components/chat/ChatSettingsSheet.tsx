@@ -1,4 +1,10 @@
-import { Brain, Folder, Paperclip, ShieldCheck, Sparkles } from 'lucide-react'
+import {
+  Brain,
+  FolderOpen,
+  Paperclip,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { FullModeConfirmContent } from '@/components/permissions/FullModeConfirmDialog'
 import { PermissionModePickerPanel } from '@/components/permissions/PermissionModePicker'
@@ -220,7 +226,7 @@ export function ChatSettingsSheet({
                 <SheetMenuRow
                   label="Working directory"
                   value={directoryName(workingDir)}
-                  icon={<Folder className="size-[18px]" aria-hidden />}
+                  icon={<FolderOpen className="size-[18px]" aria-hidden />}
                   disabled={disabled || workingDirLocked}
                   onClick={() => navigation.push('directory')}
                 />

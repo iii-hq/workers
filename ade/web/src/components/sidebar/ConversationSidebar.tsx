@@ -7,7 +7,15 @@ import {
   Settings,
   SquarePen,
 } from 'lucide-react'
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  type CSSProperties,
+  type DragEvent,
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { hashForSettingsLanding } from '@/hooks/use-hash-route'
@@ -16,11 +24,13 @@ import {
   countConversations,
   groupConversationRoots,
   NO_PROJECT_GROUP_KEY,
+  PINNED_GROUP_KEY,
 } from '@/lib/conversation-groups'
 import {
   buildConversationTree,
   type ConvNode,
   flattenConversationTree,
+  isFinishedToggle,
 } from '@/lib/conversation-tree'
 import {
   type ConversationListView,
@@ -70,8 +80,13 @@ interface ConversationSidebarProps {
 }
 
 const TREE_COLLAPSED_KEY = 'iii-chat-tree-collapsed'
+/** Parents whose finished sub-agents the reader chose to show. */
+const FINISHED_SHOWN_KEY = 'iii-chat-tree-finished-shown'
 const GROUPS_COLLAPSED_KEY = 'iii-chat-groups-collapsed'
 const LIST_VIEW_KEY = 'iii-chat-list-view'
+/** The drag payload of a pinned chat being rearranged. */
+const PIN_DRAG_MIME = 'application/x-iii-pinned-chat'
+
 /** The grouping-only key this view record replaced; read as a fallback. */
 const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
 
@@ -163,6 +178,23 @@ export function ConversationSidebar({
     persistStringSet(TREE_COLLAPSED_KEY, collapsedNodes)
   }, [collapsedNodes])
 
+  /* A parent lists only its live sub-agents; the finished ones fold behind
+     "Show N finished", remembered per parent once opened. */
+  const [finishedShown, setFinishedShown] = useState<Set<string>>(() =>
+    loadStringSet(FINISHED_SHOWN_KEY),
+  )
+  useEffect(() => {
+    persistStringSet(FINISHED_SHOWN_KEY, finishedShown)
+  }, [finishedShown])
+  const toggleFinished = useCallback((parentId: string) => {
+    setFinishedShown((prev) => {
+      const next = new Set(prev)
+      if (next.has(parentId)) next.delete(parentId)
+      else next.add(parentId)
+      return next
+    })
+  }, [])
+
   /* Section collapse state. Group keys carry their mode, so one set covers
      both groupings without either overwriting the other. */
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() =>
@@ -174,7 +206,78 @@ export function ConversationSidebar({
 
   /* Kinds shown, grouping and order — one record, one Clear filters. */
   const [view, setView] = useState<ConversationListView>(loadListView)
-  const { pinned, togglePin } = usePinnedConversations()
+  const { pinned, togglePin, movePin } = usePinnedConversations()
+
+  /* Pinned chats rearrange by drag: the dragged id, and the row edge it
+     would land on. A drag can end anywhere (outside the list, with Escape),
+     and the window hears every end, so neither outlives it. */
+  const [pinDrag, setPinDrag] = useState<string | null>(null)
+  const [pinDrop, setPinDrop] = useState<{
+    id: string
+    place: 'before' | 'after'
+  } | null>(null)
+  useEffect(() => {
+    if (!pinDrag) return
+    const reset = () => {
+      setPinDrag(null)
+      setPinDrop(null)
+    }
+    window.addEventListener('dragend', reset)
+    window.addEventListener('drop', reset)
+    return () => {
+      window.removeEventListener('dragend', reset)
+      window.removeEventListener('drop', reset)
+    }
+  }, [pinDrag])
+  /* What a keyboard move did, for a screen reader: the drag shows it. */
+  const [pinAnnouncement, setPinAnnouncement] = useState('')
+  const pinReorder = useCallback(
+    (id: string, order: readonly ConvNode[]) => ({
+      canMoveUp: order[0]?.conversation.id !== id,
+      canMoveDown: order.at(-1)?.conversation.id !== id,
+      onMove: (step: -1 | 1) => {
+        const index = order.findIndex((n) => n.conversation.id === id)
+        const target = order[index + step]
+        if (index === -1 || !target) return
+        movePin(id, target.conversation.id, step < 0 ? 'before' : 'after')
+        setPinAnnouncement(
+          `Moved ${order[index].conversation.title} to position ${index + step + 1} of ${order.length}`,
+        )
+      },
+      dragging: pinDrag === id,
+      dropEdge: pinDrop?.id === id ? pinDrop.place : undefined,
+      onDragStart: (event: DragEvent<HTMLDivElement>) => {
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData(PIN_DRAG_MIME, id)
+        setPinDrag(id)
+      },
+      onDragOver: (event: DragEvent<HTMLDivElement>) => {
+        if (!pinDrag) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        const box = event.currentTarget.getBoundingClientRect()
+        const place =
+          event.clientY < box.top + box.height / 2 ? 'before' : 'after'
+        setPinDrop((current) =>
+          current?.id === id && current.place === place
+            ? current
+            : { id, place },
+        )
+      },
+      onDrop: (event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault()
+        const dragged = event.dataTransfer.getData(PIN_DRAG_MIME) || pinDrag
+        if (dragged && pinDrop?.id === id) movePin(dragged, id, pinDrop.place)
+        setPinDrag(null)
+        setPinDrop(null)
+      },
+      onDragEnd: () => {
+        setPinDrag(null)
+        setPinDrop(null)
+      },
+    }),
+    [pinDrag, pinDrop, movePin],
+  )
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
@@ -243,10 +346,23 @@ export function ConversationSidebar({
           count: countConversations(group.roots),
           rows: collapsedGroups.has(group.key)
             ? []
-            : flattenConversationTree(group.roots, collapsedNodes),
+            : flattenConversationTree(
+                group.roots,
+                collapsedNodes,
+                finishedShown,
+                activeId,
+              ),
         }),
       ),
-    [roots, view.grouping, collapsedGroups, collapsedNodes, pinned],
+    [
+      roots,
+      view.grouping,
+      collapsedGroups,
+      collapsedNodes,
+      finishedShown,
+      activeId,
+      pinned,
+    ],
   )
   /* The flat list has one section and no header to collapse it by — unless
      pins split it, when both halves need naming. */
@@ -254,7 +370,7 @@ export function ConversationSidebar({
   /* Once any row carries a sub-agent caret at its end, every row keeps that
      column so timestamps and actions line up down the list. */
   const caretColumn = sections.some((section) =>
-    section.rows.some((row) => row.hasChildren),
+    section.rows.some((row) => !isFinishedToggle(row) && row.hasChildren),
   )
 
   /* The 8px gutter plus the nav row's own 10px inset puts every glyph, the
@@ -272,10 +388,7 @@ export function ConversationSidebar({
             type="button"
             onClick={onCreate}
             title={hoverTitle('New chat', 'chat.new')}
-            className={cn(
-              NAV_ROW,
-              narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
-            )}
+            className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-sm')}
           >
             {/* A compose mark, not a plus: the header's plus already means
                 "new workspace", and the phone header spells new chat this
@@ -290,10 +403,7 @@ export function ConversationSidebar({
             type="button"
             onClick={onAddProject}
             title={hoverTitle('Add project', 'project.add')}
-            className={cn(
-              NAV_ROW,
-              narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
-            )}
+            className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-sm')}
           >
             <FolderPlus className="size-4 shrink-0" aria-hidden />
             <span className="min-w-0 flex-1 truncate">Add project</span>
@@ -307,7 +417,7 @@ export function ConversationSidebar({
           onClick={() => requestPaletteOpen()}
           aria-label="Search and commands"
           title={hoverTitle('Search and commands', 'palette.toggle')}
-          className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-[13px]')}
+          className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-sm')}
         >
           <Search className="size-4 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate">Search</span>
@@ -316,7 +426,7 @@ export function ConversationSidebar({
       </nav>
 
       <div className="flex items-center justify-between gap-2 px-2 pt-4 pb-1 pl-[18px]">
-        <h2 className="min-w-0 truncate font-inter text-base font-medium text-neutral-500 sm:text-[13px] dark:text-neutral-400">
+        <h2 className="min-w-0 truncate font-inter text-base font-medium text-neutral-500 sm:text-sm dark:text-neutral-400">
           Chats
         </h2>
         <div className="flex items-center gap-0.5">
@@ -340,9 +450,12 @@ export function ConversationSidebar({
         </div>
       </div>
 
+      <div role="status" className="sr-only">
+        {pinAnnouncement}
+      </div>
       <div className="conversation-list-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-1">
         {sections.length === 0 ? (
-          <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
+          <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-inter text-base text-ink-ghost sm:text-sm">
             {started.length === 0 ? (
               'No chats yet. Start one with New chat.'
             ) : (
@@ -376,8 +489,19 @@ export function ConversationSidebar({
               const project =
                 group.key.startsWith('project:') &&
                 group.key !== NO_PROJECT_GROUP_KEY
-              const rowList = rows.map(
-                ({ conversation: c, depth, hasChildren }) => (
+              const rowList = rows.map((row) => {
+                if (isFinishedToggle(row))
+                  return (
+                    <FinishedToggle
+                      key={`finished:${row.parentId}`}
+                      depth={row.depth}
+                      finished={row.finished}
+                      expanded={row.expanded}
+                      onToggle={() => toggleFinished(row.parentId)}
+                    />
+                  )
+                const { conversation: c, depth, hasChildren } = row
+                return (
                   <ConversationRow
                     key={c.id}
                     conversation={c}
@@ -395,9 +519,16 @@ export function ConversationSidebar({
                     onRemove={() => onRemove(c.id)}
                     pinned={pinned.has(c.id)}
                     onTogglePin={() => togglePin(c.id)}
+                    reorder={
+                      group.key === PINNED_GROUP_KEY &&
+                      depth === 0 &&
+                      group.roots.length > 1
+                        ? pinReorder(c.id, group.roots)
+                        : undefined
+                    }
                   />
-                ),
-              )
+                )
+              })
               return (
                 <Fragment key={group.key}>
                   {headers ? (
@@ -470,5 +601,36 @@ export function ConversationSidebar({
         </Hint>
       </div>
     </div>
+  )
+}
+
+/**
+ * The fold under a parent's live sub-agents: how many finished their job,
+ * and the way to see them. Sits at the sub-agents' indent, quiet until
+ * pointed at.
+ */
+function FinishedToggle({
+  depth,
+  finished,
+  expanded,
+  onToggle,
+}: {
+  depth: number
+  finished: number
+  expanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(uiClasses.treeItem, 'conversation-finished-toggle')}
+      style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      <span className={uiClasses.treeItemLabel}>
+        {expanded ? 'Hide finished' : `Show ${finished} finished`}
+      </span>
+    </button>
   )
 }

@@ -581,7 +581,7 @@ export function EdgeAddZone({
               'absolute top-1/2 flex -translate-y-1/2 items-center justify-center overflow-hidden',
               'iii-ui-motion-control transition-[width,height,background-color,border-color,color,box-shadow]',
               // Rest: 8×40px, no wider than the hover strip it sits in.
-              'h-10 w-2 border border-edge bg-panel-raised text-transparent shadow-sm',
+              'h-10 w-2 border border-edge bg-panel-raised text-transparent shadow-sm dark:border-neutral-900 dark:bg-black',
               // Flat against the screen edge, bordered on the other three.
               side === 'left'
                 ? 'left-0 rounded-r-sm border-l-0'

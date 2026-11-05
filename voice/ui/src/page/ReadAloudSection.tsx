@@ -4,13 +4,14 @@
  * local Stop control that also ignores a pending synthesis response.
  */
 
-import { Button, Chip, type Host, StatusPanel } from '@iii-dev/console-ui'
+import { type Host, ShadcnButton, ShadcnTextarea, StatusPanel } from '@iii-dev/console-ui'
 import { Square, Volume2 } from 'lucide-react'
 import { useState } from 'react'
 import { speak } from '../lib/client'
 import { useBrowserPlayback } from '../lib/playback'
 import type { DoctorResponse } from '../lib/types'
-import { Fact, Facts, SectionCard } from './shared'
+import { StatusBadge } from '../ui/status'
+import { Fact, Facts, PanelBody, SectionCard } from './shared'
 
 const SAMPLE = 'Build finished. Three tests failed in the billing module; the rest passed.'
 
@@ -31,70 +32,76 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
     <>
       <SectionCard
         title="Read aloud"
+        description="Type or paste text and hear it in the configured voice."
         actions={
-          <Chip tone={tts.available ? 'success' : 'neutral'}>
+          <StatusBadge tone={tts.available ? 'ok' : 'off'}>
             {tts.backend === 'host' ? (tts.command ?? 'host') : tts.backend}
-          </Chip>
+          </StatusBadge>
         }
       >
-        <textarea
-          className="voice-textarea"
-          value={text}
-          onChange={(event) => { setText(event.target.value); setSelection({ start: 0, end: 0 }) }}
-          onSelect={(event) => setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
-          rows={4}
-          aria-label="text to read aloud"
-          placeholder="Type something to hear it…"
-        />
-        <p className="voice-note">Select a passage above to read only that text, or leave it unselected to read everything.
-          {' '}Markdown formatting (bold, italics, headings and links) is not spoken; fenced code blocks are skipped.</p>
-        <div className="voice-inline-actions">
-          {busy ? (
-            <Button variant="primary" onClick={stop}>
-              <Square />
-              Stop
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              onClick={onSpeak}
-              disabled={disabled || !text.trim()}
-            >
-              <Volume2 />
-              {selectedText ? 'Read selection' : 'Speak'}
-            </Button>
-          )}
-          <Button variant="ghost" onClick={() => setText(SAMPLE)} disabled={text === SAMPLE}>
-            Reset sample
-          </Button>
-        </div>
-        {state.phase === 'loading' ? <p className="voice-note" role="status">Generating audio for this browser…</p> : null}
-        {state.phase === 'error' ? (
-          <StatusPanel variant="alert" headline="Could not speak" detail={state.message} />
-        ) : null}
-        {disabled ? (
-          <StatusPanel
-            variant="warn"
-            headline={tts.backend === 'off' ? 'Read-aloud is off' : 'Read-aloud is not ready'}
-            detail={
-              tts.problem ?? (tts.backend === 'off'
-                ? 'Set tts.backend to host or openai in the voice configuration.'
-                : 'Install the selected speech engine on the worker and download its voice in Models.')
+        <PanelBody>
+          <ShadcnTextarea
+            className="voice-textarea"
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value)
+              setSelection({ start: 0, end: 0 })
+            }}
+            onSelect={(event) =>
+              setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })
             }
+            rows={4}
+            aria-label="text to read aloud"
+            placeholder="Type something to hear it…"
           />
-        ) : null}
+          <p className="voice-row-hint">
+            Select a passage to read only that text. Markdown formatting is not spoken; fenced code blocks are skipped.
+          </p>
+          <div className="voice-inline-actions">
+            {busy ? (
+              <ShadcnButton onClick={stop}>
+                <Square />
+                Stop
+              </ShadcnButton>
+            ) : (
+              <ShadcnButton onClick={onSpeak} disabled={disabled || !text.trim()}>
+                <Volume2 />
+                {selectedText ? 'Read selection' : 'Speak'}
+              </ShadcnButton>
+            )}
+            <ShadcnButton variant="ghost" onClick={() => setText(SAMPLE)} disabled={text === SAMPLE}>
+              Reset sample
+            </ShadcnButton>
+            {state.phase === 'loading' ? (
+              <span className="voice-row-hint" role="status">
+                Generating audio for this browser…
+              </span>
+            ) : null}
+          </div>
+          {state.phase === 'error' ? (
+            <StatusPanel variant="alert" headline="Could not speak" detail={state.message} />
+          ) : null}
+          {disabled ? (
+            <StatusPanel
+              variant="warn"
+              headline={tts.backend === 'off' ? 'Read-aloud is off' : 'Read-aloud is not ready'}
+              detail={
+                tts.problem ??
+                (tts.backend === 'off'
+                  ? 'Set tts.backend to host or openai in the voice configuration.'
+                  : 'Install the selected speech engine on the worker and download its voice in Models.')
+              }
+            />
+          ) : null}
+        </PanelBody>
       </SectionCard>
       <SectionCard title="How replies are read">
         <Facts>
-          <Fact label="In chat">
-            <span className="voice-sub">Each finished turn shows a Read aloud action above the composer.</span>
-          </Fact>
-          <Fact label="Where it plays">
-            <span className="voice-sub">
-              Audio is generated by the worker or configured provider and returned only to this browser.
-              Nothing plays on the server; Stop affects only this browser.
-            </span>
-          </Fact>
+          <Fact label="In chat" hint="Each finished turn shows a Read aloud action above the composer." />
+          <Fact
+            label="Where it plays"
+            hint="Audio is generated by the worker or the configured provider and returned only to this browser. Nothing plays on the server; Stop affects only this browser."
+          />
         </Facts>
       </SectionCard>
     </>

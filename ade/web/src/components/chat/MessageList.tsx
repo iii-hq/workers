@@ -1430,7 +1430,7 @@ export function MessageList({
           variant="pill"
           size="sm"
           className={cn(
-            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md sm:h-8 sm:text-[0.8125rem]',
+            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md sm:h-8 sm:text-[0.8125rem] dark:bg-black/80 dark:ring-1 dark:ring-neutral-900',
             hasPendingApproval && 'text-warn',
           )}
           onClick={hasPendingApproval ? handleJumpToAction : handleJumpToLatest}

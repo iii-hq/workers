@@ -1,6 +1,6 @@
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useDebounce } from '@iii-dev/console-ui/hooks'
-import { Folder, Package } from 'lucide-react'
+import { FolderOpen, Package } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/shadcn/button'
 import {
@@ -109,7 +109,7 @@ export function AddWorkerDialog({
             }}
             options={[
               { value: 'registry', label: 'Registry', icon: <Package /> },
-              { value: 'path', label: 'Local path', icon: <Folder /> },
+              { value: 'path', label: 'Local path', icon: <FolderOpen /> },
             ]}
           />
           {open && mode === 'registry' ? (

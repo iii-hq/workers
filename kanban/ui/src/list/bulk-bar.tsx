@@ -1,5 +1,5 @@
 import { ShadcnButton } from '@iii-dev/console-ui'
-import { ChevronDown, CircleDashed, Folder, GitBranch, Milestone, Tag, Trash2, X } from 'lucide-react'
+import { ChevronDown, CircleDashed, FolderOpen, GitBranch, Milestone, Tag, Trash2, X } from 'lucide-react'
 import { forwardRef, type ReactNode, useEffect, useRef } from 'react'
 import { type AgentProfile, type Column, priorityLabel, type ProjectView, type ReleaseView, type TicketSummary } from '../shared'
 import { AssigneeAvatar, assigneeName } from '../ui/avatar'
@@ -149,7 +149,7 @@ export function BulkBar({
         label: candidate.name,
         icon: (
           <span className="kb-project-dot" data-tone={candidate.color ?? undefined}>
-            <Folder size={16} />
+            <FolderOpen size={16} />
           </span>
         ),
       })),
@@ -234,7 +234,7 @@ export function BulkBar({
         note={PROJECT_HINT}
         onChange={(id) => onFacet('project', id)}
         options={projectOpts}
-        trigger={<Action icon={<Folder size={16} />}>Project</Action>}
+        trigger={<Action icon={<FolderOpen size={16} />}>Project</Action>}
         value={shared((ticket) => ticket.project_id) ?? null}
       />
       <SearchPicker

@@ -1,4 +1,4 @@
-import { ChevronRight, CornerLeftUp, File, Folder } from 'lucide-react'
+import { ChevronRight, CornerLeftUp, File, FolderOpen } from 'lucide-react'
 import { useMemo } from 'react'
 import type { FlatTree } from './coder'
 
@@ -103,7 +103,7 @@ export function WorkspaceBrowser({
             }
           >
             {entry.dir ? (
-              <Folder aria-hidden className="shui-browser-entry-icon" />
+              <FolderOpen aria-hidden className="shui-browser-entry-icon" />
             ) : (
               <File aria-hidden className="shui-browser-entry-icon" />
             )}

@@ -67,7 +67,6 @@ describe('SessionObservers', () => {
     )
     expect(html).toContain('aria-expanded="true"')
     expect(html).toContain('grid-rows-[1fr]')
-    expect(html).not.toContain('inert=""')
     expect(html).toContain('Agent 1 findings')
     expect(textOf(html)).toContain(
       'Agent 1 findings · state::on-changed · notifies this chat · on review/agent-1/findings · once',
@@ -79,6 +78,27 @@ describe('SessionObservers', () => {
     expect(html).toContain('aria-label="remove Agent 1 findings"')
     expect(html).toContain('aria-label="dismiss Agent 1 ready"')
     expect(html).toContain('aria-label="clear all observers"')
+  })
+})
+
+describe('SessionObservers inactive group', () => {
+  it('folds the inactive rows under the live ones, with a Clear beside them', () => {
+    const html = renderToStaticMarkup(
+      <SessionObservers
+        observers={rows}
+        onDispose={() => {}}
+        defaultExpanded
+      />,
+    )
+    const live = html.indexOf('Agent 1 findings')
+    const group = html.indexOf('1 inactive</span></button>')
+    expect(live).toBeGreaterThan(0)
+    expect(group).toBeGreaterThan(live)
+    expect(html.indexOf('Agent 1 ready')).toBeGreaterThan(group)
+    // Folded by default: the spent rows stay mounted but take no focus.
+    expect(html.match(/aria-expanded="false"/g)).toHaveLength(1)
+    expect(html).toContain('inert=""')
+    expect(html).toContain('aria-label="clear 1 inactive observer"')
   })
 })
 

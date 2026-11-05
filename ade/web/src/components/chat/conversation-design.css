@@ -19,18 +19,31 @@
   background: var(--color-panel);
 }
 
-/* Dark chat sits on the application's black canvas; the header, composer
-   and tool cards lift off it on the app's raised step. */
+/* Dark chat is black all the way down: the canvas, the raised cards (header,
+   composer, tool cards, code) and the quiet fills are all black, and every
+   region is drawn by a neutral-900 line instead of a grey step. Hover and
+   selection are the only fills, neutral-900. */
 [data-theme="dark"] .conversation-surface {
-  --color-panel: #0a0a0a;
-  --color-panel-raised: #171717;
+  --color-panel: #000000;
+  --color-panel-raised: #000000;
   --color-ink: #e8e8e8;
   --color-ink-faint: #adadad;
   --color-ink-ghost: #979797;
   --color-muted-foreground: #adadad;
   --color-rule-focus: #8c8c8c;
-  --color-surface: #1c1c1c;
-  --color-surface-hover: #262626;
+  --color-surface: #000000;
+  --color-surface-hover: var(--color-neutral-900);
+  --color-surface-selected: var(--color-neutral-900);
+  --color-edge: var(--color-neutral-900);
+  /* Legacy names some chat chrome still paints with: the raised alias goes
+     black and the once-invisible rule becomes the neutral-900 line. */
+  --color-paper-2: #000000;
+  --color-rule-2: var(--color-neutral-900);
+}
+
+/* Code panes set their own surface; in the dark chat it is black too. */
+[data-theme="dark"] .conversation-surface .code-theme-editor {
+  --code-surface: #000000;
 }
 
 .chat-message,
@@ -119,8 +132,18 @@
 
 .chat-user-bubble {
   padding: 12px 16px;
-  border-radius: 18px 18px 6px 18px;
+  border-radius: 20px 20px 6px 20px;
   background: var(--color-surface);
+}
+
+/* Dark: the chat is black, so what you sent is the one filled shape in it —
+   a neutral-900 bubble with a faint neutral-800 edge that keeps it crisp
+   against the canvas. */
+[data-theme="dark"] .chat-user-bubble {
+  background: var(--color-neutral-900);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--color-neutral-800) 70%, transparent);
+  color: var(--color-ink);
 }
 
 .chat-user-copy {
@@ -138,6 +161,11 @@
 
 .chat-user-copy:hover {
   color: var(--color-ink);
+}
+
+[data-theme="dark"] .chat-user-copy {
+  background: var(--color-black);
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -253,6 +281,12 @@
   overflow-wrap: anywhere;
 }
 
+/* Dark: inline code is black on a neutral-900 line, like the code blocks. */
+[data-theme="dark"] .chat-prose :not(pre) > code {
+  background: var(--color-black);
+  box-shadow: inset 0 0 0 1px var(--color-neutral-900);
+}
+
 .chat-prose .chat-prose-link {
   color: var(--color-ink);
   text-decoration-color: color-mix(in srgb, var(--color-ink) 35%, transparent);
@@ -283,6 +317,11 @@
   .chat-prose .chat-inline-code-link:hover code,
   .chat-prose .chat-inline-file-button:hover code {
     background: var(--color-surface-hover);
+  }
+
+  [data-theme="dark"] .chat-prose .chat-inline-code-link:hover code,
+  [data-theme="dark"] .chat-prose .chat-inline-file-button:hover code {
+    background: var(--color-neutral-900);
   }
 }
 
@@ -660,9 +699,18 @@
     0 5px 24px -8px rgb(0 0 0 / 16%);
 }
 
+/* Dark: a black card on a neutral-900 line, the line one step brighter
+   while you type in it. */
+[data-theme="dark"] .composer-shell .composer-card {
+  background: var(--color-black);
+  box-shadow:
+    inset 0 0 0 1px var(--color-neutral-900),
+    0 4px 20px -8px rgb(0 0 0 / 12%);
+}
+
 [data-theme="dark"] .composer-shell .composer-card:focus-within {
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--color-ink-faint) 50%, transparent),
+    inset 0 0 0 1px var(--color-neutral-800),
     0 5px 24px -8px rgb(0 0 0 / 16%);
 }
 
@@ -702,7 +750,8 @@
   .new-chat-dialog-toolbar
   [data-iii-ui="voice"]
   .voice-recording-bar {
-  background: var(--color-neutral-900);
+  background: var(--color-black);
+  box-shadow: inset 0 0 0 1px var(--color-neutral-900);
 }
 
 @container (max-width: 480px) {
@@ -856,4 +905,12 @@
       transparent calc(100% - 1.25rem)
     );
   }
+}
+
+/* Dark chat: a neutral badge (a tag such as "skill") is outlined like the
+   chips, not a grey tint on the black. Status badges keep their tone. */
+[data-theme="dark"] .conversation-surface [data-badge-variant="accent"],
+[data-theme="dark"] .conversation-surface [data-badge-variant="default"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-neutral-900);
 }

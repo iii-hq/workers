@@ -157,6 +157,19 @@ export const MixedSources: Story = {
   args: { observers: mixedSources, defaultExpanded: true },
 }
 
+/** A long-running orchestration: one live wake over a run of spent ones. */
+const longRun: SessionObserverInfo[] = [
+  stateWake('live-review', 'PR 2433 review', 'pr2433/findings'),
+  ...Array.from({ length: 18 }, (_, i) =>
+    consumed(`spent-${i}`, `Agent ${i + 1} findings`, `agent-${i + 1}/done`),
+  ),
+]
+
+export const ManyInactive: Story = {
+  name: 'expanded, one live over 18 inactive',
+  args: { observers: longRun, defaultExpanded: true },
+}
+
 export const NoClearAll: Story = {
   name: 'without clear all (read-only backend)',
   args: { onClearAll: undefined, defaultExpanded: true },

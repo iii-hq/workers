@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   loadPinnedConversationIds,
+  movePinnedId,
   PINNED_CONVERSATIONS_KEY,
   savePinnedConversationIds,
   togglePinnedId,
@@ -30,5 +31,14 @@ describe('pinned conversations', () => {
     expect(togglePinnedId([], 'a')).toEqual(['a'])
     expect(togglePinnedId(['a'], 'b')).toEqual(['b', 'a'])
     expect(togglePinnedId(['b', 'a'], 'b')).toEqual(['a'])
+  })
+
+  it('moves a pin before or after another, ignoring no-op drops', () => {
+    const ids = ['a', 'b', 'c', 'd']
+    expect(movePinnedId(ids, 'd', 'a', 'before')).toEqual(['d', 'a', 'b', 'c'])
+    expect(movePinnedId(ids, 'a', 'c', 'after')).toEqual(['b', 'c', 'a', 'd'])
+    expect(movePinnedId(ids, 'b', 'c', 'before')).toBe(ids)
+    expect(movePinnedId(ids, 'b', 'b', 'after')).toBe(ids)
+    expect(movePinnedId(ids, 'x', 'a', 'before')).toBe(ids)
   })
 })

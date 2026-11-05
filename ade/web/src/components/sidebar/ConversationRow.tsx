@@ -1,5 +1,7 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
+  ArrowDown,
+  ArrowUp,
   Bot,
   ChevronRight,
   Ellipsis,
@@ -8,7 +10,7 @@ import {
   PinOff,
   Trash2,
 } from 'lucide-react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, DragEvent } from 'react'
 import { useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
 import {
@@ -21,6 +23,7 @@ import {
 import { Hint } from '@/components/ui/Hint'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { isAwaitingAnswer } from '@/lib/chat-activity'
 import { CONVERSATION_KIND_TAGS } from '@/lib/conversation-view'
 import { cn } from '@/lib/utils'
 import type {
@@ -36,8 +39,9 @@ import { RenameConversationDialog } from './RenameConversationDialog'
 const menuActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
 
 /* The pin shortcut is a hover affordance for a pointer; touch reaches Pin
-   through the menu, so the shortcut drops off coarse pointers. */
-const pinActionClassName = uiClasses.treeItemAction
+   through the menu, so the shortcut drops off coarse pointers. A pinned
+   chat's pin stays on show in the same place, hovered or not. */
+const pinActionClassName = `${uiClasses.treeItemAction} conversation-row__pin`
 
 /* Menu rows on the console's popover canon: Inter 14px, 36px tall, an
    icon then its label, generous inset so the list breathes. */
@@ -52,6 +56,22 @@ interface ConversationRowProps {
   /** Whether the reader pinned this chat to the top of the list. */
   pinned?: boolean
   onTogglePin?: () => void
+  /**
+   * Drag to rearrange (pinned chats): the row is draggable, and `dropEdge`
+   * draws where a dragged row would land.
+   */
+  reorder?: {
+    dragging: boolean
+    dropEdge?: 'before' | 'after'
+    onDragStart: (event: DragEvent<HTMLDivElement>) => void
+    onDragOver: (event: DragEvent<HTMLDivElement>) => void
+    onDrop: (event: DragEvent<HTMLDivElement>) => void
+    onDragEnd: () => void
+    /** The keyboard way to rearrange: one step up or down, from the menu. */
+    onMove: (step: -1 | 1) => void
+    canMoveUp: boolean
+    canMoveDown: boolean
+  }
   /** Tree nesting level; 0 = root. Drives the shared tree indent. */
   depth?: number
   /** True when this row has nested sub-agent rows (renders a toggle caret). */
@@ -150,6 +170,7 @@ export function ConversationRow({
   onRemove,
   pinned = false,
   onTogglePin,
+  reorder,
   depth = 0,
   hasChildren = false,
   treeCollapsed = false,
@@ -164,6 +185,12 @@ export function ConversationRow({
   const rowRef = useRef<HTMLDivElement>(null)
 
   const glyph = resolveGlyph(conversation, depth)
+  // A sub-agent that finished its job: a hollow mark and a quieter title, so
+  // the live ones above it read first. A main chat at rest is not "done".
+  const finished =
+    depth > 0 &&
+    conversation.status === 'done' &&
+    !isAwaitingAnswer(conversation)
   const kindTag = kind ? CONVERSATION_KIND_TAGS[kind] : undefined
   const PinIcon = pinned ? PinOff : Pin
 
@@ -179,6 +206,14 @@ export function ConversationRow({
       style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
       data-menu-open={menuOpen || undefined}
       data-pinned={pinned || undefined}
+      data-finished={finished || undefined}
+      data-dragging={reorder?.dragging || undefined}
+      data-drop={reorder?.dropEdge}
+      draggable={reorder ? !renaming : undefined}
+      onDragStart={reorder?.onDragStart}
+      onDragOver={reorder?.onDragOver}
+      onDrop={reorder?.onDrop}
+      onDragEnd={reorder?.onDragEnd}
       onClick={() => !renaming && onSelect()}
       onDoubleClick={(e) => {
         if (!(e.target as HTMLElement).closest('button')) setRenaming(true)
@@ -204,10 +239,21 @@ export function ConversationRow({
         </span>
       ) : null}
       {/* The live state leads the title, where the eye starts reading the
-          row: a pulsing dot while the agent works, a still one on error. */}
+          row: a pulsing dot while the agent works, an amber one while it
+          waits on the reader's answer to its question, red on error, and a
+          hollow ring once a sub-agent finished its job. */}
       {conversation.status === 'working' ? (
         <span className="conversation-row__status">
           <StatusDot tone="accent" pulse title="working" />
+        </span>
+      ) : isAwaitingAnswer(conversation) ? (
+        <span
+          className="conversation-row__status"
+          data-awaiting-answer=""
+          title="waiting for your answer"
+        >
+          <StatusDot tone="warn" />
+          <span className="sr-only">waiting for your answer</span>
         </span>
       ) : conversation.status === 'error' ? (
         <span className="conversation-row__status">
@@ -216,6 +262,18 @@ export function ConversationRow({
             title={conversation.statusReason ?? 'error'}
           />
         </span>
+      ) : finished ? (
+        <span
+          className="conversation-row__status"
+          data-finished-mark=""
+          title="finished"
+        >
+          <span
+            aria-hidden
+            className="inline-block size-1.5 shrink-0 rounded-full ring-1 ring-ink-ghost"
+          />
+          <span className="sr-only">finished</span>
+        </span>
       ) : null}
       {/* A long title fades at its right edge and slides into view while the
           row is hovered (MarqueeLabel), so the whole name is readable
@@ -223,7 +281,11 @@ export function ConversationRow({
       <MarqueeLabel className={uiClasses.treeItemLabel}>
         {conversation.title}
       </MarqueeLabel>
-      <span className={uiClasses.treeItemTrailing}>
+      {/* The trailing edge keeps every control where it was: the pin has its
+          own place (on show while pinned, on hover otherwise), and the time
+          and the ⋯ share one cell at the far right, the ⋯ taking the time's
+          place on hover. Nothing slides under the pointer. */}
+      <span className="conversation-row__trailing">
         {kindTag ? (
           <span
             className={cn(
@@ -235,25 +297,42 @@ export function ConversationRow({
             {kindTag.label}
           </span>
         ) : null}
-        {pinned ? (
+        {/* Each control stops its click so the row does not also open. */}
+        {onTogglePin ? (
+          <Hint label={pinned ? 'Unpin' : 'Pin'}>
+            <button
+              type="button"
+              className={pinActionClassName}
+              data-pointer={pinned ? undefined : 'fine'}
+              data-pinned-mark={pinned ? '' : undefined}
+              aria-label={`${pinned ? 'unpin' : 'pin'} ${conversation.title}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onTogglePin()
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <Pin aria-hidden />
+            </button>
+          </Hint>
+        ) : pinned ? (
           <Pin
             aria-hidden
             className="conversation-row__pinned size-4 shrink-0"
             data-pinned-mark=""
           />
         ) : null}
-        <span className={uiClasses.treeItemMeta}>
-          {formatRelative(conversation.updatedAt)}
-        </span>
-        {/* The cluster is a sibling of the row's own click target: every
-            control inside stops its click so the row does not also open. */}
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: a propagation boundary around nested buttons, not a control. */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: a propagation boundary around the menu trigger, not a control. */}
         <span
-          className={uiClasses.treeItemActions}
+          className="conversation-row__slot"
           onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >
+          <span className={uiClasses.treeItemMeta}>
+            {formatRelative(conversation.updatedAt)}
+          </span>
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <Hint label="More">
               <DropdownMenuTrigger
@@ -283,6 +362,26 @@ export function ConversationRow({
                 <PinIcon aria-hidden />
                 {pinned ? 'Unpin' : 'Pin'}
               </DropdownMenuItem>
+              {reorder ? (
+                <>
+                  <DropdownMenuItem
+                    className={MENU_ITEM_CLASS}
+                    disabled={!reorder.canMoveUp}
+                    onClick={() => reorder.onMove(-1)}
+                  >
+                    <ArrowUp aria-hidden />
+                    Move up
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className={MENU_ITEM_CLASS}
+                    disabled={!reorder.canMoveDown}
+                    onClick={() => reorder.onMove(1)}
+                  >
+                    <ArrowDown aria-hidden />
+                    Move down
+                  </DropdownMenuItem>
+                </>
+              ) : null}
               <DropdownMenuSeparator className="my-1.5" />
               <DropdownMenuItem
                 variant="destructive"
@@ -294,23 +393,10 @@ export function ConversationRow({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          {onTogglePin ? (
-            <Hint label={pinned ? 'Unpin' : 'Pin'}>
-              <button
-                type="button"
-                className={pinActionClassName}
-                data-pointer="fine"
-                aria-label={`${pinned ? 'unpin' : 'pin'} ${conversation.title}`}
-                onClick={onTogglePin}
-              >
-                <PinIcon aria-hidden />
-              </button>
-            </Hint>
-          ) : null}
         </span>
       </span>
-      {/* Last in the row: the hover actions widen the trailing cluster, and a
-          caret before it would slide left under the pointer as they appear. */}
+      {/* Last in the row, after the trailing cluster, so nothing that
+          appears on hover can slide into the caret's place. */}
       {hasChildren ? (
         <button
           type="button"
