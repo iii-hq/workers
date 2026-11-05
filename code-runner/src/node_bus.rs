@@ -461,6 +461,100 @@ mod tests {
         assert!(err.contains("no such observer"), "got {err}");
     }
 
+    /// Everything `tracing` wrote while `f` ran, as plain text.
+    fn with_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = Sink::default();
+        let writer = sink.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, f);
+        let text = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        (out, text)
+    }
+
+    fn guest(source: Value) -> GuestObserveInput {
+        parse_guest_observe(json!({ "source": source, "target": "app::react" })).unwrap()
+    }
+
+    /// A guest's legacy `deliver` keeps working: it is forwarded as the
+    /// source's legacy `deliver` field (the SDK copies `Source::deliver`
+    /// verbatim into the outbound `observe` frame's `source.deliver`, and the
+    /// 0.26 engine translates it), and a deprecation warning names `capture`
+    /// as the replacement.
+    #[test]
+    fn a_guest_deliver_is_forwarded_as_the_legacy_field_with_a_deprecation_warning() {
+        use iii_sdk::Deliver;
+        let filters = json!({ "input.key": { "$eq": "k" } });
+        for (raw, expected) in [
+            ("output", Deliver::Output),
+            ("input", Deliver::Input),
+            ("envelope", Deliver::Envelope),
+        ] {
+            let input = guest(json!({
+                "function_id": "state::on-changed",
+                "filters": filters,
+                "deliver": raw,
+            }));
+            let ((source, _, _), logs) = with_logs(|| sdk_observe(input));
+            assert_eq!(
+                source,
+                Source::function("state::on-changed")
+                    .filters(filters.clone())
+                    .deliver(expected),
+                "deliver {raw} must reach the frame as the legacy field"
+            );
+            assert!(
+                logs.contains("WARN")
+                    && logs.contains("deprecated")
+                    && logs.contains("deliver")
+                    && logs.contains("capture")
+                    && logs.contains("state::on-changed"),
+                "no deprecation warning naming capture for deliver {raw}: {logs:?}"
+            );
+        }
+    }
+
+    /// The replacement the warning names: a guest `capture` reaches the
+    /// frame as `source.capture`, with no warning.
+    #[test]
+    fn a_guest_capture_is_forwarded_without_a_warning() {
+        use iii_sdk::Capture;
+        let input = guest(json!({
+            "function_id": "state::on-changed",
+            "capture": ["input", "output", "error", "caller", "metadata"],
+        }));
+        let ((source, _, _), logs) = with_logs(|| sdk_observe(input));
+        assert_eq!(
+            source,
+            Source::function("state::on-changed").capture([
+                Capture::Input,
+                Capture::Output,
+                Capture::Error,
+                Capture::Caller,
+                Capture::Metadata,
+            ])
+        );
+        assert!(!logs.contains("deprecated"), "unexpected warning: {logs}");
+
+        let ((source, _, _), _) = with_logs(|| {
+            sdk_observe(guest(json!({ "function_id": "a::b", "capture": [] })))
+        });
+        assert_eq!(source, Source::function("a::b").capture([]));
+    }
+
     /// A filter the SDK cannot parse is refused before anything is sent,
     /// and the refusal reaches the guest instead of a pending observer.
     #[tokio::test]
