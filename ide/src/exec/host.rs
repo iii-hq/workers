@@ -574,19 +574,17 @@ mod tests {
         let cfg = test_cfg();
         assert!(cfg.env.inherit, "the test targets the inheriting default");
 
+        // One key, not `env`: a CI runner's whole environment outgrows the output cap.
+        let printenv = vec!["printenv".to_string(), KEY.to_string()];
         let out = run_to_completion(
-            &["env".into()],
+            &printenv,
             &cfg,
             5000,
             &crate::exec::policy::ExecOverrides::default(),
         )
         .await
         .unwrap();
-        assert!(
-            !out.stdout.contains("III_WORKER_NAME="),
-            "identity stripped: {}",
-            out.stdout
-        );
+        assert_eq!(out.stdout.trim(), "", "identity stripped");
 
         let overrides = crate::exec::policy::ExecOverrides {
             env: Some(std::collections::BTreeMap::from([(
@@ -595,14 +593,10 @@ mod tests {
             )])),
             ..Default::default()
         };
-        let out = run_to_completion(&["env".into()], &cfg, 5000, &overrides)
+        let out = run_to_completion(&printenv, &cfg, 5000, &overrides)
             .await
             .unwrap();
-        assert!(
-            out.stdout.contains("III_WORKER_NAME=explicit"),
-            "explicit override lands: {}",
-            out.stdout
-        );
+        assert_eq!(out.stdout.trim(), "explicit", "explicit override lands");
     }
 
     /// A per-call `env` key is visible to the child process, EVEN THOUGH
