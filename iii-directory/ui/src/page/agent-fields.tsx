@@ -65,6 +65,7 @@ const TOKEN_ICONS: Record<string, LucideIcon> = {
   design: Palette,
 }
 
+/** The Lucide glyph for an avatar token (`agent`, `code`, …); nothing for unknown tokens. */
 export function TokenIcon({ token, className }: { token: string; className?: string }) {
   const Icon = TOKEN_ICONS[token]
   return Icon ? <Icon aria-hidden className={className} /> : null
@@ -85,6 +86,7 @@ interface CatalogState<T> {
  * it (no skeleton, no reveal) while a fresh copy loads behind. */
 const catalogCache = new WeakMap<Host, Map<unknown, unknown[]>>()
 
+/** Load a catalog (skills, functions, models, agents) for the form, seeded from the per-host cache. */
 function useCatalog<T>(host: Host, fetch: (host: Host) => Promise<T[]>): CatalogState<T> {
   const [items, setItems] = useState<T[] | null>(() => (catalogCache.get(host)?.get(fetch) as T[] | undefined) ?? null)
   const [error, setError] = useState(false)
@@ -113,6 +115,7 @@ function useCatalog<T>(host: Host, fetch: (host: Host) => Promise<T[]>): Catalog
   return { items, error }
 }
 
+/** The skill catalog for the skills picker. */
 const fetchSkills = (host: Host) =>
   host.iii
     .call<{
@@ -152,6 +155,7 @@ interface AgentCatalogRow {
   inheritance_error?: string | null
 }
 
+/** The agent catalog for "Based on". */
 const fetchAgents = (host: Host): Promise<AgentCatalogRow[]> =>
   host.iii.call<{ agents?: AgentCatalogRow[] }>('directory::agents::list').then((out) => out.agents ?? [])
 
@@ -165,6 +169,7 @@ interface CatalogModelRow {
   reasoning_efforts?: unknown
 }
 
+/** Reasoning-effort options from a model row; undefined when the model lists none. */
 function parseReasoningEfforts(value: unknown) {
   if (!Array.isArray(value)) return undefined
   const efforts = value.flatMap((raw) => {
@@ -181,6 +186,7 @@ function parseReasoningEfforts(value: unknown) {
   return efforts.length > 0 ? efforts : undefined
 }
 
+/** The router's model catalog as ModelPicker options (provider-qualified ids). */
 const fetchModels = (host: Host): Promise<ModelOption[]> =>
   host.iii.call<{ models?: CatalogModelRow[] }>('router::models::list', {}).then((out) =>
     (out.models ?? []).flatMap((row) => {
@@ -225,10 +231,12 @@ const AGENT_COLORS = [
 
 type AgentColor = (typeof AGENT_COLORS)[number]['id']
 
+/** Normalise a stored colour to one of the avatar tones (neutral when unknown). */
 function agentColor(value: string): AgentColor {
   return AGENT_COLORS.some((color) => color.id === value) ? (value as AgentColor) : 'neutral'
 }
 
+/** The avatar button and its popover: pick a glyph and a tone. */
 function AvatarPicker({
   icon,
   color,
@@ -351,6 +359,7 @@ function AvatarPicker({
   )
 }
 
+/** Grow a textarea with its text (on value change and on width change). */
 function useAutoResizeTextarea(value: string) {
   const ref = useRef<HTMLTextAreaElement>(null)
   useLayoutEffect(() => {
@@ -514,6 +523,7 @@ const FUNCTIONS_COPY: PickerCopy = {
   mono: true,
 }
 
+/** A key that types a character (no modifier), used to send typing back to search. */
 function isPrintableKey(event: KeyboardEvent<HTMLElement>) {
   return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey
 }
@@ -571,6 +581,7 @@ function PickerRowView({
   )
 }
 
+/** One picker group ("Selected" or "Available"): a sticky head with its count, then the checkbox rows. */
 function PickerGroup({
   title,
   items,
@@ -889,6 +900,7 @@ function Bar({ w, h = 10 }: { w: string | number; h?: number }) {
   return <Skeleton style={{ display: 'block', width: w, height: h }} />
 }
 
+/** The agent page's shape (header, tabs, settings rows) as skeleton blocks. */
 function AgentFormSkeletonLayout() {
   return (
     <div className="dir-agent dir-agent-skeleton">
@@ -919,6 +931,7 @@ function AgentFormSkeletonLayout() {
   )
 }
 
+/** Loading state for the agent page, announced as a status. */
 export function AgentFormSkeleton() {
   return (
     <div className="dir-ui-af-loading t-skel" data-state="loading" role="status" aria-label="Loading agent">
@@ -945,6 +958,7 @@ export function withComposerPlaceholder(draft: string, next: string): string {
     : withoutFrontmatterFields(draft, ['composer_placeholder'])
 }
 
+/** The composer example text field, capped at the server's length. */
 function ComposerExampleField({
   id,
   value,
@@ -976,6 +990,7 @@ function ComposerExampleField({
 
 type AgentTab = 'overview' | 'prompt' | 'skills' | 'functions'
 
+/** The agent page: identity header (edited in place), then Overview · Instructions · Skills · Functions. */
 export function AgentForm(ctx: FormContext) {
   const {
     host,

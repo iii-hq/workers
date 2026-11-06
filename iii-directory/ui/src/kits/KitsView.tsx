@@ -59,6 +59,7 @@ export type KitsRoute =
   | { view: 'plan'; planId: string }
   | { view: 'install' }
 
+/** What a pending plan would do, in words: "Install 1.2.0", "Update 1.1 → 1.2", "Remove 1.0". */
 function planVerb(p: PlanSummary): string {
   if (p.kind === 'install') return `Install ${p.to ?? ''}`
   if (p.kind === 'update') return `Update ${p.from ?? ''} → ${p.to ?? ''}`
@@ -113,6 +114,7 @@ export function kitRows(listing: KitsListing): BrowserRow[] {
   return [...pending, ...kits]
 }
 
+/** The Kits section: the library of plans and installed kits beside the open kit, plan or home. */
 export function KitsView({
   host,
   nav,
@@ -380,6 +382,7 @@ function KitsHome({ listing, onInstall }: { listing: KitsListing | null; onInsta
   )
 }
 
+/** A mono value with a copy button (copy ⇄ copied cross-fade). */
 function CopyLine({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<number | undefined>(undefined)
@@ -423,11 +426,11 @@ function InstallDialog({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fieldId = useId()
+  // `submitting` is NOT reset here: it clears only when the request settles,
+  // and the dialog refuses to close until then (below), so a cancelled
+  // dialog can never jump to a plan or start a second download.
   useEffect(() => {
-    if (!open) {
-      setError(null)
-      setSubmitting(false)
-    }
+    if (!open) setError(null)
   }, [open])
   const kitRef = value.trim()
   const valid = KIT_REF.test(kitRef)
@@ -445,7 +448,13 @@ function InstallDialog({
     }
   }
   return (
-    <ShadcnDialog open={open} onOpenChange={onOpenChange}>
+    <ShadcnDialog
+      open={open}
+      onOpenChange={(next) => {
+        // Escape, the corner ✕ and an outside click wait for the request.
+        if (next || !submitting) onOpenChange(next)
+      }}
+    >
       <ShadcnDialogContent>
         <form
           onSubmit={(e) => {
@@ -469,6 +478,7 @@ function InstallDialog({
               placeholder="acme/support@1.2.0"
               spellCheck={false}
               autoComplete="off"
+              readOnly={submitting}
               aria-invalid={error ? true : undefined}
               aria-describedby={`${fieldId}-help`}
             />
@@ -477,7 +487,7 @@ function InstallDialog({
             </p>
           </div>
           <ShadcnDialogFooter>
-            <ShadcnButton type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+            <ShadcnButton type="button" variant="ghost" disabled={submitting} onClick={() => onOpenChange(false)}>
               Cancel
             </ShadcnButton>
             <ShadcnButton type="submit" disabled={!valid || submitting}>

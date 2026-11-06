@@ -20,8 +20,9 @@ import { ChevronRight, Plus, Search, SearchX, X } from 'lucide-react'
 import type { KeyboardEvent, ReactNode, Ref } from 'react'
 import { useMemo, useRef } from 'react'
 import type { BrowserRow } from './browser'
-import { closestMatches, groupRows, matchesQuery } from './library-model'
+import { closestMatches, firstShownRow, groupRows, isGroupCollapsed, matchesQuery } from './library-model'
 
+/** Move focus among the rendered rows (`[data-dir-row]`) by a step, or to the first/last. */
 function moveFocus(container: HTMLElement | null, from: Element | null, delta: number | 'first' | 'last') {
   if (!container) return
   const rows = [...container.querySelectorAll<HTMLButtonElement>('[data-dir-row]')]
@@ -34,6 +35,7 @@ function moveFocus(container: HTMLElement | null, from: Element | null, delta: n
   rows[index]?.scrollIntoView({ block: 'nearest' })
 }
 
+/** The library column for one collection: search, the "new" action, and the grouped rows (or a loading, empty, error or no-match state). */
 export function Library({
   noun,
   nounPlural,
@@ -106,9 +108,13 @@ export function Library({
     } else if (e.key === 'Escape' && query) {
       e.preventDefault()
       onQuery('')
-    } else if (e.key === 'Enter' && (visible.length > 0 || suggestions.length > 0)) {
+    } else if (e.key === 'Enter') {
+      // The row at the top of the list as drawn (not the adapter's order),
+      // or the best "did you mean" when nothing matched.
+      const first = firstShownRow(groups, { filtering: !!needle, collapsed }) ?? suggestions[0]
+      if (!first) return
       e.preventDefault()
-      onOpen((visible[0] ?? suggestions[0]).key)
+      onOpen(first.key)
     }
   }
 
@@ -214,7 +220,11 @@ export function Library({
       // biome-ignore lint/a11y/noStaticElementInteractions: arrow-key relay between the row buttons inside
       <div ref={listRef} onKeyDown={onListKeyDown}>
         {groups.map((group) => {
-          const isCollapsed = !needle && showHeaders && collapsed.includes(group.id)
+          const isCollapsed = isGroupCollapsed(group.id, {
+            groupCount: groups.length,
+            filtering: !!needle,
+            collapsed,
+          })
           return (
             <section key={group.id} className="dir-lib-group" aria-label={group.label}>
               {showHeaders ? (
@@ -299,6 +309,7 @@ export function Library({
   )
 }
 
+/** One two-line library row: optional glyph, title with a trailing tag, one-line description. */
 function LibraryRow({ row, current, onOpen }: { row: BrowserRow; current: boolean; onOpen: (key: string) => void }) {
   // Ids read as data (mono) only when there is no title to show instead.
   const titled = row.title !== ''

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BrowserRow } from './browser'
-import { closestMatches, groupRows, matchesQuery } from './library-model'
+import { closestMatches, firstShownRow, groupRows, matchesQuery } from './library-model'
 
 const row = (key: string, group?: string, extra: Partial<BrowserRow> = {}): BrowserRow => ({
   key,
@@ -62,5 +62,29 @@ describe('closestMatches', () => {
   it('suggests nothing for unrelated text or an empty query', () => {
     expect(closestMatches(rows, 'quarterly')).toEqual([])
     expect(closestMatches(rows, '   ')).toEqual([])
+  })
+})
+
+describe('firstShownRow', () => {
+  // The adapter lists a built-in first; the screen shows "yours" first.
+  const groups = groupRows(
+    [row('builtin-a', 'builtin'), row('mine', 'yours'), row('kit-a', 'kit')],
+    ['yours', 'kit', 'builtin'],
+  )
+
+  it('is the top row as rendered, not the first row the adapter returned', () => {
+    expect(firstShownRow(groups, { filtering: false, collapsed: [] })?.key).toBe('mine')
+  })
+
+  it('skips folded groups', () => {
+    expect(firstShownRow(groups, { filtering: false, collapsed: ['yours'] })?.key).toBe('kit-a')
+  })
+
+  it('ignores folding while searching (every group is open then)', () => {
+    expect(firstShownRow(groups, { filtering: true, collapsed: ['yours'] })?.key).toBe('mine')
+  })
+
+  it('is undefined for an empty list', () => {
+    expect(firstShownRow([], { filtering: true, collapsed: [] })).toBeUndefined()
   })
 })

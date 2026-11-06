@@ -334,6 +334,7 @@ function SectionTabs({
   )
 }
 
+/** The `directory` page: section tabs over three always-mounted sections (agents, skills, kits), routed by panel context. */
 export function DirectoryPage({
   host,
   panelSide = 'left',

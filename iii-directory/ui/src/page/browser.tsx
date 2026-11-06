@@ -222,6 +222,7 @@ interface Loaded {
   content: string
 }
 
+/** Keep the split ratio between a quarter and three quarters of the width. */
 const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
 
 /** "Unable to save: <reason>." — the reason without a trailing stop. */
@@ -252,6 +253,7 @@ function useOnChange(host: Host, functionId: string, onEvent: () => void) {
   }, [host, functionId])
 }
 
+/** A shadcn tooltip around a trigger element. */
 function Hint({ label, children }: { label: ReactNode; children: React.ReactElement }) {
   return (
     <ShadcnTooltip>
@@ -261,6 +263,7 @@ function Hint({ label, children }: { label: ReactNode; children: React.ReactElem
   )
 }
 
+/** The list + document browser for one file collection (skills or agents): load, edit, save, delete, live updates. */
 export function CollectionBrowser({
   host,
   adapter,
@@ -1314,6 +1317,7 @@ export function SaveBar({
   )
 }
 
+/** Loading placeholder shaped like a document header and a few lines of body. */
 function DocSkeleton() {
   return (
     <div className="dir-doc-skeleton" aria-hidden>
@@ -1327,6 +1331,7 @@ function DocSkeleton() {
   )
 }
 
+/** Which panes show: both when wide; in narrow panes the list until an entry (or a new one) is open, then the document. */
 export function resolveBrowserPaneVisibility({
   narrow,
   selected,

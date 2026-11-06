@@ -32,6 +32,27 @@ export function groupRows(rows: BrowserRow[], order: readonly string[] = [], fal
   return [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id) || a.label.localeCompare(b.label))
 }
 
+/** Whether a group renders folded: only when headers show (more than one
+ * group) and never while a search is filtering the list. */
+export function isGroupCollapsed(
+  id: string,
+  { groupCount, filtering, collapsed }: { groupCount: number; filtering: boolean; collapsed: readonly string[] },
+): boolean {
+  return !filtering && groupCount > 1 && collapsed.includes(id)
+}
+
+/** The first row ON SCREEN — group order first, folded groups skipped — which
+ * is what Enter in the search box opens (the same row ↓ lands on). */
+export function firstShownRow(
+  groups: LibraryGroup[],
+  { filtering, collapsed }: { filtering: boolean; collapsed: readonly string[] },
+): BrowserRow | undefined {
+  const open = groups.find(
+    (g) => g.rows.length > 0 && !isGroupCollapsed(g.id, { groupCount: groups.length, filtering, collapsed }),
+  )
+  return open?.rows[0]
+}
+
 /** Case-insensitive match over the key, title and description. */
 export function matchesQuery(row: BrowserRow, needle: string): boolean {
   if (!needle) return true
@@ -64,12 +85,14 @@ function editDistance(a: string, b: string): number {
   return prev[b.length]
 }
 
+/** Lower-cased alphanumeric words of a name (`ade/console-ui` → ade, console, ui). */
 const words = (text: string) =>
   text
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean)
 
+/** Length of the shared prefix of two strings. */
 function commonPrefix(a: string, b: string): number {
   let i = 0
   while (i < a.length && i < b.length && a[i] === b[i]) i += 1
