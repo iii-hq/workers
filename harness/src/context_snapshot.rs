@@ -592,8 +592,13 @@ pub async fn exactify(
     let skills_prompt = skills_prompt.filter(|p| !p.is_empty());
 
     let from_cache = |part: Option<Part<'_>>| match part {
-        Some(part) => cached(cache_key(&model, provider.as_deref(), part.kind(), &part.content_key()))
-            .map(|(tokens, estimator)| Counted { tokens, estimator }),
+        Some(part) => cached(cache_key(
+            &model,
+            provider.as_deref(),
+            part.kind(),
+            &part.content_key(),
+        ))
+        .map(|(tokens, estimator)| Counted { tokens, estimator }),
         None => Some(Counted::default()),
     };
     let counted = (
