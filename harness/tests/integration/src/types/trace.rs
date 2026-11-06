@@ -63,7 +63,7 @@ impl TraceEvidenceV1 {
         let lifecycle_turns = self
             .spans_named(&lifecycle_name)
             .into_iter()
-            .filter_map(TraceSpanV1::invocation_input)
+            .filter_map(TraceSpanV1::observed_event)
             .filter_map(|mut payload| {
                 strip_engine_fields(&mut payload);
                 let terminal = payload.get("terminal").and_then(Value::as_bool) == Some(true);
@@ -233,6 +233,21 @@ impl TraceSpanV1 {
 
     pub fn invocation_output(&self) -> Option<Value> {
         self.event("iii.invocation.output")?.payload()
+    }
+
+    /// The event an observer target was called with: a target observing with
+    /// `capture: [output]` receives the `Observed` envelope, the event under
+    /// `output`; any other input is the event itself.
+    pub fn observed_event(&self) -> Option<Value> {
+        let input = self.invocation_input()?;
+        match input {
+            Value::Object(mut map)
+                if map.contains_key("observer_id") && map.contains_key("output") =>
+            {
+                map.remove("output")
+            }
+            other => Some(other),
+        }
     }
 
     fn self_and_descendants(&self) -> Box<dyn Iterator<Item = &TraceSpanV1> + '_> {

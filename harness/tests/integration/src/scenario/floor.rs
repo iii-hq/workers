@@ -265,7 +265,7 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
         .spans_named(&lifecycle_name)
         .into_iter()
         .map(|span| {
-            span.invocation_input().map(|mut payload| {
+            span.observed_event().map(|mut payload| {
                 strip_engine_fields(&mut payload);
                 payload
             })
