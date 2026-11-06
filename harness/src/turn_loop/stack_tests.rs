@@ -458,8 +458,13 @@ async fn a_step_parked_on_a_held_call_stops_claiming_to_run_tools() {
 async fn a_resolve_resuming_the_turn_says_it_is_queueing_the_next_step() {
     let held = json!({"call_hold": {
         "state": "pending", "function_id": "test::hold", "held_by": "test::gate"}});
-    let (result, calls, turn) =
-        run_on_fake_engine(held, json!([]), None, json!({}), |deps| async move {
+    let (result, calls, turn) = run_on_fake_engine(
+        json!({}),
+        held,
+        json!([]),
+        None,
+        json!({}),
+        |deps| async move {
             let req = crate::functions::function_resolve::FunctionResolveRequest {
                 session_id: "s".into(),
                 turn_id: "t1".into(),
@@ -469,8 +474,9 @@ async fn a_resolve_resuming_the_turn_says_it_is_queueing_the_next_step() {
                 ..Default::default()
             };
             crate::deferred::resolve(&deps, req).await
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(result.unwrap().turn_resumed);
     assert_eq!(turn["step"], 2);
     assert_eq!(phases(&calls), ["queueing next step", "harness::turn"]);
@@ -540,8 +546,13 @@ async fn resolves_after_a_stop_keep_its_stopping_ack() {
         "call_hold": held_call(),
         "call_external": {"state": "pending", "function_id": "test::external"},
     });
-    let (result, calls, _) =
-        run_on_fake_engine(parked, json!([]), None, json!({}), |deps| async move {
+    let (result, calls, _) = run_on_fake_engine(
+        json!({}),
+        parked,
+        json!([]),
+        None,
+        json!({}),
+        |deps| async move {
             let cfg = deps.cfg().await;
             let mut record =
                 crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
@@ -563,8 +574,9 @@ async fn resolves_after_a_stop_keep_its_stopping_ack() {
                 serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 2}))
                     .unwrap();
             run_step(&deps, payload).await
-        })
-        .await;
+        },
+    )
+    .await;
     assert_eq!(result.unwrap().status, TurnStatus::Cancelled);
     assert_eq!(
         phases(&calls),
@@ -607,9 +619,16 @@ async fn release(
     Vec<(String, Value)>,
     Value,
 ) {
-    run_on_fake_engine(checkpoints, json!([]), None, hooks, |deps| async move {
-        crate::deferred::resolve(&deps, resolve_request("call_hold", "execute")).await
-    })
+    run_on_fake_engine(
+        json!({}),
+        checkpoints,
+        json!([]),
+        None,
+        hooks,
+        |deps| async move {
+            crate::deferred::resolve(&deps, resolve_request("call_hold", "execute")).await
+        },
+    )
     .await
 }
 
@@ -640,7 +659,7 @@ async fn redeliver(
     Vec<(String, Value)>,
     Value,
 ) {
-    run_on_fake_engine(checkpoints, stored, None, json!({}), step_one).await
+    run_on_fake_engine(json!({}), checkpoints, stored, None, json!({}), step_one).await
 }
 
 /// Run step 1 with nothing stored, the provider streaming `reply`.
@@ -663,7 +682,15 @@ async fn generate_observed(
     Vec<(String, Value)>,
     Value,
 ) {
-    run_on_fake_engine(json!({}), json!([]), Some(reply), hooks, step_one).await
+    run_on_fake_engine(
+        json!({}),
+        json!({}),
+        json!([]),
+        Some(reply),
+        hooks,
+        step_one,
+    )
+    .await
 }
 
 async fn step_one(deps: Deps) -> Result<TurnStepResult, HarnessError> {
@@ -673,8 +700,12 @@ async fn step_one(deps: Deps) -> Result<TurnStepResult, HarnessError> {
 }
 
 /// Without a `reply` the provider's stream channel cannot open: the step ends
-/// at that boundary.
+/// at that boundary. `script` answers chosen calls first: a function id, or
+/// a function id and the state scope it acts on (`"state::list
+/// harness_queue"`), maps to the replies its next calls get in order, each
+/// `{"result": ..}` or `{"error": {"code", "message"}}`.
 async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
+    mut script: Value,
     checkpoints: Value,
     stored: Value,
     reply: Option<Value>,
@@ -754,7 +785,15 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
                 .lock()
                 .unwrap()
                 .push((function.clone(), data.clone()));
+            let scoped = format!("{function} {}", data["scope"].as_str().unwrap_or_default());
+            let scripted = [scoped.as_str(), function.as_str()]
+                .into_iter()
+                .find_map(|call| {
+                    let replies = script.get_mut(call)?.as_array_mut()?;
+                    (!replies.is_empty()).then(|| replies.remove(0))
+                });
             let result = match function.as_str() {
+                _ if scripted.is_some() => scripted.as_ref().unwrap()["result"].clone(),
                 hook if !hooks[hook].is_null() => hooks[hook].clone(),
                 "engine::workers::register" => json!({"success": true}),
                 "state::get" | "harness::state::get" if data["scope"] == "harness_turn" => {
@@ -798,10 +837,14 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
                 _ => Value::Null,
             };
             if !message["invocation_id"].is_null() {
-                let reply = json!({
+                let mut reply = json!({
                     "type": "invocationresult", "invocation_id": message["invocation_id"],
                     "function_id": function, "result": result
                 });
+                if let Some(error) = scripted.as_ref().and_then(|reply| reply.get("error")) {
+                    reply["error"] = error.clone();
+                    reply.as_object_mut().unwrap().remove("result");
+                }
                 let frame = tokio_tungstenite::tungstenite::Message::Text(reply.to_string().into());
                 if socket.send(frame).await.is_err() {
                     break;
@@ -831,10 +874,100 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
     })
     .await
     .expect("the hooks' observers activate");
-    let result = tokio::time::timeout(Duration::from_secs(10), drive(deps)).await;
+    // The catalog wait of an overflowing step alone takes about 7 s.
+    let result = tokio::time::timeout(Duration::from_secs(20), drive(deps)).await;
     iii.shutdown();
     server.abort();
     let calls = calls.lock().unwrap().clone();
     let turn = turn.lock().unwrap().clone();
     (result.unwrap(), calls, turn)
+}
+
+/// An assembly that overflows only because the provider has not registered
+/// the model yet (a harness waking sessions at boot, ahead of its providers)
+/// waits for the catalog and assembles again. It used to fail the turn as an
+/// unknown model, a failure nothing retries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_overflow_on_a_model_listed_late_assembles_again() {
+    let overflow = json!({"error": {"code": "context/overflow", "message":
+        "context/overflow: assembled context requires 9000 tokens but usable budget is 8000"}});
+    let (result, calls, _) = run_on_fake_engine(
+        json!({
+            "context::assemble": [overflow],
+            "router::models::get": [
+                {"result": {"model": null}},
+                {"result": {"model": {"id": "fake"}}}
+            ],
+            "router::models::list": [{"result": {"models": []}}],
+        }),
+        json!({}),
+        json!([]),
+        Some(text_reply(0.25)["message"].clone()),
+        json!({}),
+        step_one,
+    )
+    .await;
+    let assemblies = calls
+        .iter()
+        .filter(|(f, _)| f == "context::assemble")
+        .count();
+    assert_eq!(
+        result.expect("the step finishes").status,
+        TurnStatus::Completed,
+        "{calls:?}"
+    );
+    assert_eq!(assemblies, 2, "{calls:?}");
+}
+
+/// A completion whose finalize drain delivers a message parked during the
+/// last step is followed by a reseeded turn, so it is not terminal: a
+/// consumer that finalizes the exchange on `terminal: true` closed it while
+/// the session went on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completion_followed_by_a_reseeded_turn_is_not_terminal() {
+    let parked = json!({"id": "q1", "session_id": "s", "entry_id": "e_wake", "queued_at": 3,
+        "message": {"role": "user", "timestamp": 3,
+            "content": [{"type": "text", "text": "[notification] the job finished"}]}});
+    // Parked before the first drain, or between it and the terminal write.
+    for drains in [json!([[parked]]), json!([[], [parked]])] {
+        let replies: Vec<Value> = drains
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rows| json!({ "result": rows }))
+            .collect();
+        complete_with_parked_message(json!({ "state::list harness_queue": replies })).await;
+    }
+}
+
+async fn complete_with_parked_message(script: Value) {
+    let (result, calls, _) = run_on_fake_engine(
+        script,
+        json!({}),
+        json!([]),
+        None,
+        json!({ crate::events::ON_TURN_COMPLETED_FN: {} }),
+        |deps| async move {
+            let session = deps.session().await;
+            let mut record = crate::state::get_turn(&deps.iii, "s", 2_000)
+                .await?
+                .expect("the running turn");
+            finalize_completed(&deps, &session, &mut record, Some(json!("done"))).await
+        },
+    )
+    .await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
+    assert!(
+        calls
+            .iter()
+            .any(|(f, data)| f == "session::append" && data["entry_id"] == "e_wake"),
+        "the parked message reaches the transcript: {calls:?}"
+    );
+    let completed: Vec<&Value> = calls
+        .iter()
+        .filter(|(f, _)| f == crate::events::ON_TURN_COMPLETED_FN)
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(completed.len(), 1, "{calls:?}");
+    assert_eq!(completed[0]["terminal"], json!(false), "{completed:?}");
 }

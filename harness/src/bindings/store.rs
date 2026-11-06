@@ -84,14 +84,18 @@ impl BindingStore {
         state::get_binding(&self.iii, id, self.timeout_ms).await
     }
 
-    pub async fn delete(&self, id: &str) -> Result<(), HarnessError> {
+    /// Delete the record whatever version it holds by then, and return that
+    /// version (`None`: it was already gone). A caller reporting the removal
+    /// reads the record it actually deleted: a fire may land between its own
+    /// read and the delete.
+    pub async fn delete(&self, id: &str) -> Result<Option<Binding>, HarnessError> {
         const ATTEMPTS: usize = 8;
         for _ in 0..ATTEMPTS {
             let Some(binding) = self.get(id).await? else {
-                return Ok(());
+                return Ok(None);
             };
             if self.delete_if_unchanged(&binding).await? {
-                return Ok(());
+                return Ok(Some(binding));
             }
         }
         Err(HarnessError::State(format!(
@@ -332,6 +336,24 @@ impl BindingStore {
             "binding {} lost {ATTEMPTS} claim attempts in a row",
             binding.id
         )))
+    }
+
+    /// Give back the fire `claimed` took, when its wake could not be
+    /// delivered: the binding stays armed for the next fire. Only that exact
+    /// record is restored; one that moved or was retired meanwhile is left
+    /// alone and `false` is returned.
+    pub async fn release_fire(&self, claimed: &Binding) -> Result<bool, HarnessError> {
+        let mut released = claimed.clone();
+        released.fires = claimed.fires.saturating_sub(1);
+        let swapped = state::cas_binding(&self.iii, Some(claimed), &released, self.timeout_ms)
+            .await?
+            .is_none();
+        if swapped {
+            self.events
+                .emit_observers_changed(&claimed.owner.session_id)
+                .await;
+        }
+        Ok(swapped)
     }
 
     async fn reserve_owner_slot(&self, binding: &Binding) -> Result<ReserveOutcome, HarnessError> {

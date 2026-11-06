@@ -824,6 +824,7 @@ async fn generate_step(
         record.pre_generate_hook_tokens,
     );
     let mut reassembled = false;
+    let mut waited_for_model = false;
     let (
         gen_system_prompt,
         gen_annotations,
@@ -852,10 +853,10 @@ async fn generate_step(
         {
             Ok(assembled) => assembled,
             Err(HarnessError::ContextOverflow(reason)) => {
-                let failure = overflow_failure(deps, &record).await;
-                return finalize_failed(deps, &session, &mut record, &reason, failure)
-                    .await
-                    .map(PreparedStep::Finished);
+                if model_listed_late(deps, &record, &mut waited_for_model).await {
+                    continue;
+                }
+                return finish_overflow(deps, &session, &mut record, &reason).await;
             }
             Err(error) => return Err(error),
         };
@@ -1028,14 +1029,14 @@ async fn generate_step(
             );
         }
         if reassembled {
+            if model_listed_late(deps, &record, &mut waited_for_model).await {
+                continue;
+            }
             let reason = format!(
                 "final model request exceeds the assembled usable budget: {final_request_tokens} tokens > {} usable (persists after re-assembly with reserved headroom)",
                 assembled.usable
             );
-            let failure = overflow_failure(deps, &record).await;
-            return finalize_failed(deps, &session, &mut record, &reason, failure)
-                .await
-                .map(PreparedStep::Finished);
+            return finish_overflow(deps, &session, &mut record, &reason).await;
         }
         // One-shot recovery: fold the measured post-assembly additions (plus
         // margin for hook variance on the retry — hooks re-run against the
@@ -2707,18 +2708,20 @@ pub(crate) async fn advance(
 }
 
 /// A completing turn is terminal unless its session still owns an armed wake
-/// (a one-shot notify subscription): the wiring turn of a one-way run ends
-/// with its `turn_complete` watcher armed and completes non-terminally; the
-/// final compose turn (wake consumed, nothing re-armed) is terminal.
-/// Consumers finalize a logical exchange only on `terminal: true`.
-async fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+/// (a one-shot notify subscription) or is about to be reseeded (`reseeding`:
+/// the finalize drain delivered a message, so a fresh turn follows): the
+/// wiring turn of a one-way run ends with its `turn_complete` watcher armed
+/// and completes non-terminally; the final compose turn (wake consumed,
+/// nothing re-armed) is terminal. Consumers finalize a logical exchange only
+/// on `terminal: true`.
+async fn turn_is_terminal(deps: &Deps, session_id: &str, reseeding: bool) -> bool {
     if matches!(
         crate::functions::delete_session_tree::guard_owner(deps, session_id).await,
         Ok(Some(_))
     ) {
         return true;
     }
-    !crate::bindings::session_expects_wake(deps, session_id).await
+    !reseeding && !crate::bindings::session_expects_wake(deps, session_id).await
 }
 
 /// After the terminal `Completed` write, a failed deletion-guard lookup must
@@ -2769,6 +2772,14 @@ async fn finalize_completed(
     record.updated_at = AgentMessage::now_ms();
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
+    // post-enqueue recheck: a send whose recheck still saw `Running` must have
+    // enqueued before the terminal write landed, so this sweep collects its
+    // row; a recheck that sees the terminal record seeds its own turn. Without
+    // it, a row enqueued between the first drain and the terminal write would
+    // strand — queued against a turn that will never drain again. It runs
+    // before the completion event, which must know whether a turn follows.
+    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     deps.cancels.clear(&record.turn_id);
     crate::session_status::project(session, record).await;
     deps.events
@@ -2781,7 +2792,7 @@ async fn finalize_completed(
             None,
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            turn_is_terminal(deps, &record.session_id).await,
+            turn_is_terminal(deps, &record.session_id, woke).await,
             record.context_snapshot.as_ref(),
         )
         .await;
@@ -2811,13 +2822,6 @@ async fn finalize_completed(
                 .await;
         }
     }
-    // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
-    // post-enqueue recheck: a send whose recheck still saw `Running` must have
-    // enqueued before the terminal write landed, so this sweep collects its
-    // row; a recheck that sees the terminal record seeds its own turn. Without
-    // it, a row enqueued between the first drain and the terminal write would
-    // strand — queued against a turn that will never drain again.
-    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // A message parked during this turn's final step was just drained to the
     // transcript with no turn to react to it; seed one now (after the terminal
     // write above, or it would clobber the fresh turn's slot).
@@ -2836,6 +2840,83 @@ async fn finalize_completed(
 struct FailurePresentation {
     summary: String,
     next_actions: Vec<&'static str>,
+}
+
+/// How long an assembly overflow waits for the router catalog to list the
+/// turn's model, and how often it looks. A harness that boots wakes parked
+/// sessions within a second, before the providers have registered their
+/// models: the context manager then sizes the model with conservative
+/// fallback limits, and the overflow says nothing about the conversation.
+const MODEL_LISTING_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const MODEL_LISTING_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+/// The context manager remembers a model the router did not list for 5 s, and
+/// clears it early only on `router::models::on-changed`, which a context
+/// manager starting with the providers can miss. Any session's miss before
+/// the listing refills it, so the assembly waits this long after the model is
+/// first seen listed.
+const MODEL_LISTING_SETTLE: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Whether the turn's model was not listed by the router catalog (missing, or
+/// the router not answering yet) and is listed now, after waiting up to
+/// [`MODEL_LISTING_WAIT`]: the overflow is then worth one more assembly,
+/// [`MODEL_LISTING_SETTLE`] after the model is first seen listed. Once per step
+/// (`waited`). A model listed from the start (a real overflow), still not
+/// listed at the deadline, or a turn stopped meanwhile is `false`. The step
+/// holds its session lock while it waits, which a stop does not need: it fires
+/// the cancel first.
+async fn model_listed_late(deps: &Deps, record: &TurnRecord, waited: &mut bool) -> bool {
+    if std::mem::replace(waited, true) {
+        return false;
+    }
+    let router = deps.router().await;
+    let provider = record.options.provider.as_deref();
+    let model = &record.options.model;
+    if router.model_listed(provider, model).await == Some(true) {
+        return false;
+    }
+    let started = tokio::time::Instant::now();
+    let mut listed_at = None;
+    while listed_at.is_some() || started.elapsed() < MODEL_LISTING_WAIT {
+        tokio::time::sleep(MODEL_LISTING_POLL).await;
+        if deps.cancels.is_fired(&record.turn_id) {
+            return false;
+        }
+        match listed_at {
+            None if router.model_listed(provider, model).await == Some(true) => {
+                listed_at = Some(tokio::time::Instant::now());
+            }
+            Some(at) if at.elapsed() >= MODEL_LISTING_SETTLE => {
+                tracing::info!(
+                    session_id = %record.session_id,
+                    model,
+                    "model listed after the assembly overflowed; re-assembling"
+                );
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// How a step ends on an assembly overflow it will not assemble again:
+/// cancelled when the turn was stopped meanwhile (the catalog wait ends on
+/// it), failed otherwise.
+async fn finish_overflow(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    reason: &str,
+) -> Result<PreparedStep, HarnessError> {
+    if deps.cancels.is_fired(&record.turn_id) {
+        return Box::pin(finalize_cancelled(deps, session, record, "cancelled"))
+            .await
+            .map(PreparedStep::Finished);
+    }
+    let failure = overflow_failure(deps, record).await;
+    finalize_failed(deps, session, record, reason, failure)
+        .await
+        .map(PreparedStep::Finished)
 }
 
 /// The failure for an assembly overflow: [`UNKNOWN_MODEL_FAILURE`] only when
@@ -3064,6 +3145,10 @@ async fn finalize_failed(
             Some(&origin(&record.turn_id)),
         )
         .await;
+    // Second post-terminal sweep, as in `finalize_completed`: closes the
+    // enqueue-after-drain window against `try_enqueue`'s recheck, before the
+    // completion event says whether a turn follows.
+    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
@@ -3075,7 +3160,7 @@ async fn finalize_failed(
             Some(&summary),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            turn_is_terminal(deps, &record.session_id).await,
+            turn_is_terminal(deps, &record.session_id, woke).await,
             record.context_snapshot.as_ref(),
         )
         .await;
@@ -3097,9 +3182,6 @@ async fn finalize_failed(
         )
         .await;
     }
-    // Second post-terminal sweep, as in `finalize_completed`: closes the
-    // enqueue-after-drain window against `try_enqueue`'s recheck.
-    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // As in `finalize_completed`: a message that parked during the failing
     // turn's final step is genuine new input (a notification, a steer) and
     // deserves a turn, the same as an external send arriving at a failed
@@ -3273,7 +3355,7 @@ pub(crate) async fn finalize_cancelled(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            turn_is_terminal(deps, &record.session_id).await,
+            turn_is_terminal(deps, &record.session_id, false).await,
             record.context_snapshot.as_ref(),
         )
         .await;

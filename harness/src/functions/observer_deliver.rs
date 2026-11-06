@@ -21,7 +21,9 @@
 //!
 //! The claim (the persisted fire count) lands BEFORE dispatch: a redelivered
 //! event finds the budget already spent and stops. Retirement lands AFTER, so a
-//! crash mid-dispatch loses nothing that was not already claimed. Dispatch has
+//! crash mid-dispatch loses nothing that was not already claimed. A wake that
+//! still fails after its retries gives the claim back instead of retiring, so
+//! its parked owner keeps the binding that would wake it. Dispatch has
 //! exactly two shapes — wake the owner, or call a plain function — and never
 //! creates an agent.
 
@@ -317,26 +319,43 @@ pub async fn handle(
     let retiring = binding.retires_after_fire(fires_after);
 
     let (delivered, outcome) = dispatch(deps, &claimed, &event).await;
+    // Only a fire that would retire the binding gives its claim back: a
+    // standing binding is still armed anyway, and the next fire reuses the
+    // released ordinal's entry id.
+    let released = match &outcome {
+        Err(undelivered) if undelivered.transient && retiring => {
+            release_failed_wake(deps, &claimed, &undelivered.error).await
+        }
+        _ => false,
+    };
+    let retired = retiring && !released;
 
-    if retiring {
+    if retired {
         retire(deps, &claimed).await;
     }
 
     let note = outcome
         .as_ref()
         .err()
-        .map(|e| format!("dispatch failed: {e}"));
+        .map(|e| format!("dispatch failed: {}", e.error));
     let record_outcome = if outcome.is_ok() {
         fired::FireOutcome::Delivered
     } else {
         fired::FireOutcome::DeliveryFailed
     };
-    let retirement_reason = delivery_retirement_reason(&binding, fires_after);
+    let retirement_reason = delivery_retirement_reason(&binding, fires_after).filter(|_| retired);
+    // A released fire's ordinal is taken again by the next one, whose record
+    // must not dedupe against this one.
+    let record_id = if released {
+        skip_record_entry_id(&binding.id, "dispatch")
+    } else {
+        record_entry_id(&binding.id, fires_after)
+    };
     let (function_id, args, filters) = fired::source_fields(&binding);
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
-        &record_entry_id(&binding.id, fires_after),
+        &record_id,
         fired::ObserverFired {
             observer_id: &binding.id,
             target: &binding.target.function_id,
@@ -347,8 +366,8 @@ pub async fn handle(
             filters,
             outcome: record_outcome,
             once: binding.lifecycle.once,
-            fires: fires_after,
-            retired: retiring,
+            fires: fires_after - u64::from(released),
+            retired,
             retirement_reason,
             scope: fired::event_state_watch(&event).0,
             key: fired::event_state_watch(&event).1,
@@ -361,7 +380,7 @@ pub async fn handle(
 
     Ok(match outcome {
         Ok(()) => DeliverResult::delivered(),
-        Err(e) => DeliverResult::stopped("dispatch", e),
+        Err(e) => DeliverResult::stopped("dispatch", e.error),
     })
 }
 
@@ -371,10 +390,35 @@ pub async fn handle(
 /// keeps delivery generic across state, database, queue, cron, timer, and
 /// functions that do not exist yet. Returns the best-known delivered
 /// payload alongside the outcome so the fired record can carry it.
-async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Result<(), String>) {
+async fn dispatch(
+    deps: &Deps,
+    binding: &Binding,
+    event: &Value,
+) -> (Value, Result<(), Undelivered>) {
     match binding.target.function_id.as_str() {
         crate::functions::SEND_ID => (event.clone(), wake_target(deps, binding, event).await),
-        other => call_target(deps, binding, other, project(binding, event)).await,
+        other => {
+            let (payload, outcome) =
+                call_target(deps, binding, other, project(binding, event)).await;
+            (payload, outcome.map_err(Undelivered::refused))
+        }
+    }
+}
+
+/// A dispatch that did not land: why, and whether trying again could land it
+/// (a dependency or state failure of a wake). A call target's failure never
+/// is: a call is not idempotent, and running it again could repeat its effect.
+struct Undelivered {
+    error: String,
+    transient: bool,
+}
+
+impl Undelivered {
+    fn refused(error: String) -> Self {
+        Self {
+            error,
+            transient: false,
+        }
     }
 }
 
@@ -416,11 +460,66 @@ pub(crate) fn inject_at(payload: Value, pointer: &str, value: Value) -> Value {
     root
 }
 
+/// A wake that could not be delivered gives its fire back instead of retiring:
+/// its owner is parked on it, and a retired binding leaves nothing to wake it.
+/// Still armed, the next fire, the boot replay or the deadline's wake-lost
+/// notice reaches the owner. When the fire cannot be given back — the record
+/// was retired meanwhile by a pass cleaning up a spent binding, its deadline
+/// or a removal, all of which leave a claimed fire's outcome to its delivery
+/// — the wake is lost, and the owner is told.
+async fn release_failed_wake(deps: &Deps, claimed: &Binding, error: &str) -> bool {
+    match deps.bindings().await.release_fire(claimed).await {
+        Ok(true) => true,
+        outcome => {
+            if let Err(store) = outcome {
+                tracing::warn!(binding = %claimed.id, error = %store, "undelivered wake kept its spent fire");
+            }
+            notify_undelivered(deps, claimed, error).await;
+            false
+        }
+    }
+}
+
+/// What the owner of a lost wake reads, once per binding (the entry id): the
+/// same doctrine as the claim and condition failure notices — the failure
+/// surfaces where the wake was expected.
+async fn notify_undelivered(deps: &Deps, binding: &Binding, error: &str) {
+    let watch = binding
+        .source_text()
+        .map(|source| format!(" (observing {source})"))
+        .unwrap_or_default();
+    let notice = format!(
+        "[notification] binding {}{watch} fired, but its wake could not be delivered (`{}`) \
+         and the binding is gone. Nothing else will wake this session for it: read what it \
+         watched now and decide the fallback (re-arm, report, or tear down).",
+        binding.id,
+        truncate_chars(error, 400)
+    );
+    if let Err(e) = crate::functions::send::inject(
+        deps,
+        &binding.owner.session_id,
+        AgentMessage::user_text(notice),
+        Some(&format!("e_undelivered_{}", binding.id)),
+        Some(&json!({ "notification": true, "binding": binding.id })),
+    )
+    .await
+    {
+        tracing::warn!(binding = %binding.id, error = %e, "undelivered-wake notice failed");
+    }
+}
+
+/// Attempts of a wake whose delivery hits a dependency or state failure, and
+/// the pause before the second (doubled before each later one).
+const WAKE_ATTEMPTS: u32 = 3;
+const WAKE_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// A wake: the event becomes a message in the owner's session. Routed through
 /// `send::inject` rather than an engine call to `harness::send` so it keeps the
 /// notification origin marker (clients must not render it as human-typed) and a
-/// deterministic entry id (a redelivered event appends nothing new).
-async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<(), String> {
+/// deterministic entry id (a redelivered event appends nothing new). That id
+/// is also what makes retrying a failed dependency safe: an attempt that got
+/// partway is completed, never duplicated.
+async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<(), Undelivered> {
     let session_id = binding
         .target
         .payload
@@ -431,16 +530,39 @@ async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<()
         .to_string();
     let message = AgentMessage::user_text(notification_text(binding, event));
     let entry_id = fire_entry_id(&binding.id, binding.fires);
-    crate::functions::send::inject(
-        deps,
-        &session_id,
-        message,
-        Some(&entry_id),
-        Some(&json!({ "notification": true, "binding": binding.id })),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+    let mut pause = WAKE_RETRY_PAUSE;
+    for attempt in 1.. {
+        match crate::functions::send::inject(
+            deps,
+            &session_id,
+            message.clone(),
+            Some(&entry_id),
+            Some(&json!({ "notification": true, "binding": binding.id })),
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(
+                error @ (crate::error::HarnessError::Dependency(_)
+                | crate::error::HarnessError::State(_)),
+            ) if attempt < WAKE_ATTEMPTS => {
+                tracing::warn!(binding = %binding.id, attempt, %error, "wake delivery failed; retrying");
+                tokio::time::sleep(pause).await;
+                pause *= 2;
+            }
+            Err(error) => {
+                return Err(Undelivered {
+                    transient: matches!(
+                        error,
+                        crate::error::HarnessError::Dependency(_)
+                            | crate::error::HarnessError::State(_)
+                    ),
+                    error: error.to_string(),
+                })
+            }
+        }
+    }
+    unreachable!("the wake attempts always return")
 }
 
 /// The frozen-capability gate for a call dispatch, factored pure for testing:
