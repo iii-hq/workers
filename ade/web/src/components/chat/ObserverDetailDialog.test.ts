@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
-import {
-  deliveryLabel,
-  lifecycleNote,
-  stateWatch,
-  summarizeObserver,
-} from './SessionObservers'
+import { deliveryLabel, lifecycleNote } from './ObserverDetailDialog'
 
 function observer(
   overrides: Partial<SessionObserverInfo>,
@@ -19,11 +14,6 @@ function observer(
   }
 }
 
-const watch = (scope: string | undefined, key?: string) => ({
-  ...(scope !== undefined ? { 'input.scope': { $eq: scope } } : {}),
-  ...(key !== undefined ? { 'input.key': { $eq: key } } : {}),
-})
-
 describe('deliveryLabel', () => {
   it('labels a wake and a call from the delivery data alone', () => {
     expect(deliveryLabel(observer({ delivery: { kind: 'notify' } }))).toBe(
@@ -34,68 +24,6 @@ describe('deliveryLabel', () => {
         observer({ delivery: { kind: 'call', functionId: 'state::set' } }),
       ),
     ).toBe('calls state::set')
-  })
-})
-
-describe('stateWatch', () => {
-  it('reads a keyed state observer, tolerating a missing scope', () => {
-    expect(stateWatch(observer({ filters: watch('run', 'done') }))).toEqual({
-      scope: 'run',
-      key: 'done',
-    })
-    expect(stateWatch(observer({ filters: watch(undefined, 'done') }))).toEqual(
-      {
-        scope: undefined,
-        key: 'done',
-      },
-    )
-  })
-
-  it('is null for keyless filters and other functions', () => {
-    expect(stateWatch(observer({ filters: watch('run') }))).toBeNull()
-    expect(
-      stateWatch(
-        observer({
-          functionId: 'cron::on-tick',
-          filters: watch(undefined, 'irrelevant'),
-        }),
-      ),
-    ).toBeNull()
-  })
-})
-
-describe('summarizeObserver', () => {
-  it('renders an UNKNOWN future function generically', () => {
-    // The compatibility requirement: a function that does not exist yet gets
-    // the same treatment as the known ones — scalar args, no interpretation,
-    // no crash.
-    expect(
-      summarizeObserver(
-        observer({
-          functionId: 'mqtt::on-message',
-          args: { topic: 'sensors/#', qos: 1, retained: true },
-        }),
-      ),
-    ).toBe('topic: sensors/# · qos: 1 · retained: true')
-  })
-
-  it('caps at three entries, skips nested args, and reads filters', () => {
-    expect(
-      summarizeObserver(
-        observer({
-          args: { a: 1, nested: { deep: true }, b: 2 },
-          filters: watch('run', 'done'),
-        }),
-      ),
-    ).toBe('a: 1 · b: 2 · input.scope = run')
-  })
-
-  it('is null without args or filters', () => {
-    expect(summarizeObserver(observer({}))).toBeNull()
-    expect(summarizeObserver(observer({ args: {} }))).toBeNull()
-    expect(
-      summarizeObserver(observer({ args: { only: { nested: 1 } } })),
-    ).toBeNull()
   })
 })
 

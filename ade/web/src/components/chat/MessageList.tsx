@@ -1,9 +1,12 @@
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ChevronDown } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   type CSSProperties,
   forwardRef,
   type ReactNode,
+  type Ref,
+  type SyntheticEvent,
   type TouchEvent,
   type UIEvent,
   useCallback,
@@ -78,9 +81,29 @@ import {
   TAIL_GLIDE_SETTLE_DISTANCE_PX,
   TAIL_REARM_DISTANCE_PX,
   type TailScrollState,
+  tailDistanceFromBottom,
   tailScrollTarget,
   tailStateAfterScroll,
 } from './tail-scroll'
+import {
+  agentMovedPast,
+  estimateRowSlot,
+  type FlatTimelineRow,
+  flattenTimelineRows,
+  isHistoryPrepend,
+  isLiveRow,
+  isProseRow,
+  measureRowSlot,
+  observeNonEmptyRect,
+  rowIndexByEntryId,
+  rowSlot,
+  rowsWithSpacers,
+  topLevelRowKey,
+  useSelectedRowKeys,
+  WINDOW_MIN_ROWS,
+  WINDOW_OVERSCAN_ROWS,
+  windowedRowIndexes,
+} from './transcript-window'
 import type { TurnVisualPhase } from './turn-visual-state'
 import './chat-motion.css'
 import './tool-group.css'
@@ -352,6 +375,12 @@ interface LiveTimelineRowProps {
   animate: boolean
   staggerIndex?: number
   className?: string
+  /** A transcript-level row: how the window measures it and finds its index. */
+  rowRef?: Ref<HTMLDivElement>
+  rowIndex?: number
+  /** Sibling spacing, from the row model: the neighbor may not be mounted. */
+  beforeGroup?: boolean
+  afterProse?: boolean
 }
 
 function LiveTimelineRow({
@@ -360,6 +389,10 @@ function LiveTimelineRow({
   animate,
   staggerIndex = 0,
   className,
+  rowRef,
+  rowIndex,
+  beforeGroup,
+  afterProse,
 }: LiveTimelineRowProps) {
   const [present, setPresent] = useState(!animate)
 
@@ -374,6 +407,10 @@ function LiveTimelineRow({
 
   return (
     <div
+      ref={rowRef}
+      data-index={rowIndex}
+      data-before-group={beforeGroup ? '' : undefined}
+      data-after-prose={afterProse ? '' : undefined}
       data-message-row={messageRow}
       data-presence={present ? 'present' : 'entering'}
       className={cn('chat-live-row', className)}
@@ -661,6 +698,204 @@ export function MessageList({
   // ConversationsProvider; the empty state falls back to `ready` there.
   const ctx = useConversationsCtxOptional()
 
+  /* Windowing. Only the rows around the viewport are mounted, in normal flow,
+     with a spacer standing in for each run of the others, so tail following
+     and prepend restoration keep reading real DOM geometry. A row that leaves
+     the window loses its local state, so a row the reader has clicked or
+     focused stays mounted for good: that keeps every card's own state,
+     including worker UI the host cannot lift, without the card knowing. Live
+     rows, a landing target and the selected rows stay while they last. No
+     ResizeObserver means no layout to window against (SSR, jsdom), so every
+     row renders. */
+  const windowed = typeof ResizeObserver !== 'undefined'
+  const knownRowKeysRef = useRef<ReadonlySet<string>>(new Set())
+  const flatRows = useMemo(
+    () =>
+      flattenTimelineRows(rows, settlingThoughtIds, knownRowKeysRef.current),
+    [rows, settlingThoughtIds],
+  )
+  useLayoutEffect(() => {
+    knownRowKeysRef.current = new Set(flatRows.map((flat) => flat.key))
+  }, [flatRows])
+  const rowIndexById = useMemo(() => rowIndexByEntryId(flatRows), [flatRows])
+  // Placeholders a display renderer keeps visible in a folded batch (a
+  // sub-agent card) are fetched when their page arrives, not when their row
+  // mounts: a windowed row mounts as it scrolls in, and a card landing then
+  // pushes the transcript down under the reader. Once per id; the store
+  // dedupes reads still in flight, and opening a card is the retry.
+  const requestedDisplayIdsRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (!onLoadActivityEntries) return
+    const display = new Map<string, boolean>()
+    const isDisplay = (functionId: string) => {
+      let claimed = display.get(functionId)
+      if (claimed === undefined) {
+        claimed = renderers.some(
+          (renderer) =>
+            renderer.isMatch(functionId) && renderer.metadata?.display === true,
+        )
+        display.set(functionId, claimed)
+      }
+      return claimed
+    }
+    const calls = flatRows.flatMap((flat) =>
+      flat.kind === 'activity-group'
+        ? flat.row.items.flatMap((item) =>
+            item.kind === 'function-call' &&
+            item.message.unloaded &&
+            isDisplay(item.message.functionId)
+              ? [item.message]
+              : [],
+          )
+        : [],
+    )
+    const ids = unloadedEntryIds(calls).filter(
+      (id) => !requestedDisplayIdsRef.current.has(id),
+    )
+    if (ids.length === 0) return
+    for (const id of ids) requestedDisplayIdsRef.current.add(id)
+    void onLoadActivityEntries(ids)
+  }, [flatRows, renderers, onLoadActivityEntries])
+  const [stickyRowKeys, setStickyRowKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const pinRow = useCallback((key: string | undefined) => {
+    if (!key) return
+    setStickyRowKeys((current) =>
+      current.has(key) ? current : new Set(current).add(key),
+    )
+  }, [])
+  const pinInteractedRow = useCallback(
+    (event: SyntheticEvent<HTMLElement>) => {
+      pinRow(topLevelRowKey(event.target as Element))
+    },
+    [pinRow],
+  )
+  const selectedRows = useSelectedRowKeys(contentRef)
+  const pinnedRowIndexes = useMemo(() => {
+    const pinned = new Set<number>()
+    flatRows.forEach((flat, index) => {
+      if (isLiveRow(flat)) pinned.add(index)
+    })
+    for (const key of stickyRowKeys) {
+      const index = rowIndexById.get(key)
+      if (index !== undefined) pinned.add(index)
+    }
+    // Pinned in the commit the request arrives, so the landing effect below
+    // finds its row in the DOM and a collapsed batch reveals it in that render.
+    const focusIndex = focusMessageId
+      ? rowIndexById.get(focusMessageId)
+      : undefined
+    if (focusIndex !== undefined) pinned.add(focusIndex)
+    if (selectedRows) {
+      const anchor = rowIndexById.get(selectedRows.anchor)
+      const focus = rowIndexById.get(selectedRows.focus)
+      if (anchor !== undefined && focus !== undefined) {
+        const last = Math.max(anchor, focus)
+        for (let index = Math.min(anchor, focus); index <= last; index++) {
+          pinned.add(index)
+        }
+      }
+    }
+    return pinned
+  }, [flatRows, focusMessageId, rowIndexById, selectedRows, stickyRowKeys])
+  const prevFirstIdRef = useRef<string | undefined>(undefined)
+  const renderedRowKeysRef = useRef<readonly string[]>([])
+  // Only rows already mounted: one first mounted in this commit would add its
+  // real height to the delta the prepend restoration reads, and then be
+  // corrected a second time when it is measured. A short chat mounts everything
+  // anyway, so it only needs this for a paused reader, the one who gets that
+  // correction.
+  const frozenRowIndexes =
+    isHistoryPrepend(prevFirstIdRef.current, messages) &&
+    (tailStateRef.current === 'paused' || flatRows.length > WINDOW_MIN_ROWS)
+      ? flatRows.flatMap((flat, index) =>
+          renderedRowKeysRef.current.includes(flat.key) ? [index] : [],
+        )
+      : null
+  const getRowKey = useCallback(
+    (index: number) => flatRows[index]?.key ?? index,
+    [flatRows],
+  )
+  const virtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
+    enabled: windowed,
+    count: flatRows.length,
+    getScrollElement: () => containerRef.current,
+    getItemKey: getRowKey,
+    estimateSize: estimateRowSlot,
+    overscan: WINDOW_OVERSCAN_ROWS,
+    initialRect: { width: 0, height: windowed ? window.innerHeight : 0 },
+    observeElementRect: observeNonEmptyRect,
+    measureElement: measureRowSlot,
+    // Recorded so a correction is not read as the reader scrolling up.
+    scrollToFn: (offset, { adjustments = 0 }) => {
+      const container = containerRef.current
+      if (!container) return
+      container.scrollTop = offset + adjustments
+      lastScrollTopRef.current = container.scrollTop
+    },
+    rangeExtractor: (range) =>
+      windowedRowIndexes(range, {
+        opening: tailState === 'initializing',
+        frozen: frozenRowIndexes,
+        pinned: pinnedRowIndexes,
+      }),
+  })
+  // Keep what a paused reader sees still when a row above them changes height.
+  // While following, the tail loop owns the offset. Live rects, because
+  // `item.start` is stale until the next render while each correction in this
+  // pass has already moved the offset. A row straddling the top edge only counts
+  // on its first measurement: once known, its growth happens below the part in
+  // view.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+    item,
+    delta,
+    instance,
+  ) => {
+    if (tailStateRef.current !== 'paused') return false
+    const rect = instance.elementsCache.get(item.key)?.getBoundingClientRect()
+    const top = instance.scrollElement?.getBoundingClientRect().top
+    if (!rect || top === undefined) return false
+    return instance.itemSizeCache.has(item.key)
+      ? rect.bottom - delta <= top
+      : rect.top < top
+  }
+  const virtualItems = windowed ? virtualizer.getVirtualItems() : null
+  useLayoutEffect(() => {
+    renderedRowKeysRef.current =
+      virtualItems?.map((item) => String(item.key)) ?? []
+  })
+  // A hidden tab runs no ResizeObserver: a row growing there would leave the
+  // window with the height it had when it mounted.
+  useLayoutEffect(() => {
+    if (!windowed || !document.hidden) return
+    for (const node of virtualizer.elementsCache.values()) {
+      if (!node.isConnected) continue
+      virtualizer.resizeItem(
+        virtualizer.indexFromElement(node),
+        rowSlot(node, node.offsetHeight),
+      )
+    }
+  })
+  // What the reader chose for a batch, kept here to outlive its time in the
+  // window. Nothing else is remembered: a batch left alone shows what a reload
+  // would show.
+  const expandedGroupsRef = useRef(new Map<string, boolean>())
+  /** Whether the reader is in this element, so it must not change under them. */
+  const readerIsIn = useCallback((element: HTMLElement | null) => {
+    const container = containerRef.current
+    if (!element || !container) return false
+    if (element.contains(document.activeElement)) return true
+    const selection = document.getSelection()
+    if (selection && !selection.isCollapsed) {
+      if (selection.getRangeAt(0).intersectsNode(element)) return true
+    }
+    if (tailStateRef.current !== 'paused') return false
+    const box = container.getBoundingClientRect()
+    const rect = element.getBoundingClientRect()
+    return rect.bottom > box.top && rect.top < box.bottom
+  }, [])
+
   const transitionTailState = useCallback((next: TailScrollState) => {
     if (tailStateRef.current === next) return
     tailStateRef.current = next
@@ -675,15 +910,68 @@ export function MessageList({
     lastAnimationTimeRef.current = null
   }, [])
 
+  /** Whether the write moved the window, so a commit with new rows is coming. */
   const writeScrollTop = useCallback(
     (container: HTMLElement, scrollTop: number) => {
       container.scrollTop = scrollTop
       // Programmatic scroll events arrive later. Recording the clamped value
       // now keeps them from looking like manual upward movement.
       lastScrollTopRef.current = container.scrollTop
+      // The virtualizer would only hear of this from that later event, and
+      // until then a row resize would write back from the stale offset. Told
+      // now, it reads that event as a no-op, so the window moves from here.
+      const before = virtualizer.range
+      virtualizer.scrollOffset = container.scrollTop
+      const after = virtualizer.calculateRange()
+      const moved =
+        after?.startIndex !== before?.startIndex ||
+        after?.endIndex !== before?.endIndex
+      if (moved) virtualizer.options.onChange?.(virtualizer, false)
+      return moved
     },
-    [],
+    [virtualizer],
   )
+
+  /**
+   * Center a mounted row. A far or upward landing jumps: the smooth path would
+   * cross rows mounting above it, each one correcting the offset and cancelling
+   * the glide.
+   */
+  const landingRowRef = useRef<HTMLElement | null>(null)
+  const scrollRowToCenter = useCallback(
+    (container: HTMLElement, node: HTMLElement, settling = false) => {
+      const containerRect = container.getBoundingClientRect()
+      const nodeRect = node.getBoundingClientRect()
+      const centeredTop =
+        container.scrollTop +
+        nodeRect.top -
+        containerRect.top -
+        (container.clientHeight - nodeRect.height) / 2
+      const target = Math.max(
+        0,
+        Math.min(tailScrollTarget(container), centeredTop),
+      )
+      const jump =
+        settling ||
+        reducedMotionRef.current ||
+        target < container.scrollTop ||
+        target - container.scrollTop > container.clientHeight * 2
+      if (!jump) {
+        container.scrollTo({ top: target, behavior: 'smooth' })
+      } else if (writeScrollTop(container, target) && !settling) {
+        landingRowRef.current = node
+      }
+    },
+    [writeScrollTop],
+  )
+  // The rows around a jump mount in the next commit, and a tall one above the
+  // target pushes it down without counting as above the viewport.
+  useLayoutEffect(() => {
+    const node = landingRowRef.current
+    const container = containerRef.current
+    landingRowRef.current = null
+    if (node && container) scrollRowToCenter(container, node, true)
+  })
 
   /**
    * One retargetable animation follows the live tail. ResizeObserver callbacks
@@ -725,6 +1013,13 @@ export function MessageList({
         currentContainer,
         nextTailScrollTop(current, nextTarget, elapsed),
       )
+      // The browser rounds the offset, so a step under a pixel lands nowhere:
+      // the glide would spin short of the tail, every frame, until new content.
+      if (currentContainer.scrollTop === current) {
+        writeScrollTop(currentContainer, nextTarget)
+        lastAnimationTimeRef.current = null
+        return
+      }
       animationFrameRef.current = requestAnimationFrame(step)
     }
 
@@ -824,7 +1119,11 @@ export function MessageList({
     const content = contentRef.current
     if (!container || !content) return
 
+    let previousTarget = tailScrollTarget(container)
     const observer = new ResizeObserver(() => {
+      const target = tailScrollTarget(container)
+      const growth = Math.max(0, target - previousTarget)
+      previousTarget = target
       noteOpeningLayout()
       if (tailStateRef.current === 'paused') return
       if (!didInitialScrollRef.current || openingRef.current) {
@@ -832,7 +1131,17 @@ export function MessageList({
         // cards, fonts). Keep the tail pinned with direct writes: nothing
         // glides while nothing is visible, and the reveal shows the settled
         // bottom, never a scroll in progress.
-        writeScrollTop(container, tailScrollTarget(container))
+        writeScrollTop(container, target)
+        return
+      }
+      // Moving focus or find-in-page scrolls up with no gesture to pause on, and
+      // then rows mounting there change the height. Far from the tail by more
+      // than this growth, with no glide of ours running, the reader went there.
+      if (
+        animationFrameRef.current === null &&
+        tailDistanceFromBottom(container) - growth > container.clientHeight
+      ) {
+        transitionTailState('paused')
         return
       }
       scheduleTailFollow()
@@ -844,6 +1153,7 @@ export function MessageList({
     hasScrollableContent,
     noteOpeningLayout,
     scheduleTailFollow,
+    transitionTailState,
     writeScrollTop,
   ])
 
@@ -924,7 +1234,6 @@ export function MessageList({
      is requested before the glide has moved a pixel, and the whole history
      cascades in on a short first page. `didInitialScrollRef` is left alone,
      this is not the open. */
-  const prevFirstIdRef = useRef<string | undefined>(undefined)
   const prevMetricsRef = useRef<PrependScrollMetrics | null>(null)
   const recordScrollMetrics = useCallback((container: HTMLElement) => {
     prevMetricsRef.current = {
@@ -939,12 +1248,7 @@ export function MessageList({
     prevFirstIdRef.current = firstId
     if (!container) return
     const previous = prevMetricsRef.current
-    const prepended =
-      previous !== null &&
-      prevFirstId !== undefined &&
-      firstId !== prevFirstId &&
-      messages.some((m) => m.id === prevFirstId)
-    if (prepended) {
+    if (previous !== null && isHistoryPrepend(prevFirstId, messages)) {
       writeScrollTop(
         container,
         scrollTopAfterPrepend(
@@ -1043,9 +1347,17 @@ export function MessageList({
   const handleJumpToLatest = useCallback(() => {
     didInitialScrollRef.current = true
     transitionTailState('following')
-    containerRef.current?.focus({ preventScroll: true })
+    const container = containerRef.current
+    container?.focus({ preventScroll: true })
+    // A far jump skips the rows in between instead of mounting each on the way.
+    if (
+      container &&
+      tailDistanceFromBottom(container) > container.clientHeight * 2
+    ) {
+      writeScrollTop(container, tailScrollTarget(container))
+    }
     scheduleTailFollow()
-  }, [scheduleTailFollow, transitionTailState])
+  }, [scheduleTailFollow, transitionTailState, writeScrollTop])
 
   const handleJumpToAction = useCallback(() => {
     const container = containerRef.current
@@ -1068,20 +1380,7 @@ export function MessageList({
     // no longer reads direction, so pause here. Landing on the tail (a card
     // at the very end) re-arms following from the scroll event itself.
     transitionTailState('paused')
-    const containerRect = container.getBoundingClientRect()
-    const approvalRect = approval.getBoundingClientRect()
-    const centeredTop =
-      container.scrollTop +
-      approvalRect.top -
-      containerRect.top -
-      (container.clientHeight - approvalRect.height) / 2
-    const target = Math.max(
-      0,
-      Math.min(tailScrollTarget(container), centeredTop),
-    )
-
-    if (reducedMotionRef.current) writeScrollTop(container, target)
-    else container.scrollTo({ top: target, behavior: 'smooth' })
+    scrollRowToCenter(container, approval)
 
     const action = approval.querySelector<HTMLElement>(
       '[data-approval-actions] button:not([disabled])',
@@ -1092,8 +1391,8 @@ export function MessageList({
     cancelTailAnimation,
     handleJumpToLatest,
     newestPendingApprovalId,
+    scrollRowToCenter,
     transitionTailState,
-    writeScrollTop,
   ])
 
   /* External landing (trace → "go to message"): center the requested row
@@ -1126,19 +1425,9 @@ export function MessageList({
     cancelTailAnimation()
     didInitialScrollRef.current = true
     transitionTailState('paused')
-    const containerRect = container.getBoundingClientRect()
-    const nodeRect = node.getBoundingClientRect()
-    const centeredTop =
-      container.scrollTop +
-      nodeRect.top -
-      containerRect.top -
-      (container.clientHeight - nodeRect.height) / 2
-    const target = Math.max(
-      0,
-      Math.min(tailScrollTarget(container), centeredTop),
-    )
-    if (reducedMotionRef.current) writeScrollTop(container, target)
-    else container.scrollTo({ top: target, behavior: 'smooth' })
+    // The request is handed back below; the row must outlive it to be landed on.
+    pinRow(topLevelRowKey(node))
+    scrollRowToCenter(container, node)
     if (typeof node.animate === 'function') {
       node.animate(
         [
@@ -1157,8 +1446,9 @@ export function MessageList({
     messages,
     onFocusMessageHandled,
     cancelTailAnimation,
+    pinRow,
+    scrollRowToCenter,
     transitionTailState,
-    writeScrollTop,
   ])
 
   if (messages.length === 0 && !header && !isThinking && transcriptHydrated) {
@@ -1179,6 +1469,147 @@ export function MessageList({
     density === 'dock'
       ? 'px-3 py-5 @2xl:px-4 @2xl:py-6'
       : 'px-3 py-5 @2xl:px-6 @2xl:py-7 @5xl:px-9 @5xl:py-8'
+
+  const measureRow = windowed ? virtualizer.measureElement : undefined
+  const renderFlatRow = (flat: FlatTimelineRow, index: number) => {
+    const beforeGroup =
+      isProseRow(flat) && flatRows[index + 1]?.kind === 'activity-group'
+    if (flat.kind === 'activity-group') {
+      return (
+        <LiveTimelineRow
+          key={flat.key}
+          rowRef={measureRow}
+          rowIndex={index}
+          afterProse={isProseRow(flatRows[index - 1])}
+          messageRow={flat.key}
+          // Activity children own their stagger; animating the whole
+          // group too would double-transform rich worker surfaces.
+          animate={false}
+          staggerIndex={flat.staggerIndex}
+        >
+          <FunctionCallGroup
+            row={flat.row}
+            renderers={renderers}
+            registrations={registrations}
+            reducedMotion={reducedMotion}
+            livePhaseChildKeys={livePresentationKeys}
+            groupKey={flat.key}
+            expandedGroups={expandedGroupsRef.current}
+            agentMovedOn={agentMovedPast(
+              flatRows,
+              index,
+              turnVisualPhase !== 'idle',
+            )}
+            readerIsIn={readerIsIn}
+            defaultOpenCalls={defaultOpenCalls}
+            focusMessageId={focusMessageId}
+            onLoadActivityEntries={onLoadActivityEntries}
+            onResolveApproval={onResolveApproval}
+            onAlwaysAllow={onAlwaysAllow}
+            onResolveFilesystemAccess={onResolveFilesystemAccess}
+            onManageFilesystemAccess={onManageFilesystemAccess}
+            workingDir={workingDir}
+            agentName={agentName}
+          />
+        </LiveTimelineRow>
+      )
+    }
+
+    if (flat.kind === 'summary') {
+      const summary = flat.message
+      const calls = fcallsByAssistant.get(summary.id)
+      const copyText =
+        summary.content || calls?.length
+          ? () => assistantCopyText(summary.content, calls ?? [], redactFor)
+          : undefined
+      return (
+        <LiveTimelineRow
+          key={flat.key}
+          rowRef={measureRow}
+          rowIndex={index}
+          beforeGroup={beforeGroup}
+          messageRow={flat.key}
+          animate={!reducedMotion && livePresentationKeys.has(summary.id)}
+          staggerIndex={flat.staggerIndex}
+        >
+          <Message
+            message={summary}
+            copyText={copyText}
+            agentName={agentName}
+            showHeader={headerIds.has(summary.id)}
+            turnDurationMs={turnDurationMs(messages, summary.id)}
+            changedFiles={changedFilesFromCalls(calls ?? [])}
+            revealOnMount={
+              !reducedMotion && livePresentationKeys.has(summary.id)
+            }
+          />
+        </LiveTimelineRow>
+      )
+    }
+
+    const m = flat.message
+    // Assistant turns copy their prose plus the calls that follow them;
+    // the thunk defers building that string until the copy click. Left
+    // undefined when the turn has nothing to copy (no prose, no calls)
+    // so the header shows no copy affordance.
+    const calls =
+      m.role === 'assistant' ? fcallsByAssistant.get(m.id) : undefined
+    const copyText =
+      m.role === 'assistant' && (m.content || calls?.length)
+        ? () => assistantCopyText(m.content, calls ?? [], redactFor)
+        : undefined
+    return (
+      <LiveTimelineRow
+        key={flat.key}
+        rowRef={measureRow}
+        rowIndex={index}
+        beforeGroup={beforeGroup}
+        messageRow={flat.key}
+        animate={
+          !reducedMotion &&
+          livePresentationKeys.has(m.id) &&
+          // These live surfaces own their internal reveal; wrapping
+          // them in a second translate/fade would compound motion.
+          m.role !== 'thought' &&
+          !(m.role === 'assistant' && m.streaming)
+        }
+        staggerIndex={flat.staggerIndex}
+        className={cn(
+          m.role === 'thought' && 'chat-thought-row',
+          m.role === 'thought' && !m.streaming && 'chat-thought-row-settling',
+        )}
+      >
+        <Message
+          message={m}
+          spawnContext={spawnContext}
+          agentName={agentName}
+          showHeader={m.role === 'assistant' ? headerIds.has(m.id) : undefined}
+          sessionId={sessionId}
+          copyText={copyText}
+          turnDurationMs={
+            m.role === 'assistant' ? turnDurationMs(messages, m.id) : null
+          }
+          changedFiles={
+            m.role === 'assistant'
+              ? changedFilesFromCalls(calls ?? [])
+              : undefined
+          }
+          revealOnMount={
+            !reducedMotion &&
+            m.role === 'assistant' &&
+            livePresentationKeys.has(m.id)
+          }
+          defaultOpenCalls={defaultOpenCalls}
+          onResolveApproval={onResolveApproval}
+          onAlwaysAllow={onAlwaysAllow}
+          onResolveFilesystemAccess={onResolveFilesystemAccess}
+          onManageFilesystemAccess={onManageFilesystemAccess}
+          workingDir={workingDir}
+          registration={registrations.get(m.id)}
+        />
+      </LiveTimelineRow>
+    )
+  }
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -1211,6 +1642,8 @@ export function MessageList({
           listPad,
         )}
         onScroll={handleScroll}
+        onClickCapture={pinInteractedRow}
+        onFocusCapture={pinInteractedRow}
         onClick={(event) => {
           if (event.defaultPrevented) return
           const zoom = imageZoomTarget(event.target)
@@ -1253,145 +1686,14 @@ export function MessageList({
               onLoadOlder={onLoadOlder}
             />
           ) : null}
-          {rows.flatMap((row, rowIndex) => {
-            if (row.kind === 'activity-group') {
-              const activityRow = (
-                <LiveTimelineRow
-                  key={row.id}
-                  messageRow={row.id}
-                  // Activity children own their stagger; animating the whole
-                  // group too would double-transform rich worker surfaces.
-                  animate={false}
-                  staggerIndex={rowIndex}
-                >
-                  <FunctionCallGroup
-                    row={row}
-                    renderers={renderers}
-                    registrations={registrations}
-                    reducedMotion={reducedMotion}
-                    livePhaseChildKeys={livePresentationKeys}
-                    defaultOpenCalls={defaultOpenCalls}
-                    focusMessageId={focusMessageId}
-                    onLoadActivityEntries={onLoadActivityEntries}
-                    onResolveApproval={onResolveApproval}
-                    onAlwaysAllow={onAlwaysAllow}
-                    onResolveFilesystemAccess={onResolveFilesystemAccess}
-                    onManageFilesystemAccess={onManageFilesystemAccess}
-                    workingDir={workingDir}
-                    agentName={agentName}
-                  />
-                </LiveTimelineRow>
+          {virtualItems
+            ? rowsWithSpacers(
+                virtualItems,
+                virtualizer.getTotalSize(),
+                (index) => renderFlatRow(flatRows[index], index),
+                (key, slot) => <TranscriptSpacer key={key} slot={slot} />,
               )
-              if (!row.summary) return [activityRow]
-
-              const summary = row.summary
-              const calls = fcallsByAssistant.get(summary.id)
-              const copyText =
-                summary.content || calls?.length
-                  ? () =>
-                      assistantCopyText(summary.content, calls ?? [], redactFor)
-                  : undefined
-              // Summaries remain direct children of the transcript stack.
-              // If late protocol data reclassifies existing prose as a phase
-              // summary, the stable key keeps its Message instance alive.
-              return [
-                activityRow,
-                <LiveTimelineRow
-                  key={summary.id}
-                  messageRow={summary.id}
-                  animate={
-                    !reducedMotion && livePresentationKeys.has(summary.id)
-                  }
-                  staggerIndex={rowIndex + 1}
-                >
-                  <Message
-                    message={summary}
-                    copyText={copyText}
-                    agentName={agentName}
-                    showHeader={headerIds.has(summary.id)}
-                    turnDurationMs={turnDurationMs(messages, summary.id)}
-                    changedFiles={changedFilesFromCalls(calls ?? [])}
-                    revealOnMount={
-                      !reducedMotion && livePresentationKeys.has(summary.id)
-                    }
-                  />
-                </LiveTimelineRow>,
-              ]
-            }
-
-            const m = row.message
-            if (
-              m.role === 'thought' &&
-              !m.streaming &&
-              !settlingThoughtIds.has(m.id)
-            ) {
-              return []
-            }
-            // Assistant turns copy their prose plus the calls that follow them;
-            // the thunk defers building that string until the copy click. Left
-            // undefined when the turn has nothing to copy (no prose, no calls)
-            // so the header shows no copy affordance.
-            const calls =
-              m.role === 'assistant' ? fcallsByAssistant.get(m.id) : undefined
-            const copyText =
-              m.role === 'assistant' && (m.content || calls?.length)
-                ? () => assistantCopyText(m.content, calls ?? [], redactFor)
-                : undefined
-            return [
-              <LiveTimelineRow
-                key={m.id}
-                messageRow={m.id}
-                animate={
-                  !reducedMotion &&
-                  livePresentationKeys.has(m.id) &&
-                  // These live surfaces own their internal reveal; wrapping
-                  // them in a second translate/fade would compound motion.
-                  m.role !== 'thought' &&
-                  !(m.role === 'assistant' && m.streaming)
-                }
-                staggerIndex={rowIndex}
-                className={cn(
-                  m.role === 'thought' && 'chat-thought-row',
-                  m.role === 'thought' &&
-                    !m.streaming &&
-                    'chat-thought-row-settling',
-                )}
-              >
-                <Message
-                  message={m}
-                  spawnContext={spawnContext}
-                  agentName={agentName}
-                  showHeader={
-                    m.role === 'assistant' ? headerIds.has(m.id) : undefined
-                  }
-                  sessionId={sessionId}
-                  copyText={copyText}
-                  turnDurationMs={
-                    m.role === 'assistant'
-                      ? turnDurationMs(messages, m.id)
-                      : null
-                  }
-                  changedFiles={
-                    m.role === 'assistant'
-                      ? changedFilesFromCalls(calls ?? [])
-                      : undefined
-                  }
-                  revealOnMount={
-                    !reducedMotion &&
-                    m.role === 'assistant' &&
-                    livePresentationKeys.has(m.id)
-                  }
-                  defaultOpenCalls={defaultOpenCalls}
-                  onResolveApproval={onResolveApproval}
-                  onAlwaysAllow={onAlwaysAllow}
-                  onResolveFilesystemAccess={onResolveFilesystemAccess}
-                  onManageFilesystemAccess={onManageFilesystemAccess}
-                  workingDir={workingDir}
-                  registration={registrations.get(m.id)}
-                />
-              </LiveTimelineRow>,
-            ]
-          })}
+            : flatRows.map(renderFlatRow)}
           {waitingMounted ? (
             <div
               className="chat-waiting-slot"
@@ -1449,6 +1751,17 @@ export function MessageList({
         </Button>
       ) : null}
     </div>
+  )
+}
+
+/** Stands in for unmounted rows; a flex child, so it brings one gap itself. */
+function TranscriptSpacer({ slot }: { slot: number }) {
+  return (
+    <div
+      aria-hidden="true"
+      data-transcript-spacer=""
+      style={{ height: `max(0px, calc(${slot}px - var(--chat-stack-gap)))` }}
+    />
   )
 }
 
@@ -1519,6 +1832,13 @@ interface FunctionCallGroupProps {
   registrations: ReadonlyMap<string, ObserverRegistration>
   reducedMotion: boolean
   livePhaseChildKeys: ReadonlySet<string>
+  /** This row's key in the window, stable as older calls merge into it. */
+  groupKey: string
+  /** The reader's choices by group key, outliving this group's mount. */
+  expandedGroups: Map<string, boolean>
+  /** The turn ended, or something other than a thought came after this batch. */
+  agentMovedOn: boolean
+  readerIsIn: (element: HTMLElement | null) => boolean
   defaultOpenCalls?: boolean
   onResolveApproval?: MessageListProps['onResolveApproval']
   onAlwaysAllow?: MessageListProps['onAlwaysAllow']
@@ -1605,10 +1925,10 @@ function useDwelledActivityKeys(
 
 /**
  * A sequence of agent calls reads as one phase: one card whose header counts
- * the tools and whose rows are the calls. A batch seen live opens in full;
- * a settled batch keeps the latest call plus any rich-display, approval, or
- * live call visible, and the header chevron restores every call in
- * chronological order. The assistant's intermediate prose stays normal prose
+ * the tools and whose rows are the calls. A batch seen live opens in full
+ * until the agent moves past it; a settled batch keeps the latest call plus any
+ * rich-display, approval, or live call visible, and the header chevron restores
+ * every call in chronological order. The assistant's intermediate prose stays normal prose
  * after the card and doubles as the batch summary.
  */
 function FunctionCallGroup({
@@ -1617,6 +1937,10 @@ function FunctionCallGroup({
   registrations,
   reducedMotion,
   livePhaseChildKeys,
+  groupKey,
+  expandedGroups,
+  agentMovedOn,
+  readerIsIn,
   defaultOpenCalls,
   onResolveApproval,
   onAlwaysAllow,
@@ -1628,9 +1952,10 @@ function FunctionCallGroup({
   onLoadActivityEntries,
 }: FunctionCallGroupProps) {
   // A batch observed live opens in full: its rows arrive one by one and the
-  // reader watches them settle. A settled batch from the transcript folds to
-  // its latest call (plus anything a renderer keeps on display) behind the
-  // header, where "Called 11 functions" and a chevron say what is there.
+  // reader watches them settle. Once the agent moves past it, and for a settled
+  // batch from the transcript, it folds to its latest call (plus anything a
+  // renderer keeps on display) behind the header, where "Called 11 functions"
+  // and a chevron say what is there.
   const live = row.items.some(
     (item) =>
       item.kind === 'function-call' &&
@@ -1643,7 +1968,23 @@ function FunctionCallGroup({
       !item.message.pendingApproval &&
       isErrorOutput(item.message.output),
   ).length
-  const [expanded, setExpanded] = useState(!!defaultOpenCalls || live)
+  // Mounting settled means the window brought it back or history landed:
+  // nothing in it is arriving, so nothing in it animates in.
+  const [mountedSettled] = useState(!live)
+  const [expanded, setExpanded] = useState(
+    () => expandedGroups.get(groupKey) ?? (!!defaultOpenCalls || live),
+  )
+  // A batch that ran live folds when it is over, as a reload would show it,
+  // unless the reader chose or is in it. Read once, when it finishes. One that
+  // mounted settled has nothing to fold: if open, a landing just revealed it.
+  const sectionRef = useRef<HTMLElement>(null)
+  const over = !live && agentMovedOn
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fires when the batch finishes; the rest is read at that moment.
+  useLayoutEffect(() => {
+    if (!over || mountedSettled || defaultOpenCalls) return
+    if (expandedGroups.has(groupKey)) return
+    if (!readerIsIn(sectionRef.current)) setExpanded(false)
+  }, [over])
   const contentId = useId()
   // A renderer that keeps its calls visible while the phase is collapsed
   // (`metadata.display`) is decided by function id alone for a placeholder:
@@ -1696,10 +2037,9 @@ function FunctionCallGroup({
   }
   const hiddenCount = row.items.length - collapsedItems.length
   const canCollapse = hiddenCount > 0
-  // Placeholders the collapsed view shows anyway (a display renderer claims
-  // them) are fetched as soon as they appear — a handful per session. The
-  // rest wait for their card to open or "show all". Automatic requests run
-  // once per id in this group; the store dedupes across groups and in flight.
+  // Placeholders the collapsed view shows anyway are fetched by MessageList
+  // when their page arrives. The rest wait for their card to open or "show
+  // all"; the store dedupes ids still in flight.
   const unloadedCalls = row.items.flatMap((item) =>
     item.kind === 'function-call' && item.message.unloaded
       ? [item.message]
@@ -1722,20 +2062,10 @@ function FunctionCallGroup({
     for (const id of ids) requestedEntryIdsRef.current.add(id)
     return onLoadActivityEntries(ids)
   }
-  const displayPlaceholderSignature = unloadedCalls
-    .filter((call) => hasDisplayRenderer(call.functionId))
-    .map((call) => call.id)
-    .join('\u0000')
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the primitive signature is the placeholder set's identity; the request helper reads current props.
-  useEffect(() => {
-    if (!displayPlaceholderSignature) return
-    requestEntries(
-      unloadedCalls.filter((call) => hasDisplayRenderer(call.functionId)),
-    )
-  }, [displayPlaceholderSignature])
   const toggleExpanded = () => {
     if (!expanded) requestEntries(unloadedCalls, true)
-    setExpanded((value) => !value)
+    expandedGroups.set(groupKey, !expanded)
+    setExpanded(!expanded)
   }
   const presentedKeyValues = expanded
     ? row.items.map(timelineActivityPresentationKey)
@@ -1761,9 +2091,23 @@ function FunctionCallGroup({
 
   return (
     <section
+      ref={sectionRef}
+      onClickCapture={(event) => {
+        // Opening or using a call is a choice to keep this batch open, or the
+        // fold would discard it. Answering an approval is not: that is the
+        // batch moving along, and it can fold like any other.
+        const target = event.target as Element
+        if (
+          target.closest('.chat-activity-item') &&
+          !target.closest('[data-approval-actions]')
+        ) {
+          expandedGroups.set(groupKey, expanded)
+        }
+      }}
       className="chat-tool-group"
       data-function-call-group=""
       data-function-call-count={row.items.length}
+      data-mounted-settled={mountedSettled ? '' : undefined}
       data-expanded={expanded}
       data-can-collapse={canCollapse}
       data-live={live}

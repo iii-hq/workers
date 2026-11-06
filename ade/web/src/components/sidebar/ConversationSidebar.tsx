@@ -1,4 +1,5 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   CircleQuestionMark,
   Download,
@@ -10,12 +11,19 @@ import {
 import {
   type CSSProperties,
   type DragEvent,
-  Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
+import {
+  measureRowSlot,
+  observeNonEmptyRect,
+  rowsWithSpacers,
+  windowedRowIndexes,
+} from '@/components/chat/transcript-window'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
 import { hashForSettingsLanding } from '@/hooks/use-hash-route'
@@ -86,6 +94,11 @@ const GROUPS_COLLAPSED_KEY = 'iii-chat-groups-collapsed'
 const LIST_VIEW_KEY = 'iii-chat-list-view'
 /** The drag payload of a pinned chat being rearranged. */
 const PIN_DRAG_MIME = 'application/x-iii-pinned-chat'
+
+/** Rows kept mounted past each edge of the list's viewport. Rows are cheap. */
+const LIST_OVERSCAN_ROWS = 12
+/** `.iii-ui-tree`'s gap: a spacer is a flex child, so it brings one itself. */
+const LIST_GAP_PX = 1
 
 /** The grouping-only key this view record replaced; read as a fallback. */
 const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
@@ -373,6 +386,216 @@ export function ConversationSidebar({
     section.rows.some((row) => !isFinishedToggle(row) && row.hasChildren),
   )
 
+  /* Windowed: only the rows around the viewport are mounted, in normal flow,
+     with a spacer for each run of the others. Sections are flattened for it, and
+     a row is its own child of the list. The active row stays, as does the last
+     one focused, which covers its menu and rename dialog: their focus reaches it
+     through the portal. A dragged row stays too, or its dragend never fires. No
+     ResizeObserver means no layout to window against (SSR, jsdom), so every row
+     renders. */
+  const windowed = typeof ResizeObserver !== 'undefined'
+  const items = useMemo(
+    () =>
+      sections.flatMap(({ group, count, rows }) => {
+        // A project folder heads its own chats; date buckets stay labels.
+        const project =
+          group.key.startsWith('project:') && group.key !== NO_PROJECT_GROUP_KEY
+        return [
+          ...(headers
+            ? [
+                {
+                  kind: 'header' as const,
+                  key: `header:${group.key}`,
+                  group,
+                  count,
+                  project,
+                },
+              ]
+            : []),
+          ...rows.map((row, position) => ({
+            kind: 'row' as const,
+            // Not by section: a chat changing bucket keeps its menu or dialog.
+            key: isFinishedToggle(row)
+              ? `finished:${row.parentId}`
+              : row.conversation.id,
+            row,
+            group,
+            project,
+            stacked: project && position > 0,
+          })),
+        ]
+      }),
+    [sections, headers],
+  )
+  const [focusedKey, setFocusedKey] = useState<string | null>(null)
+  const heldIndexes = useMemo(() => {
+    const held = new Set<number>()
+    items.forEach((item, index) => {
+      if (item.key === focusedKey) {
+        // Its neighbors stay as tab stops, so the keyboard walk goes on from it.
+        held.add(index - 1)
+        held.add(index)
+        held.add(index + 1)
+      }
+      if (item.kind !== 'row' || isFinishedToggle(item.row)) return
+      const { id } = item.row.conversation
+      if (id === activeId || id === pinDrag) held.add(index)
+    })
+    return held
+  }, [items, focusedKey, activeId, pinDrag])
+  const listRef = useRef<HTMLDivElement>(null)
+  const getItemKey = useCallback(
+    (index: number) => items[index]?.key ?? index,
+    [items],
+  )
+  const estimateItem = useCallback(
+    (index: number) => {
+      const item = items[index]
+      if (item?.kind === 'header') return item.project ? 49 : 41
+      // A stacked row sits 1px up (conversation-tree.css), and its slot counts it.
+      return (narrow ? 45 : 37) - (item?.stacked ? 1 : 0)
+    },
+    [items, narrow],
+  )
+  // A changed list's range still comes from the old offset, so a section moving
+  // up would unmount the rows in view. They stay for that commit, for the browser
+  // to anchor on; the scroll it makes then moves the window to them.
+  const viewedRowsRef = useRef<{
+    items: typeof items
+    keys: ReadonlySet<string>
+  }>({ items, keys: new Set() })
+  const carriedIndexes =
+    viewedRowsRef.current.items === items
+      ? []
+      : items.flatMap((item, index) =>
+          viewedRowsRef.current.keys.has(item.key) ? [index] : [],
+        )
+  const virtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
+    enabled: windowed,
+    count: items.length,
+    getScrollElement: () => listRef.current,
+    getItemKey,
+    estimateSize: estimateItem,
+    overscan: LIST_OVERSCAN_ROWS,
+    initialRect: { width: 0, height: windowed ? window.innerHeight : 0 },
+    observeElementRect: observeNonEmptyRect,
+    measureElement: measureRowSlot,
+    rangeExtractor: (range) =>
+      windowedRowIndexes(range, {
+        opening: false,
+        frozen: null,
+        pinned: [...heldIndexes, ...carriedIndexes],
+      }),
+  })
+  // The browser's scroll anchoring already holds the rows in view when one above
+  // them changes; correcting too would move them by twice that.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false
+  const virtualItems = windowed ? virtualizer.getVirtualItems() : null
+  useLayoutEffect(() => {
+    const list = listRef.current
+    if (windowed && list && viewedRowsRef.current.items !== items) {
+      // The browser has anchored the carried rows by now. The library only hears
+      // of that scroll from its event, and a render before it would mount the
+      // window at the old offset again: a blank frame, and the rows coming back
+      // without their anchor. Tell it now, and move the window in this commit.
+      const before = virtualizer.range
+      virtualizer.scrollOffset = list.scrollTop
+      const after = virtualizer.calculateRange()
+      if (
+        after?.startIndex !== before?.startIndex ||
+        after?.endIndex !== before?.endIndex
+      ) {
+        virtualizer.options.onChange?.(virtualizer, false)
+      }
+    }
+    const range = virtualizer.range
+    viewedRowsRef.current = {
+      items,
+      keys: new Set(
+        range
+          ? items
+              .slice(range.startIndex, range.endIndex + 1)
+              .map((item) => item.key)
+          : [],
+      ),
+    }
+  })
+
+  const renderRow = ({
+    row,
+    group,
+  }: Extract<(typeof items)[number], { kind: 'row' }>) => {
+    if (isFinishedToggle(row)) {
+      return (
+        <FinishedToggle
+          depth={row.depth}
+          finished={row.finished}
+          expanded={row.expanded}
+          onToggle={() => toggleFinished(row.parentId)}
+        />
+      )
+    }
+    const { conversation: c, depth, hasChildren } = row
+    return (
+      <ConversationRow
+        conversation={c}
+        active={c.id === activeId}
+        depth={depth}
+        hasChildren={hasChildren}
+        caretColumn={caretColumn}
+        kind={tagKinds ? effectiveConversationKind(c, byId) : undefined}
+        treeCollapsed={collapsedNodes.has(c.id)}
+        onToggleTree={() => toggleNode(c.id)}
+        onSelect={() => onSelect(c.id)}
+        onRename={(title) => onRename(c.id, title)}
+        onRemove={() => onRemove(c.id)}
+        pinned={pinned.has(c.id)}
+        onTogglePin={() => togglePin(c.id)}
+        reorder={
+          group.key === PINNED_GROUP_KEY &&
+          depth === 0 &&
+          group.roots.length > 1
+            ? pinReorder(c.id, group.roots)
+            : undefined
+        }
+      />
+    )
+  }
+
+  const renderItem = (item: (typeof items)[number], index: number) => (
+    <div
+      key={item.key}
+      ref={windowed ? virtualizer.measureElement : undefined}
+      data-index={index}
+      className={
+        item.kind === 'row' && item.project
+          ? 'conversation-project-rows'
+          : undefined
+      }
+      data-stacked={item.kind === 'row' && item.stacked ? '' : undefined}
+      onFocusCapture={() => setFocusedKey(item.key)}
+    >
+      {item.kind === 'header' ? (
+        <ConversationGroupHeader
+          label={item.group.label}
+          title={item.group.title}
+          count={item.count}
+          collapsed={collapsedGroups.has(item.group.key)}
+          onToggle={() => toggleGroup(item.group.key)}
+          narrow={narrow}
+          project={item.project}
+          onCreate={
+            item.project && item.group.title && onCreateInProject
+              ? () => onCreateInProject(item.group.title as string)
+              : undefined
+          }
+        />
+      ) : (
+        renderRow(item)
+      )}
+    </div>
+  )
+
   /* The 8px gutter plus the nav row's own 10px inset puts every glyph, the
      heading and the empty copy on one 18px column. */
   return (
@@ -453,7 +676,10 @@ export function ConversationSidebar({
       <div role="status" className="sr-only">
         {pinAnnouncement}
       </div>
-      <div className="conversation-list-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-1">
+      <div
+        ref={listRef}
+        className="conversation-list-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-1"
+      >
         {sections.length === 0 ? (
           <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-inter text-base text-ink-ghost sm:text-sm">
             {started.length === 0 ? (
@@ -484,77 +710,21 @@ export function ConversationSidebar({
             )}
             data-narrow={narrow || undefined}
           >
-            {sections.map(({ group, count, rows }) => {
-              // A project folder heads its own chats; date buckets stay labels.
-              const project =
-                group.key.startsWith('project:') &&
-                group.key !== NO_PROJECT_GROUP_KEY
-              const rowList = rows.map((row) => {
-                if (isFinishedToggle(row))
-                  return (
-                    <FinishedToggle
-                      key={`finished:${row.parentId}`}
-                      depth={row.depth}
-                      finished={row.finished}
-                      expanded={row.expanded}
-                      onToggle={() => toggleFinished(row.parentId)}
+            {virtualItems
+              ? rowsWithSpacers(
+                  virtualItems,
+                  virtualizer.getTotalSize(),
+                  (index) => renderItem(items[index], index),
+                  (key, slot) => (
+                    <div
+                      key={key}
+                      aria-hidden="true"
+                      data-list-spacer=""
+                      style={{ height: Math.max(0, slot - LIST_GAP_PX) }}
                     />
-                  )
-                const { conversation: c, depth, hasChildren } = row
-                return (
-                  <ConversationRow
-                    key={c.id}
-                    conversation={c}
-                    active={c.id === activeId}
-                    depth={depth}
-                    hasChildren={hasChildren}
-                    caretColumn={caretColumn}
-                    kind={
-                      tagKinds ? effectiveConversationKind(c, byId) : undefined
-                    }
-                    treeCollapsed={collapsedNodes.has(c.id)}
-                    onToggleTree={() => toggleNode(c.id)}
-                    onSelect={() => onSelect(c.id)}
-                    onRename={(title) => onRename(c.id, title)}
-                    onRemove={() => onRemove(c.id)}
-                    pinned={pinned.has(c.id)}
-                    onTogglePin={() => togglePin(c.id)}
-                    reorder={
-                      group.key === PINNED_GROUP_KEY &&
-                      depth === 0 &&
-                      group.roots.length > 1
-                        ? pinReorder(c.id, group.roots)
-                        : undefined
-                    }
-                  />
+                  ),
                 )
-              })
-              return (
-                <Fragment key={group.key}>
-                  {headers ? (
-                    <ConversationGroupHeader
-                      label={group.label}
-                      title={group.title}
-                      count={count}
-                      collapsed={collapsedGroups.has(group.key)}
-                      onToggle={() => toggleGroup(group.key)}
-                      narrow={narrow}
-                      project={project}
-                      onCreate={
-                        project && group.title && onCreateInProject
-                          ? () => onCreateInProject(group.title as string)
-                          : undefined
-                      }
-                    />
-                  ) : null}
-                  {project && rowList.length ? (
-                    <div className="conversation-project-rows">{rowList}</div>
-                  ) : (
-                    rowList
-                  )}
-                </Fragment>
-              )
-            })}
+              : items.map(renderItem)}
           </div>
         )}
       </div>
