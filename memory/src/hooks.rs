@@ -3199,6 +3199,73 @@ Formal."
         assert_eq!(pair(legacy), ["fp-new"]);
     }
 
+    /// Two awaited saves of a change, however fast: the second is the newer.
+    #[tokio::test]
+    async fn a_change_saved_right_after_replaces_the_old_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        for i in 0..50 {
+            let save = |text: String| {
+                crate::functions::items::save(
+                    &deps,
+                    crate::functions::items::SaveRequest {
+                        bank: Some("b".into()),
+                        text,
+                        entities: vec![],
+                        tags: vec![],
+                        pinned: false,
+                        session_id: None,
+                    },
+                )
+            };
+            let old = save(format!("The nightly backup runs at 02:{i:02}."));
+            let old = old.await.unwrap().memory;
+            let new = save(format!("The nightly backup now runs at 04:{i:02}."));
+            let new = new.await.unwrap().memory;
+            let e = words(2, 3, 1.0);
+            let hits = vec![(old, e.clone()), (new.clone(), e)];
+            assert_eq!(kept(hits, &HashSet::new(), 6), [new.id]);
+        }
+    }
+
+    /// Rewriting a line right after it was saved states it again, later.
+    #[tokio::test]
+    async fn a_text_update_right_after_a_save_is_newer() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        for i in 0..50 {
+            let saved = crate::functions::items::save(
+                &deps,
+                crate::functions::items::SaveRequest {
+                    bank: Some("b".into()),
+                    text: format!("The nightly backup runs at 02:{i:02}."),
+                    entities: vec![],
+                    tags: vec![],
+                    pinned: false,
+                    session_id: None,
+                },
+            )
+            .await
+            .unwrap()
+            .memory;
+            let updated = crate::functions::items::update(
+                &deps,
+                crate::functions::items::UpdateRequest {
+                    bank: Some("b".into()),
+                    id: saved.id.clone(),
+                    text: Some(format!("The nightly backup now runs at 04:{i:02}.")),
+                    entities: None,
+                    tags: None,
+                    pinned: None,
+                },
+            )
+            .await
+            .unwrap()
+            .memory;
+            assert!(updated.last_stated() > saved.last_stated(), "{updated:?}");
+        }
+    }
+
     #[test]
     fn a_change_without_a_marker_keeps_both() {
         let e = words(2, 3, 1.0);

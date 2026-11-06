@@ -124,6 +124,17 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// [`now_ms`] that never repeats or runs back in this process: statements saved
+/// one after the other keep their order, even inside one millisecond.
+pub fn stated_now_ms() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = now_ms();
+    let next = |last: u64| now.max(last + 1);
+    let last = LAST.fetch_update(Relaxed, Relaxed, |last| Some(next(last)));
+    next(last.unwrap_or_else(|last| last))
+}
+
 /// `ms` (epoch millis) formatted in the host's local time zone — the worker
 /// runs on the user's machine, so "amanhã" said in the evening resolves
 /// against their calendar day, not UTC's. Empty when out of range.
@@ -155,6 +166,16 @@ pub fn fingerprint(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stated_now_ms_never_repeats() {
+        let mut last = stated_now_ms();
+        for _ in 0..10_000 {
+            let now = stated_now_ms();
+            assert!(now > last, "{now} after {last}");
+            last = now;
+        }
+    }
 
     #[test]
     fn fingerprint_is_stable_and_normalizing() {
