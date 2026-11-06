@@ -9,7 +9,11 @@
 //!   envelope of iii's delivery and from the raw payload a source's deliver
 //!   hook sends through the observer;
 //! - a harness back on a new connection under the same worker name replaces
-//!   its binding's suspended observer by observing the same id again.
+//!   its binding's suspended observer by observing the same id again;
+//! - a wake that fails to deliver is retried, then left armed, never retired
+//!   undelivered; when it cannot stay armed its owner is told;
+//! - removing a wake a fire just claimed does not report it lost;
+//! - the boot sweep retires bindings on sources agents may not observe.
 
 #[path = "support/engine.rs"]
 mod engine;
@@ -60,6 +64,14 @@ struct Stack {
     state: Arc<Mutex<BTreeMap<(String, String), Value>>>,
     sink: Arc<Mutex<Vec<Value>>>,
     appended: Arc<Mutex<Vec<Value>>>,
+    /// How many more calls of a function fail before it answers again.
+    failures: Arc<Mutex<BTreeMap<String, usize>>>,
+    /// A binding that one fire claims right before the next compare-and-set
+    /// deleting it: a fire landing between a remover's read and its delete.
+    fire_before_delete: Arc<Mutex<Option<String>>>,
+    /// A binding whose record is deleted by the next failing call: a sweep
+    /// cleaning up a claimed record while its delivery is failing.
+    delete_on_failure: Arc<Mutex<Option<String>>>,
 }
 
 impl Stack {
@@ -112,6 +124,17 @@ impl Stack {
                     .collect(),
             ),
             "harness::state::compare-and-set" => {
+                let mut armed = self.fire_before_delete.lock().unwrap();
+                if scope == "harness_binding"
+                    && data["value"].is_null()
+                    && armed.as_deref() == Some(key)
+                {
+                    *armed = None;
+                    let mut record = self.get(scope, key);
+                    record["fires"] = json!(record["fires"].as_u64().unwrap_or(0) + 1);
+                    self.put(scope, key, record);
+                }
+                drop(armed);
                 let current = self.get(scope, key);
                 let swapped = current == data["expected"];
                 if swapped {
@@ -145,9 +168,80 @@ impl Stack {
                 RegisterFunction::new_async(move |data: Value| {
                     let stack = stack.clone();
                     let id = id.clone();
-                    async move { Ok::<_, iii_sdk::Error>(stack.respond(&id, &data)) }
+                    async move {
+                        if stack.failing(&id, &data) {
+                            if let Some(binding) = stack.delete_on_failure.lock().unwrap().take() {
+                                stack.put("harness_binding", &binding, Value::Null);
+                            }
+                            return Err(iii_sdk::Error::Remote {
+                                code: "UNAVAILABLE".into(),
+                                message: format!("{id} is down"),
+                                stacktrace: None,
+                            });
+                        }
+                        Ok::<_, iii_sdk::Error>(stack.respond(&id, &data))
+                    }
                 }),
             );
+        }
+    }
+
+    /// Fail the next `calls` calls of `call`: a function id, or a function
+    /// id and the state scope it acts on (`"state::set harness_queue"`).
+    fn fail(&self, call: &str, calls: usize) {
+        self.failures.lock().unwrap().insert(call.into(), calls);
+    }
+
+    fn failing(&self, function_id: &str, data: &Value) -> bool {
+        let scoped = format!(
+            "{function_id} {}",
+            data["scope"].as_str().unwrap_or_default()
+        );
+        let mut failures = self.failures.lock().unwrap();
+        for call in [scoped.as_str(), function_id] {
+            if let Some(left) = failures.get_mut(call).filter(|left| **left > 0) {
+                *left -= 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Give `s_owner` a running turn, as a session parked on its wakes has
+    /// between steps: a wake delivered to it is queued for that turn.
+    fn park_owner(&self) {
+        self.put(
+            "harness_turn",
+            "s_owner",
+            json!({
+                "session_id": "s_owner", "turn_id": "t_owner", "status": "running",
+                "step": 1, "turn_count": 1, "depth": 0,
+                "options": {"model": "fake", "max_turns": 16},
+                "created_at": 1, "updated_at": 1
+            }),
+        );
+    }
+
+    /// The messages queued for a turn: the wakes delivered to it.
+    fn queued(&self) -> Vec<Value> {
+        self.state
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((scope, _), _)| scope == "harness_queue")
+            .map(|(_, row)| row.clone())
+            .collect()
+    }
+
+    async fn wait_until(&self, what: &str, done: impl Fn(&Stack) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(self) {
+            assert!(
+                Instant::now() < deadline,
+                "{what}: timed out; appended: {:?}",
+                self.appended.lock().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -224,6 +318,37 @@ fn sink_binding(id: &str, function_id: &str) -> Binding {
         fires: 0,
         created_at: 0,
     }
+}
+
+/// A one-shot wake of `s_owner` on `function_id`: what a parked session
+/// waits on.
+fn wake_binding(id: &str, function_id: &str) -> Binding {
+    let mut binding = sink_binding(id, function_id);
+    binding.target = BindingTarget::new(harness::functions::SEND_ID);
+    binding.lifecycle.once = true;
+    binding.capability = None;
+    binding
+}
+
+/// The stub stack, registered on `engine`.
+async fn stack_on(engine: &Engine) -> (Stack, IIIClient) {
+    let stack = Stack::default();
+    let stub = register_worker(&engine.url, worker_options("stack"));
+    stack.register(&stub);
+    stub.wait_until_registered(Duration::from_secs(5))
+        .await
+        .expect("stack registered");
+    (stack, stub)
+}
+
+/// Store `binding` and observe its source.
+async fn arm(deps: &Deps, stack: &Stack, binding: &Binding) {
+    stack.insert_binding(binding);
+    let handle = harness::bindings::observe_binding(deps, binding).expect("a source");
+    tokio::time::timeout(Duration::from_secs(10), handle.ready())
+        .await
+        .expect("observer settles")
+        .unwrap_or_else(|error| panic!("{}: {error}", binding.id));
 }
 
 /// A harness connection under the worker name `harness` with the delivery
@@ -620,4 +745,212 @@ async fn a_late_on_ready_observer_receives_the_ready_event_alone_in_its_own_shap
 
     consumer.shutdown_async().await;
     host.shutdown_async().await;
+}
+
+/// The write that queues a wake for a running turn, and nothing else on the
+/// delivery path.
+const QUEUE_WRITE: &str = "state::set harness_queue";
+
+/// A wake whose delivery hits a failing dependency is retried; one that keeps
+/// failing gives its fire back and stays armed. Retired undelivered, it left
+/// the parked owner waiting on an event it would never hear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_undelivered_wake_is_retried_then_left_armed() {
+    let Some(engine) = isolated_engine().await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let (stack, stub) = stack_on(&engine).await;
+    let source = event_sources(&engine).await;
+    let deps = harness_connection(&engine).await;
+    stack.park_owner();
+
+    // One failed write of the turn's queue: the second attempt delivers.
+    arm(
+        &deps,
+        &stack,
+        &wake_binding("sub_retried", "demo::on-event"),
+    )
+    .await;
+    stack.fail(QUEUE_WRITE, 1);
+    emit(&source, "demo::on-event", json!({ "n": 1 })).await;
+    stack
+        .wait_until("the retried wake reaches the turn", |s| {
+            s.queued().len() == 1
+        })
+        .await;
+    stack
+        .wait_until("its fire is recorded", |s| {
+            !s.fired("sub_retried").is_empty()
+        })
+        .await;
+    let fired = stack.fired("sub_retried");
+    assert_eq!(
+        fired[0]["custom"]["data"]["outcome"],
+        json!("delivered"),
+        "{fired:?}"
+    );
+    assert!(stack.get("harness_binding", "sub_retried").is_null());
+
+    // A queue that stays down: the fire is given back and the wake stays armed.
+    arm(&deps, &stack, &wake_binding("sub_armed", "demo::on-event")).await;
+    stack.fail(QUEUE_WRITE, usize::MAX);
+    emit(&source, "demo::on-event", json!({ "n": 2 })).await;
+    stack
+        .wait_until("the failed fire is recorded", |s| {
+            s.fired("sub_armed").len() == 1
+        })
+        .await;
+    let failed = stack.fired("sub_armed")[0]["custom"].clone();
+    assert_eq!(
+        failed["data"]["outcome"],
+        json!("delivery_failed"),
+        "{failed}"
+    );
+    assert_eq!(failed["data"]["retired"], json!(false), "{failed}");
+    let stored = stack.get("harness_binding", "sub_armed");
+    assert_eq!(
+        stored["fires"],
+        json!(0),
+        "the fire was not given back: {stored}"
+    );
+
+    // The next event delivers it, under a record of its own.
+    stack.fail(QUEUE_WRITE, 0);
+    emit(&source, "demo::on-event", json!({ "n": 3 })).await;
+    stack
+        .wait_until("the armed wake reaches the turn", |s| s.queued().len() == 2)
+        .await;
+    stack
+        .wait_until("its fire is recorded", |s| s.fired("sub_armed").len() == 2)
+        .await;
+    let fired = stack.fired("sub_armed");
+    assert_eq!(
+        fired[1]["custom"]["data"]["outcome"],
+        json!("delivered"),
+        "{fired:?}"
+    );
+    assert_ne!(fired[0]["entry_id"], fired[1]["entry_id"], "{fired:?}");
+    assert!(stack.get("harness_binding", "sub_armed").is_null());
+
+    source.shutdown_async().await;
+    deps.iii.shutdown_async().await;
+    stub.shutdown_async().await;
+}
+
+/// A wake that a fire claims between the removal's read and its delete was
+/// delivered: the owner must not also be told it was removed before firing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disposing_a_wake_a_fire_just_claimed_reports_no_lost_wake() {
+    let Some(engine) = isolated_engine().await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let (stack, stub) = stack_on(&engine).await;
+    let deps = harness_connection(&engine).await;
+    stack.insert_binding(&wake_binding("sub_raced", "demo::on-event"));
+    *stack.fire_before_delete.lock().unwrap() = Some("sub_raced".into());
+
+    let request = serde_json::from_value(json!({
+        "observer_id": "sub_raced", "session_id": "s_owner"
+    }))
+    .unwrap();
+    let response = harness::functions::observers_list::dispose(&deps, request)
+        .await
+        .expect("disposed");
+    assert!(response.removed);
+    assert!(stack.get("harness_binding", "sub_raced").is_null());
+    let records = stack.fired("sub_raced");
+    assert_eq!(records.len(), 1, "{records:?}");
+    let note = records[0]["custom"]["data"]["note"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!note.contains("before any fire"), "{records:?}");
+
+    deps.iii.shutdown_async().await;
+    stub.shutdown_async().await;
+}
+
+/// A binding on a harness function agents may not observe, from a build that
+/// allowed it, is retired by the boot sweep and its owner told; before, each
+/// boot re-armed it forever. A binding on an ordinary source is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_boot_sweep_retires_a_binding_on_a_refused_source() {
+    let Some(engine) = isolated_engine().await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let (stack, stub) = stack_on(&engine).await;
+    let deps = harness_connection(&engine).await;
+    let mut refused = wake_binding("sub_refused", "harness::on-turn-completed");
+    refused.lifecycle.once = false;
+    stack.insert_binding(&refused);
+    stack.insert_binding(&wake_binding("sub_kept", "demo::on-event"));
+
+    harness::bindings::gc::run(&deps).await;
+
+    assert!(stack.get("harness_binding", "sub_refused").is_null());
+    assert!(!stack.get("harness_binding", "sub_kept").is_null());
+    let records = stack.fired("sub_refused");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(
+        records[0]["custom"]["data"]["outcome"],
+        json!("invalidated")
+    );
+
+    deps.iii.shutdown_async().await;
+    stub.shutdown_async().await;
+}
+
+/// A wake cannot give its fire back once its record was retired mid-delivery
+/// (a pass cleaning up the claimed record, its deadline, a removal): the
+/// owner is told the wake is lost. A wake refused for good (its session has
+/// no turn) is not retried or given back: it retires as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wake_that_cannot_be_given_back_tells_its_owner() {
+    let Some(engine) = isolated_engine().await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let (stack, stub) = stack_on(&engine).await;
+    let source = event_sources(&engine).await;
+    let deps = harness_connection(&engine).await;
+    stack.park_owner();
+
+    arm(&deps, &stack, &wake_binding("sub_gone", "demo::on-event")).await;
+    stack.fail(QUEUE_WRITE, 3);
+    *stack.delete_on_failure.lock().unwrap() = Some("sub_gone".into());
+    emit(&source, "demo::on-event", json!({ "n": 1 })).await;
+    stack
+        .wait_until("the owner is told the wake is lost", |s| {
+            s.queued()
+                .iter()
+                .any(|row| row["entry_id"] == "e_undelivered_sub_gone")
+        })
+        .await;
+    assert!(stack.get("harness_binding", "sub_gone").is_null());
+
+    let mut refused = wake_binding("sub_cold", "demo::on-event");
+    refused.target.payload = Some(json!({ "session_id": "s_cold" }));
+    arm(&deps, &stack, &refused).await;
+    emit(&source, "demo::on-event", json!({ "n": 2 })).await;
+    stack
+        .wait_until("the refused fire is recorded", |s| {
+            !s.fired("sub_cold").is_empty()
+        })
+        .await;
+    let fired = stack.fired("sub_cold");
+    assert_eq!(
+        fired[0]["custom"]["data"]["outcome"],
+        json!("delivery_failed"),
+        "{fired:?}"
+    );
+    assert!(
+        stack.get("harness_binding", "sub_cold").is_null(),
+        "a refused wake was given back"
+    );
+
+    source.shutdown_async().await;
+    deps.iii.shutdown_async().await;
+    stub.shutdown_async().await;
 }

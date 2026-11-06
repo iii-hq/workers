@@ -167,14 +167,18 @@ pub async fn dispose(
             binding.id, binding.owner.session_id, session_id
         )));
     }
-    let was_armed_wake = crate::bindings::expiry::is_unfired_wake(&binding);
     if binding.observer_id.is_some() {
         crate::bindings::dispose_observer(deps, &binding.id).await;
     }
-    store.delete(&binding.id).await?;
+    // Report the record deleted, not the one read above: a wake that fired in
+    // between was delivered, and telling its owner it was removed before
+    // firing contradicts the wake it already has.
+    let Some(binding) = store.delete(&binding.id).await? else {
+        return Ok(ObserversDisposeResponse { removed: false });
+    };
     // Removing a still-armed wake from outside the owner's own turn strands
     // the parked owner silently — tell it, same as an expiry would.
-    if was_armed_wake {
+    if crate::bindings::expiry::is_unfired_wake(&binding) {
         crate::bindings::expiry::notify_wake_lost(
             deps,
             &binding,

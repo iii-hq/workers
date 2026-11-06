@@ -12,6 +12,10 @@
 //!   the spawn-target removal: delivery never creates an agent, so they are
 //!   retired LOUDLY — the owner gets a notification naming the migration
 //!   (observe for a wake, spawn directly) — never adapted.
+//! * **Refused sources.** Records whose source is a harness function agents
+//!   may not observe come from a build that allowed it. Nothing fires them,
+//!   and without a deadline each boot re-arms them forever, so they are
+//!   retired just as loudly.
 //! * **Orphan observers.** An observer aimed at the delivery hop whose
 //!   binding record is gone (an in-memory state adapter restarted, a record
 //!   deleted while the observer could not be disposed) is disposed.
@@ -44,7 +48,8 @@ pub fn should_gc(state: OwnerState) -> bool {
 
 /// Startup sweep: rewrite records from before 0.26, drop bindings whose owner
 /// is provably gone, loudly retire records that still target
-/// `harness::spawn`, dispose observers whose record disappeared — then
+/// `harness::spawn` or observe a source agents may not observe, dispose
+/// observers whose record disappeared — then
 /// re-create every surviving binding's observer from the durable record and
 /// deliver one-shot state wakes whose key was written while no observer
 /// existed for it.
@@ -63,6 +68,7 @@ pub async fn run(deps: &Deps) {
 
     let mut dropped = 0usize;
     let mut stale_spawn = 0usize;
+    let mut refused = 0usize;
     let mut survivors: Vec<crate::bindings::Binding> = Vec::new();
     for binding in bindings {
         let owner_gone = should_gc(owner_state(deps, &binding.owner.session_id).await);
@@ -80,6 +86,11 @@ pub async fn run(deps: &Deps) {
             stale_spawn += 1;
             continue;
         }
+        if let Some(source) = refused_source(&binding) {
+            retire_refused_source_binding(deps, &binding, &source).await;
+            refused += 1;
+            continue;
+        }
         survivors.push(binding);
     }
 
@@ -88,6 +99,7 @@ pub async fn run(deps: &Deps) {
         || migrated.retired > 0
         || dropped > 0
         || stale_spawn > 0
+        || refused > 0
         || orphans > 0
         || rearmed > 0
         || caught_up > 0
@@ -97,6 +109,7 @@ pub async fn run(deps: &Deps) {
             untranslated = migrated.retired,
             owner_gone = dropped,
             stale_spawn = stale_spawn,
+            refused_source = refused,
             orphan_observers = orphans,
             rearmed = rearmed,
             caught_up = caught_up,
@@ -262,20 +275,68 @@ async fn catch_up_state_wake(deps: &Deps, binding: &crate::bindings::Binding) ->
 /// has. Called from the startup sweep (mass-retire) and from delivery resolve
 /// (the race backstop for a fire already in flight).
 pub async fn retire_stale_spawn_binding(deps: &Deps, binding: &crate::bindings::Binding) {
+    retire_invalidated(
+        deps,
+        binding,
+        "`harness::spawn` is not a binding target — delivery never creates an agent. Observe \
+         the same function as a wake (omit `target`) and spawn workers directly from the woken \
+         turn.",
+        "harness::spawn is not a binding target; the binding was retired",
+        ("stalespawn", "obsstale"),
+    )
+    .await;
+}
+
+/// The source of a record the current harness refuses to create: a harness
+/// function agents may not observe.
+fn refused_source(binding: &crate::bindings::Binding) -> Option<String> {
+    let source = binding.source.as_ref()?;
+    crate::subscriptions::is_forbidden_source(&source.function_id)
+        .then(|| source.function_id.clone())
+}
+
+async fn retire_refused_source_binding(
+    deps: &Deps,
+    binding: &crate::bindings::Binding,
+    source: &str,
+) {
+    retire_invalidated(
+        deps,
+        binding,
+        &format!(
+            "agents may not observe `{source}` in this harness, so it can never fire. Observe \
+             what the work writes instead (state keys, database rows), or `{}` for a deadline.",
+            crate::timer::ON_TIMER_FN
+        ),
+        &format!("`{source}` is not agent-observable; the binding was retired"),
+        ("refusedsource", "obsrefused"),
+    )
+    .await;
+}
+
+/// Retire a record that can no longer be honoured, LOUDLY: a silent dispose
+/// would leave the owner believing in an armed reaction it no longer has. The
+/// notice and the record carry fixed entry ids (`e_<tag>_<binding>`), so a
+/// retirement repeated by a racing delivery appends nothing twice.
+async fn retire_invalidated(
+    deps: &Deps,
+    binding: &crate::bindings::Binding,
+    why: &str,
+    note: &str,
+    (notice_tag, record_tag): (&str, &str),
+) {
     if binding.observer_id.is_some() {
         super::dispose_observer(deps, &binding.id).await;
     }
     if let Err(e) = deps.bindings().await.delete(&binding.id).await {
-        tracing::warn!(binding = %binding.id, error = %e, "stale spawn-binding delete failed");
+        tracing::warn!(binding = %binding.id, error = %e, "invalidated binding delete failed");
     }
     let watch = binding
         .source_text()
         .map(|source| format!(" (was observing {source})"))
         .unwrap_or_default();
     let notice = format!(
-        "[notification] binding {}{watch} was RETIRED: `harness::spawn` is not a binding \
-         target — delivery never creates an agent. Observe the same function as a wake (omit \
-         `target`) and spawn workers directly from the woken turn.",
+        "[notification] binding {}{watch} was RETIRED: {why}",
         binding.id
     );
     let message = crate::types::message::AgentMessage::user_text(notice);
@@ -283,22 +344,22 @@ pub async fn retire_stale_spawn_binding(deps: &Deps, binding: &crate::bindings::
         deps,
         &binding.owner.session_id,
         message,
-        Some(&format!("e_stalespawn_{}", binding.id)),
+        Some(&format!("e_{notice_tag}_{}", binding.id)),
         Some(&json!({ "notification": true, "binding": binding.id })),
     )
     .await
     {
-        tracing::warn!(binding = %binding.id, error = %e, "stale spawn-binding notice failed");
+        tracing::warn!(binding = %binding.id, error = %e, "invalidated binding notice failed");
     }
     crate::subscriptions::fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
-        &format!("e_obsstale_{}", binding.id),
+        &format!("e_{record_tag}_{}", binding.id),
         crate::subscriptions::fired::retirement_record(
             binding,
             crate::subscriptions::fired::FireOutcome::Invalidated,
             crate::subscriptions::fired::RetirementReason::Invalidated,
-            Some("harness::spawn is not a binding target; the binding was retired"),
+            Some(note),
             crate::subscriptions::fired::now_ms(),
         ),
     )
