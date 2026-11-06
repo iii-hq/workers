@@ -18,7 +18,63 @@ iii call compose::add worker=tmux
 
 The worker drives the `tmux` binary installed on the host (Linux or macOS) and
 talks to the same tmux server you use from your terminal. Without tmux it still
-starts and reports `available: false`.
+starts and reports `available: false`, and `tmux::install` can put it there.
+
+## Installing tmux
+
+```bash
+iii trigger tmux::install            # starts or joins the install, answers at once
+iii trigger tmux::install::status    # poll until succeeded or failed
+```
+
+| Computer | What runs, in order |
+|---|---|
+| macOS | Homebrew when `brew` is there (never as root), otherwise MacPorts as root or with `sudo -n`; then the official build |
+| Linux, as root or with `sudo -n` | The first of `apt-get` (after `apt-get update`), `dnf`, `pacman`, `zypper`, `apk`; then the official build |
+| Linux, no root and no passwordless sudo | The official build |
+| Linux on armv7 | Only a package manager: there is no official build, and without root or sudo the error says what to ask an administrator to run |
+
+Nothing ever waits for a password or for an answer. The official build is
+[`tmux/tmux-builds`](https://github.com/tmux/tmux-builds) 3.7c for Linux and
+macOS on x86_64 and arm64, pinned by SHA-256 in this worker's source. It goes
+to `~/.local/bin/tmux`: checked before it is unpacked, asked `-V` before it
+lands there, moved atomically. A file already at that path is never replaced.
+
+An attempt only counts when tmux then resolves, answers `-V` and starts a
+server on a private socket of its own. A package manager that fails falls
+through to the official build, and the failure's `log` says so. An install
+never talks to your tmux server.
+
+The answer of both functions:
+
+```json
+{ "state": "running", "step": "downloading", "label": "Downloading tmux…",
+  "hints": ["From the tmux project's official builds", "tmux 3.7c"],
+  "progress": 0.42, "method": "prebuilt", "path": null, "version": null,
+  "error": null, "log": [] }
+```
+
+`state` is `idle`, `running`, `succeeded` or `failed`; `step` is `checking`,
+`updating`, `downloading`, `verifying`, `installing` or `finishing`; `method` is
+`apt`, `dnf`, `pacman`, `zypper`, `apk`, `homebrew`, `macports` or `prebuilt`.
+`label` and `hints` are the words to show while it runs, `error` is one
+sentence, and `log` is empty until a failure, when it holds every command and
+its output. A worker that restarted mid-install answers `idle`.
+
+`tmux::status` says `installable: true` when tmux is missing and this can try:
+Linux or macOS, with `tmux_binary` left as plain `tmux`.
+
+A daemon's `PATH` is often short, so plain `tmux` is also looked for after
+`PATH` in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`,
+`/home/linuxbrew/.linuxbrew/bin` and `/opt/local/bin`.
+
+On a system with no terminfo entry for `xterm-256color` (Alpine without
+`ncurses-terminfo-base`), the official build can run every command but can't
+attach a terminal, so the install also writes that one entry to
+`~/.terminfo/x/xterm-256color`.
+
+`tmux --install-tmux` runs the same install with no engine and exits: the steps
+and the log on stderr, the final status as the last line of stdout.
 
 ## Quickstart
 

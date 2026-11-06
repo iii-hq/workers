@@ -12,9 +12,10 @@ use tokio::sync::Mutex;
 
 use crate::activity::{ActivityReader, Recorder};
 use crate::agents::{host_names, session_title, AgentSet, AgentTracker};
-use crate::binary::BinaryCache;
+use crate::binary::{BinaryCache, Resolved};
 use crate::compose;
 use crate::config::{SharedConfig, WorkerConfig};
+use crate::install::installable;
 use crate::model::{
     now_ms, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane, PaneRef,
     PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
@@ -137,6 +138,13 @@ impl Collector {
         })
     }
 
+    /// Forget what is known and look for tmux again: an install just changed
+    /// what's there. Only `-V`, which talks to no server.
+    pub async fn resolve_tmux_again(&self) -> Result<Resolved, String> {
+        self.binary.forget();
+        self.binary.get(&self.config().tmux_binary).await
+    }
+
     pub async fn info(&self) -> TmuxInfo {
         let config = self.config();
         let resolved = match self.binary.get(&config.tmux_binary).await {
@@ -144,6 +152,7 @@ impl Collector {
             Err(error) => {
                 return TmuxInfo {
                     error: Some(error),
+                    installable: installable(&config.tmux_binary),
                     ..TmuxInfo::default()
                 }
             }
@@ -265,6 +274,7 @@ impl Collector {
             }
             Err(error) => {
                 info.error = Some(error);
+                info.installable = installable(&config.tmux_binary);
                 None
             }
         };

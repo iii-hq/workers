@@ -6,7 +6,9 @@
 //! starting another worker. Resolution therefore walks `PATH` by hand, skips
 //! this executable, and accepts a candidate only when `-V` answers like tmux.
 //! The probe also sets [`PROBE_ENV`], which makes this binary exit at once
-//! (see `main.rs`) if a copy of it is ever probed anyway.
+//! (see `main.rs`) if a copy of it is ever probed anyway. A bare name is looked
+//! for in a few more folders after `PATH`, because a daemon's `PATH` is short
+//! (simple-installs D5).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -40,6 +42,36 @@ pub fn candidates(binary: &str, path_var: Option<&std::ffi::OsStr>) -> Vec<PathB
         .unwrap_or_default()
 }
 
+/// Where tools live that a short `PATH` (launchd, systemd, an SSH session)
+/// leaves out: where an install puts tmux, Homebrew's two, Linuxbrew's, MacPorts'.
+pub fn fallback_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    home.map(|home| home.join(".local/bin"))
+        .into_iter()
+        .chain(
+            [
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/home/linuxbrew/.linuxbrew/bin",
+                "/opt/local/bin",
+            ]
+            .map(PathBuf::from),
+        )
+        .collect()
+}
+
+/// [`candidates`], then the fallback folders for a bare name.
+fn lookup(binary: &str, path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut found = candidates(binary, path_var);
+    if !binary.contains('/') {
+        for candidate in fallback_dirs(home).iter().map(|dir| dir.join(binary)) {
+            if !found.contains(&candidate) {
+                found.push(candidate);
+            }
+        }
+    }
+    found
+}
+
 fn expand_home(raw: &str) -> PathBuf {
     match raw.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME")
@@ -63,7 +95,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
@@ -71,8 +103,13 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 async fn probe(path: &Path) -> Result<String, String> {
+    probe_within(path, PROBE_TIMEOUT).await
+}
+
+/// `path -V` must answer like tmux within `limit`.
+pub(crate) async fn probe_within(path: &Path, limit: Duration) -> Result<String, String> {
     let output = tokio::time::timeout(
-        PROBE_TIMEOUT,
+        limit,
         tokio::process::Command::new(path)
             .arg("-V")
             .env(PROBE_ENV, "1")
@@ -95,8 +132,9 @@ async fn probe(path: &Path) -> Result<String, String> {
 pub async fn resolve(binary: &str) -> Result<Resolved, String> {
     let own = std::env::current_exe().ok();
     let path_var = std::env::var_os("PATH");
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut rejected = Vec::new();
-    for candidate in candidates(binary, path_var.as_deref()) {
+    for candidate in lookup(binary, path_var.as_deref(), home.as_deref()) {
         if !is_executable_file(&candidate) {
             continue;
         }
@@ -160,6 +198,14 @@ impl BinaryCache {
         result
     }
 
+    /// Drop what is known, so the next [`Self::get`] looks again.
+    pub fn forget(&self) {
+        *self
+            .entry
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+    }
+
     fn cached(&self, binary: &str) -> Option<Result<Resolved, String>> {
         let guard = self
             .entry
@@ -200,6 +246,66 @@ mod tests {
             candidates("/opt/tmux/bin/tmux", Some(&path)),
             vec![PathBuf::from("/opt/tmux/bin/tmux")]
         );
+    }
+
+    #[test]
+    fn a_bare_name_is_also_looked_for_in_the_fallback_folders() {
+        let path = std::env::join_paths(["/a", "/usr/local/bin"]).unwrap();
+        assert_eq!(
+            lookup("tmux", Some(&path), Some(Path::new("/h"))),
+            vec![
+                PathBuf::from("/a/tmux"),
+                PathBuf::from("/usr/local/bin/tmux"),
+                PathBuf::from("/h/.local/bin/tmux"),
+                PathBuf::from("/opt/homebrew/bin/tmux"),
+                PathBuf::from("/home/linuxbrew/.linuxbrew/bin/tmux"),
+                PathBuf::from("/opt/local/bin/tmux"),
+            ]
+        );
+        assert_eq!(
+            lookup("tmux", None, None).first(),
+            Some(&PathBuf::from("/opt/homebrew/bin/tmux"))
+        );
+    }
+
+    #[test]
+    fn a_configured_path_is_never_looked_for_elsewhere() {
+        assert_eq!(
+            lookup("/opt/tmux", None, Some(Path::new("/h"))),
+            vec![PathBuf::from("/opt/tmux")]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_forgotten_entry_is_looked_up_again() {
+        let cache = BinaryCache::default();
+        let dir = std::env::temp_dir().join(format!("iii-tmux-binary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake-tmux");
+        let binary = script.to_str().unwrap();
+        assert!(cache.get(binary).await.is_err());
+
+        std::fs::write(&script, "#!/bin/sh\necho 'tmux 3.7c'\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(cache.get(binary).await.is_err(), "the miss is still cached");
+
+        cache.forget();
+        let mut resolved = cache.get(binary).await;
+        for _ in 0..20 {
+            // A fork elsewhere in the test process may still hold the new file open.
+            if !resolved
+                .as_ref()
+                .is_err_and(|error| error.contains("os error 26"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cache.forget();
+            resolved = cache.get(binary).await;
+        }
+        assert_eq!(resolved.unwrap().version, "3.7c");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

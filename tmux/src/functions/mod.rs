@@ -1,6 +1,7 @@
 //! The public `tmux::*` functions. Mutations poke the live feed so the
 //! console reflects them at once.
 
+pub mod install;
 pub mod panes;
 pub mod sessions;
 pub mod subagents;
@@ -120,6 +121,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         PORTS_LIST,
         PORTS_LIST_DESC,
     ));
+    specs.extend(install::catalog());
     specs
 }
 
@@ -145,4 +147,5 @@ pub fn register_all(iii: &IIIClient, ctx: Arc<Ctx>) {
         EmptyInput,
         ports_list
     );
+    install::register(iii, &ctx);
 }
