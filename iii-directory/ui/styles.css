@@ -65,9 +65,7 @@
   gap: 8px;
   padding: 12px;
 }
-[data-iii-ui="iii-directory"] .dir-ui-loading > *,
-[data-iii-ui="iii-directory"] .dir-ui-skel-row > *,
-[data-iii-ui="iii-directory"] .dir-ui-doc-loading > * {
+[data-iii-ui="iii-directory"] .dir-ui-loading > * {
   display: block;
   height: 10px;
 }
@@ -178,190 +176,6 @@
   color: var(--color-ink-faint);
 }
 
-/* ── the page (page `directory`): shell + browser ────────────────────── */
-
-[data-iii-ui="iii-directory"] .dir-ui-shell {
-  min-height: 360px;
-  color: var(--color-ink);
-  font-family: var(--font-sans);
-}
-[data-iii-ui="iii-directory"] .dir-ui-shell-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-}
-/* The inactive collection stays mounted (drafts survive switching) but
-   must actually disappear — the flex display above would beat [hidden]. */
-[data-iii-ui="iii-directory"] .dir-ui-shell-body[hidden] {
-  display: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-  min-width: 0;
-  width: 100%;
-  container-type: inline-size;
-}
-/* Right-column pane: mirror so the sidebar hugs the outer edge. */
-[data-iii-ui="iii-directory"] .dir-ui-browser.right {
-  flex-direction: row-reverse;
-}
-
-/* ── navigation sidebar ─────────────────────────────────────────────── */
-
-[data-iii-ui="iii-directory"] .dir-ui-side {
-  border-right: 1px solid var(--color-edge);
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.right .dir-ui-side {
-  border-right: 0;
-  border-left: 1px solid var(--color-edge);
-}
-/* Narrow is CONTAINER width (< 850px): one pane at a time. */
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-side {
-  border-right: 0;
-  border-left: 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-side-top {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 12px 8px;
-  flex-shrink: 0;
-}
-/* Full-width so it reads as an action for the whole collection, not a row. */
-[data-iii-ui="iii-directory"] .dir-ui-new-btn {
-  justify-content: flex-start;
-  width: 100%;
-  height: 38px;
-  padding: 4px 8px 4px 6px;
-  gap: 9px;
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-new-btn:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-ink);
-}
-[data-iii-ui="iii-directory"] .dir-ui-new-mark {
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border-radius: 6px;
-  background: var(--color-accent);
-  color: var(--color-accent-fg);
-}
-[data-iii-ui="iii-directory"] .dir-ui-new-mark svg {
-  width: 16px;
-  height: 16px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-count {
-  padding: 0 2px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-  font-variant-numeric: tabular-nums;
-}
-[data-iii-ui="iii-directory"] .dir-ui-side-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 4px 6px 12px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-collection-tabs {
-  width: 100%;
-  flex-shrink: 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-collection-tabs[data-icon-only="true"] > button {
-  flex: 1 1 0;
-}
-
-/* entry rows — the shared list item, plus the worker's own selection rail */
-[data-iii-ui="iii-directory"] .dir-ui-nav-row .iii-ui-list-item__title {
-  font-weight: 500;
-}
-[data-iii-ui="iii-directory"] .dir-ui-nav-row.active .iii-ui-list-item__title {
-  font-weight: 600;
-}
-/* Selection stays neutral: the recipe's wash + this inset edge rail. */
-[data-iii-ui="iii-directory"] .dir-ui-nav-row.active {
-  box-shadow: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-nav-row.active::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  background: var(--color-edge);
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser:not(.prominent-list) .dir-ui-nav-row .iii-ui-list-item__description {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  white-space: normal;
-}
-[data-iii-ui="iii-directory"] .dir-ui-nav-id {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-faint);
-  word-break: break-all;
-}
-[data-iii-ui="iii-directory"] .dir-ui-nav-desc {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-nav-fine {
-  margin-top: 2px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-  font-variant-numeric: tabular-nums;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.prominent-list .dir-ui-nav-row {
-  min-height: 58px;
-  padding: 9px 10px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.prominent-list .dir-ui-nav-row .iii-ui-list-item__title {
-  font-size: 14px;
-  font-weight: 600;
-}
-/* An agent's key stands in for a missing name: display copy, so sans. */
-[data-iii-ui="iii-directory"] .dir-ui-browser.prominent-list .dir-ui-nav-row .dir-ui-mono {
-  font-family: var(--font-sans);
-  word-break: normal;
-}
-/* A profile's origin (kit, worker, local…) under its description. */
-[data-iii-ui="iii-directory"] .dir-ui-browser.prominent-list .dir-ui-nav-row .iii-ui-list-item__description:has(.dir-ui-nav-origin) {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-nav-desc-line {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-nav-origin {
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* The row glyph is the same token glyph the avatar picker renders. */
 [data-iii-ui="iii-directory"] .dir-ui-nav-ico {
   display: inline-flex;
@@ -381,333 +195,7 @@
   width: 20px;
   height: 20px;
 }
-/* Touch-sized targets in the drill-in flow. */
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-nav-row {
-  min-height: 44px;
-  padding-top: 12px;
-  padding-bottom: 12px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow.prominent-list .dir-ui-nav-row {
-  min-height: 68px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-nav-ico {
-  width: 36px;
-  height: 36px;
-}
 
-/* sidebar loading / empty / error */
-[data-iii-ui="iii-directory"] .dir-ui-skel {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 12px 10px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-skel-row {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-side-empty {
-  padding: 8px 4px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-error {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 8px 4px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-error.grow {
-  align-self: flex-start;
-  margin: 16px;
-  max-width: 560px;
-}
-
-/* ── document workspace ─────────────────────────────────────────────── */
-
-[data-iii-ui="iii-directory"] .dir-ui-doc {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-panel);
-}
-/* workspace header — stable across loading/error/loaded states */
-[data-iii-ui="iii-directory"] .dir-ui-doc-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  min-height: 52px;
-  padding: 8px 16px 0;
-  flex-shrink: 0;
-  background: var(--color-panel-raised);
-}
-[data-iii-ui="iii-directory"] .dir-ui-editor-tabs {
-  order: 3;
-  width: 100%;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-identity {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1;
-  min-width: 140px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-ink);
-}
-/* The text needs its own box — ellipsis doesn't reach into a flex row. */
-[data-iii-ui="iii-directory"] .dir-ui-doc-name-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-crumb {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-save-area {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-[data-iii-ui="iii-directory"] .dir-ui-delete-btn {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-delete-btn:hover:not(:disabled) {
-  background: var(--color-alert-muted);
-  color: var(--color-alert);
-}
-[data-iii-ui="iii-directory"] .dir-ui-save-note {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-  white-space: nowrap;
-}
-/* status banners sit directly under the header, near what they describe */
-[data-iii-ui="iii-directory"] .dir-ui-banner {
-  flex-shrink: 0;
-  padding: 8px 16px 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-banner-detail {
-  display: block;
-  margin-bottom: 6px;
-  font-family: var(--font-mono);
-  word-break: break-word;
-}
-
-/* editor / split / preview body */
-[data-iii-ui="iii-directory"] .dir-ui-doc-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: stretch;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.dragging {
-  cursor: col-resize;
-  user-select: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-pane {
-  flex-grow: 1;
-  flex-basis: 0;
-  min-width: 0;
-  overflow: auto;
-}
-[data-iii-ui="iii-directory"] .dir-ui-pane.editor {
-  display: flex;
-  flex-direction: column;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.dragging .dir-ui-pane {
-  pointer-events: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.mode-split .dir-ui-pane {
-  min-width: 240px;
-}
-/* Preview mode keeps the editor MOUNTED (Monaco cursor/scroll survive). */
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.mode-preview .dir-ui-pane.editor {
-  display: none;
-}
-
-/* Structured frontmatter: the two fields people edit belong in real form
-   controls. Any remaining advanced YAML stays in the markdown source below. */
-[data-iii-ui="iii-directory"] .dir-ui-edit-fields {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.4fr) minmax(280px, 1fr);
-  gap: 12px;
-  padding: 14px 16px;
-  flex-shrink: 0;
-  background: var(--color-panel-raised);
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.mode-split .dir-ui-edit-fields,
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-edit-fields {
-  grid-template-columns: minmax(0, 1fr);
-}
-[data-iii-ui="iii-directory"] .dir-ui-edit-field {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-edit-label {
-  min-height: 12px;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  line-height: 1;
-}
-/* The derived file name is data: authored casing, no tracking. */
-[data-iii-ui="iii-directory"] .dir-ui-edit-hint {
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-model-invocation {
-  grid-column: 1 / -1;
-  min-width: 0;
-  padding-top: 2px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-checkrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-checkrow input {
-  accent-color: var(--color-accent);
-}
-[data-iii-ui="iii-directory"] .dir-ui-checkrow.dir-ui-model-invocation {
-  align-items: flex-start;
-  cursor: pointer;
-}
-[data-iii-ui="iii-directory"] .dir-ui-model-invocation > input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  flex: none;
-  cursor: inherit;
-}
-[data-iii-ui="iii-directory"] .dir-ui-model-invocation:has(input:disabled) {
-  cursor: not-allowed;
-}
-[data-iii-ui="iii-directory"] .dir-ui-edit-textarea {
-  width: 100%;
-  min-height: 64px;
-  resize: vertical;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: var(--color-surface);
-  padding: 9px 12px;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--color-ink);
-  transition:
-    border-color var(--motion-duration-control) var(--motion-ease-standard),
-    background-color var(--motion-duration-control) var(--motion-ease-standard);
-}
-[data-iii-ui="iii-directory"] .dir-ui-edit-textarea::placeholder {
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-edit-textarea:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="iii-directory"] .dir-ui-edit-textarea:focus {
-  outline: none;
-  border-color: var(--color-rule-focus);
-}
-[data-iii-ui="iii-directory"] .dir-ui-source-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 30px;
-  padding: 7px 16px;
-  flex-shrink: 0;
-  background: var(--color-bg);
-}
-[data-iii-ui="iii-directory"] .dir-ui-code {
-  min-height: 240px;
-  flex: 1;
-}
-[data-iii-ui="iii-directory"] .dir-ui-divider {
-  flex: 0 0 5px;
-  cursor: col-resize;
-  background: transparent;
-  border-left: 1px solid var(--color-edge);
-  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
-  touch-action: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-divider:hover,
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.dragging .dir-ui-divider {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="iii-directory"] .dir-ui-divider:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-loading {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 28px 32px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-statusbar {
-  padding: 0 16px;
-  background: var(--color-panel-raised);
-}
-/* workspace empty state — teaches the next action, not the absence */
-[data-iii-ui="iii-directory"] .dir-ui-hero {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 48px 24px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-hero-hint {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-}
-
-/* ── preview: document typography, not another code panel ───────────── */
-
-[data-iii-ui="iii-directory"] .dir-ui-pane.preview {
-  background: var(--color-panel);
-}
-[data-iii-ui="iii-directory"] .dir-ui-reading {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 40px 48px 72px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.mode-split .dir-ui-reading {
-  padding: 28px 32px 56px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-reading {
-  padding: 24px 20px 48px;
-}
 /* Undo MarkdownPreview's card chrome — the reading column owns spacing. */
 [data-iii-ui="iii-directory"] .dir-ui-preview {
   background: transparent;
@@ -814,6 +302,1506 @@
 [data-iii-ui="iii-directory"] .dir-ui-preview input[type="checkbox"] {
   margin-right: 6px;
   accent-color: var(--color-accent);
+}
+
+/* ── the page (page `directory`): library + document ───────────────────
+   Inter for everything a person reads (mono only for ids, paths, code),
+   14px rows, secondary copy in ink-faint, hairline edges, one floating
+   save bar. Every state carries a non-colour cue (indicator, underline,
+   ring). Hover only where there is hover; logical properties throughout. */
+
+[data-iii-ui="iii-directory"] .dir-shell {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  /* The document column every header, notice, field and reading body
+     shares: one left edge, one right edge. */
+  --dir-column: 720px;
+  --dir-gutter: 24px;
+  --dir-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --dir-ease-swap: cubic-bezier(0.2, 0, 0, 1);
+  min-height: 360px;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  background: var(--color-panel);
+}
+/* Dark: a true black canvas with neutral-900 hairlines and washes, like
+   the chat and kanban — no matte grey panels. Remapped on the shell so the
+   agent form and Kits inherit it too. Controls keep a findable stroke
+   (dialog edge, neutral-800), one step above the structural hairline. */
+[data-iii-ui="iii-directory"] .dir-shell:is([data-theme="dark"] *) {
+  --color-panel: black;
+  --color-panel-raised: black;
+  --color-bg: black;
+  --color-edge: var(--color-popover-edge);
+  --color-card-edge: var(--color-popover-edge);
+  --color-control-edge: var(--color-dialog-edge);
+  --color-surface: color-mix(in srgb, var(--color-ink) 9%, black);
+  --color-surface-hover: color-mix(in srgb, var(--color-ink) 9%, black);
+  --color-surface-selected: color-mix(in srgb, var(--color-ink) 12%, black);
+}
+[data-iii-ui="iii-directory"] .dir-shell-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+/* Inactive sections stay mounted (drafts survive switching) but must
+   disappear — the flex display above would beat [hidden]. */
+[data-iii-ui="iii-directory"] .dir-shell-body[hidden] {
+  display: none;
+}
+[data-iii-ui="iii-directory"] .dir-mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+[data-iii-ui="iii-directory"] .dir-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+[data-iii-ui="iii-directory"] .dir-browser {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  container-type: inline-size;
+}
+/* Right-docked pane: mirror so the library hugs the outer edge. */
+[data-iii-ui="iii-directory"] .dir-browser.right {
+  flex-direction: row-reverse;
+}
+[data-iii-ui="iii-directory"] .dir-side {
+  border-inline-end: 1px solid var(--color-edge);
+  background: var(--color-panel);
+}
+[data-iii-ui="iii-directory"] .dir-browser.right .dir-side {
+  border-inline-end: 0;
+  border-inline-start: 1px solid var(--color-edge);
+}
+[data-iii-ui="iii-directory"] .dir-browser.narrow .dir-side {
+  border: 0;
+}
+
+/* section tabs: line tabs (the agent page's pattern) — the 2px underline
+   is the cue, the label stays readable, counts trail */
+[data-iii-ui="iii-directory"] .dir-sections-wrap {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="iii-directory"] .dir-sections-root {
+  flex: 1;
+  min-width: 0;
+  gap: 0;
+}
+[data-iii-ui="iii-directory"] .dir-sections {
+  justify-content: flex-start;
+  gap: 2px;
+  width: 100%;
+  height: 36px;
+  padding: 0;
+}
+[data-iii-ui="iii-directory"] .dir-section {
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 0 5px;
+  font: 500 14px/1 var(--font-sans);
+  color: var(--color-ink-faint);
+  transition-property: color;
+  transition-duration: var(--motion-duration-instant);
+}
+[data-iii-ui="iii-directory"] .dir-section[aria-selected="true"] {
+  color: var(--color-ink);
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-section:hover {
+    color: var(--color-ink);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-section:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+[data-iii-ui="iii-directory"] .dir-section-count {
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-section-attention {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-warn-muted);
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── library column ── */
+[data-iii-ui="iii-directory"] .dir-lib {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+[data-iii-ui="iii-directory"] .dir-lib-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px 4px;
+}
+/* Search (and every input here): a control-edge stroke you can find, a
+   2px focus ring, no fill. */
+[data-iii-ui="iii-directory"] .dir-lib-search {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-control-edge);
+  background: transparent;
+}
+[data-iii-ui="iii-directory"] .dir-lib-search:has(input:focus-visible) {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-search-icon {
+  position: absolute;
+  inset-inline-start: 9px;
+  width: 16px;
+  height: 16px;
+  color: var(--color-ink-faint);
+  pointer-events: none;
+}
+[data-iii-ui="iii-directory"] .dir-lib-search input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding-block: 0;
+  padding-inline: 34px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: 400 14px/1 var(--font-sans);
+}
+[data-iii-ui="iii-directory"] .dir-lib-search input::placeholder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-lib-search input::-webkit-search-cancel-button {
+  display: none;
+}
+[data-iii-ui="iii-directory"] .dir-lib-search-kbd {
+  position: absolute;
+  inset-inline-end: 8px;
+  pointer-events: none;
+}
+[data-iii-ui="iii-directory"] .dir-lib-search-clear {
+  position: absolute;
+  inset-inline-end: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-lib-search-clear:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-ink);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-lib-search-clear:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-search-clear svg {
+  width: 16px;
+  height: 16px;
+}
+/* Holds "12 of 170" while a query is active; empty (and 8px) otherwise. */
+[data-iii-ui="iii-directory"] .dir-lib-meta {
+  min-height: 8px;
+  padding: 0 16px;
+  font-size: 12px;
+  line-height: 24px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="iii-directory"] .dir-lib-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 8px 16px;
+  scrollbar-gutter: stable;
+}
+/* Groups: 16px between, 2px inside — space before lines. */
+[data-iii-ui="iii-directory"] .dir-lib-group + .dir-lib-group {
+  margin-block-start: 16px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+  padding-block: 0;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--color-panel);
+  color: var(--color-ink-faint);
+  font: 500 12px/1 var(--font-sans);
+  text-align: start;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-lib-group-head:hover:not(:disabled) {
+    color: var(--color-ink);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-lib-group-head:disabled {
+  cursor: default;
+}
+[data-iii-ui="iii-directory"] .dir-lib-group-head:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-group-chevron {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+[data-iii-ui="iii-directory"] .dir-lib-group-head[aria-expanded="true"] .dir-lib-group-chevron {
+  transform: rotate(90deg);
+}
+/* The chevron points along the reading direction. */
+[data-iii-ui="iii-directory"] .dir-lib-group-head:dir(rtl) .dir-lib-group-chevron {
+  scale: -1 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="iii-directory"] .dir-lib-group-chevron {
+    transition: transform var(--motion-duration-fast) var(--dir-ease-swap);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-lib-group-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="iii-directory"] .dir-lib-group-count {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="iii-directory"] .dir-lib-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="iii-directory"] .dir-lib-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--color-ink);
+  text-align: start;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-lib-row:hover {
+    background: var(--color-surface-hover);
+  }
+}
+/* Selected = the wash across the whole row; no side rail. */
+[data-iii-ui="iii-directory"] .dir-lib-row[aria-current="true"] {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="iii-directory"] .dir-lib-row:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-hover);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-glyph[data-color] {
+  background: color-mix(in oklab, var(--agent-avatar-tone) 16%, var(--color-panel));
+  color: var(--agent-avatar-tone);
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-glyph svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-badge {
+  flex-shrink: 0;
+  margin-inline-start: auto;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-lib-row-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-lib-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 10px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-state-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+[data-iii-ui="iii-directory"] .dir-lib-state-body {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+[data-iii-ui="iii-directory"] .dir-lib-state-detail {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="iii-directory"] .dir-lib-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 10px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── document ── */
+[data-iii-ui="iii-directory"] .dir-doc {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--color-panel);
+  container-type: inline-size;
+}
+[data-iii-ui="iii-directory"] .dir-doc-back {
+  padding: 8px 12px 0;
+}
+/* Header, notices, fields, editor and the reading body share ONE column,
+   centred in the pane (a document, like Linear's): same edges top to
+   bottom, gutters on narrow panes. */
+[data-iii-ui="iii-directory"] .dir-doc-head,
+[data-iii-ui="iii-directory"] .dir-notice,
+[data-iii-ui="iii-directory"] .dir-fields,
+[data-iii-ui="iii-directory"] .dir-reading,
+[data-iii-ui="iii-directory"] .dir-source-head,
+[data-iii-ui="iii-directory"] .dir-doc-skeleton {
+  box-sizing: border-box;
+  width: 100%;
+  max-inline-size: calc(var(--dir-column) + 2 * var(--dir-gutter));
+  margin-inline: auto;
+}
+[data-iii-ui="iii-directory"] .dir-doc-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px var(--dir-gutter) 16px;
+}
+[data-iii-ui="iii-directory"] .dir-doc-identity {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-doc-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+[data-iii-ui="iii-directory"] .dir-doc-title-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="iii-directory"] .dir-doc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-doc-fine {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="iii-directory"] .dir-doc-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 24px;
+  margin-inline-start: -6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-doc-id:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-ink);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-doc-id:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 0;
+}
+[data-iii-ui="iii-directory"] .dir-doc-id .dir-mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Copy ⇄ copied: two stacked glyphs cross-fade (scale, opacity, blur). */
+[data-iii-ui="iii-directory"] .dir-copy-glyph {
+  position: relative;
+  display: inline-grid;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="iii-directory"] .dir-copy-glyph svg {
+  grid-area: 1 / 1;
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="iii-directory"] .dir-copy-glyph-done {
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+  color: var(--color-ok);
+}
+[data-iii-ui="iii-directory"] .dir-copy-glyph[data-copied] .dir-copy-glyph-idle {
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+[data-iii-ui="iii-directory"] .dir-copy-glyph[data-copied] .dir-copy-glyph-done {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="iii-directory"] .dir-copy-glyph svg {
+    transition-property: opacity, scale, filter;
+    transition-duration: var(--motion-duration-panel);
+    transition-timing-function: var(--dir-ease-swap);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="iii-directory"] .dir-copy-glyph svg {
+    scale: 1;
+    filter: none;
+    transition: opacity var(--motion-duration-fast) ease-out;
+  }
+}
+[data-iii-ui="iii-directory"] .dir-doc-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  box-shadow: inset 0 0 0 1px var(--color-card-edge);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-doc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+/* View switch: labelled segments in an 8px track (outer 8 = inner 6 +
+   2px inset). Active = a control-edge ring + ink label, not a fill. */
+[data-iii-ui="iii-directory"] .dir-modes-root {
+  gap: 0;
+}
+[data-iii-ui="iii-directory"] .dir-modes {
+  height: 34px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+}
+[data-iii-ui="iii-directory"] .dir-mode {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: 500 13px/1 var(--font-sans);
+  transition-property: none;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-mode:hover {
+    color: var(--color-ink);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-mode[aria-selected="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+  box-shadow: 0 0 0 1px var(--color-control-edge);
+}
+[data-iii-ui="iii-directory"] .dir-mode:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+[data-iii-ui="iii-directory"] .dir-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 0 var(--dir-gutter) 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+[data-iii-ui="iii-directory"] .dir-notice > span:first-child {
+  flex: 1 1 240px;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--color-warn-muted);
+}
+[data-iii-ui="iii-directory"] .dir-notice[data-tone="alert"] > span:first-child {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui="iii-directory"] .dir-notice-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-doc-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  border-block-start: 1px solid var(--color-edge);
+}
+[data-iii-ui="iii-directory"] .dir-doc-body.dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+[data-iii-ui="iii-directory"] .dir-pane {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+/* Read view keeps the editor MOUNTED (Monaco cursor/scroll survive). */
+[data-iii-ui="iii-directory"] .dir-doc-body.mode-read .dir-pane-edit {
+  display: none;
+}
+[data-iii-ui="iii-directory"] .dir-pane-read {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+[data-iii-ui="iii-directory"] .dir-divider {
+  position: relative;
+  flex: 0 0 1px;
+  background: var(--color-edge);
+  cursor: col-resize;
+}
+[data-iii-ui="iii-directory"] .dir-divider::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline: -4px;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-divider:hover {
+    background: var(--color-rule-focus);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-divider:focus-visible,
+[data-iii-ui="iii-directory"] .dir-doc-body.dragging .dir-divider {
+  background: var(--color-rule-focus);
+  outline: 0;
+}
+[data-iii-ui="iii-directory"] .dir-divider:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-rule-focus);
+}
+[data-iii-ui="iii-directory"] .dir-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px var(--dir-gutter) 16px;
+}
+
+[data-iii-ui="iii-directory"] .dir-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-field-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-field-help {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-ink-faint);
+  text-wrap: pretty;
+}
+[data-iii-ui="iii-directory"] .dir-field-error {
+  color: var(--color-alert);
+}
+[data-iii-ui="iii-directory"] .dir-input,
+[data-iii-ui="iii-directory"] .dir-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--color-control-edge);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--color-ink);
+  font: 400 14px/20px var(--font-sans);
+}
+[data-iii-ui="iii-directory"] .dir-input {
+  min-height: 36px;
+  padding: 0 12px;
+}
+[data-iii-ui="iii-directory"] .dir-input.dir-mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+[data-iii-ui="iii-directory"] .dir-textarea {
+  min-height: 60px;
+  padding: 8px 12px;
+  resize: none;
+}
+[data-iii-ui="iii-directory"] .dir-input:focus,
+[data-iii-ui="iii-directory"] .dir-textarea:focus {
+  outline: 0;
+  box-shadow: none;
+}
+[data-iii-ui="iii-directory"] .dir-input:focus-visible,
+[data-iii-ui="iii-directory"] .dir-textarea:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="iii-directory"] .dir-input::placeholder,
+[data-iii-ui="iii-directory"] .dir-textarea::placeholder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+[data-iii-ui="iii-directory"] .dir-check > :first-child {
+  margin-block-start: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-check-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+[data-iii-ui="iii-directory"] .dir-check-help {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-source {
+  display: flex;
+  flex: 1;
+  min-height: 240px;
+  flex-direction: column;
+}
+[data-iii-ui="iii-directory"] .dir-source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 var(--dir-gutter);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-source-meta {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+/* The editor lives in the same column: outlined, rounded, filling the
+   height that is left. */
+[data-iii-ui="iii-directory"] .dir-code {
+  flex: 1;
+  min-height: 240px;
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--dir-gutter));
+  max-inline-size: var(--dir-column);
+  margin: 0 auto 88px;
+  overflow: hidden;
+}
+[data-iii-ui="iii-directory"] .dir-reading {
+  padding: 24px var(--dir-gutter) 120px;
+}
+[data-iii-ui="iii-directory"] .dir-doc-body.mode-split .dir-reading {
+  padding: 20px var(--dir-gutter) 120px;
+}
+[data-iii-ui="iii-directory"] .dir-reading-lead {
+  margin: 0 0 24px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+  text-wrap: pretty;
+}
+[data-iii-ui="iii-directory"] .dir-reading-empty {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-doc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 96px;
+}
+/* The agent form owns its scroll region and reveal; this only hands it the
+   column's height, plus room under it for the save bar. */
+[data-iii-ui="iii-directory"] .dir-doc-custom {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+[data-iii-ui="iii-directory"] .dir-doc-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px var(--dir-gutter);
+}
+[data-iii-ui="iii-directory"] .dir-doc-skeleton-gap {
+  height: 12px;
+}
+[data-iii-ui="iii-directory"] .dir-doc-empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 32px var(--dir-gutter);
+  overflow-y: auto;
+}
+[data-iii-ui="iii-directory"] .dir-doc-empty-card {
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="iii-directory"] .dir-doc-empty-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+}
+[data-iii-ui="iii-directory"] .dir-doc-empty-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+[data-iii-ui="iii-directory"] .dir-doc-empty-fine {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-doc-empty-fine[data-tone="alert"] {
+  color: var(--color-alert);
+}
+[data-iii-ui="iii-directory"] .dir-doc-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-block-start: 8px;
+}
+
+/* Buttons give under the finger; never when disabled, never under reduce. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="iii-directory"] .dir-shell button[data-slot="button"]:not(:disabled) {
+    transition-property: background-color, color, scale;
+    transition-duration: var(--motion-duration-fast);
+    transition-timing-function: ease-out;
+  }
+  [data-iii-ui="iii-directory"] .dir-shell button[data-slot="button"]:not(:disabled):active {
+    scale: 0.96;
+  }
+}
+
+/* the one save bar: enters once when the draft turns dirty */
+[data-iii-ui="iii-directory"] .dir-savebar {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 20px;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+[data-iii-ui="iii-directory"] .dir-savebar-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 16px;
+  max-width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding-block: 6px;
+  padding-inline: 16px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xl);
+  background: var(--color-popover-surface);
+  box-shadow: 0 0 0 1px var(--color-popover-edge), var(--shadow-floating);
+  font-size: 14px;
+  opacity: 0;
+  translate: 0 8px;
+  filter: blur(4px);
+  /* Exit: shorter than the enter, easing out. */
+  transition:
+    opacity var(--motion-duration-control) ease-out,
+    translate var(--motion-duration-control) ease-out,
+    filter var(--motion-duration-control) ease-out;
+}
+[data-iii-ui="iii-directory"] .dir-savebar[data-visible] .dir-savebar-card {
+  opacity: 1;
+  translate: 0 0;
+  filter: blur(0);
+  pointer-events: auto;
+  transition-duration: var(--motion-duration-panel);
+  transition-timing-function: var(--dir-ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="iii-directory"] .dir-savebar-card,
+  [data-iii-ui="iii-directory"] .dir-savebar[data-visible] .dir-savebar-card {
+    translate: none;
+    filter: none;
+    transition: opacity var(--motion-duration-fast) ease-out;
+  }
+}
+[data-iii-ui="iii-directory"] .dir-savebar-card[data-tone="alert"] .dir-savebar-text {
+  color: var(--color-alert);
+}
+[data-iii-ui="iii-directory"] .dir-savebar-status {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-savebar-status svg {
+  width: 16px;
+  height: 16px;
+  color: var(--color-ok);
+}
+[data-iii-ui="iii-directory"] .dir-savebar-text {
+  overflow-wrap: anywhere;
+  max-width: 56ch;
+}
+[data-iii-ui="iii-directory"] .dir-savebar-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+[data-iii-ui="iii-directory"] .dir-savebar-kbd {
+  margin-inline-start: 4px;
+}
+/* Keycaps on the filled Save button take the button's ink, not the muted
+   grey made for the canvas. */
+[data-iii-ui="iii-directory"] .dir-savebar-kbd [data-slot="kbd"] {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+  opacity: 0.75;
+}
+
+/* ── agent page: identity header + tabs, in the same 820px column ─────── */
+
+[data-iii-ui="iii-directory"] .dir-agent {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-panel);
+  font-family: var(--font-sans);
+}
+[data-iii-ui="iii-directory"] .dir-agent-head,
+[data-iii-ui="iii-directory"] .dir-agent-panel-hint,
+[data-iii-ui="iii-directory"] .dir-agent-tabs-skeleton {
+  box-sizing: border-box;
+  width: 100%;
+  max-inline-size: calc(var(--dir-column) + 2 * var(--dir-gutter));
+  margin-inline: auto;
+}
+[data-iii-ui="iii-directory"] .dir-agent-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px var(--dir-gutter) 16px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-head .dir-ui-af-avatar-trigger {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-xl);
+}
+[data-iii-ui="iii-directory"] .dir-agent-identity {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-file {
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="iii-directory"] .dir-agent-tabs {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0;
+}
+[data-iii-ui="iii-directory"] .dir-agent-tablist {
+  flex-shrink: 0;
+  justify-content: flex-start;
+  gap: 4px;
+  margin-inline: auto;
+  width: calc(100% - 2 * var(--dir-gutter));
+  max-inline-size: var(--dir-column);
+  height: 40px;
+  padding: 0;
+  border-block-end: 1px solid var(--color-edge);
+  font-size: 14px;
+}
+/* Tabs hug their labels, left-aligned. */
+[data-iii-ui="iii-directory"] .dir-agent-tablist > button:first-child {
+  margin-inline-start: -10px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-tablist > button {
+  flex: 0 0 auto;
+  padding: 0 10px;
+  font-size: 14px;
+  transition-property: color;
+  transition-duration: var(--motion-duration-instant);
+}
+[data-iii-ui="iii-directory"] .dir-agent-tablist > button:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+[data-iii-ui="iii-directory"] .dir-agent-tab-count {
+  margin-inline-start: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-agent-panel {
+  flex: 1;
+  min-height: 0;
+  outline: 0;
+}
+/* Panels stay mounted (Monaco is built once, not on every tab switch);
+   the inactive ones must still disappear. */
+[data-iii-ui="iii-directory"] .dir-agent-panel[hidden] {
+  display: none;
+}
+[data-iii-ui="iii-directory"] .dir-agent-panel.is-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-block: 20px 112px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-panel.is-scroll > * {
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--dir-gutter));
+  max-inline-size: var(--dir-column);
+  margin-inline: auto;
+}
+[data-iii-ui="iii-directory"] .dir-agent-panel.is-editor,
+[data-iii-ui="iii-directory"] .dir-agent-panel.is-fill {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="iii-directory"] .dir-agent-panel.is-editor .dir-agent-panel-hint,
+[data-iii-ui="iii-directory"] .dir-agent-panel.is-fill .dir-agent-panel-hint {
+  margin-block: 0;
+  padding: 16px var(--dir-gutter) 12px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-panel-hint {
+  margin-block: 0 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+  text-wrap: pretty;
+}
+[data-iii-ui="iii-directory"] .dir-agent-prompt-editor {
+  flex: 1;
+  min-height: 240px;
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--dir-gutter));
+  max-inline-size: var(--dir-column);
+  margin: 0 auto 88px;
+  overflow: hidden;
+}
+
+/* Overview: one outlined settings list — what it is leading, the control
+   trailing, a hairline between rows (stacks in narrow panes). */
+[data-iii-ui="iii-directory"] .dir-agent-settings {
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: 8px 24px;
+  padding: 16px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting + .dir-agent-setting {
+  border-block-start: 1px solid var(--color-edge);
+}
+@container (max-width: 560px) {
+  [data-iii-ui="iii-directory"] .dir-agent-setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-hint {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-ink-faint);
+  text-wrap: pretty;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-error {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-alert);
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control.is-switch {
+  justify-content: flex-end;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control.is-switch > :first-child {
+  flex: 0 0 auto;
+}
+[data-iii-ui="iii-directory"] .dir-agent-picker {
+  width: 100%;
+}
+/* Every control in the settings list is an outlined field on the canvas
+   (no grey fills), with the control stroke. */
+[data-iii-ui="iii-directory"] .dir-agent-setting-control button[aria-haspopup],
+[data-iii-ui="iii-directory"] .dir-agent-setting-control [role="combobox"] {
+  min-height: 36px;
+  border: 1px solid var(--color-control-edge);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 14px;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-agent-setting-control button[aria-haspopup]:hover,
+  [data-iii-ui="iii-directory"] .dir-agent-setting-control [role="combobox"]:hover {
+    background: var(--color-surface-hover);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control button[aria-haspopup]:focus-visible,
+[data-iii-ui="iii-directory"] .dir-agent-setting-control [role="combobox"]:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control .dir-ui-af-text-input {
+  border: 1px solid var(--color-control-edge);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  font-size: 14px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control .dir-ui-af-text-input::placeholder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-agent-setting-control .dir-ui-af-text-input:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+/* What a new chat with this agent starts with, read off the fields above. */
+[data-iii-ui="iii-directory"] .dir-agent-summary {
+  margin-block: 16px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+}
+[data-iii-ui="iii-directory"] .dir-agent-summary-label {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-agent-summary-label::after {
+  content: ":";
+}
+
+/* skeleton */
+[data-iii-ui="iii-directory"] .dir-agent-skeleton .dir-agent-identity {
+  gap: 10px;
+  padding-block-start: 4px;
+}
+[data-iii-ui="iii-directory"] .dir-agent-tabs-skeleton {
+  display: flex;
+  gap: 24px;
+  height: 40px;
+  align-items: center;
+  padding: 0 var(--dir-gutter);
+  border-block-end: 1px solid var(--color-edge);
+}
+[data-iii-ui="iii-directory"] .dir-agent-skeleton .dir-agent-settings {
+  max-inline-size: var(--dir-column);
+  margin: 20px auto;
+}
+
+/* ── skill / function picker: the library's row anatomy, one outlined
+   list, sticky "Selected" / "Available" group heads ─────────────────── */
+[data-iii-ui="iii-directory"] .dir-picker {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--dir-gutter));
+  max-inline-size: var(--dir-column);
+  margin: 0 auto 88px;
+}
+[data-iii-ui="iii-directory"] .dir-picker-search {
+  flex: 0 0 auto;
+}
+[data-iii-ui="iii-directory"] .dir-picker-list {
+  flex: 1;
+  min-height: 160px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 4px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+}
+[data-iii-ui="iii-directory"] .dir-picker-group + .dir-picker-group {
+  margin-block-start: 8px;
+}
+[data-iii-ui="iii-directory"] .dir-picker-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  margin: 0;
+  padding: 0 10px;
+  background: var(--color-panel);
+  font: 500 12px/1 var(--font-sans);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-picker-count {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="iii-directory"] .dir-picker-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="iii-directory"] .dir-picker-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-picker-row:hover {
+    background: var(--color-surface-hover);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-picker-row:has(input:disabled) {
+  cursor: default;
+}
+/* Keyboard focus rings the whole row, not only the check. */
+[data-iii-ui="iii-directory"] .dir-picker-row:has(.dir-picker-native:focus-visible) {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="iii-directory"] .dir-picker-native {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+[data-iii-ui="iii-directory"] .dir-picker-check {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1px solid var(--color-control-edge);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: transparent;
+}
+[data-iii-ui="iii-directory"] .dir-picker-check[data-checked] {
+  border-color: var(--color-ink);
+  background: var(--color-ink);
+  color: var(--color-panel);
+}
+[data-iii-ui="iii-directory"] .dir-picker-check svg {
+  width: 16px;
+  height: 16px;
+  padding: 2px;
+  box-sizing: border-box;
+}
+[data-iii-ui="iii-directory"] .dir-picker-row:has(input:disabled) .dir-picker-check {
+  opacity: 0.5;
+}
+[data-iii-ui="iii-directory"] .dir-picker-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-picker-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="iii-directory"] .dir-picker-name,
+[data-iii-ui="iii-directory"] .dir-picker-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="iii-directory"] .dir-picker-name {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-picker-row[data-mono] .dir-picker-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+[data-iii-ui="iii-directory"] .dir-picker-desc {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-picker-missing {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-warn);
+}
+[data-iii-ui="iii-directory"] .dir-picker-empty {
+  margin: 0;
+  padding: 8px 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+
+/* ── kits on the shared frame ── */
+[data-iii-ui="iii-directory"] .dir-kit-doc .dir-notice {
+  padding-block-start: 12px;
+}
+[data-iii-ui="iii-directory"] .dir-dev {
+  margin-block-start: 24px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-dev summary {
+  width: fit-content;
+  border-radius: 6px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-dev summary:hover {
+    color: var(--color-ink);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-dev summary:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-dev-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-block-start: 12px;
+}
+[data-iii-ui="iii-directory"] .dir-dev-label {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-iii-ui="iii-directory"] .dir-dev-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 2px;
+  padding-inline: 10px 2px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+[data-iii-ui="iii-directory"] .dir-dev-line code {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="iii-directory"] .dir-install-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-block: 16px;
 }
 
 /* ── the configuration form ─────────────────────────────────────────── */
@@ -988,127 +1976,40 @@
 [data-iii-ui="iii-directory"] .t-skel-content {
   position: absolute;
   inset: 0;
-  transition:
-    opacity var(--motion-duration-panel) var(--motion-ease-standard),
-    filter var(--motion-duration-panel) var(--motion-ease-standard);
+  transition: opacity var(--motion-duration-fast) ease-out;
 }
 [data-iii-ui="iii-directory"] .t-skel-skeleton {
   z-index: 1;
   opacity: 1;
-  filter: blur(0);
 }
 [data-iii-ui="iii-directory"] .t-skel-content {
   z-index: 2;
   opacity: 0;
-  filter: blur(2px);
 }
 [data-iii-ui="iii-directory"] .t-skel.is-revealed .t-skel-skeleton {
   opacity: 0;
-  filter: blur(2px);
+  pointer-events: none;
 }
 [data-iii-ui="iii-directory"] .t-skel.is-revealed .t-skel-content {
   opacity: 1;
-  filter: blur(0);
 }
 [data-iii-ui="iii-directory"] .dir-ui-af-loading {
   flex: 1;
   min-height: 0;
   overflow: auto;
 }
-[data-iii-ui="iii-directory"] .dir-ui-af-loading .t-skel-skeleton,
-[data-iii-ui="iii-directory"] .dir-ui-af-skeleton {
+[data-iii-ui="iii-directory"] .dir-ui-af-loading .t-skel-skeleton {
   min-height: 100%;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  gap: 22px;
-  padding: 32px clamp(20px, 4cqi, 52px) 64px;
-  background: var(--color-panel);
-  font-family: var(--font-sans);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skeleton-prompt {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skeleton-skill-row {
-  display: flex;
-  min-height: 50px;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 7px 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-profile,
-[data-iii-ui="iii-directory"] .dir-ui-af-aligned {
-  width: min(100%, 780px);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-profile {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 1fr);
-  align-items: start;
-  gap: 16px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-profile-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding-top: 1px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-title-row {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-title-row .dir-ui-af-inline-display,
-[data-iii-ui="iii-directory"] .dir-ui-af-title-row .dir-ui-af-inline-input {
-  flex: 1;
-  min-width: 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-save-panel {
-  position: sticky;
-  top: 0;
-  z-index: 4;
-  display: flex;
-  min-height: 48px;
-  min-width: 0;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 16px;
-  background: var(--color-panel-raised);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-save-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-left: auto;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-aligned {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding-left: 72px;
 }
 
 /* identity tint: one of the six glyph tones, faint ink when unset */
-[data-iii-ui="iii-directory"] [data-color] { --agent-avatar-tone: var(--color-ink-faint); }
-[data-iii-ui="iii-directory"] [data-color="blue"] { --agent-avatar-tone: var(--color-glyph-blue); }
-[data-iii-ui="iii-directory"] [data-color="purple"] { --agent-avatar-tone: var(--color-glyph-purple); }
-[data-iii-ui="iii-directory"] [data-color="teal"] { --agent-avatar-tone: var(--color-glyph-teal); }
-[data-iii-ui="iii-directory"] [data-color="green"] { --agent-avatar-tone: var(--color-glyph-green); }
-[data-iii-ui="iii-directory"] [data-color="amber"] { --agent-avatar-tone: var(--color-glyph-amber); }
-[data-iii-ui="iii-directory"] [data-color="rose"] { --agent-avatar-tone: var(--color-glyph-rose); }
+[data-iii-ui="iii-directory"] [data-color]{ --agent-avatar-tone: var(--color-ink-faint); }
+[data-iii-ui="iii-directory"] [data-color="blue"]{ --agent-avatar-tone: var(--color-glyph-blue); }
+[data-iii-ui="iii-directory"] [data-color="purple"]{ --agent-avatar-tone: var(--color-glyph-purple); }
+[data-iii-ui="iii-directory"] [data-color="teal"]{ --agent-avatar-tone: var(--color-glyph-teal); }
+[data-iii-ui="iii-directory"] [data-color="green"]{ --agent-avatar-tone: var(--color-glyph-green); }
+[data-iii-ui="iii-directory"] [data-color="amber"]{ --agent-avatar-tone: var(--color-glyph-amber); }
+[data-iii-ui="iii-directory"] [data-color="rose"]{ --agent-avatar-tone: var(--color-glyph-rose); }
 [data-iii-ui="iii-directory"] .dir-ui-af-avatar-wrap {
   position: relative;
   display: block;
@@ -1136,8 +2037,7 @@
 }
 [data-iii-ui="iii-directory"] .dir-ui-af-avatar-trigger:focus-visible,
 [data-iii-ui="iii-directory"] .dir-ui-af-avatar-option:focus-visible,
-[data-iii-ui="iii-directory"] .dir-ui-af-avatar-color input:focus-visible,
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display:focus-visible {
+[data-iii-ui="iii-directory"] .dir-ui-af-avatar-color input:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
 }
@@ -1221,162 +2121,7 @@
   border-color: var(--color-panel-raised);
   box-shadow: 0 0 0 2px var(--color-ink);
 }
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display {
-  appearance: none;
-  display: flex;
-  min-width: 0;
-  max-width: 100%;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink);
-  font-family: inherit;
-  text-align: left;
-}
-[data-iii-ui="iii-directory"] button.dir-ui-af-inline-display {
-  cursor: text;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display.name {
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display.description {
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display .placeholder {
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display:focus-visible {
-  outline-offset: 4px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-pencil {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  margin-top: 6px;
-  opacity: 0.65;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display.description .dir-ui-af-pencil {
-  margin-top: 3px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display:hover .dir-ui-af-pencil,
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-display:focus-visible .dir-ui-af-pencil {
-  opacity: 1;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-input {
-  box-sizing: border-box;
-  width: 100%;
-  border: 0;
-  border-radius: 6px;
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -1px;
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font-family: inherit;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-name-input {
-  height: 38px;
-  padding: 2px 8px;
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inline-description-input {
-  min-height: 32px;
-  overflow: hidden;
-  resize: none;
-  padding: 6px 8px;
-  font-size: 14px;
-  line-height: 1.55;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-file-hint {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-inheritance-error {
-  color: var(--color-warn);
-}
-/* Profile settings: a grid of stacked fields (label, hint, control) that
-   fills the aligned column. The track minimum is half the row, so it never
-   holds more than two columns and folds to one below ~520px on its own —
-   no breakpoint, so split mode and narrow panes behave the same way. */
-[data-iii-ui="iii-directory"] .dir-ui-af-settings {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(248px, calc((100% - 25px) / 2))), 1fr));
-  align-items: start;
-  gap: 20px 24px;
-  padding-bottom: 6px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field.is-wide {
-  grid-column: 1 / -1;
-}
-/* A boolean reads as one line: the switch leads, its label and hint follow. */
-[data-iii-ui="iii-directory"] .dir-ui-af-field.is-switch {
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 12px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field.is-switch:not(:has(input:disabled)) label {
-  cursor: pointer;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field-head {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field-label {
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-  color: var(--color-ink);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field-hint {
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field-control {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field-picker {
-  flex: 1 1 auto;
-  width: 100%;
-  min-width: 0;
-}
-/* The shared model trigger is transparent (it was drawn for the chat
-   composer). Give it the Select's field fill so Model and Extends read as a
-   pair; without this hook it simply falls back to the transparent trigger. */
-[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup] {
-  background: var(--color-surface);
-  color: var(--color-ink);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup]:hover,
-[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup][data-state="open"] {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup] > svg {
-  color: var(--color-ink-faint);
-  stroke-width: 1;
-}
+
 /* Plain multi-line text field (the composer example): same surface and
    focus ring as the inline editors, as wide as its grid cell. */
 [data-iii-ui="iii-directory"] .dir-ui-af-text-input {
@@ -1402,425 +2147,21 @@
   outline-offset: -1px;
 }
 
-/* disclosure rows: the shared collapsible card, flattened onto the page */
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure {
-  border: 0;
-  border-top: 1px solid var(--color-edge);
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  overflow: visible;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-head {
-  display: grid;
-  width: 100%;
-  min-height: 62px;
-  grid-template-columns: minmax(0, 1fr) auto 16px;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border-radius: 6px;
-  color: var(--color-ink);
-  text-align: left;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-title {
-  font-size: 16px;
-  font-weight: 500;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-description {
-  overflow: hidden;
-  font-size: 12px;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-summary {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-chevron {
-  width: 16px;
-  height: 16px;
-  color: var(--color-ink-faint);
-  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-head[data-state="open"] .dir-ui-af-disclosure-chevron {
-  transform: rotate(180deg);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-disclosure-content {
-  padding: 4px 0 22px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-prompt {
-  box-sizing: border-box;
-  display: block;
-  width: 100%;
-  min-height: 168px;
-  overflow: hidden;
-  resize: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  outline: none;
-  background: var(--color-surface);
-  padding: 14px 16px;
-  color: var(--color-ink);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.6;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-prompt::placeholder {
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-prompt:focus {
-  border-color: var(--color-rule-focus);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skills,
-[data-iii-ui="iii-directory"] .dir-ui-af-picker-lists {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-picker-hint {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  margin: -2px 0 0;
-  padding: 0 2px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-row[data-mono="true"] .dir-ui-af-skill-name {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 500;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-list-wrap {
-  overflow: hidden;
-  border-radius: 6px;
-  background: var(--color-surface);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-list-head {
-  display: flex;
-  min-height: 34px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 10px;
-  background: var(--color-panel-raised);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-count {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-list {
-  max-height: 216px;
-  margin: 0;
-  overflow-y: auto;
-  padding: 4px;
-  list-style: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-row {
-  position: relative;
-  display: flex;
-  min-width: 0;
-  min-height: 50px;
-  align-items: start;
-  gap: 10px;
-  padding: 7px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-row:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-row:has(input:disabled) {
-  cursor: default;
-  opacity: 0.65;
-}
-/* Keyboard focus lights the whole row, not only the check glyph. */
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-row:has(.dir-ui-af-skill-native:focus-visible) {
-  background: var(--color-surface-hover);
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-native {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  opacity: 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-check {
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  background: var(--color-panel-raised);
-  box-shadow: inset 0 0 0 1px var(--color-edge);
-  transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-check[data-checked="true"] {
-  background: var(--color-ink);
-  box-shadow: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-check svg {
-  width: 16px;
-  height: 16px;
-  color: var(--color-panel-raised);
-}
-/* The check draws itself in: dash offset runs the path length on check. */
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-check svg path {
-  stroke-dasharray: 24;
-  stroke-dashoffset: 24;
-  transition: stroke-dashoffset var(--motion-duration-control) var(--motion-ease-standard);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-check[data-checked="true"] svg path {
-  stroke-dashoffset: 0;
-  transition: stroke-dashoffset var(--motion-duration-panel) var(--motion-ease-enter);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-copy {
-  min-width: 0;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-name,
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-description {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-name {
-  font-size: 13px;
-  line-height: 1;
-  font-weight: 500;
-  color: var(--color-ink);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-description {
-  font-size: 12px;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-missing {
-  margin-left: 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--color-warn);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-empty,
-[data-iii-ui="iii-directory"] .dir-ui-af-catalog-message {
-  padding: 14px 10px;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-skill-transfer {
-  display: flex;
-  height: 18px;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  font-size: 13px;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-remove-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding-top: 4px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-remove-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 13px;
-  color: var(--color-ink);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-remove-copy span {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-remove {
-  flex-shrink: 0;
-  color: var(--color-alert);
-}
-[data-iii-ui="iii-directory"] .dir-ui-af-remove:hover:not(:disabled) {
-  background: var(--color-alert-muted);
-  color: var(--color-alert);
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.mode-split .dir-ui-af {
-  padding-right: 20px;
-  padding-left: 20px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-body.mode-split .dir-ui-af-aligned,
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-aligned {
-  padding-left: 0;
-}
-
-/* narrow (drill-in) adjustments for the agent editor */
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af {
-  gap: 20px;
-  padding: 22px 16px 48px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-mobile-back {
-  display: flex;
-  min-width: 0;
-  min-height: 32px;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-doc-mobile-back > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-disclosure-head {
-  min-height: 70px;
-  grid-template-columns: minmax(0, 1fr) 20px;
-  gap: 10px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-disclosure-summary {
-  display: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-skill-list-head {
-  min-height: 44px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-remove {
-  min-height: 48px;
-  align-self: flex-start;
-}
-
 /* Phone-width panes: reading sizes step up with the browser's own width. */
 @container (max-width: 640px) {
-  [data-iii-ui="iii-directory"] .dir-ui-browser.prominent-list .dir-ui-nav-row .iii-ui-list-item__title {
-    font-size: 16px;
-  }
-  [data-iii-ui="iii-directory"] .dir-ui-browser.prominent-list .dir-ui-nav-row .iii-ui-list-item__description {
-    font-size: 14px;
-  }
+  
+  
   [data-iii-ui="iii-directory"] .dir-ui-preview p,
   [data-iii-ui="iii-directory"] .dir-ui-preview ul,
   [data-iii-ui="iii-directory"] .dir-ui-preview ol {
     font-size: 15px;
   }
-  [data-iii-ui="iii-directory"] .dir-ui-af-inline-display.name,
-  [data-iii-ui="iii-directory"] .dir-ui-af-inline-name-input {
-    font-size: 22px;
-  }
-  [data-iii-ui="iii-directory"] .dir-ui-af-inline-display.description,
-  [data-iii-ui="iii-directory"] .dir-ui-af-inline-description-input,
-  [data-iii-ui="iii-directory"] .dir-ui-af-text-input,
-  [data-iii-ui="iii-directory"] .dir-ui-af-field-label,
-  [data-iii-ui="iii-directory"] .dir-ui-af-skill-name,
-  [data-iii-ui="iii-directory"] .dir-ui-af-skill-description,
-  [data-iii-ui="iii-directory"] .dir-ui-af-skill-empty,
-  [data-iii-ui="iii-directory"] .dir-ui-af-catalog-message,
-  [data-iii-ui="iii-directory"] .dir-ui-af-prompt,
-  [data-iii-ui="iii-directory"] .dir-ui-af-remove-copy {
+  
+    [data-iii-ui="iii-directory"] .dir-ui-af-text-input {
     font-size: 16px;
   }
-  [data-iii-ui="iii-directory"] .dir-ui-af-field-hint,
-  [data-iii-ui="iii-directory"] .dir-ui-af-disclosure-description,
-  [data-iii-ui="iii-directory"] .dir-ui-af-skill-list-head {
-    font-size: 14px;
-  }
-  [data-iii-ui="iii-directory"] .dir-ui-af-disclosure-title {
-    font-size: 18px;
-  }
 }
 
-/* ── Kits (Directory › Kits, screens A–F, and the kit chat cards) ─────── */
-
-/* switcher tab glyph with the attention count */
-[data-iii-ui="iii-directory"] .dir-ui-kits-tab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kits-tab svg {
-  width: 16px;
-  height: 16px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kits-badge {
-  position: absolute;
-  top: -7px;
-  right: -11px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 9999px;
-  background: var(--color-accent);
-  color: var(--color-accent-fg);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-/* sidebar groups */
-[data-iii-ui="iii-directory"] .dir-ui-kit-side-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-side-actions .dir-ui-count {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-side-actions > button {
-  flex: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-side-actions svg {
-  width: 16px;
-  height: 16px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-side-group + .dir-ui-kit-side-group {
-  margin-top: 10px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-side-head {
-  padding: 8px 8px 4px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-pending-ico {
-  background: var(--color-warn-muted);
-  color: var(--color-warn);
-}
-
-/* a screen: header, scrolling body, footer bar */
-[data-iii-ui="iii-directory"] .dir-ui-kit-doc {
-  min-height: 0;
-}
 [data-iii-ui="iii-directory"] .dir-ui-kit-screen {
   flex: 1;
   min-height: 0;
@@ -1831,10 +2172,10 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 14px 20px 14px;
+  padding: 20px var(--dir-gutter, 24px) 16px;
   flex-shrink: 0;
-  background: var(--color-panel-raised);
-  border-bottom: 1px solid var(--color-edge);
+  background: transparent;
+  border-block-end: 1px solid var(--color-edge);
 }
 [data-iii-ui="iii-directory"] .dir-ui-kit-head-top {
   display: flex;
@@ -1842,13 +2183,10 @@
   flex-wrap: wrap;
   gap: 8px 12px;
 }
-[data-iii-ui="iii-directory"] .dir-ui-kit-head-mark,
-[data-iii-ui="iii-directory"] .dir-ui-kit-head-gap {
+[data-iii-ui="iii-directory"] .dir-ui-kit-head-mark {
   margin-left: auto;
 }
-[data-iii-ui="iii-directory"] .dir-ui-kit-head-gap + * {
-  margin-left: 0;
-}
+
 [data-iii-ui="iii-directory"] .dir-ui-kit-title {
   margin: 0;
   min-width: 0;
@@ -2724,7 +3062,6 @@
 }
 [data-iii-ui="iii-directory"] .dir-ui-kit-pr-row-main:focus-visible,
 [data-iii-ui="iii-directory"] .dir-ui-kit-pr-tick:focus-visible,
-[data-iii-ui="iii-directory"] .dir-ui-kit-card-main:focus-visible,
 [data-iii-ui="iii-directory"] .dir-ui-kit-row:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: -2px;
@@ -2945,130 +3282,6 @@
   font-family: var(--font-mono);
 }
 
-/* overview (screen A) */
-[data-iii-ui="iii-directory"] .dir-ui-kit-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in oklab, var(--color-warn) 40%, var(--color-edge));
-  border-radius: 6px;
-  background: var(--color-warn-muted);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-banner > svg {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  color: var(--color-warn);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-banner-text {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  color: var(--color-ink);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-banner-text strong {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-install {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--color-edge);
-  border-radius: 6px;
-  background: var(--color-surface);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-install[data-open] {
-  border-color: var(--color-accent-border);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-install .dir-ui-kit-column-head {
-  padding: 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-install .dir-ui-kit-fine {
-  margin: 0;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-install-form {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-install-form > :first-child {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-mono);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-section-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 2px 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 12px 4px 4px;
-  border: 1px solid var(--color-edge);
-  border-left: 2px solid var(--color-accent);
-  border-radius: 6px;
-  background: var(--color-panel);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-card-main {
-  display: grid;
-  flex: 1;
-  min-width: 0;
-  grid-template-columns: auto minmax(0, max-content) auto 1fr;
-  align-items: baseline;
-  gap: 4px 10px;
-  padding: 10px 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink);
-  text-align: left;
-  cursor: pointer;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-card-main:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-card-name {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-card-status {
-  justify-self: end;
-  font-size: 12px;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-card-status[data-update] {
-  color: var(--color-accent);
-  font-weight: 600;
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-card-facts {
-  grid-column: 2 / -1;
-  font-size: 12px;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="iii-directory"] .dir-ui-kit-lockpath {
-  margin: 10px 2px 0;
-  font-family: var(--font-mono);
-  overflow-wrap: anywhere;
-}
-
 /* chat cards */
 [data-iii-ui="iii-directory"] .dir-ui-kit-card-actions {
   display: flex;
@@ -3123,15 +3336,234 @@
     border-right: 0;
     border-bottom: 1px solid var(--color-edge);
   }
-  [data-iii-ui="iii-directory"] .dir-ui-kit-card-main {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-  [data-iii-ui="iii-directory"] .dir-ui-kit-card-status {
-    justify-self: start;
-    grid-column: 2 / -1;
-  }
+  
+  
   [data-iii-ui="iii-directory"] .dir-ui-kit-done-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 4px;
   }
+}
+
+/* Monaco paints its own canvas; on this page it is the page's canvas
+   (black in dark), never a grey panel. */
+[data-iii-ui="iii-directory"] .dir-code .monaco-editor,
+[data-iii-ui="iii-directory"] .dir-agent-prompt-editor .monaco-editor {
+  --vscode-editor-background: var(--color-panel);
+  --vscode-editorGutter-background: var(--color-panel);
+}
+[data-iii-ui="iii-directory"] .dir-code .monaco-editor-background,
+[data-iii-ui="iii-directory"] .dir-code .monaco-editor .margin,
+[data-iii-ui="iii-directory"] .dir-agent-prompt-editor .monaco-editor-background,
+[data-iii-ui="iii-directory"] .dir-agent-prompt-editor .monaco-editor .margin {
+  background-color: var(--color-panel);
+}
+
+/* Until Monaco arrives the editor is a plain textarea; give it Monaco's
+   exact type (14px / 21px) so the swap never changes the text size. */
+[data-iii-ui="iii-directory"] .dir-code > textarea,
+[data-iii-ui="iii-directory"] .dir-agent-prompt-editor > textarea {
+  font-size: 14px;
+  line-height: 21px;
+}
+
+/* ── text edited in place: no box, no pencil — the caret is the cue ── */
+[data-iii-ui="iii-directory"] .dir-inplace,
+[data-iii-ui="iii-directory"] .dir-inplace-title,
+[data-iii-ui="iii-directory"] .dir-inplace-lead {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  resize: none;
+  overflow: hidden;
+  field-sizing: content;
+}
+[data-iii-ui="iii-directory"] .dir-inplace:focus,
+[data-iii-ui="iii-directory"] .dir-inplace-title:focus,
+[data-iii-ui="iii-directory"] .dir-inplace-lead:focus {
+  outline: 0;
+  box-shadow: none;
+}
+[data-iii-ui="iii-directory"] .dir-inplace::placeholder,
+[data-iii-ui="iii-directory"] .dir-inplace-title::placeholder,
+[data-iii-ui="iii-directory"] .dir-inplace-lead::placeholder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-inplace-name,
+[data-iii-ui="iii-directory"] .dir-inplace-title {
+  height: 28px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.01em;
+}
+[data-iii-ui="iii-directory"] .dir-inplace-description {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-inplace-description:focus {
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-inplace-lead {
+  min-height: 24px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-inplace-lead:focus {
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-fields-inplace {
+  gap: 8px;
+  padding-block: 4px 16px;
+}
+[data-iii-ui="iii-directory"] .dir-fields-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-block-start: 12px;
+}
+/* Delete is a quiet text action that turns alert only when aimed at. */
+[data-iii-ui="iii-directory"] .dir-delete {
+  color: var(--color-ink-faint);
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-delete:hover:not(:disabled) {
+    background: var(--color-alert-muted);
+    color: var(--color-alert);
+  }
+}
+[data-iii-ui="iii-directory"] .dir-delete:focus-visible {
+  color: var(--color-alert);
+}
+[data-iii-ui="iii-directory"] .dir-agent-danger {
+  display: flex;
+  justify-content: flex-end;
+  margin-block-start: 16px;
+}
+
+/* File references in the preview (`chat-inline-file`): icon and path on
+   one line, inside the chip — as in chat. */
+[data-iii-ui="iii-directory"] .dir-ui-preview .chat-inline-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  vertical-align: -3px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="iii-directory"] .dir-ui-preview .chat-inline-file-mark {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+/* Menus: room around and between the items. */
+[data-iii-ui="iii-directory"] .dir-menu {
+  min-width: 200px;
+  padding: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-menu [data-slot="dropdown-menu-item"] {
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+/* Checkboxes keep a stroke you can see on the canvas (the hairline control
+   edge disappears on black); checked fills with ink. */
+[data-iii-ui="iii-directory"] .dir-check [data-slot="checkbox"]:not([data-checked]),
+[data-iii-ui="iii-directory"] .dir-picker-check:not([data-checked]) {
+  border-color: color-mix(in srgb, var(--color-ink) 40%, transparent);
+  background: transparent;
+}
+
+/* Monaco insets its text 12px; pull the editor out by that much so the
+   text starts on the column's edge like every line above it. */
+[data-iii-ui="iii-directory"] .dir-code,
+[data-iii-ui="iii-directory"] .dir-agent-prompt-editor {
+  position: relative;
+  inset-inline-start: -12px;
+}
+
+/* ── search found nothing: a centred note, one way out, and the closest
+   rows as a "did you mean" list you can open (Enter opens the first) ── */
+[data-iii-ui="iii-directory"] .dir-lib-nomatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 40px 12px 16px;
+  text-align: center;
+}
+[data-iii-ui="iii-directory"] .dir-lib-nomatch-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-block-end: 6px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-lib-nomatch-mark svg {
+  width: 20px;
+  height: 20px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-nomatch-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-lib-nomatch-body {
+  max-inline-size: 30ch;
+  margin: 2px 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+/* The query stays on one line (ellipsis when it is longer than the column). */
+[data-iii-ui="iii-directory"] .dir-lib-nomatch-query {
+  display: inline-block;
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+[data-iii-ui="iii-directory"] .dir-lib-nomatch-query q {
+  color: var(--color-ink);
+  quotes: "“" "”";
+}
+[data-iii-ui="iii-directory"] .dir-lib-nomatch [data-slot="kbd"] {
+  margin-inline-start: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-lib-suggest {
+  align-self: stretch;
+  margin-block-start: 28px;
+  padding-block-start: 16px;
+  border-block-start: 1px solid var(--color-edge);
+  text-align: start;
+}
+[data-iii-ui="iii-directory"] .dir-lib-suggest-label {
+  margin: 0 0 6px;
+  padding-inline: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
 }

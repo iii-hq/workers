@@ -1,32 +1,40 @@
 import {
-  Button,
-  CollapsibleCard,
-  CollapsibleCardContent,
-  CollapsibleCardTrigger,
+  CodeEditor,
   type Host,
   IconButton,
-  Kbd,
   type ModelOption,
   ModelPicker,
-  SearchField,
   Select,
+  ShadcnButton,
+  ShadcnDropdownMenu,
+  ShadcnDropdownMenuContent,
+  ShadcnDropdownMenuGroup,
+  ShadcnDropdownMenuItem,
+  ShadcnDropdownMenuTrigger,
+  ShadcnTabs,
+  ShadcnTabsContent,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
   Skeleton,
   Switch,
 } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
 import {
   Bot,
   Check,
-  ChevronDown,
   ClipboardCheck,
   CodeXml,
+  Copy,
+  CopyPlus,
   Database,
+  Ellipsis,
   FileText,
   FlaskConical,
   type LucideIcon,
   Palette,
-  Pencil,
   Search,
   Terminal,
+  Trash2,
   X,
 } from 'lucide-react'
 import type { KeyboardEvent, ReactNode } from 'react'
@@ -41,6 +49,7 @@ import {
   setFrontmatterStringList,
   withoutFrontmatterFields,
 } from './frontmatter'
+import { countLabel } from './library-model'
 
 /** The nine harness `SubagentIcon` glyphs — the same Lucide icons the
  * console's session tree renders for each token (ActiveSubagentChips). */
@@ -72,8 +81,12 @@ interface CatalogState<T> {
   error: boolean
 }
 
+/** Last catalog per host + fetcher: reopening an agent paints at once from
+ * it (no skeleton, no reveal) while a fresh copy loads behind. */
+const catalogCache = new WeakMap<Host, Map<unknown, unknown[]>>()
+
 function useCatalog<T>(host: Host, fetch: (host: Host) => Promise<T[]>): CatalogState<T> {
-  const [items, setItems] = useState<T[] | null>(null)
+  const [items, setItems] = useState<T[] | null>(() => (catalogCache.get(host)?.get(fetch) as T[] | undefined) ?? null)
   const [error, setError] = useState(false)
 
   useEffect(() => {
@@ -81,6 +94,12 @@ function useCatalog<T>(host: Host, fetch: (host: Host) => Promise<T[]>): Catalog
     setError(false)
     fetch(host)
       .then((next) => {
+        let byFetch = catalogCache.get(host)
+        if (!byFetch) {
+          byFetch = new Map()
+          catalogCache.set(host, byFetch)
+        }
+        byFetch.set(fetch, next)
         if (!cancelled) setItems(next)
       })
       .catch(() => {
@@ -265,7 +284,7 @@ function AvatarPicker({
         type="button"
         className="dir-ui-af-avatar-trigger"
         data-color={selectedColor}
-        aria-label="Choose agent profile avatar"
+        aria-label="Choose agent avatar"
         aria-haspopup="dialog"
         aria-expanded={state === 'open'}
         disabled={readOnly}
@@ -279,7 +298,7 @@ function AvatarPicker({
           className="dir-ui-af-avatar-pop iii-ui-motion-dropdown"
           data-state={state === 'closing' ? 'closed' : 'open'}
           role="dialog"
-          aria-label="Agent profile avatars"
+          aria-label="Agent avatars"
           inert={state === 'closing'}
           onAnimationEnd={() => {
             if (state === 'closing') setState('closed')
@@ -293,7 +312,6 @@ function AvatarPicker({
                 type="button"
                 aria-pressed={icon === preset.token}
                 aria-label={preset.token}
-                title={preset.token}
                 className="dir-ui-af-avatar-option"
                 data-color={selectedColor}
                 onClick={() => onIconChange(preset)}
@@ -305,7 +323,6 @@ function AvatarPicker({
               type="button"
               aria-pressed={icon === ''}
               aria-label="No avatar"
-              title="No avatar"
               className="dir-ui-af-avatar-option"
               data-color={selectedColor}
               onClick={() => onIconChange(null)}
@@ -315,7 +332,7 @@ function AvatarPicker({
           </div>
           <div className="dir-ui-af-avatar-colors" role="radiogroup" aria-label="Avatar color">
             {AGENT_COLORS.map((option) => (
-              <label key={option.id} className="dir-ui-af-avatar-color" data-color={option.id} title={option.label}>
+              <label key={option.id} className="dir-ui-af-avatar-color" data-color={option.id}>
                 <input
                   type="radio"
                   name="agent-avatar-color"
@@ -336,169 +353,118 @@ function AvatarPicker({
 
 function useAutoResizeTextarea(value: string) {
   const ref = useRef<HTMLTextAreaElement>(null)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: resize after controlled value changes
   useLayoutEffect(() => {
     const textarea = ref.current
     if (!textarea) return
     textarea.style.height = '0px'
     textarea.style.height = `${textarea.scrollHeight}px`
   }, [value])
+  // …and when the pane width changes the wrap.
+  useLayoutEffect(() => {
+    const textarea = ref.current
+    if (!textarea || typeof ResizeObserver === 'undefined') return
+    let width = textarea.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === width) return
+      width = textarea.clientWidth
+      textarea.style.height = '0px'
+      textarea.style.height = `${textarea.scrollHeight}px`
+    })
+    observer.observe(textarea)
+    return () => observer.disconnect()
+  }, [])
   return ref
 }
 
+/** The agent's name and description are edited where they are read: plain
+ * text you click into (no box, no pencil, no edit mode). The description
+ * grows with its text. Escape puts back what was there when you came in. */
 function InlineTextField({
   id,
   name,
+  label,
   value,
   placeholder,
   readOnly,
   multiline = false,
   onChange,
+  onBegin,
+  onCancel,
 }: {
   id: string
   name: string
+  label: string
   value: string
   placeholder: string
   readOnly: boolean
   multiline?: boolean
   onChange: (next: string) => void
+  /** Focus arrived: remember the document as it is now. */
+  onBegin: () => void
+  /** Escape: put that document back, byte for byte (rewriting just the field
+      could re-quote the frontmatter and leave the draft "changed"). */
+  onCancel: () => void
 }) {
-  const [editing, setEditing] = useState(false)
-  const initialRef = useRef(value)
-  const inputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useAutoResizeTextarea(value)
-
-  useEffect(() => {
-    if (!editing) return
-    const field = multiline ? textareaRef.current : inputRef.current
-    field?.focus()
-    if (!multiline && field instanceof HTMLInputElement) field.select()
-  }, [editing, multiline, textareaRef])
-
-  const begin = () => {
-    if (readOnly) return
-    initialRef.current = value
-    setEditing(true)
-  }
-  const cancel = () => {
-    onChange(initialRef.current)
-    setEditing(false)
-  }
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if (event.key === 'Escape') {
+      onCancel()
+      event.currentTarget.blur()
       event.preventDefault()
-      cancel()
       return
     }
     if ((!multiline && event.key === 'Enter') || (event.metaKey && event.key === 'Enter')) {
       event.preventDefault()
-      setEditing(false)
+      event.currentTarget.blur()
     }
   }
-
-  if (editing) {
-    return multiline ? (
-      <textarea
-        ref={textareaRef}
-        id={id}
-        name={name}
-        value={value}
-        rows={1}
-        aria-label="Agent profile description"
-        placeholder={placeholder}
-        className="dir-ui-af-inline-input dir-ui-af-inline-description-input"
-        onChange={(event) => onChange(event.currentTarget.value)}
-        onBlur={() => setEditing(false)}
-        onKeyDown={onKeyDown}
-      />
-    ) : (
-      <input
-        ref={inputRef}
-        id={id}
-        name={name}
-        value={value}
-        required
-        spellCheck={false}
-        aria-label="Agent profile name"
-        placeholder={placeholder}
-        className="dir-ui-af-inline-input dir-ui-af-inline-name-input"
-        onChange={(event) => onChange(event.currentTarget.value)}
-        onBlur={() => setEditing(false)}
-        onKeyDown={onKeyDown}
-      />
-    )
+  const common = {
+    id,
+    name,
+    value,
+    placeholder,
+    readOnly,
+    spellCheck: multiline,
+    autoComplete: 'off',
+    'aria-label': label,
+    onFocus: onBegin,
+    onKeyDown,
   }
-
-  const display = value.trim() || placeholder
-  if (readOnly) {
-    return (
-      <div className={`dir-ui-af-inline-display${multiline ? ' description' : ' name'}`}>
-        <span className={value.trim() ? '' : 'placeholder'}>{display}</span>
-      </div>
-    )
-  }
-
-  return (
-    <button
-      type="button"
-      className={`dir-ui-af-inline-display${multiline ? ' description' : ' name'}`}
-      aria-label={`Edit agent profile ${multiline ? 'description' : 'name'}`}
-      onClick={begin}
-    >
-      <span className={value.trim() ? '' : 'placeholder'}>{display}</span>
-      <Pencil aria-hidden className="dir-ui-af-pencil" />
-    </button>
+  return multiline ? (
+    <textarea
+      {...common}
+      ref={textareaRef}
+      rows={1}
+      className="dir-inplace dir-inplace-description"
+      onChange={(event) => onChange(event.currentTarget.value)}
+    />
+  ) : (
+    <input
+      {...common}
+      required
+      className="dir-inplace dir-inplace-name"
+      onChange={(event) => onChange(event.currentTarget.value)}
+    />
   )
 }
 
-function CollapsibleSection({
-  title,
-  description,
-  summary,
-  defaultOpen = true,
-  children,
-}: {
-  title: string
-  description: string
-  summary?: string
-  defaultOpen?: boolean
-  children: ReactNode
-}) {
-  return (
-    <CollapsibleCard className="dir-ui-af-disclosure" defaultOpen={defaultOpen}>
-      <CollapsibleCardTrigger className="dir-ui-af-disclosure-head">
-        <span className="dir-ui-af-disclosure-copy">
-          <span className="dir-ui-af-disclosure-title">{title}</span>
-          <span className="dir-ui-af-disclosure-description">{description}</span>
-        </span>
-        {summary ? <span className="dir-ui-af-disclosure-summary">{summary}</span> : null}
-        <ChevronDown aria-hidden className="dir-ui-af-disclosure-chevron" />
-      </CollapsibleCardTrigger>
-      <CollapsibleCardContent>
-        <div className="dir-ui-af-disclosure-content">{children}</div>
-      </CollapsibleCardContent>
-    </CollapsibleCard>
-  )
-}
-
+/** The system prompt is the profile's markdown body: edited in the same
+ * Monaco editor as skills, filling its tab. */
 function SystemPromptEditor({ draft, editDraft, readOnly }: Pick<FormContext, 'draft' | 'editDraft' | 'readOnly'>) {
   const rawBody = frontmatterBody(draft)
   const separator = rawBody.startsWith('\r\n') ? '\r\n' : rawBody.startsWith('\n') ? '\n' : ''
   const value = rawBody.slice(separator.length)
-  const textareaRef = useAutoResizeTextarea(value)
-
   return (
-    <textarea
-      ref={textareaRef}
-      name="system_prompt"
+    <CodeEditor
       value={value}
-      rows={6}
+      onChange={(next) => editDraft(setFrontmatterBody(draft, `${separator}${next}`))}
+      language="markdown"
+      fill
+      fontSize={14}
       readOnly={readOnly}
-      spellCheck
-      aria-label="System prompt"
-      placeholder="Describe the profile's role, constraints, and working style…"
-      className="dir-ui-af-prompt"
-      onChange={(event) => editDraft(setFrontmatterBody(draft, `${separator}${event.currentTarget.value}`))}
+      aria-label="Instructions"
+      placeholder="Describe the agent’s role, constraints and working style…"
+      className="dir-agent-prompt-editor"
     />
   )
 }
@@ -509,7 +475,7 @@ type PickerRow = PickItem & { missing?: boolean }
 
 /** Copy for one picker instance (skills or preloaded functions). */
 interface PickerCopy {
-  /** Form field name for the hidden native checkboxes (`skills`, `functions`). */
+  /** Form field name for the native checkboxes (`skills`, `functions`). */
   field: string
   /** Plural noun in messages ("skills", "functions"). */
   plural: string
@@ -517,7 +483,7 @@ interface PickerCopy {
   loadError: string
   loading: string
   missing: string
-  emptySelected: (needle: boolean, selectedCount: number) => string
+  emptySelected: (needle: boolean) => string
   emptyAvailable: (needle: boolean) => string
   /** Render labels in the mono voice (function ids are technical data). */
   mono?: boolean
@@ -526,33 +492,25 @@ interface PickerCopy {
 const SKILLS_COPY: PickerCopy = {
   field: 'skills',
   plural: 'skills',
-  placeholder: 'Filter skills…',
-  loadError: 'The skill catalog could not be loaded. Existing selections will be preserved when you save.',
+  placeholder: 'Search skills',
+  loadError: 'Unable to load the skill list. Your selection is kept and saves as it is.',
   loading: 'Loading skills…',
-  missing: 'This skill is not in the current catalog.',
-  emptySelected: (needle, count) =>
-    needle
-      ? 'No selected skills match.'
-      : count === 0
-        ? 'None — sessions using this profile fetch skills on demand.'
-        : 'No skills selected.',
-  emptyAvailable: (needle) => (needle ? 'No available skills match.' : 'All skills selected.'),
+  missing: 'Not in the skill list any more.',
+  emptySelected: (needle) =>
+    needle ? 'No selected skills match.' : 'None yet. Chats with this agent fetch skills when a task needs them.',
+  emptyAvailable: (needle) => (needle ? 'No other skills match.' : 'Every skill is selected.'),
 }
 
 const FUNCTIONS_COPY: PickerCopy = {
   field: 'functions',
   plural: 'functions',
-  placeholder: 'Filter functions (e.g. coder::)…',
-  loadError: 'The function registry could not be read. Existing selections will be preserved when you save.',
+  placeholder: 'Search functions, like coder::',
+  loadError: 'Unable to read the function registry. Your selection is kept and saves as it is.',
   loading: 'Loading functions…',
-  missing: 'This function is not registered right now; sessions will be told it is unavailable.',
-  emptySelected: (needle, count) =>
-    needle
-      ? 'No selected functions match.'
-      : count === 0
-        ? 'None — sessions discover every function through search as usual.'
-        : 'No functions selected.',
-  emptyAvailable: (needle) => (needle ? 'No registered functions match.' : 'All registered functions selected.'),
+  missing: 'Not registered right now. Chats are told it is unavailable.',
+  emptySelected: (needle) =>
+    needle ? 'No selected functions match.' : 'None yet. Chats with this agent find functions through search.',
+  emptyAvailable: (needle) => (needle ? 'No other functions match.' : 'Every registered function is selected.'),
   mono: true,
 }
 
@@ -560,6 +518,8 @@ function isPrintableKey(event: KeyboardEvent<HTMLElement>) {
   return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey
 }
 
+/** One checkbox row: the library's anatomy (44px, title + one-line
+ * description), with the check leading. */
 function PickerRowView({
   item,
   field,
@@ -567,25 +527,23 @@ function PickerRowView({
   disabled,
   tabStop,
   mono,
-  missing = false,
   onChange,
   onFocus,
   register,
 }: {
-  item: PickItem
+  item: PickerRow
   field: string
   checked: boolean
   disabled: boolean
-  /** Roving tabindex: exactly one row per list sits in the Tab order. */
+  /** Roving tabindex: exactly one row per group sits in the Tab order. */
   tabStop: boolean
   mono?: boolean
-  missing?: boolean
   onChange: () => void
   onFocus: () => void
   register: (id: string, element: HTMLInputElement | null) => void
 }) {
   return (
-    <label className="dir-ui-af-skill-row" data-mono={mono ? 'true' : undefined}>
+    <label className="dir-picker-row" data-mono={mono ? '' : undefined}>
       <input
         ref={(element) => register(item.id, element)}
         type="checkbox"
@@ -595,27 +553,25 @@ function PickerRowView({
         disabled={disabled}
         tabIndex={tabStop ? 0 : -1}
         data-picker-row={item.id}
-        className="dir-ui-af-skill-native"
+        className="dir-picker-native"
         onChange={onChange}
         onFocus={onFocus}
       />
-      <span className="dir-ui-af-skill-check" aria-hidden="true" data-checked={checked}>
+      <span className="dir-picker-check" aria-hidden="true" data-checked={checked ? '' : undefined}>
         <Check />
       </span>
-      <span className="dir-ui-af-skill-copy">
-        <span className="dir-ui-af-skill-name" title={item.label}>
-          {item.label}
-          {missing ? <span className="dir-ui-af-missing">Missing</span> : null}
+      <span className="dir-picker-text">
+        <span className="dir-picker-title">
+          <span className="dir-picker-name">{item.label}</span>
+          {item.missing ? <span className="dir-picker-missing">missing</span> : null}
         </span>
-        <span className="dir-ui-af-skill-description" title={item.desc ?? 'No description.'}>
-          {item.desc ?? 'No description.'}
-        </span>
+        {item.desc ? <span className="dir-picker-desc">{item.desc}</span> : null}
       </span>
     </label>
   )
 }
 
-function PickerListView({
+function PickerGroup({
   title,
   items,
   field,
@@ -640,19 +596,18 @@ function PickerListView({
   onRowFocus: (id: string) => void
   register: (id: string, element: HTMLInputElement | null) => void
 }) {
+  const headId = useId()
   return (
-    <div className="dir-ui-af-skill-list-wrap">
-      <div className="dir-ui-af-skill-list-head">
-        <span>{title}</span>
-        <span className="dir-ui-af-skill-count">{items.length}</span>
-      </div>
-      {/* The explicit role keeps list semantics when host styles remove markers. */}
-      {/* biome-ignore lint/a11y/noRedundantRoles: preserve list semantics across embedded hosts */}
-      <ul className="dir-ui-af-skill-list" role="list" aria-label={title}>
-        {items.length === 0 ? (
-          <li className="dir-ui-af-skill-empty">{empty}</li>
-        ) : (
-          items.map((item) => (
+    <section className="dir-picker-group" aria-labelledby={headId}>
+      <h3 className="dir-picker-head" id={headId}>
+        {title} <span className="dir-picker-count">{items.length}</span>
+      </h3>
+      {items.length === 0 ? (
+        <p className="dir-picker-empty">{empty}</p>
+      ) : (
+        // biome-ignore lint/a11y/noRedundantRoles: keep list semantics where host styles drop markers
+        <ul className="dir-picker-rows" role="list">
+          {items.map((item) => (
             <li key={item.id}>
               <PickerRowView
                 item={item}
@@ -661,39 +616,37 @@ function PickerListView({
                 disabled={disabled}
                 tabStop={item.id === tabStopId}
                 mono={mono}
-                missing={item.missing}
                 onChange={() => onToggle(item.id)}
                 onFocus={() => onRowFocus(item.id)}
                 register={register}
               />
             </li>
-          ))
-        )}
-      </ul>
-    </div>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 
 /**
- * Search + two transfer lists (Selected / Available), fully keyboard
- * operable:
+ * Search + one outlined list in two groups (Selected, then Available).
+ * Checking a row moves it between the groups at once — no animation, the
+ * focus stays on the slot it left. Fully keyboard operable:
  *
- *   search: ↓/↑ enter the lists · Enter adds the first available match
- *           (the filter stays, so `coder::` + Enter×N adds one per press) ·
- *           Esc clears the filter
- *   rows:   ↓/↑ move (across both lists; ↑ from the top returns to search)
- *           · Home/End · Space or Enter toggles · Esc returns to search ·
- *           typing (or Backspace) goes straight back to the search box
+ *   search: ↓/↑ enter the list · Enter adds the first available match
+ *           (the query stays, so `coder::` + Enter×N adds one per press) ·
+ *           Esc clears the query
+ *   rows:   ↓/↑ move (↑ from the top returns to search) · Home/End ·
+ *           Space or Enter toggles · Esc returns to search · typing (or
+ *           Backspace) goes straight back to the search box
  *
- * Each list is one Tab stop (roving tabindex), so a long function registry
- * never becomes hundreds of Tab presses. After a keyboard toggle the focus
- * stays on the same slot of the same list, so repeated toggles flow.
+ * Each group is one Tab stop (roving tabindex), so a long function registry
+ * never becomes hundreds of Tab presses.
  */
 function PickerEditor({
   copy,
   items,
   error,
-  selected,
   missing,
   readOnly,
   isSelected,
@@ -702,7 +655,6 @@ function PickerEditor({
   copy: PickerCopy
   items: PickItem[] | null
   error: boolean
-  selected: string[]
   missing: string[]
   readOnly: boolean
   isSelected: (id: string) => boolean
@@ -714,16 +666,6 @@ function PickerEditor({
   const rowsRef = useRef(new Map<string, HTMLInputElement>())
   const pendingFocusRef = useRef<{ list: PickerList; index: number } | null>(null)
   const listsId = useId()
-  // `SearchField` forwards no ARIA beyond its label: the list link and the
-  // key hints ride on the element itself.
-  const attachSearch = useCallback(
-    (el: HTMLInputElement | null) => {
-      searchRef.current = el
-      el?.setAttribute('aria-controls', listsId)
-      el?.setAttribute('aria-keyshortcuts', 'ArrowDown ArrowUp Enter Escape')
-    },
-    [listsId],
-  )
   const needle = filter.trim().toLowerCase()
   const matches = (item: PickItem) =>
     !needle ||
@@ -749,13 +691,13 @@ function PickerEditor({
     const element = rowsRef.current.get(id)
     if (!element) return false
     element.focus()
-    element.scrollIntoView?.({ block: 'nearest' })
+    element.closest('label')?.scrollIntoView?.({ block: 'nearest' })
     return true
   }
   const focusSearch = () => searchRef.current?.focus()
 
-  // After a keyboard toggle the row re-renders under the other list; keep
-  // the focus on the slot it left (or the search box when the list ran dry).
+  // After a keyboard toggle the row re-renders in the other group; keep
+  // the focus on the slot it left (or the search box when the group ran dry).
   useLayoutEffect(() => {
     const pending = pendingFocusRef.current
     if (!pending) return
@@ -765,7 +707,7 @@ function PickerEditor({
     if (!next || !focusRow(next.id)) focusSearch()
   })
 
-  /** Which list a row sits in right now, and at which slot. */
+  /** Which group a row sits in right now, and at which slot. */
   const slotOf = (id: string): { list: PickerList; index: number } => {
     const list: PickerList = isSelected(id) || missing.includes(id) ? 'selected' : 'available'
     return { list, index: rows[list].findIndex((item) => item.id === id) }
@@ -855,17 +797,6 @@ function PickerEditor({
     }
   }
 
-  if (error) {
-    return (
-      <div className="dir-ui-af-catalog-message" role="status">
-        {copy.loadError}
-      </div>
-    )
-  }
-  if (items === null) {
-    return <div className="dir-ui-af-catalog-message">{copy.loading}</div>
-  }
-
   const tabStopFor = (list: PickerList) => {
     const current = active[list]
     if (current && rows[list].some((item) => item.id === current)) return current
@@ -874,41 +805,32 @@ function PickerEditor({
   const onRowFocus = (list: PickerList) => (id: string) =>
     setActive((current) => (current[list] === id ? current : { ...current, [list]: id }))
 
-  return (
-    <div className="dir-ui-af-skills" data-picker={copy.field}>
-      <SearchField
-        ref={attachSearch}
-        name={`${copy.field}_filter`}
-        value={filter}
-        onChange={setFilter}
-        onKeyDown={onSearchKeyDown}
-        placeholder={copy.placeholder}
-        aria-label={`Filter ${copy.plural}`}
-      />
-      <p className="dir-ui-af-picker-hint" aria-hidden="true">
-        <Kbd>↑</Kbd>
-        <Kbd>↓</Kbd> browse · <Kbd>Enter</Kbd> adds the first match · <Kbd>Space</Kbd> toggles · <Kbd>Esc</Kbd> back to
-        search
+  let body: ReactNode
+  if (error) {
+    body = (
+      <p className="dir-picker-empty" role="status">
+        {copy.loadError}
       </p>
-      <div id={listsId} className="dir-ui-af-picker-lists" onKeyDown={onListsKeyDown}>
-        <PickerListView
+    )
+  } else if (items === null) {
+    body = <p className="dir-picker-empty">{copy.loading}</p>
+  } else {
+    body = (
+      <>
+        <PickerGroup
           title="Selected"
           items={selectedItems}
           field={copy.field}
           checked
           disabled={readOnly}
-          empty={copy.emptySelected(needle.length > 0, selected.length)}
+          empty={copy.emptySelected(needle.length > 0)}
           tabStopId={tabStopFor('selected')}
           mono={copy.mono}
           onToggle={toggleFromKeyboard}
           onRowFocus={onRowFocus('selected')}
           register={register}
         />
-        <div className="dir-ui-af-skill-transfer" aria-hidden="true">
-          <span>↓</span>
-          <span>↑</span>
-        </div>
-        <PickerListView
+        <PickerGroup
           title="Available"
           items={available}
           field={copy.field}
@@ -921,6 +843,42 @@ function PickerEditor({
           onRowFocus={onRowFocus('available')}
           register={register}
         />
+      </>
+    )
+  }
+
+  return (
+    <div className="dir-picker" data-picker={copy.field}>
+      <label className="dir-lib-search dir-picker-search">
+        <Search aria-hidden className="dir-lib-search-icon" />
+        <input
+          ref={searchRef}
+          type="search"
+          name={`${copy.field}_filter`}
+          value={filter}
+          onChange={(event) => setFilter(event.currentTarget.value)}
+          onKeyDown={onSearchKeyDown}
+          placeholder={copy.placeholder}
+          aria-label={`Search ${copy.plural}`}
+          aria-controls={listsId}
+          aria-keyshortcuts="ArrowDown ArrowUp Enter Escape"
+          spellCheck={false}
+          autoComplete="off"
+        />
+        {filter ? (
+          <button
+            type="button"
+            className="dir-lib-search-clear"
+            aria-label="Clear search"
+            onClick={() => setFilter('')}
+          >
+            <X aria-hidden />
+          </button>
+        ) : null}
+      </label>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: arrow-key relay between the checkboxes inside */}
+      <div id={listsId} className="dir-picker-list" onKeyDown={onListsKeyDown}>
+        {body}
       </div>
     </div>
   )
@@ -931,107 +889,31 @@ function Bar({ w, h = 10 }: { w: string | number; h?: number }) {
   return <Skeleton style={{ display: 'block', width: w, height: h }} />
 }
 
-function SkeletonSkillList() {
-  return (
-    <div className="dir-ui-af-skill-list-wrap">
-      <div className="dir-ui-af-skill-list-head">
-        <Bar w={72} />
-        <Bar w={16} />
-      </div>
-      {/* biome-ignore lint/a11y/noRedundantRoles: preserve list semantics across embedded hosts */}
-      <ul className="dir-ui-af-skill-list" role="list">
-        {[0, 1].map((row) => (
-          <li key={row}>
-            <div className="dir-ui-af-skeleton-skill-row">
-              <Bar w={20} h={20} />
-              <span className="dir-ui-af-skill-copy">
-                <Bar w="42%" />
-                <Bar w="72%" h={9} />
-              </span>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-function SkeletonDisclosure({ kind }: { kind: 'prompt' | 'skills' }) {
-  return (
-    <section className="dir-ui-af-disclosure">
-      <div className="dir-ui-af-disclosure-head">
-        <span className="dir-ui-af-disclosure-copy">
-          <Bar w={96} h={16} />
-          <Bar w="min(70%, 300px)" />
-        </span>
-        <span className="dir-ui-af-disclosure-summary">
-          <Bar w={52} h={8} />
-        </span>
-        <Bar w={16} h={16} />
-      </div>
-      <div className="dir-ui-af-disclosure-content">
-        {kind === 'prompt' ? (
-          <div className="dir-ui-af-prompt dir-ui-af-skeleton-prompt">
-            <Bar w="88%" />
-            <Bar w="68%" />
-            <Bar w="42%" />
-          </div>
-        ) : (
-          <div className="dir-ui-af-skills">
-            <Bar w="100%" h={36} />
-            <SkeletonSkillList />
-            <div className="dir-ui-af-skill-transfer" aria-hidden="true">
-              <Bar w={36} h={6} />
-            </div>
-            <SkeletonSkillList />
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
 function AgentFormSkeletonLayout() {
   return (
-    <div className="dir-ui-af dir-ui-af-skeleton">
-      <div className="dir-ui-af-profile">
-        <Bar w={56} h={56} />
-        <div className="dir-ui-af-profile-copy">
-          <Bar w="min(52%, 280px)" h={24} />
+    <div className="dir-agent dir-agent-skeleton">
+      <div className="dir-agent-head">
+        <Bar w={48} h={48} />
+        <div className="dir-agent-identity">
+          <Bar w="min(52%, 280px)" h={22} />
           <Bar w="min(72%, 420px)" h={12} />
-          <Bar w="min(48%, 280px)" h={12} />
         </div>
       </div>
-
-      <div className="dir-ui-af-aligned">
-        <div className="dir-ui-af-settings">
-          {[0, 1].map((cell) => (
-            <div key={cell} className="dir-ui-af-field">
-              <div className="dir-ui-af-field-head">
-                <Bar w={52} h={12} />
-                <Bar w={112} h={8} />
-              </div>
-              <Bar w="100%" h={36} />
+      <div className="dir-agent-tabs-skeleton">
+        {[72, 104, 56, 80].map((w) => (
+          <Bar key={w} w={w} h={12} />
+        ))}
+      </div>
+      <div className="dir-agent-settings">
+        {[0, 1, 2, 3].map((row) => (
+          <div key={row} className="dir-agent-setting">
+            <div className="dir-agent-setting-copy">
+              <Bar w={96} h={12} />
+              <Bar w="min(80%, 220px)" h={10} />
             </div>
-          ))}
-          <div className="dir-ui-af-field is-wide">
-            <div className="dir-ui-af-field-head">
-              <Bar w={112} h={12} />
-              <Bar w="min(80%, 360px)" h={8} />
-            </div>
-            <Bar w="100%" h={32} />
+            <Bar w="100%" h={34} />
           </div>
-          <div className="dir-ui-af-field is-wide is-switch">
-            <Bar w={36} h={20} />
-            <div className="dir-ui-af-field-head">
-              <Bar w={52} h={12} />
-              <Bar w="min(70%, 320px)" h={8} />
-            </div>
-          </div>
-        </div>
-        <SkeletonDisclosure kind="prompt" />
-        <SkeletonDisclosure kind="skills" />
-        <SkeletonDisclosure kind="skills" />
+        ))}
       </div>
     </div>
   )
@@ -1039,8 +921,8 @@ function AgentFormSkeletonLayout() {
 
 export function AgentFormSkeleton() {
   return (
-    <div className="dir-ui-af-loading t-skel" data-state="loading" role="status" aria-label="Loading agent profile">
-      <div className="t-skel-skeleton is-pulsing" aria-hidden="true">
+    <div className="dir-ui-af-loading t-skel" data-state="loading" role="status" aria-label="Loading agent">
+      <div className="t-skel-skeleton" aria-hidden="true">
         <AgentFormSkeletonLayout />
       </div>
       <div className="t-skel-content" aria-hidden="true" />
@@ -1092,6 +974,8 @@ function ComposerExampleField({
   )
 }
 
+type AgentTab = 'overview' | 'prompt' | 'skills' | 'functions'
+
 export function AgentForm(ctx: FormContext) {
   const {
     host,
@@ -1107,6 +991,7 @@ export function AgentForm(ctx: FormContext) {
     saving,
     deleting,
     onRemove,
+    onDuplicate,
     entryKey,
   } = ctx
   const skills = readFrontmatterStringList(draft, 'skills').values
@@ -1123,11 +1008,23 @@ export function AgentForm(ctx: FormContext) {
   const modelCatalog = useCatalog(host, fetchModels)
   const agentCatalog = useCatalog(host, fetchAgents)
   const derived = useMemo(() => slugify(nameValue), [nameValue])
+  const [tab, setTab] = useState<AgentTab>('overview')
   const draftRef = useRef(draft)
   draftRef.current = draft
   const commitDraft = (next: string) => {
     draftRef.current = next
     editDraft(next)
+  }
+
+  // Escape in the name/description puts back the whole document as it was
+  // when the field took focus.
+  const inPlaceSnapshot = useRef<string | null>(null)
+  const beginInPlace = () => {
+    inPlaceSnapshot.current = draftRef.current
+  }
+  const cancelInPlace = () => {
+    const snapshot = inPlaceSnapshot.current
+    if (snapshot !== null && snapshot !== draftRef.current) commitDraft(snapshot)
   }
 
   const setModel = (next: string) => {
@@ -1191,14 +1088,11 @@ export function AgentForm(ctx: FormContext) {
   const toggleFunction = (id: string) => {
     const current = draftRef.current
     const currentFunctions = readFrontmatterStringList(current, 'functions').values
-    const next = currentFunctions.includes(id)
-      ? currentFunctions.filter((fn) => fn !== id)
-      : [...currentFunctions, id]
+    const next = currentFunctions.includes(id) ? currentFunctions.filter((fn) => fn !== id) : [...currentFunctions, id]
     commitDraft(setFrontmatterStringList(current, 'functions', next))
   }
   const knownFunctionIds = new Set((functionCatalog.items ?? []).map((item) => item.id))
-  const missingFunctions =
-    functionCatalog.items === null ? [] : functions.filter((id) => !knownFunctionIds.has(id))
+  const missingFunctions = functionCatalog.items === null ? [] : functions.filter((id) => !knownFunctionIds.has(id))
   const pickerOptions = useMemo(() => {
     const options = modelCatalog.items ?? []
     if (!model || options.some((option) => option.id === model)) return options
@@ -1220,18 +1114,163 @@ export function AgentForm(ctx: FormContext) {
     (functionCatalog.items === null && !functionCatalog.error) ||
     (modelCatalog.items === null && !modelCatalog.error)
 
+  const modelLabel = model
+    ? (pickerOptions.find((option) => option.id === model)?.label ?? model)
+    : 'the session’s model'
+  const summary = [
+    modelLabel,
+    countLabel(skills.length, { one: 'skill', other: 'skills' }),
+    countLabel(functions.length, { one: 'function', other: 'functions' }),
+    ...(extendsId ? [`based on ${extendsId}`] : []),
+  ].join(' · ')
+
+  const settings = (
+    <>
+      <div className="dir-agent-settings">
+        <div className="dir-agent-setting">
+          <div className="dir-agent-setting-copy">
+            <span className="dir-agent-setting-label">Model</span>
+            <span className="dir-agent-setting-hint">
+              {modelKnown
+                ? 'The model new chats start on. Leave empty to use the session’s.'
+                : 'This model is not in the model list any more.'}
+            </span>
+          </div>
+          <div className="dir-agent-setting-control">
+            <ModelPicker
+              value={model || null}
+              options={pickerOptions}
+              thinkingLevel={reasoningEffort}
+              onChange={setModel}
+              onThinkingLevelChange={setReasoningEffort}
+              disabled={readOnly || modelCatalog.error}
+              loading={modelCatalog.items === null && !modelCatalog.error}
+              showRefresh={false}
+              showProviderConfiguration={false}
+              showReasoningEffort
+              placeholder="Session default"
+              className="dir-agent-picker"
+            />
+            {model && !readOnly ? (
+              <IconButton label="Use the session default model" onClick={() => setModel('')}>
+                <X />
+              </IconButton>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="dir-agent-setting">
+          <div className="dir-agent-setting-copy">
+            <span className="dir-agent-setting-label">Based on</span>
+            <span className="dir-agent-setting-hint">
+              {inheritanceError ? 'The saved chain does not resolve.' : 'Start from another agent and add to it.'}
+            </span>
+          </div>
+          <div className="dir-agent-setting-control">
+            <Select
+              className="dir-agent-picker"
+              aria-label="Based on"
+              aria-busy={agentCatalog.items === null && !agentCatalog.error}
+              value={extendsId || undefined}
+              options={parentOptions.map((row) => ({
+                value: row.id,
+                label: row.name && row.name !== row.id ? `${row.name} (${row.id})` : row.id,
+              }))}
+              placeholder="None"
+              allowEmpty
+              emptyLabel="None"
+              onClear={() => setExtends('')}
+              disabled={readOnly || agentCatalog.error}
+              onChange={setExtends}
+            />
+            {inheritanceError ? <p className="dir-agent-setting-error">{inheritanceError}</p> : null}
+          </div>
+        </div>
+
+        <div className="dir-agent-setting">
+          <div className="dir-agent-setting-copy">
+            <label className="dir-agent-setting-label" htmlFor={`${fieldId}-composer-placeholder`}>
+              Composer example
+            </label>
+            <span className="dir-agent-setting-hint" id={`${fieldId}-composer-placeholder-hint`}>
+              Shown in an empty chat box for this agent. Never sent, and not inherited.
+            </span>
+          </div>
+          <div className="dir-agent-setting-control">
+            <ComposerExampleField
+              id={`${fieldId}-composer-placeholder`}
+              value={composerPlaceholder}
+              readOnly={readOnly}
+              onChange={setComposerPlaceholder}
+            />
+          </div>
+        </div>
+
+        <div className="dir-agent-setting">
+          <div className="dir-agent-setting-copy">
+            <label className="dir-agent-setting-label" htmlFor={`${fieldId}-hidden`}>
+              Hide from the new-chat list
+            </label>
+            <span className="dir-agent-setting-hint" id={`${fieldId}-hidden-hint`}>
+              Still usable as a base for other agents.
+            </span>
+          </div>
+          <div className="dir-agent-setting-control is-switch">
+            <Switch
+              id={`${fieldId}-hidden`}
+              aria-describedby={`${fieldId}-hidden-hint`}
+              checked={hidden}
+              disabled={readOnly}
+              onChange={(event) => setHidden(event.currentTarget.checked)}
+            />
+          </div>
+        </div>
+      </div>
+      <p className="dir-agent-summary">
+        <span className="dir-agent-summary-label">New chats start with</span> {summary}
+      </p>
+      {onRemove ? (
+        <div className="dir-agent-danger">
+          <ShadcnButton
+            variant="ghost"
+            size="sm"
+            className="dir-delete"
+            disabled={saving || deleting}
+            onClick={onRemove}
+          >
+            <Trash2 aria-hidden />
+            Delete agent
+          </ShadcnButton>
+        </div>
+      ) : null}
+    </>
+  )
+
+  const [copied, setCopied] = useState(false)
+  const copyTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(copyTimer.current), [])
+  const copyId = () => {
+    if (!entryKey) return
+    void copyText(entryKey).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      window.clearTimeout(copyTimer.current)
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1400)
+    })
+  }
+
   return (
     <div
       className={`dir-ui-af-loading t-skel${catalogsLoading ? '' : ' is-revealed'}`}
       data-state={catalogsLoading ? 'loading' : 'loaded'}
       aria-busy={catalogsLoading}
     >
-      <div className="t-skel-skeleton is-pulsing" aria-hidden={!catalogsLoading}>
+      <div className="t-skel-skeleton" aria-hidden={!catalogsLoading}>
         <AgentFormSkeletonLayout />
       </div>
       <div className="t-skel-content" aria-hidden={catalogsLoading} inert={catalogsLoading}>
-        <div className="dir-ui-af">
-          <div className="dir-ui-af-profile">
+        <div className="dir-agent">
+          <header className="dir-agent-head">
             <AvatarPicker
               icon={icon}
               color={color}
@@ -1239,202 +1278,113 @@ export function AgentForm(ctx: FormContext) {
               onIconChange={setAvatar}
               onColorChange={setAvatarColor}
             />
-            <div className="dir-ui-af-profile-copy">
-              <div className="dir-ui-af-title-row">
-                <InlineTextField
-                  id={`${fieldId}-name`}
-                  name="name"
-                  value={nameValue}
-                  placeholder="Untitled agent profile"
-                  readOnly={readOnly}
-                  onChange={setName}
-                />
-              </div>
+            <div className="dir-agent-identity">
+              <InlineTextField
+                id={`${fieldId}-name`}
+                name="name"
+                label="Agent name"
+                onBegin={beginInPlace}
+                onCancel={cancelInPlace}
+                value={nameValue}
+                placeholder="Untitled agent"
+                readOnly={readOnly}
+                onChange={setName}
+              />
               <InlineTextField
                 id={`${fieldId}-description`}
                 name="description"
+                label="Agent description"
+                onBegin={beginInPlace}
+                onCancel={cancelInPlace}
                 value={descriptionValue}
-                placeholder="Add a concise description…"
+                placeholder="Add a description"
                 readOnly={readOnly}
                 multiline
                 onChange={setDescription}
               />
-              {creating ? (
-                <p className="dir-ui-af-file-hint">
-                  {derived ? `${derived}.md` : 'The file name follows the agent profile name.'}
-                </p>
-              ) : null}
+              <p className="dir-agent-file">
+                {creating
+                  ? derived
+                    ? `Saved as agents/${derived}.md`
+                    : 'The file name comes from the name.'
+                  : `agents/${entryKey}.md`}
+              </p>
             </div>
-          </div>
-
-          <div className="dir-ui-af-aligned">
-            {/* Profile settings: a two-up grid of stacked fields (label, hint,
-                control) that fills the aligned column. The two pickers pair
-                up; free text and the visibility switch span both tracks. */}
-            <div className="dir-ui-af-settings">
-              <div className="dir-ui-af-field">
-                <div className="dir-ui-af-field-head">
-                  <span className="dir-ui-af-field-label">Model</span>
-                  <span className="dir-ui-af-field-hint">
-                    {modelKnown ? 'Optional default.' : 'Unavailable in the catalog.'}
-                  </span>
-                </div>
-                <div className="dir-ui-af-field-control">
-                  <ModelPicker
-                    value={model || null}
-                    options={pickerOptions}
-                    thinkingLevel={reasoningEffort}
-                    onChange={setModel}
-                    onThinkingLevelChange={setReasoningEffort}
-                    disabled={readOnly || modelCatalog.error}
-                    loading={modelCatalog.items === null && !modelCatalog.error}
-                    showRefresh={false}
-                    showProviderConfiguration={false}
-                    showReasoningEffort
-                    placeholder="Session default"
-                    className="dir-ui-af-field-picker"
-                  />
-                  {model && !readOnly ? (
-                    <IconButton label="Use the session default model" onClick={() => setModel('')}>
-                      <X />
-                    </IconButton>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="dir-ui-af-field">
-                <div className="dir-ui-af-field-head">
-                  <span className="dir-ui-af-field-label">Extends</span>
-                  <span className="dir-ui-af-field-hint">
-                    {inheritanceError ? 'Saved chain does not resolve.' : 'Optional parent profile.'}
-                  </span>
-                </div>
-                <div className="dir-ui-af-field-control">
-                  <Select
-                    className="dir-ui-af-field-picker"
-                    aria-label="Parent agent profile"
-                    aria-busy={agentCatalog.items === null && !agentCatalog.error}
-                    value={extendsId || undefined}
-                    options={parentOptions.map((row) => ({
-                      value: row.id,
-                      label: row.name && row.name !== row.id ? `${row.name} (${row.id})` : row.id,
-                    }))}
-                    placeholder="None"
-                    allowEmpty
-                    emptyLabel="None"
-                    onClear={() => setExtends('')}
-                    disabled={readOnly || agentCatalog.error}
-                    onChange={setExtends}
-                  />
-                </div>
-                {inheritanceError ? (
-                  <p className="dir-ui-af-file-hint dir-ui-af-inheritance-error">{inheritanceError}</p>
-                ) : null}
-              </div>
-
-              <div className="dir-ui-af-field is-wide">
-                <div className="dir-ui-af-field-head">
-                  <span className="dir-ui-af-field-label">
-                    <label htmlFor={`${fieldId}-composer-placeholder`}>Composer example</label>
-                  </span>
-                  <span className="dir-ui-af-field-hint" id={`${fieldId}-composer-placeholder-hint`}>
-                    Shown in an empty chat box for this profile. Never sent; not inherited.
-                  </span>
-                </div>
-                <ComposerExampleField
-                  id={`${fieldId}-composer-placeholder`}
-                  value={composerPlaceholder}
-                  readOnly={readOnly}
-                  onChange={setComposerPlaceholder}
+            {!creating ? (
+              <ShadcnDropdownMenu>
+                <ShadcnDropdownMenuTrigger
+                  render={
+                    <ShadcnButton variant="ghost" size="icon-sm" aria-label="More agent actions">
+                      <Ellipsis aria-hidden />
+                    </ShadcnButton>
+                  }
                 />
-              </div>
+                <ShadcnDropdownMenuContent align="end" sideOffset={6} className="dir-menu">
+                  <ShadcnDropdownMenuGroup>
+                    <ShadcnDropdownMenuItem closeOnClick={false} onClick={copyId}>
+                      {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+                      {copied ? 'Copied' : 'Copy id'}
+                    </ShadcnDropdownMenuItem>
+                    {onDuplicate ? (
+                      <ShadcnDropdownMenuItem onClick={onDuplicate}>
+                        <CopyPlus aria-hidden />
+                        Duplicate
+                      </ShadcnDropdownMenuItem>
+                    ) : null}
+                  </ShadcnDropdownMenuGroup>
+                </ShadcnDropdownMenuContent>
+              </ShadcnDropdownMenu>
+            ) : null}
+          </header>
 
-              <div className="dir-ui-af-field is-wide is-switch">
-                <Switch
-                  id={`${fieldId}-hidden`}
-                  aria-describedby={`${fieldId}-hidden-hint`}
-                  checked={hidden}
-                  disabled={readOnly}
-                  onChange={(event) => setHidden(event.currentTarget.checked)}
-                />
-                <div className="dir-ui-af-field-head">
-                  <label className="dir-ui-af-field-label" htmlFor={`${fieldId}-hidden`}>
-                    Hidden
-                  </label>
-                  <span className="dir-ui-af-field-hint" id={`${fieldId}-hidden-hint`}>
-                    Keep out of the new-session gallery; still usable as a parent.
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <CollapsibleSection
-              title="System prompt"
-              description="Instructions sessions using this profile follow — the whole identity, with nothing built-in underneath. Optional: with a parent, empty runs the parent's prompt alone; with no parent, empty means no identity prompt at all."
-              summary="Markdown"
-            >
+          <ShadcnTabs value={tab} onValueChange={(next) => setTab(next as AgentTab)} className="dir-agent-tabs">
+            <ShadcnTabsList variant="line" activateOnFocus className="dir-agent-tablist">
+              <ShadcnTabsTrigger value="overview">Overview</ShadcnTabsTrigger>
+              <ShadcnTabsTrigger value="prompt">Instructions</ShadcnTabsTrigger>
+              <ShadcnTabsTrigger value="skills">
+                Skills <span className="dir-agent-tab-count">{skills.length}</span>
+              </ShadcnTabsTrigger>
+              <ShadcnTabsTrigger value="functions">
+                Functions <span className="dir-agent-tab-count">{functions.length}</span>
+              </ShadcnTabsTrigger>
+            </ShadcnTabsList>
+            <ShadcnTabsContent value="overview" keepMounted className="dir-agent-panel is-scroll">
+              {settings}
+            </ShadcnTabsContent>
+            <ShadcnTabsContent value="prompt" keepMounted className="dir-agent-panel is-editor">
+              <p className="dir-agent-panel-hint">
+                What every chat with this agent follows. With a base agent, empty instructions run the base’s alone.
+              </p>
               <SystemPromptEditor draft={draft} editDraft={editDraft} readOnly={readOnly} />
-            </CollapsibleSection>
-
-            <CollapsibleSection
-              title="Skills"
-              description="Move skills between the available and selected lists. Selected skills are preloaded into every session's prompt; empty = none."
-              summary={`${skills.length} selected`}
-            >
+            </ShadcnTabsContent>
+            <ShadcnTabsContent value="skills" keepMounted className="dir-agent-panel is-fill">
+              <p className="dir-agent-panel-hint">Selected skills load into every chat this agent starts.</p>
               <PickerEditor
                 copy={SKILLS_COPY}
                 items={skillCatalog.items}
                 error={skillCatalog.error}
-                selected={skills}
                 missing={missingSkills}
                 readOnly={readOnly}
                 isSelected={isSkillSelected}
                 onToggle={toggleSkill}
               />
-            </CollapsibleSection>
-
-            <CollapsibleSection
-              title="Preloaded functions"
-              description="Functions this profile uses routinely. Their contracts are pre-loaded into the system prompt of every new session, so the model calls them right away instead of searching and fetching each contract first."
-              summary={`${functions.length} selected`}
-            >
+            </ShadcnTabsContent>
+            <ShadcnTabsContent value="functions" keepMounted className="dir-agent-panel is-fill">
+              <p className="dir-agent-panel-hint">
+                Functions this agent calls all the time. Their contracts load up front, so it calls them without
+                searching first.
+              </p>
               <PickerEditor
                 copy={FUNCTIONS_COPY}
                 items={functionCatalog.items}
                 error={functionCatalog.error}
-                selected={functions}
                 missing={missingFunctions}
                 readOnly={readOnly}
                 isSelected={isFunctionSelected}
                 onToggle={toggleFunction}
               />
-            </CollapsibleSection>
-
-            {onRemove ? (
-              <CollapsibleSection
-                title="Danger area"
-                description="Destructive actions for this agent profile."
-                summary="Delete"
-                defaultOpen={false}
-              >
-                <div className="dir-ui-af-remove-panel">
-                  <div className="dir-ui-af-remove-copy">
-                    <strong>Delete this agent profile</strong>
-                    <span>This action cannot be undone.</span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="dir-ui-af-remove"
-                    disabled={saving || deleting}
-                    onClick={onRemove}
-                  >
-                    {deleting ? 'Deleting…' : 'Delete agent profile'}
-                  </Button>
-                </div>
-              </CollapsibleSection>
-            ) : null}
-          </div>
+            </ShadcnTabsContent>
+          </ShadcnTabs>
         </div>
       </div>
     </div>
