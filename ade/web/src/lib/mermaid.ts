@@ -103,6 +103,9 @@ export function renderMermaid(source: string, theme: Theme): Promise<string> {
   if (cached !== undefined) return Promise.resolve(cached)
 
   const task = renderQueue.then(async () => {
+    // A same-key request queued behind the first render reuses its result.
+    const done = cachedMermaidSvg(source, theme)
+    if (done !== undefined) return done
     const { default: mermaid } = await import('mermaid')
     await document.fonts?.ready
     mermaid.initialize({

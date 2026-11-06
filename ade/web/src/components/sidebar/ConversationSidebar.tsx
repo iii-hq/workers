@@ -452,7 +452,8 @@ export function ConversationSidebar({
     (index: number) => {
       const item = items[index]
       if (item?.kind === 'header') return item.project ? 49 : 41
-      return narrow ? 45 : 37
+      // A stacked row sits 1px up (conversation-tree.css), and its slot counts it.
+      return (narrow ? 45 : 37) - (item?.stacked ? 1 : 0)
     },
     [items, narrow],
   )

@@ -958,54 +958,67 @@ test.describe('sidebar window', () => {
     expect(m.scrollHeight).toBeGreaterThan(400 * 36)
   })
 
-  test('the viewport stays full and steady all the way down', async ({
-    page,
-  }) => {
-    await openList(page, 300)
-    await page.hover(LIST)
-    const heights = new Set<number>()
-    for (let step = 0; step < 40; step++) {
-      const before = await page.evaluate(
-        ({ list, item }) => {
-          const scroller = document.querySelector<HTMLElement>(list)
-          const box = scroller?.getBoundingClientRect()
-          const node = [
-            ...(scroller?.querySelectorAll<HTMLElement>(item) ?? []),
-          ].find((el) => box && el.getBoundingClientRect().top >= box.top)
-          return node
-            ? {
-                index: node.dataset.index as string,
-                top: node.getBoundingClientRect().top,
-              }
-            : null
-        },
-        { list: LIST, item: ITEM },
-      )
-      expect(before).not.toBeNull()
-      await page.mouse.wheel(0, 300)
-      await settle(page)
-      const top = await page.evaluate(
-        ({ item, index }) =>
-          document
-            .querySelector(`${item}[data-index="${index}"]`)
-            ?.getBoundingClientRect().top,
-        { item: ITEM, index: before?.index },
-      )
-      const m = await listMetrics(page)
-      heights.add(m.scrollHeight)
-      expect(m.inView).toBeGreaterThan(10)
-      if (top !== undefined && m.scrollHeight - m.clientHeight > 0) {
-        const moved = (before?.top ?? 0) - top
-        expect(moved === 0 || Math.abs(moved - 300) < 1).toBe(true)
+  for (const grouping of ['date', 'project'] as const)
+    test(`the viewport stays full and steady all the way down (${grouping})`, async ({
+      page,
+    }) => {
+      // By project, every row after a section's first is stacked 1px up.
+      if (grouping === 'project')
+        await page.addInitScript(() => {
+          localStorage.setItem(
+            'iii-chat-list-view',
+            JSON.stringify({
+              kinds: ['user'],
+              grouping: 'project',
+              sort: 'updated',
+            }),
+          )
+        })
+      await openList(page, 300)
+      await page.hover(LIST)
+      const heights = new Set<number>()
+      for (let step = 0; step < 40; step++) {
+        const before = await page.evaluate(
+          ({ list, item }) => {
+            const scroller = document.querySelector<HTMLElement>(list)
+            const box = scroller?.getBoundingClientRect()
+            const node = [
+              ...(scroller?.querySelectorAll<HTMLElement>(item) ?? []),
+            ].find((el) => box && el.getBoundingClientRect().top >= box.top)
+            return node
+              ? {
+                  index: node.dataset.index as string,
+                  top: node.getBoundingClientRect().top,
+                }
+              : null
+          },
+          { list: LIST, item: ITEM },
+        )
+        expect(before).not.toBeNull()
+        await page.mouse.wheel(0, 300)
+        await settle(page)
+        const top = await page.evaluate(
+          ({ item, index }) =>
+            document
+              .querySelector(`${item}[data-index="${index}"]`)
+              ?.getBoundingClientRect().top,
+          { item: ITEM, index: before?.index },
+        )
+        const m = await listMetrics(page)
+        heights.add(m.scrollHeight)
+        expect(m.inView).toBeGreaterThan(10)
+        if (top !== undefined && m.scrollHeight - m.clientHeight > 0) {
+          const moved = (before?.top ?? 0) - top
+          expect(moved === 0 || Math.abs(moved - 300) < 1).toBe(true)
+        }
       }
-    }
-    // Every row here is its estimate: the list is as long wherever it is
-    // scrolled, so each spacer stands in for exactly the rows it replaces.
-    expect([...heights]).toHaveLength(1)
-    await scrollListTo(page, 1e9)
-    await expect(page.locator(chat(299))).toBeInViewport()
-    expect((await listMetrics(page)).items).toBeLessThan(MAX_MOUNTED_ITEMS)
-  })
+      // Every row here is its estimate: the list is as long wherever it is
+      // scrolled, so each spacer stands in for exactly the rows it replaces.
+      expect([...heights]).toHaveLength(1)
+      await scrollListTo(page, 1e9)
+      await expect(page.locator(ITEM).last()).toBeInViewport()
+      expect((await listMetrics(page)).items).toBeLessThan(MAX_MOUNTED_ITEMS)
+    })
 
   test('the active chat stays mounted out of view', async ({ page }) => {
     await openList(page, 300)
