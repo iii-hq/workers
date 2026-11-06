@@ -233,7 +233,13 @@ stop asked not to have. Stopped means the session's last turn is `cancelled`, or
 carries the `abort` flag `harness::stop { quiet_deadlines: true }` sets on a
 parked session's ended turn; the next turn starts a new record, so a later send
 undoes it. When the last wake is gone, `finish_stopped_exchange` ends the
-exchange as cancelled with `terminal: true`, because no later turn will.
+exchange as cancelled (a failed turn stays failed) with `terminal: true`, because
+no later turn will. The turn record's `exchange_finished` marks that completion, so
+of the turn's finalizer and its wakes going, only the first to reach it emits it.
+The wake that led here is gone and no sweep comes back, so a store failure is
+retried in the background for about 15 seconds; past that the session stays as it
+was, logged. The event goes before the record is written, so a failure can repeat
+the completion but never lose it.
 
 ## Restarts, the binding pass, and stored records
 
