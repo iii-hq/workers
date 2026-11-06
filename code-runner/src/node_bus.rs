@@ -245,7 +245,10 @@ fn sdk_observe(guest: GuestObserveInput) -> (Source, Target, ObserverOptions) {
         let (deliver, replacement) = match deliver {
             GuestDeliver::Envelope => (Deliver::Envelope, "omit it (the envelope is the default)"),
             GuestDeliver::Input => (Deliver::Input, "capture: ['input'] and read payload.input"),
-            GuestDeliver::Output => (Deliver::Output, "capture: ['output'] and read payload.output"),
+            GuestDeliver::Output => (
+                Deliver::Output,
+                "capture: ['output'] and read payload.output",
+            ),
         };
         tracing::warn!(
             function_id = %source.function_id(),
@@ -571,9 +574,8 @@ mod tests {
         );
         assert!(!logs.contains("deprecated"), "unexpected warning: {logs}");
 
-        let ((source, _, _), _) = with_logs(|| {
-            sdk_observe(guest(json!({ "function_id": "a::b", "capture": [] })))
-        });
+        let ((source, _, _), _) =
+            with_logs(|| sdk_observe(guest(json!({ "function_id": "a::b", "capture": [] }))));
         assert_eq!(source, Source::function("a::b").capture([]));
     }
 

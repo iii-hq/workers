@@ -1039,7 +1039,9 @@ mod tests {
         assert!(expected.is_some(), "fixture ref must parse");
         let event: super::ObservedSecretChange = serde_json::from_value(observed(
             crate::secrets::ON_CHANGED_FN,
-            Some(json!({ "name": "bucket-key", "ref": "secret://bucket-key", "action": "rotated" })),
+            Some(
+                json!({ "name": "bucket-key", "ref": "secret://bucket-key", "action": "rotated" }),
+            ),
         ))
         .unwrap();
         assert_eq!(super::secret_change_reference(event), expected);

@@ -207,10 +207,7 @@ pub fn observe_engine_events(iii: &IIIClient) -> EngineEvents {
     for source in [FUNCTIONS_CHANGED_FN, WORKERS_CHANGED_FN] {
         // The observers live as long as the worker's connection; dropping
         // the handles does not dispose them.
-        iii.observe(
-            engine_change_source(source),
-            ENGINE_CHANGE_FN_ID,
-        );
+        iii.observe(engine_change_source(source), ENGINE_CHANGE_FN_ID);
     }
     events
 }
@@ -794,7 +791,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(event.event(), Some("function_registered"));
-        let empty: EngineChangeEvent = serde_json::from_value(json!({ "status": "error" })).unwrap();
+        let empty: EngineChangeEvent =
+            serde_json::from_value(json!({ "status": "error" })).unwrap();
         assert_eq!(empty.event(), None);
     }
 

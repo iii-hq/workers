@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::{
-    Capture, CallRequest, Error, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+    CallRequest, Capture, Error, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use serial_test::serial;

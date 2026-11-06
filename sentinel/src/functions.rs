@@ -937,7 +937,6 @@ mod tests {
         assert_eq!(observed_event(turn).session_id, "");
     }
 
-
     #[test]
     fn the_only_write_an_investigation_can_make_is_its_own_diagnosis() {
         let own: Vec<&str> = INVESTIGATION_ALLOW
