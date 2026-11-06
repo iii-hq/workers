@@ -166,7 +166,7 @@ test.describe('Provider configuration', () => {
       const savedUrl = uniqueSaveUrl()
 
       await page.goto(live.consoleUrl)
-      await expect(page).toHaveTitle(/iii Console/i)
+      await expect(page).toHaveTitle(/iii ADE/i)
       await openModelPicker(page)
       const providerGroup = page.locator(
         `[data-provider-group="${live.providerId}"]`,

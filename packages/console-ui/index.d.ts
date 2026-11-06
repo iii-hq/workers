@@ -1926,6 +1926,9 @@ export interface ShadcnTabsProps extends Omit<React.HTMLAttributes<HTMLDivElemen
 export declare const ShadcnTabs: React.ComponentType<ShadcnTabsProps>
 export interface ShadcnTabsListProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'default' | 'line'
+  /** Select a tab as the arrow keys move focus onto it (default: arrows
+      only move focus; Enter or Space selects). */
+  activateOnFocus?: boolean
 }
 export declare const ShadcnTabsList: React.ComponentType<ShadcnTabsListProps>
 export interface ShadcnTabsTriggerProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'value'> {
