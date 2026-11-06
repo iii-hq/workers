@@ -196,7 +196,8 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                             "input.event_type": { "$eq": "configuration:updated" }
                         })
                     );
-                    assert_eq!(value["source"]["deliver"], "output");
+                    assert_eq!(value["source"]["capture"], json!(["output"]));
+                    assert!(value["source"].get("deliver").is_none());
                     reload = true;
                 }
                 // Observed even though no secrets worker exists: the observer stays pending.
@@ -206,7 +207,8 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         "judge-openai::on-secret-change"
                     );
                     assert!(value["source"].get("args").is_none());
-                    assert_eq!(value["source"]["deliver"], "output");
+                    assert_eq!(value["source"]["capture"], json!(["output"]));
+                    assert!(value["source"].get("deliver").is_none());
                     secret_reload = true;
                 }
                 "observe"

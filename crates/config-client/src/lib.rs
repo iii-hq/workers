@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 /// The configuration worker's change event, observed by [`on_change`].
@@ -233,9 +233,9 @@ fn dispose_in_background(handle: ObserverHandle) {
     }
 }
 
-/// The `configuration::on-updated` event, delivered as output to
-/// `<worker>::on-config-change`. Advisory only: handlers read `id` and
-/// re-fetch the authoritative value, so a direct call can never inject
+/// What `<worker>::on-config-change` receives: the `Observed` envelope of a
+/// `configuration::on-updated` call (captured as output). Advisory only:
+/// handlers ignore it and re-fetch the authoritative value, so a direct call can never inject
 /// config.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
@@ -273,8 +273,8 @@ impl Reload {
 /// keep it out of the callable catalog agents browse, and denied to agents
 /// in iii-permissions.yaml) and observe `configuration::on-updated` for
 /// `config_id` with it: filters on `input.id` and on
-/// `input.event_type == "configuration:updated"`, the event delivered as
-/// output. Every delivery runs `reload` through the same serialized
+/// `input.event_type == "configuration:updated"`, capturing the event (its
+/// output). Every delivery runs `reload` through the same serialized
 /// [`Reload`]. The observer stays `pending` while the configuration source
 /// is not registered.
 ///
@@ -317,7 +317,7 @@ where
     iii.observe(
         Source::function(ON_UPDATED_FN)
             .filters(update_filters(config_id))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         fn_id,
     );
     reload

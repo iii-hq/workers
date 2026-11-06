@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    register_worker, Call, CallRequest, Capture, Deliver, IIIClient, Observer, ObserverOptions,
+    register_worker, Call, CallRequest, Capture, IIIClient, Observer, ObserverOptions,
     RegisterFunction, Source,
 };
 use llm_router::channels::create_router_channel;
@@ -1761,8 +1761,8 @@ async fn models_changed_event_reaches_an_observer() {
         .expect("router boots");
 
     // Probe worker observing the router's event function (README § Events)
-    // with the event delivered as output: the handler receives the raw event,
-    // no envelope.
+    // capturing the event (the output): the handler records the envelope's
+    // `output`.
     let probe = register_worker(&engine.url, test_init_options());
     let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let sink = received.clone();
@@ -1771,7 +1771,7 @@ async fn models_changed_event_reaches_an_observer() {
         RegisterFunction::new_async(move |input: Value| {
             let sink = sink.clone();
             async move {
-                sink.lock().unwrap().push(input);
+                sink.lock().unwrap().push(input["output"].clone());
                 Ok::<Value, Error>(json!({}))
             }
         }),
@@ -1779,7 +1779,7 @@ async fn models_changed_event_reaches_an_observer() {
     let observer = probe.observe(
         Source::function("router::models::on-changed")
             .filters(json!({ "input.provider": { "$eq": "real" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "probe::on_models_changed",
     );
     tokio::time::timeout(Duration::from_secs(10), observer.ready())
@@ -1841,7 +1841,7 @@ async fn provider_changed_event_reports_register_and_discovery() {
         RegisterFunction::new_async(move |input: Value| {
             let sink = sink.clone();
             async move {
-                sink.lock().unwrap().push(input);
+                sink.lock().unwrap().push(input["output"].clone());
                 Ok::<Value, Error>(json!({}))
             }
         }),
@@ -1849,7 +1849,7 @@ async fn provider_changed_event_reports_register_and_discovery() {
     let observer = probe.observe(
         Source::function("router::provider::on-changed")
             .filters(json!({ "input.provider": { "$eq": "real" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "probe::on_provider_changed",
     );
     tokio::time::timeout(Duration::from_secs(10), observer.ready())
@@ -3256,7 +3256,7 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
 /// Stand-in for the `secrets` worker: `secrets::resolve` answers from a
 /// name → value / error-code table (`env://NAME` references under that full
 /// key), and `secrets::on-changed` is a private function whose deliver hook
-/// calls every matching observer and waits for each, so an announcement
+/// calls every matching observer with the Observed envelope and waits for each, so an announcement
 /// returns once the router has handled it.
 #[derive(Clone)]
 struct FakeSecretsWorker {
@@ -3314,9 +3314,17 @@ async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
             move |call: Call, observers: Vec<Observer>| {
                 let iii = iii_for_deliver.clone();
                 async move {
+                    // What the engine delivers to an observer capturing
+                    // [output]: the Observed envelope, the event (this
+                    // function returns its input) under `output`.
                     for observer in observers.iter().filter(|obs| obs.matches(&call)) {
-                        iii.call(CallRequest::observer(observer, call.input.clone()))
-                            .await?;
+                        let envelope = json!({
+                            "observer_id": observer.id(),
+                            "function_id": SECRETS_ON_CHANGED,
+                            "status": "success",
+                            "output": call.input.clone(),
+                        });
+                        iii.call(CallRequest::observer(observer, envelope)).await?;
                     }
                     Ok(call.input)
                 }

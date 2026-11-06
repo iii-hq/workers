@@ -1,5 +1,6 @@
 //! `router::on_secret_changed` — the target of the router's observer of the
-//! `secrets` worker's `secrets::on-changed`. The event is advisory and
+//! `secrets` worker's `secrets::on-changed`, which captures the event (its
+//! output) in the Observed envelope. The event is advisory and
 //! never carries a value: the handler re-reads the named reference through
 //! `secrets::resolve`, and when its outcome changed (rotated, deleted,
 //! access granted or revoked) the cache's change listener queues a
@@ -15,7 +16,7 @@ use super::{parse_ref, valid_name, ChangeListener, Refetch, SecretCache, SecretR
 use crate::config::state::{snapshot, ConfigCell};
 use crate::registry::refresh::{Refresh, RefreshQueue};
 use crate::registry::resolve::referenced_secrets;
-use crate::types::router::{RouterAck, SecretChangedEvent};
+use crate::types::router::{RouterAck, SecretChangedEvent, SecretChangedObserved};
 
 /// The reference an event is about, canonical: from `ref` (which names the
 /// store), or else from `name` as a vault secret.
@@ -35,12 +36,12 @@ fn event_secret(event: &SecretChangedEvent) -> Option<String> {
 pub fn make_on_secret_changed(
     config: ConfigCell,
     secrets: Arc<SecretCache>,
-) -> impl Fn(SecretChangedEvent) -> BoxFuture<'static, Result<RouterAck, Error>> + Send + Sync + 'static
+) -> impl Fn(SecretChangedObserved) -> BoxFuture<'static, Result<RouterAck, Error>> + Send + Sync + 'static
 {
-    move |event: SecretChangedEvent| {
+    move |observed: SecretChangedObserved| {
         let (config, secrets) = (config.clone(), secrets.clone());
         Box::pin(async move {
-            let Some(reference) = event_secret(&event) else {
+            let Some(reference) = observed.output.as_ref().and_then(event_secret) else {
                 return Ok(RouterAck { ok: false });
             };
             // Secrets no slice references are none of this router's business.
@@ -76,6 +77,12 @@ mod tests {
     use crate::secrets::SecretError;
     use serde_json::json;
     use std::time::Duration;
+
+    fn observed(event: SecretChangedEvent) -> SecretChangedObserved {
+        SecretChangedObserved {
+            output: Some(event),
+        }
+    }
 
     /// Past the debounce (the paused clock auto-advances while idle).
     async fn flush() {
@@ -125,11 +132,11 @@ mod tests {
 
         // rotated
         fake.set("secret://SHARED", Ok("v2"));
-        let ack = handler(SecretChangedEvent {
+        let ack = handler(observed(SecretChangedEvent {
             name: Some("SHARED".into()),
             reference: Some("secret://SHARED".into()),
             action: Some("rotated".into()),
-        })
+        }))
         .await
         .unwrap();
         assert!(ack.ok);
@@ -146,11 +153,11 @@ mod tests {
         // deleted: the cached value is gone, not served stale
         fired.lock().unwrap().clear();
         fake.set("secret://SHARED", Err(SecretError::NotFound));
-        handler(SecretChangedEvent {
+        handler(observed(SecretChangedEvent {
             name: Some("SHARED".into()),
             reference: None,
             action: Some("deleted".into()),
-        })
+        }))
         .await
         .unwrap();
         assert_eq!(
@@ -162,11 +169,11 @@ mod tests {
 
         // an event that changes nothing nudges nobody
         fired.lock().unwrap().clear();
-        handler(SecretChangedEvent {
+        handler(observed(SecretChangedEvent {
             name: Some("SHARED".into()),
             reference: None,
             action: Some("access_changed".into()),
-        })
+        }))
         .await
         .unwrap();
         flush().await;
@@ -183,11 +190,11 @@ mod tests {
         fake.set("env://OPENAI_API_KEY", Ok("from-dotenv"));
         let secrets = Arc::new(fake.cache());
         let handler = make_on_secret_changed(config, secrets.clone());
-        handler(SecretChangedEvent {
+        handler(observed(SecretChangedEvent {
             name: Some("OPENAI_API_KEY".into()),
             reference: Some("env://OPENAI_API_KEY".into()),
             action: Some("rotated".into()),
-        })
+        }))
         .await
         .unwrap();
         assert_eq!(fake.calls(), vec!["env://OPENAI_API_KEY".to_string()]);
@@ -202,14 +209,41 @@ mod tests {
         let config = new_config_cell(json!({ "providers": { "openai": { "api_key": "sk" } } }));
         let fake = FakeSecrets::default();
         let handler = make_on_secret_changed(config, Arc::new(fake.cache()));
-        let ack = handler(SecretChangedEvent {
+        let ack = handler(observed(SecretChangedEvent {
             name: Some("SOMEONE_ELSES".into()),
             reference: None,
             action: Some("created".into()),
-        })
+        }))
         .await
         .unwrap();
         assert!(ack.ok);
         assert!(fake.calls().is_empty());
+    }
+
+    /// The observer captures the event as output: the target reads it from
+    /// the Observed envelope.
+    #[tokio::test]
+    async fn an_observed_envelope_refreshes_the_secret_named_in_its_output() {
+        let config = new_config_cell(json!({ "providers": {
+            "anthropic": { "api_key": "secret://SHARED" },
+        }}));
+        let fake = FakeSecrets::default();
+        fake.set("secret://SHARED", Ok("v2"));
+        let handler = make_on_secret_changed(config, Arc::new(fake.cache()));
+        let envelope = json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": "secrets::on-changed",
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "name": "SHARED", "action": "rotated", "fingerprint": "f" },
+        });
+        let ack = handler(serde_json::from_value(envelope).unwrap())
+            .await
+            .unwrap();
+        assert!(ack.ok);
+        assert_eq!(fake.calls(), vec!["secret://SHARED".to_string()]);
     }
 }
