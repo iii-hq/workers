@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
@@ -462,7 +462,7 @@ pub fn observe_config_changes(iii: &IIIClient, state: AppState) {
                 "input.id": { "$eq": config_id() },
                 "input.event_type": { "$eq": "configuration:updated" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_FN_ID,
     );
 }

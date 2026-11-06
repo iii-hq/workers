@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1975,7 +1975,7 @@ pub fn register(
         ("harness::on-turn-completed", COMPLETED_FN_ID),
     ] {
         iii.observe(
-            Source::function(event).deliver(Deliver::Output),
+            Source::function(event).capture([Capture::Output]),
             function_id,
         );
     }

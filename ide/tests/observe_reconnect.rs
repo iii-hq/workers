@@ -16,7 +16,7 @@ use std::time::Duration;
 use ide::config::ShellConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, Observed, ObserverHandle,
+    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, Observed, ObserverHandle,
     ObserverOptions, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
@@ -190,6 +190,22 @@ fn recorder(iii: &IIIClient, id: &str) -> Arc<Received> {
     received
 }
 
+/// A recorder of what an observer of `capture: [output]` acts on: the
+/// output its `Observed` envelope carries.
+fn output_recorder(iii: &IIIClient, id: &str) -> Arc<Received> {
+    let received = Arc::new(Received::default());
+    let sink = received.clone();
+    iii.register_function(
+        id,
+        RegisterFunction::new(move |payload: Value| {
+            let output = payload.get("output").cloned().unwrap_or(Value::Null);
+            sink.0.lock().unwrap().push(output);
+            Ok::<_, Error>(json!({ "ok": true }))
+        }),
+    );
+    received
+}
+
 /// Observes `source` into `target` with `options` and waits until the
 /// observer is active.
 async fn observe(
@@ -272,8 +288,8 @@ async fn on_job_finished_replays_to_an_observer_added_again_after_a_reconnect() 
     );
 
     let took = recorder(&consumer, "e2e::reconnect::took");
-    let once = recorder(&consumer, "e2e::reconnect::once");
-    let away = recorder(&consumer, "e2e::reconnect::away");
+    let once = output_recorder(&consumer, "e2e::reconnect::once");
+    let away = output_recorder(&consumer, "e2e::reconnect::away");
     let took_handle = observe(
         &consumer,
         job(&before),
@@ -283,14 +299,14 @@ async fn on_job_finished_replays_to_an_observer_added_again_after_a_reconnect() 
     .await;
     observe(
         &consumer,
-        job(&before).deliver(Deliver::Output),
+        job(&before).capture([Capture::Output]),
         "e2e::reconnect::once",
         ObserverOptions::default().max_fires(1),
     )
     .await;
     observe(
         &consumer,
-        job(&during).deliver(Deliver::Output),
+        job(&during).capture([Capture::Output]),
         "e2e::reconnect::away",
         ObserverOptions::default(),
     )
