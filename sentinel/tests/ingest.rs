@@ -458,6 +458,44 @@ async fn a_tick_of_only_this_workers_own_traces_reads_nothing() {
 }
 
 #[tokio::test]
+async fn a_tick_that_names_its_errored_traces_queues_them_with_no_read() {
+    let telemetry = FakeEngineTelemetry::default();
+    let reads = telemetry.reads.clone();
+    let harness = harness(telemetry).await;
+    harness.ring.remember("own");
+
+    let (queued, phantom_dropped) = harness.ingest.filter_errored_tick(&ids(&["own", "t1"]));
+
+    assert_eq!(queued, ids(&["t1"]));
+    assert_eq!(
+        phantom_dropped, 1,
+        "this worker's own trace is still dropped"
+    );
+    assert_eq!(reads.load(Ordering::Relaxed), 0, "no engine::traces::list");
+    assert!(harness.ingest.filter_errored_tick(&[]).0.is_empty());
+}
+
+#[test]
+fn a_tick_says_whether_its_engine_named_the_errored_traces() {
+    use sentinel::functions::TraceActivityEventV1;
+    let older: TraceActivityEventV1 =
+        serde_json::from_value(serde_json::json!({ "trace_ids": ["t1"] })).unwrap();
+    assert_eq!(
+        older.error_trace_ids, None,
+        "an older engine keeps the read"
+    );
+    let newer: TraceActivityEventV1 = serde_json::from_value(
+        serde_json::json!({ "trace_ids": ["t1", "t2"], "error_trace_ids": [] }),
+    )
+    .unwrap();
+    assert_eq!(
+        newer.error_trace_ids,
+        Some(vec![]),
+        "a clean tick queues nothing"
+    );
+}
+
+#[tokio::test]
 async fn an_empty_tick_reads_nothing() {
     let telemetry = FakeEngineTelemetry::default();
     let reads = telemetry.reads.clone();

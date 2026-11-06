@@ -1,10 +1,21 @@
 {
-  "description": "Internal observer of observability::on-span; reads the tick's traces in one call and queues those that hold an error.",
+  "description": "Internal observer of observability::on-span; queues the traces the tick names in error_trace_ids, or, from an engine that does not name them, reads the tick's traces in one call and queues those that hold an error.",
   "function_id": "sentinel::on-trace-activity",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "The `observability::on-span` event, delivered as output: trace ids only, coalesced.",
+    "description": "The `observability::on-span` event, delivered as output: the trace ids of one coalesced window.",
     "properties": {
+      "error_trace_ids": {
+        "default": null,
+        "description": "The traces of the window that recorded an error span. An engine that names them spares the tick its read; `None` (an older engine) keeps it.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "trace_ids": {
         "default": [],
         "items": {

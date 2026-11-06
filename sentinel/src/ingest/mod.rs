@@ -725,6 +725,16 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         (self.errored_traces(kept).await, dropped)
     }
 
+    /// A tick whose engine already named the traces that recorded an error:
+    /// queue those, with no read. Reading every active trace on each ~300 ms
+    /// tick made the engine decode whole traces several times a second
+    /// (MOT-5648).
+    pub fn filter_errored_tick(&self, error_trace_ids: &[String]) -> (Vec<String>, u64) {
+        let (kept, dropped) = self.ring.filter(error_trace_ids.iter());
+        self.counters.add_phantom_ticks_dropped(dropped);
+        (kept, dropped)
+    }
+
     /// The traces of a tick that hold an error, read in one call so a clean
     /// trace costs no job. A failed read keeps them all, for the job to re-read
     /// and the queue to retry: losing an error silently is worse than extra jobs.

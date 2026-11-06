@@ -208,7 +208,7 @@ iii.observe(
 
 | Function | Args, filters | Target |
 |---|---|---|
-| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target reads the tick's traces in one call and queues those that hold an error; if that read fails it queues them all | `sentinel::on-trace-activity` |
+| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target queues the traces the tick names in `error_trace_ids`, with no read. From an engine that does not name them, it reads the tick's traces in one call and queues those that hold an error; if that read fails it queues them all | `sentinel::on-trace-activity` |
 | `observability::on-log` (`default` namespace) | filter `{ "input.severity_number": { "$gte": 17 } }` (ERROR and above) | `sentinel::on-log` |
 | `harness::on-turn-completed` | none | `sentinel::on-turn-completed` |
 | `cron::on-tick` | args `{ expression: retention.cron }` | `sentinel::on-schedule` |

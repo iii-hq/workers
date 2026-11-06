@@ -62,7 +62,7 @@ pub const INGEST_ID: &str = "sentinel::ingest";
 pub const INGEST_DESC: &str =
     "Internal durable queue step: reads one trace or log and records what failed.";
 pub const ON_TRACE_ACTIVITY_ID: &str = "sentinel::on-trace-activity";
-pub const ON_TRACE_ACTIVITY_DESC: &str = "Internal observer of observability::on-span; reads the tick's traces in one call and queues those that hold an error.";
+pub const ON_TRACE_ACTIVITY_DESC: &str = "Internal observer of observability::on-span; queues the traces the tick names in error_trace_ids, or, from an engine that does not name them, reads the tick's traces in one call and queues those that hold an error.";
 pub const ON_LOG_ID: &str = "sentinel::on-log";
 pub const ON_LOG_DESC: &str =
     "Internal observer of observability::on-log, filtered to ERROR records and above.";
@@ -106,12 +106,16 @@ pub const DIAGNOSIS_RECORD_DESC: &str = "Record what an investigation concluded 
 
 pub use crate::configuration::{CONFIG_CHANGE_DESC, CONFIG_CHANGE_ID};
 
-/// The `observability::on-span` event, delivered as output: trace ids only,
-/// coalesced.
+/// The `observability::on-span` event, delivered as output: the trace ids of
+/// one coalesced window.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct TraceActivityEventV1 {
     #[serde(default)]
     pub trace_ids: Vec<String>,
+    /// The traces of the window that recorded an error span. An engine that
+    /// names them spares the tick its read; `None` (an older engine) keeps it.
+    #[serde(default)]
+    pub error_trace_ids: Option<Vec<String>>,
 }
 
 /// One ERROR log as `observability::on-log` delivers it, as output.
@@ -553,7 +557,10 @@ async fn on_trace_activity<E: EngineRegistry>(
             phantom_dropped: 0,
         };
     }
-    let (wanted, phantom_dropped) = deps.ingest.filter_tick(&event.trace_ids).await;
+    let (wanted, phantom_dropped) = match &event.error_trace_ids {
+        Some(errored) => deps.ingest.filter_errored_tick(errored),
+        None => deps.ingest.filter_tick(&event.trace_ids).await,
+    };
     let mut queued = 0;
     for trace_id in wanted {
         let job = IngestJob::Trace { trace_id };
