@@ -126,8 +126,10 @@ pub fn register(iii: &Arc<IIIClient>) {
 ///
 /// The observer asks for the two input fields the hook reads
 /// ([`HOOK_INPUT`]), not the whole prompt and every tool schema. A harness
-/// older than the hook `input` arg refuses it (`CONFIG_ERROR`); the hook then
-/// observes again with the whole input.
+/// older than the hook `input` arg refuses it: the engine checks observer
+/// args against the hook's `args_format` (`INVALID_ARGS`), and the harness
+/// itself answers `CONFIG_ERROR`. The hook then observes again with the whole
+/// input.
 pub fn observe(iii: &IIIClient) -> ObserverHandle {
     let args = json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" });
     let mut projected = args.clone();
@@ -139,7 +141,7 @@ pub fn observe(iii: &IIIClient) -> ObserverHandle {
     let (client, first) = (iii.clone(), handle.clone());
     tokio::spawn(async move {
         if let Err(Error::Remote { code, .. }) = first.ready().await {
-            if code == "CONFIG_ERROR" {
+            if matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR") {
                 client.observe(
                     Source::function(PRE_GENERATE_HOOK_FN).args(args),
                     PRE_GENERATE_FN,

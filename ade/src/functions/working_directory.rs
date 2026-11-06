@@ -279,8 +279,10 @@ pub const GENERATION_INPUT: [&str; 2] = ["generate.system_prompt", "generate.too
 
 /// Observe `harness::hook::on-pre-generate` with `target`, asking for
 /// [`GENERATION_INPUT`] only: the full input carries every message and tool
-/// schema of the turn. A harness older than the hook `input` arg refuses it
-/// (`CONFIG_ERROR`); the target then observes again with the whole input.
+/// schema of the turn. A harness older than the hook `input` arg refuses it:
+/// the engine checks observer args against the hook's `args_format`
+/// (`INVALID_ARGS`), and the harness itself answers `CONFIG_ERROR`. The
+/// target then observes again with the whole input.
 pub fn observe_generation(iii: &IIIClient, target: &str, args: Value) {
     let mut projected = args.clone();
     projected["input"] = json!(GENERATION_INPUT);
@@ -291,7 +293,7 @@ pub fn observe_generation(iii: &IIIClient, target: &str, args: Value) {
     let (client, target) = (iii.clone(), target.to_string());
     tokio::spawn(async move {
         if let Err(Error::Remote { code, .. }) = handle.ready().await {
-            if code == "CONFIG_ERROR" {
+            if matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR") {
                 client.observe(Source::function(PRE_GENERATE_HOOK_FN).args(args), &target);
             }
         }
