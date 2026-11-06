@@ -753,6 +753,10 @@ pub struct TurnStore {
     dir: PathBuf,
     max_blob_bytes: u64,
     blob_bytes: Mutex<Option<u64>>,
+    /// Largest file a turn snapshot takes (`turns.snapshot_max_file_bytes`).
+    snapshot_max_file_bytes: u64,
+    /// Free space a turn snapshot needs on the store's disk.
+    snapshot_min_free_bytes: u64,
 }
 
 impl TurnStore {
@@ -761,7 +765,21 @@ impl TurnStore {
             dir,
             max_blob_bytes,
             blob_bytes: Mutex::new(None),
+            snapshot_max_file_bytes: crate::config::DEFAULT_SNAPSHOT_MAX_FILE_BYTES,
+            snapshot_min_free_bytes: crate::turn_snapshot::MIN_FREE_BYTES,
         }
+    }
+
+    /// Tests snapshot on whatever disk they run on.
+    #[cfg(test)]
+    pub fn with_snapshot_min_free_bytes(mut self, bytes: u64) -> Self {
+        self.snapshot_min_free_bytes = bytes;
+        self
+    }
+
+    pub fn with_snapshot_max_file_bytes(mut self, bytes: u64) -> Self {
+        self.snapshot_max_file_bytes = bytes;
+        self
     }
 
     fn session_path(&self, session_id: &str) -> PathBuf {
@@ -1408,7 +1426,14 @@ impl TurnLog {
         };
         let stem = session_file_stem(&target.session_id);
         let taken_at = now_ms();
-        let tree = match repo.snapshot(&stem).await {
+        let tree = match repo
+            .snapshot(
+                &stem,
+                self.store.snapshot_max_file_bytes,
+                self.store.snapshot_min_free_bytes,
+            )
+            .await
+        {
             Ok(tree) => tree,
             Err(e) => {
                 tracing::warn!(
@@ -1779,10 +1804,10 @@ pub fn register(
     resolver: crate::code::state::ResolverCell,
 ) -> Arc<TurnLog> {
     let data_dir = config.resolved_data_dir();
-    let log = Arc::new(TurnLog::new(TurnStore::new(
-        data_dir.clone(),
-        config.max_blob_bytes,
-    )));
+    let log = Arc::new(TurnLog::new(
+        TurnStore::new(data_dir.clone(), config.max_blob_bytes)
+            .with_snapshot_max_file_bytes(config.snapshot_max_file_bytes),
+    ));
     // Surfaces that list a session's turns hear each stored record instead
     // of asking again on a timer.
     log.notify_changes(crate::turn_events::register_turns_changed(iii));
@@ -2373,7 +2398,9 @@ mod tests {
     use super::*;
 
     fn log_in(dir: &Path) -> Arc<TurnLog> {
-        Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)))
+        Arc::new(TurnLog::new(
+            TurnStore::new(dir.join("turns"), 1024 * 1024).with_snapshot_min_free_bytes(0),
+        ))
     }
 
     /// The Timeline lists turns again only when told: a stored record must
@@ -2925,7 +2952,7 @@ mod tests {
     #[tokio::test]
     async fn blob_store_dedupes_and_prunes_oldest_past_the_cap() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TurnStore::new(dir.path().join("turns"), 1000);
+        let store = TurnStore::new(dir.path().join("turns"), 1000).with_snapshot_min_free_bytes(0);
         let a = vec![b'a'; 400];
         let b = vec![b'b'; 400];
         let c = vec![b'c'; 400];
