@@ -972,6 +972,31 @@ async fn the_last_wake_gone_ends_a_quietly_stopped_session_as_cancelled() {
     );
 }
 
+/// Reading "not stopped" by mistake would start the turn the stop ruled out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_read_of_a_stopped_session_is_retried_before_any_notice() {
+    let stack = Stack::new("completed").await;
+    arm_wake(&stack, "wake", "grandchild1").await;
+    stop_with(&stack, "grandchild1", true).await;
+    let store = stack.deps.bindings().await;
+    let wake = store.get("wake").await.unwrap().unwrap();
+    store.delete("wake").await.unwrap();
+    {
+        let mut state = stack.store.lock().unwrap();
+        state.fail.insert("state::get".into());
+        state.fail.insert("harness::state::get".into());
+    }
+    let state = stack.store.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        state.lock().unwrap().fail.clear();
+    });
+
+    harness::bindings::expiry::report_expired_retirement(&stack.deps, &wake).await;
+
+    assert_eq!(turn_field(&stack, "grandchild1", "status"), "cancelled");
+}
+
 /// The wake is already gone, so nothing else would come back to end the session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_store_failure_while_ending_a_stopped_session_is_retried() {

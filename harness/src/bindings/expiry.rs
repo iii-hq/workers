@@ -344,12 +344,20 @@ pub async fn report_wake_removed(deps: &Deps, binding: &Binding, by: &str) {
 }
 
 /// The session's last turn, when a stop reached it: cancelled while it ran, or
-/// flagged while parked (`harness::stop`'s `quiet_deadlines`). A failed read counts
-/// as not stopped: better one notice than a stranded session.
+/// flagged while parked (`harness::stop`'s `quiet_deadlines`). A failed read is tried
+/// again, because a wrong answer starts the turn the stop ruled out. Past that it
+/// counts as not stopped: better one notice than a stranded session.
 async fn stopped_turn(deps: &Deps, session_id: &str) -> Option<String> {
+    const RETRY_DELAYS_MS: [u64; 2] = [1_000, 2_000];
     let timeout_ms = deps.cfg().await.session_timeout_ms;
-    crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms)
-        .await
+    let mut record = crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms).await;
+    for delay_ms in RETRY_DELAYS_MS {
+        let Err(error) = &record else { break };
+        tracing::warn!(session_id, %error, "could not read whether a stop reached this session");
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        record = crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms).await;
+    }
+    record
         .ok()
         .flatten()
         .filter(|record| record.status == TurnStatus::Cancelled || record.abort)

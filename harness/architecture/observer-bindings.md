@@ -81,7 +81,7 @@ it; the harness uses the state worker's hidden CAS primitives.
     "event_into": "/event"          // JSON pointer; default "/event"
   },
   "conditions": [ { "function_id": "state::barrier", "config": { } } ],
-  "lifecycle": { "once": true, "max_fires": null, "expires_at": 600000 },
+  "lifecycle": { "once": true, "max_fires": null, "expires_at": 1793900000000 },
   "capability": { "allow": [ ], "deny": [ ], "expose": "…" },
   "dedup_key": { },                 // the canonical observe request
   "fires": 0,

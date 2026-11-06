@@ -13,6 +13,23 @@ const LOW: libc::rlim_t = 256;
 
 #[test]
 fn the_worker_raises_a_low_open_file_limit_at_startup() {
+    let mut inherited = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit only writes the struct it is given.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut inherited) },
+        0
+    );
+    if inherited.rlim_max <= LOW {
+        eprintln!(
+            "[skip] a hard open-file limit of {} leaves nothing to raise",
+            inherited.rlim_max
+        );
+        return;
+    }
+
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ide"));
     cmd.args(["--url", "ws://127.0.0.1:9"])
         .current_dir(std::env::temp_dir())
@@ -28,9 +45,13 @@ fn the_worker_raises_a_low_open_file_limit_at_startup() {
                 rlim_cur: 0,
                 rlim_max: 0,
             };
-            libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit);
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             limit.rlim_cur = LOW;
-            libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
