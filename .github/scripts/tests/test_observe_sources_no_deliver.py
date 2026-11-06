@@ -93,3 +93,60 @@ def test_no_observe_source_sets_deliver() -> None:
 def test_allowlist_entries_exist() -> None:
     missing = [rel for rel in ALLOWED if not (ROOT / rel).exists()]
     assert not missing, f"stale allowlist entries: {missing}"
+
+
+# Markdown: an observe example inside a fenced code block teaches readers to
+# set `deliver`, so the same per-language patterns apply to fence bodies.
+# Prose outside fences is not scanned (it may describe the legacy field).
+MD_PATTERNS = [p for suffix in (".rs", ".ts", ".go", ".py") for p in PATTERNS[suffix]]
+MD_FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+# Markdown trees whose fences may still show `deliver`. Each entry says why.
+MD_ALLOWED: dict[str, str] = {
+    "tech-specs/": "dated design records of the observe API as it was specified",
+    "template/skills/": (
+        "vendored from the upstream template by template/sync.sh and pinned by "
+        "hash in template/upstream/sync.json; fixed upstream, then re-synced"
+    ),
+}
+
+
+def markdown_offending_lines() -> list[str]:
+    out = subprocess.check_output(["git", "ls-files", "*.md"], cwd=ROOT, text=True)
+    hits: list[str] = []
+    for rel in out.splitlines():
+        if "/node_modules/" in rel or any(rel.startswith(p) for p in MD_ALLOWED):
+            continue
+        try:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue
+        fence: str | None = None
+        for number, line in enumerate(text.splitlines(), 1):
+            opened = MD_FENCE.match(line)
+            if opened:
+                marker = opened.group(1)
+                if fence is None:
+                    fence = marker
+                    continue
+                closing = line.strip()
+                if closing == closing[0] * len(closing) and closing[0] == fence[0] and len(closing) >= len(fence):
+                    fence = None
+                    continue
+            if fence and any(p.search(line) for p in MD_PATTERNS):
+                hits.append(f"{rel}:{number}: {line.strip()}")
+    return hits
+
+
+def test_no_markdown_observe_example_sets_deliver() -> None:
+    hits = markdown_offending_lines()
+    assert not hits, (
+        f"{len(hits)} markdown code example(s) still set the removed `deliver`; "
+        "show `capture` and a target reading payload.output / payload.input:\n"
+        + "\n".join(hits)
+    )
+
+
+def test_markdown_allowlist_entries_exist() -> None:
+    missing = [prefix for prefix in MD_ALLOWED if not (ROOT / prefix).is_dir()]
+    assert not missing, f"stale markdown allowlist entries: {missing}"
