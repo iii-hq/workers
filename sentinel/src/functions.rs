@@ -168,6 +168,16 @@ pub struct ScheduleEventV1 {
     pub _caller_worker_id: Option<String>,
 }
 
+/// What an observer target receives with `capture: ['output']`: the
+/// activation envelope, the observed call's event as its `output`.
+pub type ObservedEventV1<T> = iii_sdk::Observed<Value, T>;
+
+/// The event an observer target was delivered. An activation without an
+/// output (the observed call failed) reads as the empty event.
+pub fn observed_event<T: Default>(observed: ObservedEventV1<T>) -> T {
+    observed.output.unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PruneResponseV1 {
     pub buckets_removed: u64,
@@ -467,8 +477,9 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_TRACE_ACTIVITY_ID,
-        RegisterFunction::new_async(move |event: TraceActivityEventV1| {
+        RegisterFunction::new_async(move |observed: ObservedEventV1<TraceActivityEventV1>| {
             let deps = current.clone();
+            let event = observed_event(observed);
             async move { Ok::<_, iii_sdk::errors::Error>(on_trace_activity(&deps, event).await) }
         })
         .description(ON_TRACE_ACTIVITY_DESC)
@@ -478,8 +489,9 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_LOG_ID,
-        RegisterFunction::new_async(move |log: StoredLogEventV1| {
+        RegisterFunction::new_async(move |observed: ObservedEventV1<StoredLogEventV1>| {
             let deps = current.clone();
+            let log = observed_event(observed);
             async move { Ok::<_, iii_sdk::errors::Error>(on_log(&deps, log).await) }
         })
         .description(ON_LOG_DESC)
@@ -502,8 +514,9 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_TURN_COMPLETED_ID,
-        RegisterFunction::new_async(move |event: TurnCompletedEventV1| {
+        RegisterFunction::new_async(move |observed: ObservedEventV1<TurnCompletedEventV1>| {
             let deps = current.clone();
+            let event = observed_event(observed);
             async move {
                 let outcome = deps.investigations.on_turn_completed(event).await?;
                 broadcast(&deps, outcome.events).await;
@@ -517,7 +530,7 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_SCHEDULE_ID,
-        RegisterFunction::new_async(move |_event: ScheduleEventV1| {
+        RegisterFunction::new_async(move |_tick: ObservedEventV1<ScheduleEventV1>| {
             let deps = current.clone();
             async move { prune(&deps).await.map_err(Into::into) }
         })
@@ -776,17 +789,17 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<TraceGetRequestV1, TraceGetResponseV1>(TRACE_GET_ID, TRACE_GET_DESC),
         spec::<LogsListRequestV1, LogsListResponseV1>(LOGS_LIST_ID, LOGS_LIST_DESC),
-        spec::<TraceActivityEventV1, QueuedResponseV1>(
+        spec::<ObservedEventV1<TraceActivityEventV1>, QueuedResponseV1>(
             ON_TRACE_ACTIVITY_ID,
             ON_TRACE_ACTIVITY_DESC,
         ),
-        spec::<StoredLogEventV1, QueuedResponseV1>(ON_LOG_ID, ON_LOG_DESC),
+        spec::<ObservedEventV1<StoredLogEventV1>, QueuedResponseV1>(ON_LOG_ID, ON_LOG_DESC),
         spec::<IngestJob, IngestResponseV1>(INGEST_ID, INGEST_DESC),
-        spec::<TurnCompletedEventV1, DoorbellResponseV1>(
+        spec::<ObservedEventV1<TurnCompletedEventV1>, DoorbellResponseV1>(
             ON_TURN_COMPLETED_ID,
             ON_TURN_COMPLETED_DESC,
         ),
-        spec::<ScheduleEventV1, PruneResponseV1>(ON_SCHEDULE_ID, ON_SCHEDULE_DESC),
+        spec::<ObservedEventV1<ScheduleEventV1>, PruneResponseV1>(ON_SCHEDULE_ID, ON_SCHEDULE_DESC),
         spec::<iii_config_client::OnConfigChangeEvent, iii_config_client::OnConfigChangeResponse>(
             CONFIG_CHANGE_ID,
             CONFIG_CHANGE_DESC,
