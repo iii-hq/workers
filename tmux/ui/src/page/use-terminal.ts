@@ -167,12 +167,13 @@ export function useTmuxTerminal({
         })
       })
     void load(0).then(
-      ({ Terminal, FitAddon }) => {
+      ({ Terminal, FitAddon, WebglAddon }) => {
         if (cancelled) return
         setDetail(null)
         const styles = window.getComputedStyle(container)
-        const fontFamily =
-          styles.getPropertyValue('--font-code').trim() || 'ui-monospace, SFMono-Regular, Menlo, monospace'
+        // Geist Mono lacks powerline/box/Nerd Font glyphs (tofu); add symbol-capable fallbacks.
+        const base = styles.getPropertyValue('--font-code').trim() || 'ui-monospace'
+        const fontFamily = `${base}, "JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace`
         const terminal = new Terminal({
           cursorBlink: true,
           fontFamily,
@@ -189,6 +190,17 @@ export function useTmuxTerminal({
         container.appendChild(hostNode)
         terminal.open(hostNode)
         termRef.current = terminal
+
+        // The DOM renderer draws no custom glyphs: powerline / box / block
+        // characters fall back to the font and show as tofu. WebGL draws them
+        // itself; if it is unavailable or loses its context, DOM remains.
+        try {
+          const webgl = new WebglAddon()
+          webgl.onContextLoss(() => webgl.dispose())
+          terminal.loadAddon(webgl)
+        } catch {
+          // No WebGL2 here; the DOM renderer keeps working.
+        }
 
         const send = (bytes: Uint8Array) => inputRef.current?.(bytes)
         const onData = terminal.onData((data) => send(new TextEncoder().encode(data)))
@@ -237,6 +249,46 @@ export function useTmuxTerminal({
         }
         container.addEventListener('wheel', zoom, { passive: false })
 
+        // xterm scrolls on wheel only; map a vertical swipe to scrollback lines, or to
+        // SGR wheel reports when tmux has mouse tracking on.
+        let touchY: number | null = null
+        let touchRem = 0
+        const touchStart = (event: TouchEvent) => {
+          touchY = event.touches.length === 1 ? (event.touches[0]?.clientY ?? null) : null
+          touchRem = 0
+        }
+        const touchMove = (event: TouchEvent) => {
+          if (touchY === null || event.touches.length !== 1) return
+          const y = event.touches[0]?.clientY ?? touchY
+          const cell = Math.max(8, container.getBoundingClientRect().height / Math.max(1, terminal.rows))
+          touchRem += (touchY - y) / cell
+          touchY = y
+          const lines = Math.trunc(touchRem)
+          if (lines === 0) return
+          touchRem -= lines
+          event.preventDefault()
+          event.stopPropagation()
+          if (terminal.modes.mouseTrackingMode !== 'none') {
+            const code = lines < 0 ? 64 : 65
+            const box = (container.querySelector('.xterm-screen') ?? container).getBoundingClientRect()
+            const col = Math.min(terminal.cols, Math.max(1, Math.ceil(((event.touches[0]?.clientX ?? box.x) - box.x) / (box.width / terminal.cols))))
+            const row = Math.min(terminal.rows, Math.max(1, Math.ceil((y - box.y) / (box.height / terminal.rows))))
+            for (let i = 0; i < Math.abs(lines); i++) send(new TextEncoder().encode(`\x1b[<${code};${col};${row}M`))
+          } else {
+            terminal.scrollLines(lines)
+          }
+        }
+        const touchEnd = () => {
+          touchY = null
+        }
+        // Capture phase: xterm's inner elements get the touch after us, so
+        // nothing they do (stopPropagation, their own gesture handling) can
+        // starve this handler.
+        container.addEventListener('touchstart', touchStart, { passive: true, capture: true })
+        container.addEventListener('touchmove', touchMove, { passive: false, capture: true })
+        container.addEventListener('touchend', touchEnd, { passive: true, capture: true })
+        container.addEventListener('touchcancel', touchEnd, { passive: true, capture: true })
+
         fitNow()
         setSize({ cols: terminal.cols, rows: terminal.rows })
         setTermReady(true)
@@ -245,6 +297,10 @@ export function useTmuxTerminal({
           window.clearTimeout(resizeTimer)
           if (fitFrame) window.cancelAnimationFrame(fitFrame)
           container.removeEventListener('wheel', zoom)
+          container.removeEventListener('touchstart', touchStart, { capture: true })
+          container.removeEventListener('touchmove', touchMove, { capture: true })
+          container.removeEventListener('touchend', touchEnd, { capture: true })
+          container.removeEventListener('touchcancel', touchEnd, { capture: true })
           observer.disconnect()
           onResize.dispose()
           onBinary.dispose()

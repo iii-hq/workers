@@ -234,6 +234,7 @@
     overflow: hidden;
     padding: 6px 8px;
     background: var(--tmux-term-bg);
+    touch-action: none;
   }
   .tmux-xterm-host,
   .tmux-xterm .xterm {
