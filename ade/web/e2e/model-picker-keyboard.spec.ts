@@ -156,7 +156,7 @@ test.describe('Provider configuration ModelPicker keyboard journeys', () => {
     const live = await runtime()
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto(live.consoleUrl)
-    await expect(page).toHaveTitle(/iii Console/i)
+    await expect(page).toHaveTitle(/iii ADE/i)
     const group = await openProvider(page)
 
     const afterConfigure = await activeElement(page)
@@ -207,7 +207,7 @@ test.describe('Provider configuration ModelPicker keyboard journeys', () => {
     const live = await runtime()
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto(live.consoleUrl)
-    await expect(page).toHaveTitle(/iii Console/i)
+    await expect(page).toHaveTitle(/iii ADE/i)
     await installSchemaFailure(page, live.configurationId)
     try {
       await openProvider(page, { expectHealthy: false })
@@ -252,7 +252,7 @@ test.describe('Provider configuration ModelPicker keyboard journeys', () => {
     const live = await runtime()
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(live.consoleUrl)
-    await expect(page).toHaveTitle(/iii Console/i)
+    await expect(page).toHaveTitle(/iii ADE/i)
     const group = await openProvider(page)
     await expect(
       page.getByRole('button', { name: 'back to models' }),

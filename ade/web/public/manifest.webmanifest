@@ -1,7 +1,7 @@
 {
   "id": ".",
-  "name": "iii Console",
-  "short_name": "iii Console",
+  "name": "iii ADE",
+  "short_name": "iii ADE",
   "description": "Console for managing and interacting with iii workers",
   "start_url": "./",
   "scope": "./",
