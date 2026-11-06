@@ -789,11 +789,19 @@ async fn assert_count_settles(received: &Received, want: usize, what: &str) {
 
 /// Every `output` a `capture: [output]` target received is the ready event itself.
 fn assert_ready_events(received: &Received, what: &str) {
-    for payload in received.lock().unwrap().iter() {
+    for envelope in received.lock().unwrap().iter() {
         assert_eq!(
-            payload,
-            &json!({}),
-            "{what}: the ready event is delivered as output"
+            envelope["function_id"], "router::on-ready",
+            "{what}: {envelope}"
+        );
+        assert_eq!(
+            envelope["output"],
+            json!({}),
+            "{what}: the ready event is captured as output: {envelope}"
+        );
+        assert!(
+            envelope.get("input").is_none(),
+            "{what}: capture [output] carries no input: {envelope}"
         );
     }
 }
