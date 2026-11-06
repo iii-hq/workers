@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, ensure, Context};
 use iii_sdk::errors::Error;
-use iii_sdk::{register_worker, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{register_worker, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use provider_openai_codex::credential_store::{
     PrivateStateStore, SecretsSessionStore, SessionRecord, SessionStore, AUTH_SCOPE,
 };
@@ -471,23 +471,24 @@ async fn codex_login_logout_wins_over_a_secrets_backed_refresh() -> anyhow::Resu
     Ok(())
 }
 
-/// Observes every `state::on-changed` event (no filter), delivered as output to
-/// a target that forwards it to the returned receiver.
+/// Observes every `state::on-changed` event (no filter), captured as output, with
+/// a target that forwards the envelope's `output` to the returned receiver.
 fn observe_state(client: &IIIClient) -> (ObserverHandle, mpsc::UnboundedReceiver<ObservedEvent>) {
     let (sender, receiver) = mpsc::unbounded_channel();
     client.register_function(
         "contract::codex-state-event",
-        RegisterFunction::new_async(move |event: Value| {
+        RegisterFunction::new_async(move |observed: Value| {
+            let event = &observed["output"];
             let _ = sender.send(ObservedEvent {
                 scope: event["scope"].as_str().unwrap_or_default().into(),
                 key: event["key"].as_str().unwrap_or_default().into(),
-                secret: contains_secret(&event),
+                secret: contains_secret(event),
             });
             async { Ok::<_, Error>(json!({ "ok": true })) }
         }),
     );
     let observer = client.observe(
-        Source::function("state::on-changed").deliver(Deliver::Output),
+        Source::function("state::on-changed").capture([Capture::Output]),
         "contract::codex-state-event",
     );
     (observer, receiver)
