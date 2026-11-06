@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A worker without a UTF-8 locale lists its sessions again.** With no `LANG` (a daemon
+  started by systemd or launchd, a container) tmux printed the listing separator as `_`,
+  so `tmux::sessions::list` came back empty and `tmux::sessions::create` failed. Every tmux
+  command now passes `-u`.
+
 ### Changed
 
 - **iii-sdk 0.25.0.** The worker builds against the 0.25 SDK. Console terminal calls
