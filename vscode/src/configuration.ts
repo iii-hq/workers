@@ -138,7 +138,7 @@ export async function observeConfigChanges(
         'input.id': { $eq: CONFIG_ID },
         'input.event_type': { $eq: 'configuration:updated' },
       },
-      deliver: 'output',
+      capture: ['output'],
     },
     CONFIG_FN_ID,
   );
