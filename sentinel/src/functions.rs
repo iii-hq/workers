@@ -168,6 +168,16 @@ pub struct ScheduleEventV1 {
     pub _caller_worker_id: Option<String>,
 }
 
+/// What an observer target receives with `capture: ['output']`: the
+/// activation envelope, the observed call's event as its `output`.
+pub type ObservedEventV1<T> = iii_sdk::Observed<Value, T>;
+
+/// The event an observer target was delivered. An activation without an
+/// output (the observed call failed) reads as the empty event.
+pub fn observed_event<T: Default>(observed: ObservedEventV1<T>) -> T {
+    observed.output.unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PruneResponseV1 {
     pub buckets_removed: u64,
@@ -467,8 +477,9 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_TRACE_ACTIVITY_ID,
-        RegisterFunction::new_async(move |event: TraceActivityEventV1| {
+        RegisterFunction::new_async(move |observed: ObservedEventV1<TraceActivityEventV1>| {
             let deps = current.clone();
+            let event = observed_event(observed);
             async move { Ok::<_, iii_sdk::errors::Error>(on_trace_activity(&deps, event).await) }
         })
         .description(ON_TRACE_ACTIVITY_DESC)
@@ -478,8 +489,9 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_LOG_ID,
-        RegisterFunction::new_async(move |log: StoredLogEventV1| {
+        RegisterFunction::new_async(move |observed: ObservedEventV1<StoredLogEventV1>| {
             let deps = current.clone();
+            let log = observed_event(observed);
             async move { Ok::<_, iii_sdk::errors::Error>(on_log(&deps, log).await) }
         })
         .description(ON_LOG_DESC)
@@ -502,8 +514,9 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_TURN_COMPLETED_ID,
-        RegisterFunction::new_async(move |event: TurnCompletedEventV1| {
+        RegisterFunction::new_async(move |observed: ObservedEventV1<TurnCompletedEventV1>| {
             let deps = current.clone();
+            let event = observed_event(observed);
             async move {
                 let outcome = deps.investigations.on_turn_completed(event).await?;
                 broadcast(&deps, outcome.events).await;
@@ -517,7 +530,7 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     let current = deps.clone();
     iii.register_function(
         ON_SCHEDULE_ID,
-        RegisterFunction::new_async(move |_event: ScheduleEventV1| {
+        RegisterFunction::new_async(move |_tick: ObservedEventV1<ScheduleEventV1>| {
             let deps = current.clone();
             async move { prune(&deps).await.map_err(Into::into) }
         })
@@ -776,17 +789,17 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<TraceGetRequestV1, TraceGetResponseV1>(TRACE_GET_ID, TRACE_GET_DESC),
         spec::<LogsListRequestV1, LogsListResponseV1>(LOGS_LIST_ID, LOGS_LIST_DESC),
-        spec::<TraceActivityEventV1, QueuedResponseV1>(
+        spec::<ObservedEventV1<TraceActivityEventV1>, QueuedResponseV1>(
             ON_TRACE_ACTIVITY_ID,
             ON_TRACE_ACTIVITY_DESC,
         ),
-        spec::<StoredLogEventV1, QueuedResponseV1>(ON_LOG_ID, ON_LOG_DESC),
+        spec::<ObservedEventV1<StoredLogEventV1>, QueuedResponseV1>(ON_LOG_ID, ON_LOG_DESC),
         spec::<IngestJob, IngestResponseV1>(INGEST_ID, INGEST_DESC),
-        spec::<TurnCompletedEventV1, DoorbellResponseV1>(
+        spec::<ObservedEventV1<TurnCompletedEventV1>, DoorbellResponseV1>(
             ON_TURN_COMPLETED_ID,
             ON_TURN_COMPLETED_DESC,
         ),
-        spec::<ScheduleEventV1, PruneResponseV1>(ON_SCHEDULE_ID, ON_SCHEDULE_DESC),
+        spec::<ObservedEventV1<ScheduleEventV1>, PruneResponseV1>(ON_SCHEDULE_ID, ON_SCHEDULE_DESC),
         spec::<iii_config_client::OnConfigChangeEvent, iii_config_client::OnConfigChangeResponse>(
             CONFIG_CHANGE_ID,
             CONFIG_CHANGE_DESC,
@@ -863,6 +876,67 @@ pub const INVESTIGATION_DENY: [&str; 22] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// What iii delivers to an observer target with `capture: ['output']`:
+    /// the activation envelope, the observed call's event as `output`.
+    fn envelope(function_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": function_id,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": output,
+        })
+    }
+
+    #[test]
+    fn observer_targets_read_their_event_from_the_observed_envelope() {
+        let spans: ObservedEventV1<TraceActivityEventV1> = serde_json::from_value(envelope(
+            "observability::on-span",
+            json!({ "trace_ids": ["t1", "t2"] }),
+        ))
+        .unwrap();
+        assert_eq!(observed_event(spans).trace_ids, vec!["t1", "t2"]);
+
+        let log: ObservedEventV1<StoredLogEventV1> = serde_json::from_value(envelope(
+            "observability::on-log",
+            json!({ "severity_number": 17, "body": "boom", "trace_id": "t1", "service_name": "api" }),
+        ))
+        .unwrap();
+        let log = observed_event(log);
+        assert_eq!(log.severity_number, 17);
+        assert_eq!(log.body, "boom");
+        assert_eq!(log.trace_id.as_deref(), Some("t1"));
+        assert_eq!(log.service_name, "api");
+
+        // The turn's own status, never the envelope's `status: success`.
+        let turn: ObservedEventV1<TurnCompletedEventV1> = serde_json::from_value(envelope(
+            "harness::on-turn-completed",
+            json!({ "session_id": "s1", "turn_id": "t9", "status": "failed", "terminal": true }),
+        ))
+        .unwrap();
+        let turn = observed_event(turn);
+        assert_eq!(turn.session_id, "s1");
+        assert_eq!(turn.turn_id.as_deref(), Some("t9"));
+        assert_eq!(turn.status.as_deref(), Some("failed"));
+        assert_eq!(turn.terminal, Some(true));
+
+        let tick: ObservedEventV1<ScheduleEventV1> = serde_json::from_value(envelope(
+            "cron::on-tick",
+            json!({ "expression": "0 0 3 * * *" }),
+        ))
+        .unwrap();
+        let _ = observed_event(tick);
+
+        // An activation without an output (an error) reads as an empty event.
+        let mut empty = envelope("harness::on-turn-completed", Value::Null);
+        empty.as_object_mut().unwrap().remove("output");
+        let turn: ObservedEventV1<TurnCompletedEventV1> = serde_json::from_value(empty).unwrap();
+        assert_eq!(observed_event(turn).session_id, "");
+    }
+
 
     #[test]
     fn the_only_write_an_investigation_can_make_is_its_own_diagnosis() {

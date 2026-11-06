@@ -6,7 +6,7 @@
 //! not up — stays pending and becomes active when that worker registers it.
 
 use iii_config_client::ObserverSlot;
-use iii_sdk::{Deliver, IIIClient, Source};
+use iii_sdk::{Capture, IIIClient, Source};
 use serde_json::json;
 
 use crate::{functions, WorkerConfig};
@@ -83,7 +83,7 @@ impl Observers {
 pub fn span_source() -> Source {
     Source::function(ON_SPAN_FN)
         .namespace("default")
-        .deliver(Deliver::Output)
+        .capture([Capture::Output])
 }
 
 /// ERROR (and FATAL) log records.
@@ -91,26 +91,45 @@ pub fn log_source() -> Source {
     Source::function(ON_LOG_FN)
         .namespace("default")
         .filters(json!({ "input.severity_number": { "$gte": ERROR_SEVERITY_NUMBER } }))
-        .deliver(Deliver::Output)
+        .capture([Capture::Output])
 }
 
 /// Every finished harness turn; the target re-reads the status of the ones
 /// that belong to an investigation.
 pub fn turn_completed_source() -> Source {
-    Source::function(ON_TURN_COMPLETED_FN).deliver(Deliver::Output)
+    Source::function(ON_TURN_COMPLETED_FN).capture([Capture::Output])
 }
 
 /// The retention prune's cron schedule.
 pub fn prune_source(expression: &str) -> Source {
     Source::function(ON_TICK_FN)
         .args(json!({ "expression": expression }))
-        .deliver(Deliver::Output)
+        .capture([Capture::Output])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::Capture;
     use std::sync::Arc;
+
+    #[test]
+    fn span_activity_ships_only_the_output() {
+        assert_eq!(
+            span_source(),
+            Source::function("observability::on-span")
+                .namespace("default")
+                .capture([Capture::Output])
+        );
+    }
+
+    #[test]
+    fn finished_turns_ship_only_the_output() {
+        assert_eq!(
+            turn_completed_source(),
+            Source::function("harness::on-turn-completed").capture([Capture::Output])
+        );
+    }
 
     #[test]
     fn error_logs_are_selected_by_severity() {
@@ -119,7 +138,7 @@ mod tests {
             Source::function("observability::on-log")
                 .namespace("default")
                 .filters(json!({ "input.severity_number": { "$gte": 17 } }))
-                .deliver(Deliver::Output)
+                .capture([Capture::Output])
         );
     }
 
@@ -129,7 +148,7 @@ mod tests {
             prune_source("0 0 3 * * *"),
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "0 0 3 * * *" }))
-                .deliver(Deliver::Output)
+                .capture([Capture::Output])
         );
     }
 

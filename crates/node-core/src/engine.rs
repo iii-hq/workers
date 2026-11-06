@@ -285,11 +285,29 @@ pub struct GuestObserveSource {
     /// Read by iii: which calls reach the target.
     #[serde(default)]
     pub filters: Option<serde_json::Map<String, Value>>,
+    /// What travels to the target, in the engine's vocabulary (`input`,
+    /// `output`, `error`, `caller`, `metadata`). Unset: the engine default.
+    #[serde(default)]
+    pub capture: Option<Vec<GuestCapture>>,
+    /// Deprecated: the pre-0.26 delivery mode. Still forwarded to the engine
+    /// as the legacy source field, which the engine translates; use
+    /// `capture` and read `payload.output` / `payload.input` instead.
     #[serde(default)]
     pub deliver: Option<GuestDeliver>,
 }
 
-/// What the target receives when iii delivers a call.
+/// One field of the activation envelope a guest observer asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuestCapture {
+    Input,
+    Output,
+    Error,
+    Caller,
+    Metadata,
+}
+
+/// Deprecated legacy delivery mode (see [`GuestObserveSource::deliver`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuestDeliver {
@@ -896,6 +914,7 @@ mod tests {
                 "namespace": "default",
                 "args": { "db": "primary", "table": "orders" },
                 "filters": { "input.op": { "$eq": "insert" } },
+                "capture": ["input", "output", "error", "caller", "metadata"],
                 "deliver": "output",
             },
             "target": "app::project",
@@ -911,6 +930,16 @@ mod tests {
         assert_eq!(parsed.source.function_id, "database::on-row-changed");
         assert_eq!(parsed.source.namespace.as_deref(), Some("default"));
         assert_eq!(parsed.source.deliver, Some(GuestDeliver::Output));
+        assert_eq!(
+            parsed.source.capture,
+            Some(vec![
+                GuestCapture::Input,
+                GuestCapture::Output,
+                GuestCapture::Error,
+                GuestCapture::Caller,
+                GuestCapture::Metadata,
+            ])
+        );
         assert_eq!(parsed.target, "app::project");
         assert_eq!(parsed.options.id.as_deref(), Some("app::orders"));
         assert_eq!(parsed.options.max_in_flight, Some(1));
@@ -925,6 +954,8 @@ mod tests {
             json!({ "source": { "function_id": "state::on-changed" }, "target": "" }),
             json!({ "source": { "function_id": "state::on-changed", "args": [] }, "target": "app::react" }),
             json!({ "source": { "function_id": "state::on-changed", "deliver": "everything" }, "target": "app::react" }),
+            json!({ "source": { "function_id": "state::on-changed", "capture": ["everything"] }, "target": "app::react" }),
+            json!({ "source": { "function_id": "state::on-changed", "capture": "output" }, "target": "app::react" }),
         ] {
             assert!(
                 parse_guest_observe(input.clone()).is_err(),

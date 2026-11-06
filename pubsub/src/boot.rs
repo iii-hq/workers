@@ -21,8 +21,8 @@ const BUILTIN_III_PUBSUB_WORKER_ID: &str = "iii-pubsub";
 pub const RELAYED_FROM: &str = "pubsub_relayed_from";
 
 const PUBLISH_DESCRIPTION: &str = "Publish an event to a pubsub topic. Subscribers observe this \
-     function with a filter on input.topic and deliver: 'input', and receive { topic, data }. \
-     Returns null.";
+     function with a filter on input.topic and capture: ['input'], and read { topic, data } \
+     from the delivered payload's input. Returns null.";
 
 pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
 pub type ConfigCell = Arc<tokio::sync::RwLock<PubSubConfig>>;

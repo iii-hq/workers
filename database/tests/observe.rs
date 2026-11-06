@@ -188,6 +188,23 @@ fn sink(iii: &IIIClient, id: &str) -> mpsc::UnboundedReceiver<Value> {
     rx
 }
 
+/// A sink for observers with `capture: [input]`: forwards the envelope's
+/// `input`, the row-change event itself.
+fn input_sink(iii: &IIIClient, id: &str) -> mpsc::UnboundedReceiver<Value> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    iii.register_function(
+        id,
+        RegisterFunction::new_async(move |payload: Value| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(payload["input"].clone());
+                Ok::<(), iii_sdk::errors::Error>(())
+            }
+        }),
+    );
+    rx
+}
+
 async fn next(rx: &mut mpsc::UnboundedReceiver<Value>, what: &str) -> Value {
     tokio::time::timeout(WAIT, rx.recv())
         .await
@@ -384,13 +401,13 @@ async fn one_of_two_native_observers_leaving_keeps_the_other_hearing() {
     )
     .await;
     let consumer = client(&url, &ns, "consumer");
-    let mut first = sink(&consumer, "consumer::first");
-    let mut second = sink(&consumer, "consumer::second");
+    let mut first = input_sink(&consumer, "consumer::first");
+    let mut second = input_sink(&consumer, "consumer::second");
     let observe = |target: &str| {
         consumer.observe(
             Source::function("database::on-row-changed")
                 .args(json!({ "db": "watched", "table": "orders" }))
-                .deliver(iii_sdk::Deliver::Input),
+                .capture([iii_sdk::Capture::Input]),
             target,
         )
     };
@@ -453,14 +470,14 @@ async fn a_consumer_back_under_its_observer_id_keeps_hearing() {
         consumer.observe_with(
             Source::function("database::on-row-changed")
                 .args(json!({ "db": "watched", "table": "orders" }))
-                .deliver(iii_sdk::Deliver::Input),
+                .capture([iii_sdk::Capture::Input]),
             "consumer::orders",
             ObserverOptions::default().id(id.clone()),
         )
     };
 
     let first = client(&url, &ns, "consumer");
-    let mut before = sink(&first, "consumer::orders");
+    let mut before = input_sink(&first, "consumer::orders");
     observe(&first).ready().await.unwrap();
     eventually("the observer on the host", || {
         db.capture.observer_count() == 1
@@ -480,7 +497,7 @@ async fn a_consumer_back_under_its_observer_id_keeps_hearing() {
     .await;
 
     let second = client(&url, &ns, "consumer");
-    let mut after = sink(&second, "consumer::orders");
+    let mut after = input_sink(&second, "consumer::orders");
     let handle = observe(&second);
     handle
         .ready()
@@ -603,11 +620,11 @@ async fn config_reload_installs_capture_for_existing_observers() {
     )
     .await;
     let consumer = client(&url, &ns, "consumer");
-    let mut events = sink(&consumer, "consumer::sink");
+    let mut events = input_sink(&consumer, "consumer::sink");
     let handle = consumer.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
-            .deliver(iii_sdk::Deliver::Input),
+            .capture([iii_sdk::Capture::Input]),
         "consumer::sink",
     );
     handle.ready().await.unwrap();
@@ -673,11 +690,11 @@ async fn commit_order_and_rollback() {
     )
     .await;
     let consumer = client(&url, &ns, "consumer");
-    let mut events = sink(&consumer, "consumer::sink");
+    let mut events = input_sink(&consumer, "consumer::sink");
     let handle = consumer.observe_with(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
-            .deliver(iii_sdk::Deliver::Input),
+            .capture([iii_sdk::Capture::Input]),
         "consumer::sink",
         ObserverOptions::default().max_in_flight(1),
     );
@@ -1015,18 +1032,18 @@ async fn host_restart_replays_observers() {
         )
         .await;
     let consumer = client(&url, &ns, "consumer");
-    let mut orders = sink(&consumer, "consumer::orders");
-    let mut inserts = sink(&consumer, "consumer::inserts");
+    let mut orders = input_sink(&consumer, "consumer::orders");
+    let mut inserts = input_sink(&consumer, "consumer::inserts");
     let handle = consumer.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
-            .deliver(iii_sdk::Deliver::Input),
+            .capture([iii_sdk::Capture::Input]),
         "consumer::orders",
     );
     let insert_only = consumer.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "ops": ["insert"] }))
-            .deliver(iii_sdk::Deliver::Input),
+            .capture([iii_sdk::Capture::Input]),
         "consumer::inserts",
     );
     handle.ready().await.unwrap();
@@ -1190,6 +1207,8 @@ fn logged_sink(
     iii.register_function(
         id,
         RegisterFunction::new_async(move |payload: Value| {
+            // `capture: [input]`: the event is the envelope's input.
+            let payload = payload["input"].clone();
             kept.lock().unwrap().push(payload.clone());
             let _ = tx.send(payload);
             async { Ok::<(), iii_sdk::errors::Error>(()) }
@@ -1258,7 +1277,7 @@ async fn observers_follow_the_engine_across_restarts() {
     let observer = consumer.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
-            .deliver(iii_sdk::Deliver::Input),
+            .capture([iii_sdk::Capture::Input]),
         "consumer::orders",
     );
     observer.ready().await.unwrap();

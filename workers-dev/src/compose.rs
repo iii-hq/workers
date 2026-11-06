@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use iii_sdk::runtime::{FunctionRef, IIIConnectionState, WorkerMetadata};
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle, ObserverState,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverState,
     RegisterFunction, Source, WorkerIdentityMode,
 };
 use serde::Deserialize;
@@ -28,8 +28,8 @@ use crate::config::{
 };
 
 /// Compose's progress feed, hosted in the project's namespace. Its handler
-/// returns the event, so an observer with `deliver: output` receives the
-/// `ProgressEvent`.
+/// returns the event, so an observer with `capture: ['output']` receives the
+/// `ProgressEvent` as the envelope's `output`.
 const PROGRESS_FN: &str = "compose::on-operation-progress";
 
 /// compose answers `function_not_found` for the first seconds of a cold engine
@@ -298,7 +298,7 @@ impl Compose {
             RegisterFunction::new_async(move |value: Value| {
                 let progress = std::sync::Arc::clone(&progress);
                 async move {
-                    if let Ok(event) = serde_json::from_value::<ProgressEvent>(value) {
+                    if let Some(event) = progress_event(value) {
                         apply_progress(&progress, event);
                     }
                     Ok(json!({"ok": true}))
@@ -307,9 +307,9 @@ impl Compose {
         );
         // Source and target both resolve in this worker's namespace, which is
         // the project's: where compose hosts the progress function. The event
-        // reaches the handler as output, the `ProgressEvent` itself.
+        // reaches the handler as the envelope's output.
         let observer = client.observe(
-            Source::function(PROGRESS_FN).deliver(Deliver::Output),
+            progress_source(),
             function_id.as_str(),
         );
         // The feed is an extra, never a gate: without it the table still
@@ -1004,6 +1004,16 @@ fn note_to(path: &Path, message: &str) {
     }
 }
 
+/// The progress feed: compose's progress event as the envelope's output.
+fn progress_source() -> Source {
+    Source::function(PROGRESS_FN).capture([Capture::Output])
+}
+
+/// The `ProgressEvent` an activation envelope carries as its output.
+fn progress_event(observed: Value) -> Option<ProgressEvent> {
+    serde_json::from_value(observed.get("output")?.clone()).ok()
+}
+
 fn apply_progress(progress: &Mutex<Progress>, event: ProgressEvent) {
     let mut progress = progress.lock().unwrap();
     if progress.operation_id.as_deref() != Some(event.operation_id.as_str()) {
@@ -1170,6 +1180,36 @@ async fn terminate_group(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_progress_feed_ships_only_the_output() {
+        assert_eq!(
+            progress_source(),
+            Source::function(PROGRESS_FN).capture([iii_sdk::Capture::Output])
+        );
+    }
+
+    /// The feed's target receives the activation envelope; the progress
+    /// event is its `output`.
+    #[test]
+    fn the_progress_target_reads_the_event_from_the_observed_envelope() {
+        let event = progress_event(json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": PROGRESS_FN,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "operation_id": "op-1", "container": "state", "phase": "starting", "terminal": false },
+        }))
+        .expect("the event is read from output");
+        assert_eq!(event.operation_id, "op-1");
+        assert_eq!(event.container.as_deref(), Some("state"));
+        assert_eq!(event.phase, "starting");
+        assert!(!event.terminal);
+        assert!(progress_event(json!({ "status": "error", "operation_id": "op-1" })).is_none());
+    }
+
 
     #[test]
     fn compose_payload_routes_by_namespace_and_absolute_file() {

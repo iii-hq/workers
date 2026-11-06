@@ -23,7 +23,7 @@ use crate::material::{self, BucketError, Material, Stage};
 use crate::secrets::Refetch;
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -824,7 +824,7 @@ pub struct OnConfigChangeResponse {
 
 /// Register the internal `storage::on-config-change` reload handler and
 /// observe `configuration::on-updated` with it: filters on this worker's
-/// entry id and on `configuration:updated`, the event delivered as output.
+/// entry id and on `configuration:updated`, the event captured as output.
 /// The observer stays `pending` until the configuration worker registers the
 /// function.
 pub fn observe_config_changes(iii: &IIIClient, state: AppState, runtime: Arc<StorageRuntime>) {
@@ -857,15 +857,34 @@ pub fn observe_config_changes(iii: &IIIClient, state: AppState, runtime: Arc<Sto
 
     // The observer lives as long as the worker's connection; dropping the
     // handle does not dispose it.
-    iii.observe(
-        Source::function(CONFIG_UPDATED_FN)
-            .filters(json!({
-                "input.id": { "$eq": config_id() },
-                "input.event_type": { "$eq": "configuration:updated" },
-            }))
-            .deliver(Deliver::Output),
-        CONFIG_FN_ID,
-    );
+    iii.observe(config_change_source(), CONFIG_FN_ID);
+}
+
+/// `configuration::on-updated` for this worker's entry, the event as the
+/// envelope's output (the handler ignores it and re-fetches).
+pub fn config_change_source() -> Source {
+    Source::function(CONFIG_UPDATED_FN)
+        .filters(json!({
+            "input.id": { "$eq": config_id() },
+            "input.event_type": { "$eq": "configuration:updated" },
+        }))
+        .capture([Capture::Output])
+}
+
+/// What the secret watcher receives: the activation envelope, the advisory
+/// `secrets::on-changed` event as its `output`.
+pub type ObservedSecretChange = iii_sdk::Observed<Value, OnSecretChangeEvent>;
+
+/// The reference an observed secret change names, if any. An activation
+/// without an output names nothing.
+pub fn secret_change_reference(observed: ObservedSecretChange) -> Option<String> {
+    let event = observed.output?;
+    crate::secrets::event_reference(&json!({ "name": event.name, "ref": event.reference }))
+}
+
+/// `secrets::on-changed`, the event as the envelope's output.
+pub fn secret_change_source() -> Source {
+    Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
 }
 
 /// Advisory `secrets::on-changed` event (never carries a value).
@@ -882,7 +901,7 @@ pub struct OnSecretChangeEvent {
 }
 
 /// Register the internal secret-change handler and observe
-/// `secrets::on-changed` with it, the event delivered as output. A rotated,
+/// `secrets::on-changed` with it, the event captured as output. A rotated,
 /// deleted or re-shared secret that a bucket references is re-read, and
 /// only the buckets whose resolved values changed are rebuilt. The payload
 /// is advisory (it never carries a value) and anything unrelated is
@@ -890,12 +909,11 @@ pub struct OnSecretChangeEvent {
 pub fn observe_secret_changes(iii: &IIIClient, state: AppState, runtime: Arc<StorageRuntime>) {
     iii.register_function(
         SECRET_FN_ID,
-        RegisterFunction::new_async(move |event: OnSecretChangeEvent| {
+        RegisterFunction::new_async(move |event: ObservedSecretChange| {
             let state = state.clone();
             let runtime = runtime.clone();
             async move {
-                let payload = json!({ "name": event.name, "ref": event.reference });
-                let Some(reference) = crate::secrets::event_reference(&payload) else {
+                let Some(reference) = secret_change_reference(event) else {
                     return Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse {
                         ok: false,
                     });
@@ -913,10 +931,7 @@ pub fn observe_secret_changes(iii: &IIIClient, state: AppState, runtime: Arc<Sto
     // `secrets::on-changed` belongs to the secrets worker: while it is absent
     // the observer stays `pending`, and the engine activates it once the
     // function registers.
-    iii.observe(
-        Source::function(crate::secrets::ON_CHANGED_FN).deliver(Deliver::Output),
-        SECRET_FN_ID,
-    );
+    iii.observe(secret_change_source(), SECRET_FN_ID);
 }
 
 async fn call_configuration_with_retry(
@@ -998,6 +1013,57 @@ mod tests {
     #[test]
     fn is_not_found_matches_only_the_envelope_code() {
         assert_missing_entry_contract(super::is_not_found);
+    }
+
+    fn observed(function_id: &str, output: Option<Value>) -> Value {
+        let mut envelope = json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": function_id,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+        });
+        if let Some(output) = output {
+            envelope["output"] = output;
+        }
+        envelope
+    }
+
+    /// The secret watcher's target reads the advisory event from the
+    /// envelope's `output`; without one there is nothing to re-read.
+    #[test]
+    fn the_secret_watcher_reads_the_event_from_the_observed_envelope() {
+        let expected = crate::secrets::event_reference(&json!({ "ref": "secret://bucket-key" }));
+        assert!(expected.is_some(), "fixture ref must parse");
+        let event: super::ObservedSecretChange = serde_json::from_value(observed(
+            crate::secrets::ON_CHANGED_FN,
+            Some(json!({ "name": "bucket-key", "ref": "secret://bucket-key", "action": "rotated" })),
+        ))
+        .unwrap();
+        assert_eq!(super::secret_change_reference(event), expected);
+        let event: super::ObservedSecretChange =
+            serde_json::from_value(observed(crate::secrets::ON_CHANGED_FN, None)).unwrap();
+        assert_eq!(super::secret_change_reference(event), None);
+    }
+
+    #[test]
+    fn the_watchers_capture_the_output() {
+        use iii_sdk::{Capture, Source};
+        assert_eq!(
+            super::secret_change_source(),
+            Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
+        );
+        assert_eq!(
+            super::config_change_source(),
+            Source::function(super::CONFIG_UPDATED_FN)
+                .filters(json!({
+                    "input.id": { "$eq": super::config_id() },
+                    "input.event_type": { "$eq": "configuration:updated" },
+                }))
+                .capture([Capture::Output])
+        );
     }
 
     use super::*;
