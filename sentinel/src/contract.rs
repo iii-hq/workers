@@ -515,6 +515,10 @@ pub struct IngestStatusV1 {
     /// Traces that had already left the engine's ring when the tick read them
     /// or the job ran, whether or not they held an error.
     pub lost_before_capture: u64,
+    /// Tick trace ids dropped, oldest first, because the engine stayed too
+    /// slow to read them and the backlog reached its cap. A number that climbs
+    /// means the engine's trace store, not its ring, is the bottleneck.
+    pub tick_backlog_dropped: u64,
     /// Deliveries refused because the durable dependencies were not claimed
     /// yet. They are redelivered, not lost.
     pub dropped_not_ready: u64,

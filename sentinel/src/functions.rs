@@ -542,8 +542,8 @@ async fn status<E: EngineRegistry>(deps: &Deps<E>) -> StatusResponseV1 {
 /// and a slow one holds an in-flight slot of the observer. Its one read is worth
 /// it because nearly every trace that ticks is clean, and a durable job for each
 /// costs far more than reading them all together.
-async fn on_trace_activity<E: EngineRegistry>(
-    deps: &Deps<E>,
+async fn on_trace_activity<E: EngineRegistry + 'static>(
+    deps: &Arc<Deps<E>>,
     event: TraceActivityEventV1,
 ) -> QueuedResponseV1 {
     if !deps.counters.is_ready() {
@@ -554,8 +554,17 @@ async fn on_trace_activity<E: EngineRegistry>(
         };
     }
     let (wanted, phantom_dropped) = deps.ingest.filter_tick(&event.trace_ids).await;
+    let queued = queue_traces(deps, wanted).await;
+    drain_tick_backlog_later(deps);
+    QueuedResponseV1 {
+        queued,
+        phantom_dropped,
+    }
+}
+
+async fn queue_traces<E: EngineRegistry>(deps: &Deps<E>, trace_ids: Vec<String>) -> u64 {
     let mut queued = 0;
-    for trace_id in wanted {
+    for trace_id in trace_ids {
         let job = IngestJob::Trace { trace_id };
         if let Err(error) = deps.queue.enqueue(&job).await {
             tracing::warn!(%error, "could not queue a trace for ingest");
@@ -564,10 +573,35 @@ async fn on_trace_activity<E: EngineRegistry>(
         deps.counters.add_queued(1);
         queued += 1;
     }
-    QueuedResponseV1 {
-        queued,
-        phantom_dropped,
+    queued
+}
+
+/// Ids a tick read leaves behind (a failed or busy read, or the handler's
+/// batch cap) wait for the next tick, which may never come once the traces
+/// that failed have gone quiet. This reads them once they are due, one
+/// scheduled read at a time and at least one read window apart, so a handler
+/// still busy with the backlog is not polled in a loop.
+fn drain_tick_backlog_later<E: EngineRegistry + 'static>(deps: &Arc<Deps<E>>) {
+    let Some(due) = deps.ingest.tick_backlog_due() else {
+        return;
+    };
+    if !deps.ingest.claim_tick_drain() {
+        return;
     }
+    let deps = deps.clone();
+    // Stay in the activation's trace: the engine does not tick on-span for
+    // it, so the reads and jobs below are not ingested back as new activity.
+    let activation = iii_helpers::observability::capture_otel_context();
+    tokio::spawn(activation.attach(async move {
+        let earliest = tokio::time::Instant::now() + crate::ingest::TICK_READ_DELAY;
+        tokio::time::sleep_until(due.max(earliest)).await;
+        deps.ingest.release_tick_drain();
+        if deps.counters.is_ready() {
+            let (wanted, _) = deps.ingest.filter_tick(&[]).await;
+            queue_traces(&deps, wanted).await;
+        }
+        drain_tick_backlog_later(&deps);
+    }));
 }
 
 async fn on_log<E: EngineRegistry>(deps: &Deps<E>, log: StoredLogEventV1) -> QueuedResponseV1 {
