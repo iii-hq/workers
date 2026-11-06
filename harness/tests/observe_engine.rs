@@ -27,7 +27,7 @@ use harness::events::{TurnEvents, ON_READY_FN};
 use harness::functions::observer_deliver::DELIVER_ID;
 use harness::types::turn::FunctionPolicy;
 use iii_sdk::{
-    register_worker, Call, CallAction, CallRequest, Deliver, IIIClient, Observer, RegisterFunction,
+    register_worker, Call, CallAction, CallRequest, Capture, IIIClient, Observer, RegisterFunction,
     Source,
 };
 use serde_json::{json, Value};
@@ -546,25 +546,25 @@ async fn a_late_on_ready_observer_receives_the_ready_event_alone_in_its_own_shap
     // Observers present at boot receive the boot ready event.
     let boot_envelope = consumer.observe(Source::function(ON_READY_FN), "test::boot-envelope");
     let boot_output = consumer.observe(
-        Source::function(ON_READY_FN).deliver(Deliver::Output),
+        Source::function(ON_READY_FN).capture([Capture::Output]),
         "test::boot-output",
     );
     boot_envelope.ready().await.expect("boot envelope observer");
     boot_output.ready().await.expect("boot output observer");
     events.emit_ready().await;
     let boot_env_event = received.wait("test::boot-envelope", 1).await.remove(0);
-    let boot_out_event = received.wait("test::boot-output", 1).await.remove(0);
+    let boot_out_event = received.wait("test::boot-output", 1).await.remove(0)["output"].clone();
 
     // Observers added after boot receive the current ready event once each.
     let late_envelope = consumer.observe(Source::function(ON_READY_FN), "test::late-envelope");
     let late_output = consumer.observe(
-        Source::function(ON_READY_FN).deliver(Deliver::Output),
+        Source::function(ON_READY_FN).capture([Capture::Output]),
         "test::late-output",
     );
     late_envelope.ready().await.expect("late envelope observer");
     late_output.ready().await.expect("late output observer");
     let late_env_event = received.wait("test::late-envelope", 1).await.remove(0);
-    let late_out_event = received.wait("test::late-output", 1).await.remove(0);
+    let late_out_event = received.wait("test::late-output", 1).await.remove(0)["output"].clone();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     for target in [
@@ -608,7 +608,8 @@ async fn a_late_on_ready_observer_receives_the_ready_event_alone_in_its_own_shap
         "same envelope shape"
     );
 
-    // `deliver: output`: the ready event itself, as the boot event arrived.
+    // `capture: [output]`: the ready event is the envelope's output, as the
+    // boot event arrived.
     assert_eq!(late_out_event["status"], json!("ready"), "{late_out_event}");
     assert!(late_out_event["timestamp"].is_i64(), "{late_out_event}");
     assert_eq!(

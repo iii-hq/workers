@@ -3681,3 +3681,42 @@ Formal."
         assert!(v["mutations"]["append_messages"].is_array());
     }
 }
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+    use crate::observed::{delivered_event, envelope, Delivered};
+
+    /// The turn-completed target is called with the `Observed` envelope:
+    /// the finished turn is its output.
+    #[test]
+    fn the_finished_turn_is_read_from_the_envelope() {
+        let delivered: Delivered<TurnCompletedInput> = serde_json::from_value(envelope(
+            "harness::on-turn-completed",
+            serde_json::json!({
+                "session_id": "s-1",
+                "turn_id": "t-1",
+                "parent_session_id": "p-1",
+                "terminal": true,
+            }),
+        ))
+        .expect("the envelope parses");
+        let input = delivered_event(delivered).unwrap_or_default();
+        assert_eq!(input.session_id, "s-1");
+        assert_eq!(input.turn_id.as_deref(), Some("t-1"));
+        assert_eq!(input.parent_session_id.as_deref(), Some("p-1"));
+    }
+
+    /// The session-deleted target is called with the `Observed` envelope:
+    /// the deleted session is its output.
+    #[test]
+    fn the_deleted_session_is_read_from_the_envelope() {
+        let delivered: Delivered<SessionDeletedInput> = serde_json::from_value(envelope(
+            "session::on-deleted",
+            serde_json::json!({ "session_id": "s-1" }),
+        ))
+        .expect("the envelope parses");
+        let input = delivered_event(delivered).unwrap_or_default();
+        assert_eq!(input.session_id, "s-1");
+    }
+}

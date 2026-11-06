@@ -503,7 +503,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         deps,
         crate::subscriptions::ON_SESSION_DELETED_ID,
         crate::subscriptions::ON_SESSION_DELETED_DESC,
-        |d, r| async move { on_session_deleted::handle(&d, r).await },
+        |d, r| async move { on_session_deleted::handle_delivered(&d, r).await },
     );
 
     tracing::info!("all harness::* functions registered");

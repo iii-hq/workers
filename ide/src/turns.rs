@@ -27,11 +27,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+use crate::observed::{delivered_event, Delivered};
 use tokio::sync::Mutex;
 
 use crate::code::functions::create_file::content_revision;
@@ -1917,9 +1919,10 @@ pub fn register(
         let log = log.clone();
         iii.register_function(
             STARTED_FN_ID,
-            RegisterFunction::new_async(move |event: TurnEvent| {
+            RegisterFunction::new_async(move |delivered: Delivered<TurnEvent>| {
                 let log = log.clone();
                 async move {
+                    let event = delivered_event(delivered).unwrap_or_default();
                     if let (Some(session_id), Some(turn_id)) = (event.session_id, event.turn_id) {
                         let parent = event
                             .parent
@@ -1949,10 +1952,11 @@ pub fn register(
         let observers = observers.clone();
         iii.register_function(
             COMPLETED_FN_ID,
-            RegisterFunction::new_async(move |event: TurnEvent| {
+            RegisterFunction::new_async(move |delivered: Delivered<TurnEvent>| {
                 let log = log.clone();
                 let observers = observers.clone();
                 async move {
+                    let event = delivered_event(delivered).unwrap_or_default();
                     if let (Some(session_id), Some(turn_id)) = (event.session_id, event.turn_id) {
                         if let Err(e) = log.on_turn_closed(&session_id, &turn_id).await {
                             tracing::warn!(error = %e, "turn log: turn end not recorded");
@@ -1971,7 +1975,7 @@ pub fn register(
         ("harness::on-turn-completed", COMPLETED_FN_ID),
     ] {
         iii.observe(
-            Source::function(event).deliver(Deliver::Output),
+            Source::function(event).capture([Capture::Output]),
             function_id,
         );
     }
@@ -2370,6 +2374,29 @@ impl TurnLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turn targets are called with the `Observed` envelope: the turn
+    /// event is its output.
+    #[test]
+    fn the_turn_event_is_read_from_the_envelope() {
+        let envelope = crate::observed::envelope(
+            "harness::on-turn-started",
+            json!({
+                "session_id": "s-1",
+                "turn_id": "t-1",
+                "message_preview": "hello",
+                "parent": { "session_id": "p-1", "turn_id": "pt-1" },
+            }),
+        );
+        let delivered: Delivered<TurnEvent> =
+            serde_json::from_value(envelope).expect("the envelope parses");
+        let event = delivered_event(delivered).unwrap_or_default();
+        assert_eq!(event.session_id.as_deref(), Some("s-1"));
+        assert_eq!(event.turn_id.as_deref(), Some("t-1"));
+        assert_eq!(event.message_preview.as_deref(), Some("hello"));
+        let parent = event.parent.expect("the parent is read");
+        assert_eq!(parent.session_id.as_deref(), Some("p-1"));
+    }
 
     fn log_in(dir: &Path) -> Arc<TurnLog> {
         Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)))

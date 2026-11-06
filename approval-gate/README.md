@@ -110,15 +110,15 @@ are counted per function and reason) and unordered. Reconcile with one
 | `approval::on-pending-resolved` | none; filter on `input.session_id`, `input.session_metadata.<key>` | a pending call left the inbox (exactly once per record) | `PendingResolvedEvent { session_id, turn_id, function_call_id, function_id, outcome: "allow" \| "deny" \| "aborted", reason?, session_metadata?, resolved_at }` — `reason` is the operator's, on deny |
 
 A multi-tenant notification worker observes only its own sessions by
-filtering on the record's denormalized `session_metadata`, and takes the
-event itself with `deliver: 'output'`:
+filtering on the record's denormalized `session_metadata`, and reads the
+event from the envelope's output with `capture: ['output']`:
 
 ```ts
 iii.observe(
   {
     function_id: 'approval::on-pending-created',
     filters: { 'input.session_metadata.owner': { $eq: 'u_1' } },
-    deliver: 'output',
+    capture: ['output'],   // the target reads the event as payload.output
   },
   'notify::approval-requested',
 )
@@ -128,7 +128,7 @@ iii.observe(
 iii.observe(
     Source::function("approval::on-pending-resolved")
         .filters(json!({ "input.session_id": { "$eq": session_id } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "notify::approval-cleared",
 );
 ```
