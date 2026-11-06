@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -144,14 +144,35 @@ impl EngineChanges {
     }
 }
 
-/// The event of `engine::on-functions-changed` / `engine::on-workers-changed`,
-/// delivered as output. Only the advisory event tag is read; the larger
-/// fields (`functions`, `worker_id`) are ignored because a change is only a
-/// cue to re-check.
+/// What the engine-change target receives: the activation envelope of an
+/// `engine::on-functions-changed` / `engine::on-workers-changed` call, the
+/// change as its `output` (`capture: ['output']`). Only the advisory event
+/// tag is read; the larger fields (`functions`, `worker_id`) are ignored
+/// because a change is only a cue to re-check.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EngineChangeEvent {
     #[serde(default)]
+    pub output: Option<EngineChange>,
+}
+
+/// The engine change itself, the envelope's `output`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct EngineChange {
+    #[serde(default)]
     pub event: Option<String>,
+}
+
+impl EngineChangeEvent {
+    /// The change's advisory tag, when the envelope carries one.
+    pub fn event(&self) -> Option<&str> {
+        self.output.as_ref()?.event.as_deref()
+    }
+}
+
+/// The observer of one engine change feed: the change rides as the
+/// envelope's output.
+pub fn engine_change_source(source: &str) -> Source {
+    Source::function(source).capture([Capture::Output])
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -172,7 +193,7 @@ pub fn observe_engine_events(iii: &IIIClient) -> EngineEvents {
         RegisterFunction::new_async(move |event: EngineChangeEvent| {
             let events = handler_events.clone();
             async move {
-                tracing::debug!(event = ?event.event, "engine registry changed");
+                tracing::debug!(event = ?event.event(), "engine registry changed");
                 events.notify();
                 Ok::<_, Error>(EngineChangeAck { ok: true })
             }
@@ -187,7 +208,7 @@ pub fn observe_engine_events(iii: &IIIClient) -> EngineEvents {
         // The observers live as long as the worker's connection; dropping
         // the handles does not dispose them.
         iii.observe(
-            Source::function(source).deliver(Deliver::Output),
+            engine_change_source(source),
             ENGINE_CHANGE_FN_ID,
         );
     }
