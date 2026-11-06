@@ -142,6 +142,8 @@ pub fn observe(iii: &IIIClient) -> ObserverHandle {
     tokio::spawn(async move {
         if let Err(Error::Remote { code, .. }) = first.ready().await {
             if matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR") {
+                // Leave no refused observer behind to show as an error.
+                let _ = first.dispose().await;
                 client.observe(
                     Source::function(PRE_GENERATE_HOOK_FN).args(args),
                     PRE_GENERATE_FN,
