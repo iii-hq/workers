@@ -447,7 +447,7 @@ fn manager_commands(
         ],
         // Never `-Sy`: a refreshed database with one package from it is a partial
         // upgrade, which Arch doesn't support. A stale or empty database fails,
-        // and the official build takes over (D31).
+        // and the official build takes over (D50).
         InstallMethod::Pacman => vec![install(&["-S", "--noconfirm", "--needed", "tmux"], &[])],
         InstallMethod::Dnf => vec![install(&["install", "-y", "tmux"], &[])],
         InstallMethod::Zypper => vec![
@@ -627,7 +627,7 @@ fn blocked(os: &str, binary: &str) -> Option<String> {
 }
 
 /// With no official build for this processor only a package manager can help
-/// (D33). Whether this user may run one takes a process, and without it the
+/// (D52). Whether this user may run one takes a process, and without it the
 /// install still answers with the command to ask an administrator to run.
 fn can_try(os: &str, arch: &str, binary: &str, manager_here: impl FnOnce() -> bool) -> bool {
     let official_build = PREBUILTS.iter().any(|pin| pin.os == os && pin.arch == arch);
@@ -1428,7 +1428,7 @@ where
         }
         // After a failure too: a package manager can fail after installing tmux,
         // and another process (the button and `--install-tmux`, two engines on
-        // one home) may have just put it there (D32).
+        // one home) may have just put it there (D51).
         let failure = match (verify().await, outcome) {
             (Ok((path, version)), outcome) => {
                 if let Err(failure) = outcome {
@@ -1785,7 +1785,7 @@ mod tests {
 
     #[test]
     fn pacman_never_refreshes_its_database_for_one_package() {
-        // A refreshed database with one package from it is a partial upgrade (D31).
+        // A refreshed database with one package from it is a partial upgrade (D50).
         for (root, sudo) in [(true, false), (false, true)] {
             let plan = plan(&host("linux", "x86_64", root, sudo, &["pacman", "sudo"]));
             let commands = commands(&plan);
@@ -1981,7 +1981,7 @@ mod tests {
         assert!(can_try("linux", "aarch64", "tmux", no_need_to_look));
         assert!(can_try("macos", "aarch64", "tmux", no_need_to_look));
         assert!(can_try("macos", "x86_64", "tmux", no_need_to_look));
-        // No official build: a package manager or nothing (D33).
+        // No official build: a package manager or nothing (D52).
         assert!(can_try("linux", "arm", "tmux", || true));
         assert!(!can_try("linux", "arm", "tmux", || false));
         assert!(!can_try("linux", "powerpc64", "tmux", || false));

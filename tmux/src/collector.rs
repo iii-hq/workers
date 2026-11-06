@@ -587,7 +587,7 @@ mod tests {
     }
 
     // Only where an official build exists is the answer known without looking
-    // for a package manager (simple-installs D33).
+    // for a package manager (simple-installs D52).
     #[cfg(all(
         any(target_os = "linux", target_os = "macos"),
         any(target_arch = "x86_64", target_arch = "aarch64")
