@@ -11,7 +11,8 @@
 //! The record is durable (state worker, `harness_binding` scope) because the
 //! engine's observers are not: they belong to the harness connection, so a
 //! harness or engine restart loses them, and the boot pass re-creates every
-//! surviving binding's observer from this store.
+//! surviving binding's observer from this store. So does a harness away past
+//! the engine's grace period, once it is back ([`crate::observers`]).
 
 pub mod compose;
 pub mod expiry;
@@ -63,6 +64,14 @@ impl ObserverHandles {
             .remove(binding_id)
     }
 
+    pub fn get(&self, binding_id: &str) -> Option<ObserverHandle> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(binding_id)
+            .cloned()
+    }
+
     pub fn contains(&self, binding_id: &str) -> bool {
         self.0
             .lock()
@@ -74,6 +83,8 @@ impl ObserverHandles {
 /// Create the binding's observer: its source, the delivery hop as target, the
 /// binding id as observer id and `__binding` sidecar, and the lifecycle
 /// deadline as a backstop. The handle is kept in [`Deps::observer_handles`].
+/// When the engine disposes the observer while the harness is away, the
+/// binding is observed again from its record ([`gc::observe_again`]).
 /// `None` for a binding without a source.
 pub fn observe_binding(deps: &Deps, binding: &Binding) -> Option<ObserverHandle> {
     let source = binding.source.as_ref()?;
@@ -92,6 +103,10 @@ pub fn observe_binding(deps: &Deps, binding: &Binding) -> Option<ObserverHandle>
         crate::functions::observer_deliver::DELIVER_ID,
         options,
     );
+    let (again, binding_id) = (deps.clone(), binding.id.clone());
+    crate::observers::when_disposed_while_away(&handle, move || {
+        tokio::spawn(async move { gc::observe_again(&again, &binding_id).await });
+    });
     deps.observer_handles
         .insert(binding.id.clone(), handle.clone());
     Some(handle)
