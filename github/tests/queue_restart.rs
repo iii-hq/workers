@@ -29,7 +29,7 @@ use iii_http::{
     boot,
     config::{RestApiConfig, WebhookListenerConfig},
 };
-use iii_sdk::{Deliver, Error, IIIClient, ObserverOptions, RegisterFunction, Source};
+use iii_sdk::{Capture, Error, IIIClient, ObserverOptions, RegisterFunction, Source};
 use mocks::Queue;
 use real_engine::{call, RealEngine};
 use serde_json::{json, Value};
@@ -212,13 +212,19 @@ async fn a_restarted_worker_keeps_its_queue_observer_id_and_gets_its_unacked_job
     let seen = processed.clone();
     recorder.register_function(
         RECORDER,
-        RegisterFunction::new(move |input: Value| {
-            let job = input["job_id"].as_str().unwrap_or_default().to_owned();
+        RegisterFunction::new(move |observed: Value| {
+            let job = observed["input"]["job_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
             seen.lock().unwrap().push(job);
             Ok::<_, Error>(Value::Null)
         }),
     );
-    let _recording = recorder.observe(Source::function(PROCESS).deliver(Deliver::Input), RECORDER);
+    let _recording = recorder.observe(
+        Source::function(PROCESS).capture([Capture::Input]),
+        RECORDER,
+    );
     let count = |job: &str| {
         processed
             .lock()

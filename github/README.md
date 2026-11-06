@@ -97,7 +97,7 @@ its activity feed and live git graph.
 
 ```typescript
 iii.observe(
-  { function_id: 'github::on-called', filters: { 'input.ok': { $eq: false } }, deliver: 'output' },
+  { function_id: 'github::on-called', filters: { 'input.ok': { $eq: false } }, capture: ['output'] },
   'alerts::github-failure',
 )
 ```

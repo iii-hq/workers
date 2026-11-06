@@ -55,6 +55,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	}
 	received := make(chan callback, 64)
 	if _, err := consumer.RegisterFunction(callbackID, func(callCtx context.Context, raw json.RawMessage) (any, error) {
+		raw = observedOutput(raw)
 		var result callback
 		result.payload = raw
 		result.err = json.Unmarshal(raw, &result.event)
@@ -136,7 +137,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		FunctionID string         `json:"function_id"`
 		Namespace  string         `json:"namespace"`
 		Filters    map[string]any `json:"filters"`
-		Deliver    iii.Deliver    `json:"deliver"`
+		Capture    []iii.Capture  `json:"capture"`
 	}
 	if err := json.Unmarshal([]byte(example), &source); err != nil {
 		t.Fatal(err)
@@ -167,7 +168,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		}
 		return false
 	})
-	discovery, err := guideObserver.Observe(iii.Source{FunctionID: source.FunctionID, Namespace: source.Namespace, Filters: source.Filters, Deliver: source.Deliver}, callbackID, iii.ObserverOptions{Metadata: json.RawMessage(`{"observer":"discovery"}`)})
+	discovery, err := guideObserver.Observe(iii.Source{FunctionID: source.FunctionID, Namespace: source.Namespace, Filters: source.Filters, Capture: source.Capture}, callbackID, iii.ObserverOptions{Metadata: json.RawMessage(`{"observer":"discovery"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +193,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	handles := []*iii.ObserverHandle{discovery}
 	for name, filter := range filters {
 		metadata, _ := json.Marshal(map[string]string{"observer": name})
-		handle, err := registrar.Observe(iii.Source{FunctionID: "whatsapp::cloud::on-events", Filters: filter, Deliver: iii.DeliverOutput}, callbackID, iii.ObserverOptions{Metadata: metadata, TargetNamespace: callbackNamespace})
+		handle, err := registrar.Observe(iii.Source{FunctionID: "whatsapp::cloud::on-events", Filters: filter, Capture: []iii.Capture{iii.CaptureOutput}}, callbackID, iii.ObserverOptions{Metadata: metadata, TargetNamespace: callbackNamespace})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -328,4 +329,16 @@ func compileDiscoveredCloudSchema(t *testing.T, document any) *validate.Schema {
 		t.Fatal(err)
 	}
 	return schema
+}
+
+// observedOutput is the output a capture: [output] observer's Observed envelope
+// carries; nil when it carries none.
+func observedOutput(raw json.RawMessage) json.RawMessage {
+	var observed struct {
+		Output json.RawMessage `json:"output"`
+	}
+	if json.Unmarshal(raw, &observed) != nil {
+		return nil
+	}
+	return observed.Output
 }

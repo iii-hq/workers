@@ -205,7 +205,7 @@ test('schedule: set-schedule and delete in index.mjs go through the wiki schedul
   assert.equal((INDEX.match(/applyWikiSchedule\(id, 'off'\)/g) || []).length, 2);
 });
 
-test('turn events: harness::on-turn-completed and on-turn-started, deliver output, no filters', () => {
+test('turn events: harness::on-turn-completed and on-turn-started, capture output, no filters', () => {
   const { worker, log } = fakeWorker();
   const handles = observeTurnEvents(worker);
   assert.equal(handles.length, 2);
@@ -213,12 +213,12 @@ test('turn events: harness::on-turn-completed and on-turn-started, deliver outpu
     log.map(({ source, target, options }) => ({ source, target, options })),
     [
       {
-        source: { function_id: 'harness::on-turn-completed', deliver: 'output' },
+        source: { function_id: 'harness::on-turn-completed', capture: ['output'] },
         target: 'openwiki::on-turn-completed',
         options: undefined,
       },
       {
-        source: { function_id: 'harness::on-turn-started', deliver: 'output' },
+        source: { function_id: 'harness::on-turn-started', capture: ['output'] },
         target: 'openwiki::on-turn-started',
         options: undefined,
       },

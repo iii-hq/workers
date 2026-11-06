@@ -61,12 +61,13 @@ iii.observe(
       'input.session_id': { $eq: 'work' },
       'input.kind': { $in: ['message.received', 'session.connected'] },
     },
-    deliver: 'output',
+    capture: ['output'],
   },
   'automation::on-whatsapp-event',
 )
 ```
 
+The target receives the Observed envelope; the event is its `output`.
 Without a filter on `input.session_id` the observer receives every session;
 without one on `input.kind`, every kind. Events contain `session_id`, `sequence`,
 `kind`, `timestamp_ms`, and `data`. Set `namespace` on the source when the worker

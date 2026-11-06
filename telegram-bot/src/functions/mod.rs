@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, Observed, ObserverHandle, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -62,6 +62,44 @@ fn register<Req, Resp, F, Fut>(
     );
 }
 
+/// The event a `capture: [output]` observer target receives: the output of
+/// the observed call, carried in its Observed envelope. An envelope without
+/// an output (the call returned nothing) is an error naming the function.
+pub fn observed_output<T>(event: Observed<Value, T>) -> Result<T, Error> {
+    event.output.ok_or_else(|| {
+        Error::Handler(format!(
+            "observed call of {} carried no output",
+            event.function_id
+        ))
+    })
+}
+
+/// [`register`] for an observer target: the request is the Observed
+/// envelope and `handler` gets the event in its `output`.
+fn register_observed<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, Error>> + Send + 'static,
+{
+    register(
+        iii,
+        deps,
+        id,
+        description,
+        move |deps, event: Observed<Value, Req>| {
+            let handler = handler.clone();
+            async move { handler(deps, observed_output(event)?).await }
+        },
+    );
+}
+
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     webhook::register(iii, deps);
     set_webhook::register(iii, deps);
@@ -105,7 +143,8 @@ pub fn approval_observers() -> [(&'static str, &'static str, Option<Value>); 2] 
 /// optional `approval-gate` worker. Each observer stays `pending` while its
 /// worker is absent and becomes active when that worker registers the
 /// function, so a gate that connects later is observed with no extra step.
-/// Targets receive the event itself (`deliver: output`).
+/// Observers capture `[output]`: targets receive the Observed envelope and
+/// read the event from its `output` ([`observed_output`]).
 pub fn observe_events(iii: &Arc<IIIClient>) {
     for (source, target, filters) in session_observers().into_iter().chain(approval_observers()) {
         observe_event(iii, source, target, filters);
@@ -115,17 +154,23 @@ pub fn observe_events(iii: &Arc<IIIClient>) {
 /// The observer lives as long as the worker's connection; dropping the
 /// handle does not dispose it.
 fn observe_event(iii: &IIIClient, source: &str, target: &str, filters: Option<Value>) {
-    let mut src = Source::function(source).deliver(Deliver::Output);
-    if let Some(filters) = filters {
-        src = src.filters(filters);
-    }
-    let handle = iii.observe(src, target);
+    let handle = iii.observe(event_source(source, filters), target);
     tracing::info!(
         function_id = source,
         observer_target = target,
         observer_id = handle.id(),
         "observing"
     );
+}
+
+/// The source of an event observer: `source`'s calls matching `filters`,
+/// captured as their output.
+pub fn event_source(source: &str, filters: Option<Value>) -> Source {
+    let src = Source::function(source).capture([Capture::Output]);
+    match filters {
+        Some(filters) => src.filters(filters),
+        None => src,
+    }
 }
 
 /// The args of the `http::on-request` observer that serves `POST /<api_path>`.
@@ -166,6 +211,106 @@ pub fn observe_webhook_route(iii: &IIIClient) -> ObserverHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        MessageAddedEvent, MessageUpdatedEvent, PendingApprovalRecord, PendingResolvedEvent,
+        StatusChangedEvent, TurnCompletedEvent,
+    };
+    use iii_sdk::{Capture, Observed};
+
+    /// What a `capture: [output]` observer target receives.
+    fn envelope(function_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": "obs_1",
+            "activation_id": "act_1",
+            "function_id": function_id,
+            "invocation_id": "inv_1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": output,
+        })
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(payload: Value) -> Result<T, Error> {
+        let observed: Observed<Value, T> =
+            serde_json::from_value(payload).expect("an Observed envelope");
+        observed_output(observed)
+    }
+
+    #[test]
+    fn event_observers_capture_the_output() {
+        let filters = json!({ "input.message.role": { "$in": ["assistant"] } });
+        assert_eq!(
+            event_source(SESSION_MESSAGE_UPDATED_FN, Some(filters.clone())),
+            Source::function(SESSION_MESSAGE_UPDATED_FN)
+                .capture([Capture::Output])
+                .filters(filters)
+        );
+        assert_eq!(
+            event_source(APPROVAL_PENDING_CREATED_FN, None),
+            Source::function(APPROVAL_PENDING_CREATED_FN).capture([Capture::Output])
+        );
+    }
+
+    #[test]
+    fn binding_targets_read_the_event_from_the_observed_envelope() {
+        let added: MessageAddedEvent = decode(envelope(
+            SESSION_MESSAGE_ADDED_FN,
+            json!({ "session_id": "s1", "entry_id": "e1",
+                    "message": { "role": "assistant", "content": [] } }),
+        ))
+        .unwrap();
+        assert_eq!(
+            (added.session_id.as_str(), added.entry_id.as_str()),
+            ("s1", "e1")
+        );
+        assert_eq!(added.message.unwrap().role, "assistant");
+
+        let updated: MessageUpdatedEvent = decode(envelope(
+            SESSION_MESSAGE_UPDATED_FN,
+            json!({ "session_id": "s1", "entry_id": "e1", "revision": 4,
+                    "message": { "role": "assistant", "content": [] } }),
+        ))
+        .unwrap();
+        assert_eq!(updated.revision, 4);
+
+        let status: StatusChangedEvent = decode(envelope(
+            SESSION_STATUS_CHANGED_FN,
+            json!({ "session_id": "s1", "status": "idle" }),
+        ))
+        .unwrap();
+        assert_eq!(status.status, "idle");
+
+        let turn: TurnCompletedEvent = decode(envelope(
+            HARNESS_TURN_COMPLETED_FN,
+            json!({ "session_id": "s1", "turn_id": "t1", "status": "failed",
+                    "terminal": false }),
+        ))
+        .unwrap();
+        assert_eq!((turn.turn_id.as_str(), turn.terminal), ("t1", false));
+
+        let pending: PendingApprovalRecord = decode(envelope(
+            APPROVAL_PENDING_CREATED_FN,
+            json!({ "session_id": "s1", "function_call_id": "c1", "function_id": "shell::exec" }),
+        ))
+        .unwrap();
+        assert_eq!(pending.function_id, "shell::exec");
+
+        let resolved: PendingResolvedEvent = decode(envelope(
+            APPROVAL_PENDING_RESOLVED_FN,
+            json!({ "session_id": "s1", "function_call_id": "c1", "outcome": "approved" }),
+        ))
+        .unwrap();
+        assert_eq!(resolved.outcome, "approved");
+    }
+
+    #[test]
+    fn an_envelope_without_output_is_an_error() {
+        let mut payload = envelope(HARNESS_TURN_COMPLETED_FN, Value::Null);
+        payload.as_object_mut().unwrap().remove("output");
+        let err = decode::<TurnCompletedEvent>(payload).unwrap_err();
+        assert!(err.to_string().contains(HARNESS_TURN_COMPLETED_FN), "{err}");
+    }
 
     #[test]
     fn routes_are_posts_under_the_worker_prefix() {

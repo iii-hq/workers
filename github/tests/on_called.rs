@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use engine::{wait, Engine};
 use github::events::{register_on_called, run_and_emit, CalledEvent, ON_CALLED_FN};
-use iii_sdk::{Deliver, Error, RegisterFunction, Source};
+use iii_sdk::{Capture, Error, RegisterFunction, Source};
 use real_engine::RealEngine;
 use serde_json::{json, Value};
 
@@ -82,7 +82,7 @@ async fn on_called_is_private_and_called_once_per_run_while_observed() {
     let observer = console.observe(
         Source::function(ON_CALLED_FN)
             .namespace("github")
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         TARGET,
     );
     tokio::time::timeout(Duration::from_secs(10), observer.ready())
@@ -125,7 +125,7 @@ async fn on_called_is_private_and_called_once_per_run_while_observed() {
     engine.shutdown().await;
 }
 
-/// Through a real engine: an observer with `deliver: output` and a filter on
+/// Through a real engine: an observer with `capture: [output]` and a filter on
 /// `input.function_id` receives the event of each matching run once, and a
 /// slow observer never holds the run back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -152,7 +152,8 @@ async fn an_observed_run_reaches_its_observer_once() {
         RegisterFunction::new_async(move |event: Value| {
             let log = log.clone();
             async move {
-                log.lock().unwrap().push(event);
+                // capture [output]: the event is the envelope's output.
+                log.lock().unwrap().push(event["output"].clone());
                 // A slow observer: the run it observes does not wait for it.
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 Ok::<_, Error>(Value::Null)
@@ -164,7 +165,7 @@ async fn an_observed_run_reaches_its_observer_once() {
         Source::function(ON_CALLED_FN)
             .namespace("default")
             .filters(json!({ "input.function_id": { "$eq": "github::pr::list" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         TARGET,
     );
     tokio::time::timeout(Duration::from_secs(10), observer.ready())

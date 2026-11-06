@@ -178,7 +178,7 @@ https://myaccount.google.com/apppasswords — the worker accepts both spaced
 
 `email::on-new-mail` is private: only this worker calls it, and any worker
 may observe it. Its handler returns the event it is called with, so an
-observer that delivers `output` receives the event:
+observer that captures `output` receives it as the Observed envelope's `output`:
 
 ```typescript
 iii.observe(
@@ -188,14 +188,14 @@ iii.observe(
       'input.account': { $eq: 'support' },
       'input.folder': { $eq: 'INBOX' },
     },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-mail',
 )
 ```
 
 ```rust
-use iii_sdk::{Deliver, Source};
+use iii_sdk::{Capture, Source};
 use serde_json::json;
 
 iii.observe(
@@ -204,7 +204,7 @@ iii.observe(
             "input.account": { "$eq": "support" },
             "input.folder": { "$eq": "INBOX" },
         }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "my-worker::on-mail",
 );
 ```
