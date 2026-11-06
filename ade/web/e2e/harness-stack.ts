@@ -323,8 +323,11 @@ export async function openSession(
     name: `open ${stack.ready.session.title}`,
     exact: true,
   })
-  // Coarse-pointer actions can occupy the row center; target its title instead.
-  await session.getByText(stack.ready.session.title, { exact: true }).click()
+  // The title's box runs under the row's actions, and a click there lands on them
+  // with no error, because they sit inside the same button. Its start is on show.
+  await session
+    .getByText(stack.ready.session.title, { exact: true })
+    .click({ position: { x: 4, y: 4 } })
   await expect(session).toHaveAttribute('aria-current', 'page')
   await expect(
     page.locator(`[data-chat-session-id="${stack.ready.session.id}"]`),
