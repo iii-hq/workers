@@ -30,9 +30,9 @@ iii trigger tmux::install::status    # poll until succeeded or failed
 | Computer | What runs, in order |
 |---|---|
 | macOS | Homebrew when `brew` is there (never as root), otherwise MacPorts as root or with `sudo -n`; then the official build |
-| Linux, as root or with `sudo -n` | The first of `apt-get` (after `apt-get update`), `dnf`, `pacman`, `zypper`, `apk`; then the official build |
+| Linux, as root or with `sudo -n` | The first of `apt-get` (after `apt-get update`), `dnf`, `pacman` (never `-Sy`, so a stale or empty database falls through), `zypper`, `apk`; then the official build |
 | Linux, no root and no passwordless sudo | The official build |
-| Linux on armv7 | Only a package manager: there is no official build, and without root or sudo the error says what to ask an administrator to run |
+| Linux on a processor with no official build (armv7) | Only a package manager, and without root or sudo the error says what to ask an administrator to run |
 
 Nothing ever waits for a password or for an answer. The official build is
 [`tmux/tmux-builds`](https://github.com/tmux/tmux-builds) 3.7c for Linux and
@@ -41,9 +41,11 @@ to `~/.local/bin/tmux`: checked before it is unpacked, asked `-V` before it
 lands there, moved atomically. A file already at that path is never replaced.
 
 An attempt only counts when tmux then resolves, answers `-V` and starts a
-server on a private socket of its own. A package manager that fails falls
-through to the official build, and the failure's `log` says so. An install
-never talks to your tmux server.
+server on a private socket of its own, and one that reports a failure counts
+when tmux works anyway. A package manager that fails falls through to the
+official build, and the failure's `log` says so. With tmux already there the
+install changes nothing: it makes the same check and answers `succeeded` with
+`method: null`. An install never talks to your tmux server.
 
 The answer of both functions:
 
@@ -62,7 +64,8 @@ sentence, and `log` is empty until a failure, when it holds every command and
 its output. A worker that restarted mid-install answers `idle`.
 
 `tmux::status` says `installable: true` when tmux is missing and this can try:
-Linux or macOS, with `tmux_binary` left as plain `tmux`.
+Linux or macOS, with `tmux_binary` left as plain `tmux`, on a processor with an
+official build or a computer with one of those package managers.
 
 A daemon's `PATH` is often short, so plain `tmux` is also looked for after
 `PATH` in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`,

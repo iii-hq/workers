@@ -31,7 +31,7 @@ pub struct Resolved {
 /// names one, otherwise every `PATH` entry joined with it.
 pub fn candidates(binary: &str, path_var: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
     if binary.contains('/') {
-        return vec![expand_home(binary)];
+        return vec![expand_home(binary, std::env::var_os("HOME").as_deref())];
     }
     path_var
         .map(|value| {
@@ -45,7 +45,9 @@ pub fn candidates(binary: &str, path_var: Option<&std::ffi::OsStr>) -> Vec<PathB
 /// Where tools live that a short `PATH` (launchd, systemd, an SSH session)
 /// leaves out: where an install puts tmux, Homebrew's two, Linuxbrew's, MacPorts'.
 pub fn fallback_dirs(home: Option<&Path>) -> Vec<PathBuf> {
-    home.map(|home| home.join(".local/bin"))
+    // An empty or relative `HOME` would mean a tmux in the current folder.
+    home.filter(|home| home.is_absolute())
+        .map(|home| home.join(".local/bin"))
         .into_iter()
         .chain(
             [
@@ -72,12 +74,11 @@ fn lookup(binary: &str, path_var: Option<&std::ffi::OsStr>, home: Option<&Path>)
     found
 }
 
-fn expand_home(raw: &str) -> PathBuf {
-    match raw.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join(rest))
-            .unwrap_or_else(|| PathBuf::from(raw)),
-        None => PathBuf::from(raw),
+fn expand_home(raw: &str, home: Option<&std::ffi::OsStr>) -> PathBuf {
+    let home = home.map(Path::new).filter(|home| home.is_absolute());
+    match (raw.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(raw),
     }
 }
 
@@ -198,6 +199,18 @@ impl BinaryCache {
         result
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed(&self, binary: &str, result: Result<Resolved, String>) {
+        *self
+            .entry
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(Entry {
+            binary: binary.to_string(),
+            result,
+            at: Instant::now(),
+        });
+    }
+
     /// Drop what is known, so the next [`Self::get`] looks again.
     pub fn forget(&self) {
         *self
@@ -265,6 +278,40 @@ mod tests {
         assert_eq!(
             lookup("tmux", None, None).first(),
             Some(&PathBuf::from("/opt/homebrew/bin/tmux"))
+        );
+    }
+
+    #[test]
+    fn a_home_that_isnt_absolute_never_means_the_current_folder() {
+        for home in ["", "relative", "./x"] {
+            let found = lookup("tmux", None, Some(Path::new(home)));
+            assert_eq!(
+                found.first(),
+                Some(&PathBuf::from("/opt/homebrew/bin/tmux"))
+            );
+            assert!(found.iter().all(|path| path.is_absolute()), "{found:?}");
+            assert_eq!(
+                expand_home("~/bin/tmux", Some(std::ffi::OsStr::new(home))),
+                PathBuf::from("~/bin/tmux")
+            );
+        }
+        assert_eq!(
+            expand_home("~/bin/tmux", Some(std::ffi::OsStr::new("/h"))),
+            PathBuf::from("/h/bin/tmux")
+        );
+    }
+
+    #[test]
+    fn path_keeps_its_own_meaning_for_finding_tmux() {
+        // What a shell would run, and what this worker has always done.
+        let path = std::env::join_paths(["", "rel", "/a"]).unwrap();
+        assert_eq!(
+            candidates("tmux", Some(&path)),
+            vec![
+                PathBuf::from("tmux"),
+                PathBuf::from("rel/tmux"),
+                PathBuf::from("/a/tmux")
+            ]
         );
     }
 

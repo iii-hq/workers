@@ -3,9 +3,9 @@
 //! [`plan`] is a pure function of a [`Host`]: what to try, in order. A system
 //! package manager when this user may run it, then the project's official
 //! prebuilt binary (`tmux/tmux-builds`) into `~/.local/bin`. [`Installer`] runs
-//! the plan in the background and answers `tmux::install::status`. An attempt
-//! only counts when tmux then resolves the normal way; anything else falls
-//! through to the next one.
+//! the plan in the background and answers `tmux::install::status`. What counts
+//! after an attempt, whatever it said, is whether tmux then resolves the normal
+//! way and starts; otherwise the next one runs.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error as _;
@@ -101,8 +101,11 @@ const DOWNLOAD_LIMIT: Duration = Duration::from_secs(5 * 60);
 const NEW_FILE_PROBE_LIMIT: Duration = Duration::from_secs(30);
 const START_CHECK_LIMIT: Duration = Duration::from_secs(10);
 const TERM_GRACE: Duration = Duration::from_secs(5);
+/// Longer than any run lasts, so a file this old can't be another process's.
+const LEFTOVER_AFTER: Duration = Duration::from_secs(60 * 60);
 const READERS_GRACE: Duration = Duration::from_secs(2);
 const MAX_DOWNLOAD: u64 = 64 * 1024 * 1024;
+const TEMP_PREFIX: &str = ".tmux-install-";
 
 const MAX_LOG_LINES: usize = 1000;
 const MAX_LINE_CHARS: usize = 500;
@@ -233,13 +236,7 @@ impl Host {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|home| home.is_absolute());
-        let path_var = std::env::var_os("PATH");
-        let mut dirs: Vec<PathBuf> = path_var
-            .as_deref()
-            .map(|value| std::env::split_paths(value).collect())
-            .unwrap_or_default();
-        dirs.extend(binary::fallback_dirs(home.as_deref()));
-        dirs.extend(["/usr/sbin", "/sbin"].map(PathBuf::from));
+        let dirs = tool_dirs(std::env::var_os("PATH").as_deref(), home.as_deref());
         let tools: BTreeMap<String, PathBuf> = TOOLS
             .iter()
             .filter_map(|tool| {
@@ -280,6 +277,18 @@ impl Host {
             if tools.is_empty() { "none" } else { &tools }
         )
     }
+}
+
+/// Where to look for a package manager. Only absolute folders: these tools run
+/// as root, and an empty or relative `PATH` entry means the current folder.
+fn tool_dirs(path_var: Option<&OsStr>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = path_var
+        .map(|value| std::env::split_paths(value).collect())
+        .unwrap_or_default();
+    dirs.extend(binary::fallback_dirs(home));
+    dirs.extend(["/usr/sbin", "/sbin"].map(PathBuf::from));
+    dirs.retain(|dir| dir.is_absolute());
+    dirs
 }
 
 async fn passwordless_sudo(sudo: &Path) -> bool {
@@ -430,16 +439,16 @@ fn manager_commands(
     };
     const DEBIAN: &[(&str, &str)] = &[("DEBIAN_FRONTEND", "noninteractive")];
     match method {
-        // A stale list is why these two refresh first: the mirrors drop the
-        // versions an old list names.
+        // A stale list is why this refreshes first: the mirrors drop the versions
+        // an old list names.
         InstallMethod::Apt => vec![
             update(&["update"], DEBIAN),
             install(&["install", "-y", "tmux"], DEBIAN),
         ],
-        InstallMethod::Pacman => vec![
-            update(&["-Sy", "--noconfirm"], &[]),
-            install(&["-S", "--noconfirm", "--needed", "tmux"], &[]),
-        ],
+        // Never `-Sy`: a refreshed database with one package from it is a partial
+        // upgrade, which Arch doesn't support. A stale or empty database fails,
+        // and the official build takes over (D31).
+        InstallMethod::Pacman => vec![install(&["-S", "--noconfirm", "--needed", "tmux"], &[])],
         InstallMethod::Dnf => vec![install(&["install", "-y", "tmux"], &[])],
         InstallMethod::Zypper => vec![
             install(&["--non-interactive", "install", "tmux"], &[]),
@@ -449,7 +458,7 @@ fn manager_commands(
                 InstallStep::Installing,
                 UPDATE_LIMIT,
                 false,
-                Path::new("mkdir"),
+                Path::new("/bin/mkdir"),
                 &["-p", "-m", "1777", "/run/tmux"],
                 &[],
                 privilege,
@@ -617,10 +626,33 @@ fn blocked(os: &str, binary: &str) -> Option<String> {
     None
 }
 
-/// `tmux::status.installable` for an unavailable tmux. Reads no process or
-/// file, so it costs `tmux::status` nothing.
+/// With no official build for this processor only a package manager can help
+/// (D33). Whether this user may run one takes a process, and without it the
+/// install still answers with the command to ask an administrator to run.
+fn can_try(os: &str, arch: &str, binary: &str, manager_here: impl FnOnce() -> bool) -> bool {
+    let official_build = PREBUILTS.iter().any(|pin| pin.os == os && pin.arch == arch);
+    blocked(os, binary).is_none() && (official_build || manager_here())
+}
+
+fn manager_here() -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let dirs = tool_dirs(std::env::var_os("PATH").as_deref(), home.as_deref());
+    LINUX_MANAGERS.iter().any(|method| {
+        dirs.iter()
+            .any(|dir| is_executable_file(&dir.join(method.tool())))
+    })
+}
+
+/// `tmux::status.installable` for an unavailable tmux. Starts no process, and
+/// looks at files only on a processor without an official build, so it costs
+/// `tmux::status` next to nothing.
 pub fn installable(binary: &str) -> bool {
-    blocked(std::env::consts::OS, binary).is_none()
+    can_try(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        binary,
+        manager_here,
+    )
 }
 
 /// Cleans a process's bytes into log lines: a carriage return starts its line
@@ -757,10 +789,16 @@ impl Progress {
         self.with(|shared| shared.status.progress = Some(progress));
     }
 
-    fn log(&self, line: impl Into<String>) {
-        let line = line.into();
-        tracing::debug!(target: "tmux::install", "{line}");
-        self.with(|shared| shared.log.push(line));
+    /// Whatever the text and wherever it came from, it goes in cleaned and capped.
+    fn log(&self, text: impl AsRef<str>) {
+        for line in text
+            .as_ref()
+            .lines()
+            .filter_map(|line| clean_line(line.as_bytes()))
+        {
+            tracing::debug!(target: "tmux::install", "{line}");
+            self.with(|shared| shared.log.push(line));
+        }
     }
 
     fn lines(&self) -> Vec<String> {
@@ -840,6 +878,8 @@ fn extended_path(current: Option<&OsStr>) -> OsString {
     let mut dirs: Vec<PathBuf> = current
         .map(|value| std::env::split_paths(value).collect())
         .unwrap_or_default();
+    // These children run as root: no entry that means the current folder.
+    dirs.retain(|dir| dir.is_absolute());
     for dir in SYSTEM_DIRS.map(PathBuf::from) {
         if !dirs.contains(&dir) {
             dirs.push(dir);
@@ -878,9 +918,20 @@ fn signal_group(pid: Option<u32>, signal: i32) {
     }
 }
 
+/// Anyone left in the group, even one this user can't signal.
+fn group_alive(pid: Option<u32>) -> bool {
+    pid.is_some_and(|pid| {
+        // SAFETY: as in `signal_group`; signal 0 only asks.
+        let answer = unsafe { libc::kill(-(pid as i32), 0) };
+        answer == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    })
+}
+
 /// Runs one process: no stdin, its own process group, a time limit, its lines
-/// in the log. A process that outlives the limit gets a chance to clean up,
-/// then SIGKILL. A daemon it left holding its pipes doesn't hold up the run.
+/// in the log. A process group that outlives the limit gets a chance to clean
+/// up, then SIGKILL, whoever in it is left: a helper that ignores SIGTERM would
+/// run on beside the next attempt. A daemon it left behind after ending by
+/// itself doesn't hold up the run.
 async fn run_command(planned: &PlannedCommand, progress: &Progress) -> Result<(), String> {
     progress.log(format!("$ {}", display_command(planned)));
     let mut command = Command::new(&planned.argv[0]);
@@ -913,13 +964,15 @@ async fn run_command(planned: &PlannedCommand, progress: &Progress) -> Result<()
         Ok(Err(error)) => Err(format!("waiting for {}: {error}", planned.argv[0])),
         Err(_) => {
             signal_group(pid, libc::SIGTERM);
-            if tokio::time::timeout(TERM_GRACE, child.wait())
-                .await
-                .is_err()
-            {
-                signal_group(pid, libc::SIGKILL);
-                let _ = child.start_kill();
+            let grace = tokio::time::Instant::now() + TERM_GRACE;
+            let _ = tokio::time::timeout_at(grace, child.wait()).await;
+            while group_alive(pid) && tokio::time::Instant::now() < grace {
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
+            if group_alive(pid) {
+                signal_group(pid, libc::SIGKILL);
+            }
+            let _ = child.start_kill();
             Err(format!(
                 "{} took longer than {} seconds and was stopped",
                 planned.argv[0],
@@ -1047,6 +1100,10 @@ fn extract_tmux(archive: &[u8], to: &Path) -> std::io::Result<()> {
 /// fails when the target exists, where a rename would replace it (D4).
 fn place(temp: &Path, target: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(temp, std::fs::Permissions::from_mode(0o755))?;
+    link_new(temp, target)
+}
+
+fn link_new(temp: &Path, target: &Path) -> std::io::Result<()> {
     match std::fs::hard_link(temp, target) {
         Ok(()) => std::fs::remove_file(temp),
         Err(error) if error.kind() == ErrorKind::AlreadyExists => Err(error),
@@ -1094,12 +1151,45 @@ where
         .unwrap_or_else(|error| Err(std::io::Error::other(error.to_string())))
 }
 
+/// What a killed run left in `dir`: regular files of exactly the temp file's
+/// name, and only old ones, because another process may be installing right now.
+fn sweep_leftovers(dir: &Path, older_than: Duration, progress: &Progress) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let ours = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(TEMP_PREFIX))
+            .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        // `DirEntry::metadata` doesn't follow a symlink.
+        let old = entry.metadata().is_ok_and(|meta| {
+            meta.is_file()
+                && meta
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age > older_than)
+        });
+        if ours && old && std::fs::remove_file(entry.path()).is_ok() {
+            progress.log(format!(
+                "Removed {}, left by a run that was killed",
+                entry.path().display()
+            ));
+        }
+    }
+}
+
 async fn run_prebuilt(
     prebuilt: &Prebuilt,
     progress: &Progress,
     after: Option<InstallMethod>,
 ) -> Result<(), Failure> {
     let target = prebuilt.target.clone();
+    if let Some(dir) = target.parent() {
+        sweep_leftovers(dir, LEFTOVER_AFTER, progress);
+    }
     if target.symlink_metadata().is_ok() {
         return Err(already_there(&target));
     }
@@ -1152,7 +1242,7 @@ async fn run_prebuilt(
             error.to_string(),
         )
     };
-    let temp = TempFile(dir.join(format!(".tmux-install-{}", uuid::Uuid::new_v4().simple())));
+    let temp = TempFile(dir.join(format!("{TEMP_PREFIX}{}", uuid::Uuid::new_v4().simple())));
     let (mkdir, written) = (dir.clone(), temp.0.clone());
     blocking(move || {
         std::fs::create_dir_all(&mkdir)?;
@@ -1200,6 +1290,9 @@ fn terminfo_dirs(
         dirs.extend(std::env::split_paths(value));
     }
     dirs.extend(["/etc/terminfo", "/lib/terminfo", "/usr/share/terminfo"].map(PathBuf::from));
+    // Relative to whatever the current folder is, so it says nothing about the
+    // terminals to come.
+    dirs.retain(|dir| dir.is_absolute());
     dirs
 }
 
@@ -1225,12 +1318,30 @@ fn ensure_terminal_type(home: &Path) -> std::io::Result<Option<PathBuf>> {
     let dir = home.join(".terminfo/x");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(TERMINAL_TYPE);
+    let written = write_new_file(&path, |file| file.write_all(XTERM_256COLOR))?;
+    Ok(written.then_some(path))
+}
+
+/// Writes `path` in one step, `true` when this wrote it: a kill or a full disk
+/// leaves no half a file that a later run takes for the real one (D27), and a
+/// file that's there stays.
+fn write_new_file(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<bool> {
+    let temp =
+        TempFile(path.with_file_name(format!("{TEMP_PREFIX}{}", uuid::Uuid::new_v4().simple())));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&path)?;
-    file.write_all(XTERM_256COLOR)?;
-    Ok(Some(path))
+        .open(&temp.0)?;
+    write(&mut file)?;
+    file.sync_all()?;
+    match link_new(&temp.0, path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 async fn run_manager(
@@ -1280,6 +1391,11 @@ enum Unverified {
     CantStart { path: String, error: String },
 }
 
+fn cant_start(progress: &Progress, path: &str, error: &str) -> String {
+    progress.log(format!("{path} can't start a server: {error}"));
+    format!("tmux is installed at {path}, but it can't start on this computer.")
+}
+
 /// Runs the plan until an attempt ends with a tmux that `verify` accepts.
 async fn execute<V, F>(
     plan: &Plan,
@@ -1303,28 +1419,35 @@ where
                 run_prebuilt(prebuilt, progress, failed.as_ref().map(|(m, _)| *m)).await
             }
         };
-        let failure = match outcome {
-            Err(failure) => failure,
-            Ok(()) => {
-                progress.step(
-                    InstallStep::Finishing,
-                    "Finishing up…",
-                    vec!["Making sure tmux runs".to_string()],
-                );
-                match verify().await {
-                    Ok((path, version)) => return Ok((method, path, version)),
-                    Err(Unverified::CantStart { path, error }) => {
-                        progress.log(format!("{path} can't start a server: {error}"));
-                        return Err(format!(
-                            "tmux is installed at {path}, but it can't start on this computer."
-                        ));
-                    }
-                    Err(Unverified::Missing(error)) => Failure::new(
-                        format!("{} finished, but tmux still can't be found.", method.name()),
-                        format!("tmux doesn't resolve after {}: {error}", method.name()),
-                    ),
+        if outcome.is_ok() {
+            progress.step(
+                InstallStep::Finishing,
+                "Finishing up…",
+                vec!["Making sure tmux runs".to_string()],
+            );
+        }
+        // After a failure too: a package manager can fail after installing tmux,
+        // and another process (the button and `--install-tmux`, two engines on
+        // one home) may have just put it there (D32).
+        let failure = match (verify().await, outcome) {
+            (Ok((path, version)), outcome) => {
+                if let Err(failure) = outcome {
+                    progress.log(failure.detail);
+                    progress.log(format!("{} said it failed, but tmux works.", method.name()));
                 }
+                return Ok((method, path, version));
             }
+            (Err(Unverified::CantStart { path, error }), outcome) => {
+                if let Err(failure) = outcome {
+                    progress.log(failure.detail);
+                }
+                return Err(cant_start(progress, &path, &error));
+            }
+            (Err(Unverified::Missing(_)), Err(failure)) => failure,
+            (Err(Unverified::Missing(error)), Ok(())) => Failure::new(
+                format!("{} finished, but tmux still can't be found.", method.name()),
+                format!("tmux doesn't resolve after {}: {error}", method.name()),
+            ),
         };
         progress.log(failure.detail.as_str());
         progress.log(failure.sentence.as_str());
@@ -1395,18 +1518,31 @@ async fn resolved(collector: &Collector) -> Result<(String, String), String> {
     Ok((found.path.to_string_lossy().into_owned(), found.version))
 }
 
+/// Nothing to install, but Try again after a tmux that can't start must not
+/// turn into a success with nothing changed (D28).
+async fn already_there_check(
+    progress: &Progress,
+    path: String,
+    version: String,
+) -> Result<Installed, String> {
+    progress.log(format!("tmux {version} is already at {path}"));
+    if let Err(error) = start_check(Path::new(&path)).await {
+        return Err(cant_start(progress, &path, &error));
+    }
+    Ok(Installed {
+        method: None,
+        path,
+        version,
+    })
+}
+
 async fn install(progress: &Progress, collector: &Collector) -> Result<Installed, String> {
     let binary = collector.config().tmux_binary.clone();
     if let Some(sentence) = blocked(std::env::consts::OS, &binary) {
         return Err(sentence);
     }
     if let Ok((path, version)) = resolved(collector).await {
-        progress.log(format!("tmux {version} is already at {path}"));
-        return Ok(Installed {
-            method: None,
-            path,
-            version,
-        });
+        return already_there_check(progress, path, version).await;
     }
     let plan = plan(&Host::detect().await);
     let verify = || async {
@@ -1564,17 +1700,14 @@ mod tests {
             (
                 "pacman",
                 InstallMethod::Pacman,
-                &[
-                    "/t/pacman -Sy --noconfirm",
-                    "/t/pacman -S --noconfirm --needed tmux",
-                ],
+                &["/t/pacman -S --noconfirm --needed tmux"],
             ),
             (
                 "zypper",
                 InstallMethod::Zypper,
                 &[
                     "/t/zypper --non-interactive install tmux",
-                    "mkdir -p -m 1777 /run/tmux",
+                    "/bin/mkdir -p -m 1777 /run/tmux",
                 ],
             ),
             (
@@ -1648,6 +1781,46 @@ mod tests {
         // yum alone means RHEL 7 or Amazon Linux 2: tmux 1.8 (D30).
         let plan = plan(&host("linux", "x86_64", true, false, &["yum"]));
         assert_eq!(methods(&plan), vec![InstallMethod::Prebuilt]);
+    }
+
+    #[test]
+    fn pacman_never_refreshes_its_database_for_one_package() {
+        // A refreshed database with one package from it is a partial upgrade (D31).
+        for (root, sudo) in [(true, false), (false, true)] {
+            let plan = plan(&host("linux", "x86_64", root, sudo, &["pacman", "sudo"]));
+            let commands = commands(&plan);
+            assert!(
+                commands.iter().all(|line| !line.contains("-Sy")),
+                "{commands:?}"
+            );
+            assert_eq!(commands.len(), 1, "{commands:?}");
+            assert!(commands[0].ends_with("/t/pacman -S --noconfirm --needed tmux"));
+        }
+    }
+
+    #[test]
+    fn every_program_a_plan_runs_is_named_by_its_full_path() {
+        let sudo = PathBuf::from("/t/sudo");
+        for method in LINUX_MANAGERS {
+            for privilege in [Privilege::Root, Privilege::Sudo(&sudo)] {
+                for command in manager_commands(method, Path::new("/t/x"), Some(&privilege)) {
+                    let program = command
+                        .argv
+                        .iter()
+                        .find(|arg| {
+                            !arg.ends_with("/sudo")
+                                && !["-n", "env"].contains(&arg.as_str())
+                                && !arg.contains('=')
+                        })
+                        .unwrap();
+                    assert!(
+                        Path::new(program).is_absolute(),
+                        "{}",
+                        display_command(&command)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1802,6 +1975,21 @@ mod tests {
     }
 
     #[test]
+    fn an_install_can_try_only_where_something_could_work() {
+        let no_need_to_look = || -> bool { panic!("this processor has an official build") };
+        assert!(can_try("linux", "x86_64", "tmux", no_need_to_look));
+        assert!(can_try("linux", "aarch64", "tmux", no_need_to_look));
+        assert!(can_try("macos", "aarch64", "tmux", no_need_to_look));
+        assert!(can_try("macos", "x86_64", "tmux", no_need_to_look));
+        // No official build: a package manager or nothing (D33).
+        assert!(can_try("linux", "arm", "tmux", || true));
+        assert!(!can_try("linux", "arm", "tmux", || false));
+        assert!(!can_try("linux", "powerpc64", "tmux", || false));
+        assert!(!can_try("freebsd", "x86_64", "tmux", || true));
+        assert!(!can_try("linux", "x86_64", "/opt/tmux/bin/tmux", || true));
+    }
+
+    #[test]
     fn every_manager_command_stays_non_interactive() {
         for method in LINUX_MANAGERS {
             for command in manager_commands(method, Path::new("/t/x"), Some(&Privilege::Root))
@@ -1830,6 +2018,19 @@ mod tests {
             "/a:/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin"
         );
         assert!(extended_path(None).to_string_lossy().contains("/usr/sbin"));
+    }
+
+    #[test]
+    fn what_runs_as_root_never_looks_in_the_current_folder() {
+        let dirs = tool_dirs(Some(OsStr::new(":rel:/a:./b")), Some(Path::new("")));
+        assert!(dirs.iter().all(|dir| dir.is_absolute()), "{dirs:?}");
+        assert!(dirs.contains(&PathBuf::from("/a")));
+        assert!(dirs.contains(&PathBuf::from("/usr/sbin")));
+
+        let extended = extended_path(Some(OsStr::new(":rel:/a:./b")));
+        let entries: Vec<PathBuf> = std::env::split_paths(&extended).collect();
+        assert!(entries.iter().all(|dir| dir.is_absolute()), "{entries:?}");
+        assert_eq!(entries[0], PathBuf::from("/a"));
     }
 
     fn cleaned(bytes: &[u8]) -> Vec<String> {
@@ -1972,6 +2173,30 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10));
         tokio::time::sleep(Duration::from_secs(4)).await;
         assert!(!marker.exists(), "the process group outlived the limit");
+    }
+
+    #[tokio::test]
+    async fn a_helper_that_ignores_sigterm_doesnt_outlive_the_limit() {
+        let dir = temp_dir();
+        let beats = dir.join("beats");
+        // SIGTERM ends the direct child at once and not its helper.
+        let script = format!(
+            "(trap '' TERM; while :; do echo beat >> {}; sleep 0.1; done) & sleep 60",
+            beats.display()
+        );
+        let error = run_command(
+            &sh(&script, Duration::from_millis(300), true),
+            &Progress::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("was stopped"), "{error}");
+        let count = || std::fs::read_to_string(&beats).unwrap().lines().count();
+        let at_the_end = count();
+        assert!(at_the_end > 0, "the helper never ran");
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(count(), at_the_end, "the helper outlived the limit");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -2238,6 +2463,15 @@ mod tests {
         Ok(("/found/tmux".to_string(), "3.7c".to_string()))
     }
 
+    /// What verifying finds: tmux, once `target` is there.
+    fn when_there(target: &Path) -> Result<(String, String), Unverified> {
+        if target.exists() {
+            resolves()
+        } else {
+            Err(Unverified::Missing("not found".to_string()))
+        }
+    }
+
     #[tokio::test]
     async fn a_failing_manager_falls_through_to_the_prebuilt_and_the_log_says_so() {
         let home = temp_dir();
@@ -2253,10 +2487,13 @@ mod tests {
             ],
             ..Plan::default()
         };
+        let target = home.join(".local/bin/tmux");
         let progress = Progress::default();
-        let (method, path, _) = execute(&plan, &progress, || async { resolves() })
-            .await
-            .unwrap();
+        let verify = || {
+            let found = when_there(&target);
+            async move { found }
+        };
+        let (method, path, _) = execute(&plan, &progress, verify).await.unwrap();
         assert_eq!(method, InstallMethod::Prebuilt);
         assert_eq!(path, "/found/tmux");
         let lines = progress.lines();
@@ -2283,14 +2520,8 @@ mod tests {
         let target = home.join(".local/bin/tmux");
         let progress = Progress::default();
         let verify = || {
-            let found = target.exists();
-            async move {
-                if found {
-                    resolves()
-                } else {
-                    Err(Unverified::Missing("not found".to_string()))
-                }
-            }
+            let found = when_there(&target);
+            async move { found }
         };
         let (method, ..) = execute(&plan, &progress, verify).await.unwrap();
         assert_eq!(method, InstallMethod::Prebuilt);
@@ -2361,9 +2592,8 @@ mod tests {
             otherwise: None,
         };
         let progress = Progress::default();
-        let error = execute(&plan, &progress, || async { resolves() })
-            .await
-            .unwrap_err();
+        let verify = || async { Err(Unverified::Missing("no tmux".to_string())) };
+        let error = execute(&plan, &progress, verify).await.unwrap_err();
         assert!(error.contains("left alone"), "{error}");
         assert!(!error.contains('\n'));
         let lines = progress.lines();
@@ -2408,8 +2638,211 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_manager_that_fails_after_installing_tmux_counts() {
+        let home = temp_dir();
+        let plan = Plan {
+            attempts: vec![
+                manager(InstallMethod::Dnf, vec![sh("exit 1", LONG, true)]),
+                Attempt::Prebuilt(prebuilt_at(
+                    &home,
+                    "http://127.0.0.1:9/x".to_string(),
+                    String::new(),
+                )),
+            ],
+            ..Plan::default()
+        };
+        let progress = Progress::default();
+        let (method, path, _) = execute(&plan, &progress, || async { resolves() })
+            .await
+            .unwrap();
+        assert_eq!(method, InstallMethod::Dnf);
+        assert_eq!(path, "/found/tmux");
+        assert!(progress
+            .lines()
+            .contains(&"dnf said it failed, but tmux works.".to_string()));
+        // No second tmux that `PATH` would never pick.
+        assert!(!home.join(".local").exists());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn a_failed_manager_whose_tmux_cant_start_ends_the_run() {
+        let home = temp_dir();
+        let plan = Plan {
+            attempts: vec![
+                manager(InstallMethod::Zypper, vec![sh("exit 1", LONG, true)]),
+                Attempt::Prebuilt(prebuilt_at(
+                    &home,
+                    "http://127.0.0.1:9/x".to_string(),
+                    String::new(),
+                )),
+            ],
+            ..Plan::default()
+        };
+        let verify = || async {
+            Err(Unverified::CantStart {
+                path: "/usr/bin/tmux".to_string(),
+                error: "no".to_string(),
+            })
+        };
+        let error = execute(&plan, &Progress::default(), verify)
+            .await
+            .unwrap_err();
+        assert!(error.contains("can't start"), "{error}");
+        assert!(!home.join(".local").exists());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn a_second_install_that_finds_the_first_ones_tmux_succeeds() {
+        let home = temp_dir();
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("tmux"), FAKE_TMUX).unwrap();
+        let plan = Plan {
+            attempts: vec![Attempt::Prebuilt(prebuilt_at(
+                &home,
+                "http://127.0.0.1:9/x".to_string(),
+                String::new(),
+            ))],
+            ..Plan::default()
+        };
+        let (method, ..) = execute(&plan, &Progress::default(), || async { resolves() })
+            .await
+            .unwrap();
+        assert_eq!(method, InstallMethod::Prebuilt);
+        assert_eq!(std::fs::read(bin.join("tmux")).unwrap(), FAKE_TMUX);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn an_install_that_loses_the_race_to_place_the_file_succeeds() {
+        let home = temp_dir();
+        let bin = home.join(".local/bin");
+        let archive = archive_with("tmux", FAKE_TMUX);
+        let sha = hex_sha256(&archive);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/x", listener.local_addr().unwrap());
+        let winner = bin.clone();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
+                line.clear();
+            }
+            // The other process lands its tmux while this one downloads.
+            std::fs::create_dir_all(&winner).unwrap();
+            std::fs::write(winner.join("tmux"), b"the winner's").unwrap();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                archive.len()
+            );
+            let _ = stream.write_all(&archive);
+        });
+        let plan = Plan {
+            attempts: vec![Attempt::Prebuilt(prebuilt_at(&home, url, sha))],
+            ..Plan::default()
+        };
+        let target = bin.join("tmux");
+        let verify = || {
+            let found = when_there(&target);
+            async move { found }
+        };
+        execute(&plan, &Progress::default(), verify).await.unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"the winner's");
+        assert_eq!(files_in(&bin), vec!["tmux"]);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn what_a_tmux_says_when_it_cant_start_goes_in_the_log_capped_and_clean() {
+        let long = format!("\x1b[31m{}\nthe next line", "x".repeat(MAX_LINE_CHARS * 3));
+        let plan = Plan {
+            attempts: vec![manager(
+                InstallMethod::Zypper,
+                vec![sh("exit 0", LONG, true)],
+            )],
+            ..Plan::default()
+        };
+        let progress = Progress::default();
+        let verify = || {
+            let error = long.clone();
+            async move {
+                Err(Unverified::CantStart {
+                    path: "/usr/bin/tmux".to_string(),
+                    error,
+                })
+            }
+        };
+        execute(&plan, &progress, verify).await.unwrap_err();
+        let lines = progress.lines();
+        assert!(lines
+            .iter()
+            .all(|line| line.chars().count() <= MAX_LINE_CHARS + 1 && !line.contains('\x1b')));
+        assert!(lines.contains(&"the next line".to_string()), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_tmux_already_there_only_counts_when_it_starts() {
+        let dir = temp_dir();
+        let broken = dir.join("broken");
+        runnable_script(&broken, "#!/bin/sh\necho 'no room' >&2\nexit 1\n");
+        let progress = Progress::default();
+        let error = already_there_check(
+            &progress,
+            broken.to_string_lossy().into_owned(),
+            "3.7c".to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("can't start"), "{error}");
+        assert!(progress.lines().iter().any(|line| line.contains("no room")));
+
+        let (fine, calls) = recording_tmux(&dir);
+        let installed = already_there_check(
+            &Progress::default(),
+            fine.to_string_lossy().into_owned(),
+            "3.7c".to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(installed.method, None);
+        // Its check is on a private server, like any other.
+        let calls = std::fs::read_to_string(calls).unwrap();
+        assert!(
+            calls
+                .lines()
+                .all(|line| line.starts_with("-u -L iii-check-")),
+            "{calls}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_start_check_removes_its_own_socket() {
+        let dir = temp_dir();
+        let fake = dir.join("tmux");
+        let seen = dir.join("seen");
+        // Like tmux, it leaves the socket behind when its server ends.
+        let body = format!(
+            "#!/bin/sh\nsocket={0}/$3\ncase \"$*\" in\n*new-session*) : > \"$socket\"; echo \"$socket\" > {1};;\n*display-message*) echo \"$socket\";;\nesac\n",
+            dir.display(),
+            seen.display()
+        );
+        runnable_script(&fake, &body);
+        start_check(&fake).await.unwrap();
+        let socket = std::fs::read_to_string(&seen).unwrap();
+        assert!(socket.contains("iii-check-"), "{socket}");
+        assert!(!Path::new(socket.trim()).exists(), "{socket}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn the_start_check_runs_a_server_and_leaves_nothing_behind() {
         let Ok(real) = binary::resolve("tmux").await else {
+            eprintln!("skipped: no tmux here");
             return;
         };
         let sockets = || {
@@ -2552,6 +2985,106 @@ mod tests {
         assert!(linux_style.contains(&PathBuf::from("/a")));
         assert!(linux_style.contains(&PathBuf::from("/usr/share/terminfo")));
         assert!(has_terminal_type(&linux_style));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn terminfo_settings_that_arent_absolute_are_ignored() {
+        let home = temp_dir();
+        let dirs = terminfo_dirs(
+            &home,
+            Some(OsStr::new("")),
+            Some(OsStr::new(":rel:./x:/abs")),
+        );
+        assert!(dirs.iter().all(|dir| dir.is_absolute()), "{dirs:?}");
+        assert_eq!(dirs[0], home.join(".terminfo"));
+        assert!(dirs.contains(&PathBuf::from("/abs")));
+        let relative = terminfo_dirs(&home, Some(OsStr::new("rel")), None);
+        assert_eq!(relative[0], home.join(".terminfo"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_write_that_fails_leaves_no_half_a_file() {
+        let dir = temp_dir();
+        let path = dir.join("entry");
+        write_new_file(&path, |file| {
+            file.write_all(b"half")?;
+            Err(std::io::Error::other("disk full"))
+        })
+        .unwrap_err();
+        assert_eq!(files_in(&dir), Vec::<String>::new());
+
+        assert!(write_new_file(&path, |file| file.write_all(b"whole")).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"whole");
+        assert_eq!(files_in(&dir), vec!["entry"]);
+
+        // Never over what's there.
+        assert!(!write_new_file(&path, |file| file.write_all(b"other")).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"whole");
+        assert_eq!(files_in(&dir), vec!["entry"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn made_old(path: &Path) {
+        let hours_ago = std::time::SystemTime::now() - LEFTOVER_AFTER * 2;
+        std::fs::File::open(path)
+            .unwrap()
+            .set_modified(hours_ago)
+            .unwrap();
+    }
+
+    #[test]
+    fn only_old_temp_files_of_this_exact_name_are_swept() {
+        let dir = temp_dir();
+        let id = "0123456789abcdef0123456789abcdef";
+        let leftover = dir.join(format!("{TEMP_PREFIX}{id}"));
+        let not_ours = [
+            format!("{TEMP_PREFIX}notes"),
+            format!("{TEMP_PREFIX}{id}x"),
+            format!("{TEMP_PREFIX}{}", "z".repeat(32)),
+            "tmux".to_string(),
+        ];
+        std::fs::write(&leftover, b"x").unwrap();
+        made_old(&leftover);
+        for name in &not_ours {
+            std::fs::write(dir.join(name), b"x").unwrap();
+            made_old(&dir.join(name));
+        }
+        // Another process's, right now.
+        let recent = format!("{TEMP_PREFIX}{}", "f".repeat(32));
+        std::fs::write(dir.join(&recent), b"x").unwrap();
+        // A folder of that name.
+        let folder = format!("{TEMP_PREFIX}{}", "a".repeat(32));
+        std::fs::create_dir(dir.join(&folder)).unwrap();
+        made_old(&dir.join(&folder));
+
+        sweep_leftovers(&dir, LEFTOVER_AFTER, &Progress::default());
+
+        let mut left = files_in(&dir);
+        left.sort();
+        let mut expected: Vec<String> = not_ours.to_vec();
+        expected.extend([recent, folder]);
+        expected.sort();
+        assert_eq!(left, expected);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_run_sweeps_what_a_killed_run_left() {
+        let home = temp_dir();
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let leftover = bin.join(format!("{TEMP_PREFIX}{}", "1".repeat(32)));
+        std::fs::write(&leftover, b"x").unwrap();
+        made_old(&leftover);
+        let archive = archive_with("tmux", FAKE_TMUX);
+        let sha = hex_sha256(&archive);
+        let prebuilt = prebuilt_at(&home, serve_archive(archive), sha);
+        run_prebuilt(&prebuilt, &Progress::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(files_in(&bin), vec!["tmux"]);
         let _ = std::fs::remove_dir_all(home);
     }
 
