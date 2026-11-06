@@ -27,7 +27,6 @@ describe("A2UI bindings to a worker's event functions", () => {
       {
         function_id: 'orders::on-changed',
         filters: { 'input.status': { $eq: 'open' } },
-        deliver: 'output',
       },
       expect.stringMatching(/^iii::a2ui-binding::.+::browser-1$/),
     )
@@ -53,7 +52,7 @@ describe("A2UI bindings to a worker's event functions", () => {
       target_path: '/count',
     }, vi.fn())
     expect(mock.observe).toHaveBeenCalledWith(
-      { function_id: 'demo::on-counter-changed', args: { counter: 'clicks' }, deliver: 'output' },
+      { function_id: 'demo::on-counter-changed', args: { counter: 'clicks' } },
       expect.any(String),
     )
     off()
@@ -183,7 +182,6 @@ describe('A2UI surface events', () => {
       {
         function_id: 'state::on-changed',
         filters: { 'input.scope': { $eq: 'a2ui' }, 'input.key': { $eq: 'session-1' } },
-        deliver: 'output',
       },
       'iii::a2ui-ui::events::browser-1',
     )

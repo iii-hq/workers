@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use common::engine;
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use iii_state::config::{EARLIER_EVENTS_KEY, StateConfig};
 use iii_state::configuration;
 use iii_state::functions::ConfigCell;
@@ -55,7 +55,8 @@ async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Valu
     .await
 }
 
-/// Register `target` as a sink that forwards every event it receives.
+/// Register `target` as a sink that forwards the event of every call it
+/// receives: the envelope's `output`.
 fn event_sink(iii: &IIIClient, target: &str) -> tokio::sync::mpsc::UnboundedReceiver<Value> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     iii.register_function(
@@ -63,7 +64,7 @@ fn event_sink(iii: &IIIClient, target: &str) -> tokio::sync::mpsc::UnboundedRece
         RegisterFunction::new_async(move |payload: Value| {
             let tx = tx.clone();
             async move {
-                let _ = tx.send(payload);
+                let _ = tx.send(payload["output"].clone());
                 Ok::<Value, Error>(json!({"ok": true}))
             }
         }),
@@ -71,14 +72,14 @@ fn event_sink(iii: &IIIClient, target: &str) -> tokio::sync::mpsc::UnboundedRece
     rx
 }
 
-/// Observe `state::on-changed` with `filters`, delivering the event itself to
-/// `target`, and wait until the observer is active: observing is
+/// Observe `state::on-changed` with `filters`, capturing the event (its output)
+/// for `target`, and wait until the observer is active: observing is
 /// asynchronous (engine -> host -> ack), so a write before that would race.
 async fn observe_changes(iii: &IIIClient, filters: Value, target: &str) -> ObserverHandle {
     let handle = iii.observe(
         Source::function(ON_CHANGED_FN)
             .filters(filters)
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         target,
     );
     tokio::time::timeout(Duration::from_secs(5), handle.ready())

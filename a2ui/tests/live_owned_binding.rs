@@ -26,7 +26,7 @@ use a2ui::protocol::{
 use a2ui::store::Store;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, RegisterFunction, Source,
+    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -264,7 +264,7 @@ async fn owned_function_binding_end_to_end() {
                     .await
                     .map_err(Error::Handler)?;
                 let _ = tx.send(
-                    json!({"event": event, "value": refreshed.value, "changed": refreshed.changed}),
+                    json!({"event": event["output"], "value": refreshed.value, "changed": refreshed.changed}),
                 );
                 Ok::<Value, Error>(json!({}))
             }
@@ -274,7 +274,7 @@ async fn owned_function_binding_end_to_end() {
     let observer = iii.observe(
         Source::function("demo::on-counter-changed")
             .args(json!({"counter": "clicks"}))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "a2ui-live::on-counter",
     );
     tokio::time::timeout(Duration::from_secs(5), observer.ready())
@@ -416,7 +416,7 @@ async fn owned_function_binding_end_to_end() {
     let translated = iii.observe(
         Source::function("a2ui-live::on-note-saved")
             .filters(json!({"input.note": {"$eq": "n1"}}))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "a2ui-live::on-counter",
     );
     tokio::time::timeout(Duration::from_secs(5), translated.ready())
@@ -427,7 +427,7 @@ async fn owned_function_binding_end_to_end() {
     let as_args = iii.observe(
         Source::function("a2ui-live::on-note-saved")
             .args(json!({"note": "n1"}))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "a2ui-live::on-counter",
     );
     let error = tokio::time::timeout(Duration::from_secs(5), as_args.ready())

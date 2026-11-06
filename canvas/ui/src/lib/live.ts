@@ -39,7 +39,7 @@ export function useCanvasStateEvents(
       handlerRef.current(event)
     })
     const dispose = host.iii.observe(
-      { function_id: ON_CHANGED_FN, filters: { 'input.scope': { $eq: 'canvas' } }, deliver: 'output' },
+      { function_id: ON_CHANGED_FN, filters: { 'input.scope': { $eq: 'canvas' } } },
       `${EVENTS_FN}::${host.iii.browserId}`,
     )
     return () => {

@@ -9,7 +9,7 @@ import { BROWSER_ON_FRAME_EVENT_FUNCTION_ID } from './browser'
  * (see page/useBrowserSessionsLive). Each observer is `host.iii.on(fnId)`
  * plus `host.iii.observe` with the target `<fnId>::<browserId>` (the host
  * registers the handler under the same namespaced id, so they match) and
- * `deliver: 'output'`, so the handler receives the event itself. The handler
+ * no `capture`, so the host hands the handler the event itself. The handler
  * base ids carry the `iii::` prefix so per-event invocations stay
  * span-suppressed and out of the trace feed; the per-mount `instanceId`
  * keeps two hook instances from colliding.
@@ -25,14 +25,13 @@ const SESSION_ARGS_FUNCTIONS: ReadonlySet<string> = new Set([BROWSER_ON_FRAME_EV
 
 /** What to observe for `functionId`, narrowed to one tab when `sessionId` is set. */
 export function browserEventSource(functionId: string, sessionId: string | null): ObserveSource {
-  if (!sessionId) return { function_id: functionId, deliver: 'output' }
+  if (!sessionId) return { function_id: functionId }
   if (SESSION_ARGS_FUNCTIONS.has(functionId)) {
-    return { function_id: functionId, args: { session_id: sessionId }, deliver: 'output' }
+    return { function_id: functionId, args: { session_id: sessionId } }
   }
   return {
     function_id: functionId,
     filters: { 'input.session_id': { $eq: sessionId } },
-    deliver: 'output',
   }
 }
 
