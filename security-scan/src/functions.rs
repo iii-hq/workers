@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use schemars::{schema::RootSchema, JsonSchema};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::action::{ACTION_COMMIT_ID, ACTION_PUSH_ID};
 use crate::events::{
@@ -176,7 +176,8 @@ pub fn register_all(iii: &IIIClient, deps: &Arc<Deps>) {
     let action_executor = deps.action_executor.clone();
     iii.register_function(
         TURN_COMPLETED_ID,
-        RegisterFunction::new_async(move |event: TurnCompletedEventV1| {
+        RegisterFunction::new_async(move |observed: ObservedEventV1<TurnCompletedEventV1>| {
+            let event = observed_event(observed);
             let scan_executor = scan_executor.clone();
             let action_executor = action_executor.clone();
             async move {
@@ -254,11 +255,11 @@ pub fn catalog() -> Vec<FunctionSpec> {
             ACTION_READ_DESC,
         ),
         spec::<EnqueueRequest, ExecuteResponseV1>(EXECUTE_ID, EXECUTE_DESC),
-        spec::<TurnCompletedEventV1, TurnCompletedResponseV1>(
+        spec::<ObservedEventV1<TurnCompletedEventV1>, TurnCompletedResponseV1>(
             TURN_COMPLETED_ID,
             TURN_COMPLETED_DESC,
         ),
-        spec::<SecurityScanScheduleEventV1, SecurityScanScheduleResponseV1>(
+        spec::<ObservedEventV1<SecurityScanScheduleEventV1>, SecurityScanScheduleResponseV1>(
             ON_SCHEDULE_ID,
             ON_SCHEDULE_DESC,
         ),
@@ -287,6 +288,22 @@ pub fn catalog() -> Vec<FunctionSpec> {
             ChangeKind::Action.description(),
         ),
     ]
+}
+
+/// What an observer target receives with `capture: ['output']`: the
+/// activation envelope, the observed call's event as its `output`.
+pub type ObservedEventV1<T> = iii_sdk::Observed<Value, T>;
+
+/// The event an observer target was delivered. An activation without an
+/// output (the observed call failed) reads as the empty event.
+pub fn observed_event<T: Default>(observed: ObservedEventV1<T>) -> T {
+    observed.output.unwrap_or_default()
+}
+
+/// The harness completion doorbell: every finished turn, the turn as the
+/// envelope's output.
+pub fn turn_completed_source() -> Source {
+    Source::function(HARNESS_ON_TURN_COMPLETED_FN).capture([Capture::Output])
 }
 
 #[cfg(test)]

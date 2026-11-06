@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{
-    Deliver, IIIClient, ObserverHandle, ObserverOptions, ObserverState, RegisterFunction, Source,
+    Capture, IIIClient, ObserverHandle, ObserverOptions, ObserverState, RegisterFunction, Source,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -59,7 +59,8 @@ pub fn register(
     let function = iii.register_function(
         ON_SCHEDULE_ID,
         RegisterFunction::new_async(
-            move |_event: SecurityScanScheduleEventV1, metadata: Option<Value>| {
+            move |_tick: crate::functions::ObservedEventV1<SecurityScanScheduleEventV1>,
+                  metadata: Option<Value>| {
                 let service = service_for_handler.clone();
                 let config = config_for_handler.clone();
                 async move {
@@ -105,7 +106,7 @@ pub fn register(
 
 /// One `cron::on-tick` observer for a repository's schedule: the cron
 /// expression is the arg, the repository id rides as observer metadata (the
-/// target's metadata sidecar), and the target takes the tick as output.
+/// target's metadata sidecar), and the tick rides as the envelope's output.
 fn observe_schedule(
     iii: &IIIClient,
     repository: &RepositoryConfigV1,
@@ -121,7 +122,7 @@ fn observe_schedule(
 fn schedule_source(schedule: &RepositoryScheduleV1) -> Source {
     Source::function(ON_TICK_FN)
         .args(json!({ "expression": schedule.expression }))
-        .deliver(Deliver::Output)
+        .capture([Capture::Output])
 }
 
 fn schedule_metadata(repository: &RepositoryConfigV1) -> Value {

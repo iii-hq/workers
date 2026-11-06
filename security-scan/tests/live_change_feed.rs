@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
 use security_scan::events::{
     self, ChangeFeed, ChangeKind, ReconciliationChangedEventV1, ON_RECONCILIATION_CHANGED_FN,
     ON_RUN_CHANGED_FN,
@@ -67,14 +67,15 @@ async fn change_functions_work_on_a_live_engine() {
     consumer.register_function(
         "security-scan-live::on-reconciliation",
         RegisterFunction::new(move |payload: Value| -> Result<Value, iii_sdk::Error> {
-            let _ = tx.send(payload);
+            // `capture: [output]`: the event is the envelope's output.
+            let _ = tx.send(payload["output"].clone());
             Ok(Value::Null)
         }),
     );
     let observer = consumer.observe(
         Source::function(ON_RECONCILIATION_CHANGED_FN)
             .filters(json!({ "input.repository": { "$eq": "iii" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "security-scan-live::on-reconciliation",
     );
     tokio::time::timeout(Duration::from_secs(10), observer.ready())
