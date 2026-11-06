@@ -589,6 +589,28 @@ mod tests {
         assert_eq!(floor_failure(&clean_evidence()), None);
     }
 
+    /// The lifecycle sink observes with `capture: [output]`: its input is the
+    /// `Observed` envelope, the lifecycle event under `output`.
+    #[test]
+    fn lifecycle_event_is_read_from_the_observed_envelope() {
+        let mut evidence = clean_evidence();
+        evidence.traces = TraceEvidenceV1::new(vec![TraceTreeV1 {
+            trace_id: "trace-turn-1".into(),
+            roots: vec![lifecycle_span(
+                "turn-1",
+                json!({
+                    "observer_id": "observer-1",
+                    "activation_id": "activation-1",
+                    "function_id": "harness::on-turn-completed",
+                    "invocation_id": "invocation-1",
+                    "status": "success",
+                    "output": completed_lifecycle("turn-1", 1)
+                }),
+            )],
+        }]);
+        assert_eq!(floor_failure(&evidence), None);
+    }
+
     #[test]
     fn pending_or_error_spans_fail_the_trace_floor() {
         let mut pending = clean_evidence();

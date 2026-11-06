@@ -442,4 +442,42 @@ mod tests {
         pending.summary = TraceSummaryV1::from_traces(&pending.traces);
         assert!(!pending.is_stable_for(1, 1, "integration-probe::turn-completed"));
     }
+
+    /// The lifecycle sink observes `harness::on-turn-completed` with
+    /// `capture: [output]`, so its invocation input is the `Observed`
+    /// envelope and the event sits under `output`.
+    #[test]
+    fn stability_reads_the_lifecycle_event_from_the_observed_envelope() {
+        let mut lifecycle = span("execute integration-probe::turn-completed", false);
+        lifecycle.events.push(TraceEventV1 {
+            name: "iii.invocation.input".into(),
+            timestamp_unix_nano: 1,
+            attributes: BTreeMap::from([
+                (
+                    "iii.payload.json".into(),
+                    json!({
+                        "observer_id": "observer-1",
+                        "activation_id": "activation-1",
+                        "function_id": "harness::on-turn-completed",
+                        "invocation_id": "invocation-1",
+                        "status": "success",
+                        "output": {
+                            "session_id": "session-1",
+                            "turn_id": "turn-1",
+                            "status": "completed",
+                            "terminal": true,
+                            "timestamp": 1
+                        }
+                    })
+                    .to_string(),
+                ),
+                ("iii.payload.truncated".into(), "false".into()),
+            ]),
+        });
+        let evidence = TraceEvidenceV1::new(vec![TraceTreeV1 {
+            trace_id: "trace-1".into(),
+            roots: vec![lifecycle],
+        }]);
+        assert!(evidence.is_stable_for(1, 1, "integration-probe::turn-completed"));
+    }
 }
