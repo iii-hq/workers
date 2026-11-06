@@ -124,6 +124,16 @@ pub struct WorkerConfig {
     #[serde(default = "default_sweep_expression")]
     pub sweep_expression: String,
 
+    /// How long a turn may run before `harness::on-turn-overdue` first
+    /// reports it. Milliseconds; 0 turns the event off.
+    #[serde(default = "default_overdue_after_ms")]
+    pub overdue_after_ms: u64,
+
+    /// Interval between later `harness::on-turn-overdue` reports while the
+    /// turn still runs. Milliseconds; 0 reports it once.
+    #[serde(default = "default_overdue_every_ms")]
+    pub overdue_every_ms: u64,
+
     /// Dispatch policy for a PARENTLESS spawn (a direct/CLI/console
     /// `harness::spawn`) whose request carries no `options.functions`.
     /// Children of live turns still inherit/subset the parent policy, and
@@ -332,6 +342,14 @@ fn default_dispatch_timeout_ms() -> u64 {
 fn default_stream_coalesce_ms() -> u64 {
     150
 }
+fn default_overdue_after_ms() -> u64 {
+    1_200_000
+}
+
+fn default_overdue_every_ms() -> u64 {
+    1_200_000
+}
+
 fn default_sweep_expression() -> String {
     // 6-field cron (engine cron worker, config key "expression"): once
     // daily at midnight.
@@ -396,6 +414,8 @@ impl Default for WorkerConfig {
             dispatch_timeout_ms: default_dispatch_timeout_ms(),
             stream_coalesce_ms: default_stream_coalesce_ms(),
             sweep_expression: default_sweep_expression(),
+            overdue_after_ms: default_overdue_after_ms(),
+            overdue_every_ms: default_overdue_every_ms(),
             default_functions: default_functions(),
             default_filesystem_root: None,
             filesystem_boundary: Default::default(),

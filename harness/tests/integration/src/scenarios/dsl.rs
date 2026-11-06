@@ -223,6 +223,14 @@ impl Scenario {
         self
     }
 
+    /// Keep the controlled function (`hold_response`) running until the
+    /// harness has reported the turn overdue `reports` times, then release it.
+    pub(super) fn turn_overdue(mut self, reports: usize) -> Self {
+        self.intervention = Some(ScenarioIntervention::TurnOverdue { reports });
+        self.expected_turn_statuses = vec!["completed".to_string()];
+        self
+    }
+
     /// Hold the first generation while the runner queues four messages, edits
     /// one in place, removes another by its client-visible entry id, and then
     /// releases the turn to drain the remaining three in their original order.

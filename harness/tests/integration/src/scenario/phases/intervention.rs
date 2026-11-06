@@ -12,6 +12,9 @@ use super::super::runner::ScenarioRunner;
 use super::super::state::ActiveTurn;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Two overdue check points of the seeded harness config
+/// (`stack::config`): long enough for a stray report on a finished turn.
+const OVERDUE_QUIET: Duration = Duration::from_millis(3_000);
 
 impl ScenarioRunner<'_> {
     pub(in crate::scenario) async fn intervene(
@@ -59,6 +62,9 @@ impl ScenarioRunner<'_> {
                 .await
             }
             ScenarioIntervention::StopHeldCall => self.run_stop_held_call(services, active).await,
+            ScenarioIntervention::TurnOverdue { reports } => {
+                self.run_turn_overdue(services, active, reports).await
+            }
         };
 
         match result {
@@ -321,6 +327,52 @@ impl ScenarioRunner<'_> {
             "stop_response": stop_response,
             "status_while_held": status_while_held,
             "released": true,
+        });
+        Ok((control, vec![self.session_id.clone()]))
+    }
+
+    /// Hold the call until the harness reports the turn overdue `reports`
+    /// times, release it, and wait for the turn to complete. Then wait two
+    /// more check points: a finished turn must never be reported again.
+    async fn run_turn_overdue(
+        &self,
+        services: &RunServices,
+        active: &ActiveTurn,
+        reports: usize,
+    ) -> Result<(Value, Vec<String>), RunError> {
+        let phase = RunPhase::Intervene;
+        let deadline = active.deadline;
+        let contract = |what: &str, error: anyhow::Error| {
+            RunError::with_source(phase, RunErrorKind::Contract, what.to_string(), error)
+        };
+        services
+            .probe()
+            .bind_overdue_observer(&self.session_id, deadline)
+            .await
+            .map_err(|e| contract("observe harness::on-turn-overdue", e))?;
+        services
+            .probe()
+            .wait_for_target_calls(1, deadline)
+            .await
+            .map_err(|e| contract("wait for the controlled function to be in flight", e))?;
+        let while_held = services
+            .probe()
+            .wait_for_overdue_reports(reports, deadline)
+            .await
+            .map_err(|e| contract("wait for overdue reports while the call is held", e))?;
+        services.probe().release_target_response();
+        let status = wait_for_status(services.client(), &self.session_id, deadline, |status| {
+            status.get("status").and_then(Value::as_str) == Some("completed")
+        })
+        .await?;
+        let at_completion = services.probe().overdue_reports().len();
+        tokio::time::sleep(OVERDUE_QUIET).await;
+        let control = json!({
+            "kind": "turn_overdue",
+            "reports_while_held": while_held,
+            "reports_at_completion": at_completion,
+            "reports_after_quiet": services.probe().overdue_reports(),
+            "status": status,
         });
         Ok((control, vec![self.session_id.clone()]))
     }

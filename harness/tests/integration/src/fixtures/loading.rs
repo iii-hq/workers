@@ -74,6 +74,9 @@ pub enum ScenarioIntervention {
     /// Stop the turn while its controlled function holds its response, then
     /// release the target only after the turn is durably cancelled.
     StopHeldCall,
+    /// Hold the controlled function until `reports` `harness::on-turn-overdue`
+    /// events name the turn, then release it and let the turn complete.
+    TurnOverdue { reports: usize },
 }
 
 /// The probe action that observes rather than calls: its payload is
@@ -235,6 +238,20 @@ impl ScenarioFixture {
                     anyhow::ensure!(
                         self.expected_turn_statuses == ["cancelled"],
                         "stop-held-call must end with one cancelled turn"
+                    );
+                }
+                ScenarioIntervention::TurnOverdue { reports } => {
+                    anyhow::ensure!(*reports > 0, "turn-overdue needs at least one report");
+                    anyhow::ensure!(
+                        self.scenario
+                            .target
+                            .as_ref()
+                            .is_some_and(|target| target.hold_response),
+                        "turn-overdue needs a controlled function that holds its response"
+                    );
+                    anyhow::ensure!(
+                        self.expected_turn_statuses == ["completed"],
+                        "turn-overdue must end with one completed turn"
                     );
                 }
             }

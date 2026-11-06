@@ -17,11 +17,14 @@ use crate::types::trace::strip_engine_fields;
 pub(crate) const LIFECYCLE_FUNCTION_ID: &str = "integration-probe::turn-completed";
 const READY_FUNCTION_ID: &str = "integration-probe::harness-ready";
 const TRACES_FUNCTION_ID: &str = "integration-probe::traces-changed";
+const OVERDUE_FUNCTION_ID: &str = "integration-probe::turn-overdue";
 
 /// The harness's turn-completion event, filtered per session.
 const ON_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
 /// The harness's readiness event.
 const ON_READY_FN: &str = "harness::on-ready";
+/// The harness's report of a turn still running at a check point.
+const ON_TURN_OVERDUE_FN: &str = "harness::on-turn-overdue";
 /// The engine's span-store change event (hosted in `default`).
 const ON_SPAN_FN: &str = "observability::on-span";
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,6 +59,9 @@ pub struct ScenarioProbe {
     target_notify: Arc<tokio::sync::Notify>,
     target_response_released: Arc<AtomicBool>,
     target_response_notify: Arc<tokio::sync::Notify>,
+    /// Every `harness::on-turn-overdue` event delivered, in arrival order.
+    overdue: Arc<Mutex<Vec<Value>>>,
+    overdue_notify: Arc<tokio::sync::Notify>,
 }
 
 impl ScenarioProbe {
@@ -73,6 +79,8 @@ impl ScenarioProbe {
             target_notify: Arc::new(tokio::sync::Notify::new()),
             target_response_released: Arc::new(AtomicBool::new(false)),
             target_response_notify: Arc::new(tokio::sync::Notify::new()),
+            overdue: Arc::new(Mutex::new(Vec::new())),
+            overdue_notify: Arc::new(tokio::sync::Notify::new()),
         };
         probe.register_sinks();
         Ok(probe)
@@ -82,6 +90,30 @@ impl ScenarioProbe {
         self.register_completion_sink();
         self.register_ready_sink();
         self.register_trace_sink();
+        self.register_overdue_sink();
+    }
+
+    fn register_overdue_sink(&self) {
+        let overdue = Arc::clone(&self.overdue);
+        let overdue_notify = Arc::clone(&self.overdue_notify);
+        self.client.inner().register_function(
+            OVERDUE_FUNCTION_ID,
+            RegisterFunction::new_async(move |payload: Value| {
+                let overdue = Arc::clone(&overdue);
+                let overdue_notify = Arc::clone(&overdue_notify);
+                async move {
+                    overdue
+                        .lock()
+                        .map_err(|_| Error::Handler("integration/overdue_lock_poisoned".into()))?
+                        .push(payload);
+                    overdue_notify.notify_waiters();
+                    Ok::<Value, Error>(json!({ "accepted": true }))
+                }
+            })
+            .description("Overdue-turn reports for harness integration scenarios.")
+            .request_format(json!({ "type": "object" }))
+            .response_format(json!({ "type": "object" })),
+        );
     }
 
     fn register_completion_sink(&self) {
@@ -204,6 +236,44 @@ impl ScenarioProbe {
             deadline
                 .timeout("controlled-function call count", notified)
                 .await?;
+        }
+    }
+
+    /// Observe `harness::on-turn-overdue` for `session_id` and wait until
+    /// the observer is active.
+    pub async fn bind_overdue_observer(
+        &self,
+        session_id: &str,
+        deadline: Deadline,
+    ) -> anyhow::Result<()> {
+        let overdue = self.observe(
+            Source::function(ON_TURN_OVERDUE_FN)
+                .filters(json!({ "input.session_id": { "$eq": session_id } })),
+            ON_TURN_OVERDUE_FN,
+            OVERDUE_FUNCTION_ID,
+        )?;
+        await_active(&overdue, deadline).await
+    }
+
+    pub fn overdue_reports(&self) -> Vec<Value> {
+        self.overdue
+            .lock()
+            .map(|reports| reports.clone())
+            .unwrap_or_default()
+    }
+
+    pub async fn wait_for_overdue_reports(
+        &self,
+        expected: usize,
+        deadline: Deadline,
+    ) -> anyhow::Result<Vec<Value>> {
+        loop {
+            let notified = self.overdue_notify.notified();
+            let reports = self.overdue_reports();
+            if reports.len() >= expected {
+                return Ok(reports);
+            }
+            deadline.timeout("overdue report count", notified).await?;
         }
     }
 

@@ -75,7 +75,8 @@ function's worker rejecting the args (`INVALID_CRON_EXPRESSION`,
 `UNKNOWN_DB`) — is the observe call's error and leaves nothing behind.
 
 Two refusals of its own. **Harness functions are not agent-observable**, apart
-from `harness::on-timer` and the session's own post-turn validator: a session
+from `harness::on-timer`, `harness::on-turn-overdue` (which never reports the
+observer's own turn) and the session's own post-turn validator: a session
 notified of its own turn ending would wake itself forever, and child outcomes
 belong in the medium the children write, so observe what the work *writes*.
 And **a call target is never `harness::*`**: an observer wakes its owner or
