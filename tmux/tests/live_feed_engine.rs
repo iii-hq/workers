@@ -1,8 +1,8 @@
 //! `tmux::on-changed` through a real engine (`III_ENGINE_BIN`; the test skips
 //! when it is not set): a new observer receives the current overview once,
 //! as a call of the function for it alone, in the shape every overview
-//! reaches it (the envelope for a default observer, the overview itself under
-//! `deliver: output`); the other observers do not receive it, and a change
+//! reaches it (the full envelope for a default observer, the overview at
+//! `output` under `capture: [output]`); the other observers do not receive it, and a change
 //! reaches every observer. `III_TEST_ENGINE_PORT` picks the engine's port
 //! (default: a free one).
 

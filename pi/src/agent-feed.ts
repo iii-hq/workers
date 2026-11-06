@@ -5,11 +5,12 @@
  *   the acp worker render).
  * - `pi::on-raw-event`: every Pi AgentSession event, verbatim.
  *
- * A consumer observes a feed with args `{ session_id }` and receives
- * `{ session_id, event_id, seq, epoch, source, event }` for that session only:
+ * A consumer observes a feed with args `{ session_id }` and `capture:
+ * ['output']`; its target receives the `Observed` envelope whose `output` is
+ * `{ session_id, event_id, seq, epoch, source, event }`, for that session only:
  *
  *   iii.observe(
- *     { function_id: 'pi::on-agent-event', args: { session_id }, deliver: 'output' },
+ *     { function_id: 'pi::on-agent-event', args: { session_id }, capture: ['output'] },
  *     'acp::on-event',
  *   )
  *

@@ -149,9 +149,11 @@ iii.onObserverAdded('app::on-order', (obs) => {
   }
 })
 
-// elsewhere, observe it: every order whose total is at least 500
+// elsewhere, observe it: every order whose total is at least 500. app::alert
+// receives the Observed envelope with the order at `output`. (A guest `deliver`
+// is deprecated: it is still forwarded, with a warning naming `capture`.)
 await iii.observe(
-  { function_id: 'app::on-order', filters: { 'input.total': { $gte: 500 } }, deliver: 'output' },
+  { function_id: 'app::on-order', filters: { 'input.total': { $gte: 500 } }, capture: ['output'] },
   'app::alert',
 )
 

@@ -201,7 +201,7 @@ iii.observe(
   {
     function_id: 'my-worker::on-change',
     filters: { 'input.id': { $eq: 'orders' } }, // see get function info for the event fields
-    deliver: 'output',                          // the target receives the event
+    capture: ['output'],                        // the target reads the event at payload.output
   },
   'consumer::on-my-worker-change',
 )

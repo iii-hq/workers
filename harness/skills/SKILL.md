@@ -133,8 +133,8 @@ the `ide` worker's `fs.exec_confinement` switch.
 
 The harness hosts private functions that consumers and sibling workers observe
 with the SDK's `iii.observe` instead of polling `harness::status`. Each returns
-the event it is called with, so an observer with `deliver: 'output'` receives
-the event itself. They are not agent-observable: `harness::observe` refuses
+the event it is called with, so an observer with `capture: ['output']` receives
+the `Observed` envelope with the event at `output`. They are not agent-observable: `harness::observe` refuses
 them (see [Agent observers](#agent-observers)).
 
 - `harness::on-turn-started` — a turn began executing (first loop step).
@@ -163,7 +163,7 @@ iii.observe(
   {
     function_id: 'harness::on-turn-completed',
     filters: { 'input.session_id': { $eq: sessionId } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'myapp::on-turn-done',
 )

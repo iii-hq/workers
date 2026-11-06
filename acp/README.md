@@ -284,9 +284,9 @@ iii-acp picks the ACP `stopReason` from the final assistant message's
 private function `<namespace>::on-agent-event` (claude-code
 `claude::on-agent-event`, pi `pi::on-agent-event`, opencode, cursor, codex,
 grok, devin and hermes the same way). iii-acp observes it once per session it
-owns, with args `{ "session_id": "<id>" }` and `deliver: "output"`, so the
+owns, with args `{ "session_id": "<id>" }` and `capture: ["output"]`, so the
 producer only delivers that connection's sessions and acp's handler receives
-each frame as its input; the observer is disposed on `session/close` and when
+each frame as the `output` of the `Observed` envelope; the observer is disposed on `session/close` and when
 the process exits. Each frame is
 `{ session_id, event_id, seq, epoch, source, event }`; iii-acp restores order
 by `(epoch, seq)` (a 250 ms reorder window per stream, bounded at 256 buffered

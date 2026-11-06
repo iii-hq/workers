@@ -742,7 +742,8 @@ function ObserverDocument({
 }) {
   // The event schema belongs to the observed function, so a direct call of
   // the target opens on the shape the target receives: the event under
-  // `deliver: output`, the call's input under `deliver: input`.
+  // a legacy `deliver: output` (an older engine), the call's input under
+  // `deliver: input`.
   const load = useCallback(
     () => functionInfo(host, observer.function_id),
     [host, observer.function_id],

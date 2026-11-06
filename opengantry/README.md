@@ -190,7 +190,7 @@ Observe it with a sibling function (audit log, Slack notifier, console inbox); f
 
 ```js
 iii.observe(
-  { function_id: 'gantry::on-verdict', filters: { 'input.status': { $eq: 'failed' } }, deliver: 'output' },
+  { function_id: 'gantry::on-verdict', filters: { 'input.status': { $eq: 'failed' } }, capture: ['output'] },
   'audit::on-verdict',
 );
 ```

@@ -412,16 +412,18 @@ the path policy refuses, or that is not a directory, is rejected with
 One observer per consumer pattern:
 
 ```ts
+// each target receives the Observed envelope; the event is its `output`
+
 // wake on one background job, once
 iii.observe(
-  { function_id: 'shell::on-job-finished', args: { job_id }, deliver: 'output' },
+  { function_id: 'shell::on-job-finished', args: { job_id }, capture: ['output'] },
   'builds::on-job-finished',
   { max_fires: 1 },
 )
 
 // follow a directory
 iii.observe(
-  { function_id: 'shell::on-changed', args: { path: '/some/dir' }, deliver: 'output' },
+  { function_id: 'shell::on-changed', args: { path: '/some/dir' }, capture: ['output'] },
   'indexer::on-file-changed',
 )
 
@@ -430,7 +432,7 @@ iii.observe(
   {
     function_id: 'shell::turns::on-changed',
     filters: { 'input.session_id': { $eq: sessionId } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'review::on-turns-changed',
 )
@@ -466,9 +468,9 @@ completed, including a job that finished before `shell::exec_bg` returned.
 Once iii accepts the observer, the worker calls the function again with the
 retained event and `{ "for_observer": "<observer id>" }` as the call's
 metadata, and the function's match hook gives that call to that observer
-alone. iii delivers it as it delivers a live completion: in the shape the
-observer's `deliver` asks for (the `Observed` envelope by default), through
-its filters and `on`. Each observer of a job receives its completion once
+alone. iii delivers it as it delivers a live completion: as the `Observed`
+envelope with the fields the observer's `capture` asks for, through its
+filters and firing. Each observer of a job receives its completion once
 each time iii adds it, from the live call or from the replay. An observer
 without a `job_id` receives future completions only; it does not replay
 existing records.
@@ -568,7 +570,7 @@ directory in its args:
 
 ```ts
 iii.observe(
-  { function_id: 'shell::on-changed', args: { path: '/some/dir' }, deliver: 'output' },
+  { function_id: 'shell::on-changed', args: { path: '/some/dir' }, capture: ['output'] },
   'my-worker::on-changed',
 )
 ```

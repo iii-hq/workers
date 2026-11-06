@@ -193,13 +193,13 @@ is a doorbell, not a record: re-read the group or investigation it names.
 `status` go out at once. An alert that wants state changes only:
 
 ```rust
-use iii_sdk::{Deliver, Source};
+use iii_sdk::{Capture, Source};
 use serde_json::json;
 
 iii.observe(
     Source::function("sentinel::on-group-changed")
         .filters(json!({ "input.op": { "$in": ["created", "status"] } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "alerts::on-error-group",
 );
 ```

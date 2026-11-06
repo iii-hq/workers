@@ -224,7 +224,7 @@ targets of its own observers; both are never agent-callable (denied in
 
 | Function | Observes | Receives | Does |
 |---|---|---|---|
-| `rbac-proxy::on-config-change` | `configuration::on-updated`, filters `{ "input.id": { "$eq": <config id> }, "input.event_type": { "$eq": "configuration:updated" } }`, `deliver: output` | the `ConfigurationEvent` | re-reads the entry with `configuration::get` (the event itself is ignored) and applies it; the proxy also reloads once when the observer becomes active, for an update made during boot |
+| `rbac-proxy::on-config-change` | `configuration::on-updated`, filters `{ "input.id": { "$eq": <config id> }, "input.event_type": { "$eq": "configuration:updated" } }`, `capture: [output]` | the `Observed` envelope, the `ConfigurationEvent` at `output` | re-reads the entry with `configuration::get` (the event itself is ignored) and applies it; the proxy also reloads once when the observer becomes active, for an update made during boot |
 | `rbac-proxy::on-functions-changed` | `engine::on-functions-changed`, `capture: []` | the `Observed` envelope, without payloads | invalidates the discovery catalog cache (a 5 s TTL bounds staleness either way) |
 
 The config id is `rbac-proxy`, or `III_CONFIG_NAME` when set.

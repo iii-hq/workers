@@ -120,7 +120,7 @@ watches it listens to stay alive while it exists (see
 each notification is a job in the worker's SQLite outbox, called as one call
 of `github::pr::on-event` with that observer's payload (`profile: all` gets
 the full event, the other profiles a compact event or a digest). The target
-receives the payload itself, and the observer's `deliver` choice does not
+receives the payload itself, and the observer's `capture` does not
 apply. A target that returns acks the notification; an error or a timeout
 (8 s) keeps the job and retries it. A notification the observer's filters
 reject is acked without a call. Targets dedupe on `event_id`.

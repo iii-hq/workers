@@ -294,7 +294,8 @@ flowchart LR
   instance, at boot (`attach_bridge_relay`), registers a uniquely named relay
   function on the **main's** engine (`session::bridge::recv::<uuid>` —
   unique so multiple bridges never collide) and observes the main's
-  `session::store::on-events` with it (`deliver: output`). The returned
+  `session::store::on-events` with it (`capture: [output]`; the relay reads
+  each event envelope at the `Observed` delivery's `output`). The returned
   `BridgeRelay` keeps the `ObserverHandle`; retiring the runtime disposes it.
 - `publish-events` ingests envelopes through the main `Emitter` — so the
   main calls its own event functions **and**, once per event,

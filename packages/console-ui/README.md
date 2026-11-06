@@ -213,7 +213,8 @@ handler)` registers a browser-local handler as `<id>::<browserId>`; and
 `observe(source, target, options?)` observes a function with such a handler
 as its target and returns the disposer. `observe` delivers the observed
 function's output (the event, for an event source) unless the source sets
-`deliver`. `trigger` is the same function as `call`.
+`capture`, in which case the handler receives the `Observed` envelope
+(`deliver` is deprecated and never reaches the engine). `trigger` is the same function as `call`.
 
 ```tsx
 const handler = 'iii::state-ui::events'

@@ -787,7 +787,7 @@ async fn assert_count_settles(received: &Received, want: usize, what: &str) {
     assert_eq!(got.len(), want, "{what}: {got:?}");
 }
 
-/// Every payload a `deliver: output` target received is the ready event itself.
+/// Every `output` a `capture: [output]` target received is the ready event itself.
 fn assert_ready_events(received: &Received, what: &str) {
     for payload in received.lock().unwrap().iter() {
         assert_eq!(
@@ -936,7 +936,7 @@ impl HookLog {
 }
 
 /// Observers added after the router is ready: each receives the ready event
-/// once, in the shape its `deliver` names, and no other observer receives it.
+/// once, in the shape its `capture` names, and no other observer receives it.
 #[tokio::test(flavor = "multi_thread")]
 async fn router_ready_reaches_each_late_observer_once_in_its_shape() {
     let engine = engine_or_skip!();

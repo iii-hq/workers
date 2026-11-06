@@ -4,7 +4,7 @@
 //!
 //! - `harness::on-ready` sends an observer added after boot the ready event as
 //!   a call of the function for that observer alone, delivered in the shape
-//!   its `deliver` asks for, and no other observer receives it;
+//!   its `capture` asks for, and no other observer receives it;
 //! - `harness::observer::deliver` fires a binding from the `Observed`
 //!   envelope of iii's delivery and from the raw payload a source's deliver
 //!   hook sends through the observer;
