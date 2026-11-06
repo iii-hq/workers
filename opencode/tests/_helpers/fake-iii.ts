@@ -29,7 +29,8 @@ export type Delivery = {
   observer_id: string;
   function_id: string;
   target: string;
-  payload: Record<string, unknown>;
+  /** The `Observed` envelope; a feed frame is its `output`. */
+  payload: Observed;
 };
 
 export type ObserverSpec = {
@@ -195,10 +196,7 @@ export function fakeIii(): FakeIii {
             observer_id: obs.id,
             function_id: req.function_id,
             target: obs.target,
-            payload: observedEnvelope(obs, req.function_id, payload, output) as Record<
-              string,
-              unknown
-            >,
+            payload: observedEnvelope(obs, req.function_id, payload, output),
           });
         }
         return req.action?.type === 'void' ? undefined : output;
@@ -291,7 +289,7 @@ export function fakeIii(): FakeIii {
   const feedPayloads = (functionId: string) =>
     deliveries
       .filter((d) => d.target === consumerFor(functionId))
-      .map((d) => d.payload as unknown as FeedPayload);
+      .map((d) => d.payload.output as FeedPayload);
 
   const feedEvents = (functionId: string) =>
     feedPayloads(functionId).map((p) => p.event as Record<string, unknown>);

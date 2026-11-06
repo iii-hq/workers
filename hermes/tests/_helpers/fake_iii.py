@@ -255,7 +255,7 @@ class FakeIii:
     def feed_frames(self, fid: str, target: str | None = None) -> list[dict[str, Any]]:
         """Events delivered to `target` (default: the consumer `observe_feed` uses)."""
         target = target or consumer_fn(fid)
-        return [d["payload"] for d in self.deliveries if d["function_id"] == fid and d["target"] == target]
+        return [d["payload"]["output"] for d in self.deliveries if d["function_id"] == fid and d["target"] == target]
 
     def feed_events(self, fid: str) -> list[dict[str, Any]]:
         return [p["event"] for p in self.feed_frames(fid)]

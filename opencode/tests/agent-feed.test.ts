@@ -66,13 +66,20 @@ describe('agent feeds', () => {
     expect(fake.calls[0]).toMatchObject({ function_id: AGENT, action: CallAction.Void() });
     expect(fake.calls[0]).not.toHaveProperty('metadata');
     const delivery = fake.deliveries.find((d) => d.target === 'acp::__on_event::c1');
+    // iii hands the target the Observed envelope; the frame is its output.
     expect(delivery?.payload).toMatchObject({
+      observer_id: 'o1',
+      function_id: AGENT,
+      status: 'success',
+    });
+    expect(delivery?.payload).not.toHaveProperty('input');
+    expect(delivery?.payload.output).toMatchObject({
       session_id: 's1',
       seq: 0,
       source: 'opencode',
       event: { type: 'agent_end', messages: [] },
     });
-    const payload = delivery?.payload as { event_id: string; epoch: string };
+    const payload = delivery?.payload.output as { event_id: string; epoch: string };
     expect(payload.event_id).toBe(`s1-${payload.epoch}-00000000`);
   });
 

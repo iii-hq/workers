@@ -51,7 +51,8 @@ export type Delivery = {
   observer_id: string;
   function_id: string;
   target: string;
-  payload: Record<string, unknown>;
+  /** The `Observed` envelope; a feed frame is its `output`. */
+  payload: Observed;
 };
 
 export const AGENT = ON_AGENT_EVENT_FN;
@@ -165,7 +166,7 @@ export class MockIII {
   feedPayloads(functionId: string): FeedPayload[] {
     return this.deliveries
       .filter((delivery) => delivery.target === consumerFor(functionId))
-      .map((delivery) => delivery.payload as unknown as FeedPayload);
+      .map((delivery) => delivery.payload.output as FeedPayload);
   }
 
   /** The `event` of every frame delivered to the default observer target of a feed. */
@@ -228,10 +229,7 @@ export class MockIII {
           observer_id: obs.id,
           function_id: String(functionId),
           target: obs.target,
-          payload: this.observedEnvelope(obs, String(functionId), input, output) as Record<
-            string,
-            unknown
-          >,
+          payload: this.observedEnvelope(obs, String(functionId), input, output),
         });
       }
       return (request.action as { type?: string } | undefined)?.type === 'void'

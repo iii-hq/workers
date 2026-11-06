@@ -22,7 +22,8 @@ export type Delivery = {
   observer_id: string;
   function_id: string;
   target: string;
-  payload: Record<string, unknown>;
+  /** The `Observed` envelope; a feed frame is its `output`. */
+  payload: Observed;
 };
 
 type Hooks = { added?: AddedHook; removed?: RemovedHook; match?: MatchHook };
@@ -189,10 +190,7 @@ export function fakeIii(): FakeIii {
             observer_id: obs.id,
             function_id: req.function_id,
             target: obs.target,
-            payload: observedEnvelope(obs, req.function_id, payload, output) as Record<
-              string,
-              unknown
-            >,
+            payload: observedEnvelope(obs, req.function_id, payload, output),
           });
         }
         return req.action?.type === 'void' ? undefined : output;
@@ -301,8 +299,11 @@ export function fakeIii(): FakeIii {
     }
   };
 
+  // A feed consumer reads the frame from the envelope's `output`.
   const feedFrames = (functionId: string) =>
-    deliveries.filter((d) => d.target === feedTarget(functionId)).map((d) => d.payload);
+    deliveries
+      .filter((d) => d.target === feedTarget(functionId))
+      .map((d) => d.payload.output as Record<string, unknown>);
 
   return {
     iii,
