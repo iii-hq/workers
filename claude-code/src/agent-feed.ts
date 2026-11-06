@@ -5,11 +5,12 @@
  *   the acp worker render).
  * - `claude::on-raw-event`: every Claude Code message, verbatim.
  *
- * A consumer observes a feed with args `{ session_id }` and receives
+ * A consumer observes a feed with args `{ session_id }` and capture `['output']`,
+ * and its target reads `payload.output`:
  * `{ session_id, event_id, seq, epoch, source, event }` for that session only:
  *
  *   iii.observe(
- *     { function_id: 'claude::on-agent-event', args: { session_id }, deliver: 'output' },
+ *     { function_id: 'claude::on-agent-event', args: { session_id }, capture: ['output'] },
  *     'acp::on-event',
  *   )
  *
