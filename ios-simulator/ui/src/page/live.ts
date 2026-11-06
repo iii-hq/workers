@@ -85,7 +85,7 @@ export function useLiveScreen(host: Host, api: SimApi, udid: string | null, enab
       )
       offs.push(
         host.iii.observe(
-          { function_id: ON_FRAME_EVENT, args: { tenant: api.tenant, udid }, deliver: 'output' },
+          { function_id: ON_FRAME_EVENT, args: { tenant: api.tenant, udid } },
           `${handler}::${host.iii.browserId}`,
           { max_in_flight: 1 },
         ),
