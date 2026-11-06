@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,7 +14,6 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/gateway"
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
-	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
@@ -62,21 +60,9 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 	defer shim.Close()
 	waitPeerPath := func(peer *tsnet.Server) {
 		t.Helper()
-		lc, err := peer.LocalClient()
-		if err != nil {
-			t.Fatalf("gateway peer %q local client: %v", peer.Hostname, err)
-		}
-		hubIP, err := netip.ParseAddr(h.Status().HubAddress)
-		if err != nil {
-			t.Fatalf("gateway hub address: %v", err)
-		}
-		// Up waits for control readiness, which does not establish an encrypted peer path.
-		result, err := lc.Ping(ctx, hubIP, tailcfg.PingTSMP)
-		if err != nil || result == nil {
-			t.Fatalf("gateway peer %q encrypted path to %s: result=%+v err=%v", peer.Hostname, hubIP, result, err)
-		}
-		if result.Err != "" {
-			t.Fatalf("gateway peer %q encrypted path to %s: %+v", peer.Hostname, hubIP, result)
+		address := fmt.Sprintf("[%s]:%d", h.Status().HubAddress, h.Config().GatewayPort)
+		if err := gatewayPeerPath(ctx, peer, address); err != nil {
+			t.Fatal(err)
 		}
 	}
 	node := &tsnet.Server{Dir: t.TempDir(), Hostname: "laptop", ControlURL: shim.URL(), AuthKey: join.Secret(h.Coordinator.Identity(), h.Coordinator.Code()), Logf: t.Logf, UserLogf: t.Logf}
