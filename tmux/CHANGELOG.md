@@ -9,6 +9,10 @@
   with it the worker's build. The Kill session confirmation now names the windows that
   end in its sentence, each with its agent, `iii compose` or command, past six as `N more`
   (`0:editor (vim), 1:dev (npm) and 2:logs (tail) end with every process in them…`).
+- **A worker without a UTF-8 locale lists its sessions again.** With no `LANG` (a daemon
+  started by systemd or launchd, a container) tmux printed the listing separator as `_`,
+  so `tmux::sessions::list` came back empty and `tmux::sessions::create` failed. Every tmux
+  command now passes `-u`.
 
 ### Changed
 
