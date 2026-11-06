@@ -9,7 +9,7 @@ import { defineConfig } from '@playwright/test'
  */
 export default defineConfig({
   testDir: '.',
-  testMatch: 'traces-stress.spec.ts',
+  testMatch: ['traces-stress.spec.ts', 'transcript-window.spec.ts'],
   fullyParallel: false,
   workers: 1,
   retries: 0,

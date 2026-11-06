@@ -79,6 +79,19 @@ export function normalizeMermaidSvg(source: string): string {
   return new XMLSerializer().serializeToString(svg)
 }
 
+/** Finished diagrams: a row scrolling back into the transcript's window redraws
+ * its diagram at once instead of queueing a full Mermaid render. */
+const MAX_CACHED_DIAGRAMS = 64
+const renderedDiagrams = new Map<string, string>()
+const diagramKey = (source: string, theme: Theme) => `${theme}\u0000${source}`
+
+export function cachedMermaidSvg(
+  source: string,
+  theme: Theme,
+): string | undefined {
+  return renderedDiagrams.get(diagramKey(source, theme))
+}
+
 /** Mermaid has global configuration: serialize initialization and rendering so
  * concurrent diagrams and theme changes cannot overwrite each other's config.
  * The heavy library (and its diagram types) stays out of the initial bundle. */
@@ -86,6 +99,8 @@ export function renderMermaid(source: string, theme: Theme): Promise<string> {
   if (source.length > MAX_SOURCE_LENGTH) {
     return Promise.reject(new Error('Mermaid source exceeds the size limit.'))
   }
+  const cached = cachedMermaidSvg(source, theme)
+  if (cached !== undefined) return Promise.resolve(cached)
 
   const task = renderQueue.then(async () => {
     const { default: mermaid } = await import('mermaid')
@@ -123,7 +138,13 @@ export function renderMermaid(source: string, theme: Theme): Promise<string> {
         source,
         host,
       )
-      return normalizeMermaidSvg(svg)
+      const normalized = normalizeMermaidSvg(svg)
+      renderedDiagrams.set(diagramKey(source, theme), normalized)
+      if (renderedDiagrams.size > MAX_CACHED_DIAGRAMS) {
+        const [oldest] = renderedDiagrams.keys()
+        renderedDiagrams.delete(oldest)
+      }
+      return normalized
     } finally {
       host.remove()
     }

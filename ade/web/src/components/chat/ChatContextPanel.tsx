@@ -128,8 +128,8 @@ import {
   type SubagentVisualStatus,
 } from './active-subagents'
 import { ContextTrackingBody, useContextTracking } from './ContextTracking'
+import { ObserverDetailDialog } from './ObserverDetailDialog'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
-import { ObserverDetailDialog } from './SessionObservers'
 
 /**
  * Coloured trailing text is a plain span: the tree recipe's `__meta` class

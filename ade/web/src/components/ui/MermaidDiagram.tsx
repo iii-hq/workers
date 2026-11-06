@@ -1,8 +1,14 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { Button } from '@/components/ui/Button'
 import { ImageViewer } from '@/components/ui/ImageViewer'
 import { type Theme, useTheme } from '@/hooks/use-theme'
-import { renderMermaid } from '@/lib/mermaid'
+import { cachedMermaidSvg, renderMermaid } from '@/lib/mermaid'
 
 export const MermaidStreamingContext = createContext(false)
 
@@ -21,24 +27,28 @@ export function MermaidDiagram({ source }: { source: string }) {
   const figureRef = useRef<HTMLElement>(null)
   const viewportRef = useRef<HTMLElement>(null)
 
-  useEffect(() => {
+  // Layout effects: a cached diagram is in place before the row first paints, so
+  // remounting in the transcript's window does not flash or change its height.
+  useLayoutEffect(() => {
     // Incomplete fences and syntax are expected during streaming. Do not load
     // Mermaid or show parse errors until the assistant finishes its message.
     if (streaming) return
     let active = true
     let url: string | undefined
-    void renderMermaid(source, theme).then(
-      (svg) => {
-        if (!active) return
-        // SVG as an image is inert: no scripts, event handlers, interactive
-        // links or HTML injection into the chat DOM. Do not bind Mermaid events.
-        url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
-        setResult({ source, theme, url })
-      },
-      () => {
+    const show = (svg: string) => {
+      if (!active) return
+      // SVG as an image is inert: no scripts, event handlers, interactive
+      // links or HTML injection into the chat DOM. Do not bind Mermaid events.
+      url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
+      setResult({ source, theme, url })
+    }
+    const cached = cachedMermaidSvg(source, theme)
+    if (cached !== undefined) show(cached)
+    else {
+      void renderMermaid(source, theme).then(show, () => {
         if (active) setResult({ source, theme, error: true })
-      },
-    )
+      })
+    }
     return () => {
       active = false
       if (url) URL.revokeObjectURL(url)
@@ -49,7 +59,7 @@ export function MermaidDiagram({ source }: { source: string }) {
     !streaming && result?.source === source && result.theme === theme
       ? result
       : null
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!current?.url) return
     const figure = figureRef.current
     const viewport = viewportRef.current
