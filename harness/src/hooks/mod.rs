@@ -88,7 +88,7 @@ impl HookPoint {
     fn description(self) -> &'static str {
         match self {
             HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto. Observe it with args { sessions?, priority?, timeout_ms?, on_error? }. Each matching observer's target is called with the hook input { point, session_id, turn_id, step, depth, metadata? } and answers { decision, reason?, mutations?, annotations? }; the harness gets back the merged outcome { decision, reason? }.",
-            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Each matching observer's target is called with the hook input plus `generate` { system_prompt, messages, model, provider, functions_generation, tools, expose }, as the previous target left it; the harness gets back the merged outcome { decision, reason?, system_prompt?, append_messages?, annotations? }. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly of the turns its `sessions` globs and filters select, and its target is not called.",
+            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Each matching observer's target is called with the hook input plus `generate` { system_prompt, messages, model, provider, functions_generation, tools, expose }, as the previous target left it; the harness gets back the merged outcome { decision, reason?, system_prompt?, append_messages?, annotations? }. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly of the turns its `sessions` globs and filters select, and its target is not called. A target that reads a few fields lists them as args.input (dotted paths, `[]` maps a list) and gets those plus the envelope.",
             HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only: each matching observer's target is called with the hook input plus `generated` { message }; the harness gets back { decision: continue }.",
             HookPoint::PreCall => "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` { id, function_id, arguments }, the arguments as the previous target left them; the harness gets back the merged outcome { decision, reason?, held_by?, arguments?, annotations? }.",
             HookPoint::PostCall => "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` and `result` { function_call_id, function_id, content, is_error, details }; the harness gets back the merged outcome { decision, held_by?, result?, annotations? }.",
@@ -263,6 +263,14 @@ pub struct HookArgs {
     /// globs and filters select, and the observer's target is not called.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inject_prompt: Option<String>,
+    /// The hook-input fields the target reads, as dotted paths; `[]` after a
+    /// name maps over a list (`generate.tools[].name` sends each tool as
+    /// `{ name }`). The target gets those plus the envelope (`point`,
+    /// `session_id`, `turn_id`, `step`, `depth`, `metadata`). Omit to get the
+    /// whole input. An on-pre-generate input carries the whole prompt, so a
+    /// target that reads a few fields of it should list them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<String>>,
 }
 
 /// One observer of a hook point, as the chain runs it.
@@ -282,6 +290,8 @@ pub struct HookBinding {
     pub priority: i64,
     pub timeout_ms: u64,
     pub fail_closed: bool,
+    /// The input paths the target reads ([`HookArgs::input`]).
+    pub input: Option<Vec<String>>,
 }
 
 impl HookBinding {
@@ -317,6 +327,7 @@ impl HookBinding {
             priority: args.priority.unwrap_or(0),
             timeout_ms: args.timeout_ms.unwrap_or(5_000),
             fail_closed,
+            input: args.input,
         })
     }
 

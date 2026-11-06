@@ -21,6 +21,16 @@
           "null"
         ]
       },
+      "input": {
+        "description": "The hook-input fields the target reads, as dotted paths; `[]` after a name maps over a list (`generate.tools[].name` sends each tool as `{ name }`). The target gets those plus the envelope (`point`, `session_id`, `turn_id`, `step`, `depth`, `metadata`). Omit to get the whole input. An on-pre-generate input carries the whole prompt, so a target that reads a few fields of it should list them.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "on_error": {
         "description": "Failure policy, `fail_open` or `fail_closed` (default fail_closed for pre-* and post-turn, fail_open for the other post-*).",
         "type": [

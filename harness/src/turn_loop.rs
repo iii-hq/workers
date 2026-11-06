@@ -5404,6 +5404,7 @@ mod tests {
             priority: 0,
             timeout_ms: 1_000,
             fail_closed: false,
+            input: None,
         };
         let bindings = [hook(Some("memory rules")), hook(None)];
         let (stable, full) = super::with_runtime_context(
