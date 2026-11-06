@@ -32,8 +32,9 @@ one plain function.
 
 Response: `{ observer_id, once, note? }`. `once` is the **effective** value
 after the per-function default — trust the echo. `note` is advisory: the
-observer was created but the wiring looks suspicious (a key someone already
-wrote, an unbounded cron, a function no connected worker hosts yet).
+observer was created, and the note says what applied by default (a wake's
+10-minute deadline) or what looks suspicious in its wiring (a key someone
+already wrote, an unbounded cron, a function no connected worker hosts yet).
 
 `label` and `action` differ on purpose. The label is a short stable name that
 identifies the observer. The action describes what a future delivery means;
@@ -122,7 +123,10 @@ and can aggregate across calls.
 skipped call does not consume it. `max_fires` is a lifetime delivery budget.
 `expires_in_ms` is relative to the observe, resolved to an absolute instant
 server-side (an absolute `expires_at` is refused by name). Each removes the
-observer and records `retired: true`.
+observer and records `retired: true`. A one-shot wake without `expires_in_ms`
+gets a 10-minute deadline, unless it observes `harness::on-timer` or
+`cron::on-tick`, which fire by themselves. Standing observers and call targets
+get no default.
 
 The default `once` is **by shape**: a WAKE (no target) is once — it parks the
 session; a CALL observer is **standing** — per-event work until removed or its
@@ -151,6 +155,16 @@ deadline, and that nothing else will deliver it — so the session un-parks and
 runs its own fallback. The same notice is delivered when the console removes
 someone's armed wake. `harness::status` lists each armed wake behind
 `expects_wake` (function, args, filters, `created_at`, `expires_at`).
+
+A stop silences that notice, because it would start the turn the stop asked not to
+have: a turn cancelled with a wake armed, or a parked session stopped with
+`harness::stop { quiet_deadlines: true }`, which ADE, Telegram and the cancels of eval,
+security-scan, sentinel and workflow send. The deadline or removal then only records the
+retirement, and the last one ends the session as cancelled with `terminal: true`,
+because no later turn will. A delivery still wakes a session stopped while parked,
+including the one from a job the stop itself killed, and a timer's tick. Without the
+flag, a stopped parked session still ends on its next wake, the deadline notice
+included; agents rely on that to run their fallback.
 
 ### What you do not control
 

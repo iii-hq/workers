@@ -279,6 +279,17 @@ describe('ConversationRow menu', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
+  it('opens the chat from a tap on its time, which touch keeps on show', () => {
+    const onSelect = vi.fn()
+    mount({ onRemove: vi.fn(), onTogglePin: vi.fn(), onSelect })
+    act(() =>
+      (
+        document.querySelector('.iii-ui-tree-item__meta') as HTMLElement
+      ).click(),
+    )
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+
   it('offers Unpin on a pinned chat and routes Delete to onRemove', () => {
     const onRemove = vi.fn()
     const onTogglePin = vi.fn()

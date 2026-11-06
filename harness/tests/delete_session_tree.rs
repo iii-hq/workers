@@ -873,6 +873,158 @@ async fn durable_unknown_tool_witness_expires_failed_without_erasing_sessions() 
     assert_eq!(stack.store.lock().unwrap().sessions.len(), 4);
 }
 
+/// Arm an unfired wake that `session_id` owns.
+async fn arm_wake(stack: &Stack, id: &str, session_id: &str) {
+    let binding = harness::bindings::Binding {
+        id: id.into(),
+        observer_id: None,
+        source: None,
+        owner: harness::bindings::OwnerScope {
+            session_id: session_id.into(),
+            root_session_id: None,
+        },
+        target: harness::bindings::BindingTarget::new(harness::functions::SEND_ID),
+        conditions: vec![],
+        lifecycle: harness::bindings::Lifecycle {
+            once: true,
+            max_fires: None,
+            expires_at: Some(harness::types::message::AgentMessage::now_ms() + 3_600_000),
+        },
+        capability: None,
+        dedup_key: None,
+        fires: 0,
+        created_at: 0,
+    };
+    stack.deps.bindings().await.reserve(&binding).await.unwrap();
+}
+
+async fn stop_with(stack: &Stack, session_id: &str, quiet_deadlines: bool) {
+    harness::functions::stop::handle(
+        &stack.deps,
+        harness::functions::stop::StopRequest {
+            session_id: session_id.into(),
+            turn_id: None,
+            quiet_deadlines,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+fn turn_field(stack: &Stack, session_id: &str, field: &str) -> Value {
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .state("harness_turn", session_id)[field]
+        .clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quiet_stop_flags_the_parked_sessions_of_the_tree_and_only_those() {
+    let stack = Stack::new("completed").await;
+    arm_wake(&stack, "wake", "grandchild1").await;
+    stop_with(&stack, "child2", true).await;
+    assert_eq!(turn_field(&stack, "grandchild1", "abort"), true);
+    assert_ne!(
+        turn_field(&stack, "child2", "abort"),
+        true,
+        "nothing parked"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plain_stop_leaves_a_parked_session_to_its_next_wake() {
+    let stack = Stack::new("completed").await;
+    arm_wake(&stack, "wake", "grandchild1").await;
+    stop_with(&stack, "child2", false).await;
+    assert_ne!(turn_field(&stack, "grandchild1", "abort"), true);
+}
+
+/// Only the last wake ends the session, whichever way each one goes, and the turn's
+/// output must not read as its result. No notice starts a turn along the way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_last_wake_gone_ends_a_quietly_stopped_session_as_cancelled() {
+    use harness::bindings::expiry;
+    let stack = Stack::new("completed").await;
+    arm_wake(&stack, "expires", "grandchild1").await;
+    arm_wake(&stack, "removed", "grandchild1").await;
+    stop_with(&stack, "grandchild1", true).await;
+
+    let store = stack.deps.bindings().await;
+    let expiring = store.get("expires").await.unwrap().unwrap();
+    store.delete("expires").await.unwrap();
+    expiry::report_expired_retirement(&stack.deps, &expiring).await;
+    assert_eq!(turn_field(&stack, "grandchild1", "status"), "completed");
+
+    let removed = store.get("removed").await.unwrap().unwrap();
+    store.delete("removed").await.unwrap();
+    expiry::report_wake_removed(&stack.deps, &removed, "test").await;
+    assert_eq!(turn_field(&stack, "grandchild1", "status"), "cancelled");
+    assert_eq!(turn_field(&stack, "grandchild1", "exchange_finished"), true);
+
+    let store = stack.store.lock().unwrap();
+    assert!(
+        !serde_json::to_string(&store.messages.get("grandchild1"))
+            .unwrap()
+            .contains("[notification]"),
+        "a stopped session must not be told"
+    );
+}
+
+/// Reading "not stopped" by mistake would start the turn the stop ruled out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_read_of_a_stopped_session_is_retried_before_any_notice() {
+    let stack = Stack::new("completed").await;
+    arm_wake(&stack, "wake", "grandchild1").await;
+    stop_with(&stack, "grandchild1", true).await;
+    let store = stack.deps.bindings().await;
+    let wake = store.get("wake").await.unwrap().unwrap();
+    store.delete("wake").await.unwrap();
+    {
+        let mut state = stack.store.lock().unwrap();
+        state.fail.insert("state::get".into());
+        state.fail.insert("harness::state::get".into());
+    }
+    let state = stack.store.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        state.lock().unwrap().fail.clear();
+    });
+
+    harness::bindings::expiry::report_expired_retirement(&stack.deps, &wake).await;
+
+    assert_eq!(turn_field(&stack, "grandchild1", "status"), "cancelled");
+}
+
+/// The wake is already gone, so nothing else would come back to end the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_store_failure_while_ending_a_stopped_session_is_retried() {
+    let stack = Stack::new("completed").await;
+    arm_wake(&stack, "wake", "grandchild1").await;
+    stop_with(&stack, "grandchild1", true).await;
+    let store = stack.deps.bindings().await;
+    let wake = store.get("wake").await.unwrap().unwrap();
+    store.delete("wake").await.unwrap();
+    {
+        let mut state = stack.store.lock().unwrap();
+        state.fail.insert("state::set".into());
+        state.fail.insert("harness::state::set".into());
+    }
+    harness::bindings::expiry::report_expired_retirement(&stack.deps, &wake).await;
+    assert_eq!(turn_field(&stack, "grandchild1", "status"), "completed");
+
+    stack.store.lock().unwrap().fail.clear();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while turn_field(&stack, "grandchild1", "exchange_finished") != true {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the retry ends the session");
+    assert_eq!(turn_field(&stack, "grandchild1", "status"), "cancelled");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_cascades_durable_children_even_when_selected_turn_is_terminal() {
     let stack = Stack::new("completed").await;
@@ -882,6 +1034,7 @@ async fn stop_cascades_durable_children_even_when_selected_turn_is_terminal() {
         harness::functions::stop::StopRequest {
             session_id: "child2".into(),
             turn_id: None,
+            ..Default::default()
         },
     )
     .await
@@ -1510,6 +1663,7 @@ async fn ordinary_stop(stack: &Stack, id: &str) -> harness::functions::stop::Sto
         harness::functions::stop::StopRequest {
             session_id: id.into(),
             turn_id: None,
+            ..Default::default()
         },
     )
     .await
@@ -2410,6 +2564,7 @@ async fn stop_and_delete_work_without_the_prompt_body() {
         harness::functions::stop::StopRequest {
             session_id: "grandchild1".into(),
             turn_id: Some("t_grandchild1".into()),
+            ..Default::default()
         },
     )
     .await

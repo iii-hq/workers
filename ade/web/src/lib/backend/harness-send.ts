@@ -286,7 +286,8 @@ export function sendTurn(
 
 /**
  * Call `harness::stop`: set the abort flag and `router::abort` any live
- * stream. Omit `turnId` to stop the session's current turn.
+ * stream. Omit `turnId` to stop the session's current turn. A person pressed
+ * Stop, so a parked session's wake deadline must not start another turn.
  */
 export async function stopTurn(
   client: Pick<IiiClient, 'call'>,
@@ -295,6 +296,7 @@ export async function stopTurn(
 ): Promise<boolean> {
   const res = await client.call<HarnessStopResponse>('harness::stop', {
     session_id: sessionId,
+    quiet_deadlines: true,
     ...(turnId ? { turn_id: turnId } : {}),
   })
   return Boolean(res?.stopping)

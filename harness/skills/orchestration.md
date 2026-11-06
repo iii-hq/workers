@@ -44,7 +44,8 @@ replay, so a write that lands before its observer is armed is lost to it.
 - **Deadline**: a `harness::on-timer` wake (args `{ "in_ms": <ms> }`) so silence becomes a
   notification instead of an eternal park. A `lifecycle.expires_in_ms` on
   the completion wake does the same from the other side — an expired unfired wake
-  wakes you with a notice.
+  wakes you with a notice. Set it to how long the work should take: a one-shot
+  wake without one expires after 10 minutes.
 
 ## 3. Spawn workers directly
 

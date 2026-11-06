@@ -246,6 +246,14 @@ pub(super) fn scenario() -> ScenarioFixture {
     .verify(|run| {
         run.expect_assistant_texts(["wired and spawned", "pipeline complete"])?;
 
+        // The wake set no deadline, so it got the default and its result says so.
+        let armed =
+            Value::Array(run.function_results(OBSERVE).into_iter().cloned().collect()).to_string();
+        anyhow::ensure!(
+            armed.contains("one-shot wake expires in 10 minutes"),
+            "a wake armed without a deadline must get the default one: {armed}"
+        );
+
         // Exactly one notification, carrying the barrier's aggregate — both
         // arrivals — because the condition's payload REPLACED the raw event.
         let notifications: Vec<String> = run

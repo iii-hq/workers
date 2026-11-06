@@ -1523,7 +1523,8 @@ impl TurnLog {
             entry.last_end = entry.last_end.max(at);
         }
         self.update(session_id, |record| {
-            turn_mut(record, turn_id, at).ended_at = Some(at);
+            // A stopped turn with a wake armed completes twice; it ended at the first.
+            turn_mut(record, turn_id, at).ended_at.get_or_insert(at);
         })
         .await
     }

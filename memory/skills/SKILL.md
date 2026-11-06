@@ -110,6 +110,7 @@ polling `memory::list` / `memory::bank::list`.
    on `input.bank`).
 3. **How to observe** — neither function takes args; select calls with
    filters: `harness::observe { "function_id": "memory::on-item-changed",
-   "filters": { "input.bank": { "$eq": "blog" } } }` wakes this session on
-   each change, and a `target: { "function_id": ... }` calls that function
+   "filters": { "input.bank": { "$eq": "blog" } }, "once": false, "lifecycle":
+   { "expires_in_ms": 3600000 } }` wakes this session on each change for an
+   hour, and a `target: { "function_id": ... }` calls that function
    instead. Delivery is fire-and-forget and unordered.

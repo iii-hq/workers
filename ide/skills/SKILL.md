@@ -90,10 +90,13 @@ agents, pair with the `skills` worker.
   terminates them, or `harness::stop` stops the session that started them — unbounded by default, capped only when the operator sets a
   positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway
   job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`.
-  Same optional host-only `stdin` as `shell::exec`.
+  Same optional host-only `stdin` as `shell::exec`. Host commands run without a
+  terminal: one that needs it (a password or host-key prompt) fails, and a job
+  that stays stopped for 30 seconds is killed with the reason in its stderr.
 - `shell::status`: fetch one job's full record: state, exit code, and captured
-  stdout/stderr. A missing id (never existed or aged out) returns an `S211`
-  ("no such job") error.
+  stdout/stderr. A running host job shows the last 8 KiB of each stream, flagged
+  truncated when there is more, and the kept output once it ends. A missing id
+  (never existed or aged out) returns an `S211` ("no such job") error.
 - `shell::list`: enumerate current jobs as lightweight summaries (no argv,
   stdout, or stderr).
 - `shell::kill`: terminate a running background job by `job_id`.

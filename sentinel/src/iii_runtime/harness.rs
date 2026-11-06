@@ -116,7 +116,7 @@ impl Harness for IiiHarness {
         self.runtime
             .call(
                 "harness::stop",
-                json!({ "session_id": session_id, "turn_id": turn_id }),
+                json!({ "session_id": session_id, "turn_id": turn_id, "quiet_deadlines": true }),
             )
             .await?;
         Ok(())

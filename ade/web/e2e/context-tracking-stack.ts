@@ -190,7 +190,7 @@ export const test = base.extend<{ stack: Stack }>({
           await page
             .getByRole('button', { name: `open ${title}`, exact: true })
             .getByText(title, { exact: true })
-            .click()
+            .click({ position: { x: 4, y: 4 } })
           const section = page.getByRole('region', {
             name: 'Tracking',
             exact: true,

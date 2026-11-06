@@ -47,13 +47,71 @@ describe('SessionObservers', () => {
     const html = renderToStaticMarkup(
       <SessionObservers observers={rows} onDispose={() => {}} />,
     )
-    expect(textOf(html)).toContain('1 observer active · 1 inactive')
+    expect(textOf(html)).toContain(
+      '1 observer active · 1 inactive · Agent 1 findings',
+    )
     expect(html).toContain('aria-expanded="false"')
     // Folded rows stay mounted for the height transition but take no focus.
     expect(html).toContain('grid-rows-[0fr]')
     expect(html).toContain('inert=""')
     // No clear-all affordance without a handler for it.
     expect(html).not.toContain('clear all observers')
+  })
+
+  it('shows how long the oldest live observer has been waiting', () => {
+    const fiveMinutesAgo = Date.now() - 5 * 60_000 - 1_000
+    const html = renderToStaticMarkup(
+      <SessionObservers
+        observers={[
+          observer({ id: 'a', label: 'Oldest', createdAt: fiveMinutesAgo }),
+          observer({ id: 'b', label: 'Newer', createdAt: Date.now() }),
+        ]}
+        onDispose={() => {}}
+        defaultExpanded
+      />,
+    )
+    expect(textOf(html)).toContain('2 observers active · for 5m · Oldest')
+    // The numbers come first: a narrow strip truncates only the name.
+    const withInactive = renderToStaticMarkup(
+      <SessionObservers
+        observers={[
+          observer({ id: 'a', label: 'Oldest', createdAt: fiveMinutesAgo }),
+          observer({ id: 'g', label: 'Done', fired: true }),
+        ]}
+        onDispose={() => {}}
+      />,
+    )
+    expect(textOf(withInactive)).toContain(
+      '1 observer active · for 5m · 1 inactive · Oldest',
+    )
+    // Each live row says how long it has been waiting too, ahead of the facts
+    // a long state key can truncate.
+    expect(textOf(html)).toContain('Oldest · for 5m · state::on-changed')
+    expect(textOf(html)).toContain('Newer · just now · state::on-changed')
+  })
+
+  it('names the one-shot observer, not an older recurring one', () => {
+    const hourAgo = Date.now() - 60 * 60_000
+    const html = renderToStaticMarkup(
+      <SessionObservers
+        observers={[
+          observer({ id: 'c', label: 'Cron', once: false, createdAt: hourAgo }),
+          observer({ id: 'w', label: 'Wake', createdAt: hourAgo }),
+        ]}
+        onDispose={() => {}}
+      />,
+    )
+    expect(textOf(html)).toContain('2 observers active · for 1h · Wake')
+  })
+
+  it('names nothing when no observer is live', () => {
+    const html = renderToStaticMarkup(
+      <SessionObservers
+        observers={[observer({ fired: true, label: 'Done' })]}
+        onDispose={() => {}}
+      />,
+    )
+    expect(textOf(html)).toContain('0 observers active · 1 inactive')
   })
 
   it('unfolds one generic row per observer, ghosts a step fainter', () => {

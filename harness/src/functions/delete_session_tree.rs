@@ -547,6 +547,7 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
                 super::stop::StopRequest {
                     session_id: record.session_id.clone(),
                     turn_id: Some(record.turn_id.clone()),
+                    ..Default::default()
                 },
             )
             .await

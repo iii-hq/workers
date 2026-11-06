@@ -1455,7 +1455,7 @@ async fn stop_session(deps: &Deps, session_id: &str, turn_id: Option<&str>) {
     if let Err(error) = call::<_, Value>(
         deps,
         "harness::stop",
-        json!({ "session_id": session_id, "turn_id": turn_id }),
+        json!({ "session_id": session_id, "turn_id": turn_id, "quiet_deadlines": true }),
         BUS_TIMEOUT_MS,
     )
     .await

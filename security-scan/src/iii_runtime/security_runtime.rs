@@ -421,6 +421,7 @@ impl SecurityRuntime for IiiRuntime {
                 json!({
                     "session_id": harness.session_id,
                     "turn_id": harness.turn_id,
+                    "quiet_deadlines": true,
                 }),
                 None,
                 Some(RPC_TIMEOUT_MS),

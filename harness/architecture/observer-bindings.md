@@ -81,7 +81,7 @@ it; the harness uses the state worker's hidden CAS primitives.
     "event_into": "/event"          // JSON pointer; default "/event"
   },
   "conditions": [ { "function_id": "state::barrier", "config": { } } ],
-  "lifecycle": { "once": true, "max_fires": null, "expires_at": null },
+  "lifecycle": { "once": true, "max_fires": null, "expires_at": 1793900000000 },
   "capability": { "allow": [ ], "deny": [ ], "expose": "…" },
   "dedup_key": { },                 // the canonical observe request
   "fires": 0,
@@ -108,9 +108,10 @@ listing that never returns metadata.
 
 `harness::observe` validates the request (`args` and `filters` must be objects;
 an absolute `lifecycle.expires_at` is refused by name), applies the per-shape
-`once` default, resolves `harness::on-timer`'s `in_ms` to `at`, refuses an
-already-settled Compose operation, resolves and authorizes the target and the
-conditions, and resolves the source namespace home-first (the harness's own,
+`once` default, resolves `harness::on-timer`'s `in_ms` to `at`, gives a one-shot
+wake with no `expires_in_ms` a 10-minute deadline (not a timer or
+`cron::on-tick`, which fire by themselves), refuses an already-settled Compose
+operation, resolves and authorizes the target and the conditions, and resolves the source namespace home-first (the harness's own,
 then `default`, then Compose's), probing `engine::functions::info`. Then, under
 the topology lock:
 
@@ -225,6 +226,20 @@ record (`note: "expired unfired …"`). Retirement deletes the record FIRST: the
 delete is the atomic claim against a concurrent delivery (`claim_fire`'s CAS
 resolves to `Gone` once the record is missing). `harness::status` exposes the
 armed set as `armed_wakes`.
+
+A stopped owner gets only the record, for a deadline and for a
+`harness::observers::dispose` alike: the notification would start the turn the
+stop asked not to have. Stopped means the session's last turn is `cancelled`, or
+carries the `abort` flag `harness::stop { quiet_deadlines: true }` sets on a
+parked session's ended turn; the next turn starts a new record, so a later send
+undoes it. When the last wake is gone, `finish_stopped_exchange` ends the
+exchange as cancelled (a failed turn stays failed) with `terminal: true`, because
+no later turn will. The turn record's `exchange_finished` marks that completion, so
+of the turn's finalizer and its wakes going, only the first to reach it emits it.
+The wake that led here is gone and no sweep comes back, so a store failure is
+retried in the background for about 15 seconds; past that the session stays as it
+was, logged. The event goes before the record is written, so a failure can repeat
+the completion but never lose it.
 
 ## Restarts, the binding pass, and stored records
 

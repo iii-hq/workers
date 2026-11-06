@@ -175,14 +175,7 @@ pub async fn dispose(
     // Removing a still-armed wake from outside the owner's own turn strands
     // the parked owner silently — tell it, same as an expiry would.
     if was_armed_wake {
-        crate::bindings::expiry::notify_wake_lost(
-            deps,
-            &binding,
-            crate::bindings::expiry::WakeLost::Unregistered {
-                by: OBSERVERS_DISPOSE_ID,
-            },
-        )
-        .await;
+        crate::bindings::expiry::report_wake_removed(deps, &binding, OBSERVERS_DISPOSE_ID).await;
     } else {
         record_disposed(deps, &binding).await;
     }

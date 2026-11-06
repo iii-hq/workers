@@ -119,7 +119,7 @@ pub async fn stop(
     let value = iii
         .call(CallRequest {
             function_id: "harness::stop".into(),
-            payload: json!({ "session_id": session_id }),
+            payload: json!({ "session_id": session_id, "quiet_deadlines": true }),
             action: None,
             timeout_ms: Some(timeout_ms),
         })

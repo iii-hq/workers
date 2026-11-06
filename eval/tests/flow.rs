@@ -1144,6 +1144,8 @@ async fn cancel_stops_only_the_monitor_and_beats_late_steps() {
     let stops = h.world().calls_to("harness::stop");
     assert_eq!(stops.len(), 1);
     assert_eq!(stops[0]["session_id"], ids::analyst_session(&evaluation_id));
+    // A cancelled evaluation has no reader for another turn.
+    assert_eq!(stops[0]["quiet_deadlines"], true);
     // A step queued before the cancel is ignored.
     let late = runtime::step(
         &h.deps,
