@@ -1,5 +1,13 @@
 import { vi } from 'vitest';
-import type { AddedHook, Call, IIIClient, MatchHook, Observer, RemovedHook } from 'iii-sdk';
+import type {
+  AddedHook,
+  Call,
+  IIIClient,
+  MatchHook,
+  Observed,
+  Observer,
+  RemovedHook,
+} from 'iii-sdk';
 import {
   createAgentFeeds,
   type Emit,
@@ -29,6 +37,8 @@ export type ObserverSpec = {
   /** The observer's target. */
   target: string;
   args: Record<string, unknown>;
+  /** The call fields the target receives; defaults to `['output']`, what a feed consumer asks for. */
+  capture: Observer['capture'];
 };
 
 type Hooks = { added?: AddedHook; removed?: RemovedHook; match?: MatchHook };
@@ -71,8 +81,9 @@ export const consumerFor = (functionId: string) => `consumer::${functionId}`;
  * handlers at the same unknown boundary the engine uses, and observers of the
  * worker's own functions modelled as iii does: `onObserverAdded` runs before an
  * observer is active, `onObservationMatch` picks the observers of each call, and
- * iii's delivery hands the handler's return value to each matched target
- * (`deliver: 'output'`). Every call (incl. Void feed calls) is recorded.
+ * iii's delivery hands each matched target the `Observed` envelope of the
+ * call, carrying the fields the observer's `capture` names (the handler's
+ * return value at `output`), as the 0.26 engine does. Every call (incl. Void feed calls) is recorded.
  */
 export function fakeIii(): FakeIii {
   const calls: CallRecord[] = [];
@@ -83,6 +94,32 @@ export function fakeIii(): FakeIii {
   const active = new Map<string, Observer[]>();
   const observed: FakeIii['observed'] = [];
   const deliveries: Delivery[] = [];
+  let nextActivation = 0;
+
+  // The envelope iii delivers: the call's fields the observer's capture names;
+  // a field the call does not have is omitted, never `null`.
+  const observedEnvelope = (
+    obs: Observer,
+    functionId: string,
+    input: unknown,
+    output: unknown,
+  ): Observed => {
+    const n = ++nextActivation;
+    const envelope: Observed = {
+      observer_id: obs.id,
+      activation_id: `activation-${n}`,
+      function_id: functionId,
+      namespace: 'default',
+      invocation_id: `invocation-${n}`,
+      status: 'success',
+      started_at_ms: 0,
+      duration_ms: 0,
+    };
+    if (obs.capture.includes('input')) envelope.input = structuredClone(input);
+    if (obs.capture.includes('output') && output !== undefined)
+      envelope.output = structuredClone(output);
+    return envelope;
+  };
 
   const hooksOf = (functionId: string): Hooks => {
     const entry = hooks.get(functionId) ?? {};
@@ -158,7 +195,10 @@ export function fakeIii(): FakeIii {
             observer_id: obs.id,
             function_id: req.function_id,
             target: obs.target,
-            payload: structuredClone(output),
+            payload: observedEnvelope(obs, req.function_id, payload, output) as Record<
+              string,
+              unknown
+            >,
           });
         }
         return req.action?.type === 'void' ? undefined : output;
@@ -226,7 +266,7 @@ export function fakeIii(): FakeIii {
       filters: {},
       target: spec.target ?? consumerFor(functionId),
       on: 'success',
-      capture: ['input', 'output', 'caller'],
+      capture: spec.capture ?? ['output'],
       matches: () => true,
       accepted: async () => {},
       reject: () => {},

@@ -1,4 +1,12 @@
-import type { AddedHook, Call, IIIClient, MatchHook, Observer, RemovedHook } from 'iii-sdk';
+import type {
+  AddedHook,
+  Call,
+  IIIClient,
+  MatchHook,
+  Observed,
+  Observer,
+  RemovedHook,
+} from 'iii-sdk';
 import { isDeepStrictEqual } from 'node:util';
 import type { z } from 'zod';
 import type {
@@ -29,9 +37,16 @@ export type ObserverSpec = {
   /** The observer's target. */
   target: string;
   args: Record<string, unknown>;
+  /** The call fields the target receives; defaults to `['output']`, what a feed consumer asks for. */
+  capture: Observer['capture'];
 };
 
-/** One call iii's delivery made to an observer's target. */
+/**
+ * One call iii's delivery made to an observer's target: `payload` is the
+ * `Observed` envelope of the call, carrying the fields the observer's
+ * `capture` names (the handler's return value at `output`), as the 0.26
+ * engine delivers it.
+ */
 export type Delivery = {
   observer_id: string;
   function_id: string;
@@ -54,6 +69,7 @@ export class MockIII {
   readonly calls: Array<Record<string, unknown>> = [];
   /** Every delivery iii made to an observer's target, in order. */
   readonly deliveries: Delivery[] = [];
+  private nextActivation = 0;
   private readonly hooks = new Map<string, Hooks>();
   private readonly active = new Map<string, Observer[]>();
   configValue: unknown = defaultConfig();
@@ -122,7 +138,7 @@ export class MockIII {
       filters: {},
       target: spec.target ?? consumerFor(functionId),
       on: 'success',
-      capture: ['input', 'output', 'caller'],
+      capture: spec.capture ?? ['output'],
       matches: () => true,
       accepted: async () => {},
       reject: () => {},
@@ -157,6 +173,30 @@ export class MockIII {
     return this.feedPayloads(functionId).map((payload) => payload.event as Record<string, unknown>);
   }
 
+  // The envelope iii delivers: the call's fields the observer's capture names;
+  // a field the call does not have is omitted, never `null`.
+  private observedEnvelope(
+    obs: Observer,
+    functionId: string,
+    input: unknown,
+    output: unknown,
+  ): Observed {
+    const n = ++this.nextActivation;
+    const envelope: Observed = {
+      observer_id: obs.id,
+      activation_id: `activation-${n}`,
+      function_id: functionId,
+      namespace: 'default',
+      invocation_id: `invocation-${n}`,
+      status: 'success',
+      started_at_ms: 0,
+      duration_ms: 0,
+    };
+    if (obs.capture.includes('input')) envelope.input = clone(input);
+    if (obs.capture.includes('output') && output !== undefined) envelope.output = clone(output);
+    return envelope;
+  }
+
   private hooksOf(functionId: string): Hooks {
     const entry = this.hooks.get(functionId) ?? {};
     this.hooks.set(functionId, entry);
@@ -188,7 +228,10 @@ export class MockIII {
           observer_id: obs.id,
           function_id: String(functionId),
           target: obs.target,
-          payload: clone(output),
+          payload: this.observedEnvelope(obs, String(functionId), input, output) as Record<
+            string,
+            unknown
+          >,
         });
       }
       return (request.action as { type?: string } | undefined)?.type === 'void'
