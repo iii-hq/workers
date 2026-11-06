@@ -11,6 +11,9 @@
 
 ### Changed
 
+- **tmux is also found outside `PATH`.** Plain `tmux` is looked for in `~/.local/bin`,
+  `/opt/homebrew/bin`, `/usr/local/bin`, `/home/linuxbrew/.linuxbrew/bin` and
+  `/opt/local/bin` after `PATH`.
 - **iii-sdk 0.25.0.** The worker builds against the 0.25 SDK. Console terminal calls
   (`tmux::terminal::*`) take their caller from the invocation context the engine stamps
   (`caller.worker_id`); the payload's `_caller_worker_id` is read only on an engine
@@ -20,6 +23,11 @@
 
 ### Added
 
+- **Installing tmux from the worker.** `tmux::install` puts the tmux program on the
+  computer in the background and `tmux::install::status` says how it is going: the
+  system's package manager when this user may run it without a password, otherwise tmux's
+  official build (3.7c, pinned by SHA-256) in `~/.local/bin`. `tmux::status` gains
+  `installable`. `--install-tmux` runs the same install with no engine.
 - **tmux sessions and windows as functions.** `tmux::sessions::{list,create,rename,kill}`
   and `tmux::windows::{create,select,rename,kill}` drive the host's tmux server; sessions
   and windows are addressed by id (`$5`, `@3`) or exact name / index, never by prefix.

@@ -10,7 +10,7 @@ use tmux::config::WorkerConfig;
 use tmux::events::{self, Monitor};
 use tmux::functions::{self, Ctx};
 use tmux::terminal::{self, TerminalManager};
-use tmux::{binary, configuration, manifest, ui};
+use tmux::{binary, configuration, install, manifest, ui};
 
 const ABOUT: &str = "tmux as an iii worker: sessions and windows, agent / compose / port status per pane, and a Console page with a live tmux terminal.";
 
@@ -26,6 +26,10 @@ struct Cli {
     /// Print the registry manifest as JSON and exit without connecting.
     #[arg(long)]
     manifest: bool,
+    /// Install tmux on this machine the way `tmux::install` does and exit,
+    /// without connecting. The final status is the last line of stdout.
+    #[arg(long)]
+    install_tmux: bool,
 }
 
 async fn wait_for_shutdown_signal() -> Result<()> {
@@ -71,6 +75,9 @@ async fn main() -> Result<()> {
             serde_json::to_string_pretty(&manifest::build_manifest())?
         );
         return Ok(());
+    }
+    if cli.install_tmux {
+        std::process::exit(install::run_cli().await);
     }
 
     let iii = Arc::new(register_worker(
