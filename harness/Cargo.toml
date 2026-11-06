@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "harness"
-version = "1.9.3"
+version = "1.9.4"
 edition = "2021"
 publish = false
 
