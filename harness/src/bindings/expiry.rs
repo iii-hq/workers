@@ -39,7 +39,7 @@ use crate::deps::Deps;
 use crate::subscriptions::fired;
 use crate::timer::OneShots;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{TurnRecord, TurnStatus};
+use crate::types::turn::TurnStatus;
 
 /// Store reads at a deadline that fail are retried this many times, on a
 /// doubling backoff from [`RETRY_BASE_MS`]. Past that, the next sweep — the
@@ -316,8 +316,9 @@ pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
                 Some(&note),
             )
             .await;
-            if let Some(turn) = stopped_turn {
-                finish_if_ended(deps, &turn).await;
+            if let Some(turn_id) = stopped_turn {
+                crate::turn_loop::finish_stopped_exchange(deps, wake_session(binding), &turn_id)
+                    .await;
             }
         }
     }
@@ -326,7 +327,7 @@ pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
 /// Report an unfired wake removed from outside its owner's turn. Same rule as its
 /// deadline: a stopped session gets no notice.
 pub async fn report_wake_removed(deps: &Deps, binding: &Binding, by: &str) {
-    let Some(turn) = stopped_turn(deps, wake_session(binding)).await else {
+    let Some(turn_id) = stopped_turn(deps, wake_session(binding)).await else {
         notify_wake_lost(deps, binding, WakeLost::Unregistered { by }).await;
         return;
     };
@@ -339,26 +340,20 @@ pub async fn report_wake_removed(deps: &Deps, binding: &Binding, by: &str) {
         Some(&note),
     )
     .await;
-    finish_if_ended(deps, &turn).await;
-}
-
-/// A turn still finishing its stop ends the exchange itself.
-async fn finish_if_ended(deps: &Deps, turn: &TurnRecord) {
-    if turn.status.is_terminal() {
-        crate::turn_loop::finish_stopped_exchange(deps, &turn.session_id, &turn.turn_id).await;
-    }
+    crate::turn_loop::finish_stopped_exchange(deps, wake_session(binding), &turn_id).await;
 }
 
 /// The session's last turn, when a stop reached it: cancelled while it ran, or
 /// flagged while parked (`harness::stop`'s `quiet_deadlines`). A failed read counts
 /// as not stopped: better one notice than a stranded session.
-async fn stopped_turn(deps: &Deps, session_id: &str) -> Option<TurnRecord> {
+async fn stopped_turn(deps: &Deps, session_id: &str) -> Option<String> {
     let timeout_ms = deps.cfg().await.session_timeout_ms;
     crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms)
         .await
         .ok()
         .flatten()
         .filter(|record| record.status == TurnStatus::Cancelled || record.abort)
+        .map(|record| record.turn_id)
 }
 
 async fn emit_retirement_record(

@@ -385,6 +385,11 @@ pub struct TurnRecord {
     pub message_preview: Option<String>,
     #[serde(default)]
     pub abort: bool,
+    /// A stopped turn already has its `terminal: true` completion. It can come from
+    /// the turn's finalizer or from any of its wakes going, and those who wait on it
+    /// act on each one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exchange_finished: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watermark_entry_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -577,6 +582,7 @@ pub(crate) mod tests {
             depth: 0,
             message_preview: None,
             abort: false,
+            exchange_finished: false,
             watermark_entry_id: None,
             stream_request_id: None,
             options: TurnOptions {

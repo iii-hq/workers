@@ -3024,7 +3024,9 @@ async fn finalize_failed(
     let presentation = failure_presentation(public_message, failure);
     let summary = presentation.summary;
     let detail = failure.detail.unwrap_or(public_message);
+    let terminal = turn_is_terminal(deps, &record.session_id).await;
     record.status = TurnStatus::Failed;
+    record.exchange_finished = terminal;
     record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
@@ -3075,7 +3077,7 @@ async fn finalize_failed(
             Some(&summary),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            turn_is_terminal(deps, &record.session_id).await,
+            terminal,
             record.context_snapshot.as_ref(),
         )
         .await;
@@ -3245,7 +3247,9 @@ pub(crate) async fn finalize_cancelled(
     // send rather than auto-waking a turn they just cancelled.
     let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
+    let terminal = turn_is_terminal(deps, &record.session_id).await;
     record.status = TurnStatus::Cancelled;
+    record.exchange_finished = terminal;
     record.updated_at = AgentMessage::now_ms();
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
@@ -3262,7 +3266,7 @@ pub(crate) async fn finalize_cancelled(
             Some(reason),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            turn_is_terminal(deps, &record.session_id).await,
+            terminal,
             record.context_snapshot.as_ref(),
         )
         .await;
@@ -3304,20 +3308,35 @@ async fn append_stopped_notice(session: &SessionClient, record: &TurnRecord) {
 /// turn's usage and parent were settled when it finished.
 ///
 /// The wake that led here is already gone, so no sweep comes back to this: a store
-/// failure is retried here, and past that the session stays as it was, logged.
+/// failure is retried in the background, leaving the caller free, and past that the
+/// session stays as it was, logged.
 pub(crate) async fn finish_stopped_exchange(deps: &Deps, session_id: &str, turn_id: &str) {
-    const ATTEMPTS: u32 = 5;
-    for attempt in 0..ATTEMPTS {
-        let Err(error) = try_finish_stopped_exchange(deps, session_id, turn_id).await else {
-            return;
-        };
-        tracing::warn!(session_id, turn_id, attempt, %error, "could not end a stopped exchange");
-        tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
-    }
+    const RETRY_DELAYS_S: [u64; 4] = [1, 2, 4, 8];
+    let Err(error) = try_finish_stopped_exchange(deps, session_id, turn_id).await else {
+        return;
+    };
+    tracing::warn!(session_id, turn_id, %error, "could not end a stopped exchange; retrying");
+    let (deps, session_id, turn_id) = (deps.clone(), session_id.to_string(), turn_id.to_string());
+    tokio::spawn(async move {
+        for delay in RETRY_DELAYS_S {
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            match try_finish_stopped_exchange(&deps, &session_id, &turn_id).await {
+                Ok(()) => return,
+                Err(error) => tracing::warn!(
+                    session_id,
+                    turn_id,
+                    %error,
+                    "could not end a stopped exchange"
+                ),
+            }
+        }
+    });
 }
 
-/// Under the session lock and on a fresh record, so a turn started meanwhile is left
-/// alone. Safe to repeat: a turn already cancelled only completes again.
+/// Under the session lock and on a fresh record: it waits out a turn finishing its
+/// stop, leaves a turn started meanwhile alone, and only the first caller completes
+/// the exchange. A failure can repeat the completion, never lose it: the event goes
+/// first, because a waiter left without one stays stuck.
 async fn try_finish_stopped_exchange(
     deps: &Deps,
     session_id: &str,
@@ -3329,7 +3348,11 @@ async fn try_finish_stopped_exchange(
     let Some(mut record) =
         crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms)
             .await?
-            .filter(|record| record.turn_id == turn_id && record.status.is_terminal())
+            .filter(|record| {
+                record.turn_id == turn_id
+                    && record.status.is_terminal()
+                    && !record.exchange_finished
+            })
     else {
         return Ok(());
     };
@@ -3348,6 +3371,8 @@ async fn try_finish_stopped_exchange(
         record.status = TurnStatus::Cancelled;
         record.updated_at = now;
         crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    }
+    if record.status == TurnStatus::Cancelled {
         append_stopped_notice(&session, &record).await;
         crate::session_status::project(&session, &record).await;
     }
@@ -3369,7 +3394,8 @@ async fn try_finish_stopped_exchange(
             record.context_snapshot.as_ref(),
         )
         .await;
-    Ok(())
+    record.exchange_finished = true;
+    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await
 }
 
 const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {
