@@ -87,7 +87,11 @@ test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({ pag
   await sendExactMessage(page, firstChat, OPENAI_SWITCH_PROMPT, OPENAI_SWITCH_MARKER, OPENAI_MODEL_ID)
   await expect(firstChat).toHaveAttribute('data-chat-session-id', firstSessionId)
 
-  await page.getByRole('button', { name: /^new chat$/i }).click()
+  // The chat tab strip has its own "new chat" button; drive the sidebar's.
+  await page
+    .getByRole('navigation', { name: 'Chat actions' })
+    .getByRole('button', { name: 'New chat', exact: true })
+    .click()
   const secondChat = page.locator('[data-chat-session-id]').first()
   const secondSessionId = await secondChat.getAttribute('data-chat-session-id')
   if (!secondSessionId) throw new Error('Console did not expose the new persisted session id')
