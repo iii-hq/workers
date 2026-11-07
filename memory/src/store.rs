@@ -14,8 +14,9 @@
 //! BEFORE touching RAM, replay is last-wins by memory id, and the search
 //! index lives only in RAM (rebuilt from the file at boot) — there is no
 //! index persistence to diverge and no shutdown flush to get wrong.
-//! [`Store::commit`] is the single choke point through which every memory
-//! mutation flows: file, map, and index update together or not at all.
+//! Ordinary writes use [`Bank::commit`]; proof-bound consolidation uses
+//! [`Bank::supersede`] to publish both revisions by an atomic log replacement.
+//! Both keep file, map and index publication behind the bank write lock.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, Write};
@@ -28,7 +29,34 @@ use crate::error::MemoryError;
 use crate::index::Bm25Index;
 use crate::types::{now_ms, Memory, Rule};
 
+#[path = "query_projection.rs"]
+mod query_projection;
+
 const MEMORIES_FILE: &str = "memories.jsonl";
+// Bank Arcs from before reload may outlive their Store generation. Serialize
+// their disk mutations too; an in-RAM bank lock alone cannot guard rename
+// against an append from that older generation.
+static MEMORY_LOG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn memory_log_lock() -> std::sync::MutexGuard<'static, ()> {
+    MEMORY_LOG.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn replay_record(log: &[u8], id: &str) -> Option<Memory> {
+    let mut latest: Option<Memory> = None;
+    for line in log.split(|&byte| byte == b'\n') {
+        if let Ok(memory) = serde_json::from_slice::<Memory>(line) {
+            if memory.id == id
+                && latest
+                    .as_ref()
+                    .is_none_or(|prev| memory.revision >= prev.revision)
+            {
+                latest = Some(memory);
+            }
+        }
+    }
+    latest
+}
 const VECTORS_FILE: &str = "vectors.jsonl";
 const RULES_DIR: &str = "rules";
 const BANK_META: &str = "bank.yaml";
@@ -71,15 +99,82 @@ const MIN_Z_POOL: usize = 20;
 pub struct Evidence {
     /// The question's content terms the memory holds: never a stopword,
     /// never the `user` a pronoun added, except `user` alone for a
-    /// question of pronouns only ("who am I"), or of `MEMORY_VERBS` asked
+    /// explicit identity question ("who am I"), or of `MEMORY_VERBS` asked
     /// of "me" ("what do you remember about me").
     pub matched: Vec<String>,
+    /// Matched terms with an occurrence outside a recognized answer slot.
+    /// Unknown projections retain all legacy matches, not a new admission rule.
+    pub relation_matched: Vec<String>,
+    /// Number of distinct eligible query terms with an occurrence outside the
+    /// certified slot, including terms absent from this candidate. Repetition
+    /// does not increase this count; a term inside AND outside the slot counts
+    /// once as relational. Only a known projection uses this denominator.
+    pub relation_terms: usize,
+    /// Matched terms occurring inside a recognized answer slot. A repeated term
+    /// may also be relational when it occurs outside that slot.
+    pub requested_slot_matched: Vec<String>,
+    /// Half-open token spans in the original query; None explicitly means
+    /// unknown. This evidence is transient and is never persisted or ranked.
+    pub requested_slot_spans: Option<Vec<std::ops::Range<usize>>>,
     /// How many content terms the question has.
     pub terms: usize,
     /// The question asks what memory holds of the user ("what do you
     /// remember about me?"), not a question of pronouns alone ("what should
     /// I do now?").
     pub of_me: bool,
+    /// The query explicitly names a non-user entity handle (at least three
+    /// characters); one incidental normalized BM25 word is not enough.
+    pub named_subject: bool,
+    /// A named subject is directly questioned (copula + name), or named in
+    /// an explicit first-person question. Not an incidental object of "of".
+    pub subject_question: bool,
+    /// At least one content word is shared outside entity handles. A project
+    /// name alone cannot answer every question about that project's facts.
+    pub detail_match: bool,
+    /// The same detail check using only occurrences outside an answer slot.
+    pub relation_detail_match: bool,
+    /// Reserved legacy evidence field; no rarity-only escape is emitted.
+    pub specific_recall: bool,
+    /// The question directly requests a stored attribute tag ("which units",
+    /// "qual CI"). Entity names or incidental words are not attributes.
+    pub attribute_match: bool,
+    /// Another live fact establishes an explicitly requested attribute tag,
+    /// while this candidate is on a different attribute of the same subject.
+    pub attribute_conflict: bool,
+    /// A delimited personal nominal scope or predicate plus its argument
+    /// is attested together. A possessive window or bare verb is insufficient.
+    pub personal_match: bool,
+    /// Query-token ranges and argument/owner terms used by the transient audit.
+    pub personal_scope_spans: Vec<[usize; 2]>,
+    pub personal_scope_terms: Vec<Vec<String>>,
+    pub personal_scope_predicates: Vec<String>,
+    pub personal_scope_owners: Vec<String>,
+    pub personal_scope_matched: bool,
+    pub personal_scope_required: bool,
+    /// A certified query-target shape is evaluated independently of scores.
+    pub target_scope_required: bool,
+    pub target_scope_matched: bool,
+    pub target_scope_span: Option<[usize; 2]>,
+    pub target_scope_kind: Option<String>,
+    pub target_scope_terms: Vec<String>,
+    pub target_scope_predicate: Option<String>,
+    pub target_scope_subject: Vec<String>,
+    pub target_scope_object: Vec<String>,
+    pub target_scope_relative: Vec<String>,
+    /// Deterministic obligation witnesses, computed from raw text before
+    /// selection. None means a literal/unknown quantity, not negative support.
+    pub target_obligation: Option<serde_json::Value>,
+    /// Transient user -> assistant -> output witnesses; neither ranking nor
+    /// stored metadata supplies a missing grammatical role.
+    pub directive_scope_required: bool,
+    pub directive_scope_matched: bool,
+    pub target_directive: Option<serde_json::Value>,
+    /// Query names a known non-user subject, but this candidate is on none
+    /// of those subjects. Prevent borrowing another project's attribute.
+    pub subject_conflict: bool,
+    /// Explicit predicate conflict supplied by evidence consumers. Recall does
+    /// not infer this from another memory containing an isolated query verb.
+    pub predicate_conflict: bool,
     /// BM25 over the shared max: the lexical part of `relevance`.
     pub lexical: f32,
     /// `lexical + weight * semantic`, before entity, corroboration, pin
@@ -92,6 +187,26 @@ pub struct Evidence {
     pub z: Option<f32>,
     /// Whether the memory has a vector of the query's model at all.
     pub vector: bool,
+}
+
+impl Evidence {
+    /// Legacy/test evidence without a certified projection keeps its behavior.
+    pub(crate) fn relation_words(&self) -> &[String] {
+        if self.requested_slot_spans.is_some() {
+            &self.relation_matched
+        } else {
+            &self.matched
+        }
+    }
+    /// Unknown projections retain the legacy question denominator. Never
+    /// derive sufficiency from the candidate's matched subset.
+    pub(crate) fn relation_term_count(&self) -> usize {
+        if self.requested_slot_spans.is_some() {
+            self.relation_terms
+        } else {
+            self.terms
+        }
+    }
 }
 
 pub struct Store {
@@ -175,7 +290,8 @@ fn compact_vectors(
 }
 
 /// Replace a small file whole: hidden temp file beside it, fsync, rename
-/// over. A crash leaves the old content or the new, never a torn file.
+/// over. Readers observe one complete version after rename. No directory
+/// fsync is issued: this is not a universal power-loss durability guarantee.
 fn write_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let mut name = std::ffi::OsString::from(".");
     name.push(path.file_name().unwrap_or_default());
@@ -200,7 +316,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
-/// English function words dropped from QUERIES before lexical scoring (the
+/// English/Portuguese function words dropped from QUERIES before lexical scoring (the
 /// index keeps every token), as Postgres's `english` tsvector drops them.
 /// Without it a natural-language question matches every
 /// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
@@ -218,11 +334,18 @@ pub const STOPWORDS: &[&str] = &[
     "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those",
     "to", "too", "under", "up", "ve", "very", "was", "we", "were", "what", "when", "where",
     "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
+    "ao", "aos", "as", "até", "com", "como", "da", "das", "de", "do", "dos", "e", "ela",
+    "ele", "em", "entre", "era", "essa", "esse", "esta", "este", "eu", "foi", "isso", "isto",
+    "já", "mas", "meu", "meus", "mim", "minha", "minhas", "na", "nas", "nem", "no", "nos",
+    "nós", "o", "ou", "para", "pela", "pelo", "por", "qual", "quais", "que", "quem",
+    "se", "sem", "ser", "sua", "suas", "um", "uma", "uns", "umas", "você", "vocês", "é",
 ];
 
-/// Verbs that ask what memory holds ("what do you remember about me"); English only, by decision.
+/// Verbs that ask what memory holds in English/Portuguese.
 /// Not "tell": its "me" is who is told ("tell me more").
-const MEMORY_VERBS: &[&str] = &["remember", "know", "recall"];
+const MEMORY_VERBS: &[&str] = &[
+    "remember", "know", "recall", "lembre", "lembra", "lembrar", "recorde", "recordar", "sabe",
+];
 
 /// Bytes of a recall query kept: half from its head, half from its tail.
 const QUERY_MAX_BYTES: usize = 800;
@@ -257,9 +380,21 @@ fn query_tokens(query: &str) -> (Vec<String>, bool) {
     let mut tokens = crate::index::tokenize(query);
     let mut seen = std::collections::HashSet::new();
     tokens.retain(|t| seen.insert(t.clone()));
-    let first_person = tokens
-        .iter()
-        .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
+    let first_person = tokens.iter().any(|t| {
+        matches!(
+            t.as_str(),
+            "i" | "me"
+                | "my"
+                | "mine"
+                | "myself"
+                | "eu"
+                | "mim"
+                | "meu"
+                | "meus"
+                | "minha"
+                | "minhas"
+        )
+    });
     if tokens.iter().any(|t| !STOPWORDS.contains(&t.as_str())) {
         tokens.retain(|t| !STOPWORDS.contains(&t.as_str()));
     }
@@ -268,6 +403,30 @@ fn query_tokens(query: &str) -> (Vec<String>, bool) {
         tokens.push("user".to_string());
     }
     (tokens, expanded)
+}
+
+/// Raw recall keeps its historical English query normalization. Portuguese
+/// content/inflection handling belongs to Evidence for injection selection,
+/// not a silent reranking of public recall or its accepted metric snapshots.
+fn ranking_tokens(query: &str) -> Vec<String> {
+    let mut tokens = crate::index::tokenize(query);
+    let mut seen = HashSet::new();
+    tokens.retain(|t| seen.insert(t.clone()));
+    let personal = tokens
+        .iter()
+        .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
+    let english = &STOPWORDS[..STOPWORDS
+        .iter()
+        .position(|w| *w == "ao")
+        .expect("English prefix")];
+    let english_stop = |t: &str| english.contains(&t);
+    if tokens.iter().any(|t| !english_stop(t)) {
+        tokens.retain(|t| !english_stop(t));
+    }
+    if personal && !tokens.iter().any(|t| t == "user") {
+        tokens.push("user".into());
+    }
+    tokens
 }
 
 /// Score descending, ties by id (HashMap iteration order would otherwise
@@ -640,7 +799,25 @@ impl Bank {
     /// THE single mutation choke point: append the full record (fsync),
     /// then update the map and the index together. Every save / update /
     /// pin / supersede / tombstone flows through here.
-    pub async fn commit(&self, mut memory: Memory) -> Result<CommitKind, MemoryError> {
+    pub async fn commit(&self, memory: Memory) -> Result<CommitKind, MemoryError> {
+        self.commit_inner(memory, None).await
+    }
+
+    /// Guard read/modify/write callers against a consolidation or edit that
+    /// committed after their read. None means the id must still be absent.
+    pub async fn commit_expected(
+        &self,
+        memory: Memory,
+        expected: Option<&Memory>,
+    ) -> Result<CommitKind, MemoryError> {
+        self.commit_inner(memory, Some(expected)).await
+    }
+
+    async fn commit_inner(
+        &self,
+        mut memory: Memory,
+        expected: Option<Option<&Memory>>,
+    ) -> Result<CommitKind, MemoryError> {
         // The backstop for every write path: no known secret shape reaches
         // memories.jsonl, whoever built the record (the entry points redact
         // first, so dedup fingerprints the redacted text).
@@ -657,6 +834,14 @@ impl Bank {
             memory.text = redacted.text;
         }
         let mut inner = self.inner.write().await;
+        if let Some(expected) = expected {
+            if inner.memories.get(&memory.id) != expected {
+                return Err(MemoryError::InvalidInput(format!(
+                    "memory `{}` changed before commit",
+                    memory.id
+                )));
+            }
+        }
         let line = serde_json::to_string(&memory)
             .map_err(|e| MemoryError::Storage(format!("serialize memory: {e}")))?;
         // The write lock must span the fsync (append order = replay
@@ -665,7 +850,22 @@ impl Bank {
         // while letting other tasks run (current-thread runtimes — tests —
         // cannot yield this way and just run inline).
         let path = self.dir.join(MEMORIES_FILE);
+        let expected_disk = expected.map(|value| value.cloned());
+        let memory_id = memory.id.clone();
         run_blocking(move || -> Result<(), MemoryError> {
+            let _log = memory_log_lock();
+            if let Some(expected) = expected_disk {
+                let log = match std::fs::read(&path) {
+                    Ok(log) => log,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                    Err(e) => return Err(e.into()),
+                };
+                if replay_record(&log, &memory_id) != expected {
+                    return Err(MemoryError::InvalidInput(format!(
+                        "memory `{memory_id}` changed on disk before commit"
+                    )));
+                }
+            }
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .read(true)
@@ -714,6 +914,234 @@ impl Bank {
         }
         inner.memories.insert(memory.id.clone(), memory);
         Ok(kind)
+    }
+
+    /// Publish an extraction correction as one transition, before either side
+    /// becomes visible. Both snapshots are from the extraction input, not a
+    /// post-inference reread. A stale target, failed write or retry cannot leave
+    /// a newly published replacement beside an unretired original.
+    pub async fn correct_expected(
+        &self,
+        old: &Memory,
+        replacement: Memory,
+        expected_replacement: Option<&Memory>,
+    ) -> Result<Memory, MemoryError> {
+        if old.id == replacement.id
+            || old.pinned
+            || !old.is_live()
+            || !replacement.is_live()
+            || expected_replacement.is_some_and(|m| !m.is_live() || (m.pinned && m != &replacement))
+        {
+            return Err(MemoryError::InvalidInput(
+                "invalid correction boundary".into(),
+            ));
+        }
+        for record in [old, &replacement] {
+            let mut entities = record.entities.clone();
+            let mut tags = record.tags.clone();
+            if !crate::redact::redact(&record.text).labels.is_empty()
+                || !crate::redact::drop_secrets(&mut entities).is_empty()
+                || !crate::redact::drop_secrets(&mut tags).is_empty()
+            {
+                return Err(MemoryError::InvalidInput(
+                    "correction requires redacted records".into(),
+                ));
+            }
+        }
+        crate::redact::reject_injection("correction", &replacement.text)?;
+        let mut inner = self.inner.write().await;
+        if inner.memories.get(&old.id) != Some(old)
+            || inner.memories.get(&replacement.id) != expected_replacement
+        {
+            return Err(MemoryError::InvalidInput(
+                "correction records changed before commit".into(),
+            ));
+        }
+        let (retired, _) = crate::functions::items::supersede_transition(
+            old.clone(),
+            replacement.clone(),
+            false,
+            now_ms(),
+        );
+        let mut suffix = Vec::new();
+        for record in [&replacement, &retired] {
+            serde_json::to_writer(&mut suffix, record)
+                .map_err(|e| MemoryError::Storage(e.to_string()))?;
+            suffix.push(b'\n');
+        }
+        let path = self.dir.join(MEMORIES_FILE);
+        let disk_old = old.clone();
+        let disk_expected = expected_replacement.cloned();
+        let replacement_id = replacement.id.clone();
+        run_blocking(move || -> Result<(), MemoryError> {
+            let _log = memory_log_lock();
+            let mut log = match std::fs::read(&path) {
+                Ok(log) => log,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e.into()),
+            };
+            if replay_record(&log, &disk_old.id).as_ref() != Some(&disk_old)
+                || replay_record(&log, &replacement_id) != disk_expected
+            {
+                return Err(MemoryError::InvalidInput(
+                    "correction records changed on disk".into(),
+                ));
+            }
+            if !log.is_empty() && !log.ends_with(b"\n") {
+                log.push(b'\n');
+            }
+            log.extend_from_slice(&suffix);
+            write_atomic(&path, &log)?;
+            Ok(())
+        })
+        .await?;
+        // Readers acquire the same lock, so neither RAM nor the index exposes
+        // half of the transition. Replaced text invalidates its old embedding.
+        if expected_replacement.is_some_and(|m| m.text != replacement.text) {
+            inner.vectors.remove(&replacement.id);
+        }
+        inner.index.add(&replacement);
+        inner.index.remove(&retired.id);
+        inner.vectors.remove(&retired.id);
+        inner.memories.insert(replacement.id.clone(), replacement);
+        inner.memories.insert(retired.id.clone(), retired.clone());
+        Ok(retired)
+    }
+
+    /// Joint compare-and-write for consolidation. The bank write lock covers
+    /// BOTH preconditions, transition, durable replacement and index publication.
+    /// Retaining ordinary JSONL records preserves legacy replay and full history.
+    pub async fn supersede(
+        &self,
+        id: &str,
+        winner_id: &str,
+        reinforce: bool,
+        expected: (Option<&serde_json::Value>, Option<&serde_json::Value>),
+    ) -> Result<(Memory, Option<Memory>), MemoryError> {
+        if id == winner_id {
+            return Err(MemoryError::InvalidInput(
+                "a memory cannot supersede itself".into(),
+            ));
+        }
+        let mut inner = self.inner.write().await;
+        let loser = inner
+            .memories
+            .get(id)
+            .cloned()
+            .ok_or_else(|| MemoryError::MemoryNotFound(id.into()))?;
+        let winner = inner
+            .memories
+            .get(winner_id)
+            .cloned()
+            .ok_or_else(|| MemoryError::MemoryNotFound(winner_id.into()))?;
+        for (record, snapshot) in [(&loser, expected.0), (&winner, expected.1)] {
+            if let Some(snapshot) = snapshot {
+                // A snapshot may be a full record or a revision-bound projection.
+                // Unknown fields are rejected rather than silently ignored.
+                let fields = snapshot
+                    .as_object()
+                    .filter(|fields| !fields.is_empty())
+                    .ok_or_else(|| {
+                        MemoryError::InvalidInput(
+                            "expected snapshot must be a nonempty object".into(),
+                        )
+                    })?;
+                if fields
+                    .get("revision")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_none()
+                {
+                    return Err(MemoryError::InvalidInput(
+                        "expected snapshot requires an unsigned revision".into(),
+                    ));
+                }
+                let current = serde_json::to_value(record)
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                if !fields.iter().all(|(key, value)| {
+                    current.get(key).unwrap_or(&serde_json::Value::Null) == value
+                        && (current.get(key).is_some()
+                            || matches!(
+                                key.as_str(),
+                                "source" | "stated_at" | "invalid_at" | "superseded_by"
+                            ))
+                }) {
+                    return Err(MemoryError::InvalidInput(format!(
+                        "memory `{}` changed since expected snapshot",
+                        record.id
+                    )));
+                }
+            }
+        }
+        if loser.pinned || !loser.is_live() || !winner.is_live() {
+            return Err(MemoryError::InvalidInput(
+                "supersede requires a live unpinned loser and a live winner".into(),
+            ));
+        }
+        // Loaded legacy records can predate commit-time redaction. A merge
+        // cannot silently change the text certified by its caller, nor append
+        // a secret again: reject and leave both originals untouched instead.
+        for record in [&loser, &winner] {
+            let mut entities = record.entities.clone();
+            let mut tags = record.tags.clone();
+            if !crate::redact::redact(&record.text).labels.is_empty()
+                || !crate::redact::drop_secrets(&mut entities).is_empty()
+                || !crate::redact::drop_secrets(&mut tags).is_empty()
+            {
+                return Err(MemoryError::InvalidInput(
+                    "supersede requires redacted records".into(),
+                ));
+            }
+        }
+        let disk_loser = loser.clone();
+        let disk_winner = winner.clone();
+        let (retired, survivor) =
+            crate::functions::items::supersede_transition(loser, winner, reinforce, now_ms());
+        let path = self.dir.join(MEMORIES_FILE);
+        let records = std::iter::once(&retired).chain(survivor.iter());
+        let mut suffix = Vec::new();
+        for memory in records {
+            serde_json::to_writer(&mut suffix, memory)
+                .map_err(|e| MemoryError::Storage(e.to_string()))?;
+            suffix.push(b'\n');
+        }
+        // Replacing the complete log is intentionally conservative: two plain
+        // appended records could tear between loser and winner. Keep ALL old
+        // bytes (including corrupt lines) for audit; rename publishes both or
+        // neither, and a failed temp write/fsync/rename never changes RAM/log.
+        run_blocking(move || -> Result<(), MemoryError> {
+            let _log = memory_log_lock();
+            let mut log = match std::fs::read(&path) {
+                Ok(log) => log,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e.into()),
+            };
+            // Validate against the actual authoritative bytes as well: a
+            // reload may leave another live Bank Arc on this same path.
+            if replay_record(&log, &disk_loser.id).as_ref() != Some(&disk_loser)
+                || replay_record(&log, &disk_winner.id).as_ref() != Some(&disk_winner)
+            {
+                return Err(MemoryError::InvalidInput(
+                    "supersede records changed on disk".into(),
+                ));
+            }
+            if !log.is_empty() && !log.ends_with(b"\n") {
+                log.push(b'\n');
+            }
+            log.extend_from_slice(&suffix);
+            write_atomic(&path, &log)?;
+            Ok(())
+        })
+        .await?;
+        for memory in std::iter::once(&retired).chain(survivor.iter()) {
+            if memory.is_live() {
+                inner.index.add(memory);
+            } else {
+                inner.index.remove(&memory.id);
+                inner.vectors.remove(&memory.id);
+            }
+            inner.memories.insert(memory.id.clone(), memory.clone());
+        }
+        Ok((retired, survivor))
     }
 
     pub async fn get(&self, id: &str) -> Option<Memory> {
@@ -828,7 +1256,7 @@ impl Bank {
         let inner = self.inner.read().await;
         inner
             .index
-            .score(&query_tokens(query).0)
+            .score(&ranking_tokens(query))
             .into_iter()
             .filter(|(id, _)| {
                 inner
@@ -893,7 +1321,167 @@ impl Bank {
             .collect();
         // What memory holds of "me", not who is told ("tell me more") or a bare "I know".
         let words = crate::index::tokenize(query);
+        let requested_slot_spans = query_projection::requested_slots(query, &words);
+        let directive_scope = query_projection::directive_scope(query);
+        let target_scope = if requested_slot_spans.is_some() {
+            None
+        } else {
+            query_projection::target_scope(query)
+        };
+        let in_slot = |i: usize| {
+            requested_slot_spans
+                .as_ref()
+                .is_some_and(|spans| spans.iter().any(|span| span.contains(&i)))
+        };
         let has = |w: &str| words.iter().any(|t| t == w);
+        // In a compound noun phrase the head is the last word before an
+        // auxiliary/function word: "which code editor am I using" asks for
+        // the editor, not the incidental modifier "code".
+        let attributes: HashSet<&str> = words
+            .iter()
+            .enumerate()
+            .filter(|(i, word)| {
+                !in_slot(*i) && matches!(word.as_str(), "which" | "what" | "qual" | "quais" | "que")
+            })
+            .filter_map(|(i, _)| {
+                words
+                    .iter()
+                    .skip(i + 1)
+                    .take(3)
+                    .take_while(|word| !STOPWORDS.contains(&word.as_str()))
+                    .last()
+            })
+            .map(String::as_str)
+            .collect();
+        // Preserve the existing bounded WH noun-phrase head, but retain its
+        // preceding constituents. A tag for the head alone cannot answer a
+        // differently qualified attribute, even in a bank with no entity tags.
+        let compound_attributes: Vec<(&str, Vec<&str>)> = words
+            .iter()
+            .enumerate()
+            .filter(|(i, word)| {
+                !in_slot(*i) && matches!(word.as_str(), "which" | "what" | "qual" | "quais" | "que")
+            })
+            .filter_map(|(i, _)| {
+                let mut phrase = words
+                    .iter()
+                    .skip(i + 1)
+                    .take(3)
+                    .take_while(|word| !STOPWORDS.contains(&word.as_str()))
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let mut head = *phrase.last()?;
+                let mut seam = i + 1 + phrase.len();
+                // A single head may take one explicit genitive complement.
+                // Certify only head + linker + nominal token + the existing
+                // clause seam below; fragments/longer phrases stay unknown.
+                let english = matches!(words[i].as_str(), "which" | "what");
+                let linker = words.get(seam)?.as_str();
+                let genitive = if english {
+                    linker == "of"
+                } else {
+                    matches!(linker, "de" | "do" | "da" | "dos" | "das")
+                };
+                if phrase.len() == 1 && genitive {
+                    let mut complement_at = seam + 1;
+                    let article = words.get(complement_at)?.as_str();
+                    if (english && matches!(article, "the" | "a" | "an"))
+                        || (!english
+                            && linker == "de"
+                            && matches!(article, "o" | "a" | "os" | "as"))
+                    {
+                        complement_at += 1;
+                    }
+                    let complement = words.get(complement_at)?.as_str();
+                    if STOPWORDS.contains(&complement) {
+                        return None;
+                    }
+                    head = phrase[0];
+                    phrase.push(complement);
+                    seam = complement_at + 1;
+                }
+                // A preposition or the lookahead limit cannot certify a noun
+                // phrase: WH may instead be the subject of a verbal clause.
+                // Only an explicit inverted auxiliary + subject (EN), or an
+                // overt subject opening (PT), certifies this bounded shape.
+                let boundary = words.get(seam)?.as_str();
+                let next = words.get(seam + 1)?.as_str();
+                let certified = match words[i].as_str() {
+                    "which" | "what" => {
+                        matches!(
+                            boundary,
+                            "do" | "does" | "did" | "am" | "is" | "are" | "was" | "were"
+                        ) && matches!(
+                            next,
+                            "i" | "we"
+                                | "you"
+                                | "he"
+                                | "she"
+                                | "it"
+                                | "they"
+                                | "my"
+                                | "our"
+                                | "your"
+                                | "his"
+                                | "her"
+                                | "their"
+                                | "the"
+                                | "a"
+                                | "an"
+                        )
+                    }
+                    "qual" | "quais" | "que" => {
+                        matches!(
+                            boundary,
+                            "eu" | "nós"
+                                | "ele"
+                                | "ela"
+                                | "você"
+                                | "vocês"
+                                | "meu"
+                                | "minha"
+                                | "meus"
+                                | "minhas"
+                                | "o"
+                                | "a"
+                                | "os"
+                                | "as"
+                        ) && !STOPWORDS.contains(&next)
+                    }
+                    _ => false,
+                };
+                (phrase.len() > 1 && certified).then_some((head, phrase))
+            })
+            .collect();
+        let personal_scopes = if requested_slot_spans.is_some() {
+            Vec::new()
+        } else {
+            query_projection::personal_scopes(query)
+        };
+        // Possessives expose only a nominal head before a grammatical seam.
+        // Never harvest a fixed window across a subordinate clause or verb.
+        let possessed: HashSet<&str> = words
+            .iter()
+            .enumerate()
+            .filter(|(i, word)| !in_slot(*i) && query_projection::possessive(word))
+            .filter_map(|(i, _)| {
+                let run = words
+                    .iter()
+                    .skip(i + 1)
+                    .take_while(|word| {
+                        !STOPWORDS.contains(&word.as_str()) && !query_projection::subordinate(word)
+                    })
+                    .collect::<Vec<_>>();
+                if run.is_empty()
+                    || words
+                        .get(i + 1 + run.len())
+                        .is_some_and(|w| query_projection::subordinate(w))
+                {
+                    return None;
+                }
+                run.last().copied().map(String::as_str)
+            })
+            .collect();
         let verb = content.iter().any(|t| MEMORY_VERBS.contains(t));
         // "tell" asks it only beside a memory verb or "myself" ("tell me about myself").
         let tell = verb || has("myself");
@@ -901,13 +1489,42 @@ impl Bank {
             .iter()
             .all(|t| MEMORY_VERBS.contains(t) || *t == "anything" || (*t == "tell" && tell))
             // Or asked of the user addressed as "I": "do you know who I am?".
-            && (has("me") || has("myself") || (has("you") && verb && has("i")));
-        if expanded && (content.is_empty() || of_me) {
+            && (has("me") || has("myself") || has("mim") || (has("you") && verb && has("i")) || (has("você") && verb && has("eu")));
+        let identity =
+            (has("who") && has("am") && has("i")) || (has("quem") && has("sou") && has("eu"));
+        if expanded && ((content.is_empty() && identity) || of_me) {
             // A question of pronouns alone, or of what memory holds of them, is about the user.
             content = vec!["user"];
         }
+        if !of_me && !identity {
+            content.retain(|t| !MEMORY_VERBS.contains(t));
+        }
+        // An occurrence outside the slot remains relational even when the
+        // same word also appears in the requested constituent.
+        let relation_content: Vec<&str> = content
+            .iter()
+            .copied()
+            .filter(|term| {
+                requested_slot_spans.is_none()
+                    || words
+                        .iter()
+                        .enumerate()
+                        .any(|(i, word)| !in_slot(i) && word.as_str() == *term)
+            })
+            .collect();
+        let slot_content: Vec<&str> = content
+            .iter()
+            .copied()
+            .filter(|term| {
+                words
+                    .iter()
+                    .enumerate()
+                    .any(|(i, word)| in_slot(i) && word.as_str() == *term)
+            })
+            .collect();
         let inner = self.inner.read().await;
-        let mut bm25 = inner.index.score(&query_tokens);
+        let rank_tokens = ranking_tokens(query);
+        let mut bm25 = inner.index.score(&rank_tokens);
         // The BM25 index only holds LIVE records, so a history query must
         // seed non-live candidates itself (score 0.0: entity, pin,
         // corroboration, and recency fusion still rank them).
@@ -943,7 +1560,9 @@ impl Bank {
             .into_iter()
             .filter_map(|(id, s)| {
                 let f = inner.memories.get(&id)?;
-                (include_superseded || f.is_live()).then(|| (f.clone(), s, sem.get(&id).copied()))
+                (include_superseded
+                    || (f.is_live() && !inner.memories.values().any(|new| f.revalidated_by(new))))
+                .then(|| (f.clone(), s, sem.get(&id).copied()))
             })
             .collect();
         // BM25 over the caller's shared maximum (computed over what it can
@@ -961,6 +1580,53 @@ impl Bank {
         let z_of =
             |c: f32| (pool >= MIN_Z_POOL && sd > 0.0).then(|| ((f64::from(c) - mean) / sd) as f32);
         let now = now_ms();
+        let named_entities: HashSet<String> = inner
+            .memories
+            .values()
+            .flat_map(|m| &m.entities)
+            .filter(|e| e.as_str() != crate::scope::LAYER_ENTITY)
+            .filter(|e| {
+                let terms = crate::index::tokenize(e);
+                !terms.is_empty() && terms.iter().all(|t| content.contains(&t.as_str()))
+            })
+            .cloned()
+            .collect();
+        let nominal_possessions: Vec<(std::ops::Range<usize>, Vec<String>)> = words
+            .iter()
+            .enumerate()
+            .filter(|(i, w)| !in_slot(*i) && query_projection::possessive(w))
+            .filter_map(|(i, _)| {
+                let run = words
+                    .iter()
+                    .skip(i + 1)
+                    .take_while(|word| {
+                        !STOPWORDS.contains(&word.as_str()) && !query_projection::subordinate(word)
+                    })
+                    .collect::<Vec<_>>();
+                let head = run.last()?.as_str();
+                let end = i + 1 + run.len();
+                if words
+                    .get(end)
+                    .is_some_and(|w| query_projection::subordinate(w))
+                {
+                    return None;
+                }
+                let attested = inner
+                    .memories
+                    .values()
+                    .filter(|m| m.is_live())
+                    .any(|m| m.tags.iter().any(|tag| tag == head));
+                attested.then(|| (i..end, run.iter().map(|word| word.to_string()).collect()))
+            })
+            .collect();
+        let requested_tags: HashSet<&str> = inner
+            .memories
+            .values()
+            .filter(|m| m.is_live())
+            .flat_map(|m| &m.tags)
+            .map(String::as_str)
+            .filter(|tag| attributes.contains(tag) || possessed.contains(tag))
+            .collect();
         let mut evidence = HashMap::with_capacity(candidates.len());
         let mut scored: Vec<(Memory, f32)> = Vec::with_capacity(candidates.len());
         for (f, s, cos) in candidates {
@@ -968,18 +1634,198 @@ impl Bank {
             // both alike.
             let sem = ((cos.unwrap_or(0.0) - anchor) / (1.0 - anchor)).max(0.0);
             let relevance = s / max_bm25 + weight * sem;
-            let fused =
-                crate::index::fused_score(relevance, &f, &query_tokens, now, half_life_days);
+            let fused = crate::index::fused_score(relevance, &f, &rank_tokens, now, half_life_days);
+            let compound_answer = compound_attributes
+                .iter()
+                .filter(|(head, _)| {
+                    requested_tags.contains(head) || inner.index.has_inflection(head, &f.id)
+                })
+                .all(|(_, phrase)| {
+                    phrase.iter().all(|term| {
+                        f.tags.iter().any(|tag| tag.as_str() == *term)
+                            || inner.index.has_inflection(term, &f.id)
+                    })
+                });
+            let nominal_match = !nominal_possessions.is_empty()
+                && nominal_possessions.iter().all(|(_, terms)| {
+                    terms.last().is_some_and(|head| {
+                        let scope = query_projection::PersonalScope {
+                            span: 0..0,
+                            terms: vec![head.clone()],
+                            predicate: None,
+                            owner: None,
+                            self_owned: true,
+                            open_argument: false,
+                            portuguese_first_person: false,
+                        };
+                        query_projection::scope_matches(&scope, &f.text)
+                    })
+                });
+            let scoped_personal = personal_scopes
+                .iter()
+                .all(|scope| query_projection::scope_matches(scope, &f.text));
+            let directive = directive_scope
+                .as_ref()
+                .map(|scope| query_projection::directive_evidence(scope, &f.text));
+            let target_obligation = target_scope
+                .as_ref()
+                .and_then(|scope| query_projection::obligation_evidence(scope, &f.text));
+            let target_match = target_scope.as_ref().is_none_or(|scope| {
+                target_obligation.as_ref().map_or_else(
+                    || query_projection::target_matches(scope, &f.text),
+                    |obligation| obligation.matched,
+                )
+            });
+            let attribute_answer = scoped_personal
+                && compound_answer
+                && (f
+                    .tags
+                    .iter()
+                    .any(|tag| requested_tags.contains(tag.as_str()))
+                    || (f.entities.iter().any(|e| named_entities.contains(e))
+                        && requested_tags
+                            .iter()
+                            .any(|tag| inner.index.has_inflection(tag, &f.id))));
             evidence.insert(
                 f.id.clone(),
                 Evidence {
                     matched: content
                         .iter()
-                        .filter(|t| inner.index.has(t, &f.id))
+                        .filter(|t| inner.index.has_inflection(t, &f.id))
                         .map(|t| t.to_string())
                         .collect(),
+                    relation_matched: relation_content
+                        .iter()
+                        .filter(|t| inner.index.has_inflection(t, &f.id))
+                        .map(|t| t.to_string())
+                        .collect(),
+                    requested_slot_matched: slot_content
+                        .iter()
+                        .filter(|t| inner.index.has_inflection(t, &f.id))
+                        .map(|t| t.to_string())
+                        .collect(),
+                    relation_terms: relation_content.len(),
+                    requested_slot_spans: requested_slot_spans.clone(),
                     terms: content.len(),
                     of_me: expanded && of_me,
+                    named_subject: f
+                        .entities
+                        .iter()
+                        .filter(|e| e.as_str() != crate::scope::LAYER_ENTITY)
+                        .any(|e| {
+                            let terms = crate::index::tokenize(e);
+                            e.chars().count() >= 3
+                                && !terms.is_empty()
+                                && terms.iter().all(|t| content.contains(&t.as_str()))
+                        }),
+                    subject_question: f
+                        .entities
+                        .iter()
+                        .filter(|e| e.as_str() != crate::scope::LAYER_ENTITY)
+                        .any(|e| {
+                            let terms = crate::index::tokenize(e);
+                            !terms.is_empty()
+                                && terms.iter().all(|t| content.contains(&t.as_str()))
+                                && (words.windows(2).any(|w| {
+                                    matches!(w[0].as_str(), "is" | "é") && w[1] == terms[0]
+                                }) || (query.contains('?')
+                                    && words.iter().any(|w| {
+                                        matches!(w.as_str(), "i" | "eu" | "my" | "meu" | "minha")
+                                    })))
+                        }),
+                    subject_conflict: !named_entities.is_empty()
+                        && !f.entities.is_empty()
+                        && !f.entities.iter().any(|e| named_entities.contains(e)),
+                    // Argument/owner absence is lack of a certificate, not
+                    // semantic proof of a conflicting predicate.
+                    predicate_conflict: false,
+                    specific_recall: false,
+                    personal_match: scoped_personal
+                        && (nominal_match
+                            || personal_scopes.iter().any(|scope| {
+                                scope.predicate.is_some()
+                                    || scope.owner.is_some()
+                                    || scope.self_owned
+                            })),
+                    personal_scope_spans: personal_scopes
+                        .iter()
+                        .map(|scope| [scope.span.start, scope.span.end])
+                        .chain(
+                            nominal_possessions
+                                .iter()
+                                .map(|(span, _)| [span.start, span.end]),
+                        )
+                        .collect(),
+                    personal_scope_terms: personal_scopes
+                        .iter()
+                        .map(|scope| scope.terms.clone())
+                        .chain(nominal_possessions.iter().map(|(_, terms)| terms.clone()))
+                        .collect(),
+                    personal_scope_predicates: personal_scopes
+                        .iter()
+                        .filter_map(|scope| scope.predicate.clone())
+                        .collect(),
+                    personal_scope_owners: personal_scopes
+                        .iter()
+                        .filter_map(|scope| scope.owner.clone())
+                        .collect(),
+                    personal_scope_matched: !personal_scopes.is_empty() && scoped_personal,
+                    personal_scope_required: !personal_scopes.is_empty(),
+                    target_scope_required: target_scope.is_some(),
+                    target_scope_matched: target_scope.is_some() && target_match,
+                    target_scope_span: target_scope
+                        .as_ref()
+                        .map(|scope| [scope.span.start, scope.span.end]),
+                    target_scope_kind: target_scope
+                        .as_ref()
+                        .map(|scope| format!("{:?}", scope.kind)),
+                    target_scope_terms: target_scope
+                        .as_ref()
+                        .map(|scope| scope.terms.clone())
+                        .unwrap_or_default(),
+                    target_scope_predicate: target_scope
+                        .as_ref()
+                        .and_then(|scope| scope.predicate.clone()),
+                    target_scope_subject: target_scope
+                        .as_ref()
+                        .map(|scope| scope.subject.clone())
+                        .unwrap_or_default(),
+                    target_scope_object: target_scope
+                        .as_ref()
+                        .map(|scope| scope.object.clone())
+                        .unwrap_or_default(),
+                    target_scope_relative: target_scope
+                        .as_ref()
+                        .map(|scope| scope.relative.clone())
+                        .unwrap_or_default(),
+                    target_obligation: target_obligation
+                        .map(|obligation| serde_json::json!(obligation)),
+                    directive_scope_required: directive_scope.is_some(),
+                    directive_scope_matched: directive.as_ref().is_some_and(|audit| audit.matched),
+                    target_directive: directive.map(|audit| serde_json::json!(audit)),
+                    attribute_match: attribute_answer,
+                    attribute_conflict: !compound_answer
+                        || (!requested_tags.is_empty() && !attribute_answer),
+                    detail_match: {
+                        let entities: HashSet<String> = f
+                            .entities
+                            .iter()
+                            .flat_map(|e| crate::index::tokenize(e))
+                            .collect();
+                        content
+                            .iter()
+                            .any(|t| !entities.contains(*t) && inner.index.has_inflection(t, &f.id))
+                    },
+                    relation_detail_match: {
+                        let entities: HashSet<String> = f
+                            .entities
+                            .iter()
+                            .flat_map(|e| crate::index::tokenize(e))
+                            .collect();
+                        relation_content
+                            .iter()
+                            .any(|t| !entities.contains(*t) && inner.index.has_inflection(t, &f.id))
+                    },
                     lexical: s / max_bm25,
                     relevance,
                     cosine: cos,
@@ -1007,7 +1853,7 @@ impl Bank {
         limit: usize,
         include_superseded: bool,
     ) -> Vec<(Memory, f32)> {
-        let tokens = query_tokens(query).0;
+        let tokens = ranking_tokens(query);
         let inner = self.inner.read().await;
         let mut bm25 = inner.index.score(&tokens);
         // The index only holds live records; history seeds non-live ones.
@@ -1290,6 +2136,19 @@ mod tests {
     }
 
     #[test]
+    fn ranking_remains_legacy_while_evidence_normalizes_portuguese() {
+        assert_eq!(
+            ranking_tokens("qual é o nome da minha gata?"),
+            ["qual", "é", "o", "nome", "da", "minha", "gata"]
+        );
+        assert_eq!(
+            query_tokens("qual é o nome da minha gata?").0,
+            ["nome", "gata", "user"]
+        );
+        assert_eq!(ranking_tokens("which OS do I use"), ["os", "use", "user"]);
+    }
+
+    #[test]
     fn query_tokens_drop_stopwords_but_never_empty_the_query() {
         assert_eq!(
             query_tokens("what is my dog's name").0,
@@ -1298,6 +2157,8 @@ mod tests {
         // `.1` says the pronoun added `user`; a typed one is no expansion.
         let (tokens, expanded) = query_tokens("which OS do I use");
         assert_eq!(tokens, ["os", "use", "user"]);
+        // Preserve ambiguous technical initialisms (OS/US) even though
+        // Portuguese uses `os` as an article. Never lose explicit OS recall.
         assert!(expanded);
         let (tokens, expanded) = query_tokens("does the user live in the US");
         assert_eq!(tokens, ["user", "live", "us"]);
@@ -1645,6 +2506,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slot_projection_preserves_ranking_and_repeated_relational_occurrences() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("projection", None).await.unwrap();
+        let fact = memory("The cycle draft is archived.");
+        bank.commit(fact.clone()).await.unwrap();
+        let query = "During what cycle do I inspect the cycle draft?";
+        let (hits, evidence) = evidence_for(&bank, query).await;
+        let e = &evidence[&fact.id];
+        assert_eq!(e.relation_matched, ["cycle", "draft"]);
+        // Includes the unmatched `inspect`, counts repeated `cycle` once.
+        assert_eq!(e.relation_terms, 3);
+        assert_eq!(e.relation_term_count(), 3);
+        assert_eq!(e.requested_slot_matched, ["cycle"]);
+        assert_eq!(e.requested_slot_spans.as_ref().unwrap()[0], 0..3);
+        let plain = bank
+            .recall_scaled(query, None, "", 10, 30, false, 0.0)
+            .await;
+        assert_eq!(
+            hits.iter().map(|(m, s)| (&m.id, *s)).collect::<Vec<_>>(),
+            plain.iter().map(|(m, s)| (&m.id, *s)).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
     async fn the_pronoun_user_is_not_evidence() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
@@ -1760,6 +2646,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selector_final_diagnoses_lexical_only_paraphrase_without_fabricating_evidence() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/recall_quality/golden.json")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("lexical-diagnostic", None).await.unwrap();
+        for f in corpus["memories"].as_array().unwrap() {
+            let mut m = memory(f["text"].as_str().unwrap());
+            m.id = f["key"].as_str().unwrap().into();
+            m.entities = serde_json::from_value(f["entities"].clone()).unwrap_or_default();
+            m.tags = serde_json::from_value(f["tags"].clone()).unwrap_or_default();
+            bank.commit(m).await.unwrap();
+        }
+        for (id, required) in [
+            ("q-pt-life-par-mana", "pt-life-julia-videochamada"),
+            ("q-evt-next-week", "evt-palestra-meetup"),
+        ] {
+            let text = corpus["queries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|q| q["id"] == id)
+                .unwrap()["text"]
+                .as_str()
+                .unwrap();
+            let (ranked, evidence) = bank
+                .recall_evidence(text, None, "", usize::MAX, 30, false, 0.0)
+                .await;
+            let e = evidence.get(required);
+            println!(
+                "{}",
+                serde_json::json!({"diagnostic":"lexical-paraphrase-capability","query_id":id,"required":required,"ranked":ranked.iter().any(|(m,_)|m.id==required),"matched":e.map(|e|&e.matched),"terms":e.map(|e|e.terms),"vector":false,"semantic_quality_measured":false})
+            );
+            assert!(
+                e.is_none_or(|e| e.matched.is_empty()),
+                "do not relabel Portuguese function words as topical evidence: {text}: {e:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_personal_chatter_pronoun_does_not_create_identity_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        bank.commit(user_memory("The user lives in Recife"))
+            .await
+            .unwrap();
+        for question in ["so what should I do now?", "what is my next step?"] {
+            let (_, evidence) = evidence_for(&bank, question).await;
+            assert!(
+                evidence
+                    .values()
+                    .all(|e| !e.of_me && !e.matched.iter().any(|w| w == "user")),
+                "{question}: {evidence:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn stopwords_alone_are_never_evidence() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
@@ -1853,9 +2799,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bank_too_small_for_z_still_injects_on_meaning() {
-        // A new bank: five memories, each question close in meaning to one,
-        // sharing one word with it or none.
+    async fn hybrid_policy_small_bank_similarity_requires_independent_words() {
+        // Existing algebraic fixture, not an embedding-quality measurement.
+        // Retain its exact vectors and candidate/ranking checks; only the
+        // explicitly changed admission policy is different.
         let texts = [
             memory("The API gateway is written in Go."),
             memory("Nightly backups run at 2am UTC."),
@@ -1869,6 +2816,13 @@ mod tests {
             "Which postgres version again?",
             "what's my job title?",
             "which theme do I like",
+        ];
+        let supported_questions = [
+            "API gateway Go?",
+            "Nightly backups UTC?",
+            "billing service Postgres 16?",
+            "senior backend engineer?",
+            "dark editor theme?",
         ];
         for model in ["m", "sentence-transformers/all-MiniLM-L6-v2@rev"] {
             let dir = tempfile::tempdir().unwrap();
@@ -1894,11 +2848,38 @@ mod tests {
                     .recall_evidence(question, Some(&q), model, usize::MAX, 30, false, 0.0)
                     .await;
                 assert_eq!(ev[&texts[target].id].z, None, "{question}");
-                let picked = crate::hooks::select(hits, &ev, &std::collections::HashSet::new(), 6);
+                let picked =
+                    crate::hooks::select(hits, &ev, &std::collections::HashSet::new(), 6, question);
                 let picked: Vec<&str> = picked.iter().map(|(m, _)| m.text.as_str()).collect();
                 assert!(
-                    picked.contains(&texts[target].text.as_str()),
-                    "{model} {question}: {picked:?}"
+                    picked.is_empty(),
+                    "similarity without sufficient words: {model} {question}: {picked:?}"
+                );
+                let (supported_hits, supported_ev) = bank
+                    .recall_evidence(
+                        supported_questions[target],
+                        Some(&q),
+                        model,
+                        usize::MAX,
+                        30,
+                        false,
+                        0.0,
+                    )
+                    .await;
+                let supported = crate::hooks::select(
+                    supported_hits,
+                    &supported_ev,
+                    &HashSet::new(),
+                    6,
+                    supported_questions[target],
+                );
+                assert_eq!(
+                    supported
+                        .iter()
+                        .map(|(m, _)| m.id.as_str())
+                        .collect::<Vec<_>>(),
+                    [texts[target].id.as_str()],
+                    "explicit support must survive: {model}/{target}"
                 );
             }
         }

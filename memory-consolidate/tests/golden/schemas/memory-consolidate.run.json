@@ -45,6 +45,13 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "detail_proofs": {
+            "description": "Independently regenerated certificates for authorized merges.",
+            "items": {
+              "$ref": "#/definitions/DetailProof"
+            },
+            "type": "array"
+          },
           "errors": {
             "description": "Real failures (reads, writes). Any error keeps the pass due.",
             "items": {
@@ -125,6 +132,63 @@
         ],
         "type": "object"
       },
+      "DetailAtom": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical",
+          "rule",
+          "source"
+        ],
+        "type": "object"
+      },
+      "DetailProof": {
+        "additionalProperties": false,
+        "description": "A locally checked equivalence certificate. Each source byte is retained in `source`; ordered atoms record the only transformations the verifier permits. This is independent of the judge's reason, source label or similarity score.",
+        "properties": {
+          "retired_atoms": {
+            "items": {
+              "$ref": "#/definitions/DetailAtom"
+            },
+            "type": "array"
+          },
+          "retired_source": {
+            "type": "string"
+          },
+          "survivor_atoms": {
+            "items": {
+              "$ref": "#/definitions/DetailAtom"
+            },
+            "type": "array"
+          },
+          "survivor_source": {
+            "type": "string"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "retired_atoms",
+          "retired_source",
+          "survivor_atoms",
+          "survivor_source",
+          "version"
+        ],
+        "type": "object"
+      },
       "PlannedGroup": {
         "description": "One planned merge: `losers` retire in favor of `winner`.",
         "properties": {
@@ -183,6 +247,16 @@
           },
           "kind": {
             "$ref": "#/definitions/ActionKind"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DetailProof"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reason": {
             "type": "string"

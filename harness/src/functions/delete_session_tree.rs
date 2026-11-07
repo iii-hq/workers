@@ -710,6 +710,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     for row in state::list_queued(&deps.iii, id, timeout).await? {
         state::delete_queued(&deps.iii, id, &row.id, timeout).await?;
     }
+    crate::hooks::recall::purge(deps, id).await?;
     crate::filesystem_grants::purge(&deps.iii, id, timeout).await?;
     crate::budget::purge(deps, id, timeout).await?;
     crate::context_snapshot::delete(&deps.iii, id, timeout).await?;
@@ -725,7 +726,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
         })
         .await;
     match purge {
-        Err(iii_sdk::Error::Remote { code, .. })
+        Err(iii_sdk::errors::Error::Remote { code, .. })
             if code.eq_ignore_ascii_case("function_not_found") => {}
         Err(e) => {
             return Err(HarnessError::Dependency(format!(

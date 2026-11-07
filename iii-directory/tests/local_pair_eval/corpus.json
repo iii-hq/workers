@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "fixed_now": "2026-06-10T12:00:00Z",
+  "repeat_query_id": "d01",
+  "queries": [
+    {"id":"d01","split":"dev","domain":"family_call","language":"pt","answerable":true,"required_facts":["person","channel"],"query":"Com quem faço a videochamada de família?","docs":[
+      {"id":"d01a","language":"pt","cross_language":false,"label":"negative","kind":"near_topic","supports":[],"text":"A reunião semanal com a gerente é uma videochamada de trabalho."},
+      {"id":"d01b","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["person","channel"],"text":"A videochamada de família é com minha irmã Lia."},
+      {"id":"d01c","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"Minha irmã Lia prefere conversar por mensagens; não participa da videochamada de família."},
+      {"id":"d01d","language":"pt","cross_language":false,"label":"negative","kind":"wrong_relation","supports":[],"text":"Lia é irmã da gerente e faz a videochamada semanal da equipe."}]},
+    {"id":"d02","split":"dev","domain":"family_call","language":"en","answerable":true,"required_facts":["person","channel"],"query":"Who joins my family video call?","docs":[
+      {"id":"d02a","language":"en","cross_language":false,"label":"positive","kind":"support","supports":["person","channel"],"text":"My sister Neri joins my family video call."},
+      {"id":"d02b","language":"en","cross_language":false,"label":"negative","kind":"near_topic","supports":[],"text":"My manager joins my weekly work video call."},
+      {"id":"d02c","language":"en","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"My sister Neri never joins the family video call; she sends letters instead."},
+      {"id":"d02d","language":"en","cross_language":false,"label":"negative","kind":"wrong_relation","supports":[],"text":"My manager's sister joins the manager's family video call, not mine."}]},
+    {"id":"d03","split":"dev","domain":"family_call","language":"pt","answerable":true,"required_facts":["person","channel"],"query":"Quem participa da minha videochamada familiar?","docs":[
+      {"id":"d03a","language":"en","cross_language":true,"label":"negative","kind":"near_topic","supports":[],"text":"My weekly video meeting with my manager covers the work schedule."},
+      {"id":"d03b","language":"en","cross_language":true,"label":"negative","kind":"wrong_relation","supports":[],"text":"My manager's sister joins the team's video meeting."},
+      {"id":"d03c","language":"en","cross_language":true,"label":"positive","kind":"support","supports":["person","channel"],"text":"My sister Vela joins my family video call."},
+      {"id":"d03d","language":"en","cross_language":true,"label":"negative","kind":"contradiction","supports":[],"text":"My sister Vela does not join my family video calls."}]},
+    {"id":"d04","split":"dev","domain":"dated_agenda","language":"pt","answerable":true,"required_facts":["talk","interval"],"query":"Agora fixo: 2026-06-10T12:00:00Z. Qual palestra está marcada no intervalo inclusivo 2026-06-11 a 2026-06-17?","docs":[
+      {"id":"d04a","language":"pt","cross_language":false,"label":"negative","kind":"wrong_event","supports":[],"text":"A consulta de dermatologia está marcada para 2026-06-12."},
+      {"id":"d04b","language":"pt","cross_language":false,"label":"negative","kind":"wrong_period","supports":[],"text":"A palestra de astronomia está marcada para 2026-06-25."},
+      {"id":"d04c","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"A palestra de astronomia de 2026-06-14 foi cancelada e não ocorrerá."},
+      {"id":"d04d","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["talk","interval"],"text":"A palestra de astronomia está confirmada para 2026-06-14."}]},
+    {"id":"d05","split":"dev","domain":"dated_agenda","language":"en","answerable":true,"required_facts":["talk","interval"],"query":"Fixed now: 2026-06-10T12:00:00Z. Which talk is scheduled within the inclusive interval 2026-06-11 through 2026-06-17?","docs":[
+      {"id":"d05a","language":"en","cross_language":false,"label":"negative","kind":"wrong_period","supports":[],"text":"The ocean science talk is confirmed for 2026-07-14."},
+      {"id":"d05b","language":"en","cross_language":false,"label":"positive","kind":"support","supports":["talk","interval"],"text":"The ocean science talk is confirmed for 2026-06-16."},
+      {"id":"d05c","language":"en","cross_language":false,"label":"negative","kind":"wrong_event","supports":[],"text":"The dental appointment is scheduled for 2026-06-16."},
+      {"id":"d05d","language":"en","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"The ocean science talk on 2026-06-16 was cancelled."}]},
+    {"id":"d06","split":"dev","domain":"stream_consumers","language":"pt","answerable":true,"required_facts":["kafka","consumer_lag"],"query":"O que revisar para diagnosticar o atraso dos consumidores Kafka?","docs":[
+      {"id":"d06a","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["kafka","consumer_lag"],"text":"Para o atraso dos consumidores Kafka, revise offsets, partições e o rebalanceamento do grupo consumidor."},
+      {"id":"d06b","language":"pt","cross_language":false,"label":"negative","kind":"near_topic","supports":[],"text":"Para o armazenamento PostgreSQL, revise autovacuum, índices e espaço em disco."},
+      {"id":"d06c","language":"pt","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"O produtor Kafka publica registros com compressão; esta nota não trata de consumidores nem de atraso."},
+      {"id":"d06d","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"O atraso dos consumidores Kafka deve ser ignorado, sem revisar offsets ou rebalanceamento."}]},
+    {"id":"d07","split":"dev","domain":"stream_consumers","language":"en","answerable":true,"required_facts":["kafka","consumer_lag"],"query":"What should I inspect when Kafka consumers fall behind?","docs":[
+      {"id":"d07a","language":"pt","cross_language":true,"label":"negative","kind":"near_topic","supports":[],"text":"A lentidão do armazenamento PostgreSQL exige revisar disco e índices."},
+      {"id":"d07b","language":"pt","cross_language":true,"label":"negative","kind":"wrong_attribute","supports":[],"text":"O produtor Kafka usa compressão para publicar registros; não há diagnóstico dos consumidores nesta nota."},
+      {"id":"d07c","language":"pt","cross_language":true,"label":"positive","kind":"support","supports":["kafka","consumer_lag"],"text":"Para consumidores Kafka atrasados, inspecione offsets, distribuição de partições e rebalanceamento do grupo."},
+      {"id":"d07d","language":"pt","cross_language":true,"label":"negative","kind":"contradiction","supports":[],"text":"Não inspecione offsets nem partições quando os consumidores Kafka atrasarem."}]},
+    {"id":"d08","split":"dev","domain":"release_policy","language":"pt","answerable":true,"required_facts":["window","no_friday"],"query":"Quais são a janela permitida e a restrição de sexta-feira para releases do serviço Orbe?","docs":[
+      {"id":"d08a","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"O serviço Orbe permite releases a qualquer hora, durante as 24 horas do dia."},
+      {"id":"d08b","language":"pt","cross_language":false,"label":"positive","kind":"complement","supports":["window"],"text":"A janela de release do serviço Orbe vai das 09:00 às 11:00 UTC."},
+      {"id":"d08c","language":"pt","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"O serviço Polo permite releases na sexta-feira às 18:00 UTC."},
+      {"id":"d08d","language":"pt","cross_language":false,"label":"positive","kind":"complement","supports":["no_friday"],"text":"Releases do serviço Orbe são proibidos às sextas-feiras, inclusive dentro da janela habitual."}]},
+    {"id":"d09","split":"dev","domain":"release_policy","language":"en","answerable":true,"required_facts":["window","no_friday"],"query":"What release window and Friday restriction apply to service Nimbo?","docs":[
+      {"id":"d09a","language":"en","cross_language":false,"label":"positive","kind":"complement","supports":["no_friday"],"text":"Service Nimbo must not be released on Fridays, even during its usual window."},
+      {"id":"d09b","language":"en","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"Service Nimbo allows releases 24 hours a day, including Fridays."},
+      {"id":"d09c","language":"en","cross_language":false,"label":"positive","kind":"complement","supports":["window"],"text":"The release window for service Nimbo is 13:00 to 15:00 UTC."},
+      {"id":"d09d","language":"en","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"Service Talo has a release window on Friday from 18:00 to 20:00 UTC."}]},
+    {"id":"d10","split":"dev","domain":"relational_attribute","language":"pt","answerable":true,"required_facts":["sister","instrument"],"query":"Qual instrumento musical a irmã de Ivo toca?","docs":[
+      {"id":"d10a","language":"pt","cross_language":false,"label":"negative","kind":"wrong_relation","supports":[],"text":"Ivo toca violão; seu gerente toca piano."},
+      {"id":"d10b","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"A irmã de Ivo não toca violoncelo nem qualquer outro instrumento."},
+      {"id":"d10c","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["sister","instrument"],"text":"A irmã de Ivo toca violoncelo."},
+      {"id":"d10d","language":"pt","cross_language":false,"label":"negative","kind":"wrong_relation","supports":[],"text":"A irmã do gerente de Ivo toca flauta."}]},
+    {"id":"d11","split":"dev","domain":"no_answer_family","language":"pt","answerable":false,"required_facts":["sister_address"],"query":"Qual é o endereço residencial da minha irmã?","docs":[
+      {"id":"d11a","language":"pt","cross_language":false,"label":"negative","kind":"missing_evidence","supports":[],"text":"Minha irmã gosta de videochamadas familiares."},
+      {"id":"d11b","language":"pt","cross_language":false,"label":"negative","kind":"wrong_relation","supports":[],"text":"O escritório da gerente fica na Rua Sintética 100."},
+      {"id":"d11c","language":"pt","cross_language":false,"label":"negative","kind":"missing_evidence","supports":[],"text":"Minha irmã mudou de residência, mas o endereço não foi registrado."},
+      {"id":"d11d","language":"pt","cross_language":false,"label":"negative","kind":"missing_evidence","supports":[],"text":"As chamadas familiares acontecem por vídeo e não exigem endereço postal."}]},
+    {"id":"d12","split":"dev","domain":"no_answer_stream","language":"en","answerable":false,"required_facts":["retention_days"],"query":"How many days is Kafka topic Quartz configured to retain records?","docs":[
+      {"id":"d12a","language":"en","cross_language":false,"label":"negative","kind":"missing_evidence","supports":[],"text":"Kafka topic Quartz has six partitions; its retention period is undocumented."},
+      {"id":"d12b","language":"en","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"Kafka topic Cedar retains records for seven days."},
+      {"id":"d12c","language":"en","cross_language":false,"label":"negative","kind":"near_topic","supports":[],"text":"PostgreSQL backups are stored for thirty days."},
+      {"id":"d12d","language":"en","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"Kafka topic Quartz consumers currently lag by two minutes."}]},
+    {"id":"h01","split":"holdout","domain":"cold_chain_product","language":"pt","answerable":true,"required_facts":["model","range"],"query":"Qual é a faixa de temperatura de transporte do sensor fictício Aster S2?","docs":[
+      {"id":"h01a","language":"pt","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"O sensor Aster S2 opera entre 5 e 35 graus Celsius; esta é a faixa de operação, não de transporte."},
+      {"id":"h01b","language":"pt","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"O sensor Aster S3 é transportado entre -5 e 20 graus Celsius."},
+      {"id":"h01c","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["model","range"],"text":"O sensor fictício Aster S2 deve ser transportado entre 2 e 8 graus Celsius."},
+      {"id":"h01d","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"O transporte do Aster S2 não tem restrição de temperatura."}]},
+    {"id":"h02","split":"holdout","domain":"cold_chain_product","language":"en","answerable":true,"required_facts":["model","range"],"query":"What transport temperature range is required for the fictional Brisa T4 sensor?","docs":[
+      {"id":"h02a","language":"en","cross_language":false,"label":"positive","kind":"support","supports":["model","range"],"text":"The fictional Brisa T4 sensor requires transport between 3 and 7 degrees Celsius."},
+      {"id":"h02b","language":"en","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"The Brisa T4 operating temperature is 10 to 30 degrees Celsius; transport is a separate specification."},
+      {"id":"h02c","language":"en","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"The Brisa T5 sensor requires transport between -10 and 15 degrees Celsius."},
+      {"id":"h02d","language":"en","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"There is no transport temperature restriction for the Brisa T4."}]},
+    {"id":"h03","split":"holdout","domain":"cold_chain_product","language":"pt","answerable":true,"required_facts":["alarm","duration"],"query":"Em que temperatura e por quanto tempo o sensor fictício Cora dispara o alarme de transporte?","docs":[
+      {"id":"h03a","language":"en","cross_language":true,"label":"negative","kind":"wrong_attribute","supports":[],"text":"The fictional Cora sensor operating alarm activates below zero degrees Celsius."},
+      {"id":"h03b","language":"en","cross_language":true,"label":"positive","kind":"complement","supports":["alarm"],"text":"The fictional Cora transport alarm requires a temperature above 8 degrees Celsius."},
+      {"id":"h03c","language":"en","cross_language":true,"label":"positive","kind":"complement","supports":["duration"],"text":"The fictional Cora transport alarm requires that the high temperature persist for at least ten minutes."},
+      {"id":"h03d","language":"en","cross_language":true,"label":"negative","kind":"contradiction","supports":[],"text":"The fictional Cora transport alarm activates immediately at any temperature without a waiting period."}]},
+    {"id":"h04","split":"holdout","domain":"lab_calibration_product","language":"en","answerable":true,"required_facts":["cartridge","interval"],"query":"How often must the fictional Duna C1 cartridge be calibrated?","docs":[
+      {"id":"h04a","language":"en","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"The fictional Duna C1 cartridge is cleaned every day; this is not its calibration interval."},
+      {"id":"h04b","language":"en","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"The fictional Duna C1 cartridge never needs calibration."},
+      {"id":"h04c","language":"en","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"The fictional Duna C2 cartridge is calibrated every thirty days."},
+      {"id":"h04d","language":"en","cross_language":false,"label":"positive","kind":"support","supports":["cartridge","interval"],"text":"The fictional Duna C1 cartridge must be calibrated every fourteen days."}]},
+    {"id":"h05","split":"holdout","domain":"lab_calibration_product","language":"pt","answerable":true,"required_facts":["cartridge","interval"],"query":"Com que frequência o cartucho fictício Eloa C3 deve ser calibrado?","docs":[
+      {"id":"h05a","language":"pt","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"O cartucho fictício Eloa C4 deve ser calibrado a cada dez dias."},
+      {"id":"h05b","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["cartridge","interval"],"text":"O cartucho fictício Eloa C3 deve ser calibrado a cada vinte e um dias."},
+      {"id":"h05c","language":"pt","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"O cartucho fictício Eloa C3 deve ser limpo diariamente; limpeza não é calibração."},
+      {"id":"h05d","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"O cartucho fictício Eloa C3 dispensa qualquer calibração."}]},
+    {"id":"h06","split":"holdout","domain":"lab_calibration_product","language":"en","answerable":true,"required_facts":["owner","certificate"],"query":"Who signs the calibration certificate for the fictional Foz M2 instrument?","docs":[
+      {"id":"h06a","language":"pt","cross_language":true,"label":"negative","kind":"wrong_relation","supports":[],"text":"A transportadora assina o comprovante de entrega do instrumento fictício Foz M2."},
+      {"id":"h06b","language":"pt","cross_language":true,"label":"negative","kind":"contradiction","supports":[],"text":"O certificado de calibração do instrumento fictício Foz M2 não recebe assinatura."},
+      {"id":"h06c","language":"pt","cross_language":true,"label":"positive","kind":"support","supports":["owner","certificate"],"text":"A técnica responsável pela calibração assina o certificado de calibração do instrumento fictício Foz M2."},
+      {"id":"h06d","language":"pt","cross_language":true,"label":"negative","kind":"wrong_entity","supports":[],"text":"O gerente comercial assina o certificado de venda do instrumento fictício Foz M3."}]},
+    {"id":"h07","split":"holdout","domain":"archive_robot_product","language":"pt","answerable":true,"required_facts":["robot","humidity"],"query":"Qual umidade relativa é permitida para guardar o robô de arquivo fictício Garo R1?","docs":[
+      {"id":"h07a","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["robot","humidity"],"text":"O robô de arquivo fictício Garo R1 deve ser guardado com umidade relativa entre 40% e 55%."},
+      {"id":"h07b","language":"pt","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"O robô de arquivo fictício Garo R2 pode ser guardado com umidade relativa de 70%."},
+      {"id":"h07c","language":"pt","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"A bateria do robô de arquivo fictício Garo R1 deve ser guardada com carga de 50%; isto não mede umidade."},
+      {"id":"h07d","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"Não há limite de umidade relativa para guardar o robô de arquivo fictício Garo R1."}]},
+    {"id":"h08","split":"holdout","domain":"archive_robot_product","language":"en","answerable":true,"required_facts":["crate","power"],"query":"What crate and power precautions are required to ship the fictional Hali archive robot?","docs":[
+      {"id":"h08a","language":"en","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"Ship the fictional Hali archive robot powered on and without a protective crate."},
+      {"id":"h08b","language":"en","cross_language":false,"label":"positive","kind":"complement","supports":["power"],"text":"The fictional Hali archive robot must be switched off before shipping."},
+      {"id":"h08c","language":"en","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"The fictional Hali desk lamp ships in a cardboard sleeve while connected to power."},
+      {"id":"h08d","language":"en","cross_language":false,"label":"positive","kind":"complement","supports":["crate"],"text":"The fictional Hali archive robot must ship in its padded rigid crate."}]},
+    {"id":"h09","split":"holdout","domain":"equipment_lending_product","language":"pt","answerable":true,"required_facts":["device","borrower"],"query":"Quem pode retirar o leitor tátil fictício Iris B2 emprestado?","docs":[
+      {"id":"h09a","language":"pt","cross_language":false,"label":"negative","kind":"wrong_relation","supports":[],"text":"A equipe de manutenção pode reparar o leitor tátil fictício Iris B2, mas isso não autoriza empréstimos."},
+      {"id":"h09b","language":"pt","cross_language":false,"label":"positive","kind":"support","supports":["device","borrower"],"text":"Somente estudantes cadastrados podem retirar o leitor tátil fictício Iris B2 emprestado."},
+      {"id":"h09c","language":"pt","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"Visitantes podem retirar o fone fictício Iris B3 emprestado."},
+      {"id":"h09d","language":"pt","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"Qualquer visitante sem cadastro pode retirar o leitor tátil fictício Iris B2 emprestado."}]},
+    {"id":"h10","split":"holdout","domain":"equipment_lending_product","language":"en","answerable":true,"required_facts":["device","return_date"],"query":"Fixed now: 2026-06-10T12:00:00Z. When is the fictional Jade L2 reader due back under loan record Zeta?","docs":[
+      {"id":"h10a","language":"en","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"Loan record Zeta says the fictional Jade L2 reader was collected on 2026-06-09."},
+      {"id":"h10b","language":"en","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"Loan record Eta says the fictional Jade L3 reader is due back on 2026-06-12."},
+      {"id":"h10c","language":"en","cross_language":false,"label":"positive","kind":"support","supports":["device","return_date"],"text":"Loan record Zeta says the fictional Jade L2 reader is due back on 2026-06-15."},
+      {"id":"h10d","language":"en","cross_language":false,"label":"negative","kind":"contradiction","supports":[],"text":"Loan record Zeta has no return deadline for the fictional Jade L2 reader."}]},
+    {"id":"h11","split":"holdout","domain":"no_answer_cold_chain_product","language":"en","answerable":false,"required_facts":["battery_hours"],"query":"How many hours does the fictional Kora S7 sensor battery last?","docs":[
+      {"id":"h11a","language":"en","cross_language":false,"label":"negative","kind":"missing_evidence","supports":[],"text":"The fictional Kora S7 transport temperature is 2 to 8 degrees Celsius; battery life is undocumented."},
+      {"id":"h11b","language":"en","cross_language":false,"label":"negative","kind":"wrong_entity","supports":[],"text":"The fictional Kora S8 sensor battery lasts forty hours."},
+      {"id":"h11c","language":"en","cross_language":false,"label":"negative","kind":"wrong_attribute","supports":[],"text":"The fictional Kora S7 sensor battery requires two hours to charge; this is not its operating lifetime."},
+      {"id":"h11d","language":"en","cross_language":false,"label":"negative","kind":"missing_evidence","supports":[],"text":"The fictional Kora S7 sensor uses a rechargeable battery with no recorded lifetime measurement."}]},
+    {"id":"h12","split":"holdout","domain":"no_answer_lab_product","language":"pt","answerable":false,"required_facts":["certificate_expiry"],"query":"Em qual data vence o certificado de calibração do instrumento fictício Lume X1?","docs":[
+      {"id":"h12a","language":"en","cross_language":true,"label":"negative","kind":"wrong_attribute","supports":[],"text":"The fictional Lume X1 calibration certificate was issued on 2026-06-01; its expiry date is not recorded."},
+      {"id":"h12b","language":"en","cross_language":true,"label":"negative","kind":"wrong_entity","supports":[],"text":"The fictional Lume X2 calibration certificate expires on 2026-12-01."},
+      {"id":"h12c","language":"en","cross_language":true,"label":"negative","kind":"missing_evidence","supports":[],"text":"The fictional Lume X1 calibration certificate is signed by its laboratory technician but has no recorded expiry date."},
+      {"id":"h12d","language":"en","cross_language":true,"label":"negative","kind":"near_topic","supports":[],"text":"The fictional Lume X1 purchase warranty ends on 2026-12-01; a warranty is not a calibration certificate."}]}
+  ]
+}

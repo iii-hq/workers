@@ -8,6 +8,7 @@
 
 pub mod banks;
 pub mod items;
+pub mod metrics_support;
 pub mod ops;
 pub mod preview;
 pub mod recall;

@@ -1,0 +1,101 @@
+globalThis.memoryQualityRevision = '11';
+globalThis.memoryQualityStep = function(snapshot) {
+  const s = JSON.parse(JSON.stringify(snapshot));
+  const emit = (type, detail = {}) => ({ state: s, actions: [{ id: `${s.run_id}:${s.state_version}:${type}:${detail.unit || 'run'}`, type, ...detail }] });
+  s.state_version++;
+  if (!Array.isArray(s.units) || !Number.isFinite(s.now_ms) || !(Number.isFinite(s.deadline_ms) || (s.deadline_ms === null && s.deadline_mode === 'user-open-ended'))) throw Error('invalid snapshot');
+  for (const r of s.results || []) {
+    const u = s.units.find(x => x.id === r.unit);
+    if (!u || r.run_id !== s.run_id || r.attempt !== u.attempt || r.revision !== s.code_revision || u.processed?.includes(r.event_id)) continue;
+    if (!r.producer_stopped) continue;
+    u.processed = [...(u.processed || []), r.event_id];
+    if (!['done','blocked','failed'].includes(r.outcome) || !Array.isArray(r.evidence) || !r.evidence.length) { u.status = 'failed'; u.reason = 'invalid-result'; continue; }
+    if (r.outcome !== 'done') { u.status = r.outcome; u.reason = r.reason || r.outcome; continue; }
+    if (r.independent === true && r.accepted === true && u.status === 'verifying') u.status = 'accepted';
+    else if (u.status === 'running') u.status = 'delivered';
+  }
+  s.results = [];
+  const preps = s.preparations || [];
+  for (const r of s.preparation_results || []) {
+    const p=preps.find(p=>p.id===r.id);
+    if(!p||r.run_id!==s.run_id||r.attempt!==p.attempt||r.revision!==s.code_revision||p.processed?.includes(r.event_id)||!r.producer_stopped) continue;
+    p.processed=[...(p.processed||[]),r.event_id];
+    p.status=r.outcome==='done'&&Array.isArray(r.evidence)&&r.evidence.length?(r.independent===true&&r.accepted===true?'accepted':'delivered'):(r.outcome==='blocked'?'blocked':'failed');
+  }
+  s.preparation_results=[];
+  for(const p of preps) if(p.status==='running'&&s.now_ms>=p.deadline_ms){p.status='expired';p.needs_reconciliation=true;}
+  const stages=s.parallel_stages||[];
+  for(const r of s.stage_results||[]){
+    const p=stages.find(p=>p.id===r.id);
+    if(!p||r.run_id!==s.run_id||r.attempt!==p.attempt||r.revision!==s.code_revision||p.processed?.includes(r.event_id)||!r.producer_stopped)continue;
+    p.processed=[...(p.processed||[]),r.event_id];
+    if(r.outcome!=='done'||!Array.isArray(r.evidence)||!r.evidence.length){p.status=r.outcome==='blocked'?'blocked':'failed';continue;}
+    if(p.status==='verifying'&&r.independent===true&&r.accepted===true)p.status='accepted';else if(p.status==='running')p.status='delivered';
+  }
+  s.stage_results=[];
+  for(const p of stages)if(['running','verifying'].includes(p.status)&&s.now_ms>=p.deadline_ms){p.status='expired';p.needs_reconciliation=true;}
+  const prepPending=preps.some(p=>p.required&&p.status!=='accepted')||stages.some(p=>p.required&&p.status!=='accepted');
+  const correctionOpen = s.limits.correction_mode === 'user-unbounded' && s.authorization?.correction_rounds_unbounded === true;
+  const correctionAvailable = u => correctionOpen || (u.correction_rounds || 0) < (u.correction_limit ?? s.limits.correction_rounds);
+  const busy = [...s.units.filter(u => ['running','verifying'].includes(u.status)),...preps.filter(p=>p.status==='running'||p.needs_reconciliation),...stages.filter(p=>['running','verifying'].includes(p.status)||p.needs_reconciliation)];
+  if (!prepPending && s.scope_units?.length && s.scope_units.every(id => s.units.find(u => u.id === id)?.status === 'accepted')) return emit('finish', { complete: s.units.every(u => u.status === 'accepted'), scope_complete: true, reason: 'authorized-scope-complete' });
+  if (!prepPending && s.units.every(u => u.status === 'accepted')) return emit('finish', { complete: true });
+  const halted = (Number.isFinite(s.deadline_ms) && s.now_ms >= s.deadline_ms) || s.consumed.agent_calls >= s.limits.agent_calls || s.consumed.no_progress_rounds >= s.limits.no_progress_rounds || (!correctionOpen && s.units.some(u => (u.correction_rounds || 0) > (u.correction_limit ?? s.limits.correction_rounds)));
+  if (halted) return emit(busy.length ? 'wait' : 'finish', { complete: false, reason: 'limit', active: busy.map(u=>u.id) });
+  if (!s.approved) return emit('request approval', { reason: 'execution-authorization' });
+  if (!s.preflight_ok || !s.route_verified) return emit('finish', { complete: false, reason: 'prerequisite' });
+  if(s.authorization?.parallel_preparation===true){
+    const slots=Math.max(0,Math.min(8,s.limits.concurrency||4)-busy.length);
+    const budget=Math.max(0,s.limits.agent_calls-s.consumed.agent_calls);
+    const ready=preps.filter(p=>p.status==='pending'&&p.read_only===true&&!p.needs_reconciliation&&p.attempt<(p.attempt_limit??s.limits.attempts_per_unit)&&p.depends_on.every(id=>s.units.find(u=>u.id===id)?.status==='accepted')).slice(0,Math.min(slots,budget));
+    if(ready.length){const actions=ready.map(p=>{p.attempt++;p.status='running';p.deadline_ms=s.now_ms+(p.watchdog_ms||1200000);s.consumed.agent_calls++;return {id:[s.run_id,s.state_version,'dispatch','preparation',p.id,p.attempt].join(':'),type:'dispatch',unit:p.unit,preparation:true,preparation_id:p.id,attempt:p.attempt,read_only:true,session_id:p.session_id};});return {state:s,actions};}
+  }
+  if(s.authorization?.parallel_implementation===true){
+    const continuation=(s.stage_continuations||[]).find(c=>{
+      const p=stages.find(p=>p.id===c.id);
+      return p&&p.authorized===true&&c.producer_stopped===true&&c.revision===s.code_revision&&c.attempt===p.attempt&&!p.needs_reconciliation&&['running','verifying','delivered','blocked','failed'].includes(p.status)&&typeof c.session_id==='string'&&c.session_id.trim().length>0&&(c.kind!=='review-correction'||correctionOpen||(p.correction_rounds||0)<(p.correction_limit??s.limits.correction_rounds))&&busy.filter(x=>x.id!==p.id).length<Math.min(8,s.limits.concurrency||4);
+    });
+    if(continuation){
+      const p=stages.find(p=>p.id===continuation.id);p.status='running';p.session_id=continuation.session_id;p.deadline_ms=s.now_ms+(p.watchdog_ms||1200000);
+      if(continuation.kind==='review-correction'){p.correction_rounds=(p.correction_rounds||0)+1;s.consumed.correction_rounds++;}
+      s.stage_continuations=s.stage_continuations.filter(c=>c!==continuation);s.consumed.agent_calls++;
+      return {state:s,actions:[{id:[s.run_id,s.state_version,'dispatch','stage',p.id,p.attempt,'correction',p.correction_rounds||0].join(':'),type:'dispatch',unit:p.unit,stage_id:p.id,attempt:p.attempt,correction_round:p.correction_rounds||0,session_id:p.session_id,paths:p.paths,continuation:true,receipt:continuation.receipt}]};
+    }
+    const slots=Math.max(0,Math.min(8,s.limits.concurrency||4)-busy.length);
+    const budget=Math.max(0,s.limits.agent_calls-s.consumed.agent_calls);
+    const held=[...(s.write_locks||[]).flatMap(l=>l.paths||[]),...stages.filter(p=>['running','verifying'].includes(p.status)||p.needs_reconciliation).flatMap(p=>p.paths||[])];
+    const ready=[];
+    for(const p of stages){
+      if(ready.length>=Math.min(slots,budget))break;
+      if(p.status!=='pending'||p.authorized!==true||p.needs_reconciliation||p.attempt>=(p.attempt_limit??s.limits.attempts_per_unit)||!Array.isArray(p.paths)||!p.paths.length)continue;
+      if(!p.depends_on.every(id=>preps.some(x=>x.id===id&&x.status==='accepted')||s.units.some(x=>x.id===id&&x.status==='accepted')||stages.some(x=>x.id===id&&x.status==='accepted')))continue;
+      if(p.paths.some(path=>held.includes(path)))continue;
+      ready.push(p);held.push(...p.paths);
+    }
+    if(ready.length){const actions=ready.map(p=>{p.attempt++;p.status='running';p.deadline_ms=s.now_ms+(p.watchdog_ms||1200000);s.consumed.agent_calls++;return {id:[s.run_id,s.state_version,'dispatch','stage',p.id,p.attempt].join(':'),type:'dispatch',unit:p.unit,stage_id:p.id,attempt:p.attempt,session_id:p.session_id,paths:p.paths};});return {state:s,actions};}
+    if(slots>0&&budget>0){const p=stages.find(p=>p.status==='delivered');if(p){p.status='verifying';p.deadline_ms=s.now_ms+(p.watchdog_ms||1200000);s.consumed.agent_calls++;return {state:s,actions:[{id:[s.run_id,s.state_version,'verify','stage',p.id,p.attempt].join(':'),type:'verify',stage_id:p.id,unit:p.unit,attempt:p.attempt}]};}}
+  }
+  if(prepPending&&!s.units.some(u=>['running','verifying','delivered'].includes(u.status)))return emit(busy.length?'wait':'finish',{complete:false,reason:'preparation-incomplete'});
+  if (s.units.some(u => u.status === 'blocked')) return emit('finish', { complete: false, reason: 'blocked-unit' });
+  const continuation = (s.continuations || []).find(c => c.producer_stopped && c.revision === s.code_revision && s.units.some(u => u.id === c.unit && (u.status === 'running' || (u.status === 'verifying' && c.kind === 'review-correction' && correctionAvailable(u))) && u.attempt === c.attempt));
+  if (continuation) { const u = s.units.find(u => u.id === continuation.unit); if (continuation.kind === 'review-correction') { u.correction_rounds = (u.correction_rounds || 0) + 1; u.status = 'running'; s.consumed.correction_rounds++; } s.continuations = s.continuations.filter(c => c !== continuation); s.consumed.agent_calls++; return emit('dispatch', { unit: continuation.unit, attempt: continuation.attempt, resume: true, correction_round: u.correction_rounds || 0, receipt: continuation.receipt }); }
+  const delivered = s.units.find(u => u.status === 'delivered');
+  if (delivered) { delivered.status = 'verifying'; s.consumed.agent_calls++; return emit('verify', { unit: delivered.id, attempt: delivered.attempt }); }
+  if (s.units.some(u => ['running','verifying'].includes(u.status))) return emit('wait');
+  const next = s.units.find(u => ['pending','failed'].includes(u.status) && (!s.scope_units || s.scope_units.includes(u.id)) && u.depends_on.every(d => s.units.find(x => x.id === d)?.status === 'accepted'));
+  if (!next) return emit('finish', { complete: false, reason: 'unsatisfied-dependencies' });
+  if (next.attempt >= (next.attempt_limit ?? s.limits.attempts_per_unit)) return emit('finish', { complete: false, reason: 'attempts-exhausted', unit: next.id });
+  next.attempt++; next.status = 'running'; next.phase_deadline_ms = s.now_ms + (s.limits.phase_ms || 1800000); s.consumed.agent_calls++;
+  return emit('dispatch', { unit: next.id, attempt: next.attempt });
+};
+globalThis.validateMemoryQualityActions = function(output, paths) {
+  if (!output || !Array.isArray(output.actions) || output.actions.length > Math.min(8, output.state.limits.concurrency || 4)) throw Error('invalid actions');
+  for (const a of output.actions) {
+    if (!['dispatch','wait','request approval','verify','finish'].includes(a.type) || !a.id) throw Error('unknown action');
+    if(a.preparation){const p=output.state.preparations?.find(p=>p.id===a.preparation_id);if(output.state.authorization?.parallel_preparation!==true||a.type!=='dispatch'||a.read_only!==true||!p||!p.read_only||p.session_id!==a.session_id||p.attempt!==a.attempt||p.status!=='running')throw Error('unauthorized preparation');}
+    if(a.stage_id){const p=output.state.parallel_stages?.find(p=>p.id===a.stage_id);if(output.state.authorization?.parallel_implementation!==true||!p||p.authorized!==true||p.attempt!==a.attempt)throw Error('unauthorized stage');for(const path of p.paths||[])if(!paths.some(root=>path===root||path.startsWith(root+'/'))||path.split('/').includes('..'))throw Error('unauthorized stage path');if(a.type==='dispatch'&&(p.status!=='running'||p.session_id!==a.session_id||JSON.stringify(p.paths)!==JSON.stringify(a.paths)))throw Error('stage contract');}
+    if (a.path && !paths.some(p => a.path === p || a.path.startsWith(p + '/'))) throw Error('unauthorized path');
+  }
+  if (output.state.consumed.agent_calls > output.state.limits.agent_calls) throw Error('call limit');
+  return output;
+};

@@ -68,6 +68,29 @@ rule; point-in-time information belongs in memories.
   newer memory over an older one that contradicts it. Dated events are stored
   with absolute dates.
 
+## Incremental extraction limits
+
+A confirmed per-session cursor reads only strict-after `after_entry_id` messages;
+following pages use the opaque server cursor. The job's `until` is an inclusive
+client cut, never an API field. Missing/invalid anchors fall back to a validated
+root walk and a bounded `extraction_window`, not a full initial-history backfill.
+A missing completed boundary or transient/malformed read fails without confirming
+it; old jobs are ignored only after order on the active path proves coverage.
+All valid delta text is retained, split into oldest-first 24,000-byte excerpt runs
+(with oversized single messages alone), four calls per attempt; backlog requires
+queue retries and can reach the dead-letter limit. Nontext/trivial entries advance
+without a model call. OFF jobs must confirm before later ON jobs to avoid sweeping
+unconfirmed history across bank changes; causal delivery is not a cross-process
+transaction. The job's bank, not a newly selected bank, controls its writes.
+
+Numbered corrections resolve the prompt's actual stored record and atomically
+publish replacement and tombstone with snapshot guards. Cursor confirmation is
+separate: an interrupted/failed confirmation after a durable write can replay
+corroboration and change events. Fingerprints avoid identical records, not every
+retry side effect. Temporary offline SDK/store reconstruction tests are not proof
+of real engine delivery, state-worker durability, subprocess crash or power-loss
+consistency. No model route or live configuration is changed by this policy.
+
 ## Functions
 
 - `memory::save` — explicit save; content-fingerprinted, repeat saves reinforce.
@@ -114,3 +137,19 @@ polling `memory::list` / `memory::bank::list`.
    { "expires_in_ms": 3600000 } }` wakes this session on each change for an
    hour, and a `target: { "function_id": ... }` calls that function
    instead. Delivery is fire-and-forget and unordered.
+
+## Budget and usage interpretation
+
+The default recall line budget is 1200 estimated tokens / 4800 UTF-8 bytes;
+whole dated lines are packed, and a skipped long line does not prevent a shorter
+one from fitting. Headers, rules, reminders and wrappers add separately measured
+overhead. Rules retain their own boundary-safe byte limit. These are estimates,
+not provider counts. Productive hook/extraction telemetry contains only restricted
+identifiers, scalars and closed outcomes, never query, prompt, memory, transcript
+or free-form errors; do not copy content into metrics. Unknown token usage or
+cost is null, not zero, and Harness session totals are not Memory consumption.
+Extraction still requests the configured model, or explicitly uses the first
+catalog entry when unset; no runtime recommendation is applied. Without verified
+live availability, pricing and quality evidence, a named model recommendation is
+unavailable rather than fabricated. The offline metrics tests exercise actual
+handlers with temporary synthetic SDK transport, not a live engine or model.

@@ -33,6 +33,7 @@ are NOT the same — when unsure, leave the group out.\n\
 - promotions: candidates that are standing instructions about how an assistant should behave \
 (style, format, workflow). Phrase `rule` as ONE imperative line under 200 characters. Facts \
 about people or the world are never promoted — omit them.\n\
+- Merge indices are proposals, not proof: the local verifier requires ordered detail equality or a closed typed prose rule and retains both on ambiguity. Source labels, similarity and your confidence never certify equivalence. Case-sensitive identifiers, paths, operators, numbers, punctuation and additional details must survive.\n\
 - Empty lists are the normal answer.";
 
 const LLM_TIMEOUT_MS: u64 = 60_000;
@@ -241,6 +242,7 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             stated_at: None,
+            snapshot: Default::default(),
         }
     }
 

@@ -277,8 +277,8 @@ impl<'a> CallerModel<'a> {
     }
 }
 
-/// The single per-call invocation chokepoint. Observe controls and a locked
-/// caller's exact self-targeted `harness::send` are handled inline with
+/// The single per-call invocation chokepoint. Observe controls and
+/// every agent `harness::send` are handled inline with
 /// trusted caller context; the model cannot forge session-lock ownership.
 /// Everything else invokes the target normally. Every call site (the turn loop,
 /// `harness::function::call`, and the hook-held release path) routes through
@@ -296,6 +296,9 @@ pub async fn invoke(
     caller: Option<CallerModel<'_>>,
 ) -> ResultData {
     if agent_call_forbidden(function_id) {
+        return call::denied_result(function_id);
+    }
+    if function_id == crate::functions::SEND_ID && !policy.allows(function_id) {
         return call::denied_result(function_id);
     }
     if function_id == OBSERVE_ID {
@@ -320,14 +323,18 @@ pub async fn invoke(
                 return call::invocation_error_result(Some(error.code().into()), error.to_string())
             }
         };
-    let send = send_invocation_context(
-        function_id,
-        arguments,
-        session_id,
-        caller_holds_session_lock,
-    );
-    let (mut result, outcome_unknown) = if let Some(request) = send {
-        (intercept_send(deps, request, session_id).await, false)
+    let (mut result, outcome_unknown) = if function_id == crate::functions::SEND_ID {
+        (
+            intercept_send(
+                deps,
+                arguments,
+                session_id,
+                caller_holds_session_lock,
+                policy,
+            )
+            .await,
+            false,
+        )
     } else {
         match function_id {
             OBSERVE_ID => (
@@ -380,18 +387,11 @@ pub async fn invoke(
 /// [`invoke`].
 pub fn is_locally_intercepted(
     function_id: &str,
-    arguments: &Value,
-    session_id: &str,
-    caller_holds_session_lock: bool,
+    _arguments: &Value,
+    _session_id: &str,
+    _caller_holds_session_lock: bool,
 ) -> bool {
-    send_invocation_context(
-        function_id,
-        arguments,
-        session_id,
-        caller_holds_session_lock,
-    )
-    .is_some()
-        || matches!(function_id, OBSERVE_ID | UNOBSERVE_ID)
+    function_id == crate::functions::SEND_ID || matches!(function_id, OBSERVE_ID | UNOBSERVE_ID)
 }
 
 /// Agent calls carry the harness worker's authority. Private state accessors
@@ -405,6 +405,7 @@ fn agent_call_forbidden(function_id: &str) -> bool {
     function_id.starts_with("harness::delete-session-tree")
         || function_id == crate::state::CLAIM_NAMESPACE_ID
         || function_id == crate::bindings::OBSERVERS_DISPOSE_ID
+        || function_id == crate::functions::EDIT_QUEUED_ID
         // `harness::function::call` takes the session lock a running step
         // already holds: an agent calling it for its own session deadlocks,
         // and recursive pipeline invocation is never an agent need.
@@ -422,26 +423,34 @@ fn agent_call_forbidden(function_id: &str) -> bool {
         .any(|prefix| function_id.starts_with(prefix))
 }
 
-fn send_invocation_context(
-    function_id: &str,
-    arguments: &Value,
-    session_id: &str,
-    caller_holds_session_lock: bool,
-) -> Option<crate::functions::send::SendRequest> {
-    if function_id != crate::functions::SEND_ID || !caller_holds_session_lock {
-        return None;
-    }
-    let request: crate::functions::send::SendRequest =
-        serde_json::from_value(arguments.clone()).ok()?;
-    (request.session_id.as_deref() == Some(session_id)).then_some(request)
-}
-
 async fn intercept_send(
     deps: &Deps,
-    request: crate::functions::send::SendRequest,
+    arguments: &Value,
     caller_session_id: &str,
+    caller_holds_session_lock: bool,
+    policy: &CompiledPolicy,
 ) -> ResultData {
-    match crate::functions::send::handle_from_invoke(deps, request, caller_session_id, true).await {
+    if !policy.allows(crate::functions::SEND_ID) {
+        return call::denied_result(crate::functions::SEND_ID);
+    }
+    let request =
+        match serde_json::from_value::<crate::functions::send::SendRequest>(arguments.clone()) {
+            Ok(request) => request,
+            Err(error) => {
+                return call::invocation_error_result(
+                    Some("harness/invalid_request".into()),
+                    format!("invalid send: {error}"),
+                )
+            }
+        };
+    match crate::functions::send::handle_from_invoke(
+        deps,
+        request,
+        caller_session_id,
+        caller_holds_session_lock,
+    )
+    .await
+    {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => call::normalized_result(value),
             Err(error) => call::invocation_error_result(
@@ -2488,33 +2497,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn trusted_self_send_is_intercepted_locally() {
-        let arguments = json!({ "session_id": "s", "message": "hello" });
-        let request = send_invocation_context(crate::functions::SEND_ID, &arguments, "s", true)
-            .expect("trusted self-send should be intercepted");
-        assert_eq!(request.session_id.as_deref(), Some("s"));
-    }
-
-    #[test]
-    fn sends_without_trusted_exact_self_target_use_engine_dispatch() {
-        let cases = [
-            json!({ "session_id": "other", "message": "hello" }),
-            json!({ "message": "hello" }),
-            json!({ "session_id": 42, "message": "hello" }),
-            json!({ "session_id": "s", "message": 42 }),
-        ];
-        for arguments in cases {
-            assert!(
-                send_invocation_context(crate::functions::SEND_ID, &arguments, "s", true,)
-                    .is_none()
-            );
+    fn every_agent_send_stays_local_even_when_invalid_or_not_self_targeted() {
+        for arguments in [
+            json!({"session_id":"s","message":"hello"}),
+            json!({"session_id":"other","message":"hello"}),
+            json!({"message":"hello"}),
+            json!({"message":42}),
+        ] {
+            for locked in [true, false] {
+                assert!(is_locally_intercepted(
+                    crate::functions::SEND_ID,
+                    &arguments,
+                    "s",
+                    locked
+                ));
+            }
         }
-
-        let self_send = json!({ "session_id": "s", "message": "hello" });
-        assert!(
-            send_invocation_context(crate::functions::SEND_ID, &self_send, "s", false,).is_none()
-        );
-        assert!(send_invocation_context("state::get", &self_send, "s", true).is_none());
+        assert!(!is_locally_intercepted("state::get", &json!({}), "s", true));
     }
 
     /// The intercepted controls are published by the harness itself for

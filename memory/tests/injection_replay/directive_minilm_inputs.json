@@ -1,0 +1,62 @@
+[
+  {
+    "id": "pt-twelve",
+    "query": "Você deve escrever os horários para mim como 09:00 ou como 9 AM?",
+    "candidates": [
+      {"id":"positive","text":"A usuária quer horários no formato de 12 horas, nunca no formato de 24 horas."},
+      {"id":"negative","text":"A usuária não quer horários no formato de 12 horas, nunca no formato de 24 horas."},
+      {"id":"foreign","text":"A visitante quer horários no formato de 12 horas, nunca no formato de 24 horas."},
+      {"id":"conditional","text":"A usuária quer horários no formato de 12 horas, nunca no formato de 24 horas se disponível."},
+      {"id":"question","text":"A usuária quer horários no formato de 12 horas, nunca no formato de 24 horas?"},
+      {"id":"quoted","text":"\"A usuária quer horários no formato de 12 horas, nunca no formato de 24 horas.\""},
+      {"id":"malformed","text":"A usuária quer horários no formato de 12 horas, nunca no formato de se disponível."},
+      {"id":"executor","text":"A usuária quer horários no formato de 12 horas e tradutores como executores, nunca no formato de 24 horas."},
+      {"id":"inverse","text":"O assistente quer que a usuária escreva horários no formato de 12 horas."}
+    ]
+  },
+  {
+    "id": "en-notation",
+    "query": "Should you write times for me as 9 AM or as 09:00?",
+    "candidates": [
+      {"id":"positive","text":"User wants times in 24-hour format, never AM/PM."},
+      {"id":"negative","text":"User does not want times in 24-hour format, never AM/PM."},
+      {"id":"foreign","text":"The visitor wants times in 24-hour format, never AM/PM."},
+      {"id":"conditional","text":"User wants times in 24-hour format, never AM/PM if available."},
+      {"id":"question","text":"User wants times in 24-hour format, never AM/PM?"},
+      {"id":"quoted","text":"\"User wants times in 24-hour format, never AM/PM.\""},
+      {"id":"malformed","text":"User wants times in 24-hour format, never AM PM."},
+      {"id":"executor","text":"User wants times in 24-hour format and translators as executors, never AM/PM."},
+      {"id":"inverse","text":"The assistant wants the user to write times in 24-hour format."}
+    ]
+  },
+  {
+    "id": "pt-neutral",
+    "query": "Você deve escrever os horários para mim como 09:00 ou como 9 AM?",
+    "candidates": [
+      {"id":"positive","text":"A usuária quer horários no formato de 16 horas, nunca no formato de 32 horas."},
+      {"id":"negative","text":"A usuária não quer horários no formato de 16 horas, nunca no formato de 32 horas."},
+      {"id":"foreign","text":"A visitante quer horários no formato de 16 horas, nunca no formato de 32 horas."},
+      {"id":"conditional","text":"A usuária quer horários no formato de 16 horas, nunca no formato de 32 horas se disponível."},
+      {"id":"question","text":"A usuária quer horários no formato de 16 horas, nunca no formato de 32 horas?"},
+      {"id":"quoted","text":"\"A usuária quer horários no formato de 16 horas, nunca no formato de 32 horas.\""},
+      {"id":"malformed","text":"A usuária quer horários no formato de 16 horas, nunca no formato de se disponível."},
+      {"id":"executor","text":"A usuária quer horários no formato de 16 horas e mensageiros como revisores, nunca no formato de 32 horas."},
+      {"id":"inverse","text":"O assistente quer que a usuária escreva horários no formato de 16 horas."}
+    ]
+  },
+  {
+    "id": "en-neutral-coordination",
+    "query": "Should you write times for me as 9 AM or as 09:00?",
+    "candidates": [
+      {"id":"positive","text":"User wants times in 16-hour format and intervals as HH:MM, never AM/PM or month-first dates."},
+      {"id":"negative","text":"User does not want times in 16-hour format and intervals as HH:MM, never AM/PM or month-first dates."},
+      {"id":"foreign","text":"The visitor wants times in 16-hour format and intervals as HH:MM, never AM/PM or month-first dates."},
+      {"id":"conditional","text":"User wants times in 16-hour format and intervals as HH:MM, never AM/PM or month-first dates if available."},
+      {"id":"question","text":"User wants times in 16-hour format and intervals as HH:MM, never AM/PM or month-first dates?"},
+      {"id":"quoted","text":"\"User wants times in 16-hour format and intervals as HH:MM, never AM/PM or month-first dates.\""},
+      {"id":"malformed","text":"User wants times in 16-hour format and intervals as HH:MM, never AM PM or month-first dates."},
+      {"id":"executor","text":"User wants times in 16-hour format and couriers as reviewers, never AM/PM or month-first dates."},
+      {"id":"inverse","text":"The assistant wants the user to write times in 16-hour format and intervals as HH:MM."}
+    ]
+  }
+]

@@ -28,6 +28,9 @@ use iii_sdk::protocol::CallRequest;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::extract;
+use crate::functions::metrics_support::{
+    byte_budget, estimate_tokens_from_bytes, metric_id, RetrievalMetrics, SizeBreakdown,
+};
 use crate::store::{Bank, Evidence};
 use crate::types::{local_date, now_ms, Memory};
 
@@ -135,6 +138,193 @@ pub struct PreGenerateInput {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub generate: Option<GenerateInput>,
+    /// Controlled delivery context emitted by Harness, never options.metadata
+    /// or a claim inside a model-facing message. Legacy absence recalls nothing.
+    #[serde(default)]
+    #[schemars(with = "Option<RecallContext>")]
+    pub recall_context: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RecallContext {
+    version: u64,
+    session_id: String,
+    turn_id: String,
+    source: RecallSource,
+    #[serde(default)]
+    query: Option<RecallQuery>,
+    #[serde(default)]
+    continuation: Option<RecallQuery>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RecallSource {
+    kind: String,
+    entry_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RecallQuery {
+    entry_id: String,
+    text: String,
+}
+
+/// A response explicitly restricted to receipt/acknowledgment needs no
+/// autobiographical evidence. This is retrieval intent only, not provenance:
+/// no notification-looking prefix or claimed origin can change a channel.
+/// An actual question or a separate request for facts keeps ordinary recall.
+fn receipt_only(query: &str) -> bool {
+    if query.contains('?') {
+        return false;
+    }
+    let mut clauses: Vec<&str> = query
+        .split(['.', '!', ';', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let Some(command) = clauses.pop() else {
+        return false;
+    };
+    let words = crate::index::tokenize(command);
+    // This is a small accepted command grammar, not a deny-list of factual
+    // verbs. Unknown words or extra clauses conservatively retain recall.
+    let exclusive = words
+        .iter()
+        .any(|w| matches!(w.as_str(), "only" | "apenas" | "somente"))
+        && words.iter().any(|w| {
+            matches!(
+                w.as_str(),
+                "acknowledge" | "confirm" | "registre" | "confirme"
+            )
+        })
+        && words.iter().any(|w| {
+            matches!(
+                w.as_str(),
+                "receipt" | "received" | "recebimento" | "recebido"
+            )
+        })
+        && words.iter().all(|w| {
+            matches!(
+                w.as_str(),
+                "please"
+                    | "only"
+                    | "acknowledge"
+                    | "confirm"
+                    | "receipt"
+                    | "received"
+                    | "apenas"
+                    | "somente"
+                    | "registre"
+                    | "confirme"
+                    | "o"
+                    | "recebimento"
+                    | "recebido"
+                    | "desta"
+                    | "deste"
+                    | "dessa"
+                    | "desse"
+                    | "notificação"
+                    | "aviso"
+                    | "mensagem"
+            )
+        });
+    exclusive
+        && clauses.into_iter().all(|clause| {
+            let labelled = clause.split_once(':');
+            let text = labelled.map_or(clause, |(_, body)| body.trim());
+            let status = crate::index::tokenize(text);
+            let subject_led = status.first().is_some_and(|w| {
+                matches!(
+                    w.as_str(),
+                    "the"
+                        | "this"
+                        | "that"
+                        | "o"
+                        | "a"
+                        | "os"
+                        | "as"
+                        | "este"
+                        | "esta"
+                        | "esse"
+                        | "essa"
+                )
+            });
+            // A label is opaque context, never proof of notification origin. Bare
+            // noun subjects are admitted only behind a bounded nominal status
+            // label; an arbitrary command followed by ':' is not such a label.
+            let labelled_subject = labelled.is_some_and(|(label, _)| {
+                let label = crate::index::tokenize(label);
+                !label.is_empty()
+                    && label.iter().all(|w| {
+                        matches!(
+                            w.as_str(),
+                            "technical"
+                                | "técnico"
+                                | "técnica"
+                                | "status"
+                                | "event"
+                                | "evento"
+                                | "notification"
+                                | "notificação"
+                                | "notice"
+                                | "aviso"
+                        )
+                    })
+            });
+            if labelled.is_some() && !labelled_subject {
+                return false;
+            }
+            if !(subject_led || labelled_subject) {
+                return false;
+            }
+            let Some(at) = status.iter().position(|w| {
+                matches!(
+                    w.as_str(),
+                    "finished" | "completed" | "ended" | "terminou" | "concluiu" | "finalizou"
+                )
+            }) else {
+                return false;
+            };
+            let suffix = &status[at + 1..];
+            let simple_status = suffix.is_empty()
+                || (suffix.len() == 3
+                    && matches!(suffix[0].as_str(), "with" | "com")
+                    && suffix[2].chars().all(|c| c.is_ascii_digit()));
+            at > 0
+                && !status[..at]
+                    .iter()
+                    .any(|w| matches!(w.as_str(), "that" | "which" | "how" | "que" | "como"))
+                && simple_status
+        })
+}
+
+/// The producer resolves entry references on the active path before emitting
+/// this envelope. Correlation and version checks here fail closed for recall
+/// only; rules and bank isolation still run normally.
+fn recall_query(input: &PreGenerateInput) -> Option<String> {
+    if input.step != 0 {
+        return None;
+    }
+    let context: RecallContext = serde_json::from_value(input.recall_context.clone()?).ok()?;
+    if context.version != 1
+        || context.session_id != input.session_id
+        || Some(context.turn_id.as_str()) != input.turn_id.as_deref()
+        || !matches!(context.source.kind.as_str(), "direct" | "invoked-agent")
+        || context.source.entry_id.is_empty()
+    {
+        return None;
+    }
+    let valid = |q: &RecallQuery| {
+        !q.entry_id.is_empty() && !q.text.trim().is_empty() && q.text.len() <= 3200
+    };
+    let current = context
+        .query
+        .filter(|q| valid(q) && q.entry_id == context.source.entry_id)?;
+    match context.continuation {
+        Some(prior) if valid(&prior) && prior.entry_id != current.entry_id => Some(prior.text),
+        Some(_) => None,
+        None => Some(current.text),
+    }
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -196,6 +386,9 @@ pub struct TurnCompletedInput {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ExtractJobInput {
     pub session_id: String,
+    /// Correlation only; legacy queued jobs honestly have no turn identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     /// The bank the turn was injected with. Absent: resolved when the job
     /// runs (the worker never saw the turn, or the job predates this).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,8 +462,8 @@ pub async fn pre_generate(
     // section this session's system prompt already carries.
     let bank_name = match resolved {
         Ok(bank) => bank,
-        Err(e) => {
-            tracing::warn!(session_id = %input.session_id, error = %e, "bank lookup failed; injecting nothing new (scope-safe)");
+        Err(_) => {
+            tracing::warn!("memory bank lookup failed; injecting nothing new (scope-safe)");
             return Ok(keep_told_section(&input));
         }
     };
@@ -300,10 +493,10 @@ pub async fn pre_generate(
 
     // Recall only on the step that opens the turn: the appended message is
     // persisted and replayed on later steps, so re-recalling would stack copies.
-    let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
-    let query = (input.step == 0).then_some(query.as_str());
+    let query = recall_query(&input);
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
-    let injected = injection(deps, &cfg, &bank_name, &layers, query, &seen).await;
+    let (injected, mut metrics) =
+        injection_measured(deps, &cfg, &bank_name, &layers, query.as_deref(), &seen).await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -338,6 +531,20 @@ pub async fn pre_generate(
         }
     }
 
+    let base = input.generate.as_ref().map_or(0, |g| g.system_prompt.len());
+    metrics.delivered_bytes = mutations
+        .system_prompt
+        .as_ref()
+        .map_or(0, |s| s.len().saturating_sub(base)) as u64
+        + mutations
+            .append_messages
+            .iter()
+            .map(|m| crate::extract::content_text(m.get("content")).len() as u64)
+            .sum::<u64>();
+    tracing::info!(target: "memory_metrics", session_id = ?metric_id(Some(&input.session_id)),
+        turn_id = ?metric_id(input.turn_id.as_deref()), metrics = ?metrics,
+        "memory retrieval metrics");
+    annotations.insert("memory_metrics".into(), json!(metrics));
     Ok(HookResponse {
         decision: "continue".into(),
         mutations: Some(mutations),
@@ -422,6 +629,23 @@ pub(crate) async fn injection(
     query: Option<&str>,
     seen: &HashSet<String>,
 ) -> Injection {
+    injection_measured(deps, cfg, bank_name, layers, query, seen)
+        .await
+        .0
+}
+
+/// The productive hook also consumes telemetry without changing the legacy
+/// Injection shape used by preview and replay fixtures.
+async fn injection_measured(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    bank_name: &str,
+    layers: &[String],
+    query: Option<&str>,
+    seen: &HashSet<String>,
+) -> (Injection, RetrievalMetrics) {
+    let started = std::time::Instant::now();
+    let mut metrics = RetrievalMetrics::default();
     let store = deps.store().await;
     let bank = store.bank(bank_name).await.ok();
     let mut opened = Vec::new();
@@ -454,8 +678,16 @@ pub(crate) async fn injection(
         rules_truncated,
         ..Injection::none()
     };
+    metrics.budget_tokens = cfg.recall_budget_tokens;
+    metrics.budget_bytes = byte_budget(cfg.recall_budget_tokens);
+    metrics.mode = "none";
+    let (_, _, rule_sizes) = build_rules_section_measured(&rules, cfg.max_rule_chars);
+    metrics.sizes = rule_sizes;
+    metrics.sizes.ambient_header_bytes = out.section.len() as u64
+        - rule_sizes.rule_body_kept_bytes
+        - rule_sizes.rule_formatting_marker_bytes;
     let query = query
-        .filter(|q| !q.trim().is_empty())
+        .filter(|q| !q.trim().is_empty() && !receipt_only(q))
         .map(crate::store::cap_query);
     // On the turn's opening step, like recall: the message is persisted.
     let reminder = query.as_ref().and_then(|_| rules_reminder(&rules));
@@ -471,8 +703,8 @@ pub(crate) async fn injection(
         !layered || crate::scope::layer_keeps(name, &cfg.default_bank, m)
     };
     let Some(query) = query.filter(|_| !sources.is_empty()) else {
-        out.message = append_reminder(None, bank_name, reminder);
-        return out;
+        finish_retrieval(&mut out, &mut metrics, bank_name, reminder, started);
+        return (out, metrics);
     };
     // Fail-soft semantic signal; lexical-only when it misses.
     let query_vec = crate::embed_client::query_vector(deps, &query).await;
@@ -483,8 +715,8 @@ pub(crate) async fn injection(
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
     // One BM25 scale for every bank merged below: each bank's own best
-    // would lift a layer's weak match level with the bank's strong hits,
-    // in the ranking and against `select`'s relevance cut.
+    // would lift a layer's weak match level with the bank's strong hits.
+    // This scale ranks only; it is never independent admission support.
     let mut bm25_max = 0.0_f32;
     for (name, b, layered) in &sources {
         let keep = |m: &Memory| keeps(name, *layered, m);
@@ -533,30 +765,45 @@ pub(crate) async fn injection(
         }
         ranked.push((m, s));
     }
-    let hits = select(
-        merge_ranked(ranked, usize::MAX),
-        &best_evidence,
-        seen,
-        cfg.recall_limit,
-    );
+    let ranked = merge_ranked(ranked, usize::MAX);
+    let reasons = admission_reasons(&ranked, &best_evidence);
+    metrics.candidates = ranked.len() as u64;
+    metrics.unsupported = ranked
+        .iter()
+        .filter(|(m, _)| !reasons.get(&m.id).is_some_and(|r| r.supported()))
+        .count() as u64;
+    let hits = select(ranked, &best_evidence, seen, cfg.recall_limit, &query);
+    metrics.selection_policy_dropped = metrics.candidates - metrics.unsupported - hits.len() as u64;
     // What each source holds on a told line's subject; a memory two hold is the earlier's.
     let linked: HashSet<String> = hits.iter().flat_map(|(m, _)| subjects(m)).collect();
     let mut tagged = Vec::new();
     for &(name, b, layered) in &sources {
         for m in b.tagged(&linked).await {
-            if keeps(name, layered, &m) {
+            if keeps(name, layered, &m) && held.get(&m.id).is_none_or(|source| *source == name) {
                 held.entry(m.id.clone()).or_insert(name);
                 tagged.push(m);
             }
         }
     }
-    let hits = with_updates(hits, &tagged, &query);
+    let before_updates: HashSet<String> = hits.iter().map(|(m, _)| m.id.clone()).collect();
+    let hits = with_updates(hits, &tagged, &query, &reasons);
+    let after_updates: HashSet<String> = hits.iter().map(|(m, _)| m.id.clone()).collect();
+    metrics.updates_added = after_updates.difference(&before_updates).count() as u64;
+    metrics.updates_removed = before_updates.difference(&after_updates).count() as u64;
+    let before_unseen = hits.len();
     let scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
     // After `select`, so a slot this frees stays free.
     let memories = unseen(hits.into_iter().map(|(m, _)| m).collect(), seen);
-    if let Some((body, ids)) =
-        memories_message(bank_name, &memories, cfg.recall_budget_tokens, now_ms())
-    {
+    metrics.already_visible = (before_unseen - memories.len()) as u64;
+    let (rendered, sizes, dropped) =
+        memories_message_measured(bank_name, &memories, cfg.recall_budget_tokens, now_ms());
+    metrics.sizes.memory_text_bytes = sizes.memory_text_bytes;
+    metrics.sizes.memory_line_decoration_bytes = sizes.memory_line_decoration_bytes;
+    metrics.sizes.line_separator_bytes = sizes.line_separator_bytes;
+    metrics.sizes.recall_wrapper_header_bytes = sizes.recall_wrapper_header_bytes;
+    metrics.sizes.excluded_memory_line_bytes = sizes.excluded_memory_line_bytes;
+    metrics.budget_dropped = dropped;
+    if let Some((body, ids)) = rendered {
         out.memories = memories
             .into_iter()
             .filter(|m| ids.contains(&m.id))
@@ -567,8 +814,31 @@ pub(crate) async fn injection(
             .collect();
         out.message = Some(body);
     }
-    out.message = append_reminder(out.message.take(), bank_name, reminder);
-    out
+    finish_retrieval(&mut out, &mut metrics, bank_name, reminder, started);
+    (out, metrics)
+}
+
+fn finish_retrieval(
+    out: &mut Injection,
+    metrics: &mut RetrievalMetrics,
+    bank: &str,
+    reminder: Option<String>,
+    started: std::time::Instant,
+) {
+    let before = out.message.as_ref().map_or(0, String::len);
+    let reminder_bytes = reminder.as_ref().map_or(0, |r| r.len() + 1);
+    out.message = append_reminder(out.message.take(), bank, reminder);
+    let after = out.message.as_ref().map_or(0, String::len);
+    metrics.sizes.reminder_bytes = reminder_bytes as u64;
+    metrics.sizes.recall_wrapper_header_bytes += (after - before - reminder_bytes) as u64;
+    metrics.selected = out.memories.len() as u64;
+    metrics.mode = out.retrieval;
+    metrics.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    metrics.estimated_tokens = estimate_tokens_from_bytes((out.section.len() + after) as u64);
+    debug_assert_eq!(
+        metrics.sizes.validate((out.section.len() + after) as u64),
+        Ok(())
+    );
 }
 
 /// A turn's rules, under one `max_rule_chars` budget: each layer's in
@@ -608,13 +878,92 @@ pub(crate) fn merge_ranked(mut hits: Vec<(Memory, f32)>, limit: usize) -> Vec<(M
     hits
 }
 
-/// A hit under half the turn's best relevance shares a stray word or a
-/// loose meaning with the question, not its subject (recall eval: 0.4 and
-/// 0.5 lose no expected memory in any mode; 0.6 loses three).
-const RELEVANCE_SHARE: f32 = 0.5;
-/// A meaning match this many standard deviations above the question's
-/// mean similarity stands out even behind a strong lexical best.
-const SEMANTIC_Z: f32 = 2.0;
+/// Independent evidence authorizes injection; similarity only ranks candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionReason {
+    RelationalTerms,
+    RequestedAttribute,
+    PersonalRelation,
+    TargetRelation,
+    NamedSubjectFact,
+    SubjectConflict,
+    AttributeConflict,
+    PredicateConflict,
+    NoIndependentRelation,
+}
+
+impl AdmissionReason {
+    pub fn supported(self) -> bool {
+        matches!(
+            self,
+            Self::RelationalTerms
+                | Self::RequestedAttribute
+                | Self::PersonalRelation
+                | Self::TargetRelation
+                | Self::NamedSubjectFact
+        )
+    }
+}
+
+/// Audit the supplied candidates before selection, never from selected ids.
+/// No score/cosine/z certifies a relation. Auditors may supply the complete
+/// ranking so an independently supported hit outside the pool is not waived.
+pub fn admission_reasons(
+    hits: &[(Memory, f32)],
+    evidence: &HashMap<String, Evidence>,
+) -> HashMap<String, AdmissionReason> {
+    let none = Evidence::default();
+    let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
+    let pool: Vec<&Memory> = hits
+        .iter()
+        .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
+        .map(|(m, _)| m)
+        .collect();
+    pool.iter()
+        .map(|m| {
+            let e = ev(m);
+            let reason = if e.subject_conflict {
+                AdmissionReason::SubjectConflict
+            } else if e.attribute_conflict {
+                AdmissionReason::AttributeConflict
+            } else if e.predicate_conflict {
+                AdmissionReason::PredicateConflict
+            } else if (e.directive_scope_required && !e.directive_scope_matched)
+                || (e.target_scope_required && !e.target_scope_matched)
+                || (e.personal_scope_required && !e.personal_scope_matched)
+            {
+                AdmissionReason::NoIndependentRelation
+            } else if e.directive_scope_required && e.directive_scope_matched {
+                AdmissionReason::TargetRelation
+            } else if e.attribute_match {
+                AdmissionReason::RequestedAttribute
+            } else if e.personal_match {
+                AdmissionReason::PersonalRelation
+            } else if !e.relation_words().is_empty()
+                && e.relation_words().len() >= e.relation_term_count().min(2)
+            {
+                if e.target_scope_required {
+                    AdmissionReason::TargetRelation
+                } else {
+                    AdmissionReason::RelationalTerms
+                }
+            } else if e.named_subject
+                && e.subject_question
+                && (e.requested_slot_spans.is_none() || !e.relation_words().is_empty())
+                && pool
+                    .iter()
+                    .filter(|other| ev(other).named_subject && !ev(other).subject_conflict)
+                    .all(|other| other.id == m.id || extract::same_fact(&m.text, &other.text))
+            {
+                AdmissionReason::NamedSubjectFact
+            } else {
+                AdmissionReason::NoIndependentRelation
+            };
+            (m.id.clone(), reason)
+        })
+        .collect()
+}
 // shortcut: the pair passes are quadratic, so they see the best 4 x
 // recall_limit admitted hits, and a list question's siblings past them are
 // never told; widen it if the eval shows a newer fact ranked past it
@@ -642,26 +991,14 @@ fn unrelated(a: &Memory, b: &Memory) -> bool {
 /// more lines carry (a repo-wide service, a team) is a topic, not a subject.
 const LINK_MAX_TAGGED: usize = 5;
 
-/// `told` with, right after each line, every newer statement made later on its
-/// [`subjects`] alone, oldest first: "dana left the company" after "dana is the
-/// on-call engineer for payments-api", though it shares no word with "whom do I
-/// page for payments-api?"; never one older than a told line on those subjects.
-/// Only a line on a subject the question names links, and through an entity at
-/// most [`LINK_MAX_TAGGED`] memories carry; each note once, at its line's score,
-/// never a line told already or a rewording of one. `tagged`: the live memories
-/// the turn reads carrying a told line's subject ([`Bank::tagged`]).
-// shortcut: a line told on other words ("who is on call?" over "dana is on
-// call") links nothing, and an update naming one more subject ("dana moved to
-// the ledger team") never joins: without both, the injection eval's stray-word
-// lines drag their subjects' updates in. Widen when an eval slice of linked
-// updates shows the misses.
-// shortcut: a trivial later note on the subject joins beside the update, and a
-// told later line on the subject hides an older real update. Narrow it when an
-// eval slice of linked updates shows noise.
+/// A later line may follow a selected fact only with its own audited support
+/// or the record's explicit superseded_by link. Entity/date/subset/rarity are
+/// necessary scope guards, never sufficient evidence of an update.
 pub fn with_updates(
     told: Vec<(Memory, f32)>,
     tagged: &[Memory],
     query: &str,
+    reasons: &HashMap<String, AdmissionReason>,
 ) -> Vec<(Memory, f32)> {
     let mut unique = HashSet::new();
     let tagged: Vec<&Memory> = tagged.iter().filter(|m| unique.insert(&m.id)).collect();
@@ -701,6 +1038,13 @@ pub fn with_updates(
                         // in Redis" after "Ledgerly runs on Postgres") is a new fact.
                         && on.is_subset(&about)
                         && on.iter().any(rare)
+                        && match reasons.get(&u.id) {
+                            Some(reason) if reason.supported() => true,
+                            Some(AdmissionReason::NoIndependentRelation) => {
+                                !m.pinned && m.superseded_by.as_deref() == Some(u.id.as_str())
+                            }
+                            _ => false,
+                        }
                         && !told.iter().any(|(t, _)| extract::same_fact(&t.text, &u.text))
                 })
                 .collect();
@@ -730,14 +1074,60 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
     !a.entities.is_empty() && !b.entities.is_empty() && !within(a, b) && !within(b, a)
 }
 
-/// What a turn is told from its ranked hits (every candidate, best first):
-/// those with evidence ([`Evidence`], why each matched) that stand on their
-/// own, or with the turn's best in a turn anchored in the bank (a bank too
-/// small for a z-score anchors on any meaning match), one line per fact,
-/// `limit` of them, or more for a list (every line on the same two or more
-/// question words, each leading with its own subject, or on the `user` of a
-/// question about what memory holds of the user: all its siblings come);
-/// nothing when none has any.
+/// Conservative affirmative list intent; unknown syntax keeps recall_limit.
+/// No topic, entity or candidate count participates in this certification.
+fn enumeration_requested(query: &str) -> bool {
+    let words = crate::index::tokenize(query);
+    if query
+        .chars()
+        .any(|c| matches!(c, '\n' | ';' | '"' | '“' | '”'))
+    {
+        return false;
+    }
+    if words
+        .first()
+        .is_some_and(|w| matches!(w.as_str(), "list" | "liste" | "listar" | "enumere"))
+    {
+        return words.get(1).is_some_and(|w| {
+            matches!(
+                w.as_str(),
+                "the"
+                    | "all"
+                    | "our"
+                    | "my"
+                    | "these"
+                    | "those"
+                    | "os"
+                    | "as"
+                    | "todos"
+                    | "todas"
+                    | "meus"
+                    | "minhas"
+            )
+        });
+    }
+    if let [wh, of, determiner, noun, ..] = words.as_slice() {
+        if wh == "which"
+            && of == "of"
+            && matches!(
+                determiner.as_str(),
+                "our" | "your" | "my" | "the" | "these" | "those"
+            )
+        {
+            return noun.len() > 2 && noun.ends_with('s');
+        }
+    }
+    words.first().is_some_and(|w| w == "quais")
+        && words
+            .get(1)
+            .is_some_and(|w| w.len() > 2 && w.ends_with('s'))
+}
+
+/// Ranked candidates are injected only with independent, conflict-free
+/// relational/attribute/personal/named-subject support. Cosine, z and relative
+/// relevance discover/order candidates, never authorize a line or its tail.
+/// One line per fact; explicit list intent may relax line count only within
+/// the existing shared-support, visibility and token-budget boundaries.
 /// An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
@@ -747,14 +1137,18 @@ pub fn select(
     evidence: &HashMap<String, Evidence>,
     seen: &HashSet<String>,
     limit: usize,
+    query: &str,
 ) -> Vec<(Memory, f32)> {
+    let support = admission_reasons(&hits, evidence);
     let none = Evidence::default();
     let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
     // Every question word `a` matched, `b` matched too.
     let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
-    // Evidence: a word of the question, or a meaning above the model's floor.
+    // Candidate discovery is unchanged: a word or a cosine above the floor.
+    // Authorization is independently audited, never borrowed from similarity.
     let pool: Vec<(Memory, f32)> = hits
         .into_iter()
+        .filter(|(m, _)| m.is_live())
         .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
         .take(POOL_PER_SLOT.saturating_mul(limit))
         .collect();
@@ -766,11 +1160,12 @@ pub fn select(
                 return None;
             }
             let newer = pool.iter().enumerate().filter(|(_, (new, _))| {
-                new.last_stated() > old.last_stated()
+                support.get(&new.id).is_some_and(|reason|reason.supported())
+                    && new.last_stated() > old.last_stated()
                     && !unrelated(old, new)
                     // An older line answering a word the newer lacks stays.
                     && within(ev(old), ev(new))
-                    && extract::supersedes(&old.text, &new.text)
+                    && (old.revalidated_by(new) || extract::supersedes(&old.text, &new.text))
             });
             newer
                 .rev()
@@ -778,51 +1173,8 @@ pub fn select(
                 .map(|(j, _)| j)
         })
         .collect();
-    // Without the stale lines, so a stale best hit never sets the bar. Visible
-    // hits count: a strong one already shown still sets it.
-    let best = pool
-        .iter()
-        .zip(&newest)
-        .filter(|(_, newer)| newer.is_none())
-        .map(|((m, _), _)| ev(m).relevance)
-        .fold(0.0, f32::max);
-    // Holds two of the question's words, or its one.
-    let on_words = |e: &Evidence| !e.matched.is_empty() && e.matched.len() >= e.terms.min(2);
-    // Stands on its own evidence, whatever the turn's best.
-    let alone = |e: &Evidence| {
-        let words = e.matched.len();
-        on_words(e)
-            || e.z.is_some_and(|z| z >= SEMANTIC_Z)
-            // No vector to weigh it against meaning matches: judge its words, as in lexical mode.
-            // shortcut: so without vectors the best hit anchors the turn on one word ("go
-            // ahead" injects a Go memory); gating this arm too loses two needed lines in the
-            // lexical eval ("my current diet", "which units"): revisit with a lexical signal
-            // that tells them apart.
-            || (!e.vector && words > 0 && e.lexical >= RELEVANCE_SHARE)
-    };
-    // The share of the best counts in a turn with a subject in the bank: a hit
-    // that stands alone, hits holding two of its words between them, or, in a
-    // bank under MIN_Z_POOL vectors (no z to tell a meaning that stands out),
-    // any meaning match. A turn sharing one word ("Great, go ahead.") injects
-    // nothing on it.
-    // shortcut: so in a small embedded bank small talk close in meaning to a
-    // memory anchors itself again; calibrate a cosine bar on a small-bank eval
-    // slice if that noise matters.
-    // shortcut: the two words may land in two different memories, so chatter sharing
-    // one word with each ("great, carry on" beside a "great" and a "carry" memory)
-    // anchors itself; per-hit anchors alone lose two needed lines in the MiniLM hybrid
-    // eval (q-id-apelido, q-evt-next-week): revisit when a per-hit signal delivers them.
-    let covered: HashSet<&String> = pool.iter().flat_map(|(m, _)| &ev(m).matched).collect();
-    // The question's term count, the same on every hit.
-    let terms = pool.first().map_or(0, |(m, _)| ev(m).terms);
-    let anchored = (!covered.is_empty() && covered.len() >= terms.min(2))
-        || pool.iter().any(|(m, _)| {
-            let e = ev(m);
-            alone(e) || (e.cosine.is_some() && e.z.is_none())
-        });
-    let stands = |m: &Memory| {
-        let e = ev(m);
-        alone(e) || (anchored && e.relevance >= RELEVANCE_SHARE * best)
+    let on_words = |e: &Evidence| {
+        !e.relation_words().is_empty() && e.relation_words().len() >= e.relation_term_count().min(2)
     };
     // A line that stands, told by the statement nothing in `pool` supersedes
     // (later statements are newer, so this ends), once, at its first place.
@@ -832,7 +1184,8 @@ pub fn select(
         while let Some(newer) = newest[current] {
             current = newer;
         }
-        if stands(m) && !order.contains(&current) {
+        if support.get(&m.id).is_some_and(|reason| reason.supported()) && !order.contains(&current)
+        {
             order.push(current);
         }
     }
@@ -857,7 +1210,7 @@ pub fn select(
             kept.push((m, s));
         }
     }
-    // `limit` lines on rank. A list question carries on: when every line told
+    // `limit` lines on rank. Only a certified list question carries on: every line told
     // stands on the same question words ("which services use Postgres 16?"
     // over seven services), so does each sibling past it, to the token budget.
     // A mixed list keeps the count: its tail shares a stray word, not the subject.
@@ -874,6 +1227,16 @@ pub fn select(
     // same word and keep the count; read the whole subject if an eval shows such
     // a list lost.
     let past = kept.split_off(limit.min(kept.len()));
+    // Common words and distinct leaders are not evidence of a list request.
+    // Only explicit enumeration, or the existing memory-about-user scope,
+    // may relax the line count. Unknown/non-list queries retain the limit.
+    let user_scope = kept.first().is_some_and(|(m, _)| {
+        let e = ev(m);
+        e.of_me && e.matched == ["user"]
+    });
+    if !enumeration_requested(query) && !user_scope {
+        return kept;
+    }
     let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
     let Some(first) = kept
         .first()
@@ -1101,8 +1464,8 @@ pub async fn turn_completed(
             timeout_ms: Some(5_000),
         })
         .await;
-    if let Err(e) = enqueued {
-        tracing::debug!(error = %e, "queue surface unavailable; extracting inline");
+    if enqueued.is_err() {
+        tracing::debug!("queue surface unavailable; extracting inline");
         let deps = deps.clone();
         tokio::spawn(async move { extract::run(deps, job).await });
     }
@@ -1140,6 +1503,7 @@ pub(crate) fn plan_extraction(
     let bank = bank.flatten();
     Some(ExtractJobInput {
         session_id: input.session_id.clone(),
+        turn_id: input.turn_id.clone(),
         derived: bank.as_ref().is_some_and(|b| b.derived),
         agent: bank.as_ref().and_then(|b| b.agent.clone()),
         bank: bank.map(|b| b.bank),
@@ -1272,8 +1636,17 @@ pub(crate) fn build_rules_section(
     rules: &[crate::types::Rule],
     max_rule_chars: usize,
 ) -> (String, bool) {
+    let (body, truncated, _) = build_rules_section_measured(rules, max_rule_chars);
+    (body, truncated)
+}
+
+fn build_rules_section_measured(
+    rules: &[crate::types::Rule],
+    max_rule_chars: usize,
+) -> (String, bool, SizeBreakdown) {
+    let mut sizes = SizeBreakdown::default();
     if rules.is_empty() {
-        return (String::new(), false);
+        return (String::new(), false, sizes);
     }
     let mut out = RULES_INTRO.to_string();
     let mut budget = max_rule_chars;
@@ -1281,8 +1654,10 @@ pub(crate) fn build_rules_section(
     for rule in rules {
         let body = rule_body(rule);
         let content = body.as_str();
+        let original_len = content.len();
         if content.len() <= budget {
             budget -= content.len();
+            sizes.rule_body_kept_bytes += content.len() as u64;
             out.push_str(&format!("\n## {}\n{content}\n", rule.name));
         } else if budget > 200 {
             // Extraction appends: the learned rule loses its oldest lines,
@@ -1297,6 +1672,8 @@ pub(crate) fn build_rules_section(
             while cut > 0 && !content.is_char_boundary(cut) {
                 cut -= 1;
             }
+            sizes.rule_body_kept_bytes += cut as u64;
+            sizes.excluded_rule_body_bytes += (original_len - cut) as u64;
             out.push_str(&format!(
                 "\n## {}\n{}\n[rule truncated: over the {} char injection budget — trim it in the memory page]\n",
                 rule.name,
@@ -1306,6 +1683,7 @@ pub(crate) fn build_rules_section(
             budget = 0;
             truncated = true;
         } else {
+            sizes.excluded_rule_body_bytes += original_len as u64;
             out.push_str(&format!(
                 "\n## {} [omitted: over the injection budget]\n",
                 rule.name
@@ -1313,7 +1691,8 @@ pub(crate) fn build_rules_section(
             truncated = true;
         }
     }
-    (out, truncated)
+    sizes.rule_formatting_marker_bytes = out.len() as u64 - sizes.rule_body_kept_bytes;
+    (out, truncated, sizes)
 }
 
 /// `body` without its oldest `- ` lines, as few as bring it within
@@ -1336,37 +1715,60 @@ fn newest_lines(body: &str, budget: usize) -> String {
 /// ones ranked below it still fit. The header names the day the recall ran,
 /// never "today": the message is persisted and replayed on later turns.
 /// `None` when nothing fits.
+#[cfg(test)]
 pub(crate) fn memories_message(
     bank: &str,
     memories: &[Memory],
     recall_budget_tokens: u64,
     now: u64,
 ) -> Option<(String, Vec<String>)> {
-    let mut budget = (recall_budget_tokens * 4) as usize;
+    memories_message_measured(bank, memories, recall_budget_tokens, now).0
+}
+
+#[allow(clippy::type_complexity)]
+fn memories_message_measured(
+    bank: &str,
+    memories: &[Memory],
+    recall_budget_tokens: u64,
+    now: u64,
+) -> (Option<(String, Vec<String>)>, SizeBreakdown, u64) {
+    let mut sizes = SizeBreakdown::default();
+    let mut dropped = 0;
+    let mut budget = usize::try_from(byte_budget(recall_budget_tokens)).unwrap_or(usize::MAX);
     let mut lines = Vec::new();
     let mut ids = Vec::new();
     for memory in memories {
+        let text = memory_line_text(memory);
         let line = format!(
             "- {} ({})",
-            memory_line_text(memory),
+            text,
             local_date(memory.last_stated(), "%Y-%m-%d")
         );
         if line.len() > budget {
+            sizes.excluded_memory_line_bytes += line.len() as u64;
+            dropped += 1;
             continue;
         }
+        sizes.memory_text_bytes += text.len() as u64;
+        sizes.memory_line_decoration_bytes += (line.len() - text.len()) as u64;
         budget -= line.len();
         lines.push(line);
         ids.push(memory.id.clone());
     }
     if lines.is_empty() {
-        return None;
+        return (None, sizes, dropped);
     }
+    sizes.line_separator_bytes = (lines.len() - 1) as u64;
     let body = format!(
         "<memory bank=\"{bank}\">\nRelevant remembered memories (\"the user\" is the person you are talking to; recalled {}; each dated when last stated; verify anything surprising):\n{}\n</memory>",
         local_date(now, "%Y-%m-%d %A"),
         lines.join("\n")
     );
-    Some((body, ids))
+    sizes.recall_wrapper_header_bytes = body.len() as u64
+        - sizes.memory_text_bytes
+        - sizes.memory_line_decoration_bytes
+        - sizes.line_separator_bytes;
+    (Some((body, ids)), sizes, dropped)
 }
 
 /// A memory's text as its `<memory>` line renders it, and as
@@ -1443,6 +1845,7 @@ pub(crate) fn unseen(memories: Vec<Memory>, seen: &HashSet<String>) -> Vec<Memor
 
 /// Messages that hooks append with the user role. Each opens its own tag, and none
 /// is what the user asked.
+#[cfg(test)]
 const HOOK_NOTICE_PREFIXES: [&str; 4] = [
     "<memory ",
     "<mention_providers>",
@@ -1450,7 +1853,9 @@ const HOOK_NOTICE_PREFIXES: [&str; 4] = [
     "<discovery_assist ",
 ];
 
-/// The newest user message's text — the recall query.
+/// Legacy text-window helper retained only for compatibility tests. Production
+/// recall uses the controlled delivery context, never the last model notice.
+#[cfg(test)]
 fn last_user_text(messages: Option<&Value>) -> String {
     let Some(items) = messages.and_then(Value::as_array) else {
         return String::new();
@@ -2263,6 +2668,20 @@ Formal."
     }
 
     #[tokio::test]
+    async fn postselect_real_nonlist_respects_limit_with_identical_supported_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps =
+            postgres_services(dir.path(), offline_cfg(1), &["billing", "ledger", "search"]).await;
+        assert_eq!(
+            told(&deps, &[], "Does a service use Postgres 16?")
+                .await
+                .len(),
+            1
+        );
+        assert_eq!(told(&deps, &[], POSTGRES_QUESTION).await.len(), 3);
+    }
+
+    #[tokio::test]
     async fn seven_relevant_siblings_all_reach_the_turn() {
         let dir = tempfile::tempdir().unwrap();
         let names = [
@@ -2455,9 +2874,10 @@ Formal."
     }
 
     #[tokio::test]
-    async fn a_newer_note_about_a_told_lines_subject_joins_right_after_it() {
-        // The departure shares no word with the question and no change word
-        // with the on-call line: only the entity both carry.
+    async fn postselect_oncall_departure_without_invalidation_proof_is_not_appended() {
+        // The departure shares only an entity with the on-call line. Without
+        // an attested invalidation or own support it is intentionally withheld;
+        // real-world employment implications are not inferred here.
         let mut memories = vec![
             tagged(
                 "fp-hired",
@@ -2488,13 +2908,20 @@ Formal."
             "Who should I page for a payments-api incident right now? Reply with the name only.";
         let ids = told_ids(memories.clone(), question).await;
         let at = |id: &str| ids.iter().position(|i| i == id);
-        assert_eq!(
-            at("fp-left"),
-            at("fp-oncall").map(|i| i + 1),
-            "the departure right after the line it updates: {ids:?}"
+        assert!(
+            at("fp-left").is_none(),
+            "departure has no own support or attested on-call invalidation: {ids:?}"
+        );
+        assert!(
+            at("fp-oncall").is_some(),
+            "supported on-call fact must remain: {ids:?}"
         );
         assert!(at("fp-backup").is_some(), "{ids:?}");
-        assert_eq!(ids.len(), 3, "each later note once: {ids:?}");
+        assert_eq!(
+            ids.len(),
+            2,
+            "unsupported departure must not be added: {ids:?}"
+        );
         memories.pop();
         let mut ids = told_ids(memories, question).await;
         ids.sort();
@@ -2519,11 +2946,16 @@ Formal."
     }
 
     /// The ids [`with_updates`] gives a turn told `told` asking `query`, the
-    /// bank's memories on their subjects being `told` and `notes`.
+    /// bank's memories on their subjects being `told` and `notes`. This helper
+    /// supplies no own-support claim; only explicit record update links can join.
     fn joined(told: Vec<Memory>, notes: Vec<Memory>, query: &str) -> Vec<String> {
         let tagged: Vec<Memory> = told.iter().cloned().chain(notes).collect();
         let told = told.into_iter().map(|m| (m, 1.0)).collect();
-        with_updates(told, &tagged, query)
+        let reasons = tagged
+            .iter()
+            .map(|m| (m.id.clone(), AdmissionReason::NoIndependentRelation))
+            .collect();
+        with_updates(told, &tagged, query, &reasons)
             .into_iter()
             .map(|(m, _)| m.id)
             .collect()
@@ -2549,7 +2981,7 @@ Formal."
     }
 
     #[test]
-    fn a_trivial_later_note_does_not_push_the_update_out() {
+    fn postselect_unproven_departure_and_laptop_note_never_join() {
         let notes = || {
             vec![
                 on_dana(
@@ -2562,8 +2994,8 @@ Formal."
         };
         assert_eq!(
             joined(vec![on_call(10)], notes(), PAGE),
-            ["fp-oncall", "fp-left", "fp-laptop"],
-            "every later note, oldest first"
+            ["fp-oncall"],
+            "date and a rare subject do not prove on-call invalidation"
         );
         // A newer told line on no subject is no statement on dana.
         let runbook = stated(
@@ -2573,12 +3005,12 @@ Formal."
         );
         assert_eq!(
             joined(vec![on_call(10), runbook], notes(), PAGE),
-            ["fp-oncall", "fp-left", "fp-laptop", "fp-runbook"]
+            ["fp-oncall", "fp-runbook"]
         );
     }
 
     #[test]
-    fn a_note_joins_one_told_line_only() {
+    fn postselect_unproven_departure_is_not_an_update_of_two_relations() {
         let schema = tagged(
             "fp-schema",
             "dana-7f3a reviews every payments-api schema change.",
@@ -2587,7 +3019,28 @@ Formal."
         );
         let left = on_dana("fp-left", "dana-7f3a left our company last week.", 25);
         let ids = joined(vec![on_call(10), schema], vec![left], PAGE);
-        assert_eq!(ids, ["fp-oncall", "fp-left", "fp-schema"]);
+        assert_eq!(ids, ["fp-oncall", "fp-schema"]);
+    }
+
+    #[test]
+    fn postselect_explicit_invalidation_joins_the_matching_line_once() {
+        let schema = tagged(
+            "fp-schema",
+            "dana-7f3a reviews every payments-api schema change.",
+            10,
+            &["dana", "payments-api"],
+        );
+        let invalidation = on_dana(
+            "fp-invalidated",
+            "dana-7f3a is no longer the primary on-call engineer for payments-api incidents.",
+            25,
+        );
+        let mut attested = on_call(10);
+        attested.superseded_by = Some(invalidation.id.clone());
+        assert_eq!(
+            joined(vec![attested, schema], vec![invalidation], PAGE),
+            ["fp-oncall", "fp-invalidated", "fp-schema"]
+        );
     }
 
     #[test]
@@ -2660,6 +3113,15 @@ Formal."
 
     /// `select` over hits ranked in the order given: the ids it keeps.
     fn kept(hits: Vec<(Memory, Evidence)>, seen: &HashSet<String>, limit: usize) -> Vec<String> {
+        kept_for(hits, seen, limit, "")
+    }
+
+    fn kept_for(
+        hits: Vec<(Memory, Evidence)>,
+        seen: &HashSet<String>,
+        limit: usize,
+        query: &str,
+    ) -> Vec<String> {
         let evidence: HashMap<String, Evidence> = hits
             .iter()
             .map(|(m, e)| (m.id.clone(), e.clone()))
@@ -2669,7 +3131,7 @@ Formal."
             .enumerate()
             .map(|(i, (m, _))| (m, 1.0 / (i + 1) as f32))
             .collect();
-        select(ranked, &evidence, seen, limit)
+        select(ranked, &evidence, seen, limit, query)
             .into_iter()
             .map(|(m, _)| m.id)
             .collect()
@@ -2677,8 +3139,12 @@ Formal."
 
     /// [`kept`] for memories whose text is their id, nothing visible.
     fn selected(hits: Vec<(&str, Evidence)>, limit: usize) -> Vec<String> {
+        selected_for(hits, limit, "")
+    }
+
+    fn selected_for(hits: Vec<(&str, Evidence)>, limit: usize, query: &str) -> Vec<String> {
         let hits = hits.into_iter().map(|(id, e)| (memory(id, id), e));
-        kept(hits.collect(), &HashSet::new(), limit)
+        kept_for(hits.collect(), &HashSet::new(), limit, query)
     }
 
     /// `words` of the question's `terms` matched, at `relevance`, all of it
@@ -2688,6 +3154,7 @@ Formal."
             matched: (0..words).map(|n| format!("w{n}")).collect(),
             terms,
             lexical: relevance,
+            detail_match: words > 0,
             relevance,
             ..Evidence::default()
         }
@@ -2706,12 +3173,146 @@ Formal."
         assert!(selected(vec![("fp1", bare.clone()), ("fp2", bare)], 6).is_empty());
         assert!(selected(Vec::new(), 6).is_empty());
         let unexplained = vec![(memory("fp3", "no evidence recorded"), 1.0)];
-        assert!(select(unexplained, &HashMap::new(), &HashSet::new(), 6).is_empty());
+        assert!(select(unexplained, &HashMap::new(), &HashSet::new(), 6, "").is_empty());
     }
 
     #[test]
-    fn a_meaning_only_hit_above_the_floor_is_injected() {
-        // No word of the question, a cosine above the model's floor: that is evidence.
+    fn a_semantic_outlier_without_query_content_is_not_an_anchor() {
+        let chatter = Evidence {
+            terms: 0,
+            cosine: Some(0.9),
+            z: Some(3.0),
+            vector: true,
+            relevance: 5.0,
+            ..Evidence::default()
+        };
+        assert!(selected(vec![("unrelated-outlier", chatter)], 6).is_empty());
+    }
+
+    #[test]
+    fn slot_projection_blocks_slot_and_similarity_only_but_keeps_explicit_attribute() {
+        let slot = Evidence {
+            matched: vec!["phase".into()],
+            requested_slot_matched: vec!["phase".into()],
+            requested_slot_spans: Some(std::iter::once(0..3).collect()),
+            terms: 3,
+            detail_match: true,
+            relevance: 1.0,
+            ..Evidence::default()
+        };
+        assert!(selected(vec![("slot-only", slot.clone())], 6).is_empty());
+        let semantic = Evidence {
+            cosine: Some(0.4),
+            z: Some(2.5),
+            ..slot.clone()
+        };
+        assert!(selected(vec![("similarity-only", semantic)], 6).is_empty());
+        let attribute = Evidence {
+            attribute_match: true,
+            ..slot
+        };
+        assert_eq!(
+            selected(vec![("independent-attribute", attribute)], 6),
+            ["independent-attribute"]
+        );
+    }
+
+    #[test]
+    fn hybrid_policy_reasons_are_independent_of_similarity_and_expected_ids() {
+        let supported = Evidence {
+            matched: vec!["draft".into(), "review".into()],
+            terms: 3,
+            ..Evidence::default()
+        };
+        let incidental = Evidence {
+            matched: vec!["draft".into()],
+            terms: 3,
+            cosine: Some(0.99),
+            z: Some(12.0),
+            vector: true,
+            relevance: 99.0,
+            ..Evidence::default()
+        };
+        let attribute = Evidence {
+            attribute_match: true,
+            matched: vec!["attribute".into()],
+            terms: 3,
+            ..Evidence::default()
+        };
+        let conflict = Evidence {
+            subject_conflict: true,
+            ..supported.clone()
+        };
+        let facts = vec![
+            (memory("explicit", "We review the draft."), 0.1),
+            (
+                memory("incidental", "The draft concerns another subject."),
+                99.0,
+            ),
+            (
+                memory("attribute", "The requested attribute is present."),
+                0.01,
+            ),
+            (memory("conflict", "A different subject."), 100.0),
+        ];
+        let evidence = HashMap::from([
+            ("explicit".into(), supported),
+            ("incidental".into(), incidental),
+            ("attribute".into(), attribute),
+            ("conflict".into(), conflict),
+        ]);
+        let reasons = admission_reasons(&facts, &evidence);
+        assert_eq!(reasons["explicit"], AdmissionReason::RelationalTerms);
+        assert_eq!(
+            reasons["incidental"],
+            AdmissionReason::NoIndependentRelation
+        );
+        assert_eq!(reasons["conflict"], AdmissionReason::SubjectConflict);
+        // Production input order is ranking; expected ids are independently
+        // specified here, not derived by filtering reasons.
+        assert_eq!(
+            select(facts, &evidence, &HashSet::new(), 6, "")
+                .iter()
+                .map(|(m, _)| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["explicit", "attribute"]
+        );
+    }
+
+    #[test]
+    fn hybrid_policy_temporal_replacement_cannot_authorize_an_unsupported_line() {
+        let partial = Evidence {
+            matched: vec!["backup".into()],
+            terms: 4,
+            relevance: 5.5,
+            cosine: Some(0.99),
+            z: Some(9.0),
+            vector: true,
+            ..Evidence::default()
+        };
+        let hits = vec![
+            (stated("old", BACKUP_OLD, 1), partial.clone()),
+            (stated("new", BACKUP_NEW, 2), partial.clone()),
+        ];
+        assert!(kept(hits, &HashSet::new(), 6).is_empty());
+        let explicit = Evidence {
+            attribute_match: true,
+            ..partial.clone()
+        };
+        let hits = vec![
+            (stated("old", BACKUP_OLD, 1), explicit),
+            (stated("new", BACKUP_NEW, 2), partial),
+        ];
+        assert_eq!(
+            kept(hits, &HashSet::new(), 6),
+            ["old"],
+            "a newer unsupported candidate cannot replace independent admission"
+        );
+    }
+
+    #[test]
+    fn hybrid_policy_similarity_only_never_authorizes_a_line() {
+        // Similarity above the floor discovers a candidate, not a relation.
         let near = Evidence {
             terms: 2,
             relevance: 1.0,
@@ -2720,7 +3321,24 @@ Formal."
             vector: true,
             ..Evidence::default()
         };
-        assert_eq!(selected(vec![("fp-near", near)], 6), ["fp-near"]);
+        assert!(selected(vec![("fp-near", near.clone())], 6).is_empty());
+        let high_absolute = Evidence {
+            cosine: Some(0.99),
+            z: None,
+            ..near.clone()
+        };
+        assert!(selected(vec![("absolute-only", high_absolute)], 6).is_empty());
+        let answer = Evidence {
+            matched: vec!["gateway".into(), "storage".into()],
+            terms: 3,
+            cosine: Some(0.26),
+            z: Some(0.1),
+            ..near.clone()
+        };
+        assert_eq!(
+            selected(vec![("unrelated", near), ("answer", answer)], 6),
+            ["answer"]
+        );
     }
 
     #[test]
@@ -2734,7 +3352,11 @@ Formal."
             ],
             6,
         );
-        assert_eq!(picked, ["fp-best", "fp-half", "fp-two"]);
+        assert_eq!(
+            picked,
+            ["fp-best", "fp-two"],
+            "one incidental word cannot ride a stronger three-word answer"
+        );
     }
 
     /// [`words`], for a memory with a vector, close in meaning to nothing.
@@ -2743,6 +3365,89 @@ Formal."
             vector: true,
             ..words(words_matched, terms, relevance)
         }
+    }
+
+    #[test]
+    fn a_named_project_without_the_requested_detail_does_not_piggyback() {
+        let answer = Evidence {
+            matched: vec!["orchard".into(), "trip".into(), "documents".into()],
+            terms: 5,
+            named_subject: true,
+            detail_match: true,
+            lexical: 1.0,
+            relevance: 1.0,
+            ..Evidence::default()
+        };
+        let wrong_detail = Evidence {
+            matched: vec!["orchard".into()],
+            terms: 5,
+            named_subject: true,
+            lexical: 0.8,
+            relevance: 0.8,
+            ..Evidence::default()
+        };
+        assert_eq!(
+            selected(
+                vec![
+                    ("document-store", answer),
+                    ("implementation-language", wrong_detail)
+                ],
+                6
+            ),
+            ["document-store"]
+        );
+    }
+
+    #[test]
+    fn selector_final_named_single_fact_survives_unknown_attribute_but_not_other_subjects() {
+        let dog = memory("only-subject", "A dog named Biscuit is a beagle.");
+        let unrelated = memory("other-subject", "Payments deploy on Tuesday.");
+        let named = Evidence {
+            matched: vec!["biscuit".into()],
+            terms: 2,
+            named_subject: true,
+            subject_question: true,
+            relevance: 1.0,
+            lexical: 1.0,
+            ..Evidence::default()
+        };
+        let other = Evidence {
+            matched: vec!["old".into()],
+            terms: 2,
+            subject_conflict: true,
+            relevance: 1.0,
+            lexical: 1.0,
+            ..Evidence::default()
+        };
+        assert_eq!(
+            kept(vec![(dog, named), (unrelated, other)], &HashSet::new(), 6),
+            ["only-subject"]
+        );
+    }
+
+    #[test]
+    fn selector_final_attribute_focus_blocks_a_zero_word_semantic_outlier() {
+        let answer = Evidence {
+            matched: vec!["full".into(), "name".into()],
+            terms: 5,
+            attribute_match: true,
+            relevance: 1.0,
+            lexical: 1.0,
+            ..Evidence::default()
+        };
+        let noise = Evidence {
+            terms: 5,
+            attribute_conflict: true,
+            relevance: 0.8,
+            cosine: Some(0.3),
+            z: Some(2.4),
+            vector: true,
+            ..Evidence::default()
+        };
+        assert_eq!(
+            selected(vec![("asked-name", answer), ("unasked-language", noise)], 6),
+            ["asked-name"]
+        );
     }
 
     #[test]
@@ -2773,35 +3478,35 @@ Formal."
     }
 
     #[test]
-    fn a_meaning_match_anchors_only_a_bank_too_small_for_z() {
+    fn hybrid_policy_bank_size_does_not_turn_similarity_into_support() {
         // One word of two, close in meaning: "When do backups happen?".
         let close = |z| Evidence {
             cosine: Some(0.8),
             z,
             ..embedded(1, 2, 1.0)
         };
-        // Under MIN_Z_POOL vectors no z exists: the cosine anchors, as before z did.
-        assert_eq!(selected(vec![("fp-backup", close(None))], 6), ["fp-backup"]);
-        // With z, the meaning must stand out to anchor the turn.
+        assert!(selected(vec![("fp-backup", close(None))], 6).is_empty());
+        assert!(selected(vec![("fp-backup", close(Some(4.0)))], 6).is_empty());
+        // Even with a z-score, one incidental word is not enough.
         assert!(selected(vec![("fp-backup", close(Some(1.0)))], 6).is_empty());
     }
 
     #[test]
-    fn an_anchored_turn_keeps_its_share_hits() {
+    fn hybrid_policy_an_anchor_cannot_lend_relation_to_a_relative_tail() {
         let one = |word: &str, relevance| Evidence {
             matched: vec![word.into()],
             ..embedded(1, 3, relevance)
         };
-        // A hit holding two of the question's words anchors the turn.
+        // Two independent query words authorize only this candidate.
         let picked = selected(
             vec![("fp-two", embedded(2, 3, 1.0)), ("fp-half", one("w0", 0.6))],
             6,
         );
-        assert_eq!(picked, ["fp-two", "fp-half"]);
-        // So do two hits holding one word each.
+        assert_eq!(picked, ["fp-two"]);
+        // Separate incidental words do not authenticate a shared subject.
         let picked = selected(vec![("fp-a", one("w0", 1.0)), ("fp-b", one("w1", 0.6))], 6);
-        assert_eq!(picked, ["fp-a", "fp-b"]);
-        // And a meaning outlier.
+        assert!(picked.is_empty());
+        // A similarity-only outlier cannot authorize itself or the tail.
         let far = Evidence {
             terms: 3,
             relevance: 1.0,
@@ -2811,11 +3516,11 @@ Formal."
             ..Evidence::default()
         };
         let picked = selected(vec![("fp-far", far), ("fp-half", one("w0", 0.6))], 6);
-        assert_eq!(picked, ["fp-far", "fp-half"]);
+        assert!(picked.is_empty());
     }
 
     #[test]
-    fn a_meaning_outlier_survives_a_strong_lexical_best() {
+    fn hybrid_policy_similarity_outlier_does_not_borrow_a_lexical_anchor() {
         let best = Evidence {
             vector: true,
             ..words(2, 3, 1.0)
@@ -2829,22 +3534,22 @@ Formal."
             ..Evidence::default()
         };
         let picked = selected(vec![("fp-best", best.clone()), ("fp-far", meaning(2.3))], 6);
-        assert_eq!(picked, ["fp-best", "fp-far"]);
+        assert_eq!(picked, ["fp-best"]);
         let picked = selected(vec![("fp-best", best), ("fp-near", meaning(1.2))], 6);
         assert_eq!(picked, ["fp-best"]);
     }
 
     #[test]
-    fn a_memory_without_a_vector_is_judged_on_its_words() {
-        // A meaning match far ahead: by share of the best, one word is out.
+    fn independent_support_not_vector_presence_decides_admission() {
+        // Both facts have sufficient independent words despite unequal scores.
         let best = Evidence {
             relevance: 5.0,
             cosine: Some(0.6),
             z: Some(3.0),
             vector: true,
-            ..words(1, 3, 1.0)
+            ..words(2, 3, 1.0)
         };
-        let unembedded = words(1, 3, 0.8);
+        let unembedded = words(2, 3, 0.8);
         let picked = selected(
             vec![("fp-best", best.clone()), ("fp-new", unembedded.clone())],
             6,
@@ -2855,7 +3560,11 @@ Formal."
             ..unembedded
         };
         let picked = selected(vec![("fp-best", best), ("fp-new", embedded)], 6);
-        assert_eq!(picked, ["fp-best"], "its vector says it is far in meaning");
+        assert_eq!(
+            picked,
+            ["fp-best", "fp-new"],
+            "a vector cannot veto independent support"
+        );
     }
 
     #[test]
@@ -2871,7 +3580,7 @@ Formal."
             (shown, 2.0),
             (memory("fp-stray", "The design team uses Bazel."), 1.0),
         ];
-        let picked = select(hits, &evidence, &seen, 6);
+        let picked = select(hits, &evidence, &seen, 6, "");
         // The window shows the best already, so the turn is told nothing.
         let sent = unseen(picked.into_iter().map(|(m, _)| m).collect(), &seen);
         assert!(sent.is_empty(), "{sent:?}");
@@ -2879,11 +3588,11 @@ Formal."
 
     #[test]
     fn a_hit_past_the_pool_cap_neither_sets_the_bar_nor_hides_a_line() {
-        // One slot: the bar and the pair passes see the best 4 admitted hits,
-        // and the fillers' two words each anchor the turn.
+        // Non-list query: pair passes see only the first four candidates.
+        // Matching fillers cannot manufacture intent to exceed the line limit.
         let at = |relevance| Evidence {
             vector: true,
-            ..words(1, 4, relevance)
+            ..words(2, 4, relevance)
         };
         let past_the_cap = |last: (Memory, Evidence)| {
             let mut hits = vec![(stated("fp-old", BACKUP_OLD, 1), at(1.0))];
@@ -2954,7 +3663,11 @@ Formal."
     fn a_twin_naming_a_question_word_the_survivor_lacks_stays() {
         let mig0 = || memory("fp-mig0", MIGRATE[0]);
         let mig1 = || memory("fp-mig1", MIGRATE[1]);
-        let hits = vec![(mig0(), words(1, 3, 1.0)), (mig1(), words(2, 3, 1.0))];
+        let first = Evidence {
+            attribute_match: true,
+            ..words(1, 3, 1.0)
+        };
+        let hits = vec![(mig0(), first), (mig1(), words(2, 3, 1.0))];
         assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig0", "fp-mig1"]);
         // The other way round, the survivor names every word its twin does.
         let hits = vec![(mig1(), words(2, 3, 1.0)), (mig0(), words(1, 3, 1.0))];
@@ -2978,6 +3691,146 @@ Formal."
     }
 
     #[test]
+    fn postselect_enumeration_requires_affirmative_scope_not_shared_terms() {
+        for query in [
+            "Which of our services use Postgres 16? Reply with the service names.",
+            "List the matching entries.",
+            "Liste todos os itens.",
+            "Quais serviços usam Postgres?",
+        ] {
+            assert!(
+                enumeration_requested(query),
+                "explicit enumeration: {query}"
+            );
+        }
+        for query in [
+            "Does the backup use Postgres 16?",
+            "Postgres?",
+            "Which format does my agent use?",
+            "List type for a parser?",
+            "What should I do now?",
+            "Explain this; list the services.",
+        ] {
+            assert!(!enumeration_requested(query), "unknown/non-list: {query}");
+        }
+    }
+
+    #[test]
+    fn postselect_nonlist_never_expands_from_equal_terms_and_distinct_leads() {
+        let facts = vec![
+            (
+                memory("nightly", "Nightly backups use Postgres 16."),
+                words(2, 4, 1.0),
+            ),
+            (
+                memory("other", "Other backups use Postgres 16."),
+                words(2, 4, 1.0),
+            ),
+        ];
+        let evidence = facts
+            .iter()
+            .map(|(m, e)| (m.id.clone(), e.clone()))
+            .collect();
+        let ranked = facts.into_iter().map(|(m, _)| (m, 1.0)).collect();
+        assert_eq!(
+            select(
+                ranked,
+                &evidence,
+                &HashSet::new(),
+                1,
+                "Does the backup use Postgres 16?"
+            )
+            .iter()
+            .map(|(m, _)| m.id.as_str())
+            .collect::<Vec<_>>(),
+            ["nightly"]
+        );
+    }
+
+    #[test]
+    fn postselect_update_requires_own_support_or_same_fact_proof() {
+        let mut old = tagged("city-old", "Dana lives in Lisbon.", 1, &["dana"]);
+        old.superseded_by = Some("city-new".into());
+        let new = tagged("city-new", "Dana now lives in Porto.", 2, &["dana"]);
+        let call = tagged("call", "Dana calls her sister on Sunday.", 3, &["dana"]);
+        let laptop = tagged("laptop", "Dana returned her laptop to IT.", 4, &["dana"]);
+        let reasons = HashMap::from([
+            ("city-new".into(), AdmissionReason::NoIndependentRelation),
+            ("call".into(), AdmissionReason::NoIndependentRelation),
+            ("laptop".into(), AdmissionReason::NoIndependentRelation),
+        ]);
+        assert_eq!(
+            old.superseded_by.as_deref(),
+            Some(new.id.as_str()),
+            "attested same-fact record link"
+        );
+        let notes = vec![old.clone(), new.clone(), call, laptop];
+        let result = with_updates(
+            vec![(old.clone(), 1.0)],
+            &notes,
+            "Where does Dana live?",
+            &reasons,
+        );
+        assert_eq!(
+            result
+                .iter()
+                .map(|(m, _)| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["city-old", "city-new"]
+        );
+        let unproven = Memory {
+            superseded_by: None,
+            ..old.clone()
+        };
+        assert_eq!(
+            with_updates(
+                vec![(unproven, 1.0)],
+                &notes,
+                "Where does Dana live?",
+                &reasons
+            )
+            .iter()
+            .map(|(m, _)| m.id.as_str())
+            .collect::<Vec<_>>(),
+            ["city-old"],
+            "a change word or newer date alone is not an attested update"
+        );
+        let mut conflicted = reasons.clone();
+        conflicted.insert("city-new".into(), AdmissionReason::SubjectConflict);
+        assert_eq!(
+            with_updates(
+                vec![(old.clone(), 1.0)],
+                &notes,
+                "Where does Dana live?",
+                &conflicted
+            )
+            .iter()
+            .map(|(m, _)| m.id.as_str())
+            .collect::<Vec<_>>(),
+            ["city-old"]
+        );
+        let contact = tagged(
+            "contact",
+            "Dana's contact address is dana@example.test.",
+            5,
+            &["dana"],
+        );
+        let support = HashMap::from([("contact".into(), AdmissionReason::RequestedAttribute)]);
+        assert_eq!(
+            with_updates(
+                vec![(old, 1.0)],
+                &[contact],
+                "Dana city and contact address?",
+                &support
+            )
+            .iter()
+            .map(|(m, _)| m.id.as_str())
+            .collect::<Vec<_>>(),
+            ["city-old", "contact"]
+        );
+    }
+
+    #[test]
     fn only_a_list_on_one_set_of_words_carries_on_past_the_limit() {
         let two = || words(2, 3, 1.0);
         let other = || Evidence {
@@ -2991,19 +3844,36 @@ Formal."
             ("charlie", two()),
             ("delta", other()),
         ];
-        assert_eq!(selected(list, 1), ["alpha", "bravo", "charlie"]);
+        assert_eq!(
+            selected_for(list, 1, "List the matching entries."),
+            ["alpha", "bravo", "charlie"]
+        );
         // A mixed list keeps the count, even for the last line's sibling.
         let mixed = vec![("alpha", other()), ("bravo", two()), ("charlie", two())];
-        assert_eq!(selected(mixed, 2), ["alpha", "bravo"]);
-        // One word of three is no list, however many lines hold it.
-        let one = || words(1, 3, 1.0);
         assert_eq!(
-            selected(vec![("alpha", one()), ("bravo", one())], 1),
+            selected_for(mixed, 2, "List the matching entries."),
+            ["alpha", "bravo"]
+        );
+        // One word of three is no list, however many lines hold it.
+        let one = || Evidence {
+            attribute_match: true,
+            ..words(1, 3, 1.0)
+        };
+        assert_eq!(
+            selected_for(
+                vec![("alpha", one()), ("bravo", one())],
+                1,
+                "List the matching entries."
+            ),
             ["alpha"]
         );
         // Lines leading with one subject are facts on it, not siblings.
         assert_eq!(
-            selected(vec![("fp-a", two()), ("fp-b", two())], 1),
+            selected_for(
+                vec![("fp-a", two()), ("fp-b", two())],
+                1,
+                "List the matching entries."
+            ),
             ["fp-a"]
         );
     }
@@ -3061,7 +3931,13 @@ Formal."
         // the best: the cut drops it, and its twin delivers the fact.
         let hits = vec![
             (memory("fp-mig0", MIGRATE[0]), words(1, 4, 0.2)),
-            (memory("fp-mig1", MIGRATE[1]), words(1, 4, 1.0)),
+            (
+                memory("fp-mig1", MIGRATE[1]),
+                Evidence {
+                    attribute_match: true,
+                    ..words(1, 4, 1.0)
+                },
+            ),
         ];
         assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig1"]);
     }
@@ -3092,11 +3968,11 @@ Formal."
 
     #[test]
     fn a_stale_top_hit_does_not_set_the_bar() {
-        // One word of four each, the older over twice the newer's relevance,
-        // in a turn another hit anchors.
+        // Both have independent two-word support; ranking still cannot make
+        // the older statement current.
         let at = |relevance| Evidence {
             vector: true,
-            ..words(1, 4, relevance)
+            ..words(2, 4, relevance)
         };
         let hits = vec![
             (stated("fp-old", BACKUP_OLD, 1), at(2.5)),
@@ -3108,12 +3984,25 @@ Formal."
 
     #[test]
     fn an_older_line_that_passes_the_cut_is_told_as_its_newer() {
-        // The newer has no vector yet: on its words alone, it falls short.
+        // The newer has no vector, but its independently requested attribute
+        // authorizes the replacement; relative relevance is not authorization.
         let vector = |e: Evidence| Evidence { vector: true, ..e };
         let hits = vec![
             (memory("fp-other", "fp-other"), vector(words(2, 4, 7.0))),
-            (stated("fp-old", BACKUP_OLD, 1), vector(words(1, 4, 5.5))),
-            (stated("fp-new", BACKUP_NEW, 2), words(1, 4, 0.45)),
+            (
+                stated("fp-old", BACKUP_OLD, 1),
+                vector(Evidence {
+                    attribute_match: true,
+                    ..words(1, 4, 5.5)
+                }),
+            ),
+            (
+                stated("fp-new", BACKUP_NEW, 2),
+                Evidence {
+                    attribute_match: true,
+                    ..words(1, 4, 0.45)
+                },
+            ),
         ];
         assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-other", "fp-new"]);
     }
@@ -3311,7 +4200,13 @@ Formal."
     fn an_older_line_answering_a_word_the_newer_lacks_stays() {
         let hits = vec![
             (stated("fp-old", BACKUP_OLD, 1), words(2, 3, 1.0)),
-            (stated("fp-new", BACKUP_NEW, 2), words(1, 3, 1.0)),
+            (
+                stated("fp-new", BACKUP_NEW, 2),
+                Evidence {
+                    attribute_match: true,
+                    ..words(1, 3, 1.0)
+                },
+            ),
         ];
         assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-old", "fp-new"]);
     }
@@ -3551,6 +4446,28 @@ Formal."
     }
 
     #[test]
+    fn metrics_productive_render_long_then_short_exact_utf8_and_overflow() {
+        for text in ["x".repeat(4785), format!("{}x", "é".repeat(2392))] {
+            let ms = vec![memory("long", &"z".repeat(5000)), memory("short", &text)];
+            let (rendered, sizes, dropped) = memories_message_measured("b", &ms, 1200, NOW);
+            let (body, ids) = rendered.unwrap();
+            assert_eq!(ids, ["short"]);
+            assert_eq!(dropped, 1);
+            assert_eq!(sizes.memory_text_bytes, 4785);
+            assert_eq!(sizes.memory_line_decoration_bytes, 15);
+            assert_eq!(sizes.excluded_memory_line_bytes, 5015);
+            assert_eq!(sizes.validate(body.len() as u64), Ok(()));
+            assert!(memories_message_measured("b", &ms, 1199, NOW).0.is_none());
+            let (rendered, sizes, dropped) = memories_message_measured("b", &ms, u64::MAX, NOW);
+            let (body, ids) = rendered.unwrap();
+            assert_eq!(ids, ["long", "short"]);
+            assert_eq!(dropped, 0);
+            assert_eq!(sizes.line_separator_bytes, 1);
+            assert_eq!(sizes.validate(body.len() as u64), Ok(()));
+        }
+    }
+
+    #[test]
     fn memories_message_budget_counts_the_whole_dated_line_inclusively() {
         let ms = vec![memory("fp1", "12345")];
         let line = format!("- 12345 ({})", local_date(1, "%Y-%m-%d"));
@@ -3781,3 +4698,23 @@ Formal."
         assert!(v["mutations"]["append_messages"].is_array());
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/injection_replay/evaluator.rs"]
+mod evaluator;
+
+#[cfg(test)]
+#[path = "../tests/injection_replay/replay.rs"]
+mod injection_replay;
+
+#[cfg(test)]
+#[path = "../tests/injection_replay/relevance_contract.rs"]
+mod relevance_contract;
+
+#[cfg(test)]
+#[path = "../tests/injection_replay/cached_boundary.rs"]
+mod cached_boundary;
+
+#[cfg(test)]
+#[path = "../tests/injection_replay/paraphrase_diagnostic.rs"]
+mod paraphrase_diagnostic;

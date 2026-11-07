@@ -372,6 +372,10 @@ pub struct FailedCall {
 pub struct TurnRecord {
     pub turn_id: String,
     pub session_id: String,
+    /// Resolved from Harness-owned delivery receipts on the active path,
+    /// not writer-supplied transcript origin or options metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_context: Option<Value>,
     pub status: TurnStatus,
     /// Monotonic step counter; guards against stale/duplicate dequeues.
     pub step: u64,
@@ -524,6 +528,7 @@ impl TurnRecord {
         self.calls.retain(|_, c| {
             c.state != CallState::Done || c.child_session_id.is_some() || c.child_turn_id.is_some()
         });
+        self.recall_context = None;
         self.failed_calls.clear();
         self.watermark_entry_id = None;
         self.stream_request_id = None;
@@ -576,6 +581,7 @@ pub(crate) mod tests {
         TurnRecord {
             turn_id: "t_1".into(),
             session_id: "s_1".into(),
+            recall_context: None,
             status: TurnStatus::AwaitingFunctions,
             step: 2,
             turn_count: 1,

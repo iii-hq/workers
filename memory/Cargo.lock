@@ -873,6 +873,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "futures-util",
  "iii-console-ui",
  "iii-helpers",
  "iii-sdk",
@@ -885,6 +886,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
 ]

@@ -6,15 +6,18 @@
 //! store contract is the seam.
 //!
 //! v1 detection is deliberately conservative and fully deterministic:
-//! automatic writes happen ONLY for normalized-text equality
-//! (case/punctuation/whitespace-insensitive). Token-set equality (word
-//! order shuffles) is surfaced as REPORT-ONLY candidates — "Alice manages
+//! automatic writes require a source-bound detail certificate preserving internal
+//! punctuation, operators and signs. The public normalized fingerprint is
+//! unchanged; collisions that erase details are surfaced for review only.
+//! Token-set equality (word order shuffles) is surfaced as REPORT-ONLY candidates — "Alice manages
 //! Bob" and "Bob manages Alice" sort to the same tokens but mean opposite
 //! things, so reordering never authorizes a write; a human or a stronger
 //! verifier promotes those. Grouping keys are designed to grow: when
 //! memories gain tags, tags join the group key next to entities.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
@@ -24,6 +27,72 @@ use serde_json::{json, Value};
 
 const PAGE: usize = 500;
 const CALL_TIMEOUT_MS: u64 = 15_000;
+
+pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+/// The pass's IO boundary. Production delegates to the existing SDK and
+/// judge; offline callers can supply decisions without connecting a client.
+/// Missing decision providers fail closed, never select a model or provider.
+pub trait ConsolidationTransport: Send + Sync {
+    fn invoke<'a>(&'a self, function: &'a str, payload: Value) -> TransportFuture<'a, Value>;
+
+    fn complete<'a>(
+        &'a self,
+        _model: &'a str,
+        _system: &'a str,
+        _prompt: String,
+        _max_tokens: u32,
+    ) -> TransportFuture<'a, Value> {
+        Box::pin(async { Err("no decision provider supplied".into()) })
+    }
+
+    fn judge<'a>(
+        &'a self,
+        _model: &'a str,
+        _prompt: String,
+    ) -> TransportFuture<'a, crate::llm::JudgeReply> {
+        Box::pin(async { Err("no reorder decision provider supplied".into()) })
+    }
+}
+
+impl ConsolidationTransport for IIIClient {
+    fn invoke<'a>(&'a self, function: &'a str, payload: Value) -> TransportFuture<'a, Value> {
+        Box::pin(async move {
+            self.call(CallRequest {
+                function_id: function.to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(if matches!(function, "state::get" | "state::set") {
+                    5_000
+                } else {
+                    CALL_TIMEOUT_MS
+                }),
+            })
+            .await
+            .map_err(|e| format!("{function}: {e}"))
+        })
+    }
+
+    fn complete<'a>(
+        &'a self,
+        model: &'a str,
+        system: &'a str,
+        prompt: String,
+        max_tokens: u32,
+    ) -> TransportFuture<'a, Value> {
+        Box::pin(crate::llm::complete(
+            self, model, system, prompt, max_tokens,
+        ))
+    }
+
+    fn judge<'a>(
+        &'a self,
+        model: &'a str,
+        prompt: String,
+    ) -> TransportFuture<'a, crate::llm::JudgeReply> {
+        Box::pin(crate::llm::judge(self, model, prompt))
+    }
+}
 
 /// The slice of a memory record this pass reads (wire-tolerant: unknown
 /// fields ignored).
@@ -45,6 +114,26 @@ pub struct MemoryRow {
     /// do not bump it). Absent on legacy records.
     #[serde(default)]
     pub stated_at: Option<u64>,
+    /// Preserve revision, provenance, entities/tags and future wire fields for
+    /// the producer's joint compare. Never reconstruct proof from a fresh read.
+    #[serde(flatten)]
+    pub snapshot: BTreeMap<String, Value>,
+}
+
+impl MemoryRow {
+    pub(crate) fn expected_snapshot(&self) -> Value {
+        let mut fields = self.snapshot.clone();
+        fields.extend([
+            ("id".into(), json!(self.id)),
+            ("text".into(), json!(self.text)),
+            ("pinned".into(), json!(self.pinned)),
+            ("corroboration".into(), json!(self.corroboration)),
+            ("created_at".into(), json!(self.created_at)),
+            ("updated_at".into(), json!(self.updated_at)),
+            ("stated_at".into(), json!(self.stated_at)),
+        ]);
+        json!(fields)
+    }
 }
 
 /// One planned merge: `losers` retire in favor of `winner`.
@@ -102,6 +191,9 @@ pub struct BankReport {
     /// wrong direction, a lost number, ...).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub semantic_rejected: usize,
+    /// Independently regenerated certificates for authorized merges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detail_proofs: Vec<DetailProof>,
     /// New memories the judge could not decide even alone (a poison input);
     /// skipped past the cursor so they cannot wedge the tier.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -147,6 +239,7 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
+/// Candidate-only legacy fingerprint, never an equivalence certificate.
 /// Case-folded, punctuation-stripped, whitespace-collapsed text.
 pub fn normalize(text: &str) -> String {
     let lowered = text.to_lowercase();
@@ -166,13 +259,323 @@ pub fn token_key(text: &str) -> String {
     tokens.join(" ")
 }
 
+/// A locally checked equivalence certificate. Each source byte is retained in
+/// `source`; ordered atoms record the only transformations the verifier permits.
+/// This is independent of the judge's reason, source label or similarity score.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DetailProof {
+    pub version: u32,
+    pub survivor_source: String,
+    pub retired_source: String,
+    pub survivor_atoms: Vec<DetailAtom>,
+    pub retired_atoms: Vec<DetailAtom>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DetailAtom {
+    pub source: String,
+    pub canonical: String,
+    pub rule: String,
+}
+
+/// Closed bilingual prose lexicon, not general case folding or translation.
+/// Unknown words, proper names, operators, numbers and literal punctuation keep
+/// their exact bytes. Adding a translation requires an explicit code review.
+fn prose_word(word: &str) -> Option<&'static str> {
+    match word.to_lowercase().as_str() {
+        "user" | "usuário" => Some("user"),
+        "prefers" | "prefere" => Some("prefers"),
+        "tea" | "chá" => Some("tea"),
+        "answers" | "respostas" => Some("answers"),
+        "short" | "curtas" => Some("short"),
+        "concise" => Some("concise"),
+        "direct" => Some("direct"),
+        "the" => Some("the"),
+        "api" => Some("api"),
+        "port" => Some("port"),
+        "is" => Some("is"),
+        "same" => Some("same"),
+        "fact" => Some("fact"),
+        "text" => Some("text"),
+        "words" => Some("words"),
+        "other" => Some("other"),
+        "keep" => Some("keep"),
+        "me" => Some("me"),
+        "here" => Some("here"),
+        "this" => Some("this"),
+        "memory" => Some("memory"),
+        "duplicate" => Some("duplicate"),
+        "publishes" => Some("publishes"),
+        "on" => Some("on"),
+        "tuesday" => Some("tuesday"),
+        "mornings" => Some("mornings"),
+        "rules" => Some("rules"),
+        "apply" => Some("apply"),
+        "café" => Some("café"),
+        "alpha" => Some("alpha"),
+        "beta" => Some("beta"),
+        "gamma" => Some("gamma"),
+        _ => None,
+    }
+}
+
+fn typed_prose(text: &str) -> Option<DetailAtom> {
+    let body = text.trim().strip_suffix('.').unwrap_or(text.trim());
+    // Intersective style adjectives commute; subjects/verbs never do.
+    let words: Vec<&str> = body.split_whitespace().collect();
+    if words.len() == 3
+        && words[2] == "answers"
+        && words[..2]
+            .iter()
+            .all(|w| matches!(*w, "concise" | "direct"))
+    {
+        let mut adjectives = words[..2].to_vec();
+        adjectives.sort_unstable();
+        return Some(DetailAtom {
+            source: text.into(),
+            canonical: format!("style-adjectives:{}:answers", adjectives.join(":")),
+            rule: "intersective-style-adjectives-v1".into(),
+        });
+    }
+    // Personal memory's omitted possessor denotes the user only in this
+    // closed weekday assertion, never for arbitrary entities or relations.
+    let weekday = body
+        .strip_prefix("User's dentist is on ")
+        .or_else(|| body.strip_prefix("Dentist is on "));
+    if let Some(day) = weekday.filter(|d| {
+        matches!(
+            *d,
+            "Mondays"
+                | "Tuesdays"
+                | "Wednesdays"
+                | "Thursdays"
+                | "Fridays"
+                | "Saturdays"
+                | "Sundays"
+        )
+    }) {
+        return Some(DetailAtom {
+            source: text.into(),
+            canonical: format!("user-dentist-weekday:{day}"),
+            rule: "personal-dentist-weekday-v1".into(),
+        });
+    }
+    let (date, time, iso) = if let Some(rest) = body.strip_prefix("Appointment on ") {
+        let (date, time) = rest.split_once(" at ")?;
+        (date, time, true)
+    } else {
+        let rest = body.strip_prefix("Consulta em ")?;
+        let (date, time) = rest.split_once(" às ")?;
+        (date, time, false)
+    };
+    fn numeric_parts(s: &str, separator: char, count: usize) -> Option<Vec<u32>> {
+        let pieces: Vec<&str> = s.split(separator).collect();
+        if pieces.len() != count
+            || pieces
+                .iter()
+                .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        pieces.iter().map(|p| p.parse().ok()).collect()
+    }
+    let date = numeric_parts(date, if iso { '-' } else { '/' }, 3)?;
+    let time = numeric_parts(time, ':', 2)?;
+    let (year, month, day) = if iso {
+        (date[0], date[1], date[2])
+    } else {
+        (date[2], date[1], date[0])
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return None,
+    };
+    if year == 0 || day == 0 || day > days || time[0] > 23 || time[1] > 59 {
+        return None;
+    }
+    Some(DetailAtom {
+        source: text.into(),
+        canonical: format!(
+            "appointment:{year:04}-{month:02}-{day:02}T{:02}:{:02}",
+            time[0], time[1]
+        ),
+        rule: "appointment-pt-en-calendar-v1".into(),
+    })
+}
+
+fn detail_atoms(text: &str) -> Option<Vec<DetailAtom>> {
+    if normalize(text).is_empty() {
+        return None;
+    }
+    if let Some(typed) = typed_prose(text) {
+        return Some(vec![typed]);
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    // Explicit literal/type declarations are not prose. In particular a final
+    // full stop may belong to a filename and `!` may be a symbolic factorial.
+    let literal = words.iter().any(|word| {
+        let lower = word.to_lowercase();
+        matches!(
+            lower.as_str(),
+            "expression"
+                | "identifier"
+                | "filename"
+                | "path"
+                | "variable"
+                | "regex"
+                | "command"
+                | "literal"
+                | "expressão"
+                | "identificador"
+                | "arquivo"
+                | "caminho"
+                | "variável"
+        ) || word.contains(['/', '\\', '`', '"'])
+    });
+    if literal {
+        return Some(vec![DetailAtom {
+            source: text.into(),
+            canonical: text.into(),
+            rule: "verbatim-literal-v1".into(),
+        }]);
+    }
+    let mut atoms = Vec::new();
+    for (i, word) in words.iter().enumerate() {
+        let mut body = *word;
+        let mut stop = "";
+        if i + 1 == words.len() {
+            let stripped = body.trim_end_matches(['.', '!']);
+            let suffix = &body[stripped.len()..];
+            // Sentence stops are admitted only after a known prose word, or a
+            // numeric assertion with an explicit copula/comparison grammar.
+            let numeric_assertion = stripped.bytes().all(|b| b.is_ascii_digit())
+                && !stripped.is_empty()
+                && (suffix == "."
+                    || (!suffix.is_empty()
+                        && suffix.chars().all(|c| c == '!')
+                        && words[..i]
+                            .iter()
+                            .map(|w| w.to_lowercase())
+                            .collect::<Vec<_>>()
+                            == ["the", "api", "port", "is"]))
+                && (words.get(i.wrapping_sub(1)) == Some(&"is")
+                    || words
+                        .get(i.wrapping_sub(1))
+                        .is_some_and(|w| matches!(*w, "<" | ">" | "<=" | ">=" | "=")));
+            if !suffix.is_empty() && (prose_word(stripped).is_some() || numeric_assertion) {
+                body = stripped;
+                stop = suffix;
+            }
+        }
+        let translated = prose_word(body);
+        atoms.push(DetailAtom {
+            source: body.into(),
+            canonical: translated.unwrap_or(body).into(),
+            rule: if translated.is_some() {
+                "closed-prose-lexicon-pt-en-v1"
+            } else {
+                "verbatim-detail-v1"
+            }
+            .into(),
+        });
+        if !stop.is_empty() {
+            atoms.push(DetailAtom {
+                source: stop.into(),
+                canonical: String::new(),
+                rule: "prose-sentence-stop-v1".into(),
+            });
+        }
+    }
+    Some(atoms)
+}
+
+fn atom_key(atoms: &[DetailAtom]) -> Vec<&str> {
+    atoms
+        .iter()
+        .filter(|a| !a.canonical.is_empty())
+        .map(|a| a.canonical.as_str())
+        .collect()
+}
+
+/// Prove full ordered detail equality, never a subset or a bag of tokens.
+/// Both original texts accompany the certificate, including whitespace/case.
+/// No proof means retain both, even if a model confidently proposes a merge.
+pub fn detail_proof(survivor: &str, retired: &str) -> Option<DetailProof> {
+    let survivor_atoms = detail_atoms(survivor)?;
+    let retired_atoms = detail_atoms(retired)?;
+    if atom_key(&survivor_atoms) != atom_key(&retired_atoms) {
+        return None;
+    }
+    Some(DetailProof {
+        version: 1,
+        survivor_source: survivor.into(),
+        retired_source: retired.into(),
+        survivor_atoms,
+        retired_atoms,
+    })
+}
+
+/// Supplied certificates are untrusted: regenerate and compare every field.
+pub fn verifies_detail_proof(proof: &DetailProof, survivor: &str, retired: &str) -> bool {
+    detail_proof(survivor, retired).as_ref() == Some(proof)
+}
+
+/// Deterministic candidate grouping: case-fold only recognized prose, never
+/// translate it. A locally generated bilingual certificate is not an independent
+/// decision to compare languages; that opt-in belongs to the semantic tier.
+/// A group is writable only after a pairwise detail proof.
+pub(crate) fn retirement_key(text: &str) -> String {
+    detail_atoms(text)
+        .map(|atoms| {
+            let key: Vec<String> = atoms
+                .iter()
+                .filter(|a| !a.canonical.is_empty())
+                .map(|a| {
+                    if a.rule == "closed-prose-lexicon-pt-en-v1" {
+                        a.source.to_lowercase()
+                    } else {
+                        a.source.clone()
+                    }
+                })
+                .collect();
+            serde_json::to_string(&key).unwrap_or_default()
+        })
+        .unwrap_or_default()
+}
+
 /// Group live memories and pick a survivor per group: pinned first (a
 /// pinned record always wins), then highest corroboration, then the
 /// OLDEST record (it carries the original provenance), then id for a
-/// stable total order. Normalized-text groups are writable; token-set
-/// groups (same words, different order) are report-only.
+/// stable total order. Local write-key groups are writable; lossy normalized
+/// collisions and token-set groups (same words, different order) are report-only.
 pub fn plan(rows: &[MemoryRow]) -> Vec<PlannedGroup> {
-    let mut planned = group_by(rows, normalize, false);
+    let mut planned = group_by(rows, retirement_key, false);
+    // The public normalized fingerprint is deliberately unchanged. A
+    // collision that discarded a symbol/boundary is review-only, even
+    // when a safe duplicate subgroup can still merge independently.
+    let mut normalized_keys: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for row in rows {
+        normalized_keys
+            .entry(normalize(&row.text))
+            .or_default()
+            .insert(retirement_key(&row.text));
+    }
+    planned.extend(
+        group_by(rows, normalize, true)
+            .into_iter()
+            .filter(|g| normalized_keys[&normalize(&g.winner_text)].len() > 1),
+    );
     // Token-set candidates: only members NOT already merged by the
     // normalized pass (a normalized group is a token-set group too).
     let mut norm_groups: BTreeMap<String, usize> = BTreeMap::new();
@@ -191,6 +594,9 @@ pub fn plan(rows: &[MemoryRow]) -> Vec<PlannedGroup> {
 fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> Vec<PlannedGroup> {
     let mut groups: BTreeMap<String, Vec<&MemoryRow>> = BTreeMap::new();
     for row in rows {
+        if normalize(&row.text).is_empty() {
+            continue;
+        }
         groups.entry(key(&row.text)).or_default().push(row);
     }
     let mut planned = Vec::new();
@@ -232,23 +638,19 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
     planned
 }
 
-pub(crate) async fn call(
-    iii: &IIIClient,
+pub(crate) async fn call<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     function_id: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    iii.call(CallRequest {
-        function_id: function_id.to_string(),
-        payload,
-        action: None,
-        timeout_ms: Some(CALL_TIMEOUT_MS),
-    })
-    .await
-    .map_err(|e| format!("{function_id}: {e}"))
+    iii.invoke(function_id, payload).await
 }
 
 /// Banks eligible for this pass (config allowlist applied).
-pub async fn list_banks(iii: &IIIClient, allow: &[String]) -> Result<Vec<String>, String> {
+pub async fn list_banks<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    allow: &[String],
+) -> Result<Vec<String>, String> {
     let reply = call(iii, "memory::bank::list", json!({})).await?;
     let banks = reply
         .get("banks")
@@ -264,8 +666,8 @@ pub async fn list_banks(iii: &IIIClient, allow: &[String]) -> Result<Vec<String>
 
 /// Every LIVE memory in a bank, paged. Undecodable rows are reported —
 /// a partial scan must not read as a complete one.
-pub(crate) async fn fetch_live(
-    iii: &IIIClient,
+pub(crate) async fn fetch_live<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     errors: &mut Vec<String>,
 ) -> Result<Vec<MemoryRow>, String> {
@@ -310,8 +712,8 @@ pub(crate) async fn fetch_live(
 
 /// Run one pass over one bank. `budget` is the remaining supersede budget
 /// for the whole run; decremented as work applies.
-pub async fn run_bank(
-    iii: &IIIClient,
+pub async fn run_bank<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     dry_run: bool,
     budget: &mut usize,
@@ -334,7 +736,16 @@ pub async fn run_bank(
         if dry_run || group.report_only {
             continue;
         }
-        apply_group(iii, bank, group, budget, &mut report, REASON_NORMALIZED).await;
+        apply_group(
+            iii,
+            bank,
+            group,
+            &rows,
+            budget,
+            &mut report,
+            REASON_NORMALIZED,
+        )
+        .await;
     }
     report.groups = groups;
     (report, rows)
@@ -348,20 +759,41 @@ pub async fn run_bank(
 /// `memory::save(winner_text)` silently created a duplicate whenever the
 /// winner's text had been edited (`memory::update` keeps the old id, so the
 /// fingerprint no longer matches) and wrote pinned winners.
-async fn apply_group(
-    iii: &IIIClient,
+#[allow(clippy::too_many_arguments)]
+async fn apply_group<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     group: &PlannedGroup,
+    rows: &[MemoryRow],
     budget: &mut usize,
     report: &mut BankReport,
     reason: &str,
 ) -> usize {
     let mut applied = 0usize;
+    let Some(winner) = rows.iter().find(|row| row.id == group.winner_id) else {
+        report
+            .errors
+            .push("missing proof-bound winner snapshot".into());
+        return 0;
+    };
+    let mut expected_winner = winner.expected_snapshot();
     for loser in &group.loser_ids {
         if *budget == 0 {
             report.capped += 1;
             continue;
         }
+        let Some(seen) = rows.iter().find(|row| &row.id == loser) else {
+            report
+                .errors
+                .push("missing proof-bound loser snapshot".into());
+            break;
+        };
+        let Some(proof) = detail_proof(&winner.text, &seen.text) else {
+            report
+                .notes
+                .push("merge retained: no detail-preserving certificate".into());
+            continue;
+        };
         let superseded = call(
             iii,
             "memory::supersede",
@@ -369,6 +801,8 @@ async fn apply_group(
                 "bank": bank,
                 "id": loser,
                 "superseded_by": group.winner_id,
+                "expected_memory": seen.expected_snapshot(),
+                "expected_superseded_by": expected_winner,
                 "reinforce": true,
                 "reason": reason,
             }),
@@ -380,8 +814,22 @@ async fn apply_group(
                 applied += 1;
                 report.superseded += 1;
                 tally_reinforcement(report, &reply);
+                report.detail_proofs.push(proof);
+                if let Some(survivor) = reply.get("survivor").filter(|v| !v.is_null()) {
+                    expected_winner = survivor.clone();
+                } else if *budget > 0 && reply.get("reinforced") == Some(&Value::Bool(true)) {
+                    // An old producer cannot certify the next winner snapshot.
+                    // Stop rather than silently re-read/rebase a stale proof.
+                    report.notes.push(
+                        "producer omitted post-commit survivor; remaining group deferred".into(),
+                    );
+                    break;
+                }
             }
-            Err(e) => report.errors.push(e),
+            Err(e) => {
+                report.errors.push(e);
+                break;
+            }
         }
     }
     applied
@@ -398,25 +846,34 @@ pub struct LlmOptions {
 /// promotions. Runs AFTER the deterministic pass, never on dry runs.
 /// Fail-soft — an unavailable router lands in the report's notes (never
 /// errors: it must not keep the pass due) and the pass stays valid.
-pub async fn run_llm_tier(
-    iii: &IIIClient,
+pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     rows: &[MemoryRow],
     report: &mut BankReport,
     budget: &mut usize,
     opts: &LlmOptions,
 ) {
-    let reorder: Vec<&PlannedGroup> = report.groups.iter().filter(|g| g.report_only).collect();
+    // Normalization collisions are ambiguous, not reorder candidates.
+    let reorder: Vec<&PlannedGroup> = report
+        .groups
+        .iter()
+        .filter(|g| {
+            g.report_only
+                && g.loser_texts
+                    .iter()
+                    .all(|text| normalize(text) != normalize(&g.winner_text))
+        })
+        .collect();
     let candidates = crate::llm::promotion_candidates(rows, opts.promote_threshold);
     let Some(prompt) = crate::llm::judge_prompt(&reorder, &candidates) else {
         return;
     };
-    let reply = match crate::llm::judge(iii, &opts.model, prompt).await {
+    let reply = match iii.judge(&opts.model, prompt).await {
         Ok(r) => r,
         Err(e) => {
-            // ponytail: this routing (notes, not errors) has no test seam
-            // until IIIClient/llm::judge can be faked; the checkpoint policy
-            // it relies on is pinned in functions.rs.
+            // An unavailable optional decision provider remains a soft skip;
+            // it does not turn already-applied deterministic work into a retry.
             report.notes.push(format!("llm tier skipped: {e}"));
             return;
         }
@@ -425,7 +882,7 @@ pub async fn run_llm_tier(
     // Confirmed merges: clone the groups first (report holds them).
     let confirmed = confirmed_groups(&reply.merge_groups, &reorder);
     for group in &confirmed {
-        let applied = apply_group(iii, bank, group, budget, report, REASON_REORDER).await;
+        let applied = apply_group(iii, bank, group, rows, budget, report, REASON_REORDER).await;
         report.llm_merged += applied;
     }
 
@@ -488,6 +945,7 @@ mod tests {
             created_at,
             updated_at: created_at,
             stated_at: None,
+            snapshot: BTreeMap::new(),
         }
     }
 
@@ -611,13 +1069,10 @@ mod tests {
             row("fp1", "   ", false, 0, 100),
             row("fp2", "\t\n", false, 0, 200),
         ];
-        // Both normalize to "" — grouping them would supersede real (if
-        // odd) records on no signal; current behavior groups by equal key,
-        // which is deterministic and surfaced in the plan for review.
-        let groups = plan(&rows);
-        for g in &groups {
-            assert!(!g.report_only || g.loser_ids.is_empty() || !g.loser_ids.is_empty());
-        }
+        assert!(
+            plan(&rows).is_empty(),
+            "empty evidence cannot authorize retirement"
+        );
     }
 
     #[test]

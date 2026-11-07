@@ -19,8 +19,11 @@
 //! INCREMENTAL: a per-session cursor (last processed entry id, kept in the
 //! `state` worker under scope `memory_cursor`) means each pass reads and
 //! extracts only the messages that arrived since the previous pass — the
-//! LLM never re-pays for content it already saw. The cursor advances only
-//! after a successful pass, so a failed call retries over the same span.
+//! LLM normally reads only new content. Each successfully persisted run confirms
+//! its cursor; failures remain observable. No atomic store/state receipt exists,
+//! so crash/retry does not guarantee idempotent corroboration or events.
+
+mod history;
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -35,8 +38,11 @@ use serde_json::{json, Value};
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::events::ItemEvent;
+use crate::functions::metrics_support::{
+    metric_id, reply_usage, ExtractionMetrics, ExtractionOutcome,
+};
 use crate::hooks::ExtractJobInput;
-use crate::store::{Bank, CommitKind, Store};
+use crate::store::{Bank, Store};
 use crate::types::{fingerprint, local_date, now_ms, Confidence, Memory, Provenance};
 
 const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation excerpt.\n\
@@ -864,8 +870,8 @@ fn merge_learned(
 /// propagated — extraction is a background enrichment, not a turn
 /// dependency.
 pub async fn run(deps: Arc<Deps>, job: ExtractJobInput) {
-    if let Err(e) = try_run(&deps, &job).await {
-        tracing::warn!(session_id = %job.session_id, error = %e, "extraction pass failed");
+    if try_run(&deps, &job).await.is_err() {
+        tracing::warn!("extraction pass failed; see sanitized memory metrics");
     }
 }
 
@@ -991,7 +997,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         // past a turn end it could not find.
         let newest = entries.last().map(|(id, ..)| id.as_str());
         if let Some(id) = newest.filter(|_| until_seen || job.until.is_none()) {
-            cursor_set(&deps.iii, session_id, id).await;
+            cursor_set(&deps.iii, session_id, id).await?;
         }
         return Ok(false);
     };
@@ -1000,10 +1006,24 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
     // session's lock holds while the pass runs; after a failed run it is
     // released, and a later turn's pass may read the rest before the retry does.
     let runs = pass_runs(entries, cfg.extraction_window);
-    tracing::debug!(session_id, runs = runs.len(), "extraction pass");
+    let pending = runs.len() > PASS_CALLS;
+    tracing::debug!(session_id, runs = runs.len(), pending, "extraction pass");
     let mut asked = false;
-    for run in runs {
-        asked |= read_run(deps, &cfg, session_id, &resolved, run).await?;
+    for run in runs.into_iter().take(PASS_CALLS) {
+        asked |= read_run(
+            deps,
+            &cfg,
+            session_id,
+            job.turn_id.as_deref(),
+            &resolved,
+            run,
+        )
+        .await?;
+    }
+    if pending {
+        // A fila repete o job, já depois do último run confirmado. Nunca
+        // confirmar `until` enquanto houver tail não processado.
+        return Err("extraction pending: remaining runs require retry".into());
     }
     Ok(asked)
 }
@@ -1012,28 +1032,16 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
 /// of 2,000 chars could always send.
 const CALL_CHARS: usize = 24_000;
 
-/// The most calls one pass makes: a long turn's span fits in them.
+/// Máximo de runs por tentativa; backlog excedente retorna pending/retry.
 const PASS_CALLS: usize = 4;
 
-/// The runs one pass reads: every entry after the cursor, unless that
-/// takes more than [`PASS_CALLS`] calls, which only a backlog does (passes
-/// the queue gave up on, a skipped turn whose end was never found).
-// shortcut: past PASS_CALLS, only the newest `window` entries are read, then
-// only their newest PASS_CALLS runs (long pasted lines take a run each), and
-// the cursor moves past the rest unread, as before runs existed; drain the
-// backlog over later passes if facts are ever lost there.
+/// Todos os runs, oldest-first, sem perda de prefixo ou tail. O chamador
+/// executa no máximo PASS_CALLS e retorna pending para drenar o restante.
+/// A janela só se aplica ao bootstrap sem cursor, nunca a um delta válido.
 // shortcut: runs after the first are read without the turn's opening request;
 // carry the request into later runs if facts are lost there.
-fn pass_runs(entries: Vec<Entry>, window: usize) -> Vec<Vec<Entry>> {
-    let runs = chunks(entries, CALL_CHARS);
-    if runs.len() <= PASS_CALLS {
-        return runs;
-    }
-    let mut entries = runs.concat();
-    keep_window(&mut entries, window);
-    let mut runs = chunks(entries, CALL_CHARS);
-    runs.drain(..runs.len().saturating_sub(PASS_CALLS));
-    runs
+fn pass_runs(entries: Vec<Entry>, _window: usize) -> Vec<Vec<Entry>> {
+    chunks(entries, CALL_CHARS)
 }
 
 /// One extraction call over `entries`, a run of the span ([`chunks`]), and
@@ -1043,6 +1051,7 @@ async fn read_run(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
+    turn_id: Option<&str>,
     resolved: &crate::scope::Resolved,
     entries: Vec<Entry>,
 ) -> Result<bool, String> {
@@ -1065,7 +1074,7 @@ async fn read_run(
         // under 20 chars is skipped too; fold it into the run before if a
         // fact is ever lost there.
         if let Some(id) = newest_id {
-            cursor_set(&deps.iii, session_id, &id).await;
+            cursor_set(&deps.iii, session_id, &id).await?;
         }
         return Ok(false);
     }
@@ -1116,8 +1125,23 @@ async fn read_run(
         }
     }
 
-    let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
-    let items = extract_items(
+    let started = std::time::Instant::now();
+    let routing = if cfg.extraction_model.is_empty() {
+        "catalog_first"
+    } else {
+        "configured"
+    };
+    let mut metrics = ExtractionMetrics::new(&cfg.extraction_model, routing);
+    let model = match resolve_model(&deps.iii, &cfg.extraction_model).await {
+        Ok(model) => model,
+        Err(_) => {
+            metrics.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            metrics.emit(session_id, turn_id);
+            return Err("extraction model unavailable (redacted)".into());
+        }
+    };
+    metrics.requested_model = metric_id(Some(&model));
+    let items = extract_items_measured(
         &deps.iii,
         &model,
         cfg.max_memories_per_turn,
@@ -1127,6 +1151,9 @@ async fn read_run(
         session_id,
         layer_name.is_some(),
         !instructions.is_empty(),
+        turn_id,
+        metrics,
+        started,
     )
     .await?;
     // An agent item naming no listed agent has no bank to go to: never the
@@ -1138,7 +1165,7 @@ async fn read_run(
     if items.is_empty() {
         // Nothing to write: the run is done, advance past it.
         if let Some(id) = newest_id {
-            cursor_set(&deps.iii, session_id, &id).await;
+            cursor_set(&deps.iii, session_id, &id).await?;
         }
         return Ok(true);
     }
@@ -1223,8 +1250,8 @@ async fn read_run(
             // Screened before it appends or rewrites a listed line in place.
             .filter(|(_, t, _)| match crate::redact::reject_injection("learned rule", t) {
                 Ok(()) => true,
-                Err(e) => {
-                    tracing::warn!(session_id, bank = %bank_name, error = %e, "dropped a learned rule");
+                Err(_) => {
+                    tracing::warn!("dropped a learned rule: content rejected");
                     false
                 }
             })
@@ -1281,7 +1308,7 @@ async fn read_run(
                     deps.emitter.bank("rules-changed", name).await;
                     tracing::info!(session_id, bank = %name, changed, "extraction pass learned rules");
                 }
-                Err(e) => tracing::warn!(error = %e, "learned rule write failed"),
+                Err(e) => return Err(format!("learned rule write failed: {e}")),
             }
         }
     }
@@ -1297,8 +1324,8 @@ async fn read_run(
         if text.len() < 3 || text.len() > 500 {
             continue;
         }
-        if let Err(e) = crate::redact::reject_injection("extracted memory", text) {
-            tracing::warn!(session_id, bank = %bank_name, error = %e, "dropped an extracted memory");
+        if crate::redact::reject_injection("extracted memory", text).is_err() {
+            tracing::warn!("dropped an extracted memory: content rejected");
             continue;
         }
         let now = now_ms();
@@ -1335,6 +1362,7 @@ async fn read_run(
                 .await
             }
         };
+        let expected = existing.clone();
         let (mut memory, event) = match existing {
             // Known memory re-observed: never duplicated; reinforced, or left
             // exactly as it is (still retiring what the item corrects).
@@ -1354,31 +1382,31 @@ async fn read_run(
         if Some(at_name) == layer_name || (item_user && bank_name == cfg.default_bank) {
             crate::scope::into_layer(&mut memory.entities);
         }
-        if let Some(event) = event {
-            match at.commit(memory.clone()).await {
-                Ok(CommitKind::Created | CommitKind::Updated) => {
-                    deps.emitter.item(event, at_name, &memory).await;
-                    touched.insert(at_name);
-                    saved += 1;
-                }
-                // Propagate: the cursor must not advance past a span whose
-                // writes did not all land. The queue retries the pass;
-                // fingerprints make the retry reinforce, not duplicate.
-                Err(e) => return Err(format!("memory commit failed: {e}")),
+        // The target is the original prompt snapshot. Validate it jointly
+        // with the replacement before publishing either side or any event.
+        let correction = target
+            .filter(|_| retires)
+            .filter(|old| old.is_live() && !old.pinned && old.id != memory.id);
+        let retired = if let Some(old) = correction.as_ref() {
+            Some(
+                at.correct_expected(old, memory.clone(), expected.as_ref())
+                    .await
+                    .map_err(|e| format!("memory commit failed: {e}"))?,
+            )
+        } else {
+            if event.is_some() {
+                at.commit_expected(memory.clone(), expected.as_ref())
+                    .await
+                    .map_err(|e| format!("memory commit failed: {e}"))?;
             }
-        }
-        // A correction retires what it corrects: a tombstone pointing at
-        // the corrected memory, recoverable like any supersede.
-        let old = match target.filter(|_| retires) {
-            Some(old) => at.get(&old.id).await,
-            None => None,
+            None
         };
-        if let Some(old) = old.filter(|m| m.is_live() && !m.pinned && m.id != memory.id) {
-            let (retired, _) =
-                crate::functions::items::supersede_transition(old, memory.clone(), false, now);
-            at.commit(retired.clone())
-                .await
-                .map_err(|e| format!("memory commit failed: {e}"))?;
+        if let Some(event) = event {
+            deps.emitter.item(event, at_name, &memory).await;
+            touched.insert(at_name);
+            saved += 1;
+        }
+        if let Some(retired) = retired {
             deps.emitter
                 .item_with(
                     ItemEvent::Superseded,
@@ -1391,7 +1419,7 @@ async fn read_run(
     }
     // Every durable write landed: NOW the run is processed.
     if let Some(id) = newest_id {
-        cursor_set(&deps.iii, session_id, &id).await;
+        cursor_set(&deps.iii, session_id, &id).await?;
     }
     if saved > 0 {
         tracing::info!(session_id, bank = %bank_name, saved, "extraction pass saved memories");
@@ -1493,13 +1521,10 @@ fn new_memory(
 }
 
 pub(crate) const CURSOR_SCOPE: &str = "memory_cursor";
-/// Page size while walking a session. The walk follows `next_cursor` to
-/// the leaf (a hard page cap would permanently strand sessions longer
-/// than the cap: `session::messages` is root->leaf, so the new turn lives
-/// on the LAST page); RAM stays bounded because only the window tail and
-/// the span after the stored cursor are retained. MAX_PAGES only bounds a
-/// pathological/looping cursor, sized far above any real session.
-const PAGE_SIZE: usize = 100;
+/// Limites de paginação: atingir o cap nunca autoriza sucesso parcial.
+/// O fast-path retém o delta; root retém IDs para classificação e janela
+/// limitada para o bootstrap legado. Não há garantia de snapshot cross-page.
+const PAGE_SIZE: usize = history::PAGE_SIZE;
 const MAX_PAGES: usize = 10_000;
 
 /// Last processed entry id for a session, from the state worker. No cursor
@@ -1517,16 +1542,23 @@ async fn cursor_get(iii: &IIIClient, session_id: &str) -> Result<Option<String>,
         .await;
     let reply = match reply {
         Ok(reply) => reply,
-        Err(e) if transient(&e) => return Err(format!("state::get: {e}")),
-        Err(_) => return Ok(None),
+        Err(Error::Remote { code, .. }) if code == "function_not_found" || code == "NOT_FOUND" => {
+            return Ok(None)
+        }
+        Err(e) => return Err(format!("state::get: {e}")),
     };
-    // state::get returns the stored value at the top level; older engines
-    // wrapped it under `value` — accept both.
-    Ok(reply
-        .pointer("/last_entry_id")
-        .or_else(|| reply.pointer("/value/last_entry_id"))
+    // Estado ausente é bootstrap; resposta malformada não é ausência.
+    // Aceitar também o envelope `value` de engines antigos.
+    let value = reply.get("value").unwrap_or(&reply);
+    if value.is_null() {
+        return Ok(None);
+    }
+    let id = value
+        .get("last_entry_id")
         .and_then(Value::as_str)
-        .map(str::to_string))
+        .filter(|id| !id.is_empty())
+        .ok_or("state::get: malformed extraction cursor")?;
+    Ok(Some(id.to_owned()))
 }
 
 /// A failure worth retrying. `function_not_found` is not: it is also what
@@ -1539,24 +1571,23 @@ fn transient(e: &Error) -> bool {
     }
 }
 
-/// Best-effort cursor write; a miss only costs a re-read next pass
-/// (fingerprints keep re-extraction harmless, just not free).
-async fn cursor_set(iii: &IIIClient, session_id: &str, entry_id: &str) {
-    let res = iii
-        .call(CallRequest {
-            function_id: "state::set".into(),
-            payload: json!({
-                "scope": CURSOR_SCOPE,
-                "key": session_id,
-                "value": { "last_entry_id": entry_id },
-            }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
-    if let Err(e) = res {
-        tracing::debug!(session_id, error = %e, "cursor write failed (state worker absent?)");
-    }
+/// Confirmar o watermark é parte do sucesso do run. Fingerprints evitam
+/// duplicata textual, mas NÃO garantem idempotência de corroboration/eventos.
+/// Falha de state é observável e impede declarar o job concluído.
+async fn cursor_set(iii: &IIIClient, session_id: &str, entry_id: &str) -> Result<(), String> {
+    iii.call(CallRequest {
+        function_id: "state::set".into(),
+        payload: json!({
+            "scope": CURSOR_SCOPE,
+            "key": session_id,
+            "value": { "last_entry_id": entry_id },
+        }),
+        action: None,
+        timeout_ms: Some(5_000),
+    })
+    .await
+    .map_err(|e| format!("state::set: cursor confirmation failed: {e}"))?;
+    Ok(())
 }
 
 /// Drop a session's cursor (from the target of the `session::on-deleted`
@@ -1572,12 +1603,95 @@ pub async fn cursor_delete(iii: &IIIClient, session_id: &str) {
         .await;
 }
 
-/// The [`Span`] of user/assistant messages after `since` through `until`,
-/// and whether `until` was on the path. Walks the session page by page —
-/// `session::messages` returns root→leaf, so the new turn lives on the
-/// LAST page. `roles` narrowing also excludes custom + function_result
-/// entries, so memory's own calls never feed back into extraction.
+/// Cursor válido lê apenas o delta; `until` é um corte cliente inclusivo.
+/// Delta incompleto nunca chega ao parser/modelo. Só uma caminhada root completa
+/// do mesmo path pode provar job antigo ou autorizar o bootstrap legado.
 async fn fetch_span(
+    iii: &IIIClient,
+    session_id: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+    window: usize,
+) -> Result<(Vec<Entry>, bool), String> {
+    if since.is_some() && until.is_some() {
+        let mut reader = history::DeltaReader::new(
+            session_id,
+            since,
+            until,
+            history::Bounds {
+                max_pages: MAX_PAGES,
+                max_entries: MAX_PAGES * PAGE_SIZE,
+            },
+        );
+        while let Some(payload) = reader.next_request() {
+            let reply = messages_page(iii, payload).await;
+            reader.accept(reply.map_err(|error| {
+                if invalid_history_cursor(&error) {
+                    history::FetchFailure::InvalidCursor
+                } else if transient(&error) {
+                    history::FetchFailure::Transient
+                } else {
+                    history::FetchFailure::Other
+                }
+            }));
+        }
+        match reader.outcome() {
+            history::Outcome::Complete(delta) => {
+                if Some(delta.watermark.as_str()) != until {
+                    return Err("session::messages: mismatched delta boundary".into());
+                }
+                let entries = delta
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        parse_entry(&entry.item)
+                            .ok_or_else(|| "session::messages: invalid envelope".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok((entries, true));
+            }
+            history::Outcome::AlreadyConsumed { watermark }
+                if Some(watermark.as_str()) == until =>
+            {
+                return Ok((Vec::new(), true))
+            }
+            history::Outcome::NeedsClassification(
+                history::ClassificationReason::InvalidCursor
+                | history::ClassificationReason::BoundaryNotFound,
+            ) => {} // Prefixo parcial descartado pelo leitor; root é outra leitura.
+            other => return Err(format!("session::messages: incomplete delta {other:?}")),
+        }
+    }
+    fetch_root_span(iii, session_id, since, until, window).await
+}
+
+async fn messages_page(iii: &IIIClient, payload: Value) -> Result<Value, Error> {
+    iii.call(CallRequest {
+        function_id: "session::messages".into(),
+        payload,
+        action: None,
+        timeout_ms: Some(10_000),
+    })
+    .await
+}
+
+/// O session-manager devolve `SessionError::InvalidCursor` como
+/// `Error::Handler("session/invalid_cursor: ...")`; o dispatch do iii-sdk
+/// 0.26.0-rc.5 serializa erro não-Remote com code `invocation_failed` e
+/// message `handler error: <texto>`. Aceita só esse envelope exato (ou o code
+/// estruturado documentado), nunca substring livre nem outro code.
+fn invalid_history_cursor(error: &Error) -> bool {
+    matches!(error, Error::Remote { code, message, .. }
+        if code == "session/invalid_cursor"
+            || (code == "invocation_failed"
+                && message.starts_with("handler error: session/invalid_cursor: ")))
+}
+
+/// Recuperação limitada, nunca mudança de sessão/banco/branch. Sem âncora no
+/// path, o bootstrap conserva a janela legada: não recupera todo histórico
+/// inicial. Mesmo após encontrar `until`, valida o path inteiro antes de
+/// classificar anterioridade; cap/erro nunca equivale a leaf completo.
+async fn fetch_root_span(
     iii: &IIIClient,
     session_id: &str,
     since: Option<&str>,
@@ -1586,36 +1700,82 @@ async fn fetch_span(
 ) -> Result<(Vec<Entry>, bool), String> {
     let mut span = Span::new(since, until, window);
     let mut cursor: Option<String> = None;
+    let mut cursors = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut path = Vec::new();
     for _ in 0..MAX_PAGES {
         let mut payload = json!({
-            "session_id": session_id,
-            "limit": PAGE_SIZE,
-            "roles": ["user", "assistant"],
+            "session_id": session_id, "limit": PAGE_SIZE,
+            "roles": ["user", "assistant"], "include_image_data": false,
         });
-        if let Some(c) = &cursor {
-            payload["cursor"] = json!(c);
+        if let Some(cursor) = &cursor {
+            payload["cursor"] = json!(cursor);
         }
-        let reply = iii
-            .call(CallRequest {
-                function_id: "session::messages".into(),
-                payload,
-                action: None,
-                timeout_ms: Some(10_000),
-            })
+        let reply = messages_page(iii, payload)
             .await
             .map_err(|e| format!("session::messages: {e}"))?;
-        if let Some(items) = reply.get("messages").and_then(Value::as_array) {
-            span.push(items.iter().filter_map(parse_entry));
+        let items = reply
+            .get("messages")
+            .and_then(Value::as_array)
+            .ok_or("session::messages: malformed root page")?;
+        let next = match reply.get("next_cursor") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(next)) if !next.is_empty() => Some(next.clone()),
+            _ => return Err("session::messages: malformed root cursor".into()),
+        };
+        if items.len() > PAGE_SIZE {
+            return Err("session::messages: oversized root page".into());
         }
-        if span.done() {
-            break;
+        if let Some(next) = &next {
+            if items.is_empty() || !cursors.insert(next.clone()) {
+                return Err("session::messages: repeated root cursor or no progress".into());
+            }
         }
-        match reply.get("next_cursor").and_then(Value::as_str) {
-            Some(next) => cursor = Some(next.to_string()),
-            None => break,
+        let mut entries = Vec::with_capacity(items.len());
+        for item in items {
+            let id = item
+                .get("entry_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            if !matches!(
+                item.pointer("/message/role").and_then(Value::as_str),
+                Some("user" | "assistant")
+            ) || !item
+                .pointer("/message/content")
+                .is_some_and(Value::is_array)
+                || item.get("custom").is_some_and(|custom| !custom.is_null())
+            {
+                return Err("session::messages: malformed root envelope".into());
+            }
+            let id = id.ok_or("session::messages: missing root entry id")?;
+            if !seen.insert(id.to_owned()) {
+                return Err("session::messages: repeated root entry".into());
+            }
+            path.push(id.to_owned());
+            entries.push(parse_entry(item).ok_or("session::messages: malformed root message")?);
         }
+        span.push(entries);
+        if let Some(next) = next {
+            cursor = Some(next);
+            continue;
+        }
+        if let Some(until) = until {
+            let ids: Vec<_> = path.iter().map(String::as_str).collect();
+            match history::classify_root(since, until, &ids, true) {
+                history::RootClassification::AlreadyCovered => return Ok((Vec::new(), true)),
+                history::RootClassification::DeltaAvailable
+                | history::RootClassification::FallbackRequired => return Ok(span.finish()),
+                classification => {
+                    return Err(format!(
+                        "session::messages: boundary pending {classification:?}"
+                    ))
+                }
+            }
+        }
+        // Jobs antigos sem fronteira mantêm explicitamente o bootstrap legado.
+        return Ok(span.finish());
     }
-    Ok(span.finish())
+    Err("session::messages: root page limit; boundary pending".into())
 }
 
 /// When what `entries` hold was said: their newest message's time, not
@@ -1761,6 +1921,7 @@ impl<'a> Span<'a> {
 
     /// Later pages can change nothing: the turn's end is in, and the cursor
     /// was found before it (or there is none to look for).
+    #[cfg(test)]
     fn done(&self) -> bool {
         self.until_seen && (self.since.is_none() || self.since_seen)
     }
@@ -1941,7 +2102,9 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
         .map(str::to_string);
     match first {
         Some(id) => {
-            tracing::info!(model = %id, "extraction_model not configured; using first router model");
+            tracing::info!(
+                "extraction_model not configured; using first router model (catalog_first)"
+            );
             Ok(id)
         }
         None => Err("router catalog is empty; set extraction_model or add a provider".into()),
@@ -1976,8 +2139,8 @@ async fn child_agents(iii: &IIIClient, session_id: &str) -> Result<Vec<String>, 
         {
             Ok(reply) => reply,
             Err(e) if transient(&e) => return Err(format!("session::list: {e}")),
-            Err(e) => {
-                tracing::warn!(session_id, error = %e, "session::list failed; no sub-agent listed");
+            Err(_) => {
+                tracing::warn!("session::list failed; no sub-agent listed");
                 return Ok(out);
             }
         };
@@ -2010,6 +2173,7 @@ fn listed_agents(reply: &Value, out: &mut Vec<String>) {
 /// scope when it lists `agents`), its items. `repository`: the pass writes
 /// into a repository bank ([`REPOSITORY_RULE`]); `instructions`: `input`
 /// gives the user's own ([`EXTRACT_INSTRUCTIONS`]).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn extract_items(
     iii: &IIIClient,
@@ -2021,6 +2185,40 @@ async fn extract_items(
     session_id: &str,
     repository: bool,
     instructions: bool,
+) -> Result<Vec<ExtractedItem>, String> {
+    // The evaluation caller supplies an already resolved explicit model and
+    // predates turn correlation; keep its contract without inventing a turn.
+    extract_items_measured(
+        iii,
+        model,
+        max_memories,
+        timeout_ms,
+        input,
+        agents,
+        session_id,
+        repository,
+        instructions,
+        None,
+        ExtractionMetrics::new(model, "configured"),
+        std::time::Instant::now(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn extract_items_measured(
+    iii: &IIIClient,
+    model: &str,
+    max_memories: usize,
+    timeout_ms: u64,
+    input: String,
+    agents: bool,
+    session_id: &str,
+    repository: bool,
+    instructions: bool,
+    turn_id: Option<&str>,
+    mut metrics: ExtractionMetrics,
+    started: std::time::Instant,
 ) -> Result<Vec<ExtractedItem>, String> {
     let reply = iii
         .call(CallRequest {
@@ -2038,9 +2236,40 @@ async fn extract_items(
             action: None,
             timeout_ms: Some(timeout_ms),
         })
-        .await
-        .map_err(|e| format!("router::complete: {e}"))?;
-    reply_items(&reply, session_id)
+        .await;
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(error) => {
+            metrics.outcome = if matches!(error, Error::Timeout) {
+                ExtractionOutcome::Timeout
+            } else {
+                ExtractionOutcome::TransportError
+            };
+            metrics.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            metrics.emit(session_id, turn_id);
+            return Err("router::complete: transport failure (redacted)".into());
+        }
+    };
+    metrics.effective_model = metric_id(reply["model"].as_str());
+    metrics.provider = metric_id(reply["provider"].as_str());
+    metrics.usage = reply_usage(&reply);
+    let result = reply_items(&reply, session_id);
+    metrics.outcome = if reply["message"]["stop_reason"] == "error" {
+        ExtractionOutcome::ProviderError
+    } else if result.is_err() {
+        ExtractionOutcome::InvalidReply
+    } else {
+        ExtractionOutcome::Success
+    };
+    metrics.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    metrics.emit(session_id, turn_id);
+    result.map_err(|_| {
+        if matches!(metrics.outcome, ExtractionOutcome::ProviderError) {
+            "router::complete: provider error (redacted)".into()
+        } else {
+            "router::complete: invalid reply (redacted)".into()
+        }
+    })
 }
 
 /// The extraction system prompt: [`EXTRACT_SYSTEM`], then the clauses the
@@ -2118,8 +2347,8 @@ fn parse_items(raw: &str) -> Result<Vec<ExtractedItem>, String> {
         .into_iter()
         .filter_map(|v| match serde_json::from_value::<ExtractedItem>(v) {
             Ok(item) => Some(item),
-            Err(e) => {
-                tracing::warn!(error = %e, "skipping a malformed extracted item");
+            Err(_) => {
+                tracing::warn!("skipping a malformed extracted item");
                 None
             }
         })
@@ -2621,7 +2850,8 @@ mod tests {
         (id.into(), role.into(), text.into(), 1)
     }
 
-    /// Walk `entries` as two pages, like `session::messages` root → leaf.
+    /// Acumulador puro em duas páginas root → leaf. Não é o fetch produtivo:
+    /// o chamador valida/classifica o path antes de liberar o candidato.
     fn walk_entries(
         mut entries: Vec<Entry>,
         since: Option<&str>,
@@ -2801,7 +3031,7 @@ mod tests {
     }
 
     #[test]
-    fn a_backlog_past_one_pass_is_cut_to_its_newest_window() {
+    fn a_backlog_past_one_pass_retains_every_run_oldest_first() {
         let step = |i: usize| {
             let text = format!("Found fact {i}. {}", "detail ".repeat(200));
             said(&format!("a{i}"), "assistant", &text)
@@ -2816,20 +3046,25 @@ mod tests {
         let runs = pass_runs(span(30), 12);
         assert!(runs.len() > 1);
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 32);
-        // A backlog (passes the queue gave up on) costs at most one pass's
-        // calls: its newest window, the request, and the end the cursor
-        // lands on.
+        // O caso antigo exigia descarte: agora retém os 102 envelopes.
+        // A execução limita quatro runs, confirma somente os processados e
+        // retorna pending; o teste SDK confere a retentativa produtiva.
         let runs = pass_runs(span(100), 12);
-        assert!(runs.len() <= PASS_CALLS, "{} calls", runs.len());
+        assert!(runs.len() > PASS_CALLS, "{} calls", runs.len());
         let ids: Vec<&str> = runs.iter().flatten().map(|e| e.0.as_str()).collect();
-        assert_eq!(ids.len(), 14, "{ids:?}");
-        assert_eq!((ids[0], ids[1], ids[13]), ("u", "a89", "end"));
+        let expected: Vec<String> = std::iter::once("u".into())
+            .chain((1..=100).map(|i| format!("a{i}")))
+            .chain(std::iter::once("end".into()))
+            .collect();
+        assert_eq!(ids.len(), 102);
+        assert_eq!(ids, expected.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_ne!(runs[PASS_CALLS - 1].last().unwrap().0, "end");
     }
 
     #[test]
-    fn long_pasted_messages_never_cost_more_than_one_pass() {
+    fn long_pasted_messages_retain_all_runs_for_bounded_retries() {
         // Each user line keeps up to 12,000 chars, so two never share a run:
-        // ten inside the window are ten runs until the pass keeps its newest.
+        // Dez mensagens continuam dez runs; nenhum prefixo é descartado.
         let mut span: Vec<Entry> = (1..=10)
             .map(|i| {
                 said(
@@ -2841,9 +3076,13 @@ mod tests {
             .collect();
         span.push(said("end", "assistant", ""));
         let runs = pass_runs(span, 12);
-        assert!(runs.len() <= PASS_CALLS, "{} calls", runs.len());
+        assert_eq!(runs.len(), 10);
         let ids: Vec<&str> = runs.iter().flatten().map(|e| e.0.as_str()).collect();
-        assert_eq!((ids[0], *ids.last().unwrap()), ("p7", "end"), "{ids:?}");
+        assert_eq!(
+            ids,
+            ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "end"]
+        );
+        assert_eq!(runs[PASS_CALLS - 1].last().unwrap().0, "p4");
     }
 
     #[test]
@@ -2889,7 +3128,7 @@ mod tests {
                 vec!["e3".into(), "e4".into(), "e5".into(), "e6".into()],
                 false
             ),
-            "a turn end off the path reads to the newest entry"
+            "Span acumula candidato; fetch_root_span recusa liberar sem until provado"
         );
     }
 
@@ -3781,7 +4020,47 @@ mod tests {
     }
 
     #[test]
-    fn only_a_transient_failure_retries_the_cursor_read() {
+    fn only_documented_cursor_codes_authorize_root_classification() {
+        let remote_message = |code: &str, message: &str| Error::Remote {
+            code: code.into(),
+            message: message.into(),
+            stacktrace: None,
+        };
+        assert!(invalid_history_cursor(&remote_message(
+            "session/invalid_cursor",
+            "opaque"
+        )));
+        assert!(invalid_history_cursor(&remote_message(
+            "invocation_failed",
+            "handler error: session/invalid_cursor: missing anchor"
+        )));
+        for (code, message) in [
+            ("invocation_error", "session/invalid_cursor: missing anchor"),
+            (
+                "invocation_error",
+                "handler error: session/invalid_cursor: x",
+            ),
+            (
+                "invocation_failed",
+                "session/invalid_cursor: missing anchor",
+            ),
+            (
+                "invocation_failed",
+                "handler error: temporary: session/invalid_cursor: later",
+            ),
+            ("invocation_failed", "handler error: session/storage: down"),
+        ] {
+            assert!(!invalid_history_cursor(&remote_message(code, message)));
+        }
+        assert!(!invalid_history_cursor(&remote_message(
+            "other",
+            "session/invalid_cursor: missing anchor"
+        )));
+        assert!(!invalid_history_cursor(&Error::Timeout));
+    }
+
+    #[test]
+    fn only_a_transient_failure_has_the_transient_category() {
         assert!(transient(&Error::Timeout));
         assert!(transient(&Error::NotConnected));
         assert!(transient(&remote("invocation_error")));

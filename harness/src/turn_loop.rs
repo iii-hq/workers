@@ -635,6 +635,7 @@ async fn generate_step(
 
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
+    record.recall_context = crate::hooks::recall::resolve(deps, &record, &entries).await;
     // The previous step's watermark marks which entries arrived while that
     // step was generating (the window moves them past the reply they
     // interrupted — see crate::window::build). The new watermark is
@@ -2424,7 +2425,7 @@ fn count_model_visible(rows: &[crate::state::QueuedMessage]) -> usize {
 /// appends under its stored deterministic entry id, and rows are deleted only
 /// after the append lands — a redelivered step re-drains as a no-op and reports
 /// zero, since there is nothing left to drain.
-async fn drain_queued(
+pub(crate) async fn drain_queued(
     deps: &Deps,
     session: &SessionClient,
     session_id: &str,

@@ -19,13 +19,14 @@
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
-use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::consolidate::{call, BankReport, MemoryRow};
+use crate::consolidate::{call, BankReport, ConsolidationTransport, MemoryRow};
 
+/// Merge certificates are checked locally against BOTH exact source texts;
+/// model reasons, topics and source labels never authorize a retirement.
 /// Static system prompt (identical for every bank and batch, so providers
 /// can cache it).
 pub const SEMANTIC_SYSTEM: &str = "You consolidate a user's long-term memory bank. Each NEW \
@@ -57,7 +58,8 @@ a condition — and neither clearly replaces the other, take no action.\n\
 4. A memory marked (pinned) is never \"retired\" or \"old\".\n\
 5. Pair a new memory only with one of ITS OWN listed candidates (another new memory counts \
 when it is listed among them).\n\
-6. Use the aliases exactly as shown (n1, c3, ...). Every action needs a one-sentence reason.";
+6. Use the aliases exactly as shown (n1, c3, ...). Every action needs a one-sentence reason.\n\
+7. Merge is a proposal only: an independent closed detail verifier must produce a structured certificate bound to both exact texts. Preserve all names, operators, case-sensitive identifiers, numbers, punctuation and extra details; without such proof retain both. Free-text reason is never proof.";
 
 /// The judge's reason is carried on memory's events; memory caps it too.
 const MAX_REASON_CHARS: usize = 500;
@@ -261,6 +263,8 @@ pub struct RawAction {
     pub new: Option<String>,
     #[serde(default)]
     pub reason: String,
+    #[serde(default)]
+    pub proof: Option<crate::consolidate::DetailProof>,
 }
 
 /// Parse the judge's reply. Unlike the reorder judge, garbage is an ERROR
@@ -340,6 +344,7 @@ pub struct Action {
     pub keep: MemoryRow,
     pub retire: MemoryRow,
     pub reason: String,
+    pub proof: Option<crate::consolidate::DetailProof>,
 }
 
 #[derive(Debug, Default)]
@@ -446,10 +451,30 @@ pub fn validate(
             continue;
         }
         let seen = |r: &MemoryRow| stated.get(&r.id).copied().unwrap_or_else(|| last_stated(r));
+        if kind == ActionKind::Supersede && seen(retire) == seen(keep) {
+            verdict
+                .rejected
+                .push((label, "replacement needs a strictly later statement"));
+            continue;
+        }
         if kind == ActionKind::Supersede && seen(retire) > seen(keep) {
             verdict
                 .rejected
                 .push((label, "the outdated side was stated after its replacement"));
+            continue;
+        }
+        // A lossy legacy key is not evidence that two texts preserve
+        // operators, signs or punctuation-delimited details. Even a judge
+        // proposal cannot silently promote that deterministic collision.
+        if kind == ActionKind::Merge
+            && crate::consolidate::normalize(&keep.text)
+                == crate::consolidate::normalize(&retire.text)
+            && crate::consolidate::retirement_key(&keep.text)
+                != crate::consolidate::retirement_key(&retire.text)
+        {
+            verdict
+                .rejected
+                .push((label, "ambiguous normalized-text collision"));
             continue;
         }
         // ponytail: digits-only detail check; a names-only superset
@@ -462,6 +487,23 @@ pub fn validate(
                 .push((label, "the survivor would lose a number"));
             continue;
         }
+        let proof = if kind == ActionKind::Merge {
+            let Some(proof) = crate::consolidate::detail_proof(&keep.text, &retire.text) else {
+                verdict
+                    .rejected
+                    .push((label, "no detail-preserving equivalence proof"));
+                continue;
+            };
+            if a.proof.as_ref().is_some_and(|supplied| supplied != &proof) {
+                verdict
+                    .rejected
+                    .push((label, "invalid or stale equivalence proof"));
+                continue;
+            }
+            Some(proof)
+        } else {
+            None
+        };
         let reason: String = a.reason.trim().chars().take(MAX_REASON_CHARS).collect();
         if reason.is_empty() {
             verdict.rejected.push((label, "no reason"));
@@ -481,6 +523,7 @@ pub fn validate(
             keep: keep.clone(),
             retire: retire.clone(),
             reason,
+            proof,
         });
     }
     verdict
@@ -500,6 +543,8 @@ pub struct SemanticAction {
     /// False on dry runs. Actions dropped by the pre-write freshness check
     /// are not listed here; they count in `semantic_rejected` with a note.
     pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<crate::consolidate::DetailProof>,
 }
 
 // ---- async glue ----------------------------------------------------------
@@ -515,8 +560,8 @@ fn cursor_key(bank: &str) -> String {
     format!("semantic_cursor:{bank}")
 }
 
-async fn recall_arm(
-    iii: &IIIClient,
+async fn recall_arm<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     text: &str,
     mode: &str,
@@ -535,7 +580,11 @@ async fn recall_arm(
 /// saw, so a record edited, retired, or gone meanwhile drops the action
 /// (`Ok(false)`). Any other failure is transport (`Err`), which stops the
 /// tier with the cursor held, never a silent drop.
-async fn still_as_seen(iii: &IIIClient, bank: &str, seen: &MemoryRow) -> Result<bool, String> {
+async fn still_as_seen<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    bank: &str,
+    seen: &MemoryRow,
+) -> Result<bool, String> {
     match call(iii, "memory::get", json!({ "bank": bank, "id": seen.id })).await {
         Ok(v) => {
             let m = v.get("memory").cloned().unwrap_or(Value::Null);
@@ -558,14 +607,22 @@ enum Step {
 
 /// The tier for one bank. Runs LAST (after the deterministic and reorder
 /// tiers) on a fresh fetch, so it never sees records those tiers retired.
-pub async fn run_semantic_tier(
-    iii: &IIIClient,
+pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     opts: &SemanticOptions,
     dry_run: bool,
     budget: &mut usize,
     report: &mut BankReport,
 ) {
+    // Direct callers receive the same no-spend/no-write guarantee as the
+    // public handler. Semantic recall itself can embed, so do not start it.
+    if dry_run {
+        report.notes.push(
+            "dry-run: semantic tier unevaluated; no supplied decisions; no recall, embedding or judge calls".into(),
+        );
+        return;
+    }
     let rows = match crate::consolidate::fetch_live(iii, bank, &mut report.errors).await {
         Ok(rows) => rows,
         Err(e) => {
@@ -650,8 +707,8 @@ pub async fn run_semantic_tier(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn judge_group(
-    iii: &IIIClient,
+async fn judge_group<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     opts: &SemanticOptions,
     dry_run: bool,
@@ -686,14 +743,14 @@ async fn judge_group(
     }
 
     let batch = build_batch(&items);
-    let result = crate::llm::complete(
-        iii,
-        &opts.model,
-        SEMANTIC_SYSTEM,
-        batch.prompt.clone(),
-        MAX_OUTPUT_TOKENS,
-    )
-    .await;
+    let result = iii
+        .complete(
+            &opts.model,
+            SEMANTIC_SYSTEM,
+            batch.prompt.clone(),
+            MAX_OUTPUT_TOKENS,
+        )
+        .await;
     let parsed = match classify(&result) {
         Outcome::Reply(text) => parse_actions(&text).map_err(Outcome::InputShaped),
         other => Err(other),
@@ -744,6 +801,8 @@ async fn judge_group(
                     "bank": bank,
                     "id": action.retire.id,
                     "superseded_by": action.keep.id,
+                    "expected_memory": action.retire.expected_snapshot(),
+                    "expected_superseded_by": action.keep.expected_snapshot(),
                     "reinforce": action.kind == ActionKind::Merge,
                     "reason": action.reason,
                 }),
@@ -773,6 +832,7 @@ async fn judge_group(
             retire_text: action.retire.text,
             reason: action.reason,
             applied,
+            proof: action.proof,
         });
     }
     if verdict.capped > 0 {
@@ -798,6 +858,7 @@ mod tests {
             created_at,
             updated_at,
             stated_at: None,
+            snapshot: Default::default(),
         }
     }
 

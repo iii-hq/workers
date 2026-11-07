@@ -50,7 +50,7 @@ All fields hot-reload through the `configuration` worker and are editable in the
 | Seam | What happens |
 |---|---|
 | `harness::hook::on-pre-generate` (args `{ priority: 100, timeout_ms: 3000, on_error: fail_open }`) | Injects the session bank's rules into the system prompt once per session (sent verbatim after that; a later rule change arrives as one appended update message, so the prefix stays append-only) and, on each turn's first step, up to `recall_limit` recalled memories as one appended message, or more for a list question (past `recall_limit` only for "what do you remember about me?" or for siblings: lines on the same two or more question words, each leading with its own subject: "which services use Postgres 16?" gets each sibling, while "kotlin?", "is payments-api down?" and "what should I do now?" keep the count, among the best 4 × `recall_limit` candidates, until `recall_budget_tokens`): only memories with evidence (a word of the message, or its meaning; the `user` a pronoun stands for counts only in a question of pronouns alone, "who am I", or of a memory verb asked of "me", "what do you remember about me", "tell me about myself", "do you know who I am?", never "tell me more" or "I know") that stand on their own or with the turn's best match, which counts only in a turn anchored in the bank (two of its words matched, a meaning that stands out, which needs 20 embedded memories in the bank for a z-score (below that, any meaning match anchors the turn, as before), or, without vectors, its best word match: with vectors, "Great, go ahead." gets nothing on its one shared word); one line per fact (the best-ranked of its rewordings); the newer of a stated change, in the older one's place when only the older matched well enough ("now runs at 04:00" over "runs at 02:00"; a pinned memory is never hidden); a newer note on a told line's subject joins right after it, even with no word of the message ("dana left the company" after "dana is on call for payments-api" when the message names payments-api); and nothing when none qualifies; minus any the window already carries from an earlier turn's block, or a rewording of one (a block compaction dropped no longer counts, so its memories can return). Whether an update is due is read from the window the step sends (its newest `<memory update="rules">` message, else the frozen section), so a lost or compacted-away update is sent again and a delivered one never is |
-| `harness::on-turn-completed` | Queues one background `router::complete` extraction pass over the turn's new user/assistant messages (all of them, one call per 24,000 chars of excerpt; a session's first pass, or a backlog over 4 calls, reads at most `extraction_window` non-empty messages, plus the turn's user message), into the bank the turn was injected with (after a worker restart, the one the hook stamped on the turn's reply); under a directory bank, user-scope items go to `default_bank`; agent-scope items go to that agent's bank (see Bank selection). A failed or cancelled turn is extracted too (its own bank, not the next turn's); a sub-agent's turn never is, nor an automation or e2e session's (session `kind` other than `user`), nor a turn that finished while `extraction_enabled` was off |
+| `harness::on-turn-completed` | Queues one background `router::complete` extraction pass over the turn's new user/assistant messages (all eligible delta entries, one call per 24,000 bytes of dated excerpt; at most 4 calls per attempt, with remaining runs returning an error for queue retry instead of dropping a prefix or tail; only bootstrap without an anchor on the active path uses `extraction_window` non-empty messages, plus the opening user message), into the bank the turn was injected with (after a worker restart, the one the hook stamped on the turn's reply); under a directory bank, user-scope items go to `default_bank`; agent-scope items go to that agent's bank (see Bank selection). A failed or cancelled turn is extracted too (its own bank, not the next turn's); a sub-agent's turn never is, nor an automation or e2e session's (session `kind` other than `user`), nor a turn that finished while `extraction_enabled` was off |
 
 What injection does not catch yet:
 
@@ -61,7 +61,7 @@ What injection does not catch yet:
 - A list question gets its siblings past `recall_limit` only while every line in the first `recall_limit` matched the same question words: one line there on other words (a meaning-only match in hybrid mode, a pinned memory, a newer statement in an older line's place) cancels the whole list, and the turn keeps `recall_limit` lines. Siblings phrased object-first ("Postgres 16 runs search", "Postgres 16 runs billing") or sharing a hyphen prefix ("payments-api", "payments-worker") lead with the same word, so they keep the count too.
 - A newer note joins a told line only when the message names one of the line's entities ("who is on call?" links nothing), only on the line's own subjects (an update naming one more subject, "dana moved to the ledger team", never joins), only through an entity at most 5 memories carry, and only when both memories carry the same entity tag. Every later note on the subject joins, a trivial one included, and a told later line on the subject hides an older update.
 - A "do not remember X" said in chat is not a rule: it needs a hand rule (`memory::rule::set`). A rule is an instruction to the extraction model, not a filter, and memories stored before it stay until deleted.
-- Extraction reads a user line over 12,000 chars as its first and last 6,000; other lines keep 2,000 (the first and last 1,000).
+- Extraction keeps each eligible message's complete text. A single message larger than the 24,000-byte run budget is sent as its own run; this is not a hard per-message cap. Initial or fork-recovery bootstrap is deliberately windowed and does not promise recovery of every historical message.
 - The rules that collapse rewordings and recognize a change are English only: duplicates across languages are not collapsed, and a change without an English change word ("now", "moved", …) keeps both lines, each with its date.
 
 Bank selection, one resolver for injection, extraction and agent calls: turn metadata `memory_bank` → session metadata `memory_bank` (`session::set-meta`) → the parent turn's bank, else the parent session's (a sub-agent works in its parent's bank, walked up) → the bank of the turn's `fs_scope.root`: `<name>-<6 hex>`, named after the git repository holding it (its main checkout's folder, so every worktree of a repo shares one bank), else after the directory itself, with a hash of the canonical path so same-named folders never share → configured `default_bank` (no root, or one that does not exist). A bank the root chose reads `default_bank` under it (a sub-agent working in it too): its rules first, labelled with its name (`learned (main)`) so two `learned` rules never merge, under the one `max_rule_chars` budget, and its memories whose entities include `user` in the same recall (a `memory::save` into `default_bank` that names no entities gets `user`, so the memory page and the CLI qualify; one naming others needs `user` among them). The hook, `memory::preview` and `memory::recall` without `bank` read it alike, and so does `memory::preview` naming a directory-shaped bank (`<name>-<6 hex>`), as the console's preview tab does; a memory recalled from it carries its `bank`, and the hook's `memory_banks` annotation names the bank of each injected id. Extraction labels each item `scope` `user` (holds wherever the user works) or `project` (the default). Under a directory bank a new user-scope memory is written into `default_bank` tagged `user`, and everything else stays in the directory's bank (a user-scope correction of a directory-bank memory included: it stays there and supersedes it; so does a fact the directory's bank already holds, live, pinned or deleted). Extraction lists the layer's memories about the user as already remembered, after the bank's own and at most half as many: a restatement reinforces one where it lives, a user-scope correction supersedes it there, and a project-scope one (an exception that holds only in this repository) is written to the directory's bank, leaving the user's fact standing everywhere else. In a `default_bank` session a user-scope memory gets `user` too. A bank named by metadata or by `bank` is read alone. Project facts saved in `main` before directory banks are not read under them; read them with `bank: "main"`. A `memory::*` call without `bank` inside a turn acts on that turn's bank; outside a session (CLI, console, other workers) it uses `default_bank`. An invalid name, a deleted bank other than the default, or a parent session that no longer exists means no memory for the session — never another bank — and extraction never brings a deleted bank back. A session-lookup failure injects nothing new (the section the session already has stays) and makes extraction retry. An unknown bank gets the ambient header while extraction is on (extraction creates the bank after a turn) and nothing while it is off.
@@ -69,6 +69,55 @@ Bank selection, one resolver for injection, extraction and agent calls: turn met
 A session running as an agent profile (`agent_profile` in its session metadata, set by harness `options.agent` and by profile spawns) also reads its profile's bank, `agent-<id>` (one per profile, across repositories), under any bank no metadata named; a sub-agent reads its own profile's, never its parent's. Its rules come after `default_bank`'s and before the session bank's, labelled `learned (agent-<id>)`, under the same budget, and all its memories join the same recall. The hook (its `memory_agent` annotation is also the restart stamp), `memory::preview` and `memory::recall` without `bank` read it alike. Extraction lists the agents in the conversation, the session's own profile, then its sub-agents', and labels an item `scope` `agent`, with `agent` naming one of them, when the user tells that agent how to do its role's work, or asks to pass it on: "tell the reviewer to check the tests first" in a tech-lead session lands in `agent-reviewer`'s `learned`. The learned-rule gate still applies, an item naming no listed agent is dropped, and sub-agent turns stay unextracted. A profile id that makes no valid bank name, or a deleted agent bank, drops only that layer. The bundled general identities, `default` (which the console preselects), its alias `iii-minimal`, and `iii`, read as no profile.
 
 Switching a running session's bank does not rewrite what it already saw: the new bank's section arrives as an appended update that overrides the frozen one, while the earlier bank's section and recalled memories stay visible in the transcript. Start a new session when the two contexts must not mix. Turning `inject_rules` and `inject_memories` both off works the same way: a running session keeps its section and is told once that no memory section applies.
+
+### Incremental extraction boundaries and recovery
+
+The confirmed watermark is `state::get/set { scope: "memory_cursor", key: session_id }`,
+with `{ last_entry_id }` as its value. A valid anchor starts `session::messages` with
+`after_entry_id`; subsequent pages use only the server's opaque `cursor`. Roles are
+`[user, assistant]`, with `include_image_data: false`. The queued `until` is an inclusive
+**client-side** cut, not a session-manager request field, and extraction never chooses a
+branch with `from_entry_id`. Text-free entries still carry the cut/watermark. Empty or
+trivial excerpts do not call the model, but a successfully processed boundary advances.
+
+An invalid anchor (including SDK 0.26.0-rc.5's exact `invocation_failed` /
+`handler error: session/invalid_cursor: ` envelope), or a boundary absent from the delta,
+discards the private delta and triggers a validated root-to-leaf classification on the
+same active path. Arbitrary error substrings do not authorize fallback. A root walk
+missing `until`, an incomplete page, or a transient transport error fails without model,
+memory publication or cursor confirmation. Staleness requires path-order evidence:
+`until` at/before the confirmed anchor is already covered, not a lexicographic ID test.
+An equal anchor/boundary requires no history request. Legacy jobs without `until` still
+use the root-walk path; this compatibility mode has no completed-turn cut guarantee.
+
+Absent state, an unavailable state function, or an anchor no longer on the active path
+uses the bounded legacy window; it does **not** backfill all initial/fork history. A
+transient or malformed state read fails instead of masquerading as absence. A missing
+state writer also fails confirmation. More than four runs drain oldest-first across
+retry attempts; queue retry limits can still leave work dead-lettered, not completed.
+The bank stamped on each job is retained, and OFF/disabled jobs advance only their
+found boundary so subsequent ON jobs do not sweep those messages into a different bank.
+This assumes delivery in causal order: a later job overtaking an unconfirmed OFF job,
+multiple memory processes, and active-path mutation across page calls are not covered by
+the in-process session lock. Explicit bank changes do not split a preexisting backlog.
+
+Memory writes complete before cursor confirmation. A numbered `replaces` resolves the
+actual prompt snapshot; correction uses the existing atomic `correct_expected` store
+transition, rejecting concurrent changes before publishing replacement plus tombstone.
+Observed change events are attempted only after publication, before cursor confirmation;
+they are fire-and-forget, not an atomic receipt or guaranteed delivery. Store replay after
+SDK/store reconstruction preserves published records, but store and state have **no joint
+transaction**: interruption or state failure after publication can replay a restatement
+and increment corroboration again (textual fingerprint identity still prevents another
+identical record). This is not exactly-once extraction, exactly-once events, a subprocess
+kill test, or a machine/power-loss guarantee; parent-directory durability is not asserted.
+
+Model routing remains the configured `extraction_model`, or the first router catalog
+entry when unset. Incremental recovery changes neither the effective model nor the
+1200-token recall budget, sanitized telemetry, or null semantics of unknown usage/cost.
+Offline integration tests use the production `try_run` with SDK loopback and a temporary
+real Memory store; their file-backed state endpoint is a synthetic transport fixture,
+not a real state-worker durability or CAS test.
 
 The worker also observes `session::on-deleted` (drops the session's extraction cursor) and `queue::on-message` with args `{ topic: "memory-extraction", max_retries: 3, backoff_ms: 2000 }` (runs the queued extraction jobs; an error retries the job, then dead-letters it), and `configuration::on-updated` for its own entry.
 
@@ -197,3 +246,59 @@ The split is the point: consolidation can be installed, stopped, or removed with
 ## Boundaries
 
 Context-manager compresses one history for one turn; this worker is the durable cross-session sibling its spec reserves (see [tech-specs/2026-06-agentic/memory.md](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/memory.md)). Recall fuses BM25 with a semantic signal when `router::embed` has an embed-capable provider; `memory::recall.retrieval` names the mode either way. Consolidation belongs to the `memory-consolidate` sibling, not here.
+
+## Memory metrics and budget accounting
+
+The productive pre-generate hook adds a sanitized `memory_metrics` annotation
+and a `memory_metrics` tracing event; extraction emits one event per attempted
+Memory completion (including catalog resolution failure). These are not Harness
+session-usage totals. Only session/turn identifiers, restricted routing identifiers,
+closed outcomes and numeric measurements enter this telemetry, never queries,
+prompts, memories, transcripts, arbitrary response JSON or free-form errors.
+Legacy queued extraction jobs have no turn id: it stays absent rather than being
+invented from an entry id. New jobs carry the real completed turn id.
+
+The unchanged default `recall_budget_tokens = 1200` is **4800 nominal UTF-8
+bytes**, at four bytes per estimated token. As before, the limit packs whole dated
+memory lines inclusively, skipping a long line and continuing to shorter ones.
+Headers, inter-line newlines and rules are measured separately, not silently
+charged to that historical line budget. Rules have their own `max_rule_chars`
+limit (historically a byte limit, with UTF-8 boundary-safe truncation). Saturating
+budget multiplication and overflow-safe ceil(bytes/4) do not wrap. Neither
+estimate is a provider tokenizer count.
+
+`SizeBreakdown` partitions text, dated-line decoration, separators, recall wrapper,
+kept rule body, rule formatting/truncation markers, ambient header and reminder;
+excluded rendered memory lines and omitted rule-body bytes are outside its sum.
+`budget_dropped`, unsupported admission and the combined selection-policy drop
+counter are distinct stages. The latter deliberately groups deduplication,
+visibility and line-limit decisions rather than guessing which internal predicate
+won. Update additions/removals and the final visible-line drop count are explicit.
+`mode` reports lexical versus semantic operation, and duration is elapsed wall time.
+`delivered_bytes` independently measures actual mutation bytes (not the pre-existing
+base prompt); the constructed-section estimate is not a billing estimate. Frozen
+session prefixes and rule updates can make delivery differ from construction.
+
+Extraction routing remains unchanged: a configured `extraction_model` is requested
+verbatim; otherwise the first `router::models::list` entry is used, explicitly
+labelled `catalog_first`. Empty/unavailable catalogs fail instead of routing
+silently. Effective model/provider come only from the actual completion response;
+no response means unknown. Only the documented optional usage scalars are read.
+Equal top-level/message usage is counted once; conflicting observations become
+unknown. Missing tokens and cost stay null/absent, **never zero or inferred prices**.
+Timeout, transport, provider and parsing outcomes contain no provider error text.
+
+No live model catalog, credentials, pricing or quality experiment was accessed for
+this implementation. A named cheaper/better extraction model therefore cannot be
+recommended on verified evidence here; recommendation is **unavailable**. Keep the
+existing routing until a separately authorized catalog/price/quality evaluation
+is available. No runtime model selection or configuration change is applied.
+
+Offline coverage lives in `tests/metrics_contract.rs`: pure arithmetic/usage
+contracts plus real `hooks::pre_generate` and `extract::try_run` calls over a
+temporary loopback SDK transport and temporary store, with deny-by-default RPCs
+and synthetic replies only. Models and live engines are never invoked by those
+tests. Implemented coverage is not a passing-test certification: independent
+verification must run the focused filters, full metrics contract, scoped format,
+diff and all-target clippy gates. Relevance/origin and incremental cursor gates
+remain independent final integration requirements, not waived by metrics tests.

@@ -58,6 +58,23 @@ pub fn tokenize(text: &str) -> Vec<String> {
     tokens
 }
 
+/// Conservative Portuguese verb inflections used only as retrieval evidence,
+/// never as provenance or a synonym dictionary. Keep stems at least four
+/// letters so short identifiers (CI/Go/OS) remain exact.
+pub(crate) fn verb_stem(token: &str) -> &str {
+    for suffix in [
+        "ando", "endo", "indo", "aram", "eram", "iram", "ar", "er", "ir", "am", "em", "a", "e",
+    ] {
+        if let Some(stem) = token
+            .strip_suffix(suffix)
+            .filter(|s| s.chars().count() >= 4)
+        {
+            return stem;
+        }
+    }
+    token
+}
+
 fn is_cjk(ch: char) -> bool {
     matches!(u32::from(ch),
         0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF)
@@ -125,6 +142,40 @@ impl Bm25Index {
         self.postings
             .get(term)
             .is_some_and(|docs| docs.contains_key(id))
+    }
+
+    /// Same verb stem or regular long noun stem, retaining the original
+    /// query term as evidence. No translations or stored synonym dictionary.
+    fn noun_stem(term: &str) -> &str {
+        let singular = term
+            .strip_suffix('s')
+            .filter(|s| s.chars().count() >= 6)
+            .unwrap_or(term);
+        singular
+            .strip_suffix('o')
+            .or_else(|| singular.strip_suffix('a'))
+            .filter(|s| s.chars().count() >= 7)
+            .unwrap_or(singular)
+    }
+
+    /// Same inflection, retaining the original query term as evidence.
+    pub fn has_inflection(&self, term: &str, id: &str) -> bool {
+        let stem = verb_stem(term);
+        self.has(term, id)
+            || self.doc_tokens.get(id).is_some_and(|tokens| {
+                tokens.iter().any(|t| {
+                    verb_stem(t) == stem
+                        || Self::noun_stem(t) == Self::noun_stem(term)
+                        || (term.chars().count() >= 4 && term.strip_suffix('s') == Some(t.as_str()))
+                        || (t.chars().count() >= 4 && t.strip_suffix('s') == Some(term))
+                })
+            })
+    }
+
+    /// Number of live indexed documents holding a term (not a score relative
+    /// to the best candidate). Used only as evidence, never as authority.
+    pub fn document_frequency(&self, term: &str) -> usize {
+        self.postings.get(term).map_or(0, HashMap::len)
     }
 
     /// Okapi BM25 over the query tokens.
@@ -211,6 +262,30 @@ mod tests {
             superseded_by: None,
             revision: 0,
             stated_at: None,
+        }
+    }
+
+    #[test]
+    fn evidence_regular_long_noun_forms_do_not_require_a_synonym_table() {
+        let mut index = Bm25Index::default();
+        let note = memory("stored trip documents", &[]);
+        index.add(&note);
+        assert!(index.has_inflection("documentos", &note.id));
+        assert!(!index.has_inflection("projeto", &note.id));
+        assert!(!index.has_inflection("database", &note.id));
+    }
+
+    #[test]
+    fn evidence_inflections_link_verbs_but_not_short_identifiers() {
+        let mut index = Bm25Index::default();
+        let note = memory("Amigos chamam; ela escreve e responda em português.", &[]);
+        index.add(&note);
+        for term in ["chamar", "escrever", "responder"] {
+            assert!(index.has_inflection(term, &note.id), "{term}");
+        }
+        for term in ["ci", "go", "os"] {
+            assert_eq!(verb_stem(term), term);
+            assert!(!index.has_inflection(term, &note.id));
         }
     }
 

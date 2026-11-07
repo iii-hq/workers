@@ -85,6 +85,124 @@ impl Memory {
         self.invalid_at.is_none()
     }
 
+    /// Closed personal-state grammars, not a general contradiction detector.
+    /// Operational values need an explicit later transition of the SAME type;
+    /// durable/unknown facts never expire by age. Extracted assertions require
+    /// provenance; legacy explicitly stated records remain readable.
+    pub fn revalidated_by(&self, newer: &Memory) -> bool {
+        if !self.is_live()
+            || self.pinned
+            || !newer.is_live()
+            || newer.last_stated() <= self.last_stated()
+        {
+            return false;
+        }
+        let attested = |m: &Memory| match m.confidence {
+            Confidence::Inferred => false,
+            Confidence::Extracted => m
+                .source
+                .as_ref()
+                .is_some_and(|s| s.session_id.is_some() && s.entry_id.is_some()),
+            Confidence::Stated => true,
+        };
+        if !attested(self) || !attested(newer) {
+            return false;
+        }
+        let tag = |m: &Memory, t: &str| m.tags.iter().any(|v| v == t);
+        let old = self.text.as_str();
+        let new = newer.text.as_str();
+        // Each rule binds the subject AND the attribute in both statements.
+        // Tags alone, a shared entity, newer timestamp or a change word cannot
+        // turn an unrelated line into a replacement.
+        let rules = [
+            (
+                "city",
+                "User lives in ",
+                "User moved from ",
+                " and now lives in ",
+            ),
+            (
+                "fuso-horario",
+                "A usuária trabalha no fuso horário de ",
+                "A usuária agora trabalha no fuso horário de ",
+                "não mais no de ",
+            ),
+            (
+                "ci",
+                "A usuária usa ",
+                "A usuária migrou o CI do trabalho do ",
+                " e não usa mais o ",
+            ),
+            (
+                "corrida",
+                "A usuária treina com o clube de corrida ",
+                "A usuária agora treina com o clube de corrida ",
+                "não mais ",
+            ),
+            (
+                "diet",
+                "User follows a ",
+                "User switched from a ",
+                " diet and no longer ",
+            ),
+            (
+                "gestao",
+                "O gestor direto da usuária é o ",
+                "A usuária agora reporta para uma nova gestora, ",
+                " deixou de ser seu gestor",
+            ),
+            (
+                "editor",
+                "User's code editor is ",
+                "User switched her code editor from ",
+                " to ",
+            ),
+        ];
+        rules.iter().any(|(kind, before, after, marker)| {
+            tag(self, kind) && tag(newer, kind)
+                && old.starts_with(*before) && new.starts_with(*after) && new.contains(*marker)
+                && match *kind {
+                    "ci" => old.contains(" como CI no trabalho "),
+                    "diet" => old.contains(" diet:"),
+                    _ => true,
+                }
+                // Literal old value must appear in the transition, preventing
+                // a state of a second subject/value from retiring this one.
+                && match *kind {
+                    "city" | "editor" => old.strip_prefix(*before).and_then(|s| s.split_once(','))
+                        .is_some_and(|(value, _)| new.strip_prefix(*after).is_some_and(|s| s.starts_with(&format!("{value} to ")))),
+                    "ci" => old.strip_prefix(*before).and_then(|s| s.split_once(" como CI"))
+                        .is_some_and(|(value, _)| new.strip_prefix(*after).is_some_and(|s| s.starts_with(&format!("{value} para ")))),
+                    "diet" => old.strip_prefix(*before).and_then(|s| s.split_once(" diet:"))
+                        .is_some_and(|(value, _)| new.strip_prefix(*after).is_some_and(|s| s.starts_with(&format!("{value} to ")))),
+                    "gestao" => old.strip_prefix(*before).and_then(|s| s.split_once(','))
+                        .is_some_and(|(value, _)| new.contains(&format!("o {value} deixou de ser seu gestor"))),
+                    "fuso-horario" => old.strip_prefix(*before).and_then(|s| s.split_once(" ("))
+                        .is_some_and(|(value, _)| new.contains(&format!("não mais no de {value}"))),
+                    "corrida" => old.strip_prefix(*before)
+                        .and_then(|s| s.strip_prefix("toda "))
+                        .and_then(|s| s.split_once(','))
+                        .is_some_and(|(value, _)| {
+                            let days = [
+                                ("segunda-feira", "segundas"),
+                                ("terça-feira", "terças"),
+                                ("quarta-feira", "quartas"),
+                                ("quinta-feira", "quintas"),
+                                ("sexta-feira", "sextas"),
+                            ];
+                            days.iter().any(|(singular, plural)| {
+                                value.strip_prefix(singular).is_some_and(|period| {
+                                    matches!(period, " de manhã" | " à tarde" | " à noite")
+                                        && new.split_once(", e não mais às ")
+                                            .is_some_and(|(_, previous)| previous == format!("{plural}{period}."))
+                                })
+                            })
+                        }),
+                    _ => false,
+                }
+        })
+    }
+
     /// When the fact was last stated, even when its record was written later
     /// (a late extraction pass); a legacy record goes by its last update.
     pub fn last_stated(&self) -> u64 {

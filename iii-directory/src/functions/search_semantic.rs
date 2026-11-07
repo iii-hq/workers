@@ -1158,6 +1158,10 @@ fn normalize_minilm_embedding(embedding: &mut [f32]) -> Result<(), SemanticUnava
     Ok(())
 }
 
+#[cfg(all(test, minilm))]
+#[path = "../../tests/local_pair_eval/evaluator.rs"]
+mod local_pair_eval;
+
 #[cfg(test)]
 mod tests {
     use super::*;

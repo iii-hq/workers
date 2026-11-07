@@ -63,6 +63,10 @@ impl From<String> for MessageInput {
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
+    /// Explicit continuation of a user entry on this session's active path.
+    /// Resolved and bounded by Harness; never inferred from message text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_entry_id: Option<String>,
     /// Directory agent profile id (`directory::agents::*`) replacing the
     /// built-in identity; new sessions only, refused with a prompt field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,7 +270,7 @@ pub struct StartOutcome {
 }
 
 pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, HarnessError> {
-    handle_with_delivery_lock(deps, req, false).await
+    handle_with_delivery_lock(deps, req, false, DeliveryChannel::Direct).await
 }
 
 /// Trusted in-process entry from the invocation chokepoint. Lock ownership is
@@ -282,18 +286,26 @@ pub(crate) async fn handle_from_invoke(
         req.session_id.as_deref(),
         caller_holds_session_lock,
     );
-    handle_with_delivery_lock(deps, req, caller_holds_target_session_lock).await
+    handle_with_delivery_lock(
+        deps,
+        req,
+        caller_holds_target_session_lock,
+        DeliveryChannel::InvokedAgent,
+    )
+    .await
 }
 
 async fn handle_with_delivery_lock(
     deps: &Deps,
     req: SendRequest,
     caller_holds_target_session_lock: bool,
+    channel: DeliveryChannel,
 ) -> Result<SendResponse, HarnessError> {
     if let Some(command) = compact_command(&req.message) {
         return start_compaction(deps, req, command).await;
     }
-    let out = start_with_delivery_lock(deps, req, caller_holds_target_session_lock).await?;
+    let out =
+        start_with_delivery_lock(deps, req, caller_holds_target_session_lock, channel).await?;
     Ok(SendResponse {
         session_id: out.session_id,
         turn_id: out.turn_id,
@@ -400,13 +412,14 @@ async fn start_compaction(
 
 /// Ensure the session, persist the message, and seed/merge the turn.
 pub async fn start(deps: &Deps, req: SendRequest) -> Result<StartOutcome, HarnessError> {
-    start_with_delivery_lock(deps, req, false).await
+    start_with_delivery_lock(deps, req, false, DeliveryChannel::Direct).await
 }
 
 async fn start_with_delivery_lock(
     deps: &Deps,
     req: SendRequest,
     caller_holds_target_session_lock: bool,
+    channel: DeliveryChannel,
 ) -> Result<StartOutcome, HarnessError> {
     if let Some(id) = req.session_id.as_deref() {
         super::delete_session_tree::ensure_live(deps, id).await?;
@@ -667,6 +680,11 @@ async fn start_with_delivery_lock(
             &session_id,
             options,
             Delivery {
+                channel,
+                continuation_entry_id: req
+                    .options
+                    .as_ref()
+                    .and_then(|o| o.continuation_entry_id.as_deref()),
                 message: &message,
                 entry_id: entry_id.as_deref(),
                 origin: None,
@@ -774,6 +792,8 @@ pub async fn inject(
         session_id,
         options,
         Delivery {
+            channel: DeliveryChannel::Notification,
+            continuation_entry_id: None,
             message: &message,
             entry_id,
             origin,
@@ -912,12 +932,20 @@ pub async fn edit_queued(
         ));
     }
     let cfg = deps.cfg().await;
+    let _guard = deps.locks.guard(&req.session_id).await;
+    writable_session_metadata(&deps.session().await, &req.session_id).await?;
     let rows =
         crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
-    let Some(mut row) = rows.into_iter().find(|r| r.entry_id == req.entry_id) else {
+    let Some(mut row) = rows
+        .into_iter()
+        .find(|r| r.session_id == req.session_id && r.entry_id == req.entry_id)
+    else {
         return Ok(EditQueuedResponse { updated: false });
     };
-    row.message = normalize_message(req.message)?;
+    let message = normalize_message(req.message)?;
+    crate::hooks::recall::edit_direct(deps, &req.session_id, &row.entry_id, &row.message, &message)
+        .await?;
+    row.message = message;
     // Same `id` → same state key → overwrite in place (position preserved).
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
     deps.events
@@ -1095,7 +1123,17 @@ impl TurnLineage {
 /// One message on its way into a session: what to append, how to mark it, and
 /// the lineage the seeded turn inherits. Bundled so every seeding path takes
 /// the same shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum DeliveryChannel {
+    Direct,
+    InvokedAgent,
+    Notification,
+}
+
 pub(crate) struct Delivery<'a> {
+    pub channel: DeliveryChannel,
+    pub continuation_entry_id: Option<&'a str>,
     pub message: &'a AgentMessage,
     pub entry_id: Option<&'a str>,
     pub origin: Option<&'a Value>,
@@ -1144,6 +1182,25 @@ pub(crate) async fn deliver(
     d: Delivery<'_>,
 ) -> Result<(StartOutcome, String), HarnessError> {
     super::delete_session_tree::ensure_live(deps, session_id).await?;
+    // Mint the entry id before any durable parking. The private receipt is
+    // immutable per delivery and survives queue draining/restarts. Forwarded
+    // origin and metadata never participate in channel classification.
+    let entry_id = d
+        .entry_id
+        .map(str::to_owned)
+        .unwrap_or_else(ids::new_queued_id);
+    let d = Delivery {
+        entry_id: Some(&entry_id),
+        ..d
+    };
+    if let Err(error) = crate::hooks::recall::record_delivery(deps, session_id, &d).await {
+        if d.continuation_entry_id.is_some() || matches!(&error, HarnessError::InvalidRequest(_)) {
+            return Err(error);
+        }
+        // Provenance storage unavailable: deliver normally, resolve as unknown
+        // (rules only). Memory enrichment must never block an ordinary send.
+        tracing::warn!(session_id, %error, "recall receipt unavailable; delivering without recall authority");
+    }
     if d.skills_explicit {
         let active = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
             .await?
@@ -1846,6 +1903,7 @@ pub(crate) async fn seed_new(
     let record = TurnRecord {
         turn_id: turn_id.clone(),
         session_id: session_id.to_string(),
+        recall_context: None,
         status: TurnStatus::Running,
         step: 0,
         turn_count: 0,
@@ -2567,6 +2625,7 @@ mod tests {
         TurnRecord {
             turn_id: "t_1".into(),
             session_id: "s_1".into(),
+            recall_context: None,
             status: TurnStatus::Completed,
             step: 1,
             turn_count: 1,

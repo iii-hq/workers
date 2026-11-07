@@ -700,6 +700,9 @@ pub(crate) async fn cas_value(
     timeout_ms: u64,
 ) -> Result<Option<Value>, HarnessError> {
     let mut payload = json!({ "scope": scope, "key": key, "value": value });
+    if scope == crate::hooks::recall::SCOPE {
+        payload["durable"] = json!(true);
+    }
     if let Some(expected) = expected {
         payload["expected"] = expected;
     }
@@ -717,6 +720,13 @@ pub(crate) async fn cas_value(
         .map_err(|e| HarnessError::State(format!("{STATE_CAS_ID} {scope}/{key}: {e}")))
     })
     .await?;
+    if scope == crate::hooks::recall::SCOPE
+        && resp.get("durable").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(HarnessError::State(
+            "recall delivery receipt was not durably acknowledged".into(),
+        ));
+    }
     if resp.get("swapped").and_then(Value::as_bool) == Some(true) {
         Ok(None)
     } else {
@@ -794,7 +804,7 @@ async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(),
             function_id: CLAIM_NAMESPACE_ID.into(),
             payload: json!({
                 "functions_prefix": NAMESPACE_PREFIX,
-                "scopes": [BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::functions::delete_session_tree::OPERATIONS,
+                "scopes": [BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::hooks::recall::SCOPE, crate::functions::delete_session_tree::OPERATIONS,
                     crate::functions::delete_session_tree::GUARDS, crate::functions::delete_session_tree::DISPATCHES],
             }),
             action: None,
@@ -854,7 +864,10 @@ fn is_unregistered_accessor(error: &HarnessError) -> bool {
 }
 
 fn is_binding_scope(scope: &str) -> bool {
-    matches!(scope, BINDING_SCOPE | BINDING_OWNER_SCOPE) || is_deletion_scope(scope)
+    matches!(
+        scope,
+        BINDING_SCOPE | BINDING_OWNER_SCOPE | crate::hooks::recall::SCOPE
+    ) || is_deletion_scope(scope)
 }
 
 fn is_deletion_scope(scope: &str) -> bool {

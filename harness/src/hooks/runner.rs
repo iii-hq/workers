@@ -146,6 +146,9 @@ impl HookRegistry {
             "step": step,
             "depth": record.depth,
         });
+        if let Some(context) = &record.recall_context {
+            v["recall_context"] = context.clone();
+        }
         if let Some(m) = &record.options.metadata {
             v["metadata"] = m.clone();
         }

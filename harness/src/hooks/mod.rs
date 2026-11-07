@@ -538,6 +538,7 @@ pub fn filesystem_boundary(
     }
 }
 
+pub(crate) mod recall;
 pub mod runner;
 
 #[cfg(test)]
