@@ -687,7 +687,9 @@ fn image_from_body(body: &Body, budget: &mut usize) -> PreImage {
             missing: true,
             ..blank
         },
-        Body::TooLarge => PreImage {
+        // Excluded paths are skipped before they get here; either way the
+        // body is unknown, never absent.
+        Body::TooLarge | Body::Excluded => PreImage {
             truncated: true,
             ..blank
         },
@@ -1255,10 +1257,16 @@ impl TurnLog {
                 continue;
             };
             let bodies = repo
-                .bodies(tree, &paths, MAX_RESPONSE_BODY_BYTES as u64)
+                .bodies(
+                    tree,
+                    &paths,
+                    MAX_RESPONSE_BODY_BYTES as u64,
+                    self.store.snapshot_max_file_bytes,
+                )
                 .await;
             for (index, rel) in &rels {
-                let Some(body) = bodies.get(rel) else {
+                // A path the snapshots leave out keeps what the hooks saw.
+                let Some(body) = bodies.get(rel).filter(|b| !matches!(b, Body::Excluded)) else {
                     continue;
                 };
                 let file = &mut turn.files[*index];
@@ -2342,7 +2350,9 @@ impl TurnLog {
             .filter_map(|(index, file)| rel_under(&root, &file.path).map(|rel| (index, rel)))
             .collect();
         let paths: Vec<String> = rels.iter().map(|(_, rel)| rel.clone()).collect();
-        let bodies = repo.bodies(&tree, &paths, u64::MAX).await;
+        let bodies = repo
+            .bodies(&tree, &paths, u64::MAX, self.store.snapshot_max_file_bytes)
+            .await;
         for (index, rel) in rels {
             let image = match bodies.get(&rel) {
                 Some(Body::Bytes(bytes)) => {
@@ -2696,6 +2706,73 @@ mod tests {
         }))
         .unwrap();
         assert!(failed.result.unwrap().is_error);
+    }
+
+    /// A file the snapshots leave out (here: over the size cap) has no side
+    /// in the trees. A revert must not read that as "did not exist" and
+    /// delete a file the turn only modified, and the timeline must not call
+    /// it created.
+    #[tokio::test]
+    async fn revert_never_deletes_a_file_the_snapshots_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        if git_in(&root, &["--version"]).await.is_none() {
+            eprintln!("git is not available; skipping");
+            return;
+        }
+        let root = std::fs::canonicalize(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let big = root.join("big.db");
+        std::fs::write(&big, vec![b'a'; 64]).unwrap();
+        let log = Arc::new(TurnLog::new(
+            TurnStore::new(dir.path().join("turns"), 1024 * 1024)
+                .with_snapshot_min_free_bytes(0)
+                .with_snapshot_max_file_bytes(32),
+        ));
+
+        log.on_turn_started("s1", "t1").await.unwrap();
+        log.on_pre_turn(turn_hook("s1", "t1", &root_s)).await;
+        std::fs::write(&big, vec![b'b'; 64]).unwrap();
+        log.fold_observed(
+            "s1",
+            "t1",
+            &root_s,
+            vec![(big.to_string_lossy().into_owned(), "modified")],
+        )
+        .await;
+        log.on_post_turn(turn_hook("s1", "t1", &root_s)).await;
+        log.on_turn_completed("s1", "t1").await.unwrap();
+
+        let record = log.load("s1").await.unwrap();
+        let turn = record.turns[0].clone();
+        assert!(
+            turn.snapshot.as_ref().is_some_and(|s| s.before.is_some()),
+            "trees kept"
+        );
+        let inflated = log.inflate(&record, turn).await;
+        let file = inflated
+            .files
+            .iter()
+            .find(|file| file.path == big.to_string_lossy())
+            .unwrap();
+        assert_eq!(file.kind, "modified");
+        assert!(
+            !file.before.as_ref().is_some_and(|image| image.missing),
+            "a left-out file is not a file that did not exist"
+        );
+
+        let out = log.revert("s1", "t1", None, &|_| Ok(())).await.unwrap();
+        assert!(
+            big.exists(),
+            "the revert deleted a file the turn only modified"
+        );
+        assert_eq!(std::fs::read(&big).unwrap(), vec![b'b'; 64]);
+        assert!(
+            out.results.iter().all(|result| result.action != "removed"),
+            "{:?}",
+            out.results
+        );
     }
 
     #[tokio::test]

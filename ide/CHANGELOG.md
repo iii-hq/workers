@@ -259,11 +259,17 @@
   root's snapshot went from ~17 GB to 390 files and ~24 ms. Three bounds
   apply to any root:
   - files over `turns.snapshot_max_file_bytes` (16 MiB) stay out of the
-    trees: databases, media, disk images and logs;
+    trees, committed ones included: databases, media, disk images and logs;
   - a snapshot is skipped while the turn store's disk has less than 2 GiB
     free, instead of taking it to 0 B;
   - blobs of dropped turns leave at the next `gc --auto` instead of after
     git's default two weeks.
+
+  A path the snapshots leave out is no longer read as "did not exist" when
+  a turn is shown or reverted: the revert of a turn that modified a file
+  under `config/`, or one over the cap, used to delete it as if the turn had
+  created it, and the Timeline called it created. Such a file now keeps the
+  side the hooks recorded, or its revert is reported unavailable.
 
   The exclude rules used to be written only when a root's snapshot
   repository was created, so later fixes (like `.iii/compose/` below) never

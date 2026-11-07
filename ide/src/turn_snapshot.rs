@@ -65,8 +65,14 @@ pub const MIN_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// One side of a file in a tree.
 #[derive(Debug)]
 pub enum Body {
-    /// The path is not in the tree.
+    /// The path is not in the tree, and the snapshot would have taken it:
+    /// it did not exist when the tree was written.
     Missing,
+    /// The path is not in the tree because snapshots leave it out (an
+    /// exclude rule, or bigger than the snapshot cap), so the tree says
+    /// nothing about it. Never read as "did not exist": a revert would
+    /// delete a file the turn only modified.
+    Excluded,
     /// The blob is larger than the caller's per-file cap.
     TooLarge,
     Bytes(Vec<u8>),
@@ -290,7 +296,7 @@ impl SnapshotRepo {
                 .iter()
                 .map(|rel| [b":(literal)".as_slice(), rel].concat())
                 .collect();
-            let _ = self
+            let removed = self
                 .run_with_paths(
                     &index,
                     // `-f`: the index is the snapshot's own, and git otherwise
@@ -298,7 +304,11 @@ impl SnapshotRepo {
                     &["rm", "--cached", "-f", "-q", "--ignore-unmatch"],
                     &literal,
                 )
-                .await;
+                .await?;
+            // A failed removal would leave the old bodies in the tree.
+            if !removed.status.success() {
+                return Err(String::from_utf8_lossy(&removed.stderr).trim().to_string());
+            }
             pathspecs.push(b".".to_vec());
             pathspecs.extend(
                 too_large
@@ -354,6 +364,7 @@ impl SnapshotRepo {
         tree: &str,
         rels: &[String],
         max_bytes: u64,
+        snapshot_max_file_bytes: u64,
     ) -> HashMap<String, Body> {
         let mut out: HashMap<String, Body> = HashMap::new();
         let Ok(listing) = self.git(None, &["ls-tree", "-r", "-l", "-z", tree]).await else {
@@ -385,10 +396,18 @@ impl SnapshotRepo {
                 to_read.push((path.to_string(), oid.to_string()));
             }
         }
-        for rel in rels {
-            if !out.contains_key(rel) && !to_read.iter().any(|(p, _)| p == rel) {
-                out.insert(rel.clone(), Body::Missing);
-            }
+        let absent: Vec<&String> = rels
+            .iter()
+            .filter(|rel| !out.contains_key(*rel) && !to_read.iter().any(|(p, _)| p == *rel))
+            .collect();
+        let excluded = self.left_out(&absent, snapshot_max_file_bytes).await;
+        for rel in absent {
+            let body = if excluded.contains(rel.as_str()) {
+                Body::Excluded
+            } else {
+                Body::Missing
+            };
+            out.insert(rel.clone(), body);
         }
         if to_read.is_empty() {
             return out;
@@ -446,20 +465,63 @@ impl SnapshotRepo {
         out
     }
 
-    /// The paths `add -A` would read that are bigger than `max_bytes`: the
-    /// modified and the untracked files git lists from the index, which
-    /// hashes nothing. The two listings run side by side (~35 ms on a
-    /// 12k-file checkout instead of ~60 ms in one call).
+    /// Which of `rels`, absent from a tree, snapshots leave out: matched by
+    /// the exclude rules (`check-ignore --no-index`, the rules `add -A`
+    /// applies) or bigger than the cap on disk now. A path that is big now
+    /// may have been small and absent then; calling it excluded only costs a
+    /// revert that reports it unavailable instead of deleting it.
+    async fn left_out(&self, rels: &[&String], max_bytes: u64) -> HashSet<String> {
+        if rels.is_empty() {
+            return HashSet::new();
+        }
+        let input: Vec<u8> = rels
+            .iter()
+            .map(|rel| rel.as_bytes())
+            .collect::<Vec<_>>()
+            .join(&0u8);
+        let mut out: HashSet<String> = match self
+            .run_with_stdin(
+                None,
+                &["check-ignore", "-z", "--stdin", "--no-index"],
+                Some(input),
+            )
+            .await
+        {
+            Ok(done) => done
+                .stdout
+                .split(|b| *b == 0)
+                .filter(|rel| !rel.is_empty())
+                .map(|rel| String::from_utf8_lossy(rel).into_owned())
+                .collect(),
+            Err(e) => {
+                tracing::debug!(error = %e, "turn snapshot: exclude check failed");
+                HashSet::new()
+            }
+        };
+        for rel in rels {
+            let big = std::fs::symlink_metadata(self.root.join(rel.as_str()))
+                .is_ok_and(|meta| meta.is_file() && meta.len() > max_bytes);
+            if big {
+                out.insert(rel.to_string());
+            }
+        }
+        out
+    }
+
+    /// The paths bigger than `max_bytes` that the tree would hold: every
+    /// file in the index (seeded from HEAD or kept from an earlier snapshot)
+    /// and every untracked one `add -A` would read. Listing hashes nothing;
+    /// the two listings run side by side.
     async fn too_large(&self, index: &Path, max_bytes: u64) -> Vec<Vec<u8>> {
-        let (modified, untracked) = tokio::join!(
-            self.git(Some(index), &["ls-files", "-z", "-m"]),
+        let (indexed, untracked) = tokio::join!(
+            self.git(Some(index), &["ls-files", "-z", "-c"]),
             self.git(Some(index), &["ls-files", "-z", "-o", "--exclude-standard"]),
         );
-        let listed = match (modified, untracked) {
-            (Ok(mut modified), Ok(untracked)) => {
-                modified.push(0);
-                modified.extend(untracked);
-                modified
+        let listed = match (indexed, untracked) {
+            (Ok(mut indexed), Ok(untracked)) => {
+                indexed.push(0);
+                indexed.extend(untracked);
+                indexed
             }
             (Err(e), _) | (_, Err(e)) => {
                 tracing::debug!(error = %e, "turn snapshot: size check skipped");
@@ -494,19 +556,40 @@ impl SnapshotRepo {
         args: &[&str],
         pathspecs: &[Vec<u8>],
     ) -> Result<std::process::Output, String> {
-        let mut cmd = self.command(Some(index));
-        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
         if pathspecs.is_empty() {
-            cmd.stdin(Stdio::null());
-        } else {
-            cmd.args(["--pathspec-from-file=-", "--pathspec-file-nul"])
-                .stdin(Stdio::piped());
+            return self.run_with_stdin(Some(index), args, None).await;
         }
+        let mut args = args.to_vec();
+        args.extend(["--pathspec-from-file=-", "--pathspec-file-nul"]);
+        self.run_with_stdin(Some(index), &args, Some(pathspecs.join(&0u8)))
+            .await
+    }
+
+    /// Run git, feeding `input` on stdin from its own task so a git that
+    /// answers while it reads (`check-ignore --stdin`) cannot fill its
+    /// output pipe and block the writer.
+    async fn run_with_stdin(
+        &self,
+        index: Option<&Path>,
+        args: &[&str],
+        input: Option<Vec<u8>>,
+    ) -> Result<std::process::Output, String> {
+        let mut cmd = self.command(index);
+        cmd.args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            });
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("git failed to start: {e}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(&pathspecs.join(&0u8)).await;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&input).await;
+            });
         }
         child
             .wait_with_output()
@@ -917,5 +1000,83 @@ mod tests {
             .unwrap_err();
         assert!(err.starts_with("skipped:"), "{err}");
         assert!(!repo.index_path("s1").exists());
+    }
+
+    /// A path absent from a tree is "did not exist" only when the snapshot
+    /// would have taken it. One the rules or the cap leave out is unknown.
+    #[tokio::test]
+    async fn bodies_tell_a_left_out_path_from_one_that_did_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("stack");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(root.join("data/iii.db"), "db").unwrap();
+        std::fs::write(root.join("big.bin"), vec![0u8; 64]).unwrap();
+        std::fs::write(root.join("notes.md"), "kept\n").unwrap();
+        let Some(repo) =
+            SnapshotRepo::open_with(&store.join("repos"), &root, &store, Some(&root)).await
+        else {
+            eprintln!("git is not available; skipping");
+            return;
+        };
+        let tree = repo.snapshot("s1", 32, 0).await.unwrap();
+        let rels: Vec<String> = ["data/iii.db", "big.bin", "gone.txt", "notes.md"]
+            .map(str::to_string)
+            .to_vec();
+        let bodies = repo.bodies(&tree, &rels, u64::MAX, 32).await;
+        assert!(
+            matches!(bodies["data/iii.db"], Body::Excluded),
+            "{bodies:?}"
+        );
+        assert!(matches!(bodies["big.bin"], Body::Excluded), "{bodies:?}");
+        assert!(matches!(bodies["gone.txt"], Body::Missing), "{bodies:?}");
+        assert!(
+            matches!(&bodies["notes.md"], Body::Bytes(b) if b == b"kept\n"),
+            "{bodies:?}"
+        );
+    }
+
+    /// A file committed at HEAD and over the cap is left out too, even
+    /// unchanged: the cap holds for every path in the tree.
+    #[tokio::test]
+    async fn a_tracked_file_over_the_cap_stays_out_of_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(root.join("big.bin"), vec![0u8; 64]).unwrap();
+        std::fs::write(root.join("notes.md"), "kept\n").unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        if !git(&["init", "-q"])
+            || !git(&["add", "-A"])
+            || !git(&[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ])
+        {
+            eprintln!("git is not available; skipping");
+            return;
+        }
+        let repo = SnapshotRepo::open_with(&store.join("repos"), &root, &store, None)
+            .await
+            .unwrap();
+        let tree = repo.snapshot("s1", 32, 0).await.unwrap();
+        assert_eq!(listed(&repo, &tree).await, vec!["notes.md"]);
     }
 }
