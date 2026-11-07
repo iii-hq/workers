@@ -2208,6 +2208,15 @@ pub fn revert_step(file: &FileRecord) -> RevertStep {
     }
     match file.kind.as_str() {
         "deleted" if missing_before => RevertStep::Skip,
+        // A pre-image that says the file was there, with no body kept: the
+        // watcher's "created" was a truncating write (FSEvents), and
+        // removing the file would lose it.
+        "created" if file.before.as_ref().is_some_and(|before| !before.missing) => {
+            RevertStep::Unavailable(
+                "the file existed before the turn, but its body was not kept \
+                 (too large, or left out of the turn snapshots)",
+            )
+        }
         // The path did not exist before the turn, whatever the watcher
         // called the change.
         "created" => RevertStep::Remove,
@@ -2373,6 +2382,17 @@ impl TurnLog {
                     truncated: false,
                     stored: false,
                     missing: true,
+                    binary: false,
+                },
+                // The tree says nothing about a path the snapshots leave out:
+                // whether it existed is unknown, so a hook's pre-image stays,
+                // and without one the revert must not remove the file.
+                Some(Body::Excluded) if turn.files[index].before.is_none() => PreImage {
+                    revision: None,
+                    content: None,
+                    truncated: true,
+                    stored: false,
+                    missing: false,
                     binary: false,
                 },
                 _ => continue,
@@ -2706,6 +2726,52 @@ mod tests {
         }))
         .unwrap();
         assert!(failed.result.unwrap().is_error);
+    }
+
+    /// The watcher calls a truncating write to an existing file a creation
+    /// (FSEvents). When the snapshots leave that file out, nothing proves it
+    /// did not exist, so the revert reports it unavailable instead of
+    /// removing it.
+    #[tokio::test]
+    async fn revert_never_removes_a_left_out_file_the_watcher_called_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        if git_in(&root, &["--version"]).await.is_none() {
+            eprintln!("git is not available; skipping");
+            return;
+        }
+        let root = std::fs::canonicalize(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let big = root.join("big.db");
+        std::fs::write(&big, vec![b'a'; 64]).unwrap();
+        let log = Arc::new(TurnLog::new(
+            TurnStore::new(dir.path().join("turns"), 1024 * 1024)
+                .with_snapshot_min_free_bytes(0)
+                .with_snapshot_max_file_bytes(32),
+        ));
+
+        log.on_turn_started("s1", "t1").await.unwrap();
+        log.on_pre_turn(turn_hook("s1", "t1", &root_s)).await;
+        std::fs::write(&big, vec![b'b'; 64]).unwrap();
+        log.fold_observed(
+            "s1",
+            "t1",
+            &root_s,
+            vec![(big.to_string_lossy().into_owned(), "created")],
+        )
+        .await;
+        log.on_post_turn(turn_hook("s1", "t1", &root_s)).await;
+        log.on_turn_completed("s1", "t1").await.unwrap();
+
+        let out = log.revert("s1", "t1", None, &|_| Ok(())).await.unwrap();
+        assert!(big.exists(), "the revert removed a file that existed");
+        let result = out
+            .results
+            .iter()
+            .find(|result| result.path == big.to_string_lossy())
+            .unwrap();
+        assert_eq!(result.action, "unavailable", "{:?}", out.results);
     }
 
     /// A file the snapshots leave out (here: over the size cap) has no side

@@ -479,6 +479,10 @@ impl SnapshotRepo {
             .map(|rel| rel.as_bytes())
             .collect::<Vec<_>>()
             .join(&0u8);
+        // A batch git cannot finish (a path through a symbolic link is fatal,
+        // and the paths after it go unchecked) leaves every path unknown:
+        // only an absence the rules confirm may read as "did not exist".
+        let unknown = || rels.iter().map(|rel| rel.to_string()).collect();
         let mut out: HashSet<String> = match self
             .run_with_stdin(
                 None,
@@ -487,15 +491,23 @@ impl SnapshotRepo {
             )
             .await
         {
-            Ok(done) => done
+            // 0: some paths are ignored, 1: none is.
+            Ok(done) if matches!(done.status.code(), Some(0 | 1)) => done
                 .stdout
                 .split(|b| *b == 0)
                 .filter(|rel| !rel.is_empty())
                 .map(|rel| String::from_utf8_lossy(rel).into_owned())
                 .collect(),
+            Ok(done) => {
+                tracing::debug!(
+                    error = %String::from_utf8_lossy(&done.stderr).trim(),
+                    "turn snapshot: exclude check failed"
+                );
+                return unknown();
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "turn snapshot: exclude check failed");
-                HashSet::new()
+                return unknown();
             }
         };
         for rel in rels {
@@ -1078,5 +1090,29 @@ mod tests {
             .unwrap();
         let tree = repo.snapshot("s1", 32, 0).await.unwrap();
         assert_eq!(listed(&repo, &tree).await, vec!["notes.md"]);
+    }
+
+    /// `check-ignore` stops at a path through a symbolic link, so the batch
+    /// is unknown as a whole: no path in it may read as "did not exist".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unfinished_exclude_check_leaves_every_path_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(root.join("notes.md"), "kept\n").unwrap();
+        std::os::unix::fs::symlink("real", root.join("link")).unwrap();
+        let Some(repo) = SnapshotRepo::open_with(&store.join("repos"), &root, &store, None).await
+        else {
+            eprintln!("git is not available; skipping");
+            return;
+        };
+        let tree = repo.snapshot("s1", 32, 0).await.unwrap();
+        let rels: Vec<String> = ["link/x", "gone.txt"].map(str::to_string).to_vec();
+        let bodies = repo.bodies(&tree, &rels, u64::MAX, 32).await;
+        assert!(matches!(bodies["link/x"], Body::Excluded), "{bodies:?}");
+        assert!(matches!(bodies["gone.txt"], Body::Excluded), "{bodies:?}");
     }
 }
