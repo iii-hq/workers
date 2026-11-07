@@ -142,7 +142,7 @@ export async function observeConfigChanges(iii: IIIClient, holder: ConfigHolder)
         'input.id': { $eq: configId() },
         'input.event_type': { $eq: 'configuration:updated' },
       },
-      deliver: 'output',
+      capture: ['output'],
     },
     CONFIG_FN_ID,
   );

@@ -16,7 +16,7 @@ use email::events::new_mail::{self, NewMailEvent, ON_NEW_MAIL_FN};
 use email::events::Event;
 use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 
@@ -189,7 +189,8 @@ async fn on_new_mail_is_private_and_reaches_the_matching_observers() {
         RegisterFunction::new_async(move |event: Value| {
             let log = log.clone();
             async move {
-                log.lock().unwrap().push(event);
+                // capture [output]: the event is the envelope's `output`.
+                log.lock().unwrap().push(event["output"].clone());
                 // A slow target: the dispatch does not wait for it.
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 Ok::<_, iii_sdk::Error>(Value::Null)
@@ -202,7 +203,7 @@ async fn on_new_mail_is_private_and_reaches_the_matching_observers() {
                 "input.account": { "$eq": "support" },
                 "input.folder": { "$eq": "INBOX" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         TARGET,
     );
     tokio::time::timeout(Duration::from_secs(10), observer.ready())

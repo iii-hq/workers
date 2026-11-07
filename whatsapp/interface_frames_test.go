@@ -99,7 +99,7 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		{Source: observedSource{FunctionID: "configuration::on-updated", Filters: map[string]any{
 			"input.id":         map[string]any{"$eq": "wa-boot"},
 			"input.event_type": map[string]any{"$eq": "configuration:updated"},
-		}, Deliver: "output"}},
+		}, Capture: json.RawMessage(`["output"]`)}},
 		{Source: observedSource{FunctionID: "http::on-request", Args: map[string]any{"method": "GET", "path": "/webhooks/whatsapp-cloud/wa-boot", "public_webhook": true}}},
 		{Source: observedSource{FunctionID: "http::on-request", Args: map[string]any{"method": "POST", "path": "/webhooks/whatsapp-cloud/wa-boot", "public_webhook": true}}},
 		{Source: observedSource{FunctionID: "http::on-request", Args: map[string]any{"method": "POST", "path": "/webhooks/whatsapp-flows/wa-boot", "public_webhook": true}}},
@@ -107,8 +107,8 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		{Source: observedSource{FunctionID: "ade::ui::asset", Args: map[string]any{"kind": "style", "path": "whatsapp/styles.css"}}},
 		{Source: observedSource{FunctionID: "quick-tunnel::on-changed", Filters: map[string]any{
 			"input.tunnel_id": map[string]any{"$eq": "webhooks"},
-		}, Deliver: "output"}},
-		{Source: observedSource{FunctionID: "secrets::on-changed", Deliver: "output"}},
+		}, Capture: json.RawMessage(`["output"]`)}},
+		{Source: observedSource{FunctionID: "secrets::on-changed", Capture: json.RawMessage(`["output"]`)}},
 	}
 	targets := []string{
 		"whatsapp::on-config-change",
@@ -134,10 +134,9 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		if err := json.Unmarshal(raw, &observer); err != nil {
 			t.Fatal(err)
 		}
-		if len(observer.Source.Capture) != 0 {
-			t.Errorf("%s observer of %s sets capture %s; it uses the default", observer.Target.FunctionID, observer.Source.FunctionID, observer.Source.Capture)
-		}
-		observer.Source.Capture = nil
+		// capture is compared with want: ["output"] for the three event
+		// observers whose targets read the envelope, absent (the default) for
+		// the rest.
 		got = append(got, observer)
 	}
 	key := func(o observerFrame) string {

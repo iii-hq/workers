@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::client::Client;
@@ -93,7 +93,8 @@ impl ScenarioProbe {
                 let completions = Arc::clone(&completions);
                 let completion_notify = Arc::clone(&completion_notify);
                 async move {
-                    let event = parse_lifecycle_payload(payload).map_err(Error::Handler)?;
+                    let event = parse_lifecycle_payload(observed_output(payload))
+                        .map_err(Error::Handler)?;
                     let observation = CompletionObservation { event };
                     completions
                         .lock()
@@ -122,7 +123,7 @@ impl ScenarioProbe {
                 let ready = Arc::clone(&ready);
                 let ready_notify = Arc::clone(&ready_notify);
                 async move {
-                    parse_ready_payload(&payload).map_err(Error::Handler)?;
+                    parse_ready_payload(&observed_output(payload)).map_err(Error::Handler)?;
                     ready.store(true, Ordering::Release);
                     ready_notify.notify_waiters();
                     Ok::<Value, Error>(json!({ "accepted": true }))
@@ -141,7 +142,7 @@ impl ScenarioProbe {
                 let trace_generation = Arc::clone(&trace_generation);
                 let trace_notify = Arc::clone(&trace_notify);
                 async move {
-                    parse_trace_payload(&payload).map_err(Error::Handler)?;
+                    parse_trace_payload(&observed_output(payload)).map_err(Error::Handler)?;
                     trace_generation.fetch_add(1, Ordering::AcqRel);
                     trace_notify.notify_waiters();
                     Ok::<Value, Error>(json!({ "accepted": true }))
@@ -298,7 +299,7 @@ impl ScenarioProbe {
         Ok(())
     }
 
-    /// Observe `source` with `target`, delivering the event itself.
+    /// Observe `source` with `target`, capturing the event (the output).
     fn observe(
         &self,
         source: Source,
@@ -308,7 +309,7 @@ impl ScenarioProbe {
         let handle = self
             .client
             .inner()
-            .observe(source.deliver(Deliver::Output), target);
+            .observe(source.capture([Capture::Output]), target);
         self.bindings
             .lock()
             .map_err(|_| anyhow::anyhow!("integration/bindings_lock_poisoned"))?
@@ -479,6 +480,12 @@ pub(crate) fn latest_terminal_observation(
                 .cmp(&right.event.timestamp)
                 .then_with(|| left.event.turn_id.cmp(&right.event.turn_id))
         })
+}
+
+/// The observed call's output: what an observer of `capture: [output]`
+/// receives inside its `Observed` envelope.
+fn observed_output(payload: Value) -> Value {
+    payload.get("output").cloned().unwrap_or(Value::Null)
 }
 
 fn parse_lifecycle_payload(mut payload: Value) -> Result<LifecycleEventV1, String> {

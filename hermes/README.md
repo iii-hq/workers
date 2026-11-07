@@ -103,14 +103,14 @@ The worker provides two private functions that carry one session's frames. Obser
 | `hermes::on-raw-event` | `{ session_id }` | Raw Hermes frames: `{type: "result", text, is_error}` per turn, and `{type: "inbound", body}` per gateway delivery (session = the delivery's `session_id`, else `chat_id`, else a fresh uuid) |
 
 ```python
-async def on_frame(frame):
-    # frame: {session_id, event_id, seq, epoch, source, event}
+async def on_frame(observed):
+    frame = observed["output"]  # {session_id, event_id, seq, epoch, source, event}
     print(frame["event"]["type"])
 
 
 iii.register_function("my-app::on-hermes-frame", on_frame)
 iii.observe(
-    {"function_id": "hermes::on-raw-event", "args": {"session_id": "chat-7"}, "deliver": "output"},
+    {"function_id": "hermes::on-raw-event", "args": {"session_id": "chat-7"}, "capture": ["output"]},
     "my-app::on-hermes-frame",
     {"metadata": {"conn": "c1"}},  # optional: reaches your function as its metadata
 )
@@ -118,7 +118,7 @@ iii.observe(
 
 `session_id` is required (non-empty, at most 512 characters) and is the only arg; the engine rejects any other with `INVALID_ARGS`. Each function accepts at most 256 observers, and one more is rejected with `OBSERVER_LIMIT`. Only this worker calls the functions; any worker may observe them.
 
-Each frame is one fire-and-forget call of the function, and the event it returns is what its session's observers observe (with `deliver: "output"`, your function receives it as its input):
+Each frame is one fire-and-forget call of the function, and the event it returns is what its session's observers observe (with `capture: ["output"]`, your function receives the `Observed` envelope with it at `output`):
 
 ```json
 {

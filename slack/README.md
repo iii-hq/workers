@@ -104,12 +104,12 @@ until that worker registers the function.
 |---|---|---|---|
 | `http::on-request` | args `{ method: "POST", path: "/slack/events" }` | `slack::events` | the HTTP request; streams the response |
 | `http::on-request` | args `{ method: "POST", path: "/slack/interactions" }` | `slack::interactions` | the HTTP request; streams the response |
-| `session::on-message-added` | filters `{ "input.message.role": { "$in": ["assistant"] } }` | `slack::on-message-added` | `MessageAddedEvent` (`deliver: output`) |
-| `session::on-message-updated` | filters as above | `slack::on-message-updated` | `MessageUpdatedEvent` (`deliver: output`) |
-| `harness::on-turn-completed` | none | `slack::on-turn-completed` | `TurnCompletedEvent` (`deliver: output`) |
-| `approval::on-pending-created` | none | `slack::on-pending-created` | `PendingApprovalRecord` (`deliver: output`) |
-| `approval::on-pending-resolved` | none | `slack::on-pending-resolved` | `PendingResolvedEvent` (`deliver: output`) |
-| `configuration::on-updated` | filters `{ "input.id": { "$eq": "<config id>" }, "input.event_type": { "$eq": "configuration:updated" } }` | `slack::on-config-change` | the configuration event (`deliver: output`) |
+| `session::on-message-added` | filters `{ "input.message.role": { "$in": ["assistant"] } }` | `slack::on-message-added` | `MessageAddedEvent` (envelope `output`, `capture: [output]`) |
+| `session::on-message-updated` | filters as above | `slack::on-message-updated` | `MessageUpdatedEvent` (envelope `output`, `capture: [output]`) |
+| `harness::on-turn-completed` | none | `slack::on-turn-completed` | `TurnCompletedEvent` (envelope `output`, `capture: [output]`) |
+| `approval::on-pending-created` | none | `slack::on-pending-created` | `PendingApprovalRecord` (envelope `output`, `capture: [output]`) |
+| `approval::on-pending-resolved` | none | `slack::on-pending-resolved` | `PendingResolvedEvent` (envelope `output`, `capture: [output]`) |
+| `configuration::on-updated` | filters `{ "input.id": { "$eq": "<config id>" }, "input.event_type": { "$eq": "configuration:updated" } }` | `slack::on-config-change` | the configuration event (envelope `output`, `capture: [output]`) |
 
 The session, harness and approval observers exist from boot, so an
 approval-gate that connects later is observed with no extra step; each

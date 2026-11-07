@@ -198,12 +198,12 @@ iii.observe(
   {
     function_id: 'computer::on-session-stopped',
     filters: { 'input.session_id': { $eq: 'c1' } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'mywatcher::on-desktop',
 )
 ```
 
-Omit `filters` to receive events for all sessions. With `deliver: 'output'`
-the handler receives the event itself; for its shape, call `get function info`
+Omit `filters` to receive events for all sessions. With `capture: ['output']`
+the handler receives the `Observed` envelope with the event at `output`; for its shape, call `get function info`
 on the observed function.

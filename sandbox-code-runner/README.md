@@ -264,9 +264,9 @@ only on change) only while it has observers.
 Event: `{ kind, runtime_id?, lang?, sandbox_id?, function_id?, daemon_absent?, sandboxes? }`.
 
 ```ts
-// fleet snapshots only, the event itself as the target's input
+// fleet snapshots only; the target reads the event at payload.output
 iii.observe(
-  { function_id: 'sandbox-code-runner::on-event', filters: { 'input.kind': { $eq: 'fleet' } }, deliver: 'output' },
+  { function_id: 'sandbox-code-runner::on-event', filters: { 'input.kind': { $eq: 'fleet' } }, capture: ['output'] },
   'ops::fleet-changed',
 )
 ```

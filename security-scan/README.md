@@ -98,7 +98,7 @@ Runs, reconciliation snapshots, and finding actions are stored records owned by 
 
 ```ts
 iii.observe(
-  { function_id: 'security-scan::on-run-changed', filters: { 'input.repository': { $eq: 'iii-hq/iii' } }, deliver: 'output' },
+  { function_id: 'security-scan::on-run-changed', filters: { 'input.repository': { $eq: 'iii-hq/iii' } }, capture: ['output'] },
   'audit::on-security-run',
 )
 ```
@@ -114,7 +114,7 @@ iii.observe(
 | `cron::on-tick` | args `{ expression }` of one configured schedule; observer metadata `{ repository }` | `security-scan::on-schedule` | Starts a scheduled scan (one observer per scheduled repository) |
 | `harness::on-turn-completed` | none | `security-scan::on-turn-completed` | Wakes the run or action whose Harness turn finished; a recovery sweep every 30 s covers missed events |
 
-Both take the event as output (`deliver: 'output'`). An observer stays `pending` while its function's worker is not running and becomes active when that worker registers it, so start order does not matter.
+Both capture the event as output (`capture: ['output']`) and read it at the envelope's `output`. An observer stays `pending` while its function's worker is not running and becomes active when that worker registers it, so start order does not matter.
 
 ## Configuration
 

@@ -126,7 +126,7 @@ iii.observe(
       'input.account': { $eq: 'support' },
       'input.folder': { $eq: 'INBOX' },
     },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-mail',
 )
@@ -136,7 +136,8 @@ iii.observe(
 fields: `input.account` (a configured account with an `imap:` block) and
 `input.folder` (one of `config.accounts.<name>.imap.folders`). Without
 filters the observer receives every new message of every watched folder.
-With `deliver: 'output'` the target receives the event itself.
+With `capture: ['output']` the target receives the Observed envelope; the
+event is its `output`.
 
 Event payload per inbound message:
 

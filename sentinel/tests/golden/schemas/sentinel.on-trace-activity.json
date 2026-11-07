@@ -3,17 +3,191 @@
   "function_id": "sentinel::on-trace-activity",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "The `observability::on-span` event, delivered as output: trace ids only, coalesced.",
-    "properties": {
-      "trace_ids": {
-        "default": [],
-        "items": {
-          "type": "string"
+    "definitions": {
+      "Caller": {
+        "description": "Who made an invocation. `worker_id` / `worker_name` are stamped by the engine from the calling connection; `function_id`, `invocation_id` and `parent` are asserted by the calling SDK.",
+        "properties": {
+          "function_id": {
+            "description": "The handler the call was made from; absent for a top-level call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invocation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ParentCaller"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller of that handler, one level only."
+          },
+          "worker_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
-        "type": "array"
+        "type": "object"
+      },
+      "InvocationStatus": {
+        "enum": [
+          "success",
+          "error"
+        ],
+        "type": "string"
+      },
+      "ObservedError": {
+        "description": "What a call failed with: [`Observed::error`], [`Call::error`](crate::Call::error).",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ParentCaller": {
+        "description": "[`Caller::parent`]: a caller without a parent of its own.",
+        "properties": {
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invocation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "TraceActivityEventV1": {
+        "description": "The `observability::on-span` event, delivered as output: trace ids only, coalesced.",
+        "properties": {
+          "trace_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
       }
     },
-    "title": "TraceActivityEventV1",
+    "description": "What an observer's target receives with the default `deliver: envelope`: the observed call, per the observer's `capture`.\n\n```rust,no_run # use iii_sdk::{Error, IIIClient, Observed, RegisterFunction}; # use serde_json::Value; # fn demo(iii: &IIIClient) { iii.register_function( \"alerts::payment-failed\", RegisterFunction::new(|event: Observed<Value>| { println!(\"{} failed: {:?}\", event.function_id, event.error); Ok::<_, Error>(()) }), ); # } ```",
+    "properties": {
+      "activation_id": {
+        "type": "string"
+      },
+      "caller": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Caller"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "duration_ms": {
+        "format": "double",
+        "type": "number"
+      },
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ObservedError"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "function_id": {
+        "type": "string"
+      },
+      "input": true,
+      "invocation_id": {
+        "type": "string"
+      },
+      "metadata": true,
+      "namespace": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "observer_id": {
+        "type": "string"
+      },
+      "output": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/TraceActivityEventV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "started_at_ms": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "status": {
+        "$ref": "#/definitions/InvocationStatus"
+      }
+    },
+    "required": [
+      "activation_id",
+      "duration_ms",
+      "function_id",
+      "invocation_id",
+      "observer_id",
+      "started_at_ms",
+      "status"
+    ],
+    "title": "Observed_for_AnyValue_and_TraceActivityEventV1",
     "type": "object"
   },
   "response_schema": {

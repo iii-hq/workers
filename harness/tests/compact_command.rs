@@ -21,7 +21,7 @@ use harness::skills;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, Deliver, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
+    register_worker, Capture, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::{Notify, RwLock};
@@ -354,7 +354,7 @@ impl Stack {
             RegisterFunction::new_async(move |payload: Value| {
                 let w = w.clone();
                 async move {
-                    w.lock().unwrap().events.push(payload);
+                    w.lock().unwrap().events.push(payload["output"].clone());
                     Ok::<_, iii_sdk::Error>(json!({}))
                 }
             }),
@@ -384,7 +384,7 @@ impl Stack {
         let observer = listener.observe_with(
             Source::function(harness::events::ON_COMPACTION_FN)
                 .filters(json!({ "input.session_id": { "$eq": SESSION } }))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             "test::compaction-events",
             ObserverOptions::default().max_in_flight(1),
         );

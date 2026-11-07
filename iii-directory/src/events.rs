@@ -27,8 +27,8 @@
 //! harness and the directory's own console page observe them:
 //!
 //! ```text
-//! iii.observe(Source::function("directory::skills::on-change").deliver(Deliver::Output),
-//!             "mcp::__on_skills_changed")
+//! iii.observe(Source::function("directory::skills::on-change").capture([Capture::Output]),
+//!             "mcp::__on_skills_changed")   // the target reads payload["output"]
 //! ```
 //!
 //! The coupling stays one-way: an observer knows the directory worker hosts

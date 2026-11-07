@@ -60,7 +60,7 @@ the outcome; prefer push over polling `workflow::status` in a loop.
 
    ```ts
    iii.observe(
-     { function_id: 'workflow::on-run-completed', filters: { 'input.status': { $eq: 'failed' } }, deliver: 'output' },
+     { function_id: 'workflow::on-run-completed', filters: { 'input.status': { $eq: 'failed' } }, capture: ['output'] },
      'audit::workflow-failed',
    )
    ```
@@ -85,11 +85,11 @@ observes it; dedup on `run_id`.
 
 | Observed function | Args / filters | Target | Target receives |
 |---|---|---|---|
-| `cron::on-tick` | args `{ expression: <sweep_expression> }` | `workflow::sweep` | the tick (`deliver: output`) |
-| `harness::on-turn-completed` | none | `workflow::wake` | `TurnCompletedEvent` (`deliver: output`); non-workflow sessions are ignored |
+| `cron::on-tick` | args `{ expression: <sweep_expression> }` | `workflow::sweep` | the tick (`capture: [output]`, read as `payload.output`) |
+| `harness::on-turn-completed` | none | `workflow::wake` | `TurnCompletedEvent` (`capture: [output]`, read as `payload.output`); non-workflow sessions are ignored |
 | `harness::hook::on-pre-call` | args `{ functions: ["workflow::start"], on_error: "fail_open", timeout_ms: 30000 }` | `workflow::stamp-reply` | the pre-call hook input; returns the hook decision |
 | `harness::hook::on-pre-generate` | args `{ on_error: "fail_open", inject_prompt: <workflow guidance> }`, only while `inject_guidance` is on | `workflow::inject-guidance` | not called: the harness joins `inject_prompt` into the system prompt |
-| `configuration::on-updated` | filters on `input.id` and `input.event_type` (through `iii-config-client`) | `workflow::on-config-change` | the configuration event (`deliver: output`) |
+| `configuration::on-updated` | filters on `input.id` and `input.event_type` (through `iii-config-client`) | `workflow::on-config-change` | the configuration event (`capture: [output]`, read as `payload.output`) |
 
 A `sweep_expression` change observes the new expression first, then disposes
 the old observer; if the cron worker refuses the new expression

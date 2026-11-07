@@ -67,6 +67,13 @@ type secretChangedNotification struct {
 	Ref string `json:"ref,omitempty"`
 }
 
+// observedSecretChanged is what whatsapp::on-secret-changed receives from its
+// capture: [output] observer: the Observed envelope, with the secrets::on-changed
+// event as its output.
+type observedSecretChanged struct {
+	Output secretChangedNotification `json:"output"`
+}
+
 type callbackOK struct {
 	OK bool `json:"ok"`
 }

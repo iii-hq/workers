@@ -1,5 +1,5 @@
 use iii_sdk::{
-    Call, CallRequest, Deliver, Match, ObserveRejection, Observer, ObserverOptions,
+    Call, CallRequest, Capture, Match, ObserveRejection, Observed, Observer, ObserverOptions,
     RegisterFunction, Source,
 };
 
@@ -360,9 +360,16 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
     let s = service.clone();
     iii.register_function(
         "github::webhooks::tunnel-changed",
-        RegisterFunction::new_async(move |req: TunnelSnapshot| {
+        RegisterFunction::new_async(move |event: Observed<Value, TunnelSnapshot>| {
             let s = s.clone();
             async move {
+                // capture [output]: the snapshot is the envelope's output.
+                let req = event.output.ok_or_else(|| {
+                    iii_sdk::Error::Handler(format!(
+                        "observed call of {} carried no tunnel snapshot",
+                        event.function_id
+                    ))
+                })?;
                 let task_service = s.clone();
                 let response =
                     storage_task(async move { task_service.tunnel_changed(req).await }).await?;
@@ -494,14 +501,14 @@ pub(super) fn observed_sources(
         (
             Source::function("quick-tunnel::on-changed")
                 .filters(json!({ "input.tunnel_id": { "$eq": config.tunnel_id } }))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             "github::webhooks::tunnel-changed",
             ObserverOptions::default(),
         ),
         (
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "*/10 * * * * *" }))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             "github::webhooks::maintain",
             ObserverOptions::default(),
         ),
@@ -622,6 +629,36 @@ async fn record_activation_error(
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
+    use iii_sdk::Capture;
+
+    /// The tunnel and maintenance targets read the event from the Observed
+    /// envelope, so their observers capture `[output]`.
+    #[test]
+    fn tunnel_and_maintain_observers_capture_the_output() {
+        let config = WebhookConfig::default();
+        let sources = observed_sources(&config, "fixed".into());
+        let source = |id: &str| {
+            sources
+                .iter()
+                .find(|(source, _, _)| source.function_id() == id)
+                .unwrap()
+                .0
+                .clone()
+        };
+        let tunnel_filters = serde_json::json!({ "input.tunnel_id": { "$eq": config.tunnel_id } });
+        assert_eq!(
+            source("quick-tunnel::on-changed"),
+            Source::function("quick-tunnel::on-changed")
+                .filters(tunnel_filters)
+                .capture([Capture::Output])
+        );
+        assert_eq!(
+            source("cron::on-tick"),
+            Source::function("cron::on-tick")
+                .args(json!({ "expression": "*/10 * * * * *" }))
+                .capture([Capture::Output])
+        );
+    }
 
     #[test]
     fn the_queue_observer_id_is_the_worker_and_its_queue() {

@@ -132,15 +132,17 @@ fire-and-forget, and nothing is built for a function nobody observes.
 | `ios-simulator::on-activity` | none; filter on `input.tenant`, `input.udid` | iii's default | `{ tenant, udid, function, timestamp }` after a caller drove a simulator (gesture, button, type, key, apps, open-url, screenshot, recording::start, open); live previews surface it. |
 
 ```ts
+// each target receives the Observed envelope; the event is its `output`
+
 // every device change of one tenant
 iii.observe(
-  { function_id: 'ios-simulator::on-device-changed', filters: { 'input.tenant': { $eq: 'acme' } }, deliver: 'output' },
+  { function_id: 'ios-simulator::on-device-changed', filters: { 'input.tenant': { $eq: 'acme' } }, capture: ['output'] },
   'my-worker::on-simulator',
 )
 
 // the live view of one simulator; one frame in flight, so a slow viewer drops frames
 iii.observe(
-  { function_id: 'ios-simulator::on-frame-event', args: { tenant: 'acme', udid: '5FEF…' }, deliver: 'output' },
+  { function_id: 'ios-simulator::on-frame-event', args: { tenant: 'acme', udid: '5FEF…' }, capture: ['output'] },
   'my-worker::on-frame',
   { max_in_flight: 1 },
 )

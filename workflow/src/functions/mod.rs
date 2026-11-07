@@ -171,10 +171,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let d = deps.clone();
     iii.register_function(
         wake::WAKE_ID,
-        RegisterFunction::new_async(move |req: wake::WakeEvent| {
-            let d = d.clone();
-            async move { wake::handle(&d, req).await.map_err(Error::from) }
-        })
+        RegisterFunction::new_async(
+            move |delivered: crate::observed::Delivered<wake::WakeEvent>| {
+                let d = d.clone();
+                let req = crate::observed::delivered_event(delivered).unwrap_or_default();
+                async move { wake::handle(&d, req).await.map_err(Error::from) }
+            },
+        )
         .description(wake::WAKE_DESC),
     );
 

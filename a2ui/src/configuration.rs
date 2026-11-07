@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -104,7 +104,7 @@ pub fn register_config_observer(iii: &IIIClient, cell: ConfigCell) -> ObserverHa
     iii.observe(
         Source::function(CONFIG_UPDATED_FN)
             .filters(config_updated_filters(config_id()))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_FN_ID,
     )
 }

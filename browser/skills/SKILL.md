@@ -363,13 +363,13 @@ iii.observe(
   {
     function_id: 'browser::on-console-event',
     filters: { 'input.session_id': { $eq: 'b1' } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'mywatcher::on-console',
 )
 ```
 
-`deliver: 'output'` hands the handler the event itself. Filters always take
+`capture: ['output']` hands the handler the `Observed` envelope with the event at `output`. Filters always take
 an explicit operator (`$eq`, `$in`). `browser::on-console-event` fires per
 entry, so filter by session and treat `browser::console::read` as the
 durable record. For event shapes, read the function's `response_format`

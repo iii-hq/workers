@@ -29,7 +29,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Deliver, InitOptions, Source};
+use iii_sdk::{register_worker, Capture, InitOptions, Source};
 use tokio::sync::RwLock;
 
 use approval_gate::configuration::{self, ConfigCell};
@@ -148,11 +148,11 @@ async fn main() -> Result<()> {
     configuration::observe_hook(&iii);
     configuration::observe_filesystem_access_watch_hook(&iii);
     iii.observe(
-        Source::function(SESSION_ON_DELETED_FN).deliver(Deliver::Output),
+        Source::function(SESSION_ON_DELETED_FN).capture([Capture::Output]),
         functions::ON_SESSION_DELETED_ID,
     );
     iii.observe(
-        Source::function(HARNESS_ON_TURN_COMPLETED_FN).deliver(Deliver::Output),
+        Source::function(HARNESS_ON_TURN_COMPLETED_FN).capture([Capture::Output]),
         functions::ON_TURN_COMPLETED_ID,
     );
 

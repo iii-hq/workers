@@ -644,8 +644,8 @@ answered. Typing a reply in the composer instead works the same way.
 
 The harness hosts these functions. Every one is private: observers observe it,
 and only the harness calls it. Each handler returns the event it is called
-with, so observers receive the event as the call's output (`deliver: 'output'`
-gives the event itself). Observe them with `iii.observe` from a worker; an agent
+with, so observers receive the event as the call's output (with `capture:
+['output']` the target reads it at `payload.output`). Observe them with `iii.observe` from a worker; an agent
 observes only `harness::on-timer` and its own post-turn validator.
 
 | Function | Args | Filter on | Event |

@@ -19,6 +19,7 @@ pub mod functions;
 pub mod hooks;
 pub mod index;
 pub mod manifest;
+pub mod observed;
 pub mod redact;
 pub mod scope;
 pub mod store;

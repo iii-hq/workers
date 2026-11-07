@@ -39,7 +39,7 @@ The worker exposes one function, `publish`, registered with the bare function id
 
 ## Observing a topic
 
-Observe `publish` when a function should run every time something publishes to a topic. It takes no args: select the topic with a filter on `input.topic`, and use `deliver: 'input'` so the target receives `{ topic, data }`. Several observers of the same topic each get an independent copy (true fan-out).
+Observe `publish` when a function should run every time something publishes to a topic. It takes no args: select the topic with a filter on `input.topic`, and use `capture: ['input']` so the target receives `{ topic, data }` at `payload.input`. Several observers of the same topic each get an independent copy (true fan-out).
 
 Reach for it when:
 
@@ -58,12 +58,12 @@ iii.observe(
   {
     function_id: 'publish',
     filters: { 'input.topic': { $eq: 'orders.shipped' } },  // exact topic; $in for several
-    deliver: 'input',
+    capture: ['input'],
   },
   'notifications::on-order-shipped',
 )
 ```
 
-The handler receives `{ topic, data }`, so one handler can serve several topics. Its return value is ignored and there is no retry. Pass `{ metadata }` as the third argument of `iii.observe` to hand the handler a sidecar with every event.
+The handler receives the `Observed` envelope with `{ topic, data }` at `input`, so one handler can serve several topics. Its return value is ignored and there is no retry. Pass `{ metadata }` as the third argument of `iii.observe` to hand the handler a sidecar with every event.
 
 For the published payload shape, call `iii get function info` on `publish` or the handler function id.

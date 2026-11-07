@@ -15,7 +15,8 @@ working directory, and returns the final result, token usage, and cost. Every
 event Pi emits is published untouched on `pi::on-raw-event`; a translated
 AgentEvent view is published on `pi::on-agent-event`, which is what the iii
 console and the acp worker render. Observe either with args `{ session_id }`
-(`iii.observe({ function_id: 'pi::on-agent-event', args: { session_id }, deliver: 'output' }, target)`);
+(`iii.observe({ function_id: 'pi::on-agent-event', args: { session_id }, capture: ['output'] }, target)`;
+the target receives each frame at `payload.output`);
 frames are live only (not stored or replayed), ordered by `(epoch, seq)`.
 
 Pi runs the loop in-process (no CLI subprocess), so it needs model credentials

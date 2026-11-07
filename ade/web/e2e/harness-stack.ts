@@ -167,8 +167,9 @@ function armCompletion(
     functionRef = sdk.registerFunction(
       functionId,
       async (payload) => {
-        const event = payload as TurnCompletedEvent
-        if (event.session_id !== ready.session.id) return null
+        const event = (payload as { output?: TurnCompletedEvent } | null)
+          ?.output
+        if (!event || event.session_id !== ready.session.id) return null
         cleanup()
         resolve(event)
         return null
@@ -179,7 +180,7 @@ function armCompletion(
       {
         function_id: 'harness::on-turn-completed',
         filters: { 'input.session_id': { $eq: ready.session.id } },
-        deliver: 'output',
+        capture: ['output'],
       },
       functionId,
     )

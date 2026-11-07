@@ -43,8 +43,10 @@ export interface ExtensionIii {
   on<P = unknown>(functionId: string, handler: (payload: P) => void | Promise<void>): () => void
   /**
    * Observes `source` with `target` (a function registered with `on`, by its
-   * full id `<functionId>::<browserId>`). `deliver` defaults to `'output'`,
-   * so the handler receives the event the observed function returned.
+   * full id `<functionId>::<browserId>`). Without `capture` the handler
+   * receives the event the observed function returned (the host captures
+   * `output` and unwraps the envelope); with `capture` it receives the
+   * `Observed` envelope. `deliver` is deprecated and never reaches the engine.
    * Returns its disposer.
    */
   observe(source: string | ObserveSource, target: string, options?: ObserverOptions): () => void

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, InitOptions, ObserverHandle, ObserverOptions,
+    register_worker, CallRequest, Capture, InitOptions, ObserverHandle, ObserverOptions,
     RegisterFunction, Source,
 };
 use serde_json::json;
@@ -739,7 +739,7 @@ async fn live_frames_keep_flowing_across_tabs() {
     let frames = client.observe_with(
         Source::function("browser::on-frame-event")
             .args(json!({ "session_id": first_id }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "iii::browser-test::frames",
         ObserverOptions::default().max_in_flight(1),
     );
@@ -2182,7 +2182,7 @@ async fn late_titles_and_handoff_clicks_arrive_as_events() {
         RegisterFunction::new_async(move |event: serde_json::Value| {
             let titles_tx = titles_tx.clone();
             async move {
-                if let Some(title) = event["title"].as_str() {
+                if let Some(title) = event["output"]["title"].as_str() {
                     let _ = titles_tx.send(title.to_string());
                 }
                 Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
@@ -2214,7 +2214,7 @@ async fn late_titles_and_handoff_clicks_arrive_as_events() {
     let updated = client.observe(
         Source::function("browser::on-session-updated")
             .filters(json!({ "input.session_id": { "$eq": sid } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "iii::browser-test::updated",
     );
     await_active(&updated).await;
@@ -2302,14 +2302,14 @@ async fn idle_and_expired_tabs_go_on_their_own_deadlines() {
         RegisterFunction::new_async(move |event: serde_json::Value| {
             let events_tx = events_tx.clone();
             async move {
-                let _ = events_tx.send(event);
+                let _ = events_tx.send(event["output"].clone());
                 Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
             }
         }),
     );
     for function_id in ["browser::on-session-updated", "browser::on-session-stopped"] {
         let observer = client.observe(
-            Source::function(function_id).deliver(Deliver::Output),
+            Source::function(function_id).capture([Capture::Output]),
             "iii::browser-test::lifecycle",
         );
         await_active(&observer).await;

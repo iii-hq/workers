@@ -73,3 +73,23 @@ mod tests {
         assert!(!is_workflow_session("workflow_run")); // not the wf_ session prefix
     }
 }
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+    use crate::observed::{delivered_event, envelope, Delivered};
+
+    /// The wake target is called with the `Observed` envelope: the finished
+    /// turn is its output.
+    #[test]
+    fn the_finished_turn_is_read_from_the_envelope() {
+        let delivered: Delivered<WakeEvent> = serde_json::from_value(envelope(
+            "harness::on-turn-completed",
+            serde_json::json!({ "session_id": "wf_r1_n1@r1", "turn_id": "t-1" }),
+        ))
+        .expect("the envelope parses");
+        let event = delivered_event(delivered).unwrap_or_default();
+        assert_eq!(event.session_id, "wf_r1_n1@r1");
+        assert!(is_workflow_session(&event.session_id));
+    }
+}

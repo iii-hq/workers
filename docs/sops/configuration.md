@@ -354,7 +354,8 @@ Add defense-in-depth denies next to the existing storage/database/shell entries:
 Observe `configuration::on-updated` when a function should run on every
 register/set/delete, including external `fs` edits and bridge-forwarded events.
 The function takes no args; select the entry and the event type with filters on
-its input, and take the event as the target's input with `Deliver::Output`:
+its input, and capture the output (`Capture::Output`): the target receives the
+`Observed` envelope and reads the event at `output`:
 
 ```rust
 iii.observe(
@@ -363,7 +364,7 @@ iii.observe(
             "input.id": { "$eq": config_id() },                     // omit to receive every id
             "input.event_type": { "$eq": "configuration:updated" }, // or registered / deleted
         }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "<worker>::on-config-change",
 );
 ```

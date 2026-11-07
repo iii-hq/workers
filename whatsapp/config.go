@@ -301,21 +301,22 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 	if err := observeFunction(client, iii.Source{
 		FunctionID: "configuration::on-updated",
 		Filters:    iii.Filters{"input.id": iii.Op{"$eq": ConfigID()}, "input.event_type": iii.Op{"$eq": "configuration:updated"}},
-		Deliver:    iii.DeliverOutput,
+		Capture:    []iii.Capture{iii.CaptureOutput},
 	}, "whatsapp::on-config-change"); err != nil {
 		return err
 	}
 	// secrets::on-changed carries no value. Its ref is advisory: an event about a
 	// secret this configuration does not reference is ignored, and any other
 	// one only causes a re-read.
-	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::on-secret-changed", func(ctx context.Context, request callbackRequest[secretChangedNotification]) (callbackOK, error) {
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::on-secret-changed", func(ctx context.Context, request callbackRequest[observedSecretChanged]) (callbackOK, error) {
 		if m.interfaceOnly {
 			return callbackOK{}, interfaceCallbackError()
 		}
-		var event secretChangedNotification
-		if json.Unmarshal(request.Raw, &event) != nil {
+		var observed observedSecretChanged
+		if json.Unmarshal(request.Raw, &observed) != nil {
 			return callbackOK{}, nil
 		}
+		event := observed.Output
 		ref, isRef, err := secretRef(event.Ref)
 		if !isRef || err != nil || !m.Config().Cloud.referencesSecret(ref) {
 			return callbackOK{}, nil
@@ -333,7 +334,7 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 	if err := observeFunction(client, iii.Source{
 		FunctionID: "secrets::on-changed",
 		Namespace:  Namespace(),
-		Deliver:    iii.DeliverOutput,
+		Capture:    []iii.Capture{iii.CaptureOutput},
 	}, "whatsapp::on-secret-changed"); err != nil {
 		return err
 	}

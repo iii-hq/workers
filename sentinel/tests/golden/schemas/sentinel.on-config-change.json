@@ -3,7 +3,7 @@
   "function_id": "sentinel::on-config-change",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "The `configuration::on-updated` event, delivered as output to `<worker>::on-config-change`. Advisory only: handlers read `id` and re-fetch the authoritative value, so a direct call can never inject config.",
+    "description": "What `<worker>::on-config-change` receives: the `Observed` envelope of a `configuration::on-updated` call (captured as output). Advisory only: handlers ignore it and re-fetch the authoritative value, so a direct call can never inject config.",
     "properties": {
       "id": {
         "default": null,

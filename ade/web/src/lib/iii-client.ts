@@ -19,6 +19,7 @@
  */
 
 import {
+  type Capture,
   type IIIConnectionState,
   type InitOptions,
   type ISdk,
@@ -46,7 +47,19 @@ export interface ObserveSource {
    * each with an explicit operator: `{ 'input.session_id': { $eq: id } }`.
    */
   filters?: Record<string, unknown>
-  /** What the target receives: the event (`'output'`, the default), the call's `'input'`, or the `'envelope'`. */
+  /**
+   * The fields of the observed call the target receives, as the engine's
+   * envelope `{ observer_id, status, input?, output?, error?, caller?, ... }`.
+   * Unset, the target receives the observed function's output itself (the
+   * host captures `output` and hands the handler `envelope.output`).
+   */
+  capture?: Capture[]
+  /**
+   * @deprecated iii removed `deliver`; use `capture`. Still accepted from
+   * injected UI built against older consoles: `'output'` / `'input'` hand the
+   * target that field of the envelope, `'envelope'` the envelope. Never sent
+   * to the engine.
+   */
   deliver?: 'envelope' | 'input' | 'output'
 }
 
@@ -89,8 +102,9 @@ export interface IiiClient {
   /**
    * Observe `source` with `target`, a function registered with `on()` by
    * its full id. Returns its disposer, which `dispose()` also runs.
-   * `deliver` defaults to `'output'`, so the handler receives the event the
-   * observed function returned:
+   * Without `capture` the handler receives the event the observed function
+   * returned (the host captures `output` and unwraps the envelope); with
+   * `capture` it receives the envelope:
    *   const off = client.on('foo', handler)
    *   const offObserver = client.observe(
    *     { function_id: 'session::on-created', filters: { 'input.session_id': { $eq: id } } },
@@ -184,6 +198,19 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   // Same idea for observers, so an unmount that forgets to dispose still
   // releases the engine-side observer on dispose().
   const observerDisposers = new Set<() => void>()
+  // Observers whose target is handed one field of the envelope (no
+  // `capture` asked, or a legacy `deliver`), by observer id.
+  const projections = new Map<string, 'input' | 'output'>()
+
+  function project(data: unknown): unknown {
+    if (typeof data !== 'object' || data === null) return data
+    const observerId = (data as { observer_id?: unknown }).observer_id
+    if (typeof observerId !== 'string') return data
+    const field = projections.get(observerId)
+    if (!field) return data
+    // As the raw delivery did: a call without the field gives null.
+    return (data as Record<string, unknown>)[field] ?? null
+  }
 
   const DEFAULT_CALL_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -228,7 +255,10 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
       // Promise<unknown>). We never want to send a result back, and one
       // listener's failure must not starve the others.
       const wrapped: RemoteFunctionHandler = async (data: unknown) => {
-        await Promise.allSettled([...listeners].map(async (fn) => fn(data)))
+        const delivered = project(data)
+        await Promise.allSettled(
+          [...listeners].map(async (fn) => fn(delivered)),
+        )
         return null
       }
       // Every handler registered here is a browser-local console plumbing fn
@@ -277,20 +307,29 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     const spec: ObserveSource =
       typeof source === 'string' ? { function_id: source } : source
     const namespace = spec.namespace ?? sourceNamespace(spec.function_id)
+    const { deliver, capture, ...rest } = spec
+    const field = capture
+      ? undefined
+      : deliver === 'envelope'
+        ? undefined
+        : (deliver ?? 'output')
+    const sent = capture ?? (field ? [field] : undefined)
     const handle = sdk.observe(
       {
-        ...spec,
-        deliver: spec.deliver ?? 'output',
+        ...rest,
+        ...(sent ? { capture: sent } : {}),
         ...(namespace === undefined ? {} : { namespace }),
       } as SdkObserveSource,
       target,
       options,
     )
+    if (field) projections.set(handle.id, field)
     let active = true
     const disposeObserver = () => {
       if (!active) return
       active = false
       observerDisposers.delete(disposeObserver)
+      projections.delete(handle.id)
       handle.dispose().catch(() => {
         // SDK already disposed; the engine drops the observer with the tab.
       })

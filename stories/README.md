@@ -72,7 +72,7 @@ it is called with.
 
 | Function | Args | Delivery | Event |
 |---|---|---|---|
-| `stories::on-changed` | `{ workspace?, project?, kinds? }` (`kinds`: `direct`, `indirect`, `new`, `removed`) | The worker delivers it: each observer whose filters match receives the `ChangedEvent` narrowed to its args, fire-and-forget; an observer left with no change receives nothing. `deliver` does not apply. | `ChangedEvent { workspace, line, base, summary, changes, at }`, called after a working-tree rebuild that changed at least one component |
+| `stories::on-changed` | `{ workspace?, project?, kinds? }` (`kinds`: `direct`, `indirect`, `new`, `removed`) | The worker delivers it: each observer whose filters match receives the `ChangedEvent` narrowed to its args, fire-and-forget; an observer left with no change receives nothing. `capture` does not apply. | `ChangedEvent { workspace, line, base, summary, changes, at }`, called after a working-tree rebuild that changed at least one component |
 | `stories::on-build` | none; filter on `input.workspace` | iii delivers every call to each observer whose filters match. | `BuildEvent { workspace, build_id, status: queued \| running \| done \| failed, line, message?, at }`, called on every build state transition of any line |
 
 ```ts
@@ -82,9 +82,9 @@ iii.observe(
   'review::components-changed',
 )
 
-// build progress of one workspace, as the event itself
+// build progress of one workspace; the target reads the event at payload.output
 iii.observe(
-  { function_id: 'stories::on-build', filters: { 'input.workspace': { $eq: 'web' } }, deliver: 'output' },
+  { function_id: 'stories::on-build', filters: { 'input.workspace': { $eq: 'web' } }, capture: ['output'] },
   'review::build-progress',
 )
 ```

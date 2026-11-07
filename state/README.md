@@ -70,7 +70,8 @@ one module each under `ui/src/`:
 registrations plus the shared scoped stylesheet (`ui/src/lib/styles.ts`).
 
 The page is **live**: it observes `state::on-changed` once per tab (no
-filters = every scope/key, `deliver: 'output'`) with a per-tab handler as
+filters = every scope/key, `capture: ['output']`, the console host handing
+the handler the event) with a per-tab handler as
 the target (`iii::state-ui::events::<browserId>`), and applies the
 created/updated/deleted events in place — new scopes and keys appear as
 they are written, an open item editor updates in place when clean, and
@@ -105,7 +106,7 @@ observers see it as the call's `input` and `output`.
 | `state::on-changed` | none; filter on `input.scope`, `input.key`, `input.event_type` | iii delivers every call to each observer whose filters match | `{ type: "state", event_type, scope, key, old_value, new_value }` |
 
 ```typescript
-iii.registerFunction('orders::on-status-change', (event: StateEvent) => {
+iii.registerFunction('orders::on-status-change', ({ output: event }: { output: StateEvent }) => {
   // event: { type, event_type, scope, key, old_value, new_value }
 })
 
@@ -113,14 +114,14 @@ const observer = iii.observe(
   {
     function_id: 'state::on-changed',
     filters: { 'input.scope': { $eq: 'orders' }, 'input.key': { $eq: 'status' } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'orders::on-status-change',
 )
 await observer.ready()
 ```
 
-The target receives the event:
+The target receives the `Observed` envelope; its `output` is the event:
 
 ```json
 {
@@ -139,8 +140,8 @@ The target receives the event:
 - Filters read any field of the event: `input.scope`, `input.key`,
   `input.event_type`, `input.old_value.*`, `input.new_value.*`. With no
   filters an observer receives every change.
-- With the default `deliver` the target receives the `Observed` envelope:
-  its `caller.function_id` is the `state::*` function that made the write
+- The target receives the `Observed` envelope; with `caller` captured (the
+  default capture is `input`, `output`, `caller`) its `caller.function_id` is the `state::*` function that made the write
   and `caller.parent` the worker (and function) that called it. Filters on
   `caller.parent.worker_name` select or skip one writer's changes.
 - Every committed write emits: `state::set`, `state::update`,

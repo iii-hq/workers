@@ -154,12 +154,12 @@ The worker provides two functions that carry one session's frames. Observe one w
 | `devin::on-raw-event` | `{ session_id }` | every CLI stdout line, verbatim, as `{ "type": "stdout", "line": "..." }` |
 
 ```ts
-iii.registerFunction('my-app::on-devin-frame', async (frame) => {
+iii.registerFunction('my-app::on-devin-frame', async ({ output: frame }) => {
   // frame: { session_id, event_id, seq, epoch, source, event }
 })
 
 iii.observe(
-  { function_id: 'devin::on-raw-event', args: { session_id: 'sess-1' }, deliver: 'output' },
+  { function_id: 'devin::on-raw-event', args: { session_id: 'sess-1' }, capture: ['output'] },
   'my-app::on-devin-frame',
   { metadata: { conn: 'c1' } }, // optional: reaches your function as its metadata
 )
@@ -167,7 +167,7 @@ iii.observe(
 
 `session_id` is required (non-empty, at most 512 characters) and is the only arg; the engine rejects any other with `INVALID_ARGS`. Each function accepts at most 256 observers, and one more is rejected with `OBSERVER_LIMIT`. Both functions are private: only this worker calls them, and any worker may observe them.
 
-Each frame is one fire-and-forget call of the function, and the event it returns is what its session's observers observe (with `deliver: 'output'`, your function receives it as its input):
+Each frame is one fire-and-forget call of the function, and the event it returns is what its session's observers observe (with `capture: ['output']`, your function receives the `Observed` envelope with it at `output`):
 
 ```json
 {

@@ -40,7 +40,7 @@ Interactive surfaces automatically submit their complete bound data model with b
 
 ### Live bindings
 
-`a2ui::binding::set` binds a JSON Pointer in the surface data model to live data. A binding names a function to observe, with `args` when the function takes them and `filters` on its calls. The Console page observes it for its own view (`deliver: "output"`, so each event is the function's return value) and stores each delivered value, so a binding is active while the surface is open. Bindings are declarative and cannot invoke arbitrary functions. A surface holds at most 32 bindings.
+`a2ui::binding::set` binds a JSON Pointer in the surface data model to live data. A binding names a function to observe, with `args` when the function takes them and `filters` on its calls. The Console page observes it for its own view (`capture: ["output"]`, so each event is the function's return value) and stores each delivered value, so a binding is active while the surface is open. Bindings are declarative and cannot invoke arbitrary functions. A surface holds at most 32 bindings.
 
 - **A worker's event function** (recommended): `function_id` is a private function another worker hosts (registered with `private: true`, its handler returning the event), for example `orders::on-changed`. The function must be registered when the binding is set and each time it is refreshed. A function that is not private, such as `state::set`, is rejected. `args` are validated against the `args_format` the function registered, and a function without one takes no args: select its calls with `filters` on `input.<field>`. In event mode, each event (or `event_path` inside it) is applied. With a `query`, the event is only a notification. The page reads the query when it opens the surface (after observing) and again after each notification, through the Console-only `a2ui::binding::refresh`. That covers the initial read, recovery after a reconnect and latest-state semantics. The query function must be registered by the same worker as the observed function, with metadata `{"read_only": true}`, and its payload is validated against the function's request schema.
 - **`state::on-changed`** takes no args and exactly the filters `{ "input.scope": { "$eq": <scope> }, "input.key": { "$eq": <key> } }`; the page reads the entry with `state::get` on each event. **`shell::on-changed`** takes exactly the args `{ "path": <path> }`.
@@ -59,8 +59,8 @@ An observer of it, from any worker:
 
 ```typescript
 const clicks = iii.observe(
-  { function_id: 'demo::on-counter-changed', args: { counter: 'clicks' }, deliver: 'output' },
-  'my-app::on-clicks', // receives { counter, revision }
+  { function_id: 'demo::on-counter-changed', args: { counter: 'clicks' }, capture: ['output'] },
+  'my-app::on-clicks', // receives the Observed envelope; output is { counter, revision }
 )
 await clicks.ready() // rejected with OBSERVER_LIMIT past 64 observers
 ```
