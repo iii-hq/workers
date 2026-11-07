@@ -274,6 +274,12 @@ export function useTmuxTerminal({
             const col = Math.min(terminal.cols, Math.max(1, Math.ceil(((event.touches[0]?.clientX ?? box.x) - box.x) / (box.width / terminal.cols))))
             const row = Math.min(terminal.rows, Math.max(1, Math.ceil((y - box.y) / (box.height / terminal.rows))))
             for (let i = 0; i < Math.abs(lines); i++) send(new TextEncoder().encode(`\x1b[<${code};${col};${row}M`))
+          } else if (terminal.buffer.active.type === 'alternate') {
+            // A full-screen app without mouse tracking has no scrollback to move;
+            // like xterm's own wheel path, answer with cursor keys instead.
+            const arrow = terminal.modes.applicationCursorKeysMode ? '\x1bO' : '\x1b['
+            const key = `${arrow}${lines < 0 ? 'A' : 'B'}`
+            for (let i = 0; i < Math.abs(lines); i++) send(new TextEncoder().encode(key))
           } else {
             terminal.scrollLines(lines)
           }
