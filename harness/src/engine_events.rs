@@ -150,10 +150,13 @@ pub fn register(deps: &Arc<Deps>) {
         )
         .metadata(json!({ "internal": true })),
     );
-    let _observer = deps.iii.observe(
-        Source::function(ON_WORKERS_CHANGED_FN).deliver(Deliver::Output),
-        ENGINE_CHANGE_FN_ID,
-    );
+    let iii = deps.iii.clone();
+    let _observer = crate::observers::keep(move || {
+        iii.observe(
+            Source::function(ON_WORKERS_CHANGED_FN).deliver(Deliver::Output),
+            ENGINE_CHANGE_FN_ID,
+        )
+    });
     tracing::info!(
         source = ON_WORKERS_CHANGED_FN,
         function_id = ENGINE_CHANGE_FN_ID,
