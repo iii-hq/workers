@@ -130,6 +130,11 @@ pub struct TurnsConfig {
     /// Cap on the blob store in bytes. Default 256 MiB.
     #[serde(default = "default_turns_max_blob_bytes")]
     pub max_blob_bytes: u64,
+    /// Largest file a turn snapshot takes, in bytes. Bigger files
+    /// (databases, media, disk images, logs) are left out of the trees.
+    /// Default 16 MiB.
+    #[serde(default = "default_turns_snapshot_max_file_bytes")]
+    pub snapshot_max_file_bytes: u64,
 }
 
 impl Default for TurnsConfig {
@@ -137,6 +142,7 @@ impl Default for TurnsConfig {
         Self {
             data_dir: default_turns_data_dir(),
             max_blob_bytes: default_turns_max_blob_bytes(),
+            snapshot_max_file_bytes: default_turns_snapshot_max_file_bytes(),
         }
     }
 }
@@ -206,6 +212,16 @@ impl CommitThinking {
 
 fn default_turns_data_dir() -> String {
     iii_worker_paths::default_path("data/shell/turns")
+}
+
+/// Largest file a turn snapshot takes, by default. Bigger files (databases,
+/// media, disk images, logs) are left out of the trees: re-hashing and storing
+/// a whole copy of each every turn is what filled disks, and no turn reverts a
+/// database from its history.
+pub const DEFAULT_SNAPSHOT_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+fn default_turns_snapshot_max_file_bytes() -> u64 {
+    DEFAULT_SNAPSHOT_MAX_FILE_BYTES
 }
 
 fn default_turns_max_blob_bytes() -> u64 {

@@ -245,6 +245,41 @@
 
 ### Fixed
 
+- **Turn snapshots no longer copy the stack's own state, or fill the disk.**
+  A session without a workspace root gets the stack's launch folder (the
+  harness default), and the turn history photographs that root before and
+  after every turn. The folder holds the Compose project's `data/` — every
+  worker's databases, the trace store, session files — which the stack
+  rewrites during each turn, so every snapshot re-hashed it and stored a new
+  copy: on a dev stack each turn took ~17 s before and ~27 s after the model
+  (~16 s of CPU) and added hundreds of MB, until the disk reached 0 B and
+  every worker's writes failed. The project's `data/` and `config/` (the two
+  folders `iii project init` ignores) are now always left out when the
+  project sits under the root, whatever the root's `.gitignore` says; that
+  root's snapshot went from ~17 GB to 390 files and ~24 ms. Three bounds
+  apply to any root:
+  - files over `turns.snapshot_max_file_bytes` (16 MiB) stay out of the
+    trees, committed ones included: databases, media, disk images and logs;
+  - a snapshot is skipped while the turn store's disk has less than 2 GiB
+    free, instead of taking it to 0 B;
+  - blobs of dropped turns leave at the next `gc --auto` instead of after
+    git's default two weeks.
+
+  A path the snapshots leave out is no longer read as "did not exist" when
+  a turn is shown or reverted: the revert of a turn that modified a file
+  under `config/`, or one over the cap, used to delete it as if the turn had
+  created it, and the Timeline called it created. Such a file now keeps the
+  side the hooks recorded, or its revert is reported unavailable.
+
+  The exclude rules used to be written only when a root's snapshot
+  repository was created, so later fixes (like `.iii/compose/` below) never
+  reached existing ones. They are now checked on every open; a repository
+  from an older build switches to the current rules, and its session
+  indexes, which still hold the paths now left out, are rebuilt once. A
+  store that already grew keeps the blobs older turns pin until those turns
+  are dropped; delete `repos/<id>` under the turn store to reclaim it at
+  once (those turns lose their trees and fall back to the hooks'
+  pre-images).
 - **Stopping a session kills its background jobs.** A `sleep 300` started
   with `shell::exec_bg` kept running after `harness::stop` stopped the agent
   that started it, and nothing could tell whose job it was. Each job now
