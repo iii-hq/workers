@@ -1574,7 +1574,11 @@ impl Session {
     /// never closed. Idempotent at the caller level: `Sessions` removes the
     /// session from the live map first, so a second stop never reaches here.
     pub async fn shutdown(&self) {
+        self.close_page().await;
         self.detach().await;
+    }
+
+    async fn close_page(&self) {
         match (&self.backing, self.kind) {
             (Backing::Shared(shared), SessionKind::Launched) => {
                 let browser = shared.browser.lock().await;
@@ -5012,6 +5016,16 @@ mod tests {
         assert_eq!(back.tabs[0].ttl_ms, Some(5_000));
         assert_eq!(back.tabs[0].nav.urls, ["https://a.test/"]);
         assert_eq!(back.tabs[0].favicon, "data:image/png;base64,AAAA");
+    }
+
+    #[test]
+    fn attached_session_shutdown_ownership_distinguishes_owned_and_adopted() {
+        let owned = SessionKind::Attached { owns_page: true };
+        let adopted = SessionKind::Attached { owns_page: false };
+        let launched = SessionKind::Launched;
+        assert_ne!(owned, adopted);
+        assert_ne!(owned, launched);
+        assert_ne!(adopted, launched);
     }
 }
 
