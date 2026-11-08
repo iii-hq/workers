@@ -70,7 +70,17 @@ pub struct RecallResponse {
     pub retrieval: String,
 }
 
-pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallResponse, MemoryError> {
+pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, MemoryError> {
+    recall_at(deps, req, crate::types::EvaluationClock::wall()).await
+}
+
+/// Rust-only evaluation seam, not registered or deserialized from requests.
+#[doc(hidden)]
+pub async fn recall_at(
+    deps: &Deps,
+    mut req: RecallRequest,
+    clock: crate::types::EvaluationClock,
+) -> Result<RecallResponse, MemoryError> {
     req.query = crate::store::cap_query(&req.query);
     let cfg = deps.config().await;
     let scope = crate::scope::request_scope(deps, req.bank.clone()).await?;
@@ -103,7 +113,7 @@ pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallRespons
         bm25_max = bm25_max.max(b.bm25_max(&req.query, keep).await);
     }
     let mut hits = match &bank {
-        Some(bank) => rank(bank, &req, qv, query_model, &cfg, None, bm25_max).await,
+        Some(bank) => rank_at(bank, &req, qv, query_model, &cfg, None, bm25_max, clock).await,
         None => Vec::new(),
     };
     // The first bank holding a memory holds it, as `merge_ranked` keeps the
@@ -111,7 +121,17 @@ pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallRespons
     let mut held: HashMap<String, Option<&str>> =
         hits.iter().map(|(m, _)| (m.id.clone(), None)).collect();
     for (name, layer) in &layers {
-        let found = rank(layer, &req, qv, query_model, &cfg, Some(name), bm25_max).await;
+        let found = rank_at(
+            layer,
+            &req,
+            qv,
+            query_model,
+            &cfg,
+            Some(name),
+            bm25_max,
+            clock,
+        )
+        .await;
         for (m, _) in &found {
             held.entry(m.id.clone()).or_insert(Some(name));
         }
@@ -150,6 +170,7 @@ fn retrieval_label(mode: RecallMode, embedded: bool) -> &'static str {
 /// vectors stored under exactly that model are comparable with it.
 /// `bm25_max` is the hybrid lexical scale shared with the other banks in
 /// the ranking ([`Bank::recall_scaled`]).
+#[cfg(test)]
 async fn rank(
     bank: &Bank,
     req: &RecallRequest,
@@ -158,6 +179,30 @@ async fn rank(
     cfg: &WorkerConfig,
     layer: Option<&str>,
     bm25_max: f32,
+) -> Vec<(Memory, f32)> {
+    rank_at(
+        bank,
+        req,
+        query_vec,
+        query_model,
+        cfg,
+        layer,
+        bm25_max,
+        crate::types::EvaluationClock::wall(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn rank_at(
+    bank: &Bank,
+    req: &RecallRequest,
+    query_vec: Option<&[f32]>,
+    query_model: &str,
+    cfg: &WorkerConfig,
+    layer: Option<&str>,
+    bm25_max: f32,
+    clock: crate::types::EvaluationClock,
 ) -> Vec<(Memory, f32)> {
     let limit = req.limit.unwrap_or(cfg.recall_limit).min(100);
     let fetch = if req.tag.is_some() || layer == Some(cfg.default_bank.as_str()) {
@@ -168,7 +213,7 @@ async fn rank(
     let include = req.include_superseded.unwrap_or(false);
     let hits = match req.mode {
         RecallMode::Hybrid => {
-            bank.recall_scaled(
+            bank.recall_scaled_at(
                 &req.query,
                 query_vec,
                 query_model,
@@ -176,6 +221,7 @@ async fn rank(
                 cfg.decay_half_life_days,
                 include,
                 bm25_max,
+                clock,
             )
             .await
         }

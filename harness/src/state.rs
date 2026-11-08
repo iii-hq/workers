@@ -361,23 +361,10 @@ pub(crate) async fn hydrate(
     Ok(())
 }
 
-/// How long this process trusts, without asking the store, that a body it
-/// wrote is still there; its next write after that stores the body again.
-/// Short on purpose. The store can lose a body behind this process (a reset,
-/// or a crash between its scope files: the state worker flushes scopes in no
-/// fixed order), and [`BODY_CACHE`] hides the loss from this process's reads
-/// until a restart. Writing the body again within minutes mends every record
-/// that references it. Cost: one body write per prompt in use per window.
-///
-/// It also keeps the `created_at` of a body a new record starts referencing
-/// within minutes of now, far under the collector's grace. A rewrite that
-/// lands between the collector's read and its delete is held off by
-/// [`PROMPT_WRITES`].
-const KNOWN_BODY_TTL_MS: i64 = 5 * 60 * 1000;
-
-/// Digests this process wrote, with when.
-static KNOWN_BODIES: std::sync::Mutex<BTreeMap<String, i64>> =
-    std::sync::Mutex::new(BTreeMap::new());
+/// Refresh a verified body's collection grace at least this often. Presence
+/// is always checked in the current store: neither an engine address nor a
+/// process-global digest identifies a durable storage generation.
+const BODY_REFRESH_INTERVAL_MS: i64 = 5 * 60 * 1000;
 
 /// Held by a body write, and by [`collect_prompt_bodies`] from its read of a
 /// body to its delete: the state worker has no conditional delete, so a body
@@ -392,22 +379,20 @@ async fn store_prompt_body(
     text: &str,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
+    let _writes = PROMPT_WRITES.lock().await;
     let now = AgentMessage::now_ms();
-    let fresh = |known: &BTreeMap<String, i64>| {
-        known
-            .get(digest)
-            .is_some_and(|at| now - at < KNOWN_BODY_TTL_MS)
-    };
-    if fresh(&KNOWN_BODIES.lock().unwrap_or_else(|e| e.into_inner())) {
+    // A successful write elsewhere (or before a store reset) proves nothing
+    // about this store. Only its current, matching body can avoid persistence.
+    let current = state_get(iii, PROMPT_SCOPE, digest, timeout_ms).await?;
+    if current["body"].as_str() == Some(text)
+        && current["created_at"]
+            .as_i64()
+            .is_some_and(|at| at <= now && now.saturating_sub(at) < BODY_REFRESH_INTERVAL_MS)
+    {
         return Ok(());
     }
-    let _writes = PROMPT_WRITES.lock().await;
     let body = json!({ "body": text, "created_at": now });
-    set_retrying_timeout(iii, PROMPT_SCOPE, digest, body, timeout_ms).await?;
-    let mut known = KNOWN_BODIES.lock().unwrap_or_else(|e| e.into_inner());
-    known.retain(|_, at| now - *at < KNOWN_BODY_TTL_MS);
-    known.insert(digest.to_owned(), now);
-    Ok(())
+    set_retrying_timeout(iii, PROMPT_SCOPE, digest, body, timeout_ms).await
 }
 
 /// Delete each body that `referenced` lacks and that was last written before
@@ -434,10 +419,6 @@ pub(crate) async fn collect_prompt_bodies(
         .await;
         match deleted {
             Ok(true) => {
-                KNOWN_BODIES
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(digest);
                 collected += 1;
             }
             Ok(false) => {}
@@ -447,11 +428,32 @@ pub(crate) async fn collect_prompt_bodies(
     Ok(collected)
 }
 
-/// Bodies read back. They never change, so an entry never goes stale.
+/// Verified immutable bodies, used only to avoid hashing identical text again.
+/// Every read still checks the current store; a hit never certifies presence.
 // ponytail: FIFO, not LRU; the live stack has ~40 distinct bodies.
-static BODY_CACHE: std::sync::Mutex<VecDeque<(String, String)>> =
-    std::sync::Mutex::new(VecDeque::new());
+static BODY_CACHE: std::sync::Mutex<PromptBodyCache> =
+    std::sync::Mutex::new(PromptBodyCache(VecDeque::new()));
 const BODY_CACHE_CAP: usize = 256;
+
+struct PromptBodyCache(VecDeque<(String, String)>);
+
+impl PromptBodyCache {
+    fn contains(&self, digest: &str, body: &str) -> bool {
+        self.0
+            .iter()
+            .any(|(d, cached)| d == digest && cached == body)
+    }
+
+    fn remember(&mut self, digest: &str, body: &str) {
+        if self.contains(digest, body) {
+            return;
+        }
+        if self.0.len() >= BODY_CACHE_CAP {
+            self.0.pop_front();
+        }
+        self.0.push_back((digest.to_owned(), body.to_owned()));
+    }
+}
 
 async fn load_prompt_body(
     iii: &IIIClient,
@@ -459,15 +461,6 @@ async fn load_prompt_body(
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<String, HarnessError> {
-    let cached = BODY_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find(|(d, _)| d == digest)
-        .map(|(_, body)| body.clone());
-    if let Some(body) = cached {
-        return Ok(body);
-    }
     let value = state_get(iii, PROMPT_SCOPE, digest, timeout_ms).await?;
     let body = value
         .get("body")
@@ -476,6 +469,15 @@ async fn load_prompt_body(
             HarnessError::State(format!("missing prompt body {digest} for {session_id}"))
         })?
         .to_owned();
+    // A cached body is reusable only after the current store returns the
+    // exact same text. Missing, failed and tampered reads cannot be masked.
+    let verified = BODY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(digest, &body);
+    if verified {
+        return Ok(body);
+    }
     // Bodies are content-addressed: a body that does not hash to its key was
     // written by something else and is neither used nor cached.
     if prompt_digest(&body) != digest {
@@ -483,11 +485,10 @@ async fn load_prompt_body(
             "prompt body {digest} for {session_id} does not match its digest"
         )));
     }
-    let mut cache = BODY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if cache.len() >= BODY_CACHE_CAP {
-        cache.pop_front();
-    }
-    cache.push_back((digest.to_owned(), body.clone()));
+    BODY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remember(digest, &body);
     Ok(body)
 }
 
@@ -1353,10 +1354,25 @@ mod tests {
     /// A prompt body the fake engine refuses to store.
     const REJECTED_BODY: &str = "fake_state rejects this body";
 
+    #[derive(Default)]
+    struct StateFaults {
+        body_read: bool,
+        body_write: bool,
+        turn_write: bool,
+    }
+    type Faults = std::sync::Arc<std::sync::Mutex<StateFaults>>;
+    const FROZEN_BODY: &str = "Frozen offline prompt body";
+
     /// A store-backed fake engine serving `state::{get,set,delete,list_keys}`
     /// over every scope. Logs each call as `"<function> <scope>/<key>"`. A
     /// `state::set` of [`REJECTED_BODY`] fails.
     async fn fake_state() -> (IIIClient, Store, Calls, tokio::task::JoinHandle<()>) {
+        fake_state_with_faults(Faults::default()).await
+    }
+
+    async fn fake_state_with_faults(
+        faults: Faults,
+    ) -> (IIIClient, Store, Calls, tokio::task::JoinHandle<()>) {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
 
@@ -1380,8 +1396,14 @@ mod tests {
                 seen.lock()
                     .unwrap()
                     .push(format!("{function} {scope}/{key}"));
-                let rejected =
-                    function == "state::set" && msg["data"]["value"]["body"] == REJECTED_BODY;
+                let rejected = {
+                    let faults = faults.lock().unwrap();
+                    (function == "state::set"
+                        && (msg["data"]["value"]["body"] == REJECTED_BODY
+                            || (scope == PROMPT_SCOPE && faults.body_write)
+                            || (scope == TURN_SCOPE && faults.turn_write)))
+                        || (function == "state::get" && scope == PROMPT_SCOPE && faults.body_read)
+                };
                 let result = {
                     let mut db = db.lock().unwrap();
                     let at = (scope.clone(), key);
@@ -1461,8 +1483,8 @@ mod tests {
             .count()
     }
 
-    // Prompt texts are unique per test: the known-body set is process-wide,
-    // and each test has its own fake store.
+    // Each fake has independent persistence; equal prompt texts must work
+    // without resetting process caches or assigning a test-specific digest.
 
     /// The stored record carries refs only; the bodies live once in
     /// `harness_prompt`; `get_turn` restores the text (and keeps the refs).
@@ -1508,8 +1530,8 @@ mod tests {
         server.abort();
     }
 
-    /// Two sessions on one prompt share one body. A process writes a body once
-    /// (it remembers what it stored); concurrent first writes set the same key.
+    /// Two sessions on one prompt share one body. Verified store presence
+    /// avoids duplicate writes; concurrent first writes set the same key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn same_prompt_two_sessions_one_body() {
         let (iii, store, calls, server) = fake_state().await;
@@ -1524,11 +1546,11 @@ mod tests {
         assert_eq!(body_writes(&calls), 1);
         // Known for longer than the TTL: written again (the collector may
         // have deleted it since).
-        *KNOWN_BODIES
+        store
             .lock()
             .unwrap()
-            .get_mut(&prompt_digest(prompt))
-            .unwrap() -= KNOWN_BODY_TTL_MS;
+            .get_mut(&(PROMPT_SCOPE.into(), prompt_digest(prompt)))
+            .unwrap()["created_at"] = json!(AgentMessage::now_ms() - BODY_REFRESH_INTERVAL_MS);
         put_turn(&iii, &prompt_record("sp_2", Some(prompt), None), 2_000)
             .await
             .unwrap();
@@ -1550,6 +1572,199 @@ mod tests {
         }
         iii.shutdown();
         server.abort();
+    }
+
+    #[test]
+    fn verified_body_cache_eviction_changes_cost_not_integrity() {
+        let mut cache = PromptBodyCache(VecDeque::new());
+        let digest = prompt_digest(FROZEN_BODY);
+        cache.remember(&digest, FROZEN_BODY);
+        cache.remember(&digest, FROZEN_BODY);
+        assert_eq!(cache.0.len(), 1);
+        assert!(cache.contains(&digest, FROZEN_BODY));
+        assert!(!cache.contains(&digest, "tampered"));
+        for i in 0..BODY_CACHE_CAP {
+            let body = format!("cache capacity entry {i}");
+            cache.remember(&prompt_digest(&body), &body);
+        }
+        assert_eq!(cache.0.len(), BODY_CACHE_CAP);
+        assert!(!cache.contains(&digest, FROZEN_BODY));
+        // Reverification after eviction admits the very same frozen body.
+        assert_eq!(prompt_digest(FROZEN_BODY), digest);
+        cache.remember(&digest, FROZEN_BODY);
+        assert!(cache.contains(&digest, FROZEN_BODY));
+        assert!(!cache.contains(&digest, "tampered"));
+        assert_eq!(cache.0.len(), BODY_CACHE_CAP);
+    }
+
+    /// Independent stores must persist the identical digest on parallel and
+    /// repeated puts, even after reads warm the immutable-content cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn equal_frozen_bodies_persist_in_independent_stores() {
+        let (a, store_a, calls_a, server_a) = fake_state().await;
+        let (b, store_b, calls_b, server_b) = fake_state().await;
+        let record = prompt_record("same-session", Some(FROZEN_BODY), Some(FROZEN_BODY));
+        for _ in 0..3 {
+            let (left, right) =
+                tokio::join!(put_turn(&a, &record, 2_000), put_turn(&b, &record, 2_000));
+            left.unwrap();
+            right.unwrap();
+            for (iii, store) in [(&a, &store_a), (&b, &store_b)] {
+                let digest = prompt_digest(FROZEN_BODY);
+                assert_eq!(body_keys(store), std::slice::from_ref(&digest));
+                assert_eq!(stored(store, PROMPT_SCOPE, &digest)["body"], FROZEN_BODY);
+                let value = stored(store, TURN_SCOPE, "same-session");
+                assert_eq!(value["options"]["system_prompt"], json!({"$ref":digest}));
+                let read = get_turn(iii, "same-session", 2_000).await.unwrap().unwrap();
+                assert_eq!(read.options.system_prompt.as_deref(), Some(FROZEN_BODY));
+                assert_eq!(
+                    read.options.skill_context.unwrap().baseline.as_deref(),
+                    Some(FROZEN_BODY)
+                );
+            }
+        }
+        assert_eq!(body_writes(&calls_a), 1);
+        assert_eq!(body_writes(&calls_b), 1);
+        a.shutdown();
+        b.shutdown();
+        server_a.abort();
+        server_b.abort();
+    }
+
+    /// A hit in another store or before rollback must not hide missing or
+    /// tampered bodies, or a failed authoritative read in the current store.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cached_body_never_masks_store_loss_corruption_or_read_failure() {
+        let (a, store_a, _, server_a) = fake_state().await;
+        let faults = Faults::default();
+        let (b, store_b, _, server_b) = fake_state_with_faults(faults.clone()).await;
+        let digest = prompt_digest(FROZEN_BODY);
+        let record = prompt_record("same-session", Some(FROZEN_BODY), None);
+        put_turn(&a, &record, 2_000).await.unwrap();
+        get_turn(&a, "same-session", 2_000).await.unwrap().unwrap();
+        // Copy only the ref: this independent store never persisted its body.
+        store_b.lock().unwrap().insert(
+            (TURN_SCOPE.into(), "same-session".into()),
+            stored(&store_a, TURN_SCOPE, "same-session"),
+        );
+        let error = get_turn(&b, "same-session", 2_000).await.unwrap_err();
+        assert!(error.to_string().contains("missing prompt body"), "{error}");
+        store_b.lock().unwrap().insert(
+            (PROMPT_SCOPE.into(), digest.clone()),
+            json!({"body":"tampered", "created_at":AgentMessage::now_ms()}),
+        );
+        let error = get_turn(&b, "same-session", 2_000).await.unwrap_err();
+        assert!(
+            error.to_string().contains("does not match its digest"),
+            "{error}"
+        );
+        put_turn(&b, &record, 2_000).await.unwrap();
+        assert_eq!(
+            get_turn(&b, "same-session", 2_000)
+                .await
+                .unwrap()
+                .unwrap()
+                .options
+                .system_prompt
+                .as_deref(),
+            Some(FROZEN_BODY)
+        );
+        faults.lock().unwrap().body_read = true;
+        let error = get_turn(&b, "same-session", 2_000).await.unwrap_err();
+        assert!(error.to_string().contains("rejected"), "{error}");
+        let before = stored(&store_b, TURN_SCOPE, "same-session");
+        assert!(put_turn(&b, &record, 2_000).await.is_err());
+        assert_eq!(stored(&store_b, TURN_SCOPE, "same-session"), before);
+        faults.lock().unwrap().body_read = false;
+        store_b
+            .lock()
+            .unwrap()
+            .remove(&(PROMPT_SCOPE.into(), digest));
+        let error = get_turn(&b, "same-session", 2_000).await.unwrap_err();
+        assert!(error.to_string().contains("missing prompt body"), "{error}");
+        assert_eq!(
+            get_turn(&a, "same-session", 2_000)
+                .await
+                .unwrap()
+                .unwrap()
+                .options
+                .system_prompt
+                .as_deref(),
+            Some(FROZEN_BODY)
+        );
+        put_turn(&b, &record, 2_000).await.unwrap();
+        assert_eq!(
+            get_turn(&b, "same-session", 2_000)
+                .await
+                .unwrap()
+                .unwrap()
+                .options
+                .system_prompt
+                .as_deref(),
+            Some(FROZEN_BODY)
+        );
+        a.shutdown();
+        b.shutdown();
+        server_a.abort();
+        server_b.abort();
+    }
+
+    /// Failed body/second-body/record writes never publish a new ref. Retry
+    /// preserves the previous turn; already stored immutable bodies may remain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn equal_body_write_failures_preserve_the_previous_turn_and_retry() {
+        let (a, _, _, server_a) = fake_state().await;
+        let faults = Faults::default();
+        let (b, store_b, calls_b, server_b) = fake_state_with_faults(faults.clone()).await;
+        let record = prompt_record("same-session", Some(FROZEN_BODY), None);
+        put_turn(&a, &record, 2_000).await.unwrap();
+        get_turn(&a, "same-session", 2_000).await.unwrap().unwrap();
+        let old = serde_json::to_value(prompt_record(
+            "same-session",
+            Some("previous inline body"),
+            None,
+        ))
+        .unwrap();
+        store_b
+            .lock()
+            .unwrap()
+            .insert((TURN_SCOPE.into(), "same-session".into()), old.clone());
+        faults.lock().unwrap().body_write = true;
+        let error = put_turn(&b, &record, 2_000).await.unwrap_err();
+        assert!(error.to_string().contains("rejected"), "{error}");
+        assert_eq!(stored(&store_b, TURN_SCOPE, "same-session"), old);
+        assert!(body_keys(&store_b).is_empty());
+        assert!(!calls_b
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c == "state::set harness_turn/same-session"));
+        faults.lock().unwrap().body_write = false;
+        let second_body = prompt_record("same-session", Some(FROZEN_BODY), Some(REJECTED_BODY));
+        let error = put_turn(&b, &second_body, 2_000).await.unwrap_err();
+        assert!(error.to_string().contains("rejected"), "{error}");
+        assert_eq!(stored(&store_b, TURN_SCOPE, "same-session"), old);
+        assert_eq!(body_keys(&store_b), [prompt_digest(FROZEN_BODY)]);
+        faults.lock().unwrap().turn_write = true;
+        let error = put_turn(&b, &record, 2_000).await.unwrap_err();
+        assert!(error.to_string().contains("rejected"), "{error}");
+        assert_eq!(stored(&store_b, TURN_SCOPE, "same-session"), old);
+        faults.lock().unwrap().turn_write = false;
+        put_turn(&b, &record, 2_000).await.unwrap();
+        assert_eq!(
+            get_turn(&b, "same-session", 2_000)
+                .await
+                .unwrap()
+                .unwrap()
+                .options
+                .system_prompt
+                .as_deref(),
+            Some(FROZEN_BODY)
+        );
+        a.shutdown();
+        b.shutdown();
+        server_a.abort();
+        server_b.abort();
     }
 
     /// Records written before refs existed (inline text, no ref) read as
@@ -1713,12 +1928,10 @@ mod tests {
         server.abort();
     }
 
-    /// The store can lose a body this process wrote (a reset, or a crash
-    /// between its scope files). The process trusts its own write for minutes
-    /// only: the next write after that stores the body again, which mends the
-    /// records already referencing it.
+    /// A store reset is repaired on the next write, without a TTL delay or
+    /// reliance on another store's successful persistence.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_lost_body_is_stored_again_minutes_later() {
+    async fn a_lost_body_is_stored_again_on_the_next_write() {
         let (iii, store, _calls, server) = fake_state().await;
         let prompt = "lost_body prompt";
         let digest = prompt_digest(prompt);
@@ -1729,7 +1942,6 @@ mod tests {
             .lock()
             .unwrap()
             .remove(&(PROMPT_SCOPE.to_owned(), digest.clone()));
-        *KNOWN_BODIES.lock().unwrap().get_mut(&digest).unwrap() -= 10 * 60 * 1000;
         put_turn(&iii, &prompt_record("lb_2", Some(prompt), None), 2_000)
             .await
             .unwrap();
@@ -1756,7 +1968,9 @@ mod tests {
         assert_eq!(
             *calls.lock().unwrap(),
             [
+                format!("state::get {PROMPT_SCOPE}/{}", prompt_digest(prompt)),
                 format!("state::set {PROMPT_SCOPE}/{}", prompt_digest(prompt)),
+                format!("state::get {PROMPT_SCOPE}/{}", prompt_digest(index)),
                 format!("state::set {PROMPT_SCOPE}/{}", prompt_digest(index)),
                 format!("state::set {TURN_SCOPE}/bo_1"),
             ]

@@ -237,6 +237,36 @@ impl Stack {
         self.record(session).await.recall_context.unwrap()
     }
 }
+// Keep the original child/queue hook cases below unchanged. These repeated
+// parallel stacks additionally assert durable equal-body isolation directly,
+// before hydration can conceal an absent write behind an immutable cache hit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_equal_frozen_body_persists_across_independent_child_and_queue_stacks() {
+    for _ in 0..3 {
+        let (child, queued) = tokio::join!(Stack::new(), Stack::new());
+        tokio::join!(
+            child.reset_turn("child", crate::types::turn::TurnStatus::Completed),
+            queued.reset_turn("queued", crate::types::turn::TurnStatus::Running)
+        );
+        let body = "Frozen offline prompt body";
+        let digest = crate::state::prompt_digest(body);
+        for (stack, session) in [(&child, "child"), (&queued, "queued")] {
+            {
+                let data = stack.data.lock().unwrap();
+                assert_eq!(data.get(crate::state::PROMPT_SCOPE, &digest)["body"], body);
+                assert_eq!(
+                    data.get(crate::state::TURN_SCOPE, session)["options"]["system_prompt"],
+                    json!({"$ref":digest})
+                );
+            }
+            assert_eq!(
+                stack.record(session).await.options.system_prompt.as_deref(),
+                Some(body)
+            );
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recall_invoke_all_send_destinations_keep_agent_channel_and_real_lock() {
     for target in ["self", "cross", "new"] {

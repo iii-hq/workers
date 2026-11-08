@@ -38,7 +38,8 @@ use memory::config::WorkerConfig;
 use memory::store::{Evidence, Store, STOPWORDS};
 #[path = "injection_replay/evaluator.rs"]
 mod evaluator;
-use memory::types::{fingerprint, now_ms, Confidence, Memory};
+use memory::hooks::agenda::fixture_clock;
+use memory::types::{fingerprint, Confidence, Memory, Provenance};
 use serde::{Deserialize, Serialize};
 
 /// Embedding model the cached vectors come from, and the prefix of it kept.
@@ -421,7 +422,7 @@ async fn apply_consolidation(bank: &memory::store::Bank, golden: &Golden, c: &Co
         .iter()
         .map(|m| (m.key.as_str(), fingerprint(&m.text)))
         .collect();
-    let now = now_ms();
+    let now = fixture_clock().now_ms();
     for d in &c.decisions {
         let mut retire = bank.get(&id_of[d.retire.as_str()]).await.unwrap();
         let mut keep = bank.get(&id_of[d.keep.as_str()]).await.unwrap();
@@ -455,11 +456,21 @@ async fn build_bank(
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().to_path_buf()).unwrap();
     let (bank, _) = store.ensure_bank("eval", None).await.unwrap();
-    let now = now_ms();
+    let now = fixture_clock().now_ms();
+    // NEW synthetic producer for this temporary bank, not recovered golden
+    // transcript history and not a claim that an extraction engine ran.
+    // Production Provenance uses session_id + entry_id; recall checks presence,
+    // not a session-manager resolver. This local registry binds both references
+    // to the actual constructed record, without a live engine.
+    let session = format!(
+        "synthetic:recall-quality:eval:{}",
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+    let mut entries = HashMap::new();
     let mut key_of_id = HashMap::new();
     for g in &golden.memories {
         let at = now - g.age_days * DAY_MS;
-        let m = Memory {
+        let mut m = Memory {
             id: fingerprint(&g.text),
             text: g.text.clone(),
             entities: g.entities.clone(),
@@ -475,7 +486,32 @@ async fn build_bank(
             revision: 0,
             stated_at: Some(at),
         };
+        let original = m.clone();
+        let entry = format!("synthetic:entry:{}", m.id);
+        assert!(entries
+            .insert((session.clone(), entry.clone()), original.clone())
+            .is_none());
+        m.source = Some(Provenance {
+            session_id: Some(session.clone()),
+            entry_id: Some(entry),
+            agent: None,
+        });
+        let source = m.source.as_ref().unwrap();
+        let resolved = &entries[&(
+            source.session_id.clone().unwrap(),
+            source.entry_id.clone().unwrap(),
+        )];
+        let mut without_source = m.clone();
+        without_source.source = None;
+        assert_eq!(
+            &without_source, resolved,
+            "only provenance may change: {}",
+            g.key
+        );
+        assert_eq!(without_source, original);
+        assert_eq!(m.confidence, Confidence::Extracted);
         bank.commit(m.clone()).await.unwrap();
+        assert_eq!(bank.get(&m.id).await.as_ref(), Some(&m));
         let e = &vectors.items[&g.key];
         bank.set_vector(&m.id, &vectors.model, &m.text, e.v.clone())
             .await
@@ -556,7 +592,15 @@ async fn gate(vectors_file: &str, baseline_file: &str) {
         for q in &golden.queries {
             let qv = hybrid.then(|| vectors.items[&q.id].v.as_slice());
             let hits = bank
-                .recall(&q.text, qv, &vectors.model, DEPTH, half_life, false)
+                .recall_at(
+                    &q.text,
+                    qv,
+                    &vectors.model,
+                    DEPTH,
+                    half_life,
+                    false,
+                    fixture_clock(),
+                )
                 .await;
             if hybrid {
                 assert!(!hits.is_empty(), "guard: {} recalled nothing", q.id);
@@ -572,6 +616,10 @@ async fn gate(vectors_file: &str, baseline_file: &str) {
             };
             let mut outcome = score(&ranked, &expect, &stale);
             outcome.dup_polluted = dup_polluted(&ranked, &pairs);
+            println!(
+                "{}",
+                serde_json::json!({"diagnostic":"recall-factual-by-case","query_id":q.id,"mode":mode,"ranked":ranked,"original_expected":q.expect,"original_stale":q.stale,"effective_expected":expect,"effective_stale":stale,"recall":outcome.recall,"trap":outcome.trap,"first_hit":outcome.first_hit,"ndcg":outcome.ndcg,"duplicate_pollution":outcome.dup_polluted})
+            );
             outcomes.push((q, outcome));
         }
 
@@ -659,8 +707,35 @@ async fn gate(vectors_file: &str, baseline_file: &str) {
         "modes": snapshot,
     });
     let actual = serde_json::to_string_pretty(&baseline).unwrap() + "\n";
-    if let Err(diff) = support::check_golden(baseline_file, &actual) {
-        panic!("recall quality changed vs the committed baseline:\n{report}\n{diff}");
+    // Read-only even if an outer environment sets UPDATE_GOLDENS.
+    let historical = std::fs::read_to_string(support::golden_root().join(baseline_file)).unwrap();
+    if historical != actual {
+        let mut pending = vec![(
+            String::new(),
+            serde_json::from_str::<serde_json::Value>(&historical).unwrap(),
+            baseline.clone(),
+        )];
+        while let Some((path, before, after)) = pending.pop() {
+            if before == after {
+                continue;
+            }
+            if let (Some(old), Some(new)) = (before.as_object(), after.as_object()) {
+                let keys: BTreeSet<_> = old.keys().chain(new.keys()).collect();
+                for key in keys {
+                    pending.push((
+                        format!("{path}/{key}"),
+                        old.get(key).cloned().unwrap_or(serde_json::Value::Null),
+                        new.get(key).cloned().unwrap_or(serde_json::Value::Null),
+                    ));
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::json!({"diagnostic":"historical-recall-snapshot-row-delta","baseline":baseline_file,"row":path,"historical":before,"actual":after})
+                );
+            }
+        }
+        panic!("recall quality changed vs the committed baseline: {baseline_file}\\n{report}");
     }
 }
 
@@ -907,6 +982,7 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
     let mut report = String::new();
     let mut snapshot = BTreeMap::new();
     let mut policy_failures = Vec::new();
+    let mut factual_failures = Vec::new();
     let id_of_key: HashMap<&str, &str> = key_of_id
         .iter()
         .map(|(id, key)| (key.as_str(), id.as_str()))
@@ -951,7 +1027,7 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
                 }
             };
             let (hits, evidence) = bank
-                .recall_evidence(
+                .recall_evidence_at(
                     m.text,
                     qv,
                     &vectors.model,
@@ -959,6 +1035,7 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
                     half_life,
                     false,
                     0.0,
+                    fixture_clock(),
                 )
                 .await;
             let key = |mem: &Memory| key_of_id[&mem.id].as_str();
@@ -1017,11 +1094,38 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
                 .collect::<Vec<_>>();
             let policy = labels.injection_policy(&selected, &supported, qv.is_some());
             let responsibility = labels.responsibility(&selected, &update_proofs);
+            // Independently require every originally required cluster with
+            // production support. Missing unrelated/unsupported clusters are
+            // reported separately, never a blanket missing-answer exemption.
+            let supported_required: Vec<_> = labels
+                .required
+                .iter()
+                .filter(|root| {
+                    cluster
+                        .iter()
+                        .any(|(key, group)| *group == root.as_str() && supported.contains(*key))
+                })
+                .cloned()
+                .collect();
+            let missing_supported: Vec<_> = supported_required
+                .iter()
+                .filter(|root| policy.factual.missing_required.contains(root))
+                .cloned()
+                .collect();
+            let factual_supported_ok = missing_supported.is_empty()
+                && policy.factual.noise.is_empty()
+                && policy.factual.forbidden_selected.is_empty()
+                && policy.factual.duplicate_equivalents.is_empty();
+            if !factual_supported_ok {
+                factual_failures.push(format!("{mode}/{}: missing_supported={missing_supported:?}; noise={:?}; stale={:?}; duplicates={:?}", m.id, policy.factual.noise, policy.factual.forbidden_selected, policy.factual.duplicate_equivalents));
+            }
             println!(
                 "{}",
                 serde_json::json!({"diagnostic":"injection-policy-by-case",
                 "query_id":m.id,"mode":mode,"text":m.text,"selected":selected,
                 "factual_expected":m.expect,"supported_keys":supported,"policy":policy,
+                "supported_original_requirements":supported_required,"missing_supported_original":missing_supported,
+                "factual_supported_ok":factual_supported_ok,"factual_all_requirements_ok":policy.factual.ok,
                 "selected_before_updates":selected_before_updates,
                 "added_by_updates":selected.iter().filter(|id|!selected_before_updates.contains(&id.as_str())).collect::<Vec<_>>(),
                 "admission_reasons":reasons.iter().map(|(id,reason)|{let e=&evidence[id];
@@ -1164,8 +1268,37 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
     // injection snapshot change. Raw recall/ranking goldens remain independent.
     let historical = std::fs::read_to_string(support::golden_root().join(baseline_file)).unwrap();
     let baseline_diff = (historical != actual).then_some(baseline_file);
-    assert!(policy_failures.is_empty() && baseline_diff.is_none(),
-        "injection policy failures: {policy_failures:?}; historical snapshot difference: {baseline_diff:?}\n{report}");
+    if baseline_diff.is_some() {
+        // Exact aggregate leaf rows, not just a filename or a rebaseline.
+        // Per-query factual/support diagnostics above remain independent.
+        let mut pending = vec![(
+            String::new(),
+            serde_json::from_str::<serde_json::Value>(&historical).unwrap(),
+            baseline.clone(),
+        )];
+        while let Some((path, before, after)) = pending.pop() {
+            if before == after {
+                continue;
+            }
+            if let (Some(old), Some(new)) = (before.as_object(), after.as_object()) {
+                let keys: BTreeSet<_> = old.keys().chain(new.keys()).collect();
+                for key in keys {
+                    pending.push((
+                        format!("{path}/{key}"),
+                        old.get(key).cloned().unwrap_or(serde_json::Value::Null),
+                        new.get(key).cloned().unwrap_or(serde_json::Value::Null),
+                    ));
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::json!({"diagnostic":"historical-injection-snapshot-row-delta","baseline":baseline_file,"row":path,"historical":before,"actual":after})
+                );
+            }
+        }
+    }
+    assert!(policy_failures.is_empty() && factual_failures.is_empty() && baseline_diff.is_none(),
+        "injection policy failures: {policy_failures:?}; supported original factual failures: {factual_failures:?}; historical snapshot difference: {baseline_diff:?}\n{report}");
 }
 
 /// Regenerates `tests/recall_quality/vectors.json` through a live engine's

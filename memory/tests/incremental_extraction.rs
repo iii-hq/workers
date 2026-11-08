@@ -872,6 +872,17 @@ mod productive {
             let server = tokio::spawn(async move {
                 let (tcp, _) = listener.accept().await.unwrap();
                 let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                // SDK observers become usable only after the engine feature
+                // handshake; TCP readiness alone is not registration readiness.
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        json!({"type":"workerregistered","worker_id":"offline-memory",
+                        "features":["observe.v2"]})
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
                 let _ = ready.send(());
                 while let Some(Ok(frame)) = socket.next().await {
                     let Ok(text) = frame.to_text() else { continue };
@@ -940,6 +951,13 @@ mod productive {
                 .expect("conexão mock limitada")
                 .unwrap();
             if observe_events {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while iii.engine_supports_observe() != Some(true) {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("offline feature handshake bounded");
                 memory::events::register_all(&iii);
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     while !iii.is_observed("memory::on-item-changed")
@@ -986,6 +1004,7 @@ mod productive {
             std::fs::read_to_string(self.dir.path().join("private/memories.jsonl"))
                 .unwrap_or_default()
                 .lines()
+                .filter_map(strict_memory_record)
                 .count()
         }
         fn assert_rpc_scope(&self) {
@@ -1012,6 +1031,33 @@ mod productive {
                     assert_eq!(data["scope"], "memory_cursor");
                 }
             }
+        }
+    }
+    // Only the exact typed internal receipt is excluded. Invalid JSON and
+    // malformed memory records remain hard failures, never missing records.
+    fn strict_memory_record(line: &str) -> Option<memory::types::Memory> {
+        let value: Value = serde_json::from_str(line).expect("valid JSONL record");
+        if value.as_object().is_some_and(|object| {
+            object.len() == 1
+                && object
+                    .get("extraction_receipt")
+                    .is_some_and(Value::is_string)
+        }) {
+            None
+        } else {
+            Some(serde_json::from_value(value).expect("valid memory record"))
+        }
+    }
+    #[test]
+    fn strict_log_assertion_excludes_only_typed_receipts() {
+        assert!(strict_memory_record(r#"{"extraction_receipt":"source"}"#).is_none());
+        for malformed in [
+            "not-json",
+            r#"{"extraction_receipt":null}"#,
+            r#"{"extraction_receipt":"source","unexpected":true}"#,
+            r#"{"text":"missing-id"}"#,
+        ] {
+            assert!(std::panic::catch_unwind(|| strict_memory_record(malformed)).is_err());
         }
     }
     fn message(id: &str, text: &str) -> Value {
@@ -1578,8 +1624,7 @@ mod productive {
         assert_eq!(s.count("state::set"), 1);
         assert_eq!(s.cursor.as_deref(), Some("anchor"));
         assert_eq!(stack.commits(), 1);
-        // Sem recibo atômico store/state: não alegar retry idempotente de
-        // corroboration/eventos após esta falha, apenas fingerprint textual.
+        // The source receipt, not the independent cursor, prevents replay.
     }
 
     impl Boundary {
@@ -1604,7 +1649,7 @@ mod productive {
             std::fs::read_to_string(self.dir.path().join(bank).join("memories.jsonl"))
                 .unwrap_or_default()
                 .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
+                .filter_map(strict_memory_record)
                 .collect()
         }
     }
@@ -1892,7 +1937,11 @@ mod productive {
         let s = stack.script.lock().unwrap();
         assert_eq!(s.requests().len(), 1);
         assert_eq!(s.requests()[0]["after_entry_id"], "old");
-        assert_eq!(s.count("router::complete"), 1);
+        assert_eq!(
+            s.count("router::complete"),
+            0,
+            "durable original decision reused"
+        );
         assert_eq!(s.count("state::set"), 1);
     }
 
@@ -1947,7 +1996,7 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn cursor_failure_reopen_exposes_bounded_corroboration_gap_not_exactly_once_claim() {
+    async fn cursor_failure_reopen_recovers_committed_receipt_without_reinforcement() {
         let text = "Amber instruments require copper calibration.";
         let stack = Boundary::new(Script {
             path: vec![message("anchor", ""), message("end", text)],
@@ -1955,7 +2004,7 @@ mod productive {
             persistent_cursor: true,
             state_write_error: true,
             observe_events: true,
-            model_items: VecDeque::from([fact(text), fact(text)]),
+            model_items: VecDeque::from([fact(text)]),
             ..Script::default()
         })
         .await;
@@ -1991,23 +2040,715 @@ mod productive {
         assert_eq!(records.len(), 1, "fingerprint identity survives retry");
         assert_eq!(records[0].id, original.id);
         assert_eq!(
-            records[0].corroboration, 1,
-            "no atomic store/state receipt exists"
+            records[0].corroboration, 0,
+            "durable receipt prevents a second effect"
         );
-        assert_eq!(records[0].revision, original.revision + 1);
+        assert_eq!(records[0].revision, original.revision);
         assert_eq!(
             stack.script.lock().unwrap().publication_trace(),
-            vec![
-                ("event".into(), "updated".into()),
-                ("cursor".into(), "end".into()),
-            ]
+            vec![("cursor".into(), "end".into())]
         );
-        assert_eq!(stack.commits(), 2);
+        assert_eq!(stack.commits(), 1);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
         let s = stack.script.lock().unwrap();
         assert_eq!(s.requests().len(), 1);
-        assert_eq!(s.count("router::complete"), 1);
+        assert_eq!(s.count("router::complete"), 0);
+        assert_eq!(s.count("memory::on-item-changed"), 0);
         assert_eq!(s.count("state::set"), 1);
+    }
+
+    #[tokio::test]
+    async fn durable_reinforcement_receipt_and_correction_survive_cursor_failure_reopen() {
+        for correction in [false, true] {
+            let stack = correction_stack().await;
+            let original = stack.log_records("private")[0].clone();
+            if !correction {
+                let mut s = stack.script.lock().unwrap();
+                s.path[2] = message("end", &original.text);
+                s.model_items = VecDeque::from([fact(&original.text)]);
+            }
+            stack.script.lock().unwrap().state_write_error = true;
+            assert!(stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("state::set"));
+            let committed = stack.log_records("private");
+            assert_eq!(committed.len(), if correction { 3 } else { 2 });
+            if !correction {
+                assert_eq!(committed[1].corroboration, original.corroboration + 1);
+                assert_eq!(committed[1].revision, original.revision + 1);
+            } else {
+                assert!(!committed[2].is_live());
+                assert_eq!(committed[2].revision, original.revision + 1);
+            }
+            stack.script.lock().unwrap().state_write_error = false;
+            let stack = stack.restart().await;
+            stack.run(&job("end")).await.unwrap();
+            stack.run(&job("end")).await.unwrap();
+            assert_eq!(stack.log_records("private"), committed);
+            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 0);
+            assert_eq!(s.count("memory::on-item-changed"), 0);
+            assert_eq!(s.count("state::set"), 1);
+        }
+    }
+
+    fn stamped(id: &str, turn: &str, bank: &str, enabled: bool) -> Value {
+        let mut item = message(id, "");
+        item["message"]["role"] = json!("assistant");
+        item["origin"] = json!({"turn_id":turn,"memory_bank":bank,"memory_extraction":enabled});
+        item
+    }
+
+    #[tokio::test]
+    async fn pending_off_overtaken_by_on_and_bank_backlog_is_resolved_before_model_after_restart() {
+        let private = "Amber instruments require copper calibration.";
+        let other = "Birch archives retain monthly invoices.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("off-user", "OFF_SECRET_MUST_NOT_REACH_MODEL"),
+                stamped("off-end", "off", "private", false),
+                message("on-user", private),
+                stamped("on-end", "on", "private", true),
+                message("bank-user", other),
+                stamped("end", "bank", "other", true),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([fact(private), fact(other)]),
+            ..Script::default()
+        })
+        .await;
+        // A pending OFF callback never ran; simulate worker/store reconstruction
+        // before the latest ON job arrives first.
+        let stack = stack.restart().await;
+        let mut latest = job("end");
+        latest.turn_id = Some("bank".into());
+        latest.bank = Some("other".into());
+        stack.run(&latest).await.unwrap();
+        let mut off = job("off-end");
+        off.turn_id = Some("off".into());
+        off.skip = true;
+        stack.run(&off).await.unwrap();
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 2);
+        assert_eq!(s.count("state::set"), 3);
+        assert_eq!(s.inputs().len(), 2);
+        assert!(s.inputs().iter().all(|input| !input.contains("OFF_SECRET")));
+        assert!(s.inputs()[0].contains(private));
+        assert!(!s.inputs()[0].contains(other));
+        assert!(s.inputs()[1].contains(other));
+        assert!(!s.inputs()[1].contains(private));
+        drop(s);
+        assert_eq!(stack.log_records("private")[0].text, private);
+        assert_eq!(stack.log_records("other")[0].text, other);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+    }
+
+    #[tokio::test]
+    async fn newer_job_recovers_pending_effect_before_widening_delta_after_reopen() {
+        let first = "Amber instruments require copper calibration.";
+        let second = "Birch archives retain monthly invoices.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("first", first),
+                message("end", second),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            observe_events: true,
+            state_write_error: true,
+            model_items: VecDeque::from([fact(first), fact(second)]),
+            ..Script::default()
+        })
+        .await;
+        assert!(stack
+            .run(&job("first"))
+            .await
+            .unwrap_err()
+            .contains("state::set"));
+        let original = stack.log_records("private")[0].clone();
+        stack.script.lock().unwrap().state_write_error = false;
+        let stack = stack.restart().await;
+        stack.run(&job("end")).await.unwrap();
+        let records = stack.log_records("private");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], original);
+        assert_eq!(records[1].text, second);
+        assert_eq!(records[1].revision, 0);
+        assert_eq!(records[1].corroboration, 0);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 1);
+        assert_eq!(s.count("memory::on-item-changed"), 1);
+        assert_eq!(s.count("state::set"), 2);
+        assert_eq!(s.requests().last().unwrap()["after_entry_id"], "first");
+    }
+
+    #[tokio::test]
+    async fn learned_rule_receipt_survives_cursor_failure_reopen_and_later_human_edit() {
+        let text = "Always calibrate Amber instruments with copper before shipping.";
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("end", text)],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            observe_events: true,
+            state_write_error: true,
+            model_items: VecDeque::from([json!([{"text":text,"scope":"project","kind":"rule"}])]),
+            ..Script::default()
+        })
+        .await;
+        let mut cfg = (*stack.deps.config().await).clone();
+        cfg.rule_learning_enabled = true;
+        *stack.deps.config.write().await = Arc::new(cfg);
+        assert!(stack
+            .run(&job("end"))
+            .await
+            .unwrap_err()
+            .contains("state::set"));
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        let learned = bank.list_rules().unwrap();
+        assert_eq!(learned.len(), 1);
+        assert!(learned[0].content.contains(text));
+        assert!(!learned[0].content.contains("extraction-receipts"));
+        assert_eq!(
+            stack
+                .script
+                .lock()
+                .unwrap()
+                .count("memory::on-bank-changed"),
+            2
+        );
+        assert_eq!(
+            stack
+                .script
+                .lock()
+                .unwrap()
+                .count("memory::on-item-changed"),
+            0
+        );
+        // A human removes/replaces the learned text after publication, before ack.
+        bank.set_rule(
+            "learned",
+            "Human-authored replacement remains authoritative.",
+        )
+        .unwrap();
+        stack.script.lock().unwrap().state_write_error = false;
+        let stack = stack.restart().await;
+        let mut cfg = (*stack.deps.config().await).clone();
+        cfg.rule_learning_enabled = true;
+        *stack.deps.config.write().await = Arc::new(cfg);
+        stack.run(&job("end")).await.unwrap();
+        stack.run(&job("end")).await.unwrap();
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        assert_eq!(
+            bank.list_rules().unwrap()[0].content,
+            "Human-authored replacement remains authoritative."
+        );
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 0);
+        assert_eq!(s.count("memory::on-bank-changed"), 0);
+        assert_eq!(s.count("memory::on-item-changed"), 0);
+        assert_eq!(s.count("state::set"), 1);
+    }
+
+    #[tokio::test]
+    async fn learned_rule_io_failure_reopens_original_decision_and_emits_only_after_publication() {
+        let text = "Always calibrate Amber instruments with copper before shipping.";
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("end", text)],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            observe_events: true,
+            model_items: VecDeque::from([json!([{"text":text,"scope":"project","kind":"rule"}])]),
+            ..Script::default()
+        })
+        .await;
+        let mut cfg = (*stack.deps.config().await).clone();
+        cfg.rule_learning_enabled = true;
+        *stack.deps.config.write().await = Arc::new(cfg);
+        let (bank, _) = stack
+            .deps
+            .store()
+            .await
+            .ensure_bank("private", None)
+            .await
+            .unwrap();
+        bank.set_rule("learned", "- Existing human instruction.\n")
+            .unwrap();
+        let path = bank.dir().join("rules/learned.md");
+        let before = std::fs::read(&path).unwrap();
+        let blocker = bank.dir().join("rules/.learned.md.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        assert!(stack
+            .run(&job("end"))
+            .await
+            .unwrap_err()
+            .contains("learned rule write failed"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        assert_eq!(
+            stack
+                .script
+                .lock()
+                .unwrap()
+                .count("memory::on-bank-changed"),
+            0
+        );
+        assert_eq!(stack.script.lock().unwrap().count("state::set"), 0);
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
+        std::fs::rename(blocker, bank.dir().join("rules/synthetic-blocker-backup")).unwrap();
+        let stack = stack.restart().await;
+        let mut cfg = (*stack.deps.config().await).clone();
+        cfg.rule_learning_enabled = true;
+        *stack.deps.config.write().await = Arc::new(cfg);
+        stack.run(&job("end")).await.unwrap();
+        stack.run(&job("end")).await.unwrap();
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        let content = &bank.list_rules().unwrap()[0].content;
+        assert!(content.contains("Existing human instruction."));
+        assert_eq!(content.matches(text).count(), 1);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 0);
+        assert_eq!(s.count("memory::on-bank-changed"), 1);
+        assert_eq!(s.count("memory::on-item-changed"), 0);
+        assert_eq!(s.count("state::set"), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_rejects_changed_source_text_without_ack_or_repeat() {
+        let text = "Amber instruments require copper calibration.";
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("end", text)],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            state_write_error: true,
+            model_items: VecDeque::from([fact(text)]),
+            ..Script::default()
+        })
+        .await;
+        assert!(stack.run(&job("end")).await.is_err());
+        let original = stack.log_records("private");
+        {
+            let mut s = stack.script.lock().unwrap();
+            s.state_write_error = false;
+            s.path[1] = message(
+                "end",
+                "Different text with the same identifier must fail closed.",
+            );
+        }
+        let stack = stack.restart().await;
+        assert!(stack
+            .run(&job("end"))
+            .await
+            .unwrap_err()
+            .contains("source no longer on path"));
+        assert_eq!(stack.log_records("private"), original);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 0);
+        assert_eq!(s.count("state::set"), 0);
+    }
+
+    #[tokio::test]
+    async fn causal_backlog_retains_each_turn_across_four_run_limit_and_restart() {
+        let mut path = vec![message("anchor", "")];
+        let mut decisions = VecDeque::new();
+        for i in 0..6 {
+            let text =
+                format!("Synthetic instrument {i} requires copper calibration before shipping.");
+            path.push(message(&format!("user-{i}"), &text));
+            path.push(stamped(
+                &format!("end-{i}"),
+                &format!("turn-{i}"),
+                "private",
+                true,
+            ));
+            decisions.push_back(fact(&text));
+        }
+        let stack = Boundary::new(Script {
+            path,
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: decisions,
+            ..Script::default()
+        })
+        .await;
+        let mut latest = job("end-5");
+        latest.turn_id = Some("turn-5".into());
+        assert!(stack
+            .run(&latest)
+            .await
+            .unwrap_err()
+            .contains("remaining runs require retry"));
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end-3"}));
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
+        let stack = stack.restart().await;
+        stack.run(&latest).await.unwrap();
+        stack.run(&latest).await.unwrap();
+        let records = stack.log_records("private");
+        assert_eq!(records.len(), 6);
+        assert!(records
+            .iter()
+            .all(|m| m.corroboration == 0 && m.revision == 0));
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end-5"}));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 2);
+        assert_eq!(s.count("state::set"), 2);
+        let inputs = s.inputs();
+        let first_delta = inputs[0].split("Conversation excerpt:\n").last().unwrap();
+        let second_delta = inputs[1].split("Conversation excerpt:\n").last().unwrap();
+        assert!(!first_delta.contains("instrument 0"));
+        assert!(first_delta.contains("instrument 4"));
+        assert!(second_delta.contains("instrument 5"));
+    }
+
+    #[tokio::test]
+    async fn mismatched_job_turn_cannot_publish_another_boundary() {
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("user", "Amber instruments require copper calibration."),
+                stamped("end", "actual-turn", "private", true),
+            ],
+            cursor: Some("anchor".into()),
+            ..Script::default()
+        })
+        .await;
+        let mut input = job("end");
+        input.turn_id = Some("different-turn".into());
+        assert!(stack
+            .run(&input)
+            .await
+            .unwrap_err()
+            .contains("job/source turn mismatch"));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 0);
+        assert_eq!(s.count("state::set"), 0);
+        assert_eq!(stack.commits(), 0);
+    }
+
+    #[tokio::test]
+    async fn missing_source_policy_never_sweeps_turn_bound_backlog() {
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("end", "unclassified backlog must not leak"),
+            ],
+            cursor: Some("anchor".into()),
+            ..Script::default()
+        })
+        .await;
+        let mut input = job("end");
+        input.turn_id = Some("new-turn".into());
+        assert!(stack
+            .run(&input)
+            .await
+            .unwrap_err()
+            .contains("source policy boundary missing"));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 0);
+        assert_eq!(s.count("state::set"), 0);
+        assert_eq!(stack.commits(), 0);
+    }
+
+    #[tokio::test]
+    async fn unknown_prefix_suffix_and_gaps_fail_before_any_effect_after_restart() {
+        for position in ["prefix", "gap", "suffix", "requests", "turn", "conflict"] {
+            let text = "Amber instruments require copper calibration.";
+            let unknown = || {
+                let mut item = message("unknown", "OFF_UNKNOWN_MUST_NOT_REACH_MODEL");
+                item["message"]["role"] = json!("assistant");
+                item["origin"] = json!({"turn_id":"unconfirmed-off"});
+                item
+            };
+            let mut path = vec![message("anchor", "")];
+            if position == "prefix" {
+                path.push(unknown());
+            }
+            path.push(message("user", text));
+            if position == "gap" {
+                path.push(unknown());
+            }
+            if position == "requests" {
+                path.push(message(
+                    "unbound",
+                    "Unconfirmed request must not inherit ON.",
+                ));
+            }
+            if position == "turn" {
+                path[1]["origin"] = json!({"turn_id":"unconfirmed-off"});
+            }
+            if position == "conflict" {
+                path.push(stamped("earlier", "on", "private", false));
+            }
+            path.push(stamped("end", "on", "private", true));
+            if position == "suffix" {
+                path.push(unknown());
+            }
+            let stack = Boundary::new(Script {
+                path,
+                cursor: Some("anchor".into()),
+                persistent_cursor: true,
+                observe_events: true,
+                ..Script::default()
+            })
+            .await
+            .restart()
+            .await;
+            let mut input = job(if position == "suffix" {
+                "unknown"
+            } else {
+                "end"
+            });
+            input.turn_id = Some("on".into());
+            assert!(stack.run(&input).await.is_err(), "{position}");
+            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+            assert_eq!(stack.commits(), 0);
+            assert!(stack
+                .deps
+                .store()
+                .await
+                .pending_extraction("incremental-fixture")
+                .unwrap()
+                .is_none());
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 0);
+            assert_eq!(s.count("state::set"), 0);
+            assert_eq!(s.count("memory::on-item-changed"), 0);
+            assert_eq!(s.count("memory::on-bank-changed"), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_is_not_authority_for_automation_skip_wrong_bank_or_wrong_turn() {
+        for published in [false, true] {
+            for denied in ["automation", "skip", "bank", "turn", "policy"] {
+                let text = "Amber instruments require copper calibration.";
+                let stack = Boundary::new(Script {
+                    path: vec![
+                        message("anchor", ""),
+                        message("user", text),
+                        stamped("end", "on", "private", true),
+                    ],
+                    cursor: Some("anchor".into()),
+                    persistent_cursor: true,
+                    observe_events: true,
+                    state_write_error: published,
+                    model_failures: usize::from(!published),
+                    model_items: VecDeque::from([fact(text)]),
+                    ..Script::default()
+                })
+                .await;
+                let mut input = job("end");
+                input.turn_id = Some("on".into());
+                assert!(stack.run(&input).await.is_err());
+                let records = stack.log_records("private");
+                assert_eq!(records.len(), usize::from(published));
+                let pending = stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap();
+                assert!(pending.is_some());
+                {
+                    let mut s = stack.script.lock().unwrap();
+                    s.state_write_error = false;
+                    if denied == "automation" {
+                        s.kind = Some("automation".into());
+                    }
+                    if denied == "policy" {
+                        s.path[2]["origin"]["memory_extraction"] = json!(false);
+                    }
+                }
+                let stack = stack.restart().await;
+                let mut wrong: ExtractJobInput =
+                    serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
+                match denied {
+                    "skip" => wrong.skip = true,
+                    "bank" => wrong.bank = Some("other".into()),
+                    "turn" => wrong.turn_id = Some("other-turn".into()),
+                    _ => {}
+                }
+                let rejection = stack.run(&wrong).await;
+                if denied == "automation" {
+                    rejection.unwrap();
+                } else {
+                    assert!(rejection.is_err());
+                }
+                assert_eq!(stack.log_records("private"), records);
+                assert!(stack.log_records("other").is_empty());
+                assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+                assert_eq!(
+                    stack
+                        .deps
+                        .store()
+                        .await
+                        .pending_extraction("incremental-fixture")
+                        .unwrap(),
+                    pending
+                );
+                {
+                    let s = stack.script.lock().unwrap();
+                    assert_eq!(s.count("router::complete"), 0);
+                    assert_eq!(s.count("state::set"), 0);
+                    assert_eq!(s.count("memory::on-item-changed"), 0);
+                    assert_eq!(s.count("memory::on-bank-changed"), 0);
+                }
+                {
+                    let mut s = stack.script.lock().unwrap();
+                    s.kind = None;
+                    s.path[2]["origin"]["memory_extraction"] = json!(true);
+                }
+                let stack = stack.restart().await;
+                stack.run(&input).await.unwrap();
+                stack.run(&input).await.unwrap();
+                let recovered = stack.log_records("private");
+                assert_eq!(recovered.len(), 1);
+                assert_eq!(recovered[0].text, text);
+                assert_eq!(recovered[0].revision, 0);
+                assert_eq!(recovered[0].corroboration, 0);
+                if published {
+                    assert_eq!(recovered, records);
+                }
+                assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+                assert!(stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap()
+                    .is_none());
+                let s = stack.script.lock().unwrap();
+                assert_eq!(s.count("router::complete"), usize::from(!published));
+                assert_eq!(s.count("memory::on-item-changed"), usize::from(!published));
+                assert_eq!(s.count("state::set"), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn automation_cannot_replay_pending_corroboration_or_correction_after_reopen() {
+        for correction in [false, true] {
+            let stack = correction_stack().await;
+            let original = stack.log_records("private")[0].clone();
+            if !correction {
+                let mut s = stack.script.lock().unwrap();
+                s.path[2] = message("end", &original.text);
+                s.model_items = VecDeque::from([fact(&original.text)]);
+            }
+            stack.script.lock().unwrap().state_write_error = true;
+            assert!(stack.run(&job("end")).await.is_err());
+            let committed = stack.log_records("private");
+            assert_eq!(committed.len(), if correction { 3 } else { 2 });
+            assert_eq!(committed.last().unwrap().revision, original.revision + 1);
+            if !correction {
+                assert_eq!(committed[1].corroboration, original.corroboration + 1);
+            } else {
+                assert!(!committed[2].is_live());
+            }
+            let pending = stack
+                .deps
+                .store()
+                .await
+                .pending_extraction("incremental-fixture")
+                .unwrap();
+            {
+                let mut s = stack.script.lock().unwrap();
+                s.state_write_error = false;
+                s.kind = Some("automation".into());
+            }
+            let stack = stack.restart().await;
+            stack.run(&job("end")).await.unwrap();
+            assert_eq!(stack.log_records("private"), committed);
+            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"old"}));
+            assert_eq!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap(),
+                pending
+            );
+            {
+                let s = stack.script.lock().unwrap();
+                assert_eq!(s.count("state::get"), 0);
+                assert_eq!(s.count("state::set"), 0);
+                assert_eq!(s.count("router::complete"), 0);
+                assert_eq!(s.count("memory::on-item-changed"), 0);
+            }
+            stack.script.lock().unwrap().kind = None;
+            let stack = stack.restart().await;
+            stack.run(&job("end")).await.unwrap();
+            stack.run(&job("end")).await.unwrap();
+            assert_eq!(stack.log_records("private"), committed);
+            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 0);
+            assert_eq!(s.count("memory::on-item-changed"), 0);
+            assert_eq!(s.count("state::set"), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_correct_job_recovers_before_later_different_bank_after_restart() {
+        let first = "Amber instruments require copper calibration.";
+        let second = "Birch archives retain monthly invoices.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("first", first),
+                stamped("first-end", "first-turn", "private", true),
+                message("second", second),
+                stamped("end", "second-turn", "other", true),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            observe_events: true,
+            state_write_error: true,
+            model_items: VecDeque::from([fact(first), fact(second)]),
+            ..Script::default()
+        })
+        .await;
+        let mut first_job = job("first-end");
+        first_job.turn_id = Some("first-turn".into());
+        assert!(stack.run(&first_job).await.is_err());
+        let original = stack.log_records("private");
+        stack.script.lock().unwrap().state_write_error = false;
+        let stack = stack.restart().await;
+        let mut later = job("end");
+        later.turn_id = Some("second-turn".into());
+        later.bank = Some("other".into());
+        assert!(stack.run(&later).await.is_err());
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+        assert_eq!(stack.script.lock().unwrap().count("state::set"), 0);
+        stack.run(&first_job).await.unwrap();
+        let stack = stack.restart().await;
+        stack.run(&later).await.unwrap();
+        stack.run(&first_job).await.unwrap();
+        stack.run(&later).await.unwrap();
+        assert_eq!(stack.log_records("private"), original);
+        let other = stack.log_records("other");
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].text, second);
+        assert_eq!(other[0].revision, 0);
+        assert_eq!(other[0].corroboration, 0);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 1);
+        assert_eq!(s.count("memory::on-item-changed"), 1);
+        assert_eq!(s.count("state::set"), 1);
+        assert!(s.inputs()[0].contains(second));
+        assert!(!s.inputs()[0].contains(first));
     }
 
     #[tokio::test]
@@ -2028,9 +2769,12 @@ mod productive {
             input.skip = skip;
             stack.run(&input).await.unwrap();
             let s = stack.script.lock().unwrap();
-            assert_eq!(s.cursor.as_deref(), Some("end"));
+            assert_eq!(
+                s.cursor.as_deref(),
+                Some(if skip { "end" } else { "anchor" })
+            );
             assert_eq!(s.count("router::complete"), 0);
-            assert_eq!(s.count("state::set"), 1);
+            assert_eq!(s.count("state::set"), usize::from(skip));
             assert_eq!(stack.commits(), 0);
         }
     }

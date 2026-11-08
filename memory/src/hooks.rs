@@ -32,7 +32,9 @@ use crate::functions::metrics_support::{
     byte_budget, estimate_tokens_from_bytes, metric_id, RetrievalMetrics, SizeBreakdown,
 };
 use crate::store::{Bank, Evidence};
-use crate::types::{local_date, now_ms, Memory};
+use crate::types::{local_date, now_ms, EvaluationClock, Memory};
+
+pub mod agenda;
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
@@ -422,6 +424,16 @@ pub async fn pre_generate(
     deps: &Arc<Deps>,
     input: PreGenerateInput,
 ) -> Result<HookResponse, Error> {
+    pre_generate_at(deps, input, EvaluationClock::wall()).await
+}
+
+/// Rust-only evaluation seam: no input field or registered function can set it.
+#[doc(hidden)]
+pub async fn pre_generate_at(
+    deps: &Arc<Deps>,
+    input: PreGenerateInput,
+    clock: EvaluationClock,
+) -> Result<HookResponse, Error> {
     let cfg = deps.config().await;
     if input.session_id.is_empty() {
         return Ok(HookResponse::pass());
@@ -448,6 +460,24 @@ pub async fn pre_generate(
             resolved
         }
     };
+    // The producer persists hook annotations in assistant origins. Capture
+    // policy even when injection/extraction is OFF, before every early return.
+    annotations.insert(
+        "memory_extraction".into(),
+        json!(cfg.extraction_enabled && matches!(&resolved, Ok(Some(_)))),
+    );
+    if let Ok(Some(scope)) = &resolved {
+        annotations.insert("memory_bank".into(), json!(scope.bank));
+        if let Some(layer) = scope.layer(&cfg.default_bank) {
+            annotations.insert("memory_layer".into(), json!(layer));
+        }
+        if let Some(agent) = &scope.agent {
+            annotations.insert(
+                "memory_agent".into(),
+                json!(crate::scope::agent_bank(agent)),
+            );
+        }
+    }
     if !injecting {
         // Memory off is an empty section, told like any rules change: a
         // section this session already froze stays in its system prompt.
@@ -495,8 +525,16 @@ pub async fn pre_generate(
     // persisted and replayed on later steps, so re-recalling would stack copies.
     let query = recall_query(&input);
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
-    let (injected, mut metrics) =
-        injection_measured(deps, &cfg, &bank_name, &layers, query.as_deref(), &seen).await;
+    let (injected, mut metrics) = injection_measured(
+        deps,
+        &cfg,
+        &bank_name,
+        &layers,
+        query.as_deref(),
+        &seen,
+        clock,
+    )
+    .await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -629,13 +667,22 @@ pub(crate) async fn injection(
     query: Option<&str>,
     seen: &HashSet<String>,
 ) -> Injection {
-    injection_measured(deps, cfg, bank_name, layers, query, seen)
-        .await
-        .0
+    injection_measured(
+        deps,
+        cfg,
+        bank_name,
+        layers,
+        query,
+        seen,
+        EvaluationClock::wall(),
+    )
+    .await
+    .0
 }
 
 /// The productive hook also consumes telemetry without changing the legacy
 /// Injection shape used by preview and replay fixtures.
+#[allow(clippy::too_many_arguments)]
 async fn injection_measured(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -643,6 +690,7 @@ async fn injection_measured(
     layers: &[String],
     query: Option<&str>,
     seen: &HashSet<String>,
+    clock: EvaluationClock,
 ) -> (Injection, RetrievalMetrics) {
     let started = std::time::Instant::now();
     let mut metrics = RetrievalMetrics::default();
@@ -730,7 +778,7 @@ async fn injection_measured(
         let keep = |m: &Memory| keeps(name, layered, m);
         // Every candidate: `select` cuts the merged ranking.
         let (found, found_evidence) = b
-            .recall_evidence(
+            .recall_evidence_at(
                 &query,
                 qv,
                 query_model,
@@ -738,6 +786,7 @@ async fn injection_measured(
                 cfg.decay_half_life_days,
                 false,
                 bm25_max,
+                clock,
             )
             .await;
         let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
@@ -795,8 +844,12 @@ async fn injection_measured(
     // After `select`, so a slot this frees stays free.
     let memories = unseen(hits.into_iter().map(|(m, _)| m).collect(), seen);
     metrics.already_visible = (before_unseen - memories.len()) as u64;
-    let (rendered, sizes, dropped) =
-        memories_message_measured(bank_name, &memories, cfg.recall_budget_tokens, now_ms());
+    let (rendered, sizes, dropped) = memories_message_measured(
+        bank_name,
+        &memories,
+        cfg.recall_budget_tokens,
+        clock.now_ms(),
+    );
     metrics.sizes.memory_text_bytes = sizes.memory_text_bytes;
     metrics.sizes.memory_line_decoration_bytes = sizes.memory_line_decoration_bytes;
     metrics.sizes.line_separator_bytes = sizes.line_separator_bytes;
@@ -883,6 +936,8 @@ pub(crate) fn merge_ranked(mut hits: Vec<(Memory, f32)>, limit: usize) -> Vec<(M
 #[serde(rename_all = "snake_case")]
 pub enum AdmissionReason {
     RelationalTerms,
+    DietaryConstraint,
+    TemporalConstraint,
     RequestedAttribute,
     PersonalRelation,
     TargetRelation,
@@ -898,6 +953,8 @@ impl AdmissionReason {
         matches!(
             self,
             Self::RelationalTerms
+                | Self::DietaryConstraint
+                | Self::TemporalConstraint
                 | Self::RequestedAttribute
                 | Self::PersonalRelation
                 | Self::TargetRelation
@@ -917,7 +974,17 @@ pub fn admission_reasons(
     let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
     let pool: Vec<&Memory> = hits
         .iter()
-        .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
+        .filter(|(m, _)| {
+            !ev(m).matched.is_empty()
+                || ev(m).cosine.is_some()
+                || ev(m).dietary_constraint.is_some()
+                || ev(m).temporal_constraint.is_some()
+                || ev(m).technical_practice.is_some()
+                || [&ev(m).identity_attribute, &ev(m).life_attribute]
+                    .into_iter()
+                    .flatten()
+                    .any(|p| p["matched"] == true)
+        })
         .map(|(m, _)| m)
         .collect();
     pool.iter()
@@ -925,6 +992,43 @@ pub fn admission_reasons(
             let e = ev(m);
             let reason = if e.subject_conflict {
                 AdmissionReason::SubjectConflict
+            } else if let Some(activity) = &e.life_attribute {
+                if activity["matched"] == true
+                    && e.requested_attribute
+                        .as_ref()
+                        .is_none_or(|p| p["matched"] == true)
+                {
+                    AdmissionReason::PersonalRelation
+                } else {
+                    AdmissionReason::NoIndependentRelation
+                }
+            } else if let Some(identity) = &e.identity_attribute {
+                // An open property is an obligation before identity context.
+                if e.requested_attribute
+                    .as_ref()
+                    .is_some_and(|p| p["matched"] != true)
+                {
+                    AdmissionReason::NoIndependentRelation
+                } else if identity["matched"] == true {
+                    AdmissionReason::PersonalRelation
+                } else {
+                    AdmissionReason::NoIndependentRelation
+                }
+            } else if e.technical_scope_required {
+                if e.technical_practice.is_some()
+                    && (!e.directive_scope_required || e.directive_scope_matched)
+                    && (!e.target_scope_required || e.target_scope_matched)
+                {
+                    AdmissionReason::PersonalRelation
+                } else {
+                    AdmissionReason::NoIndependentRelation
+                }
+            } else if e.dietary_constraint.is_some() {
+                AdmissionReason::DietaryConstraint
+            } else if e.temporal_constraint.is_some() {
+                AdmissionReason::TemporalConstraint
+            } else if e.temporal_scope_required {
+                AdmissionReason::NoIndependentRelation
             } else if e.attribute_conflict {
                 AdmissionReason::AttributeConflict
             } else if e.predicate_conflict {
@@ -934,6 +1038,12 @@ pub fn admission_reasons(
                 || (e.personal_scope_required && !e.personal_scope_matched)
             {
                 AdmissionReason::NoIndependentRelation
+            } else if let Some(attribute) = &e.requested_attribute {
+                if attribute["matched"] == true {
+                    AdmissionReason::RequestedAttribute
+                } else {
+                    AdmissionReason::NoIndependentRelation
+                }
             } else if e.directive_scope_required && e.directive_scope_matched {
                 AdmissionReason::TargetRelation
             } else if e.attribute_match {
@@ -1129,9 +1239,9 @@ fn enumeration_requested(query: &str) -> bool {
 /// One line per fact; explicit list intent may relax line count only within
 /// the existing shared-support, visibility and token-budget boundaries.
 /// An older statement of a changed fact is never told: when it stands,
-/// the current statement takes its place, whatever the newer's own rank or
-/// relevance. `seen` holds the memory lines the window shows: a rewording of
-/// one is not sent again.
+/// the independently supported current statement takes its place. Neither
+/// the older line's relevance nor its rank authorizes the newer line.
+/// `seen` holds the memory lines the window shows: a rewording is not sent again.
 pub fn select(
     hits: Vec<(Memory, f32)>,
     evidence: &HashMap<String, Evidence>,
@@ -1144,12 +1254,32 @@ pub fn select(
     let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
     // Every question word `a` matched, `b` matched too.
     let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
-    // Candidate discovery is unchanged: a word or a cosine above the floor.
-    // Authorization is independently audited, never borrowed from similarity.
+    // Typed, independently admitted answers precede the SAME bounded cut.
+    // Agenda evidence already proves owner, commitment and date interval; a
+    // vector-ranked prefix must not starve it. Scores/limits stay unchanged.
+    let mut hits = hits;
+    hits.sort_by_key(|(m, _)| {
+        let typed = [&ev(m).identity_attribute, &ev(m).life_attribute]
+            .into_iter()
+            .flatten()
+            .any(|p| p["matched"] == true)
+            || (agenda::scope(query) && ev(m).temporal_constraint.is_some());
+        !(typed && support.get(&m.id).is_some_and(|r| r.supported()))
+    });
     let pool: Vec<(Memory, f32)> = hits
         .into_iter()
         .filter(|(m, _)| m.is_live())
-        .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
+        .filter(|(m, _)| {
+            !ev(m).matched.is_empty()
+                || ev(m).cosine.is_some()
+                || ev(m).dietary_constraint.is_some()
+                || ev(m).temporal_constraint.is_some()
+                || ev(m).technical_practice.is_some()
+                || [&ev(m).identity_attribute, &ev(m).life_attribute]
+                    .into_iter()
+                    .flatten()
+                    .any(|p| p["matched"] == true)
+        })
         .take(POOL_PER_SLOT.saturating_mul(limit))
         .collect();
     // Each stale line's newest superseder in `pool` (reversed: a tie goes to the better-ranked).
@@ -1165,7 +1295,14 @@ pub fn select(
                     && !unrelated(old, new)
                     // An older line answering a word the newer lacks stays.
                     && within(ev(old), ev(new))
-                    && (old.revalidated_by(new) || extract::supersedes(&old.text, &new.text))
+                    && (old.revalidated_by(new)
+                        || agenda::superseded(old, new)
+                        || (agenda::equivalent(old, new).is_none()
+                            && !old.has_operational_state_type()
+                            && !new.has_operational_state_type()
+                            && old.has_attested_statement()
+                            && new.has_attested_statement()
+                            && extract::supersedes(&old.text, &new.text)))
             });
             newer
                 .rev()
@@ -1189,6 +1326,44 @@ pub fn select(
             order.push(current);
         }
     }
+    // Entry ids identify separate observations, not different owners. Collapse
+    // only equivalent complete assertions from the same session/agent (or two
+    // legacy source-less assertions); never discard another session's source.
+    let same_identity_source = |a: &Memory, b: &Memory| match (&a.source, &b.source) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a == b || (a.session_id.is_some() && a.session_id == b.session_id && a.agent == b.agent)
+        }
+        _ => false,
+    };
+    // Equivalent identity assertions share one slot. Prefer corroborated source
+    // wording, then the earlier statement; this is dedup, never a score boost.
+    for slot in &mut order {
+        let original = *slot;
+        if !pool[original].0.pinned {
+            if let Some(canonical) = pool
+                .iter()
+                .enumerate()
+                .filter(|(_, (candidate, _))| {
+                    !candidate.pinned
+                        && same_identity_source(candidate, &pool[original].0)
+                        && support.get(&candidate.id).is_some_and(|r| r.supported())
+                        && crate::store::query_projection::identity_equivalent(
+                            &candidate.text,
+                            &pool[original].0.text,
+                        )
+                })
+                .max_by_key(|(_, (candidate, _))| {
+                    (
+                        candidate.corroboration,
+                        std::cmp::Reverse(candidate.last_stated()),
+                    )
+                })
+            {
+                *slot = canonical.0;
+            }
+        }
+    }
     let mut pool: Vec<Option<(Memory, f32)>> = pool.into_iter().map(Some).collect();
     // After the cut, so a low-relevance twin never takes the fact down with it.
     let mut kept: Vec<(Memory, f32)> = Vec::new();
@@ -1197,9 +1372,43 @@ pub fn select(
         let line = memory_line_text(&m);
         let twin = !m.pinned
             && (kept.iter().any(|(k, _)| {
-                !two_subjects(k, &m) && within(e, ev(k)) && extract::same_fact(&k.text, &m.text)
+                if let Some(equivalent) = agenda::equivalent(k, &m) {
+                    return equivalent;
+                }
+                !two_subjects(k, &m)
+                    && (!(crate::store::query_projection::identity_kinship(&k.text)
+                        || crate::store::query_projection::identity_kinship(&m.text))
+                        || (!k.pinned
+                            && same_identity_source(k, &m)
+                            && crate::store::query_projection::identity_equivalent(
+                                &k.text, &m.text,
+                            )))
+                    && (extract::same_fact(&k.text, &m.text)
+                        || (!k.pinned
+                            && same_identity_source(k, &m)
+                            && crate::store::query_projection::identity_equivalent(
+                                &k.text, &m.text,
+                            )))
+                    && ((same_identity_source(k, &m)
+                        && crate::store::query_projection::identity_equivalent(&k.text, &m.text))
+                        || within(e, ev(k))
+                        || (crate::store::query_projection::production_window_equivalence(
+                            &k.text, &m.text,
+                        ) == Some(true)
+                            && support.get(&k.id).is_some_and(|reason| reason.supported())
+                            && support.get(&m.id).is_some_and(|reason| reason.supported()))
+                        || (e.requested_slot_spans.is_none()
+                            && ev(k).requested_slot_spans.is_none()
+                            && [(k, &m), (&m, k)].iter().any(|(a, b)| {
+                                (a.text.to_lowercase().contains(" coado no ")
+                                    || a.text.to_lowercase().contains(" coada no "))
+                                    && b.text.to_lowercase().contains(" usando ")
+                            })
+                            && support.get(&k.id).is_some_and(|reason| reason.supported())
+                            && support.get(&m.id).is_some_and(|reason| reason.supported())))
             }) || seen.iter().any(|t| {
                 *t != line
+                    && !crate::store::query_projection::identity_kinship(&m.text)
                     && {
                         let words = crate::index::tokenize(t);
                         e.matched.iter().all(|w| words.contains(w))
@@ -1421,8 +1630,9 @@ fn keep_told_section(input: &PreGenerateInput) -> HookResponse {
 
 /// Ack fast; hand the extraction pass to the durable queue (retries +
 /// DLQ, receipt-id deduped by turn), falling back to an inline spawn when
-/// no queue surface is installed. At-least-once redelivery is safe either
-/// way: fingerprints make the whole pass idempotent.
+/// no queue surface is installed. Extraction memory effects use durable
+/// source-bound receipts; model attempts and best-effort event delivery are
+/// NOT exactly-once. Legacy unstamped backlog has no causal policy guarantee.
 pub async fn turn_completed(
     deps: &Arc<Deps>,
     input: TurnCompletedInput,

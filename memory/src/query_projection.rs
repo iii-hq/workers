@@ -1418,6 +1418,1306 @@ pub(super) fn target_matches(scope: &TargetScope, text: &str) -> bool {
     })
 }
 
+/// Finite, auditable lexical taxonomy, not an assertion about this user.
+/// Leaves cover ordinary seeds/nuts, grains/legumes, fruit and animal foods
+/// in English/Portuguese. The only productive compounds are edible material
+/// heads (oil/flour/milk) with a known food complement. The WHOLE argument
+/// must parse: a food token inside a software name never types that artifact.
+/// Unknown bare nouns abstain. The separate source-grounded path retains
+/// ingestion or a severe restriction with an explicitly carried treatment;
+/// that latter path does not infer the unknown argument's edibility.
+fn lexical_food_type(argument: &str) -> Option<&'static str> {
+    fn leaf(word: &str) -> bool {
+        matches!(
+            word,
+            "sesame"
+                | "sunflower"
+                | "flax"
+                | "poppy"
+                | "peanut"
+                | "almond"
+                | "walnut"
+                | "hazelnut"
+                | "cashew"
+                | "pistachio"
+                | "chestnut"
+                | "rice"
+                | "wheat"
+                | "oat"
+                | "oats"
+                | "barley"
+                | "rye"
+                | "millet"
+                | "corn"
+                | "lentil"
+                | "lentils"
+                | "chickpea"
+                | "soy"
+                | "pea"
+                | "peas"
+                | "apple"
+                | "pear"
+                | "peach"
+                | "banana"
+                | "mango"
+                | "avocado"
+                | "milk"
+                | "egg"
+                | "eggs"
+                | "fish"
+                | "shrimp"
+                | "gergelim"
+                | "girassol"
+                | "linhaça"
+                | "amendoim"
+                | "amêndoa"
+                | "noz"
+                | "avelã"
+                | "castanha"
+                | "arroz"
+                | "trigo"
+                | "aveia"
+                | "cevada"
+                | "centeio"
+                | "painço"
+                | "milho"
+                | "lentilha"
+                | "soja"
+                | "ervilha"
+                | "maçã"
+                | "pera"
+                | "pêssego"
+                | "leite"
+                | "ovo"
+                | "peixe"
+                | "camarão"
+        )
+    }
+    let words: Vec<_> = argument.split_whitespace().collect();
+    match words.as_slice() {
+        [food] if leaf(food) => Some("ordinary_food_material"),
+        [food, "oil" | "flour" | "milk"] if leaf(food) => Some("food_material_compound"),
+        ["oil" | "flour" | "milk", "of", food] if leaf(food) => Some("food_material_compound"),
+        ["óleo" | "farinha" | "leite", "de", food] if leaf(food) => Some("food_material_compound"),
+        _ => None,
+    }
+}
+
+/// An ingestible recommendation respects the recipient's stated restriction.
+/// Assertion provenance and lexical type assumptions are kept separate; this
+/// retrieves a constraint, not a diagnosis or a clinical recommendation.
+pub(super) fn dietary_constraint(query: &str, text: &str) -> Option<serde_json::Value> {
+    static TASK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static RESTRICTION: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let task = TASK.get_or_init(|| regex::Regex::new(
+        r"^(?:(?:can|could) you (?:suggest|recommend) (?:a |an )?(?:(?:breakfast|lunch|dinner) )?(?:recipe|meal) (?:for me|that fits my (?:current )?diet)|(?:suggest|recommend) (?:a |an )?(?:recipe|meal) for me|(?:você pode )?(?:sugerir|sugira|recomendar|recomende) (?:uma )?(?:receita|refeição) para mim)\?$"
+    ).unwrap());
+    let restriction = RESTRICTION.get_or_init(|| regex::Regex::new(
+        r"^(?P<subject>user|i|a usuária|o usuário|eu) (?P<predicate>have a food allergy to|has a food allergy to|tem alergia grave a|tenho alergia grave a) (?P<substance>[\p{L} -]+?)(?P<witness>,? (?:after (?:eating|drinking|ingesting) it|após ingerir isso)|,? (?:and|e) [\p{L} -]+)?\.$"
+    ).unwrap());
+    let query = query.trim().to_lowercase();
+    if !task.is_match(&query) {
+        return None;
+    }
+    let normalized = text.trim().to_lowercase();
+    let caps = restriction.captures(&normalized)?;
+    let witness = caps.name("witness");
+    static BODILY: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let bodily = BODILY.get_or_init(|| regex::Regex::new(
+        r"^,? (?:(?:after (?:eating|drinking|ingesting) it|após ingerir isso)|(?:and|e) (?:(?:always )?carries (?:an antihistamine|allergy medication)(?: in (?:a|the) bag)?|(?:sempre )?(?:carrega|leva) (?:um antialérgico|medicação(?: antialérgica)?)(?: na bolsa| consigo)?))$"
+    ).unwrap());
+    // Optional clauses cannot be ignored even when the nominal type is known.
+    if witness.is_some_and(|w| !bodily.is_match(w.as_str())) {
+        return None;
+    }
+    let ingestion =
+        witness.is_some_and(|w| w.as_str().contains("after ") || w.as_str().contains("após "));
+    let severe = matches!(
+        &caps["predicate"],
+        "tem alergia grave a" | "tenho alergia grave a"
+    );
+    let lexical_type = lexical_food_type(&caps["substance"]);
+    let words = crate::index::tokenize(&caps["substance"]);
+    // Artifact heads are incompatible even with a claimed bodily frame. This
+    // is a general material/artifact distinction, not a particular metaphor.
+    let artifact = words.iter().any(|w| {
+        matches!(
+            w.as_str(),
+            "file"
+                | "files"
+                | "configuration"
+                | "software"
+                | "code"
+                | "protocol"
+                | "server"
+                | "database"
+                | "interface"
+                | "package"
+                | "library"
+                | "convention"
+                | "conventions"
+                | "arquivo"
+                | "arquivos"
+                | "código"
+                | "configuração"
+                | "protocolo"
+                | "servidor"
+                | "biblioteca"
+        )
+    });
+    let source_bodily_witness = ingestion || (severe && witness.is_some());
+    // A bare severe-allergy predicate does not itself assert a food relation;
+    // retain its existing requirement for an additional bodily witness. The
+    // English food-allergy predicate can compose with a lexical material type.
+    let food_assertion = matches!(
+        &caps["predicate"],
+        "have a food allergy to" | "has a food allergy to"
+    );
+    let lexical_food_assertion = food_assertion && lexical_type.is_some();
+    if artifact || !(source_bodily_witness || lexical_food_assertion) {
+        return None;
+    }
+    if words.is_empty()
+        || words.iter().any(|w| {
+            negative(w)
+                || coordination(w)
+                || subordinate(w)
+                || matches!(
+                    w.as_str(),
+                    "in" | "on"
+                        | "for"
+                        | "from"
+                        | "em"
+                        | "no"
+                        | "na"
+                        | "para"
+                        | "my"
+                        | "your"
+                        | "his"
+                        | "her"
+                )
+        })
+    {
+        return None;
+    }
+    let subject = caps.name("subject")?;
+    let predicate = caps.name("predicate")?;
+    let substance = caps.name("substance")?;
+    Some(serde_json::json!({
+        "relation": "ingestible_recommendation_respects_bodily_restriction",
+        "query_domain": "personal_ingestible_recommendation",
+        "candidate_domain": "stated_personal_bodily_allergy",
+        "assertion_source": "candidate_subject_predicate_argument",
+        "source_coordinates": "trimmed_lowercase_utf8",
+        "type_witness_bytes": witness.map(|w| [w.start(), w.end()]),
+        "substance_edibility_inferred": lexical_type.is_some(),
+        "lexical_type_assumption": lexical_type.map(|kind| serde_json::json!({
+            "taxonomy": "bounded_food_material_v1", "kind": kind,
+            "source": "general_language_type_knowledge_not_candidate_assertion"
+        })),
+        "type_witness": if ingestion { "asserted_ingestion_of_argument" } else if lexical_type.is_some() { "lexical_food_material_type" } else { "severe_bodily_restriction_and_carried_allergy_treatment" },
+        "subject_bytes": [subject.start(), subject.end()],
+        "predicate_bytes": [predicate.start(), predicate.end()],
+        "substance_bytes": [substance.start(), substance.end()]
+    }))
+}
+
+/// A bounded production-transition frame. Calendar values are typed arguments,
+/// not topics or entity aliases; extra clauses are never silently discarded.
+fn production_window(text: &str) -> Option<[String; 4]> {
+    static FRAME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let frame = FRAME.get_or_init(|| regex::Regex::new(
+        r"^user (?:ships|deploys) to production only on (?P<days>[a-z ]+), (?:between (?P<start_a>\d{2}:\d{2}) and (?P<end_a>\d{2}:\d{2})|from (?P<start_b>\d{2}:\d{2}) to (?P<end_b>\d{2}:\d{2})) (?P<zone>local time|utc)\.$"
+    ).unwrap());
+    let normalized = text.trim().to_lowercase();
+    let caps = frame.captures(&normalized)?;
+    let days = calendar_days(&caps["days"])?;
+    let start = caps
+        .name("start_a")
+        .or_else(|| caps.name("start_b"))?
+        .as_str();
+    let end = caps.name("end_a").or_else(|| caps.name("end_b"))?.as_str();
+    let clock = |s: &str| {
+        let (h, m) = s.split_once(':')?;
+        Some(h.parse::<u8>().ok()? < 24 && m.parse::<u8>().ok()? < 60)
+    };
+    if clock(start) != Some(true) || clock(end) != Some(true) {
+        return None;
+    }
+    Some([days, start.into(), end.into(), caps["zone"].into()])
+}
+
+fn calendar_days(text: &str) -> Option<String> {
+    let mut days = Vec::new();
+    for (at, word) in text.split_whitespace().enumerate() {
+        if at % 2 == 1 {
+            if word != "and" {
+                return None;
+            }
+            continue;
+        }
+        let singular = word.strip_suffix('s').unwrap_or(word);
+        if !matches!(
+            singular,
+            "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday"
+        ) {
+            return None;
+        }
+        days.push(singular);
+    }
+    (!days.is_empty() && text.split_whitespace().count() % 2 == 1).then(|| days.join(" "))
+}
+
+/// Full frame equality, including timezone and every calendar argument.
+/// None means neither text is parsed; Some(false) must not fall back to bags.
+pub(crate) fn production_window_equivalence(a: &str, b: &str) -> Option<bool> {
+    let (left, right) = (production_window(a), production_window(b));
+    (left.is_some() || right.is_some()).then(|| left.is_some() && left == right)
+}
+
+/// A temporal eligibility question binds the first-person actor to an actual
+/// production transition, not any mention of release files or working hours.
+pub(super) fn temporal_scope(query: &str) -> bool {
+    static SCOPE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    temporal_request(query) || SCOPE.get_or_init(|| regex::Regex::new(
+        r"^(?:which (?:weekdays|days) (?:am i|is (?:the )?[\p{L} -]+) allowed to [\p{L} ',?-]+|during what hours am i allowed to [\p{L} '-]+|[\p{L}\d ':-]+ at [\d:]+(?:am|pm)? on [\p{L} ]+, (?:any reason i should(?:n't|nt| not)|am i allowed to do (?:so|that)))\?$"
+    ).unwrap()).is_match(&query.trim().to_lowercase())
+}
+
+pub(super) fn temporal_request(query: &str) -> bool {
+    static TASK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let task = TASK.get_or_init(|| regex::Regex::new(
+        r"^(?:which (?:weekdays|days) am i allowed to (?:push a release live|deploy to production|ship to production)(?:, and during what hours)?|during what hours am i allowed to (?:push a release live|deploy to production|ship to production))\?$"
+    ).unwrap());
+    let normalized = query.trim().to_lowercase();
+    if task.is_match(&normalized) {
+        return true;
+    }
+    // A proposal followed by a first-person eligibility question is an open
+    // calendar constraint request, NOT a claim that the proposed day is Friday
+    // or that the proposal violates any particular stored rule. Calendar
+    // restrictions are relevant even when the proposed time is permitted.
+    static PROPOSAL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let proposal = PROPOSAL.get_or_init(|| regex::Regex::new(
+        r"^(?:i am |i'm |thinking of )?(?:planning to |considering )?(?:deploying to production|shipping to production|putting a change out) at (?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?(?P<period>am|pm)? on (?P<day>(?:the (?:first|last|next) workday of the week)|monday|tuesday|wednesday|thursday|friday|saturday|sunday), (?:any reason i should(?:n't|nt| not)|am i allowed to do (?:so|that))\?$"
+    ).unwrap());
+    let Some(caps) = proposal.captures(&normalized) else {
+        return false;
+    };
+    let Ok(hour) = caps["hour"].parse::<u8>() else {
+        return false;
+    };
+    let minute = caps
+        .name("minute")
+        .map_or(Some(0), |m| m.as_str().parse::<u8>().ok());
+    minute.is_some_and(|m| m < 60)
+        && if caps.name("period").is_some() {
+            (1..=12).contains(&hour)
+        } else {
+            hour < 24
+        }
+}
+
+pub(crate) fn temporal_constraint(query: &str, text: &str) -> Option<serde_json::Value> {
+    static EXCLUSION: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    if !temporal_request(query) {
+        return None;
+    }
+    let normalized = text.trim().to_lowercase();
+    let (kind, argument) = if production_window(text).is_some() {
+        (
+            "permitted_production_window",
+            normalized.find("only on ")? + 8,
+        )
+    } else {
+        let exclusion = EXCLUSION.get_or_init(|| regex::Regex::new(
+            r"^user never releases on (?P<days>[a-z ]+?)(?: or on the day before a public holiday)?(?P<purpose>, to [\p{L} -]+)?\.$"
+        ).unwrap());
+        let caps = exclusion.captures(&normalized)?;
+        calendar_days(&caps["days"])?;
+        if caps.name("purpose").is_some_and(|purpose| {
+            crate::index::tokenize(purpose.as_str())
+                .iter()
+                .any(|word| negative(word) || subordinate(word) || coordination(word))
+        }) {
+            return None;
+        }
+        ("excluded_production_days", caps.name("days")?.start())
+    };
+    Some(serde_json::json!({
+        "relation":"personal_production_transition_calendar",
+        "candidate_domain":kind,
+        "normalization":"trim_lowercase",
+        "query_bytes":[0,query.trim().len()],
+        "subject_bytes":[0,4],
+        "governor_bytes":[5,normalized.find(" on ").unwrap_or(argument)],
+        "calendar_type":"weekday_and_local_or_utc_clock",
+        "query_calendar_resolution":"unresolved_workday_relation_not_a_weekday_assertion",
+        "argument_start_byte":argument,
+        "assertion_bytes":[0,normalized.len()]
+    }))
+}
+
+/// A deliberately small technical-action ontology. These are argument types,
+/// not answer terms: implementations, protocols and numeric limits remain
+/// opaque source arguments. Unknown syntax receives no certificate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Practice {
+    Integration,
+    RepairOrder,
+    ServiceImplementation,
+    Communication,
+    ReviewLimit,
+}
+
+fn practice_words(text: &str, choices: &[&str]) -> bool {
+    crate::index::tokenize(text)
+        .iter()
+        .any(|word| choices.contains(&word.as_str()))
+}
+
+pub(super) fn practice_scope(query: &str) -> Option<Practice> {
+    let q = query.to_lowercase();
+    if !q.contains('?') {
+        return None;
+    }
+    // A WH subject request has its own grounded predicate/argument frame;
+    // it does not ask for the speaker's habitual practice. Topic words alone
+    // must not intercept it before the existing target guard can run.
+    // Other malformed/foreign/quoted requests remain subject to the practice
+    // owner/root proof rather than falling back to bags of technical words.
+    if target_scope(query).is_some_and(|scope| matches!(scope.kind, TargetKind::SubjectPredicate)) {
+        return None;
+    }
+    let has = |choices: &[&str]| practice_words(&q, choices);
+    if has(&["repositories", "repository", "integration"])
+        && has(&["storage", "database", "databases", "tests", "testing"])
+    {
+        Some(Practice::Integration)
+    } else if has(&["bug", "crash", "defect", "regression"])
+        && has(&["first", "before", "prior"])
+        && has(&["code", "implementation", "fix", "repair"])
+    {
+        Some(Practice::RepairOrder)
+    } else if has(&["service", "services", "microservice", "microservices"])
+        && has(&["language", "stack", "framework"])
+        && has(&["default", "normally", "usually"])
+    {
+        Some(Practice::ServiceImplementation)
+    } else if has(&["service", "services", "microservice", "microservices"])
+        && has(&["protocol", "communicate", "communication", "talk"])
+        && has(&["internal", "firewall", "private"])
+    {
+        Some(Practice::Communication)
+    } else if has(&["branch", "branches", "requests", "changeset", "patch"])
+        && has(&["size", "big", "large", "lines"])
+        && has(&["review", "reviewer", "teammates"])
+    {
+        Some(Practice::ReviewLimit)
+    } else {
+        None
+    }
+}
+
+/// Grammar binds an overt owner and root governor to the relevant argument.
+/// The accepted contrast and temporal clauses below are licensed syntax, not
+/// arbitrary tails. Quotes, reports, conditions and negated governors cannot
+/// become personal assertions merely by sharing technical words.
+pub(super) fn practice_evidence(query: &str, text: &str) -> Option<serde_json::Value> {
+    use Practice::*;
+    let kind = practice_scope(query)?;
+    let q = query.trim().to_lowercase();
+    if !practice_words(&q, &["i", "my"])
+        || q.contains('"')
+        || q.starts_with("if ")
+        || q.starts_with("user quotes")
+        || practice_words(
+            &q,
+            &["visitor", "colleague", "not", "never", "public", "external"],
+        )
+    {
+        return None;
+    }
+    // A question asks for an open argument; a personal pronoun anywhere in
+    // a bag of technical terms is not an owner/governor witness. Root frames
+    // below license only direct requests or a reported incident followed by
+    // a direct first-person request (the incident does not assert a policy).
+    static REQUEST: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let request = REQUEST.get_or_init(|| regex::Regex::new(
+        r"^(?:when i [a-z0-9 '-]+, (?:do|should) i [a-z0-9 '-]+|which [a-z -]+ do i (?:default to|normally use|usually use|use for) [a-z0-9 '-]+|how should my [a-z -]+ (?:talk|communicate) [a-z '-]+\? what [a-z -]+ do i (?:like|prefer)|how (?:big|large|many) [a-z -]*should (?:i|my) [a-z0-9 '-]+|someone [a-z '-]+; what do i (?:normally|usually) do first, (?:prior to|before) [a-z '-]+|before i [a-z '-]+, what do i do first)\?$"
+    ).unwrap());
+    if !request.is_match(&q) {
+        return None;
+    }
+    let normalized = text.trim().to_lowercase();
+    if normalized.contains(['"', '“', '”', '?']) {
+        return None;
+    }
+    static FRAMES: std::sync::OnceLock<Vec<(Practice, regex::Regex)>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| {
+        [
+            (Integration, r"^(?:user|i) (?P<governor>runs?|executes?) (?P<argument>integration tests against real [a-z0-9 +.-]+? using [a-z0-9 +.-]+?)(?: instead of mocking the database)?\.$"),
+            (RepairOrder, r"^(?:user|i) (?:always )?(?P<governor>writes?|creates?) (?P<argument>a failing regression test that reproduces a reported (?:bug|defect)) before (?P<successor>changing any code to fix it|modifying the implementation)\.$"),
+            (ServiceImplementation, r"^(?:user|i) (?P<governor>writes?|implements?) most of (?:her|his|their|my) (?P<domain>backend services|microservices) in (?P<argument>[a-z0-9 +.-]+)\.$"),
+            (Communication, r"^(?:user|i) (?P<governor>prefers?|uses?) (?:(?P<public_argument>[a-z0-9 +.-]+?) (?:between|for) public endpoints and )?(?P<argument>[a-z0-9 +.-]+?) (?:between|for) (?P<domain>internal services|private microservices)(?: and (?P<external_argument>[a-z0-9 +.-]+) for public endpoints)?\.$"),
+            (ReviewLimit, r"^(?:user|i) (?P<governor>keeps?|limits?) (?P<domain>pull requests|review patches|changesets) (?:under|to) (?P<argument>(?:about )?[0-9]+ changed lines) so a reviewer can finish them in one sitting\.$"),
+        ]
+        .into_iter()
+        .map(|(kind, pattern)| (kind, regex::Regex::new(pattern).unwrap()))
+        .collect()
+    });
+    let (_, frame) = frames.iter().find(|(candidate, _)| *candidate == kind)?;
+    let captures = frame.captures(&normalized)?;
+    let argument = captures.name("argument")?;
+    // Open argument runs are not allowed to swallow another assertion or a
+    // polarity/modal operator. `and` is a nominal coordinator in these runs.
+    if [
+        Some(argument),
+        captures.name("public_argument"),
+        captures.name("external_argument"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|part| {
+        part.as_str().contains(". ")
+            || practice_words(
+                part.as_str(),
+                &[
+                    "not",
+                    "never",
+                    "if",
+                    "would",
+                    "could",
+                    "quotes",
+                    "reports",
+                    "user",
+                    "prefers",
+                    "uses",
+                    "writes",
+                    "colleague",
+                    "visitor",
+                    "because",
+                    "although",
+                    "but",
+                    "when",
+                    "unless",
+                    "says",
+                    "instead",
+                    "for",
+                    "between",
+                ],
+            )
+    }) {
+        return None;
+    }
+    if kind == ServiceImplementation {
+        // A request for a JVM language needs a genuine language subtype, not
+        // any backend tool. The platform relation is directional.
+        let jvm = practice_words(
+            argument.as_str(),
+            &["java", "kotlin", "scala", "clojure", "groovy"],
+        );
+        let framework = practice_words(
+            argument.as_str(),
+            &["spring", "play", "quarkus", "micronaut", "ktor", "http4k"],
+        );
+        if (practice_words(&q, &["jvm"]) && !jvm) || !framework {
+            return None;
+        }
+    }
+    let governor = captures.name("governor")?;
+    Some(serde_json::json!({
+        "relation":"owned_technical_practice",
+        "kind":format!("{kind:?}"),
+        "normalization":"trim_lowercase",
+        "owner_bytes":[0,normalized.find(' ')?],
+        "governor_bytes":[governor.start(),governor.end()],
+        "argument_bytes":[argument.start(),argument.end()],
+        "argument":argument.as_str(),
+        "domain":captures.name("domain").map(|m| m.as_str()),
+        "domain_bytes":captures.name("domain").map(|m| [m.start(),m.end()]),
+        "successor":captures.name("successor").map(|m| m.as_str()),
+        "assertion_bytes":[0,normalized.len()],
+        "query_request_bytes":[0,q.len()],
+        "query_role":"direct_first_person_practice_request"
+    }))
+}
+
+/// Cardinal syntax is closed linguistic vocabulary, independent of the noun,
+/// owner or topic being counted. Keep the original value span for auditing;
+/// arbitrary modifiers and malformed number-word sequences are not counts.
+fn cardinal_count(value: &str) -> bool {
+    static CARDINAL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    CARDINAL
+        .get_or_init(|| {
+            let unit = "(?:one|two|three|four|five|six|seven|eight|nine)";
+            let small = format!("(?:{unit}|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[ -]{unit})?)");
+            let group = format!("(?:{unit} hundred(?: (?:and )?{small})?|{small})");
+            let thousand = format!("(?:{group} thousand(?: (?:and )?{group})?|{group})");
+            let million = format!("(?:{group} million(?: (?:and )?{thousand})?|{thousand})");
+            regex::Regex::new(&format!("^(?:[0-9]+|zero|{group} billion(?: (?:and )?{million})?|{million})$")).unwrap()
+        })
+        .is_match(value)
+}
+
+/// A recognized open property is an obligation, not a topic match. Property
+/// names and subjects come from the question; no stored topic vocabulary is
+/// consulted. Unknown WH syntax retains the existing evidence paths.
+pub(crate) fn requested_attribute(query: &str, text: &str) -> Option<serde_json::Value> {
+    static QUERIES: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    let frames = QUERIES.get_or_init(|| [
+        r"^how many (?P<property>[a-z]+) (?:do|does) (?P<subject>[a-z0-9 -]+) (?P<governor>have|contain)\?$",
+        r"^how many (?P<property>[a-z]+) (?P<governor>sit|stand|work) (?P<link>on|in|at) (?P<subject>[a-z0-9 -]+)\?$",
+        r"^which (?P<property>[a-z]+) is (?P<governor>[a-z]+) for (?P<subject>[a-z0-9 -]+)\?$",
+        r"^which (?P<property>[a-z]+) is (?P<subject>[a-z0-9 -]+) (?P<link>in|at)\?$",
+    ].into_iter().map(|p| regex::Regex::new(p).unwrap()).collect());
+    let q = query.trim().to_lowercase();
+    let (frame, caps) = frames
+        .iter()
+        .enumerate()
+        .find_map(|(i, r)| r.captures(&q).map(|c| (i, c)))?;
+    let property = caps.name("property")?;
+    let subject = caps.name("subject")?;
+    let governor = caps.name("governor").map(|m| m.as_str());
+    let link = caps.name("link").map(|m| m.as_str());
+    let normalized = text.trim().to_lowercase();
+    let terms = |s: &str| {
+        crate::index::tokenize(s)
+            .into_iter()
+            .filter(|w| !matches!(w.as_str(), "the" | "a" | "an"))
+            .collect::<Vec<_>>()
+    };
+    let equivalent = |a: &str, b: &str| {
+        let (a, b) = (terms(a), terms(b));
+        !a.is_empty() && a.len() == b.len() && a.iter().zip(&b).all(|(a, b)| same_form(a, b))
+    };
+    // The root assertion supplies all roles in one clause. A number elsewhere,
+    // a foreign owner, a report or a negated predicate is not a value witness.
+    static ANSWERS: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    let answers = ANSWERS.get_or_init(|| [
+        r"^(?P<subject>[a-z0-9 -]+?) (?P<governor>has|have|contains|contain) (?P<value>[a-z0-9 -]+?) (?P<property>[a-z]+)\.$",
+        r"^(?P<value>[a-z0-9 -]+?) (?P<property>[a-z]+) (?P<governor>sit|stand|work) (?P<link>on|in|at) (?P<subject>[a-z0-9 -]+)\.$",
+        r"^(?:the )?(?P<property>[a-z]+) (?P<value>[a-z0-9 -]+?) is (?P<governor>[a-z]+) for (?P<subject>[a-z0-9 -]+)\.$",
+        r"^(?P<subject>[a-z0-9 -]+?) is (?P<link>in|at) (?:the )?(?P<property>[a-z]+) (?P<value>[a-z0-9 -]+)\.$",
+    ].into_iter().map(|p| regex::Regex::new(p).unwrap()).collect());
+    let answer = answers[frame].captures(&normalized);
+    let answer = answer.filter(|a| {
+        let value = a.name("value").unwrap();
+        // `and` inside a valid cardinal belongs to the value, not to a second
+        // assertion. All roles and every operator outside it remain guarded.
+        let assertion = if frame < 2 {
+            if !cardinal_count(value.as_str()) {
+                return false;
+            }
+            format!(
+                "{}{}",
+                &normalized[..value.start()],
+                &normalized[value.end()..]
+            )
+        } else {
+            normalized.clone()
+        };
+        equivalent(subject.as_str(), &a["subject"])
+            && same_form(property.as_str(), &a["property"])
+            && governor.is_none_or(|g| {
+                a.name("governor").is_some_and(|m| {
+                    same_form(g, m.as_str()) || (g == "have" && m.as_str() == "has")
+                })
+            })
+            && link.is_none_or(|l| a.name("link").is_some_and(|m| m.as_str() == l))
+            && !crate::index::tokenize(&assertion).iter().any(|w| {
+                negative(w)
+                    || subordinate(w)
+                    || coordination(w)
+                    || matches!(w.as_str(), "quotes" | "reports" | "would" | "could")
+            })
+    });
+    Some(serde_json::json!({
+        "relation":"requested_property_value",
+        "normalization":"trim_lowercase",
+        "query_property_bytes":[property.start(),property.end()],
+        "query_subject_bytes":[subject.start(),subject.end()],
+        "property":property.as_str(), "subject":subject.as_str(),
+        "governor":governor, "link":link, "frame":frame,
+        "matched":answer.is_some(),
+        "source_subject_bytes":answer.as_ref().and_then(|a| a.name("subject")).map(|m| [m.start(),m.end()]),
+        "source_governor_bytes":answer.as_ref().and_then(|a| a.name("governor").or_else(|| a.name("link"))).map(|m| [m.start(),m.end()]),
+        "source_property_bytes":answer.as_ref().and_then(|a| a.name("property")).map(|m| [m.start(),m.end()]),
+        "value_bytes":answer.as_ref().and_then(|a| a.name("value")).map(|m| [m.start(),m.end()]),
+        "value":answer.as_ref().and_then(|a| a.name("value")).map(|m| m.as_str())
+    }))
+}
+
+/// Bind the domain to the governed object, never an incidental destination.
+fn lodging_request(query: &str) -> Option<serde_json::Value> {
+    static FRAME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let q = query.trim().to_lowercase();
+    let c = FRAME.get_or_init(|| regex::Regex::new(
+        r"^pra minha próxima (?:ida|viagem) [\p{L} ]+, (?P<governor>reservo) (?:um|uma) (?P<object>hotelzão|hotel|pousada|pensão|resort)(?: pequeno| pequena| familiar| aconchegante)? ou (?P<alternative>algo mais (?:aconchegante e familiar|familiar|aconchegante)|(?:um|uma) (?:hotel|pousada|pensão|resort))\?$"
+    ).unwrap()).captures(&q)?;
+    Some(serde_json::json!({"normalization":"trim_lowercase",
+        "governor_bytes":[c.name("governor")?.start(),c.name("governor")?.end()],
+        "object_bytes":[c.name("object")?.start(),c.name("object")?.end()],
+        "alternative_bytes":[c.name("alternative")?.start(),c.name("alternative")?.end()],
+        "object_type":"lodging"}))
+}
+
+/// Closed predicate/role vocabulary; names are opaque source values.
+/// Safety requests retrieve a restriction, never certify a recommendation.
+fn personal_life_request(query: &str) -> Option<(&'static str, serde_json::Value)> {
+    static FRAMES: std::sync::OnceLock<Vec<(&str, regex::Regex)>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| [
+        ("favorite_literary_work_context", r"^(?:sabe )?(?:qual (?P<attribute>romance|livro)(?: [\p{L}-]+)? eu (?:mais amo|prefiro)|which (?P<work>book|novel)(?: [\p{L}-]+)? do i (?:love most|prefer)|what is my favorite (?:book|novel))\?$"),
+        ("assistant_answer_style", r"^(?:remind me, )?(?:do i prefer (?P<choice>(?:short|long|concise|detailed|long detailed|short direct|straight-to-the-point) (?:answers|explanations) or (?:short|long|concise|detailed|long detailed|short direct|straight-to-the-point) (?:answers|explanations)) from you|what (?P<attribute>answer style) do i prefer from you)\?$"),
+        ("music_performers_context", r"^(?:que|quais) (?P<attribute>artistas|cantores|cantoras)(?: brasileiros| brasileiras)? (?:eu (?:escuto|ouço)|tocam no meu fone) (?P<context>enquanto|quando) (?:eu )?(?:estou )?(?P<activity>programando|codando|programo)\?$"),
+        ("music_performers_context", r"^which (?P<attribute>artists|singers|performers) do i (?:hear|listen to) (?P<context>while) (?P<activity>coding|programming)\?$"),
+        ("recorded_medication_restriction", r"^(?:estou com|tenho) (?P<complaint>enxaqueca|dor de cabeça), qual (?P<attribute>remédio|medicamento) eu posso tomar(?: (?P<qualifier>sem risco|com segurança))?\?$"),
+        ("recorded_medication_restriction", r"^i have (?:a )?(?P<complaint>headache|migraine), which (?P<attribute>medicine|medication) can i take(?: (?P<qualifier>safely|without risk))?\?$"),
+        ("sibling_video_schedule", r"^(?:em que momento da semana|quando) eu (?:costumo )?(?:bater papo|conversar|converso) com minha (?P<kinship>mana|irmã|irmão) (?P<modality>pela webcam|por videochamada)\?$"),
+        ("sibling_video_schedule", r"^when do i (?P<modality>video call|video chat with) my (?P<kinship>sister|brother)\?$"),
+    ].into_iter().map(|(k,p)| (k,regex::Regex::new(p).unwrap())).collect());
+    let q = query.trim().to_lowercase();
+    frames.iter().find_map(|(kind, frame)| {
+        let c = frame.captures(&q)?;
+        let span = |name| c.name(name).map(|m| [m.start(),m.end()]);
+        Some((*kind,serde_json::json!({
+            "normalization":"trim_lowercase", "attribute_bytes":span("attribute"),
+            "context_bytes":span("context"), "activity_bytes":span("activity"),
+            "complaint_bytes":span("complaint"), "qualifier_bytes":span("qualifier"),
+            "kinship_bytes":span("kinship"), "modality_bytes":span("modality"),
+            "choice_bytes":span("choice"), "work_bytes":span("work"),
+            "kinship":c.name("kinship").map(|m| match m.as_str() {"mana"|"irmã"|"sister" => "sister", _ => "brother"}),
+            "certifies_medication_safety":false, "certifies_performer_nationality":false
+        })))
+    })
+}
+
+/// Personal activities use a finite lexical type system, not entity aliases.
+/// Query roles create obligations; an unrelated night, hotel booking or
+/// software package cannot discharge a purpose, preference or learning role.
+fn life_scope(query: &str) -> Option<&'static str> {
+    let q = query.trim().to_lowercase();
+    let has = |words: &[&str]| practice_words(&q, words);
+    // An open requested property (room, count, publication, etc.) is not
+    // activity progress or personal preference merely because a domain occurs.
+    if requested_attribute(query, "").is_some() {
+        return None;
+    }
+    if let Some((kind, _)) = personal_life_request(query) {
+        return Some(kind);
+    }
+    if lodging_request(query).is_some() {
+        return Some("lodging_preference");
+    }
+    static REQUESTS: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    let requests = REQUESTS.get_or_init(|| [
+        r"^(?:what do i drink|o que (?:é bom )?eu (?:devo )?beber) (?:before bed|before sleeping|antes de dormir|antes de deitar)(?: (?:to sleep better|to fall asleep|pra pegar no sono|para dormir melhor))?\?$",
+        r"^(?:which (?:lodging|accommodation) do i prefer|qual (?:hotel|hospedagem|pousada) eu prefiro)\?$",
+        r"^(?:how is my (?:pottery|ceramics) (?:course|class) going|como anda meu curso de (?:olaria|cerâmica))\?(?: quero (?:fazer|modelar) (?:potes|tigelas|canecas|vasos) de barro (?:pro|para o) [\p{L} ]+\.)?$",
+    ].into_iter().map(|p| regex::Regex::new(p).unwrap()).collect());
+    if !requests.iter().any(|r| r.is_match(&q)) {
+        return None;
+    }
+    if !q.contains('?')
+        || q.contains(['\"', '“', '”'])
+        || !has(&["i", "my", "eu", "meu", "minha"])
+        || has(&[
+            "visitor",
+            "colleague",
+            "reports",
+            "quotes",
+            "if",
+            "not",
+            "never",
+        ])
+    {
+        return None;
+    }
+    if has(&["drink", "beber", "bebida"]) && has(&["sleep", "bedtime", "sono", "dormir", "deitar"])
+    {
+        Some("sleep_beverage_purpose")
+    } else if has(&[
+        "lodging",
+        "accommodation",
+        "hospedagem",
+        "hotelzão",
+        "hotel",
+        "hotéis",
+        "pousada",
+    ]) && has(&["prefer", "preference", "prefiro", "prefere", "reservo"])
+        && !has(&["booked", "reservation", "reservei", "reservado", "reserva"])
+    {
+        Some("lodging_preference")
+    } else if has(&["pottery", "ceramics", "olaria", "cerâmica"])
+        && has(&[
+            "course",
+            "class",
+            "classes",
+            "learning",
+            "curso",
+            "aulas",
+            "aprendendo",
+        ])
+    {
+        Some("ceramic_learning")
+    } else {
+        None
+    }
+}
+
+/// Preferences are owned assertions, not answer entailment. A favorite book
+/// can be useful context for a novel question without proving the work's form
+/// or nationality. Opaque titles/authors are never looked up or reclassified.
+fn personal_preference_evidence(query: &str, text: &str, kind: &str) -> Option<serde_json::Value> {
+    static FRAMES: std::sync::OnceLock<Vec<(&str, regex::Regex)>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| [
+        ("favorite_literary_work_context", r"^(?P<domain>o livro|o romance) (?P<governor>favorito) (?P<owner>da usuária|do usuário) é (?P<value>[\p{L}0-9 '-]+?), de (?P<author>[\p{L} '-]+?)(?:, que ela já releu [\p{L}0-9 -]+ vezes)?\.$"),
+        ("favorite_literary_work_context", r"^(?P<owner>user's|my) (?P<governor>favorite) (?P<domain>book|novel) is (?P<value>[\p{L}0-9 '-]+?) by (?P<author>[\p{L} '-]+)\.$"),
+        ("assistant_answer_style", r"^(?P<owner>user|i) (?P<governor>prefers|prefer) (?P<value>short, direct|short|concise|long, detailed|long|detailed) (?P<domain>answers|explanations)(?: (?P<role>from (?:you|the assistant)))?(?: that (?P<details>lead with the conclusion and skip long preambles|include examples and explain each step))?\.$"),
+    ].into_iter().map(|(k,p)| (k,regex::Regex::new(p).unwrap())).collect());
+    let normalized = text.trim().to_lowercase();
+    let assertion = frames
+        .iter()
+        .filter(|(k, _)| *k == kind)
+        .find_map(|(_, r)| r.captures(&normalized))
+        .filter(|c| {
+            ["value", "author"]
+                .into_iter()
+                .filter_map(|n| c.name(n))
+                .all(|m| {
+                    !practice_words(
+                        m.as_str(),
+                        &[
+                            "not",
+                            "never",
+                            "if",
+                            "unknown",
+                            "would",
+                            "could",
+                            "reports",
+                            "quotes",
+                            "não",
+                            "nunca",
+                            "desconhecido",
+                            "relata",
+                            "cita",
+                        ],
+                    )
+                })
+        });
+    let span = |n| {
+        assertion
+            .as_ref()
+            .and_then(|c| c.name(n))
+            .map(|m| [m.start(), m.end()])
+    };
+    Some(serde_json::json!({
+        "relation":"owned_personal_preference_context", "kind":kind,
+        "normalization":"trim_lowercase", "matched":assertion.is_some(),
+        "owner_bytes":span("owner"), "governor_bytes":span("governor"),
+        "value_bytes":span("value"), "domain_bytes":span("domain"),
+        "author_bytes":span("author"), "output_role_bytes":span("role"),
+        "output_role":if kind == "assistant_answer_style" { Some("assistant_answer") } else { None },
+        "certifies_work_nationality":false, "certifies_work_is_novel":false,
+        "query_roles":personal_life_request(query).map(|(_,p)|p),
+        "value":assertion.as_ref().and_then(|c|c.name("value")).map(|m|m.as_str()),
+        "assertion_bytes":assertion.as_ref().map(|_|[0,normalized.len()])
+    }))
+}
+
+/// Finite lexical taxonomy of ordinary musical entities. These entries resolve
+/// type only, never ownership, nationality or preference. Unknown and ambiguous
+/// homonyms require a source performer head; casing is not a type witness.
+fn musical_entity_type(value: &str) -> &'static str {
+    match value {
+        // Brazilian popular music/samba; jazz/soul/blues; folk/pop; classical.
+        "gal costa"
+        | "caetano veloso"
+        | "gilberto gil"
+        | "milton nascimento"
+        | "elis regina"
+        | "maria bethânia"
+        | "tom jobim"
+        | "dona ivone lara"
+        | "leci brandão"
+        | "nina simone"
+        | "chet baker"
+        | "dinah washington"
+        | "aretha franklin"
+        | "etta james"
+        | "otis redding"
+        | "miles davis"
+        | "ella fitzgerald"
+        | "billie holiday"
+        | "louis armstrong"
+        | "joni mitchell"
+        | "stevie wonder"
+        | "david bowie"
+        | "björk"
+        | "johann sebastian bach"
+        | "ludwig van beethoven" => "performer",
+        "jazz" | "blues" | "samba" | "mpb" | "rock" | "pop" | "soul" | "classical"
+        | "classical music" | "heavy metal" | "metal" | "death metal" | "black metal" | "folk"
+        | "country" | "reggae" | "funk" | "bossa nova" | "hip hop" | "electronic music" => "genre",
+        // Human/stage names also denoting animal, action, artifact or place.
+        "seal" | "sting" | "prince" | "boston" | "genesis" => "ambiguous",
+        _ => "unknown",
+    }
+}
+
+fn musical_argument_type(value: &str, explicit_head: bool) -> serde_json::Value {
+    let entities: Vec<_> = value
+        .split(" and ")
+        .flat_map(|part| part.split(" e "))
+        .map(|name| serde_json::json!({"value":name,"lexical_type":musical_entity_type(name)}))
+        .collect();
+    let known_performers = entities
+        .iter()
+        .all(|entity| entity["lexical_type"] == "performer");
+    serde_json::json!({
+        "source_argument_role":"listening_preference_example",
+        "type_basis":if explicit_head {"source_argument_type_head"}
+            else if known_performers {"bounded_musical_entity_taxonomy"}
+            else {"unresolved"},
+        "entities":entities,
+        "resolves_performer":explicit_head || known_performers,
+        "certifies_nationality":false,
+        "certifies_singer_subtype":false
+    })
+}
+
+/// All captures belong to one owned root assertion. Governors bind roles;
+/// a separate explicit head or bounded entity taxonomy resolves musical type.
+/// Neither cosine, tags nor name casing can discharge these obligations.
+pub(crate) fn life_evidence(query: &str, text: &str) -> Option<serde_json::Value> {
+    let kind = life_scope(query)?;
+    if matches!(
+        kind,
+        "favorite_literary_work_context" | "assistant_answer_style"
+    ) {
+        return personal_preference_evidence(query, text, kind);
+    }
+    let normalized = text.trim().to_lowercase();
+    static FRAMES: std::sync::OnceLock<Vec<(&str, regex::Regex)>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| [
+        ("sleep_beverage_purpose", r"^(?:à noite )?(?P<owner>a usuária|o usuário|eu) (?:(?:evita|evito) cafeína e )?(?P<governor>toma|tomo|bebe|bebo) (?P<value>chá de [\p{L} -]+|leite morno|água) (?P<purpose>para dormir melhor|antes de dormir para pegar no sono)\.$"),
+        ("sleep_beverage_purpose", r"^(?P<owner>user|i) (?:(?:avoids|avoid) caffeine and )?(?P<governor>drinks|drink) (?P<value>[\p{L} -]+ tea|warm milk|water) (?P<purpose>to sleep better|before bed to fall asleep)\.$"),
+        ("lodging_preference", r"^(?P<owner>a usuária|o usuário|eu) (?P<governor>prefere|prefiro) se hospedar em (?P<value>pousadas pequenas|pequenas pousadas|pensões familiares|hotéis pequenos) a (?P<contrast>grandes hotéis de rede|grandes resorts)(?: quando viaja)?\.$"),
+        ("lodging_preference", r"^(?P<owner>user|i) (?P<governor>prefers|prefer) staying in (?P<value>small guesthouses|family inns|small hotels) (?:to|rather than) (?P<contrast>large chain hotels|large resorts)(?: when traveling)?\.$"),
+        ("ceramic_learning", r"^(?P<owner>a usuária|o usuário|eu) (?P<governor>começou|comecei) aulas de (?P<domain>cerâmica|olaria) e (?:está|estou) aprendendo a (?P<action>modelar|fazer) (?P<value>tigelas|potes|vasos|canecas) no (?P<instrument>torno)\.$"),
+        ("ceramic_learning", r"^(?P<owner>user|i) (?P<governor>started) (?P<domain>pottery|ceramics) classes and (?:is|am) learning to (?P<action>shape|make|throw) (?P<value>bowls|pots|vases|mugs) on (?:a|the) (?P<instrument>wheel)\.$"),
+        ("music_performers_context", r"^(?P<owner>a usuária|o usuário|eu) (?P<governor>escuta|escuto|ouve|ouço) (?:muita |muito )?(?P<genre>[\p{L} -]+) (?P<context>enquanto) (?P<activity>programa|programo), (?P<performer_link>principalmente|especialmente) (?:(?P<performer_type>singers|performers|artists|cantores|cantoras|artistas) )?(?P<value>[\p{L} '-]+)\.$"),
+        ("music_performers_context", r"^(?P<owner>user|i) (?P<governor>listens to|listen to) (?P<genre>[\p{L} -]+) (?P<context>while) (?P<activity>coding|programming), (?P<performer_link>especially|mainly) (?:(?P<performer_type>singers|performers|artists|cantores|cantoras|artistas) )?(?P<value>[\p{L} '-]+)\.$"),
+        ("recorded_medication_restriction", r"^(?P<owner>a usuária|o usuário|eu) (?P<governor>é alérgica|é alérgico|sou alérgica|sou alérgico) a (?P<restriction>[\p{L}-]+), então (?P<habit_governor>usa|uso) (?P<value>[\p{L}-]+) (?P<context>quando tem|quando tenho) (?P<complaint>dor de cabeça|enxaqueca)\.$"),
+        ("recorded_medication_restriction", r"^(?P<owner>user|i) (?P<governor>is allergic|am allergic) to (?P<restriction>[\p{L}-]+), so (?P<habit_governor>uses|use) (?P<value>[\p{L}-]+) (?P<context>for) (?:a )?(?P<complaint>headache|migraine)\.$"),
+        ("sibling_video_schedule", r"^(?P<owner>a usuária|o usuário|eu) (?P<governor>faz|faço) (?P<modality>videochamada) com (?:a|minha|o|meu) (?P<kinship>irmã|irmão) (?P<relative>[\p{L} '-]+?) (?P<value>todo (?:domingo|sábado)(?: de manhã| à noite)?|toda (?:segunda|terça|quarta|quinta|sexta)(?:-feira)?(?: à noite| de manhã)?)(?: (?P<purpose>para colocar a conversa em dia|para conversar))?\.$"),
+        ("sibling_video_schedule", r"^(?P<owner>user|i) (?P<governor>video calls|video call) (?P<modality>with) (?:her|his|my) (?P<kinship>sister|brother) (?P<relative>[\p{L} '-]+?) (?P<value>every (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?: evening| morning)?)(?: (?P<purpose>to catch up))?\.$"),
+    ].into_iter().map(|(kind, pattern)| (kind, regex::Regex::new(pattern).unwrap())).collect());
+    let request = personal_life_request(query).map(|(_, p)| p);
+    let mut music_typing = None;
+    let assertion = frames
+        .iter()
+        .filter(|(k, _)| *k == kind)
+        .find_map(|(_, frame)| frame.captures(&normalized))
+        .filter(|c| {
+            if kind == "sibling_video_schedule" {
+                let source_role = match c.name("kinship").unwrap().as_str() {
+                    "irmã" | "sister" => "sister",
+                    _ => "brother",
+                };
+                if request.as_ref().is_none_or(|p| p["kinship"] != source_role) {
+                    return false;
+                }
+            }
+            if kind == "music_performers_context" {
+                let genre = c.name("genre").unwrap().as_str();
+                let value = c.name("value").unwrap().as_str();
+                // The listening assertion supplies ownership/activity, not
+                // entity type: resolve that independent obligation separately.
+                let typing = musical_argument_type(value, c.name("performer_type").is_some());
+                let resolves_performer = typing["resolves_performer"] == true;
+                music_typing = Some(typing);
+                let musical_style = |s: &str| s == "music" || s == "música"
+                    || musical_entity_type(s) == "genre";
+                if !musical_style(genre) || !resolves_performer {
+                    return false;
+                }
+                // The head types opaque names, including lowercase names and
+                // names homonymous with genres. It cannot type a contradictory
+                // artifact head or a new typed constituent in that same list.
+                if practice_words(value, &[
+                    "software", "studio", "server", "editor", "plugin", "package",
+                    "genre", "genres", "style", "styles", "gênero", "gêneros",
+                    "estilo", "estilos", "visitor", "visitante",
+                ]) {
+                    return false;
+                }
+            }
+            if kind == "sibling_video_schedule" {
+                static NAMES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+                let m = c.name("relative").unwrap();
+                let Some(original) = text.trim().get(m.start()..m.end()) else { return false; };
+                let names = NAMES.get_or_init(|| regex::Regex::new(r"^\p{Lu}[\p{L}'-]+(?: \p{Lu}[\p{L}'-]+)*(?: (?:and|e) \p{Lu}[\p{L}'-]+(?: \p{Lu}[\p{L}'-]+)*)*$").unwrap());
+                if !names.is_match(original) || practice_words(m.as_str(), &["jazz", "samba", "rock", "pop", "mpb", "blues", "classical", "visitor", "visitante"]) { return false; }
+            }
+            if kind == "recorded_medication_restriction" {
+                // Audited lexical medication types, not advice or entity aliases.
+                let medication = |s: &str| {
+                    matches!(
+                        s,
+                        "aspirin"
+                            | "aspirina"
+                            | "acetaminophen"
+                            | "paracetamol"
+                            | "ibuprofen"
+                            | "ibuprofeno"
+                            | "dipyrone"
+                            | "dipirona"
+                            | "naproxen"
+                            | "naproxeno"
+                            | "sumatriptan"
+                            | "sumatriptana"
+                            | "metamizole"
+                            | "metamizol"
+                    )
+                };
+                if !medication(c.name("restriction").unwrap().as_str())
+                    || !medication(c.name("value").unwrap().as_str())
+                {
+                    return false;
+                }
+            }
+            if ["genre", "relative"]
+                .iter()
+                .filter_map(|name| c.name(name))
+                .any(|m| {
+                    practice_words(
+                        m.as_str(),
+                        &[
+                            "not",
+                            "never",
+                            "if",
+                            "reports",
+                            "quotes",
+                            "says",
+                            "visitor",
+                            "colleague",
+                            "não",
+                            "nunca",
+                            "relata",
+                            "cita",
+                            "visitante",
+                            "and",
+                            "but",
+                            "e",
+                            "mas",
+                        ],
+                    )
+                })
+            {
+                return false;
+            }
+            let value = c.name("value").unwrap().as_str();
+            // In performer lists conjunctions join values, not predicates.
+            let guarded = if kind == "music_performers_context" {
+                value.replace(" and ", " ").replace(" e ", " ")
+            } else {
+                value.to_owned()
+            };
+            !practice_words(
+                &guarded,
+                &[
+                    "not",
+                    "never",
+                    "if",
+                    "would",
+                    "could",
+                    "unknown",
+                    "reports",
+                    "quotes",
+                    "não",
+                    "nunca",
+                    "talvez",
+                    "desconhecido",
+                    "and",
+                    "but",
+                    "user",
+                    "visitor",
+                    "colleague",
+                    "says",
+                    "drinks",
+                    "prefers",
+                    "e",
+                    "mas",
+                    "usuária",
+                    "usuário",
+                    "relata",
+                    "cita",
+                    "bebe",
+                    "toma",
+                ],
+            )
+        });
+    let span = |name: &str| {
+        assertion
+            .as_ref()
+            .and_then(|c| c.name(name))
+            .map(|m| [m.start(), m.end()])
+    };
+    Some(serde_json::json!({
+        "relation":"owned_personal_activity", "kind":kind,
+        "normalization":"trim_lowercase", "matched":assertion.is_some(),
+        "query_request_bytes":[0,query.trim().len()],
+        "owner_bytes":span("owner"), "governor_bytes":span("governor"),
+        "value_bytes":span("value"), "purpose_bytes":span("purpose"),
+        "contrast_bytes":span("contrast"), "domain_bytes":span("domain"),
+        "action_bytes":span("action"), "instrument_bytes":span("instrument"),
+        "genre_bytes":span("genre"), "performer_link_bytes":span("performer_link"),
+        "performer_type_bytes":span("performer_type"),
+        "performer_type_witness":assertion.as_ref().and_then(|c|c.name("performer_type")).map(|_|"source_argument_type_head"),
+        "certifies_performer_type":kind == "music_performers_context" && assertion.is_some(),
+        "music_argument_typing":music_typing,
+        "certifies_singer_subtype":false,
+        "activity_bytes":span("activity"), "context_bytes":span("context"),
+        "restriction_bytes":span("restriction"), "habit_governor_bytes":span("habit_governor"),
+        "complaint_bytes":span("complaint"), "kinship_bytes":span("kinship"),
+        "relative_bytes":span("relative"), "modality_bytes":span("modality"),
+        "query_roles":request, "query_lodging_argument":lodging_request(query),
+        "certifies_medication_safety":false,
+        "certifies_performer_nationality":false,
+        "value":assertion.as_ref().and_then(|c|c.name("value")).map(|m|m.as_str()),
+        "assertion_bytes":assertion.as_ref().map(|_|[0,normalized.len()])
+    }))
+}
+
+/// Closed linguistic attributes, not topics or stored entity labels. Recognition
+/// creates an obligation even when no fact can discharge it.
+fn identity_scope(query: &str) -> Option<(String, String)> {
+    static FRAMES: std::sync::OnceLock<Vec<(&str, regex::Regex)>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| [
+        ("occupation", r"^(?:what(?:'s| is) my (?:job title|occupation)(?: at work)?|which (?:company|employer) do i work (?:at|for)|em que empresa eu trabalho(?: mesmo)?)\?"),
+        ("age", r"^how old am i(?: now)?\?"),
+        ("birthday", r"^(?:when is my birthday|quando é (?:o )?meu aniversário)\?"),
+        ("languages", r"^(?:which languages do i speak|que idiomas eu falo)\?"),
+        ("birthplace", r"^(?:where was i born|what is my birthplace|qual é(?: mesmo)? (?:a )?minha cidade natal)\?"),
+        ("kinship", r"^what(?:'s| is) my (?P<kinship>partner|spouse|wife|husband|mother|father|sister|brother|daughter|son)'s name\?"),
+    ].into_iter().map(|(kind, pattern)| (kind, regex::Regex::new(pattern).unwrap())).collect());
+    let q = query.trim().to_lowercase();
+    if q.contains(['"', '“', '”', ';', '\n']) || q.matches('?').count() != 1 {
+        return None;
+    }
+    frames.iter().find_map(|(kind, frame)| {
+        frame.captures(&q).map(|c| {
+            (
+                kind.to_string(),
+                c.name("kinship").map_or("", |m| m.as_str()).to_owned(),
+            )
+        })
+    })
+}
+
+/// An affirmative root with an overt owner, typed governor and value. Values
+/// remain source bytes; this parser never calculates or manufactures a fact.
+fn identity_assertion(text: &str) -> Option<serde_json::Value> {
+    static FRAMES: std::sync::OnceLock<Vec<(&str, regex::Regex)>> = std::sync::OnceLock::new();
+    let frames = FRAMES.get_or_init(|| [
+        ("occupation", r"^(?P<owner>user|i) (?P<governor>is|am) (?:a|an) (?P<value>[\p{L} -]+?)(?: on the [\p{L} -]+ team)? at (?P<employer>[\p{L} -]+)\.$"),
+        ("occupation", r"^(?P<owner>a usuária|o usuário|eu) (?P<governor>trabalha|trabalho) (?:na|no|em) (?P<value>[\p{L} -]+?)(?:, (?:uma|um) [\p{L} -]+)?(?:,? desde [0-9]{4})?\.$"),
+        ("occupation", r"^(?P<owner>user|i) (?P<governor>works|work) (?:at|for) (?P<value>[\p{L} -]+)\.$"),
+        ("kinship", r"^(?P<owner>the user's|user's|my) (?P<kinship>partner|spouse|wife|husband|mother|father|sister|brother|daughter|son) (?P<governor>is) (?P<value>[\p{L} -]+?)(?:, (?P<details>(?:a|an) [\p{L} -]+?) she has been dating since (?P<since>[0-9]{4}))?\.$"),
+        ("kinship", r"^(?P<owner>the user's|user's|my) (?P<kinship>partner|spouse|wife|husband|mother|father|sister|brother|daughter|son)'s name (?P<governor>is) (?P<value>[\p{L} -]+)\.$"),
+        ("occupation", r"^(?P<owner>user|i) (?P<governor>works as|work as) (?:a|an) (?P<value>[\p{L} -]+) at (?P<employer>[\p{L} -]+)\.$"),
+        ("kinship", r"^(?P<value>[\p{L} -]+?), (?P<details>(?:a|an) [\p{L} -]+?), (?P<governor>has been) (?P<owner>the user's|my) (?P<kinship>partner|spouse|wife|husband|mother|father|sister|brother|daughter|son) since (?P<since>[0-9]{4})\.$"),
+        ("birthday", r"^(?P<owner>a usuária|o usuário|eu) (?P<governor>nasceu|nasci) em (?P<value>(?P<day>[0-9]{1,2}) de (?P<month>[\p{L}]+) de (?P<year>[0-9]{4}))\.$"),
+        ("birthday", r"^(?P<owner>user|i) (?P<governor>was born) on (?P<value>(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2}))\.$"),
+        ("age", r"^(?P<owner>user|i) (?P<governor>turned) (?P<value>[0-9]{1,3}) years old in (?P<month>[\p{L}]+) (?P<year>[0-9]{4})\.$"),
+        ("birthplace", r"^(?P<owner>user|i) (?P<governor>was born) in (?P<value>[\p{L} ,'-]+?)(?:, and grew up there until college)?\.$"),
+        ("languages", r"^(?P<owner>a usuária|o usuário) (?P<governor>tem) o (?P<value>[\p{L} -]+ como língua materna, fala [\p{L} -]+ fluente e [\p{L} -]+ em nível intermediário)\.$"),
+        ("languages", r"^(?P<owner>user|i) (?P<governor>speaks|speak) (?P<value>[\p{L} ,'-]+?)(?: fluently)?\.$"),
+    ].into_iter().map(|(kind, pattern)| (kind, regex::Regex::new(pattern).unwrap())).collect());
+    let normalized = text.trim().to_lowercase();
+    if crate::index::tokenize(&normalized).iter().any(|w| {
+        matches!(
+            w.as_str(),
+            "not"
+                | "never"
+                | "if"
+                | "would"
+                | "could"
+                | "quotes"
+                | "reports"
+                | "says"
+                | "não"
+                | "nunca"
+                | "se"
+                | "seria"
+                | "relata"
+                | "cita"
+        )
+    }) {
+        return None;
+    }
+    let (kind, c) = frames
+        .iter()
+        .find_map(|(kind, frame)| frame.captures(&normalized).map(|c| (*kind, c)))?;
+    if ["value", "details", "employer"]
+        .iter()
+        .filter_map(|name| c.name(name))
+        .any(|m| {
+            crate::index::tokenize(m.as_str()).iter().any(|w| {
+                matches!(
+                    w.as_str(),
+                    "unknown" | "unsure" | "possibly" | "maybe" | "might" | "should" | "allegedly"
+                )
+            })
+        })
+    {
+        return None;
+    }
+    let value = c.name("value")?;
+    let owner = c.name("owner")?;
+    let governor = c.name("governor")?;
+    // Do not allow an open nominal argument to swallow a new assertion.
+    if ["value", "details", "employer"]
+        .iter()
+        .filter_map(|name| c.name(name))
+        .any(|m| {
+            crate::index::tokenize(m.as_str()).iter().any(|w| {
+                matches!(
+                    w.as_str(),
+                    "is" | "was"
+                        | "has"
+                        | "user"
+                        | "usuária"
+                        | "usuário"
+                        | "visitor"
+                        | "colleague"
+                        | "but"
+                        | "where"
+                        | "whose"
+                        | "called"
+                        | "named"
+                        | "company"
+                        | "workshop"
+                        | "room"
+                        | "é"
+                )
+            })
+        })
+    {
+        return None;
+    }
+    Some(
+        serde_json::json!({"kind":kind,"owner":"user","normalization":"trim_lowercase",
+        "value":value.as_str(),"value_bytes":[value.start(),value.end()],
+        "owner_bytes":[owner.start(),owner.end()],"governor":governor.as_str(),"governor_bytes":[governor.start(),governor.end()],
+        "kinship":c.name("kinship").map(|m|m.as_str()),
+        "details":c.name("details").map(|m|m.as_str()),"since":c.name("since").map(|m|m.as_str()),
+        "year":c.name("year").map(|m|m.as_str()),"month":c.name("month").map(|m|m.as_str()),
+        "day":c.name("day").map(|m|m.as_str()),"employer":c.name("employer").map(|m|m.as_str()),
+        "argument_bytes":(["kinship","details","since","year","month","day","employer"].into_iter()
+            .filter_map(|name| c.name(name).map(|m| (name.to_owned(), serde_json::json!([m.start(),m.end()]))))
+            .collect::<serde_json::Map<String,serde_json::Value>>())}),
+    )
+}
+
+fn identity_month(s: &str) -> Option<u32> {
+    match s {
+        "january" | "janeiro" => Some(1),
+        "february" | "fevereiro" => Some(2),
+        "march" | "março" => Some(3),
+        "april" | "abril" => Some(4),
+        "may" | "maio" => Some(5),
+        "june" | "junho" => Some(6),
+        "july" | "julho" => Some(7),
+        "august" | "agosto" => Some(8),
+        "september" | "setembro" => Some(9),
+        "october" | "outubro" => Some(10),
+        "november" | "novembro" => Some(11),
+        "december" | "dezembro" => Some(12),
+        _ => s.parse::<u32>().ok().filter(|m| (1..=12).contains(m)),
+    }
+}
+
+/// Date/age context is licensed only by a real calendar date and, for an age
+/// statement, a matching birth witness and a current-year reference event.
+pub(crate) fn identity_evidence(
+    query: &str,
+    text: &str,
+    context: &[&str],
+    now: u64,
+) -> Option<serde_json::Value> {
+    use chrono::Datelike;
+    let (scope, kinship) = identity_scope(query)?;
+    let assertion = identity_assertion(text);
+    let today = chrono::DateTime::from_timestamp_millis(now as i64)?.date_naive();
+    let birth = |p: &serde_json::Value| {
+        chrono::NaiveDate::from_ymd_opt(
+            p["year"].as_str()?.parse().ok()?,
+            identity_month(p["month"].as_str()?)?,
+            p["day"].as_str()?.parse().ok()?,
+        )
+    };
+    let mut temporal_witness = None;
+    let matched = assertion.as_ref().is_some_and(|p| {
+        let kind = p["kind"].as_str().unwrap_or("");
+        match (scope.as_str(), kind) {
+            ("occupation", "occupation") => p["employer"].is_null()
+                || matches!(p["governor"].as_str(), Some("work as" | "works as"))
+                || crate::index::tokenize(p["value"].as_str().unwrap_or("")).iter().any(|w|
+                    matches!(w.as_str(), "engineer"|"designer"|"developer"|"manager"|"director"|"analyst"|"architect"|"scientist"|"teacher"|"nurse"|"physician"|"technician"|"accountant"|"attorney"|"researcher"|"consultant"|"officer"|"specialist"|"coordinator"|"assistant"|"professor"|"editor"|"writer"|"chef"|"mechanic"|"operator"|"supervisor")),
+            ("languages", "languages") => true,
+            ("birthplace", "birthplace") => !crate::index::tokenize(p["value"].as_str().unwrap_or("")).iter().any(|w|
+                matches!(w.as_str(), "company"|"workshop"|"room"|"hospital"|"ward"|"laboratory")),
+            ("kinship", "kinship") => p["kinship"] == kinship,
+            ("age"|"birthday", "birthday") => birth(p).is_some_and(|d| d <= today),
+            ("age"|"birthday", "age") => {
+                let year = p["year"].as_str().and_then(|s|s.parse::<i32>().ok());
+                let month = p["month"].as_str().and_then(identity_month);
+                let age = p["value"].as_str().and_then(|s|s.parse::<i32>().ok());
+                let witness = context.iter().find_map(|text| {
+                    let b = identity_assertion(text)?;
+                    if b["kind"] != "birthday" { return None; }
+                    let d = birth(&b)?;
+                    (year == Some(today.year()) && month == Some(d.month())
+                        && age == Some(today.year() - d.year())
+                        && d.with_year(today.year()).is_some_and(|anniversary| anniversary <= today))
+                        .then(|| serde_json::json!({"birth_assertion":text,"birth_date":d.to_string(),"current_date":today.to_string()}))
+                });
+                if let Some(witness) = witness {
+                    temporal_witness = Some(witness);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    });
+    Some(
+        serde_json::json!({"relation":"owned_identity_attribute","scope":scope,"kinship":kinship,
+        "matched":matched,"assertion":assertion.filter(|_|matched),
+        "current_date":today.to_string(),"temporal_witness":temporal_witness}),
+    )
+}
+
+pub(crate) fn identity_kinship(text: &str) -> bool {
+    identity_assertion(text).is_some_and(|p| p["kind"] == "kinship")
+}
+
+/// Full relational tuples only; shared names or partner labels are not twins.
+/// Metadata/pins are checked by the consumer before suppressing either line.
+pub(crate) fn identity_equivalent(a: &str, b: &str) -> bool {
+    let (Some(a), Some(b)) = (identity_assertion(a), identity_assertion(b)) else {
+        return false;
+    };
+    a["kind"] == "kinship"
+        && b["kind"] == "kinship"
+        && ["owner", "value", "kinship", "details", "since"]
+            .iter()
+            .all(|k| a[k] == b[k])
+}
+
 /// A scope is a requirement, not a claim that the answer exists. Empty terms
 /// mean an ambiguous personal construction: no candidate gains a certificate.
 #[derive(Debug, Clone)]

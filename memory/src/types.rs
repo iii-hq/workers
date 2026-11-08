@@ -97,15 +97,7 @@ impl Memory {
         {
             return false;
         }
-        let attested = |m: &Memory| match m.confidence {
-            Confidence::Inferred => false,
-            Confidence::Extracted => m
-                .source
-                .as_ref()
-                .is_some_and(|s| s.session_id.is_some() && s.entry_id.is_some()),
-            Confidence::Stated => true,
-        };
-        if !attested(self) || !attested(newer) {
+        if !self.has_attested_statement() || !newer.has_attested_statement() {
             return false;
         }
         let tag = |m: &Memory, t: &str| m.tags.iter().any(|v| v == t);
@@ -203,6 +195,36 @@ impl Memory {
         })
     }
 
+    /// A trust label is not a source reference for extracted statements.
+    /// Explicit saves, including legacy saves, do not require a transcript.
+    pub(crate) fn has_attested_statement(&self) -> bool {
+        match self.confidence {
+            Confidence::Inferred => false,
+            Confidence::Extracted => self.source.as_ref().is_some_and(|source| {
+                source
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|id| !id.trim().is_empty())
+                    && source
+                        .entry_id
+                        .as_ref()
+                        .is_some_and(|id| !id.trim().is_empty())
+            }),
+            Confidence::Stated => true,
+        }
+    }
+
+    /// Closed-state tags restrict the generic change heuristic; a failed
+    /// typed transition must not fall back to shared-topic word overlap.
+    pub(crate) fn has_operational_state_type(&self) -> bool {
+        self.tags.iter().any(|tag| {
+            matches!(
+                tag.as_str(),
+                "city" | "fuso-horario" | "ci" | "corrida" | "diet" | "gestao" | "editor"
+            )
+        })
+    }
+
     /// When the fact was last stated, even when its record was written later
     /// (a late extraction pass); a legacy record goes by its last update.
     pub fn last_stated(&self) -> u64 {
@@ -232,6 +254,25 @@ pub struct BankInfo {
     pub pinned: usize,
     /// Rule (always-injected markdown) count.
     pub rules: usize,
+}
+
+/// Evaluation time is an explicit Rust dependency, never deserialized from a
+/// request, configuration or environment. Production wrappers capture wall time.
+#[derive(Debug, Clone, Copy)]
+pub struct EvaluationClock(u64);
+
+impl EvaluationClock {
+    pub fn wall() -> Self {
+        Self(now_ms())
+    }
+    /// Internal fixture seam; not registered on the engine or accepted on wire.
+    #[doc(hidden)]
+    pub const fn synthetic(now: u64) -> Self {
+        Self(now)
+    }
+    pub const fn now_ms(self) -> u64 {
+        self.0
+    }
 }
 
 /// Milliseconds since the Unix epoch.

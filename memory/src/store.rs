@@ -30,7 +30,7 @@ use crate::index::Bm25Index;
 use crate::types::{now_ms, Memory, Rule};
 
 #[path = "query_projection.rs"]
-mod query_projection;
+pub(crate) mod query_projection;
 
 const MEMORIES_FILE: &str = "memories.jsonl";
 // Bank Arcs from before reload may outlive their Store generation. Serialize
@@ -57,6 +57,20 @@ fn replay_record(log: &[u8], id: &str) -> Option<Memory> {
     }
     latest
 }
+fn has_extraction_receipt(log: &[u8], receipt: &str) -> bool {
+    log.split(|&byte| byte == b'\n').any(|line| {
+        serde_json::from_slice::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| {
+                v.get("extraction_receipt")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some(receipt)
+    })
+}
+
 const VECTORS_FILE: &str = "vectors.jsonl";
 const RULES_DIR: &str = "rules";
 const BANK_META: &str = "bank.yaml";
@@ -138,12 +152,26 @@ pub struct Evidence {
     /// The question directly requests a stored attribute tag ("which units",
     /// "qual CI"). Entity names or incidental words are not attributes.
     pub attribute_match: bool,
+    /// Open-property obligation and source value/governor spans; never ranking.
+    pub requested_attribute: Option<serde_json::Value>,
+    /// Owned identity obligation with exact source spans; independent of rank.
+    pub identity_attribute: Option<serde_json::Value>,
+    /// Owned activity/purpose obligation; exact spans, never a ranking signal.
+    pub life_attribute: Option<serde_json::Value>,
     /// Another live fact establishes an explicitly requested attribute tag,
     /// while this candidate is on a different attribute of the same subject.
     pub attribute_conflict: bool,
     /// A delimited personal nominal scope or predicate plus its argument
     /// is attested together. A possessive window or bare verb is insufficient.
     pub personal_match: bool,
+    /// Directional task/constraint witness; no score or tag can create it.
+    pub dietary_constraint: Option<serde_json::Value>,
+    /// A first-person production-transition calendar, asserted by its owner.
+    pub temporal_constraint: Option<serde_json::Value>,
+    pub temporal_scope_required: bool,
+    /// Root owner/governor/argument witness, independent of ranking terms.
+    pub technical_practice: Option<serde_json::Value>,
+    pub technical_scope_required: bool,
     /// Query-token ranges and argument/owner terms used by the transient audit.
     pub personal_scope_spans: Vec<[usize; 2]>,
     pub personal_scope_terms: Vec<Vec<String>>,
@@ -482,6 +510,90 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
 }
 
 impl Store {
+    fn extraction_plan_path(&self, source: &str) -> PathBuf {
+        // Hash is only a locator: the exact source is verified on every read.
+        let hash = source.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        self.root
+            .join(".extraction")
+            .join(format!("{hash:016x}.json"))
+    }
+
+    /// Durable model decision and original prompt snapshots, before any effect.
+    /// Internal data, not a public memory or schema surface.
+    pub fn extraction_plan(&self, source: &str) -> Result<Option<serde_json::Value>, MemoryError> {
+        let _log = memory_log_lock();
+        self.extraction_plan_unlocked(source)
+    }
+
+    fn extraction_plan_unlocked(
+        &self,
+        source: &str,
+    ) -> Result<Option<serde_json::Value>, MemoryError> {
+        let bytes = match std::fs::read(self.extraction_plan_path(source)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let plan: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| MemoryError::Storage(e.to_string()))?;
+        if plan["source"].as_str() != Some(source) {
+            return Err(MemoryError::Storage(
+                "extraction source identity mismatch".into(),
+            ));
+        }
+        Ok(Some(plan["plan"].clone()))
+    }
+
+    pub fn save_extraction_plan(
+        &self,
+        source: &str,
+        plan: &serde_json::Value,
+    ) -> Result<(), MemoryError> {
+        let _log = memory_log_lock();
+        if let Some(existing) = self.extraction_plan_unlocked(source)? {
+            if existing != *plan {
+                return Err(MemoryError::InvalidInput(
+                    "extraction decision already recorded".into(),
+                ));
+            }
+            return Ok(());
+        }
+        let path = self.extraction_plan_path(source);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let bytes = serde_json::to_vec(&serde_json::json!({"source":source,"plan":plan}))
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        write_atomic(&path, &bytes)?;
+        Ok(())
+    }
+
+    /// One in-flight source interval per session; persisted before its model or
+    /// effects, replayed before any newer job can widen the delta.
+    pub fn pending_extraction(
+        &self,
+        session: &str,
+    ) -> Result<Option<serde_json::Value>, MemoryError> {
+        let key = serde_json::json!(["pending", session]).to_string();
+        self.extraction_plan(&key)
+            .map(|value| value.filter(|v| !v.is_null()))
+    }
+
+    pub fn set_pending_extraction(
+        &self,
+        session: &str,
+        value: serde_json::Value,
+    ) -> Result<(), MemoryError> {
+        let key = serde_json::json!(["pending", session]).to_string();
+        let _log = memory_log_lock();
+        let path = self.extraction_plan_path(&key);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let bytes = serde_json::to_vec(&serde_json::json!({"source":key,"plan":value}))
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        write_atomic(&path, &bytes)?;
+        Ok(())
+    }
+
     /// Open the root, verify it is writable (a probe file — an unwritable
     /// data dir is boot-fatal; memory must never silently run in RAM), and
     /// load every bank.
@@ -652,6 +764,17 @@ impl Bank {
             for (lineno, line) in std::io::BufReader::new(file).lines().enumerate() {
                 let line = line?;
                 if line.trim().is_empty() {
+                    continue;
+                }
+                // Typed internal receipts are not memories or corrupt records.
+                if serde_json::from_str::<serde_json::Value>(&line)
+                    .ok()
+                    .is_some_and(|v| {
+                        v.get("extraction_receipt")
+                            .and_then(|v| v.as_str())
+                            .is_some()
+                    })
+                {
                     continue;
                 }
                 // A corrupt line (partial write from a crash) is skipped with
@@ -1008,6 +1131,122 @@ impl Bank {
         Ok(retired)
     }
 
+    /// Atomically publish one extraction effect and its source-bound receipt.
+    /// `None` means this effect was already committed, including after reopen.
+    /// Receipts share the SAME atomic log replacement as both correction records;
+    /// an independent state cursor is only an acknowledgment, never the deduper.
+    pub async fn extraction_expected(
+        &self,
+        receipt: &str,
+        replacement: Memory,
+        expected: Option<&Memory>,
+        old: Option<&Memory>,
+    ) -> Result<Option<Option<Memory>>, MemoryError> {
+        for record in old.into_iter().chain(std::iter::once(&replacement)) {
+            let mut entities = record.entities.clone();
+            let mut tags = record.tags.clone();
+            if !crate::redact::redact(&record.text).labels.is_empty()
+                || !crate::redact::drop_secrets(&mut entities).is_empty()
+                || !crate::redact::drop_secrets(&mut tags).is_empty()
+            {
+                return Err(MemoryError::InvalidInput(
+                    "extraction requires redacted records".into(),
+                ));
+            }
+        }
+        crate::redact::reject_injection("extraction", &replacement.text)?;
+        if old.is_some_and(|old| old.id == replacement.id || old.pinned || !old.is_live())
+            || !replacement.is_live()
+            || expected.is_some_and(|m| !m.is_live() || (m.pinned && m != &replacement))
+        {
+            return Err(MemoryError::InvalidInput(
+                "invalid extraction boundary".into(),
+            ));
+        }
+        let mut inner = self.inner.write().await;
+        let retired = old.map(|old| {
+            crate::functions::items::supersede_transition(
+                old.clone(),
+                replacement.clone(),
+                false,
+                now_ms(),
+            )
+            .0
+        });
+        let mut suffix = Vec::new();
+        for record in std::iter::once(&replacement).chain(retired.iter()) {
+            serde_json::to_writer(&mut suffix, record)
+                .map_err(|e| MemoryError::Storage(e.to_string()))?;
+            suffix.push(b'\n');
+        }
+        serde_json::to_writer(
+            &mut suffix,
+            &serde_json::json!({"extraction_receipt":receipt}),
+        )
+        .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        suffix.push(b'\n');
+        let path = self.dir.join(MEMORIES_FILE);
+        let receipt = receipt.to_string();
+        let expected = expected.cloned();
+        let old = old.cloned();
+        let replacement_id = replacement.id.clone();
+        let published = run_blocking(move || -> Result<bool, MemoryError> {
+            let _log = memory_log_lock();
+            let mut log = match std::fs::read(&path) {
+                Ok(log) => log,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e.into()),
+            };
+            if has_extraction_receipt(&log, &receipt) {
+                return Ok(false);
+            }
+            if replay_record(&log, &replacement_id) != expected
+                || old
+                    .as_ref()
+                    .is_some_and(|old| replay_record(&log, &old.id).as_ref() != Some(old))
+            {
+                return Err(MemoryError::InvalidInput(
+                    "extraction records changed on disk".into(),
+                ));
+            }
+            if !log.is_empty() && !log.ends_with(b"\n") {
+                log.push(b'\n');
+            }
+            log.extend_from_slice(&suffix);
+            write_atomic(&path, &log)?;
+            Ok(true)
+        })
+        .await?;
+        if !published {
+            return Ok(None);
+        }
+        if inner
+            .memories
+            .get(&replacement.id)
+            .is_some_and(|m| m.text != replacement.text)
+        {
+            inner.vectors.remove(&replacement.id);
+        }
+        inner.index.add(&replacement);
+        inner.memories.insert(replacement.id.clone(), replacement);
+        if let Some(retired) = &retired {
+            inner.index.remove(&retired.id);
+            inner.vectors.remove(&retired.id);
+            inner.memories.insert(retired.id.clone(), retired.clone());
+        }
+        Ok(Some(retired))
+    }
+
+    /// Check committed effects BEFORE constructing another reinforcement.
+    pub fn extraction_seen(&self, receipt: &str) -> Result<bool, MemoryError> {
+        let _log = memory_log_lock();
+        match std::fs::read(self.dir.join(MEMORIES_FILE)) {
+            Ok(log) => Ok(has_extraction_receipt(&log, receipt)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Joint compare-and-write for consolidation. The bank write lock covers
     /// BOTH preconditions, transition, durable replacement and index publication.
     /// Retaining ordinary JSONL records preserves legacy replay and full history.
@@ -1247,6 +1486,34 @@ impl Bank {
         .await
     }
 
+    /// Rust-only clock seam for the ordinary public recall scoring path.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recall_at(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        embedding_model: &str,
+        limit: usize,
+        half_life_days: u64,
+        include_superseded: bool,
+        clock: crate::types::EvaluationClock,
+    ) -> Vec<(Memory, f32)> {
+        self.recall_with_evidence(
+            query,
+            query_vec,
+            embedding_model,
+            limit,
+            half_life_days,
+            include_superseded,
+            0.0,
+            false,
+            clock,
+        )
+        .await
+        .0
+    }
+
     /// The best raw BM25 any live memory `keep` accepts scores for `query`
     /// (only what the caller can rank sets the scale): what a caller
     /// merging several banks into one ranking passes to
@@ -1282,7 +1549,7 @@ impl Bank {
         include_superseded: bool,
         bm25_max: f32,
     ) -> Vec<(Memory, f32)> {
-        self.recall_evidence(
+        self.recall_with_evidence(
             query,
             query_vec,
             embedding_model,
@@ -1290,14 +1557,47 @@ impl Bank {
             half_life_days,
             include_superseded,
             bm25_max,
+            false,
+            crate::types::EvaluationClock::wall(),
         )
         .await
         .0
     }
 
-    /// [`Bank::recall_scaled`] plus, for every candidate it ranked (also
-    /// those `limit` cut), the [`Evidence`] of why it matched. The ranking
-    /// is the same arithmetic; the evidence only reads it.
+    /// Rust-only shared-scale clock seam; no wire or configuration clock.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recall_scaled_at(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        embedding_model: &str,
+        limit: usize,
+        half_life_days: u64,
+        include_superseded: bool,
+        bm25_max: f32,
+        clock: crate::types::EvaluationClock,
+    ) -> Vec<(Memory, f32)> {
+        self.recall_with_evidence(
+            query,
+            query_vec,
+            embedding_model,
+            limit,
+            half_life_days,
+            include_superseded,
+            bm25_max,
+            false,
+            clock,
+        )
+        .await
+        .0
+    }
+
+    /// Injection candidates and their independent evidence, also for records
+    /// cut by `limit`. Scores use the public ranking arithmetic unchanged;
+    /// proved personal task constraints can additionally enter at zero lexical
+    /// relevance. Public recall never adds dietary constraint-only candidates;
+    /// an independently attested technical practice is a factual answer.
     #[allow(clippy::too_many_arguments)]
     pub async fn recall_evidence(
         &self,
@@ -1308,6 +1608,60 @@ impl Bank {
         half_life_days: u64,
         include_superseded: bool,
         bm25_max: f32,
+    ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
+        self.recall_evidence_at(
+            query,
+            query_vec,
+            embedding_model,
+            limit,
+            half_life_days,
+            include_superseded,
+            bm25_max,
+            crate::types::EvaluationClock::wall(),
+        )
+        .await
+    }
+
+    /// Rust-only deterministic evaluation; never registered or read from input.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recall_evidence_at(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        embedding_model: &str,
+        limit: usize,
+        half_life_days: u64,
+        include_superseded: bool,
+        bm25_max: f32,
+        clock: crate::types::EvaluationClock,
+    ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
+        self.recall_with_evidence(
+            query,
+            query_vec,
+            embedding_model,
+            limit,
+            half_life_days,
+            include_superseded,
+            bm25_max,
+            true,
+            clock,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn recall_with_evidence(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        embedding_model: &str,
+        limit: usize,
+        half_life_days: u64,
+        include_superseded: bool,
+        bm25_max: f32,
+        include_constraints: bool,
+        clock: crate::types::EvaluationClock,
     ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
         let (query_tokens, expanded) = query_tokens(query);
         if query_tokens.is_empty() && query_vec.is_none() {
@@ -1323,6 +1677,10 @@ impl Bank {
         let words = crate::index::tokenize(query);
         let requested_slot_spans = query_projection::requested_slots(query, &words);
         let directive_scope = query_projection::directive_scope(query);
+        let agenda_scope = crate::hooks::agenda::scope(query);
+        let temporal_scope_required = crate::hooks::agenda::requires_currentness(query)
+            || query_projection::temporal_scope(query);
+        let technical_scope_required = query_projection::practice_scope(query).is_some();
         let target_scope = if requested_slot_spans.is_some() {
             None
         } else {
@@ -1535,6 +1893,105 @@ impl Bank {
                 }
             }
         }
+        // Independently proved task constraints may have no shared language
+        // or words. Discover only those proved records, without a lexical,
+        // vector or ranking boost; unknown/metaphorical relations add none.
+        let dietary_constraints: HashMap<_, _> = inner
+            .memories
+            .iter()
+            .filter(|(_, m)| include_constraints && m.is_live())
+            .filter_map(|(id, m)| {
+                query_projection::dietary_constraint(query, &m.text)
+                    .map(|proof| (id.clone(), proof))
+            })
+            .collect();
+        let temporal_constraints: HashMap<_, _> = inner
+            .memories
+            .iter()
+            .filter(|(_, m)| (include_constraints || agenda_scope) && m.is_live())
+            .filter_map(|(id, m)| {
+                (if agenda_scope {
+                    if inner
+                        .memories
+                        .values()
+                        .any(|new| crate::hooks::agenda::superseded(m, new))
+                    {
+                        None
+                    } else {
+                        crate::hooks::agenda::evidence(query, m, clock)
+                    }
+                } else {
+                    query_projection::temporal_constraint(query, &m.text)
+                })
+                .map(|proof| (id.clone(), proof))
+            })
+            .collect();
+        let technical_practices: HashMap<_, _> = inner
+            .memories
+            .iter()
+            .filter(|(_, m)| m.is_live() && m.has_attested_statement())
+            .filter_map(|(id, m)| {
+                query_projection::practice_evidence(query, &m.text).map(|proof| (id.clone(), proof))
+            })
+            .collect();
+        let life_attributes: HashMap<_, _> = inner
+            .memories
+            .iter()
+            .filter(|(_, m)| m.is_live())
+            .filter_map(|(id, m)| {
+                query_projection::life_evidence(query, &m.text).map(|mut proof| {
+                    if !m.has_attested_statement() {
+                        proof["matched"] = serde_json::json!(false);
+                    }
+                    (id.clone(), proof)
+                })
+            })
+            .collect();
+        let identity_context: Vec<&str> = inner
+            .memories
+            .values()
+            .filter(|m| m.is_live() && m.has_attested_statement())
+            .map(|m| m.text.as_str())
+            .collect();
+        let identity_attributes: HashMap<_, _> = inner
+            .memories
+            .iter()
+            .filter(|(_, m)| m.is_live())
+            .filter_map(|(id, m)| {
+                query_projection::identity_evidence(
+                    query,
+                    &m.text,
+                    &identity_context,
+                    clock.now_ms(),
+                )
+                .map(|mut proof| {
+                    if !m.has_attested_statement() {
+                        proof["matched"] = serde_json::json!(false);
+                        proof["assertion"] = serde_json::Value::Null;
+                    }
+                    (id.clone(), proof)
+                })
+            })
+            .collect();
+        for id in dietary_constraints
+            .keys()
+            .chain(temporal_constraints.keys())
+            .chain(technical_practices.keys())
+            .chain(
+                life_attributes
+                    .iter()
+                    .filter(|(_, p)| p["matched"] == true)
+                    .map(|(id, _)| id),
+            )
+            .chain(
+                identity_attributes
+                    .iter()
+                    .filter(|(_, proof)| proof["matched"] == true)
+                    .map(|(id, _)| id),
+            )
+        {
+            bm25.entry(id.clone()).or_insert(0.0);
+        }
         // Semantic candidates join the pool even without a lexical hit.
         let (floor, anchor, weight) = semantic_scale(embedding_model);
         let mut sem: HashMap<String, f32> = HashMap::new();
@@ -1560,9 +2017,7 @@ impl Bank {
             .into_iter()
             .filter_map(|(id, s)| {
                 let f = inner.memories.get(&id)?;
-                (include_superseded
-                    || (f.is_live() && !inner.memories.values().any(|new| f.revalidated_by(new))))
-                .then(|| (f.clone(), s, sem.get(&id).copied()))
+                (include_superseded || f.is_live()).then(|| (f.clone(), s, sem.get(&id).copied()))
             })
             .collect();
         // BM25 over the caller's shared maximum (computed over what it can
@@ -1579,7 +2034,7 @@ impl Bank {
         let sd = (sum_sq / pool.max(1) as f64 - mean * mean).max(0.0).sqrt();
         let z_of =
             |c: f32| (pool >= MIN_Z_POOL && sd > 0.0).then(|| ((f64::from(c) - mean) / sd) as f32);
-        let now = now_ms();
+        let now = clock.now_ms();
         let named_entities: HashSet<String> = inner
             .memories
             .values()
@@ -1670,12 +2125,18 @@ impl Bank {
             let target_obligation = target_scope
                 .as_ref()
                 .and_then(|scope| query_projection::obligation_evidence(scope, &f.text));
-            let target_match = target_scope.as_ref().is_none_or(|scope| {
-                target_obligation.as_ref().map_or_else(
-                    || query_projection::target_matches(scope, &f.text),
-                    |obligation| obligation.matched,
-                )
-            });
+            let requested_attribute = query_projection::requested_attribute(query, &f.text);
+            let target_match = requested_attribute.as_ref().map_or_else(
+                || {
+                    target_scope.as_ref().is_none_or(|scope| {
+                        target_obligation.as_ref().map_or_else(
+                            || query_projection::target_matches(scope, &f.text),
+                            |obligation| obligation.matched,
+                        )
+                    })
+                },
+                |proof| proof["matched"] == true,
+            );
             let attribute_answer = scoped_personal
                 && compound_answer
                 && (f
@@ -1740,6 +2201,11 @@ impl Bank {
                     // semantic proof of a conflicting predicate.
                     predicate_conflict: false,
                     specific_recall: false,
+                    dietary_constraint: dietary_constraints.get(&f.id).cloned(),
+                    temporal_constraint: temporal_constraints.get(&f.id).cloned(),
+                    temporal_scope_required,
+                    technical_practice: technical_practices.get(&f.id).cloned(),
+                    technical_scope_required,
                     personal_match: scoped_personal
                         && (nominal_match
                             || personal_scopes.iter().any(|scope| {
@@ -1803,6 +2269,9 @@ impl Bank {
                     directive_scope_required: directive_scope.is_some(),
                     directive_scope_matched: directive.as_ref().is_some_and(|audit| audit.matched),
                     target_directive: directive.map(|audit| serde_json::json!(audit)),
+                    identity_attribute: identity_attributes.get(&f.id).cloned(),
+                    life_attribute: life_attributes.get(&f.id).cloned(),
+                    requested_attribute,
                     attribute_match: attribute_answer,
                     attribute_conflict: !compound_answer
                         || (!requested_tags.is_empty() && !attribute_answer),
@@ -1838,7 +2307,52 @@ impl Bank {
             );
             scored.push((f, fused));
         }
-        rank_desc(&mut scored, limit);
+        // A later transition may hide an old state only when the later
+        // statement independently answers this query. Do this before the
+        // ranking limit, but after evidence: old support never transfers.
+        if !include_superseded {
+            let reasons = crate::hooks::admission_reasons(&scored, &evidence);
+            let current: Vec<&Memory> = scored
+                .iter()
+                .filter(|(m, _)| reasons.get(&m.id).is_some_and(|r| r.supported()))
+                .map(|(m, _)| m)
+                .collect();
+            let stale: HashSet<String> = scored
+                .iter()
+                .filter(|(old, _)| current.iter().any(|new| old.revalidated_by(new)))
+                .map(|(m, _)| m.id.clone())
+                .collect();
+            scored.retain(|(m, _)| !stale.contains(&m.id));
+        }
+        // A dated agenda is a factual answer on the ordinary hybrid read path,
+        // not a dietary injection constraint. Apply the same source-bound
+        // currentness/dedup before the existing cap. History/raw arms stay raw.
+        if crate::hooks::agenda::requires_currentness(query)
+            && !include_constraints
+            && !include_superseded
+        {
+            rank_desc(&mut scored, usize::MAX);
+            return (
+                crate::hooks::select(scored, &evidence, &HashSet::new(), limit, query),
+                evidence,
+            );
+        }
+        // Preserve scores and rank within each partition, but do not let an
+        // arbitrary lexical/vector prefix hide a typed, attested identity
+        // answer from callers using a finite public recall limit.
+        rank_desc(&mut scored, usize::MAX);
+        if scored.len() > limit {
+            let reasons = crate::hooks::admission_reasons(&scored, &evidence);
+            scored.sort_by_key(|(m, _)| {
+                !(evidence.get(&m.id).is_some_and(|e| {
+                    [&e.identity_attribute, &e.life_attribute]
+                        .into_iter()
+                        .flatten()
+                        .any(|p| p["matched"] == true)
+                }) && reasons.get(&m.id).is_some_and(|r| r.supported()))
+            });
+        }
+        scored.truncate(limit);
         (scored, evidence)
     }
 
@@ -1904,6 +2418,82 @@ impl Bank {
         self.dir.join(RULES_DIR)
     }
 
+    // Internal receipt metadata shares the rule's atomic rename, but is never
+    // returned/injected as rule text. Ordinary API edits retain the ledger.
+    fn rule_document(path: &Path) -> Result<(String, Vec<String>), MemoryError> {
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((String::new(), Vec::new()))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let prefix = "<!-- memory-extraction-receipts ";
+        if let Some(rest) = raw.strip_prefix(prefix) {
+            let (metadata, content) = rest
+                .split_once(" -->\n")
+                .ok_or_else(|| MemoryError::Storage("invalid rule receipt envelope".into()))?;
+            let receipts = serde_json::from_str(metadata)
+                .map_err(|e| MemoryError::Storage(format!("invalid rule receipts: {e}")))?;
+            Ok((content.into(), receipts))
+        } else {
+            Ok((raw, Vec::new()))
+        }
+    }
+
+    fn write_rule_document(
+        path: &Path,
+        content: &str,
+        receipts: &[String],
+    ) -> Result<(), MemoryError> {
+        if receipts.is_empty() {
+            if content.trim().is_empty() {
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                }
+                return Ok(());
+            }
+            return write_atomic(path, content.as_bytes()).map_err(Into::into);
+        }
+        let metadata = serde_json::to_string(receipts)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e");
+        let document = format!("<!-- memory-extraction-receipts {metadata} -->\n{content}");
+        write_atomic(path, document.as_bytes())?;
+        Ok(())
+    }
+
+    /// Publish a learned rule and source receipt in ONE atomic replacement.
+    /// A replay is a no-op even if an API edit subsequently removed the rule.
+    /// Expected text guards edits between merge and publication.
+    pub fn extraction_rule_expected(
+        &self,
+        receipt: &str,
+        name: &str,
+        expected: &str,
+        content: &str,
+    ) -> Result<bool, MemoryError> {
+        validate_name(name)?;
+        let _log = memory_log_lock();
+        let dir = self.rules_dir();
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{name}.md"));
+        let (current, mut receipts) = Self::rule_document(&path)?;
+        if receipts.iter().any(|seen| seen == receipt) {
+            return Ok(false);
+        }
+        if current != expected {
+            return Err(MemoryError::InvalidInput(
+                "extraction rule changed before commit".into(),
+            ));
+        }
+        let content = crate::redact::redact(content).text;
+        receipts.push(receipt.into());
+        Self::write_rule_document(&path, &content, &receipts)?;
+        Ok(current != content)
+    }
+
     pub fn list_rules(&self) -> Result<Vec<Rule>, MemoryError> {
         let dir = self.rules_dir();
         if !dir.exists() {
@@ -1920,13 +2510,16 @@ impl Bank {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
+            let content = match Self::rule_document(&path) {
+                Ok((c, _)) => c,
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "skipping unreadable rule file");
                     continue;
                 }
             };
+            if content.trim().is_empty() {
+                continue;
+            }
             let updated_at = entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -1947,6 +2540,7 @@ impl Bank {
     /// Atomic write ([`write_atomic`]); empty content removes the rule.
     pub fn set_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
         validate_name(name)?;
+        let _log = memory_log_lock();
         // Rules are injected into every turn: no known secret shape is kept.
         let redacted = crate::redact::redact(content);
         if !redacted.labels.is_empty() {
@@ -1957,13 +2551,8 @@ impl Bank {
         let dir = self.rules_dir();
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{name}.md"));
-        if content.trim().is_empty() {
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-            }
-            return Ok(());
-        }
-        write_atomic(&path, content.as_bytes())?;
+        let (_, receipts) = Self::rule_document(&path)?;
+        Self::write_rule_document(&path, content, &receipts)?;
         Ok(())
     }
 

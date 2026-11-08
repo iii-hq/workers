@@ -790,8 +790,13 @@ mod productive {
                         }
                         "session::messages" => {
                             reply["result"] = json!({"messages":[{
-                            "entry_id":"metric-end", "message":{"role":"user", "timestamp":1760443200000_u64,
+                            "entry_id":"metric-user", "message":{"role":"user", "timestamp":1760443200000_u64,
                                 "content":[{"type":"text","text":"PRIVATE_TRANSCRIPT Amber instruments require copper calibration."}]}
+                        }, {
+                            "entry_id":"metric-end",
+                            "origin":{"turn_id":format!("turn-{}",data["session_id"].as_str().unwrap()),
+                                "memory_bank":"private","memory_extraction":true},
+                            "message":{"role":"assistant","timestamp":1760443200000_u64,"content":[]}
                         }],"next_cursor":null})
                         }
                         "session::list" => {

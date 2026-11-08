@@ -133,7 +133,9 @@ async fn hook_replay(
     if !c.layers.is_empty() {
         input.metadata = Some(json!({"fs_scope":{"root":root}}));
     }
-    let response = pre_generate(deps, input).await.unwrap();
+    let response = pre_generate_at(deps, input, agenda::fixture_clock())
+        .await
+        .unwrap();
     let annotations = response.annotations.unwrap_or_default();
     let ids: Vec<String> = serde_json::from_value(
         annotations
@@ -195,7 +197,7 @@ async fn synthetic_injection_replay_dev_holdout() {
         );
         assert!(c.labels.required.iter().all(|k| !k.is_empty()));
     }
-    let at = now_ms();
+    let at = agenda::fixture_clock().now_ms();
     let mut failures = Vec::new();
     let mut factual_failures = Vec::new();
     let mut relevance_failures = Vec::new();
@@ -459,7 +461,7 @@ async fn synthetic_injection_replay_dev_holdout() {
             for (holder_name, layered) in sources {
                 let (holder, _) = store.ensure_bank(&holder_name, None).await.unwrap();
                 let (found, evidence) = holder
-                    .recall_evidence(
+                    .recall_evidence_at(
                         effective,
                         qv.map(|q| q.v.as_slice()),
                         cache.as_ref().map_or("", |q| q.model.as_str()),
@@ -467,6 +469,7 @@ async fn synthetic_injection_replay_dev_holdout() {
                         cfg.decay_half_life_days,
                         false,
                         0.0,
+                        agenda::fixture_clock(),
                     )
                     .await;
                 for (m, score) in found {
@@ -580,7 +583,7 @@ async fn synthetic_injection_replay_dev_holdout() {
             );
             if !ok {
                 let (ranked, ev) = bank
-                    .recall_evidence(
+                    .recall_evidence_at(
                         effective,
                         qv.map(|q| q.v.as_slice()),
                         cache.as_ref().map_or("", |q| q.model.as_str()),
@@ -588,6 +591,7 @@ async fn synthetic_injection_replay_dev_holdout() {
                         cfg.decay_half_life_days,
                         false,
                         0.0,
+                        agenda::fixture_clock(),
                     )
                     .await;
                 println!(
@@ -611,7 +615,7 @@ async fn synthetic_injection_replay_dev_holdout() {
         "scope_classification":"relevance/abstention misses remain blocking; forbidden stale facts and equivalent duplicates only are temporal/consolidation dependencies, never counted as pass",
         "coverage_gaps":["producer authority tested separately", "effective continuation/novel query without exact cache uses lexical fallback, not measured embedding quality"],
         "evaluator_source_fingerprint":crate::types::fingerprint(include_str!("evaluator.rs")),
-        "clock":"real wall clock for decay/date; Instant for local latency",
+        "clock":"SYNTHETIC Monday 2026-10-12T00:00:00Z; UTC Monday calendar next week [2026-10-19,2026-10-26); Instant for local latency; NOT actual current date",
         "holdout_scope":"scenario labels only; shared synthetic bank and pre-existing query cache, not unseen data",
         "latency_scope":"warm hook replay including in-process SDK/cache transport; excludes seeding and live embedder/model generation"})
     );

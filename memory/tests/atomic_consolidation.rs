@@ -543,25 +543,141 @@ async fn currentness_pt_en_dedup_real_store_preserves_detail_pinned_rules_histor
         calls: Mutex::new(vec![]),
         interleave: Mutex::new(None),
     };
-    let (report, _) = consolidate::run_bank(&boundary, "offline", false, &mut 10).await;
+    // The deterministic lane must not infer translation. Supply an explicit
+    // source-bound proposal to the real semantic consumer; all mutations still
+    // dispatch through ActualBoundary into the productive filesystem store.
+    struct CertifiedBoundary<'a> {
+        actual: &'a ActualBoundary,
+        cursor: Mutex<Value>,
+        proof: consolidate::DetailProof,
+        decisions: Mutex<usize>,
+    }
+    impl ConsolidationTransport for CertifiedBoundary<'_> {
+        fn invoke<'a>(&'a self, function: &'a str, payload: Value) -> TransportFuture<'a, Value> {
+            Box::pin(async move {
+                match function {
+                    "state::get" => Ok(json!({"value":
+                        if payload["key"] == "semantic_cursor:offline" {
+                            self.cursor.lock().unwrap().clone()
+                        } else { Value::Null }
+                    })),
+                    "state::set" => {
+                        if payload["key"] == "semantic_cursor:offline" {
+                            *self.cursor.lock().unwrap() = payload["value"].clone();
+                        }
+                        Ok(json!({}))
+                    }
+                    "memory::recall" => {
+                        assert_eq!(payload["bank"], "offline");
+                        assert!(matches!(
+                            payload["mode"].as_str(),
+                            Some("lexical" | "semantic")
+                        ));
+                        // Offline supplied retrieval, but the candidate snapshot
+                        // itself comes from the actual producer, not a CAS mock.
+                        let candidate = items::get(
+                            &self.actual.deps,
+                            serde_json::from_value(json!({"bank":"offline","id":"en"})).unwrap(),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        Ok(json!({"retrieval":payload["mode"],
+                            "memories":[{"memory":candidate.memory}]}))
+                    }
+                    _ => self.actual.invoke(function, payload).await,
+                }
+            })
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _model: &'a str,
+            _system: &'a str,
+            prompt: String,
+            _max_tokens: u32,
+        ) -> TransportFuture<'a, Value> {
+            Box::pin(async move {
+                assert!(prompt.contains("n1 [") && prompt.contains("Usuário prefere chá."));
+                assert!(prompt.contains("c1 [") && prompt.contains("User prefers tea."));
+                *self.decisions.lock().unwrap() += 1;
+                let proposal = json!({"actions":[{"type":"merge","survivor":"c1","retired":"n1",
+                    "reason":"Explicit supplied bilingual equivalence with source-bound certificate.",
+                    "proof":self.proof}]});
+                Ok(json!({"message":{"stop_reason":"stop","content":[
+                    {"type":"text","text":proposal.to_string()}]}}))
+            })
+        }
+    }
+    let proof = consolidate::detail_proof(&pinned.text, "Usuário prefere chá.").unwrap();
+    let certified = CertifiedBoundary {
+        actual: &boundary,
+        // The fixture's earlier records were already judged; pt is pending.
+        cursor: Mutex::new(json!({"updated_at":2,"id":"en"})),
+        proof: proof.clone(),
+        decisions: Mutex::new(0),
+    };
+    let consumer = functions::Deps {
+        iii: boundary.deps.iii.clone(),
+        config: Arc::new(tokio::sync::RwLock::new(Arc::new(config::WorkerConfig {
+            banks: vec!["offline".into()],
+            semantic_enabled: true,
+            llm_assist_enabled: false,
+            ..Default::default()
+        }))),
+        run_gate: tokio::sync::Mutex::new(()),
+    };
+    let run_request = || functions::RunRequest {
+        bank: Some("offline".into()),
+        dry_run: Some(false),
+    };
+    let history_before = std::fs::read(dir.path().join("offline/memories.jsonl")).unwrap();
+    let response = functions::run_with_transport(&consumer, run_request(), &certified)
+        .await
+        .unwrap();
+    assert!(response.checkpointed);
+    assert_eq!(response.superseded, 3); // two literal duplicates plus certified pt
+    let report = &response.banks[0];
     assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.semantic_rejected, 0);
+    assert_eq!(report.semantic.len(), 1);
+    assert!(report.semantic[0].applied);
+    assert_eq!(report.semantic[0].proof.as_ref(), Some(&proof));
+    assert_eq!(*certified.decisions.lock().unwrap(), 1);
     assert_eq!(bank.get("en").await.unwrap(), pinned);
     assert_eq!(bank.get("detail").await.unwrap(), detail);
     let retired = bank.get("pt").await.unwrap();
     assert!(!retired.is_live());
     assert_eq!(retired.superseded_by.as_deref(), Some("en"));
     assert_eq!(retired.source, record("pt").source);
-    assert!(report
-        .detail_proofs
-        .iter()
-        .any(|p| p.survivor_source == pinned.text && p.retired_source == retired.text));
+    assert_eq!(proof.survivor_source, pinned.text);
+    assert_eq!(proof.retired_source, retired.text);
+    assert_eq!(retired.text, "Usuário prefere chá.");
+    {
+        let calls = boundary.calls.lock().unwrap();
+        let writes: Vec<_> = calls
+            .iter()
+            .filter(|(f, _)| f == "memory::supersede")
+            .collect();
+        assert_eq!(writes.len(), 3);
+        let bilingual_write = writes.iter().find(|(_, p)| p["id"] == "pt").unwrap();
+        assert_eq!(
+            bilingual_write.1["expected_memory"]["source"],
+            json!(record("pt").source)
+        );
+        assert_eq!(bilingual_write.1["expected_superseded_by"], json!(pinned));
+    }
     assert_eq!(
         bank.list_rules().unwrap()[0].content,
         "Permanent rule; preserve bytes.\n"
     );
     let before = std::fs::read(dir.path().join("offline/memories.jsonl")).unwrap();
-    let (again, _) = consolidate::run_bank(&boundary, "offline", false, &mut 10).await;
+    assert!(before.starts_with(&history_before));
+    let again = functions::run_with_transport(&consumer, run_request(), &certified)
+        .await
+        .unwrap();
+    assert!(again.checkpointed);
     assert_eq!(again.superseded, 0);
+    assert_eq!(*certified.decisions.lock().unwrap(), 1);
     assert_eq!(
         std::fs::read(dir.path().join("offline/memories.jsonl")).unwrap(),
         before

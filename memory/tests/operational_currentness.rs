@@ -322,6 +322,140 @@ async fn currentness_preselection_keeps_current_when_old_would_fill_limit() {
 }
 
 #[tokio::test]
+async fn currentness_store_does_not_hide_supported_detail_for_unsupported_transition() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().into()).unwrap();
+    let (bank, _) = store.ensure_bank("offline", None).await.unwrap();
+    let mut old = record(
+        "detail-old",
+        "User's code editor is VS Code, with the Vim keybindings extension enabled.",
+        1,
+    );
+    let mut new = record(
+        "detail-new",
+        "User switched her code editor from VS Code to Neovim, configured with lazy.nvim.",
+        2,
+    );
+    old.tags = vec!["editor".into()];
+    new.tags = old.tags.clone();
+    assert!(old.revalidated_by(&new));
+    bank.commit(old).await.unwrap();
+    bank.commit(new).await.unwrap();
+    let query = "Vim keybindings extension enabled";
+    let (all, evidence) = bank
+        .recall_evidence(query, None, "", usize::MAX, 30, false, 0.0)
+        .await;
+    let reasons = hooks::admission_reasons(&all, &evidence);
+    assert!(reasons["detail-old"].supported());
+    assert!(!reasons.get("detail-new").is_some_and(|r| r.supported()));
+    let (limited, _) = bank
+        .recall_evidence(query, None, "", 1, 30, false, 0.0)
+        .await;
+    assert_eq!(limited[0].0.id, "detail-old");
+    assert_eq!(
+        hooks::select(all, &evidence, &Default::default(), 1, query)[0]
+            .0
+            .id,
+        "detail-old"
+    );
+}
+
+#[tokio::test]
+async fn currentness_source_type_owner_and_contradiction_guards_before_limit() {
+    for control in [
+        "source",
+        "empty-source",
+        "type",
+        "owner",
+        "different-fact",
+        "same-topic",
+        "equal-date",
+        "pinned",
+        "legacy",
+        "attested-extracted",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().into()).unwrap();
+        let (bank, _) = store.ensure_bank("offline", None).await.unwrap();
+        let mut old = record(
+            "old",
+            "User's code editor is VS Code, with the Vim keybindings extension enabled.",
+            1,
+        );
+        let mut new = record(
+            "new",
+            "User switched her code editor from VS Code to Neovim, configured with lazy.nvim.",
+            2,
+        );
+        old.tags = vec!["editor".into()];
+        new.tags = old.tags.clone();
+        old.corroboration = 100;
+        match control {
+            "source" => {
+                new.confidence = Confidence::Extracted;
+                new.source = None;
+            }
+            "empty-source" => {
+                new.confidence = Confidence::Extracted;
+                new.source.as_mut().unwrap().entry_id = Some(" ".into());
+            }
+            "type" => new.tags = vec!["database".into()],
+            "owner" => {
+                new.text = new
+                    .text
+                    .replace("User switched her", "User's colleague switched her")
+            }
+            "different-fact" => new.text = new.text.replace("from VS Code", "from Emacs"),
+            "same-topic" => {
+                new.text = "User now uses the code editor to write database migration notes.".into()
+            }
+            "equal-date" => {
+                new.stated_at = Some(1);
+                new.updated_at = 9;
+            }
+            "pinned" => old.pinned = true,
+            "legacy" => {
+                old.source = None;
+                old.stated_at = None;
+            }
+            "attested-extracted" => {
+                old.confidence = Confidence::Extracted;
+                new.confidence = Confidence::Extracted;
+            }
+            _ => unreachable!(),
+        }
+        let expected_stale = matches!(control, "legacy" | "attested-extracted");
+        assert_eq!(old.revalidated_by(&new), expected_stale, "{control}");
+        bank.commit(old).await.unwrap();
+        bank.commit(new).await.unwrap();
+        let query = "Which code editor am I using?";
+        let (all, evidence) = bank
+            .recall_evidence(query, None, "", usize::MAX, 30, false, 0.0)
+            .await;
+        assert_eq!(
+            all.iter().any(|(m, _)| m.id == "old"),
+            !expected_stale,
+            "store: {control}"
+        );
+        let selected = hooks::select(all, &evidence, &Default::default(), 6, query);
+        assert_eq!(
+            selected.iter().any(|(m, _)| m.id == "old"),
+            !expected_stale,
+            "select: {control}"
+        );
+        let (limited, _) = bank
+            .recall_evidence(query, None, "", 1, 30, false, 0.0)
+            .await;
+        assert_eq!(limited.len(), 1);
+        assert_eq!(
+            limited[0].0.id,
+            if expected_stale { "new" } else { "old" },
+            "before limit: {control}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn correction_atomic_rejects_stale_target_before_publishing_and_retries() {
     for change in ["edit", "pin", "retire"] {
         let dir = tempfile::tempdir().unwrap();

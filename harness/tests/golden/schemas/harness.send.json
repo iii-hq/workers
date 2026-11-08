@@ -90,6 +90,13 @@
               "null"
             ]
           },
+          "continuation_entry_id": {
+            "description": "Explicit continuation of a user entry on this session's active path. Resolved and bounded by Harness; never inferred from message text.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "functions": {
             "anyOf": [
               {

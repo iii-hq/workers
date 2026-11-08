@@ -44,7 +44,20 @@ impl ConsolidationTransport for Boundary {
             let mut state = self.state.lock().unwrap();
             state.calls.push((function.into(), payload.clone()));
             match function {
+                "memory::bank::list" => {
+                    assert_eq!(payload, json!({}));
+                    let live: Vec<_> = state
+                        .rows
+                        .iter()
+                        .filter(|r| r["invalid_at"].is_null())
+                        .collect();
+                    Ok(json!({"banks":[{"name":"offline","description":"",
+                        "memories":live.len(),
+                        "pinned":live.iter().filter(|r| r["pinned"] == true).count(),
+                        "rules":0}]}))
+                }
                 "memory::list" => {
+                    assert_eq!(payload["bank"], "offline");
                     let live: Vec<_> = state
                         .rows
                         .iter()
@@ -133,7 +146,7 @@ async fn run(boundary: &Boundary, semantic_enabled: bool) -> functions::RunRespo
         config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),
         run_gate: tokio::sync::Mutex::new(()),
     };
-    functions::run_with_transport(
+    let report = functions::run_with_transport(
         &deps,
         RunRequest {
             bank: None,
@@ -142,7 +155,18 @@ async fn run(boundary: &Boundary, semantic_enabled: bool) -> functions::RunRespo
         boundary,
     )
     .await
-    .unwrap()
+    .unwrap();
+    assert_eq!(report.banks.len(), 1, "the offline bank must be exercised");
+    let state = boundary.state.lock().unwrap();
+    assert!(state
+        .calls
+        .iter()
+        .any(|(f, p)| f == "memory::bank::list" && *p == json!({})));
+    assert!(state
+        .calls
+        .iter()
+        .any(|(f, p)| f == "memory::list" && p["bank"] == "offline"));
+    report
 }
 
 fn proposal(proof: Option<Value>) -> Value {

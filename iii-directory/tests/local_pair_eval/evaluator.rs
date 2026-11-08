@@ -432,7 +432,7 @@ fn aggregate(metrics: &[Value]) -> Vec<Value> {
         let domain = m["domain"].as_str().unwrap();
         let cross = m["cross_language"].as_bool().unwrap();
         for key in [
-            format!("{split}"),
+            split.to_string(),
             format!("{split}/language/{language}"),
             format!("{split}/cross_language/{cross}"),
             format!("{split}/domain/{domain}"),

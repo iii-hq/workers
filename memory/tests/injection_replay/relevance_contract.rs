@@ -5,6 +5,15 @@
 // controls additionally replay genuine cached vectors; no embedder is run.
 use super::*;
 
+#[path = "neutral_constraints.rs"]
+mod neutral_constraints;
+
+#[path = "identity_relations.rs"]
+mod identity_relations;
+
+#[path = "life_relations.rs"]
+mod life_relations;
+
 #[tokio::test]
 async fn directive_relation_original_role_pairs_keep_each_positive_and_reject_each_isolated_extra()
 {
@@ -3072,9 +3081,9 @@ async fn personal_scope_official_groups_keep_factual_loss_distinct_from_safe_abs
     let mut failures = Vec::new();
     let mut executed = 0;
     for (n, (query_id, expected)) in [
-        ("q-pt-life-par-artistas", vec![]),
-        ("q-en-work-wire-protocol", vec![]),
-        ("q-id-partner", vec![]),
+        ("q-pt-life-par-artistas", vec!["pt-life-mpb-gal"]),
+        ("q-en-work-wire-protocol", vec!["en-work-grpc-internal"]),
+        ("q-id-partner", vec!["id-partner"]),
         ("q-id-apelido", vec!["id-apelido"]),
         ("q-id-name", vec!["id-full-name"]),
     ]
@@ -3122,10 +3131,10 @@ async fn personal_scope_official_groups_keep_factual_loss_distinct_from_safe_abs
     println!(
         "{}",
         json!({"diagnostic":"personal-scope-official","query":query,"selected":ids(&response),
-        "original_factual_expected":["evt-pref-concise"],"independent_policy_expected":[],
-        "disposition":"argument alternatives not proved equivalent; abstain rather than borrow transport preference"})
+        "original_factual_expected":["evt-pref-concise"],"independent_policy_expected":["evt-pref-concise"],
+        "disposition":"owned assistant-output style relation proves concise answers; transport preference remains unrelated"})
     );
-    if ids(&response) != json!([]) {
+    if ids(&response) != json!(["evt-pref-concise"]) {
         failures.push(format!("answer-style: {response}"));
     }
     rules_preserved(&response);
@@ -5321,4 +5330,107 @@ async fn directive_relation_subtypes_keep_neutral_components_values_and_inverse_
         failures.is_empty(),
         "neutral subtype controls: {failures:?}"
     );
+}
+
+#[tokio::test]
+async fn identity_name_witness_does_not_supply_team_quantity_or_unwitnessed_age() {
+    let dir = tempfile::tempdir().unwrap();
+    let deps = offline(dir.path());
+    let store = deps.store().await;
+    let (bank, _) = store.ensure_bank("hook-relevance", None).await.unwrap();
+    bank.set_rule("standing", "Preserve the permanent safety rule.")
+        .unwrap();
+    let year = chrono::Utc::now().format("%Y").to_string();
+    let records = [
+        identity_relations::fact("name", "User's partner's name is Laleh."),
+        identity_relations::fact(
+            "team",
+            "User is a senior acoustics engineer on the astronomy team at Willow Cooperative.",
+        ),
+        identity_relations::fact("age", &format!("User turned 33 years old in April {year}.")),
+        identity_relations::fact("unknown", "User's sister's name is unknown."),
+    ];
+    for record in &records {
+        bank.commit(record.clone()).await.unwrap();
+    }
+    for (n, (query, expected)) in [
+        ("What's my partner's name?", json!(["name"])),
+        ("How many people sit on the astronomy team?", json!([])),
+        ("when is my birthday?", json!([])),
+        ("What's my sister's name?", json!([])),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let session = format!("name-without-count-{n}");
+        let (hits, evidence) = bank
+            .recall_evidence(query, None, "", usize::MAX, 30, false, 0.0)
+            .await;
+        let selected = select(hits, &evidence, &HashSet::new(), 6, query);
+        assert_eq!(
+            json!(selected
+                .iter()
+                .map(|(m, _)| m.id.as_str())
+                .collect::<Vec<_>>()),
+            expected
+        );
+        let response = hook(
+            &deps,
+            &session,
+            json!([{"role":"user","content":query}]),
+            context(&session, "direct", query),
+        )
+        .await;
+        assert_eq!(ids(&response), expected, "{query}");
+        rules_preserved(&response);
+    }
+    for record in records {
+        assert_eq!(bank.get(&record.id).await.unwrap(), record);
+    }
+}
+
+#[test]
+fn relevance_contract_preference_context_never_certifies_unstated_types_or_foreign_roles() {
+    use crate::store::query_projection::life_evidence;
+    let book = "User's favorite book is The Silver Estuary by Ines Duarte.";
+    for query in [
+        "What is my favorite novel?",
+        "Qual romance peruano eu mais amo?",
+        "Qual livro eu prefiro?",
+    ] {
+        let proof = life_evidence(query, book).unwrap();
+        assert_eq!(proof["matched"], true);
+        assert_eq!(proof["certifies_work_is_novel"], false);
+        assert_eq!(proof["certifies_work_nationality"], false);
+        assert_eq!(proof["value"], "the silver estuary");
+    }
+    let style = "User prefers concise answers from you.";
+    for query in [
+        "Do I prefer concise answers or detailed explanations from you?",
+        "Do I prefer detailed explanations or concise answers from you?",
+    ] {
+        let proof = life_evidence(query, style).unwrap();
+        assert_eq!(proof["matched"], true);
+        assert_eq!(proof["output_role"], "assistant_answer");
+        assert!(proof["owner_bytes"].is_array());
+        assert!(proof["governor_bytes"].is_array());
+        assert!(proof["output_role_bytes"].is_array());
+    }
+    for query in [
+        "What is the visitor's favorite novel?",
+        "If I read novels, what is my favorite novel?",
+        "User quotes: What is my favorite novel?",
+        "Is my favorite novel Colombian?",
+        "Who wrote my favorite novel?",
+        "Which format is my favorite book in?",
+        "Do you prefer short answers or long explanations from me?",
+        "Does the visitor prefer short answers or long explanations from you?",
+        "If I asked, would I prefer short answers or long explanations from you?",
+        "User quotes: Do I prefer short answers or long explanations from you?",
+        "Which language should you use for code comments?",
+        "Which time format should you use?",
+    ] {
+        assert!(life_evidence(query, book).is_none(), "book {query}");
+        assert!(life_evidence(query, style).is_none(), "style {query}");
+    }
 }

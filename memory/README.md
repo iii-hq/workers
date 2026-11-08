@@ -95,22 +95,42 @@ uses the bounded legacy window; it does **not** backfill all initial/fork histor
 transient or malformed state read fails instead of masquerading as absence. A missing
 state writer also fails confirmation. More than four runs drain oldest-first across
 retry attempts; queue retry limits can still leave work dead-lettered, not completed.
-The bank stamped on each job is retained, and OFF/disabled jobs advance only their
-found boundary so subsequent ON jobs do not sweep those messages into a different bank.
-This assumes delivery in causal order: a later job overtaking an unconfirmed OFF job,
-multiple memory processes, and active-path mutation across page calls are not covered by
-the in-process session lock. Explicit bank changes do not split a preexisting backlog.
+Turn-bound jobs resolve ordered OFF/ON and bank intervals from assistant origins
+(`memory_extraction`, `memory_bank`, layer/agent, and producer `turn_id`) before
+splitting any text into model runs. A missing policy boundary fails closed; it is
+not permission to attribute unknown backlog to the newest bank. Legacy jobs without
+turn identity retain bounded compatibility and no historical policy guarantee.
 
-Memory writes complete before cursor confirmation. A numbered `replaces` resolves the
-actual prompt snapshot; correction uses the existing atomic `correct_expected` store
-transition, rejecting concurrent changes before publishing replacement plus tombstone.
-Observed change events are attempted only after publication, before cursor confirmation;
-they are fire-and-forget, not an atomic receipt or guaranteed delivery. Store replay after
-SDK/store reconstruction preserves published records, but store and state have **no joint
-transaction**: interruption or state failure after publication can replay a restatement
-and increment corroboration again (textual fingerprint identity still prevents another
-identical record). This is not exactly-once extraction, exactly-once events, a subprocess
-kill test, or a machine/power-loss guarantee; parent-directory durability is not asserted.
+A captured, redacted pending run is persisted before inference. Current session
+eligibility, the requesting job's closing turn/policy/bank, and the entire source
+interval are validated before any pending recovery. Automation does not read or
+advance a cursor or replay a plan. A pending run requires an eligible matching-bank
+job; a different-bank job leaves it intact for the correct job, then retries after
+that recovery. Each assistant needs an explicit policy; unknown prefix/suffix/gaps,
+conflicting source turns or multiple unbound opening requests fail closed before
+any effects. Harness user messages normally have no origin, so one opening request
+is attributed only to its immediate policy-stamped assistant, never across an
+unstamped assistant. Legacy turnless jobs retain the compatibility limit above. Model decisions and original memory snapshots are
+persisted under an exact session/bank/source-turn/ordered-entry identity, including
+original learned-rule references. The closing source turn must match a bounded job;
+each older backlog interval retains its own producer turn, not the latest job's turn. Each memory effect and
+its source receipt share one atomic replacement of `memories.jsonl`, including both
+sides of a guarded correction. Replay/reopen acknowledges committed effects without
+another revision, corroboration or item-event attempt. `correct_expected` remains
+available unchanged. There is no cross-bank transaction or cross-process writer lease;
+concurrent independent Memory processes are not supported by this component.
+
+Events remain best-effort notifications attempted after publication: interruption
+between publication and emission can LOSE an event, not guarantee exactly-once delivery.
+There is no durable event outbox; these are at-most-once postcommit notification
+attempts, not reliable delivery. Learned rules carry their own exact source receipt
+inside the same atomic markdown replacement. The internal metadata is excluded from
+rule APIs/injection; API edits and empty-rule removal retain the receipt so replay
+cannot undo a subsequent human edit. Rule text is compared before publication to
+reject concurrent edits. Direct filesystem replacement of the metadata is outside
+this API guarantee. Memory and rules have separate per-effect transactions, not a
+single cross-file transaction. Atomic rename does not include parent-directory fsync; no universal
+machine/power-loss guarantee is claimed. These boundaries require independent verification.
 
 Model routing remains the configured `extraction_model`, or the first router catalog
 entry when unset. Incremental recovery changes neither the effective model nor the

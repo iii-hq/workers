@@ -79,17 +79,22 @@ it; old jobs are ignored only after order on the active path proves coverage.
 All valid delta text is retained, split into oldest-first 24,000-byte excerpt runs
 (with oversized single messages alone), four calls per attempt; backlog requires
 queue retries and can reach the dead-letter limit. Nontext/trivial entries advance
-without a model call. OFF jobs must confirm before later ON jobs to avoid sweeping
-unconfirmed history across bank changes; causal delivery is not a cross-process
-transaction. The job's bank, not a newly selected bank, controls its writes.
+without a model call. Turn-bound jobs use persisted assistant-origin OFF/ON/bank
+intervals before extracting text; missing policy stamps fail closed. Legacy jobs
+without turn identity retain bounded compatibility, not historical policy inference.
 
-Numbered corrections resolve the prompt's actual stored record and atomically
-publish replacement and tombstone with snapshot guards. Cursor confirmation is
-separate: an interrupted/failed confirmation after a durable write can replay
-corroboration and change events. Fingerprints avoid identical records, not every
-retry side effect. Temporary offline SDK/store reconstruction tests are not proof
-of real engine delivery, state-worker durability, subprocess crash or power-loss
-consistency. No model route or live configuration is changed by this policy.
+Numbered corrections retain prompt snapshot guards. Memory effects and exact source
+receipts publish in the same atomic log replacement; a persisted pending run and model
+decision recover before newer work widens the delta. Cursor retry/reopen does not repeat
+memory corroboration/revision or item-event attempts. Notifications can be lost between
+publication and emission: there is no exactly-once delivery or durable outbox.
+Learned-rule text and its source receipt share one atomic markdown replacement;
+internal metadata is not injected or returned as rule text. API edits/removals retain
+receipts, so a retry cannot undo a later human edit. Direct filesystem replacement
+of receipt metadata and independent concurrent Memory processes are outside this
+guarantee; rules and memories are separate per-effect, not cross-file transactions.
+Temporary SDK/store reconstruction is not a subprocess kill or power-loss test; parent
+directory fsync is not asserted. No model route or live configuration is changed.
 
 ## Functions
 

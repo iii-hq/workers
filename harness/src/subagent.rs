@@ -1553,20 +1553,23 @@ mod tests {
         }
     }
 
-    /// A model-chosen root can hold ~2000 missing components under PATH_MAX:
-    /// resolving it must not take a stack frame per component.
+    /// Resolve many missing components on a small stack, within the OS path limit.
+    /// macOS PATH_MAX is 1024 bytes; a 3000-byte root must fail closed there.
     #[test]
     fn a_deep_missing_root_resolves_in_constant_stack() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
-        let deep = base.join("a/".repeat(1500));
+        let components = if cfg!(target_os = "macos") { 400 } else { 1500 };
+        let deep = base.join("a/".repeat(components));
         let resolved = std::thread::Builder::new()
             .stack_size(128 * 1024)
             .spawn(move || resolve_confined(&deep))
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(resolved, Some(base.join("a/".repeat(1500))));
+        assert_eq!(resolved, Some(base.join("a/".repeat(components))));
+        #[cfg(target_os = "macos")]
+        assert_eq!(resolve_confined(&base.join("a/".repeat(1500))), None);
     }
 
     #[test]

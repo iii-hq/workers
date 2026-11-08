@@ -3390,9 +3390,14 @@ mod tests {
 
     #[test]
     fn resolved_default_filesystem_root_states() {
-        // Absent → the project directory: the boot cwd outside Compose.
+        // Absent → Compose's project directory when set, otherwise the boot cwd.
+        // The test process may itself be launched by a Compose worker.
         let cfg = WorkerConfig::default();
-        let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let project = std::env::var_os(iii_worker_paths::COMPOSE_DIR_ENV)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap());
+        let cwd = std::fs::canonicalize(&project).unwrap_or(project);
         assert_eq!(
             cfg.resolved_default_filesystem_root(),
             Some(cwd.to_string_lossy().into_owned())

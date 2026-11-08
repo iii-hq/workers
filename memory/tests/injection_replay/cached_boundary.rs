@@ -118,6 +118,8 @@ fn input(session: &str, query: &str, kind: &str) -> PreGenerateInput {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explicit_answers() {
+    let mut failures = Vec::new();
+    let mut provider_counts = Vec::new();
     let corpus: Value =
         serde_json::from_str(include_str!("../recall_quality/golden.json")).unwrap();
     for raw in [
@@ -161,11 +163,43 @@ async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explici
                 .await
                 .unwrap();
         }
-        let mut failures = Vec::new();
         let mut executed = 0;
+        // Original factual labels independently require both details. Only the
+        // window paraphrases are equivalent; no provider ordering is assumed.
+        let facts = corpus["memories"].as_array().unwrap();
+        let window = facts
+            .iter()
+            .find(|f| f["key"] == "en-work-deploy-window")
+            .unwrap();
+        let twin = facts
+            .iter()
+            .find(|f| f["key"] == "dup-deploy-window")
+            .unwrap();
+        assert_eq!(twin["dup_of"], window["key"]);
+        assert_eq!(
+            crate::store::query_projection::production_window_equivalence(
+                window["text"].as_str().unwrap(),
+                twin["text"].as_str().unwrap()
+            ),
+            Some(true)
+        );
+        let original_release = corpus["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|q| q["id"] == "q-en-work-release-days")
+            .unwrap();
+        assert_eq!(
+            original_release["expect"],
+            json!([
+                "en-work-deploy-window",
+                "en-work-no-friday-deploys",
+                "dup-deploy-window"
+            ])
+        );
         // Expected ids are independently labelled, not calculated by admission_reasons.
         for (n, (query_id, expected)) in [
-            ("q-pt-life-par-mana", None),
+            ("q-pt-life-par-mana", Some("pt-life-julia-videochamada")),
             ("q-evt-next-week", None),
             ("q-en-work-release-days", None),
             ("q-en-work-ledgerly-db", Some("en-work-ledgerly-postgres")),
@@ -213,7 +247,25 @@ async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explici
                 .get("memory_ids")
                 .cloned()
                 .unwrap_or_else(|| json!([]));
-            let expected = expected.map_or_else(|| json!([]), |id| json!([id]));
+            let release = query_id == "q-en-work-release-days";
+            let expected = if release {
+                json!({"required":["en-work-no-friday-deploys"], "exactly_one_equivalent":["en-work-deploy-window","dup-deploy-window"]})
+            } else {
+                expected.map_or_else(|| json!([]), |id| json!([id]))
+            };
+            let factual_ok = if release {
+                selected.as_array().is_some_and(|actual| {
+                    actual.len() == 2
+                        && actual.contains(&json!("en-work-no-friday-deploys"))
+                        && ["en-work-deploy-window", "dup-deploy-window"]
+                            .iter()
+                            .filter(|id| actual.contains(&json!(id)))
+                            .count()
+                            == 1
+                })
+            } else {
+                selected == expected
+            };
             println!(
                 "{}",
                 json!({"diagnostic":"hybrid-policy-real-cache","query_id":query_id,
@@ -223,8 +275,8 @@ async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explici
                 }).collect::<Vec<_>>(),"embedding_quality_measured":true,"provider_calls":0})
             );
             executed += 1;
-            if selected != expected {
-                failures.push(format!("{query_id}: {response}"));
+            if !factual_ok {
+                failures.push(format!("{} / {query_id}: {response}", cache["model"]));
             }
             if !response["mutations"]["system_prompt"]
                 .as_str()
@@ -234,19 +286,30 @@ async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explici
                 failures.push(format!("rule lost: {query_id}"));
             }
         }
-        assert_eq!(executed, 5);
-        assert!(!stack
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|call| call.starts_with("UNEXPECTED:")));
-        assert_eq!(stack.calls.lock().unwrap().len(), 5);
-        assert!(
-            failures.is_empty(),
-            "precision-first cache pairs: {failures:?}"
-        );
+        provider_counts.push(json!({"model":cache["model"],"dims":cache["dims"],"executed_controls":executed,"embedding_calls":stack.calls.lock().unwrap().len()}));
+        if executed != 5
+            || stack.calls.lock().unwrap().len() != 5
+            || stack
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| call.starts_with("UNEXPECTED:"))
+        {
+            failures.push(format!("provider controls incomplete: {}", cache["model"]));
+        }
     }
+    println!(
+        "{}",
+        json!({"diagnostic":"hybrid-policy-both-provider-counts","providers":provider_counts,"executed_controls":provider_counts.iter().map(|p| p["executed_controls"].as_u64().unwrap()).sum::<u64>()})
+    );
+    assert_eq!(provider_counts.len(), 2);
+    assert!(provider_counts.iter().all(|p| p["executed_controls"] == 5));
+    assert_ne!(provider_counts[0]["model"], provider_counts[1]["model"]);
+    assert!(
+        failures.is_empty(),
+        "precision-first cache pairs: {failures:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
