@@ -8,6 +8,6 @@
     "src/iii-integration/main.ts",
     "src/iii-integration/server.ts"
   ],
-  "inputs_sha256": "efacbd6df67df80a90b9ad42270de7b7308af471f95b2cd60c0f39976ff067e6",
-  "output_sha256": "3f26e92d489969fa13322ea2ea9b6d98c2c0153719e80c04c4863bd96639965d"
+  "inputs_sha256": "045e532df2418525da466afe9a3ed52acea663c50b38fb4e619551a18ff25a8d",
+  "output_sha256": "5387a4b134f91c21e51f43414cb827bbeef52d77560d6fbc5871bee29f9ead13"
 }

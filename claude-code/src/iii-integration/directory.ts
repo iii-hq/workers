@@ -7,6 +7,7 @@
  * A failed attempt is not cached: the next call resolves and connects again.
  */
 
+import { hostname } from 'node:os';
 import { type IIIClient, registerWorker } from 'iii-sdk';
 import { type Resolved, resolveEngine } from './engine.js';
 
@@ -39,6 +40,21 @@ export type Skill = SkillRow & { body?: string };
 
 export type Caller = <T>(function_id: string, payload: Record<string, unknown>) => Promise<T>;
 
+/**
+ * The name this process registers under. Unique per process: the engine owns a
+ * worker name per namespace and rejects a second holder
+ * (WORKER_NAMESPACE_CONFLICT), and every Claude session runs its own plugin
+ * server, so a fixed name would let only the first session connect.
+ *
+ * An inherited `III_WORKER_NAME` is dropped because iii-sdk lets it override
+ * `workerName`, and a session spawned by a worker can inherit that worker's
+ * name, which would then collide with the worker itself.
+ */
+export function pluginWorkerName(env: NodeJS.ProcessEnv = process.env): string {
+  delete env.III_WORKER_NAME;
+  return `iii-integration:${hostname()}:${process.pid}`;
+}
+
 export class Directory {
   private client: IIIClient | null = null;
   private engine: Resolved | null = null;
@@ -48,7 +64,7 @@ export class Directory {
     private readonly resolve: () => Promise<Resolved> = () => resolveEngine(),
     private readonly connect: (url: string) => IIIClient = (url) =>
       registerWorker(url, {
-        workerName: 'iii-integration',
+        workerName: pluginWorkerName(),
         invocationTimeoutMs: CALL_TIMEOUT_MS,
         // Bounded: a standalone CLI must not retry a dead engine forever.
         reconnectionConfig: { maxRetries: 3, maxDelayMs: 5_000 },

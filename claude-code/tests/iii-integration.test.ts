@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { Directory, renderSkill, renderSubagent, slug } from '../src/iii-integration/directory.js';
+import {
+  Directory,
+  pluginWorkerName,
+  renderSkill,
+  renderSubagent,
+  slug,
+} from '../src/iii-integration/directory.js';
 import { normalizeUrl, resolveEngine } from '../src/iii-integration/engine.js';
 import { createHandler } from '../src/iii-integration/server.js';
 import { INTEGRATION_FILES } from '../src/iii-integration/assets.generated.js';
@@ -241,5 +247,14 @@ describe('installer', () => {
     );
     expect(r.dir).toBe('');
     expect(r.detail).toContain('build:iii-integration');
+  });
+});
+
+describe('pluginWorkerName', () => {
+  it('is unique per process and ignores an inherited III_WORKER_NAME', () => {
+    const env: NodeJS.ProcessEnv = { III_WORKER_NAME: 'claude-code' };
+    const name = pluginWorkerName(env);
+    expect(name).toMatch(new RegExp(`^iii-integration:.+:${process.pid}$`));
+    expect(env.III_WORKER_NAME).toBeUndefined();
   });
 });
