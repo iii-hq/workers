@@ -138,8 +138,9 @@ export function buildConversationTree(list: Conversation[]): ConvNode[] {
 /**
  * Depth-first rows for the sidebar. Under each parent only its live
  * sub-agents show; the inactive ones fold behind one toggle row unless the
- * parent is in `showInactive`. An inactive sub-agent that is open (`keepId`)
- * or has a live one under it stays in view.
+ * parent is in `showInactive`, in which case they follow the toggle. An
+ * inactive sub-agent that is open (`keepId`) or has a live one under it stays
+ * in view above the toggle.
  */
 export function flattenConversationTree(
   roots: ConvNode[],
@@ -165,7 +166,10 @@ export function flattenConversationTree(
         ;(visible ? shown : folded).push(child)
       }
       const expanded = showInactive.has(node.conversation.id)
-      walk(expanded ? node.children : shown)
+      // The toggle sits between the live sub-agents and the inactive ones,
+      // expanded or not: it never moves, and "Hide inactive" stays right
+      // above the rows it folds.
+      walk(shown)
       if (folded.length > 0)
         out.push({
           kind: 'inactive-toggle',
@@ -174,6 +178,7 @@ export function flattenConversationTree(
           inactive: folded.length,
           expanded,
         })
+      if (expanded) walk(folded)
     }
   }
   walk(roots)

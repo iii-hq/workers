@@ -117,7 +117,8 @@ describe('flattenConversationTree', () => {
     expect(toggle && isInactiveToggle(toggle) && toggle.depth).toBe(1)
 
     const shown = flattenConversationTree(roots, new Set(), new Set(['a']))
-    expect(ids(shown)).toEqual(['a', 'live', 'done2', 'done1', '+2'])
+    // Expanded, the toggle keeps its place and the inactive rows follow it.
+    expect(ids(shown)).toEqual(['a', 'live', '+2', 'done2', 'done1'])
   })
 
   it('counts a waiting question or an error as live', () => {
