@@ -9,7 +9,7 @@
  *
  * Resolution order, first hit wins:
  *   1. `--url <ws://...>` on the server's command line
- *   2. `III_INTEGRATION_URL` (this plugin only)
+ *   2. `III_PLUGIN_URL` (this plugin only)
  *   3. `CLAUDE_PLUGIN_OPTION_ENGINE_URL` (the plugin's `engine_url` user option)
  *   4. `III_URL`, then `III_ENGINE_URL` (shared with every iii worker)
  *   5. auto-detect: probe each port x host until one accepts a TCP connection
@@ -89,7 +89,7 @@ export async function resolveEngine(options: ResolveOptions = {}): Promise<Resol
   const env = options.env ?? process.env;
   const explicit: [EngineSource, string | undefined][] = [
     ['flag', flag(options.argv ?? process.argv.slice(2))],
-    ['plugin-env', env.III_INTEGRATION_URL],
+    ['plugin-env', env.III_PLUGIN_URL],
     ['plugin-option', env.CLAUDE_PLUGIN_OPTION_ENGINE_URL],
     ['III_URL', env.III_URL],
     ['III_ENGINE_URL', env.III_ENGINE_URL],
@@ -101,8 +101,8 @@ export async function resolveEngine(options: ResolveOptions = {}): Promise<Resol
 
   const probe = options.probe ?? tcpProbe;
   const timeoutMs = options.timeoutMs ?? 400;
-  const hosts = list(env.III_INTEGRATION_HOSTS, STANDARD_HOSTS);
-  const ports = list(env.III_INTEGRATION_PORTS, STANDARD_PORTS.map(String))
+  const hosts = list(env.III_PLUGIN_HOSTS, STANDARD_HOSTS);
+  const ports = list(env.III_PLUGIN_PORTS, STANDARD_PORTS.map(String))
     .map(Number)
     .filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
   const tried: string[] = [];

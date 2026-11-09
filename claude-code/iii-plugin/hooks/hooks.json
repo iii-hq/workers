@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server/index.mjs\" sync --quiet >/dev/null 2>&1 &"
+          }
+        ]
+      }
+    ]
+  }
+}

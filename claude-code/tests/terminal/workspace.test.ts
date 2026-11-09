@@ -54,6 +54,19 @@ function fakeShell(
           return options.noDirectory
             ? Promise.reject(new Error('function_not_found'))
             : { body: '# Skills index\n\n## shell', workers_count: 1 };
+        // Profiles become /iii:<profile> commands; hidden ones do not.
+        case 'directory::agents::list':
+          return options.noDirectory
+            ? Promise.reject(new Error('function_not_found'))
+            : {
+                agents: [
+                  { id: 'writer', description: 'Writes things.' },
+                  { id: 'helper', hidden: true },
+                ],
+              };
+        case 'shell::fs::rm':
+          delete files[String(payload.path)];
+          return { removed: true, path: payload.path };
         case 'shell::fs::write':
           files[String(payload.path)] = String(payload.content);
           return { bytes_written: String(payload.content).length };
@@ -137,23 +150,22 @@ describe('preparing the terminal host', () => {
       'name: iii-runtime',
     );
 
-    // The iii-integration plugin ships inside the worker and is
-    // installed beside it, server and all.
-    const integration = '/hostroot/claude-code/.iii-integration';
-    expect(JSON.parse(files[`${integration}/.claude-plugin/plugin.json`]).name).toBe(
-      'iii-integration',
-    );
-    expect(files[`${integration}/server/index.mjs`]).toBeTruthy();
-    expect(files[`${integration}/.build-id`]).toBeTruthy();
+    // The same directory is the whole `iii` plugin: the committed MCP server
+    // and static commands ship inside the worker, and each visible profile
+    // gets its own /iii:<profile> command.
+    const dir = '/hostroot/claude-code/.iii-plugin';
+    expect(files[`${dir}/server/index.mjs`]).toBeTruthy();
+    expect(files[`${dir}/.build-id`]).toBeTruthy();
+    expect(files[`${dir}/commands/profile.md`]).toContain('<profile> [task]');
+    expect(files[`${dir}/commands/skills.md`]).toContain('<skill> [task]');
+    expect(files[`${dir}/commands/writer.md`]).toContain('`writer`');
+    expect(files[`${dir}/commands/helper.md`]).toBeUndefined();
+    // The worker generates the commands itself, so the standalone SessionStart
+    // `sync` hook is not installed beside the activity hooks.
+    expect(files[`${dir}/hooks/hooks.json`]).not.toContain(' sync ');
 
-    // And the session is told to load both.
-    expect(prepared.args).toEqual([
-      ...DEFAULTS.args,
-      '--plugin-dir',
-      '/hostroot/claude-code/.iii-plugin',
-      '--plugin-dir',
-      integration,
-    ]);
+    // And the session is told to load it.
+    expect(prepared.args).toEqual([...DEFAULTS.args, '--plugin-dir', dir]);
     expect(prepared.plugin).toBe('/hostroot/claude-code/.iii-plugin');
 
     // `.claude/settings.json` is the operator's file and is never written.

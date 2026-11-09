@@ -3,15 +3,14 @@
  * `iii-directory`, served to Claude Code over stdio.
  *
  * Hand-rolled JSON-RPC (newline-delimited, MCP 2024-11-05 / 2025-06-18) rather
- * than the MCP SDK: the surface is five tools, prompts and resources, and the
+ * than the MCP SDK: the surface is five tools and resources, and the
  * bundle stays one file with iii-sdk as its only dependency.
  *
  *   tools      iii_status, iii_list_agents, iii_get_agent, iii_list_skills, iii_get_skill
- *   prompts    one per visible agent profile (`/mcp__iii-directory__<id>`)
  *   resources  `iii-skill://<id>` per skill
  */
 
-import { Directory, renderSubagent } from './directory.js';
+import type { Directory } from './directory.js';
 
 const PROTOCOL = '2025-06-18';
 const SUPPORTED = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
@@ -123,8 +122,8 @@ export function createHandler(dir: Directory) {
         const asked = String(params.protocolVersion ?? '');
         return {
           protocolVersion: SUPPORTED.has(asked) ? asked : PROTOCOL,
-          capabilities: { tools: {}, prompts: {}, resources: {} },
-          serverInfo: { name: 'iii-integration', version: '0.1.0' },
+          capabilities: { tools: {}, resources: {} },
+          serverInfo: { name: 'iii-plugin', version: '0.1.0' },
           instructions:
             'Agent profiles and skills from the running iii engine. Use iii_list_agents / iii_get_agent to adopt an iii agent profile, and iii_list_skills / iii_get_skill to read iii skills.',
         };
@@ -135,37 +134,6 @@ export function createHandler(dir: Directory) {
         return { tools: TOOLS };
       case 'tools/call':
         return callTool(dir, String(params.name ?? ''), (params.arguments as Json) ?? {});
-      case 'prompts/list': {
-        // A missing engine is an empty list, not an error: Claude Code lists
-        // prompts at startup and should not show the server as broken.
-        const agents = await dir.listAgents().catch(() => []);
-        return {
-          prompts: agents.map((a) => ({
-            name: a.id,
-            title: a.name ?? a.id,
-            description: a.description ?? '',
-            arguments: [
-              { name: 'task', description: 'What the agent should do.', required: false },
-            ],
-          })),
-        };
-      }
-      case 'prompts/get': {
-        const profile = await dir.getAgent(String(params.name ?? ''));
-        const task = String((params.arguments as Json | undefined)?.task ?? '').trim();
-        return {
-          description: profile.description ?? '',
-          messages: [
-            {
-              role: 'user',
-              content: {
-                type: 'text',
-                text: `Act as the iii agent profile \`${profile.id}\` for the rest of this conversation. Its instructions follow.\n\n<agent-profile id="${profile.id}">\n${renderSubagent(profile)}</agent-profile>${task ? `\n\nTask: ${task}` : ''}`,
-              },
-            },
-          ],
-        };
-      }
       case 'resources/list': {
         const skills = await dir.listSkills().catch(() => []);
         return {

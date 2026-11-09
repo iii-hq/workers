@@ -4,7 +4,7 @@
   "vcs": { "enabled": false, "clientKind": "git" },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!!**/dist", "!!iii-integration/server"]
+    "includes": ["**", "!!**/dist", "!!iii-plugin/server"]
   },
   "formatter": {
     "enabled": true,
