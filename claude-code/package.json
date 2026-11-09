@@ -19,7 +19,8 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "build:ui": "node ui/build.mjs",
-    "build:iii-integration": "node scripts/build-iii-integration.mjs"
+    "build:iii-integration": "node scripts/build-iii-integration.mjs",
+    "check:committed-build": "node scripts/build-iii-integration.mjs --check"
   },
   "bin": {
     "claude-code": "./dist/index.js"

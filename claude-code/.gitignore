@@ -1,3 +1,2 @@
 *.tsbuildinfo
-iii-integration/server/
 src/iii-integration/assets.generated.ts
