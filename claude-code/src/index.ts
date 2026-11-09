@@ -49,6 +49,10 @@ const bootConfig: Config = {
   claude_executable: resolveClaudeExecutable(seed.claude_executable),
 };
 
+// Child processes (headless turns, their MCP servers such as the iii-directory
+// plugin) find the engine through III_URL; make it the address we connected to.
+process.env.III_URL = url;
+
 const iii = registerWorker(url, { workerName: 'claude-code' });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker

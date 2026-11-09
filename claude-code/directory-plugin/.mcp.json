@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "iii-directory": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.mjs", "serve"],
+      "env": { "III_DIRECTORY_PLUGIN_URL": "${user_config.engine_url}" }
+    }
+  }
+}
