@@ -12,7 +12,21 @@ runtime:
   kind: javascript
 
 scripts:
-  start: node ./dist/bundle/index.mjs
+  # Build whenever there is source to build. A published artifact ships
+  # `dist/bundle/index.mjs` and nothing else (see this worker's `include` list
+  # in `.deploy/workers.yaml`), so it has no `src` and goes straight to node.
+  #
+  # The build lives in `start`, not `install`: compose reads only
+  # `scripts.start` (and `runtime.base_image`) from this file, and `install`
+  # runs only inside a VM guest. This worker has no base_image (it runs on the
+  # host, beside the `claude` CLI and its login), so a `path://` compose entry
+  # needs no scripts of its own: it builds from the checkout and starts. That
+  # build also regenerates the embedded iii-integration plugin.
+  start: >-
+    if [ -f src/index.ts ]; then
+    pnpm install --ignore-workspace --frozen-lockfile && pnpm run build:bundle || exit 1;
+    fi;
+    exec node ./dist/bundle/index.mjs
 
 dependencies:
   state: "latest"
