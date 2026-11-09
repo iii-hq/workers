@@ -23,8 +23,6 @@ pub const MAX_QUESTIONS: usize = 4;
 pub const MIN_OPTIONS: usize = 2;
 /// Most options a question may offer.
 pub const MAX_OPTIONS: usize = 4;
-/// Longest `header`, in characters (not bytes).
-pub const MAX_HEADER_CHARS: usize = 16;
 /// Longest option `label`, in characters (not bytes).
 pub const MAX_LABEL_CHARS: usize = 80;
 
@@ -38,9 +36,10 @@ pub struct AskRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AskQuestion {
-    /// Short chip label such as `Approach`, 1-16 characters; prefixes the
-    /// answer line (`Approach: <label>`).
-    #[schemars(length(min = 1, max = 16))]
+    /// Short chip label such as `Approach`; prefixes the answer line
+    /// (`Approach: <label>`). No length limit: the card shows a long one
+    /// with an ellipsis and the whole text on hover.
+    #[schemars(length(min = 1))]
     pub header: String,
     /// The full question text shown above the options.
     #[schemars(length(min = 1))]
@@ -106,7 +105,7 @@ pub fn validate(req: &AskRequest) -> Result<(), String> {
 fn validate_question(qi: usize, q: &AskQuestion) -> Result<(), String> {
     let at = format!("questions[{qi}]");
     let header = format!("{at}.header");
-    check_text(&header, &q.header, Some(MAX_HEADER_CHARS))?;
+    check_text(&header, &q.header, None)?;
     check_single_line(&header, &q.header)?;
     check_text(&format!("{at}.question"), &q.question, None)?;
     let count = q.options.len();
@@ -307,8 +306,8 @@ mod tests {
 
     #[test]
     fn accepts_the_boundaries() {
-        // 4 questions, 4 options, a 16-char header and an 80-char label, all
-        // multi-byte: limits count characters, not bytes.
+        // 4 questions, 4 options and an 80-char label, all multi-byte:
+        // limits count characters, not bytes.
         let mut q = question(&"ç".repeat(16), &["a", "b", "c"]);
         q.options.push(option(&"é".repeat(80)));
         let req = request(vec![q.clone(), q.clone(), q.clone(), q]);
@@ -348,14 +347,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_17_char_header() {
+    fn accepts_a_long_header() {
+        // The header has no length limit: the card truncates it with an
+        // ellipsis and shows the whole text on hover.
         let req = request(vec![
             valid_question(),
-            question(&"ç".repeat(17), &["a", "b"]),
+            question(&"ç".repeat(64), &["a", "b"]),
         ]);
-        let err = validate(&req).unwrap_err();
-        assert!(err.contains("questions[1].header"), "{err}");
-        assert!(err.contains("16"), "{err}");
+        assert_eq!(validate(&req), Ok(()));
     }
 
     #[test]

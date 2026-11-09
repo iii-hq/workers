@@ -185,9 +185,10 @@ export function ConversationRow({
   const rowRef = useRef<HTMLDivElement>(null)
 
   const glyph = resolveGlyph(conversation, depth)
-  // A sub-agent that finished its job: a hollow mark and a quieter title, so
-  // the live ones above it read first. A main chat at rest is not "done".
-  const finished =
+  // An inactive sub-agent (done for now; an observation or the main agent
+  // can start it again): a hollow mark and a quieter title, so the live ones
+  // above it read first. A main chat at rest is not "done".
+  const inactive =
     depth > 0 &&
     conversation.status === 'done' &&
     !isAwaitingAnswer(conversation)
@@ -206,7 +207,7 @@ export function ConversationRow({
       style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
       data-menu-open={menuOpen || undefined}
       data-pinned={pinned || undefined}
-      data-finished={finished || undefined}
+      data-inactive={inactive || undefined}
       data-dragging={reorder?.dragging || undefined}
       data-drop={reorder?.dropEdge}
       draggable={reorder ? !renaming : undefined}
@@ -241,7 +242,7 @@ export function ConversationRow({
       {/* The live state leads the title, where the eye starts reading the
           row: a pulsing dot while the agent works, an amber one while it
           waits on the reader's answer to its question, red on error, and a
-          hollow ring once a sub-agent finished its job. */}
+          hollow ring while a sub-agent is inactive. */}
       {conversation.status === 'working' ? (
         <span className="conversation-row__status">
           <StatusDot tone="accent" pulse title="working" />
@@ -262,17 +263,17 @@ export function ConversationRow({
             title={conversation.statusReason ?? 'error'}
           />
         </span>
-      ) : finished ? (
+      ) : inactive ? (
         <span
           className="conversation-row__status"
-          data-finished-mark=""
-          title="finished"
+          data-inactive-mark=""
+          title="inactive"
         >
           <span
             aria-hidden
             className="inline-block size-1.5 shrink-0 rounded-full ring-1 ring-ink-ghost"
           />
-          <span className="sr-only">finished</span>
+          <span className="sr-only">inactive</span>
         </span>
       ) : null}
       {/* A long title fades at its right edge and slides into view while the
