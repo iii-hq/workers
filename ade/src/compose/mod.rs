@@ -140,7 +140,7 @@ pub fn register(iii: &Arc<IIIClient>) {
             "ade::compose::status",
             RegisterFunction::new_async(move |input: ProjectInput| {
                 let iii = iii.clone();
-                async move { watch::compose_status_value(&iii, input.file.as_deref()).await }
+                async move { compose_status(&iii, input.file.as_deref()).await }
             })
             .description(
                 "Read Compose status for a file, defaulting to the project that launched ADE.",
