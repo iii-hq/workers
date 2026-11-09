@@ -59,6 +59,7 @@ pub(super) struct Scenario {
     generations: Vec<Generation>,
     expected_turn_statuses: Vec<String>,
     parked_completions: usize,
+    terminal_outside_traces: Option<String>,
     verify: Option<VerifyFn>,
     probe_actions: Vec<crate::fixtures::ProbeAction>,
     harness_env: Vec<(String, String)>,
@@ -91,6 +92,7 @@ impl Scenario {
             generations: Vec::new(),
             expected_turn_statuses: vec!["completed".to_string()],
             parked_completions: 0,
+            terminal_outside_traces: None,
             verify: None,
             probe_actions: Vec::new(),
             harness_env: Vec::new(),
@@ -154,6 +156,25 @@ impl Scenario {
     ) -> Self {
         self.probe_actions.push(crate::fixtures::ProbeAction {
             after_turns,
+            after_parked: None,
+            after_target_calls: None,
+            function_id: function_id.to_string(),
+            payload,
+        });
+        self
+    }
+
+    /// Fire `function_id(payload)` from the probe once `parked` turns completed with
+    /// their session still owning a wake, a boundary `probe_after` cannot see.
+    pub(super) fn probe_after_parked(
+        mut self,
+        parked: usize,
+        function_id: &str,
+        payload: serde_json::Value,
+    ) -> Self {
+        self.probe_actions.push(crate::fixtures::ProbeAction {
+            after_turns: 0,
+            after_parked: Some(parked),
             after_target_calls: None,
             function_id: function_id.to_string(),
             payload,
@@ -297,6 +318,13 @@ impl Scenario {
         self
     }
 
+    /// The run's terminal completion, with this status, comes from no turn (a wake's
+    /// deadline timer), so traces hold only parked ones. The run still waits for it.
+    pub(super) fn terminal_outside_traces(mut self, status: &str) -> Self {
+        self.terminal_outside_traces = Some(status.to_string());
+        self
+    }
+
     /// Extra environment for the harness process under test — integration
     /// knobs that tune the subject for one scenario without touching the
     /// others. No scenario needs one right now (the expiry scenario's sweep
@@ -348,13 +376,15 @@ impl Scenario {
             .collect();
 
         assert!(
-            self.parked_completions < self.expected_turn_statuses.len(),
+            self.terminal_outside_traces.is_some()
+                || self.parked_completions < self.expected_turn_statuses.len(),
             "at least one completion must be terminal"
         );
         ScenarioFixture {
             slug: self.slug,
             driver: self.driver,
             expected_terminal_turns: self.expected_turn_statuses.len() - self.parked_completions,
+            terminal_outside_traces: self.terminal_outside_traces,
             expected_turn_statuses: self.expected_turn_statuses,
             scenario: CompiledScenarioV1 {
                 schema_version: SchemaVersion1::V1,

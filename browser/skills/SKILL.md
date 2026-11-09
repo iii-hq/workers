@@ -347,7 +347,9 @@ this session:
 {
   "function_id": "browser::on-console-event",
   "filters": { "input.session_id": { "$eq": "b1" } },
-  "label": "errors on the checkout tab"
+  "label": "errors on the checkout tab",
+  "once": false,
+  "lifecycle": { "expires_in_ms": 3600000 }
 }
 ```
 

@@ -1,17 +1,26 @@
 /**
- * The directory page (page `directory`): a full-height application shell —
- * slim product top bar, a navigation sidebar carrying the directory
- * switcher, and a document workspace that opens one entry in the shared
- * CodeEditor/MarkdownPreview pair, saving through the worker's update
- * functions.
+ * The directory page (page `directory`): everything that shapes what an
+ * agent knows and does, in one place — agent profiles, the skills they
+ * read, and kits that install both together.
  *
- * Both collections stay MOUNTED (the inactive one is display:none) so an
- * unsaved draft survives switching between them.
+ * One layout for every section: a library column (section tabs, search,
+ * grouped entries) beside the open document. All three sections stay
+ * MOUNTED (the inactive ones are hidden) so an unsaved draft survives
+ * switching between them.
  */
 
-import { type Host, PageHeader, type PageRenderProps, PageShell, SegmentedControl } from '@iii-dev/console-ui'
+import {
+  type Host,
+  PageHeader,
+  type PageRenderProps,
+  PageShell,
+  ShadcnTabs,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
+} from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
-import { FileText, Puzzle } from 'lucide-react'
+import { usePaneState } from '@iii-dev/console-ui/hooks'
+import { Library as LibraryIcon } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { kitsApi, useKitsChange } from '../kits/api'
 import { type KitsRoute, KitsView } from '../kits/KitsView'
@@ -22,6 +31,7 @@ import { type BrowserAdapter, CollectionBrowser } from './browser'
 interface SkillRow {
   id: string
   title: string
+  type?: string | null
   description: string
   bytes: number
   modified_at: string
@@ -48,8 +58,8 @@ interface AgentRow {
   }
 }
 
-/** Short origin label for the list row: `kit acme/team · edited`,
- * `worker kanban`, `local`, `global` or `built-in`. */
+/** Short origin label: `kit acme/team · edited`, `worker kanban`, `local`,
+ * `global` or `built-in`. */
 export function originLabel(a: AgentRow): string | undefined {
   const s = a.source
   if (a.builtin || s?.kind === 'builtin') return 'built-in'
@@ -68,7 +78,7 @@ export function originLabel(a: AgentRow): string | undefined {
   }
 }
 
-/** The list's fine print: where the profile came from, then when it changed. */
+/** The document's fine print: where the profile came from, then when it changed. */
 export function agentOrigin(a: AgentRow): string {
   if (a.builtin) return 'Built-in · edits save a local override'
   const s = a.source
@@ -88,26 +98,58 @@ export function agentOrigin(a: AgentRow): string {
   }
 }
 
+/** Library group for a profile: yours first, then what kits and workers
+ * brought, then what ships built in. */
+export function agentGroup(a: AgentRow): { group: string; groupLabel: string } {
+  const kind = a.builtin ? 'builtin' : a.source?.kind
+  switch (kind) {
+    case 'kit':
+      return { group: 'kit', groupLabel: 'From kits' }
+    case 'worker':
+      return { group: 'worker', groupLabel: 'From workers' }
+    case 'builtin':
+      return { group: 'builtin', groupLabel: 'Built-in' }
+    default:
+      return { group: 'yours', groupLabel: 'Yours' }
+  }
+}
+
+/** Library group for a skill: its first id segment (`kanban/tickets/…` →
+ * kanban); single-segment ids are standalone. */
+export function skillGroup(id: string): string {
+  const slash = id.indexOf('/')
+  return slash === -1 ? '' : id.slice(0, slash)
+}
+
 const skillsAdapter: BrowserAdapter = {
   noun: 'skill',
+  nounPlural: 'Skills',
   crumbRoot: 'skills',
   nameKeys: ['name', 'title'],
   defaultNameKey: 'name',
   modelInvocationOption: true,
   // Skill ids are slash-separated lowercase segments (ns/skill/…).
   namePattern: /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
-  nameHint: 'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
+  nameHint: 'Use lowercase words separated by slashes, like team/release-notes (a–z, 0–9, - and _).',
+  nameHelp: 'Lowercase words separated by slashes, like team/release-notes. The first word groups it.',
+  filePath: (id) => `skills/${id}.md`,
+  // An untouched new skill is not unsaved work: leaving it never asks.
+  newTemplateStartsClean: true,
+  fallbackGroupLabel: 'Standalone',
   onChangeFunction: 'directory::skills::on-change',
-  emptyTitle: 'Select a skill',
+  emptyTitle: 'Skills teach agents how to work',
   emptyBody:
-    'Choose a skill from the sidebar to view and edit its markdown. New skills arrive through the new-skill button, downloads (directory::skills::download), or direct edits to the skills folder.',
+    'A skill is a markdown file an agent reads when a task calls for it. Pick one to read or edit it, or write a new one.',
+  emptyListTitle: 'No skills yet',
+  emptyListBody: 'Write one here, or drop markdown files into the skills folder.',
   async list(host) {
     const out = await host.iii.call<{ skills: SkillRow[] }>('directory::skills::list', { include_description: true })
     return (out.skills ?? []).map((s) => ({
       key: s.id,
       title: s.title,
       description: s.description,
-      fine: `${formatBytes(s.bytes)} · ${ago(s.modified_at)}`,
+      fine: `${formatBytes(s.bytes)} · updated ${ago(s.modified_at)}`,
+      group: skillGroup(s.id),
     }))
   },
   async load(host, id) {
@@ -133,7 +175,8 @@ const skillsAdapter: BrowserAdapter = {
 }
 
 export const agentsAdapter: BrowserAdapter = {
-  noun: 'agent profile',
+  noun: 'agent',
+  nounPlural: 'Agents',
   crumbRoot: 'agents',
   // The id (file stem) and the display name are different things for an
   // agent: "Release Captain" lives in frontmatter `name`, the file is
@@ -161,11 +204,14 @@ export const agentsAdapter: BrowserAdapter = {
   customLoading: () => <AgentFormSkeleton />,
   customFormOwnsContent: true,
   customFormOwnsWorkspaceHeader: true,
-  prominentListItems: true,
+  groupOrder: ['yours', 'kit', 'worker', 'builtin'],
   onChangeFunction: 'directory::agents::on-change',
-  emptyTitle: 'Select an agent profile',
+  emptyTitle: 'Agents give a chat its identity',
   emptyBody:
-    'Choose an agent profile from the sidebar to edit its identity, default model, system prompt, skills, and preloaded functions.',
+    'An agent sets the instructions, the default model, and the skills and functions a chat starts with. Pick one to edit it, or create your own.',
+  emptyListTitle: 'No agents yet',
+  emptyListBody: 'Create one to give a chat its own instructions, model and skills.',
+  duplicate: true,
   async list(host) {
     const out = await host.iii.call<{ agents: AgentRow[] }>('directory::agents::list')
     return (out.agents ?? []).map((a) => ({
@@ -178,6 +224,7 @@ export const agentsAdapter: BrowserAdapter = {
       description: a.description,
       fine: agentOrigin(a),
       origin: originLabel(a),
+      ...agentGroup(a),
       ...(a.builtin ? { noDelete: true } : {}),
     }))
   },
@@ -213,32 +260,19 @@ interface PendingCollectionAction {
   action?: 'create'
 }
 
+/** The sections, in tab order: who the agent is, what it knows, and
+ * bundles of both. */
 export const COLLECTIONS: { value: Collection; label: string }[] = [
+  { value: 'agents', label: 'Agents' },
   { value: 'skills', label: 'Skills' },
-  { value: 'agents', label: 'Agent Profiles' },
   { value: 'kits', label: 'Kits' },
 ]
 
-const FILE_COLLECTIONS: FileCollection[] = ['skills', 'agents']
+const FILE_COLLECTIONS: FileCollection[] = ['agents', 'skills']
 
 const ADAPTERS: Record<FileCollection, BrowserAdapter> = {
   skills: skillsAdapter,
   agents: agentsAdapter,
-}
-
-/** The Kits tab glyph, with a count of what needs attention (pending
- * reviews plus available updates). */
-function KitsTabIcon({ attention }: { attention: number }) {
-  return (
-    <span className="dir-ui-kits-tab">
-      <Puzzle aria-hidden />
-      {attention > 0 ? (
-        <span className="dir-ui-kits-badge" aria-label={`${attention} need attention`}>
-          {attention > 9 ? '9+' : attention}
-        </span>
-      ) : null}
-    </span>
-  )
 }
 
 /** Kits route from a `host.panels.open` context: `{ collection: 'kits',
@@ -249,6 +283,58 @@ export function kitsRouteFromContext(context: { plan_id?: unknown; kit?: unknown
   return { view: 'home' }
 }
 
+/** The section switcher at the top of the library column: line tabs (the
+ * same pattern as the agent page), counts trailing, and an attention count
+ * on Kits only while a plan waits for review. ←/→ come from the tabs. */
+function SectionTabs({
+  value,
+  onChange,
+  counts,
+  attention,
+  focusTick,
+}: {
+  value: Collection
+  onChange: (next: Collection) => void
+  counts: Partial<Record<Collection, number>>
+  attention: number
+  /** Bumped when the keyboard switched sections: each section renders its
+   * own copy of these tabs, so focus must follow to the copy now showing
+   * (the one it was on just went hidden). */
+  focusTick: number
+}) {
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const wrap = wrapRef.current
+    if (!focusTick || !wrap || wrap.closest('[hidden]')) return
+    wrap.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus()
+  }, [focusTick])
+  return (
+    <div ref={wrapRef} className="dir-sections-wrap">
+      <ShadcnTabs value={value} onValueChange={(next) => onChange(next as Collection)} className="dir-sections-root">
+        <ShadcnTabsList variant="line" activateOnFocus className="dir-sections" aria-label="Directory sections">
+          {COLLECTIONS.map((c) => {
+            const count = counts[c.value]
+            return (
+              <ShadcnTabsTrigger key={c.value} value={c.value} className="dir-section">
+                {c.label}
+                {c.value === 'kits' && attention > 0 ? (
+                  <span className="dir-section-attention">
+                    {attention > 9 ? '9+' : attention}
+                    <span className="dir-sr-only"> waiting for review</span>
+                  </span>
+                ) : count !== undefined ? (
+                  <span className="dir-section-count">{count}</span>
+                ) : null}
+              </ShadcnTabsTrigger>
+            )
+          })}
+        </ShadcnTabsList>
+      </ShadcnTabs>
+    </div>
+  )
+}
+
+/** The `directory` page: section tabs over three always-mounted sections (agents, skills, kits), routed by panel context. */
 export function DirectoryPage({
   host,
   panelSide = 'left',
@@ -257,17 +343,22 @@ export function DirectoryPage({
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
-  const [collection, setCollection] = useState<Collection>('skills')
+  const [storedCollection, setCollection] = usePaneState<Collection>('iii-directory:section', 'agents')
+  const collection: Collection = COLLECTIONS.some((c) => c.value === storedCollection) ? storedCollection : 'agents'
   const [pendingOpen, setPendingOpen] = useState<PendingCollectionAction | null>(null)
   const [kitsRoute, setKitsRoute] = useState<KitsRoute>({ view: 'home' })
   const [attention, setAttention] = useState(0)
+  const [counts, setCounts] = useState<Partial<Record<Collection, number>>>({})
 
-  // The Kits badge follows pending reviews and available updates even
-  // while another collection is showing.
+  // The Kits tab follows pending reviews and available updates even while
+  // another section is showing.
   const refreshAttention = useCallback(() => {
     kitsApi(host)
       .list()
-      .then((l) => setAttention(l.attention))
+      .then((l) => {
+        setAttention(l.attention)
+        setCounts((c) => ({ ...c, kits: l.kits.length }))
+      })
       .catch(() => undefined)
   }, [host])
   useEffect(refreshAttention, [refreshAttention])
@@ -275,7 +366,7 @@ export function DirectoryPage({
     if (change.op !== 'progress') refreshAttention()
   })
 
-  // Panel context can open a palette entry, start a collection's creation
+  // Panel context can open a palette entry, start a section's creation
   // flow, or open a kit / kit plan. `panelContext.id` is monotonic, so a
   // repeated action still applies.
   const appliedContextRef = useRef(0)
@@ -290,11 +381,7 @@ export function DirectoryPage({
       kit?: string
     } | null
     const collectionValue = context?.collection
-    if (
-      !context ||
-      typeof collectionValue !== 'string' ||
-      !COLLECTIONS.some((c) => c.value === collectionValue)
-    ) {
+    if (!context || typeof collectionValue !== 'string' || !COLLECTIONS.some((c) => c.value === collectionValue)) {
       return
     }
     if (collectionValue === 'kits') {
@@ -303,56 +390,56 @@ export function DirectoryPage({
       return
     }
     const nextCollection = collectionValue as FileCollection
+    setCollection(nextCollection)
     const opensEntry = typeof context.key === 'string'
     const startsCreate = context.action === 'create'
     if (!opensEntry && !startsCreate) return
-    setCollection(nextCollection)
     setPendingOpen({
       id: panelContext.id,
       collection: nextCollection,
       ...(opensEntry ? { key: context.key } : {}),
       ...(startsCreate ? { action: 'create' } : {}),
     })
-  }, [panelContext])
+  }, [panelContext, setCollection])
 
-  // Kits screens open a profile or skill in its own collection.
-  const openEntry = useCallback((target: FileCollection, key: string) => {
-    setCollection(target)
-    setPendingOpen({ id: Date.now(), collection: target, key })
-  }, [])
+  // Kits screens open a profile or skill in its own section.
+  const openEntry = useCallback(
+    (target: FileCollection, key: string) => {
+      setCollection(target)
+      setPendingOpen({ id: Date.now(), collection: target, key })
+    },
+    [setCollection],
+  )
 
-  // Skills and Agent Profiles keep the control's inferred glyphs; Kits
-  // brings its own, with the attention count.
-  const options = COLLECTIONS.map((c) =>
-    c.value === 'kits'
-      ? {
-          value: c.value,
-          label: attention > 0 ? `Kits · ${attention} need attention` : c.label,
-          icon: <KitsTabIcon attention={attention} />,
-        }
-      : c,
+  const [focusTick, setFocusTick] = useState(0)
+  const changeSection = useCallback(
+    (next: Collection) => {
+      const fromTabs = (document.activeElement as HTMLElement | null)?.closest('.dir-sections')
+      setCollection(next)
+      if (fromTabs) setFocusTick((t) => t + 1)
+    },
+    [setCollection],
   )
   const switcher = (
-    <SegmentedControl<Collection>
+    <SectionTabs
       value={collection}
-      onChange={setCollection}
-      options={options}
-      iconOnly
-      className="dir-ui-collection-tabs"
-      aria-label="Browse skills, agent profiles or kits"
+      onChange={changeSection}
+      counts={counts}
+      attention={attention}
+      focusTick={focusTick}
     />
   )
 
   return (
-    <PageShell className="dir-ui-shell">
+    <PageShell className="dir-shell">
       <PageHeader
-        icon={<FileText />}
+        icon={<LibraryIcon />}
         title="Directory"
-        description="Filesystem-backed skills, agent profiles and kits"
+        description="Agents, skills and kits"
         onClose={onRequestClose}
       />
       {FILE_COLLECTIONS.map((c) => (
-        <div key={c} className="dir-ui-shell-body" hidden={collection !== c}>
+        <div key={c} className="dir-shell-body" hidden={collection !== c}>
           <CollectionBrowser
             host={host}
             adapter={ADAPTERS[c]}
@@ -362,10 +449,11 @@ export function DirectoryPage({
             commands={commands}
             active={collection === c}
             pendingOpen={pendingOpen && pendingOpen.collection === c ? pendingOpen : null}
+            onCount={(n) => setCounts((prev) => (prev[c] === n ? prev : { ...prev, [c]: n }))}
           />
         </div>
       ))}
-      <div className="dir-ui-shell-body" hidden={collection !== 'kits'}>
+      <div className="dir-shell-body" hidden={collection !== 'kits'}>
         <KitsView
           host={host}
           nav={switcher}

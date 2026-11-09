@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{ObserverHandle, Source};
+use iii_sdk::{ObserverHandle, ObserverOptions, ObserverState, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -73,6 +73,10 @@ const FUNCTIONS_INFO_ID: &str = "engine::functions::info";
 /// function's worker) reaches the agent. An observer still `pending` after
 /// it is waiting for its function's worker and activates on its own.
 const OBSERVE_READY_WAIT: Duration = Duration::from_secs(5);
+
+/// How long a one-shot wake with no `lifecycle.expires_in_ms` waits; see
+/// [`default_wake_deadline`].
+const DEFAULT_WAKE_EXPIRY_MS: i64 = 600_000;
 
 /// Agent-facing observe contract.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -139,7 +143,10 @@ pub struct LifecycleRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
     /// Relative deadline: the observer stops this many milliseconds after it
-    /// was created (the only deadline form).
+    /// was created (the only deadline form). Set it on every wake except a
+    /// timer, to how long the work should take: if nothing fires by then, the
+    /// session is woken with a notice. A one-shot wake without it expires after
+    /// 10 minutes.
     // Absolute `expires_at` was retired after repeated stale-epoch guesses
     // (verify-wake-fix-1/-4: models sent months-old round numbers);
     // `deny_unknown_fields` turns it into a field-naming error instead of a
@@ -153,9 +160,9 @@ pub struct ObserveResponse {
     pub observer_id: String,
     /// The effective `once` flag applied (after the per-function default).
     pub once: bool,
-    /// Advisory only — the observer was CREATED, but its wiring looks
-    /// suspicious (e.g. a filter naming a key someone already wrote). Read it
-    /// and fix the wiring if it applies.
+    /// Advisory only — the observer was CREATED. Says what applied by default or
+    /// what looks suspicious in its wiring (e.g. a filter naming a key someone
+    /// already wrote). Read it and act on it if it applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -180,9 +187,10 @@ pub const OBSERVE_TOOL_DESC: &str =
     "Observe a function for the current harness session: each time it runs, omit `target` to be \
      notified in this session with what it returned, or name a non-harness `target.function_id` \
      to call with it. Pass the function's `args` when it takes them and `filters` on its \
-     `input.<field>` to choose calls. Returns `{ observer_id, once }`; a `note` means the observer \
-     was created but its wiring looks suspicious. Call-target results are discarded and do not \
-     return to this session.";
+     `input.<field>` to choose calls. Set `lifecycle.expires_in_ms` on every wake except a timer, \
+     to how long the work should take; a one-shot wake without it expires after 10 minutes with a \
+     notice. Returns `{ observer_id, once }`; a `note` is advice about the observer, which was \
+     created either way. Call-target results are discarded and do not return to this session.";
 pub const UNOBSERVE_TOOL_DESC: &str =
     "Remove an observer the current harness session created (`id` is the observer_id \
      harness::observe returned).";
@@ -816,7 +824,12 @@ async fn handle(
     let dedup = registration_dedup_key(&req, once);
     resolve_timer_request(&mut req)?;
     let now_ms = crate::types::message::AgentMessage::now_ms();
-    let expires_at = resolved_expires_at(req.lifecycle.as_ref(), now_ms);
+    let requested_deadline = resolved_expires_at(req.lifecycle.as_ref(), now_ms);
+    let default_deadline = requested_deadline
+        .is_none()
+        .then(|| default_wake_deadline(&req, once, now_ms))
+        .flatten();
+    let expires_at = requested_deadline.or(default_deadline);
 
     reject_settled_compose_operation(deps, &req).await?;
     let cfg = deps.cfg().await;
@@ -947,7 +960,9 @@ async fn handle(
         prewritten_key_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req, once),
-        armed_wake_advisory(&req, once, expires_at.is_some()),
+        default_deadline.and(expires_at).map(|at| {
+            default_deadline_advisory(&req, at.saturating_sub(now_ms), policy.allows(UNOBSERVE_ID))
+        }),
     ]
     .into_iter()
     .flatten()
@@ -956,7 +971,7 @@ async fn handle(
     Ok(ObserveResponse {
         observer_id: binding.id,
         once,
-        note: compose_note(notes),
+        note: compose_note(notes, policy.allows(UNOBSERVE_ID)),
     })
 }
 
@@ -1030,13 +1045,18 @@ fn require_reserved(outcome: ReserveOutcome) -> Result<(), HarnessError> {
 /// binding, re-rolled the same request twice, then tore down its whole watch
 /// set — the notes never said the observer had been created, so starting
 /// over looked mandatory.
-fn compose_note(notes: Vec<String>) -> Option<String> {
+fn compose_note(notes: Vec<String>, can_unobserve: bool) -> Option<String> {
     if notes.is_empty() {
         return None;
     }
+    let or_unobserve = if can_unobserve {
+        " (or unobserve it)"
+    } else {
+        ""
+    };
     Some(format!(
         "observer CREATED; everything below is advisory, not an error. Apply a named fix to THIS \
-         observer (or unobserve it) rather than starting over. {}",
+         observer{or_unobserve} rather than starting over. {}",
         notes.join(" ")
     ))
 }
@@ -1150,8 +1170,9 @@ fn reject_leaf_control_plane(
 /// child keeps `tree_complete` false it hung the whole run with it: 15 idle
 /// minutes and a RESOURCE LIMIT on a run whose work was done (MOT-4766).
 ///
-/// A root keeps whatever it asked for — it can unobserve, and whoever drives
-/// it has its own timeout. The leaf's cap is the harness's existing patience
+/// A root keeps its own deadline, or the one [`default_wake_deadline`] gave it —
+/// it can unobserve, and whoever drives it has its own timeout. The leaf's cap is
+/// the harness's existing patience
 /// for pending work, so its wake can never outlive that.
 fn leaf_wake_deadline(
     policy: &CompiledPolicy,
@@ -1274,18 +1295,52 @@ fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
     Ok(())
 }
 
-/// Advisory for a one-shot state-key WAKE: the observing session parks until
-/// someone writes that exact scope/key, and the harness cannot verify any
-/// task is wired to do so. rctest postmortem: an orchestrator armed
-/// `report_ready` while its finalizer's task never mentioned the key — every
-/// row landed correctly and the orchestrator still slept forever, leaving the
-/// run's teardown permanently pending. Purely informative.
-fn armed_wake_advisory(req: &ObserveRequest, once: bool, has_deadline: bool) -> Option<String> {
-    // A deadline (the caller's `expires_in_ms`, or a leaf's capped wake)
-    // turns a write that never comes into an expiry notice: the park-forever
-    // risk this note exists for is already handled.
-    if !once || has_deadline || req.function_id != STATE_ON_CHANGED_FN {
-        return None;
+/// The deadline a one-shot wake gets when it asked for none. `once` bounds
+/// deliveries, not time: without this, a wake on an event that never comes
+/// (the command it watches died, the writer was never told the key) parks its
+/// session forever. A timer or cron tick fires by itself, possibly later than
+/// this default, so neither gets one.
+fn default_wake_deadline(req: &ObserveRequest, once: bool, now_ms: i64) -> Option<i64> {
+    let fires_by_itself = matches!(
+        req.function_id.as_str(),
+        crate::timer::ON_TIMER_FN | CRON_ON_TICK_FN
+    );
+    (once && is_wake_shape(req) && !fires_by_itself)
+        .then(|| now_ms.saturating_add(DEFAULT_WAKE_EXPIRY_MS))
+}
+
+/// Tell the agent its wake got the default deadline, and how to choose its own.
+/// A state-key wake also hears the observed way to miss it. rctest postmortem:
+/// an orchestrator armed `report_ready` while its finalizer's task never
+/// mentioned the key, and a finisher wrote a DATABASE table named like the state
+/// scope: same word, disjoint worlds, the wake never fired.
+fn default_deadline_advisory(
+    req: &ObserveRequest,
+    expires_in_ms: i64,
+    can_unobserve: bool,
+) -> String {
+    // A leaf's cap can make this shorter than the default.
+    let minutes = (expires_in_ms / 60_000).max(1);
+    let fan_in = if req.conditions.is_empty() {
+        ""
+    } else {
+        " The deadline must outlast the whole fan-in: a condition such as state::barrier never \
+         sees a write made while no observer is armed."
+    };
+    // Observing again without removing this one would leave two wakes armed, and
+    // removing it first would miss whatever happens before the new one is armed.
+    let extend = if can_unobserve {
+        " If the work should take longer, observe again with `expires_in_ms` set to how long it \
+         should take, then unobserve this observer."
+    } else {
+        ""
+    };
+    let expiry = format!(
+        "note: no `lifecycle.expires_in_ms` was set, so this one-shot wake expires in {minutes} \
+         minutes and wakes this session with a notice if nothing fired.{extend}{fan_in}"
+    );
+    if req.function_id != STATE_ON_CHANGED_FN {
+        return expiry;
     }
     let scope = filter_eq(&req.filters, "input.scope")
         .and_then(Value::as_str)
@@ -1300,21 +1355,12 @@ fn armed_wake_advisory(req: &ObserveRequest, once: bool, has_deadline: bool) -> 
     } else {
         " that passes its conditions"
     };
-    // The two observed park-forever shapes, named in order: the medium
-    // mismatch (a finisher wrote a DATABASE table named like the state scope
-    // — same word, disjoint worlds, the wake never fired), and the missing
-    // deadline (no lifecycle, so nothing could ever convert the silence into
-    // a notice).
-    Some(format!(
-        "note: one-shot WAKE — this session stays parked until a state write on \
-         {scope}/{key}{gated} wakes it, and nothing wakes it automatically. Only a state \
-         write (state::set, state::update, a swapping state::compare-and-set or state::delete) on that \
-         exact scope/key wakes it — a database table or row with the same name does NOT. \
-         Double-check that a task you spawned (worker/finalizer) EXPLICITLY sets that exact scope/key when its condition is met, or this session \
-         sleeps forever and its cleanup never runs. Set lifecycle \
-         {{ expires_in_ms: <relative ms> }} to be woken with an expiry notice instead if the \
-         write never comes."
-    ))
+    format!(
+        "{expiry} Only a state write (state::set, state::update, a swapping \
+         state::compare-and-set or state::delete) on {scope}/{key}{gated} wakes it — a database \
+         table or row with the same name does NOT. Double-check that a task you spawned \
+         (worker/finalizer) EXPLICITLY sets that exact scope/key when its condition is met."
+    )
 }
 
 /// Resolve the RELATIVE lifecycle deadline (`expires_in_ms`) into the
@@ -1387,9 +1433,11 @@ async fn observe_post_turn(
         .map_err(|e| HarnessError::InvalidRequest(format!("hook args serialize: {e}")))?;
     let topology = deps.topology.lock().await;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
-    let handle = deps.iii.observe(
+    let handle = observe_validator(
+        &deps.hooks,
         Source::function(crate::hooks::ON_POST_TURN_FN).args(args),
-        validator.as_str(),
+        validator,
+        ObserverOptions::default(),
     );
     let observer_id = deps.hooks.record_owned(session_id, handle.clone());
     drop(topology);
@@ -1407,6 +1455,43 @@ async fn observe_post_turn(
              this id when the goal is met."
         )),
     })
+}
+
+/// A post-turn validator's observer. When the engine disposes it while the
+/// harness is away, it is observed again under the same id, the one its agent
+/// holds, as long as the agent still owns it.
+fn observe_validator(
+    hooks: &crate::hooks::HookRegistry,
+    source: Source,
+    validator: String,
+    options: ObserverOptions,
+) -> ObserverHandle {
+    let handle = hooks
+        .iii
+        .observe_with(source.clone(), validator.as_str(), options);
+    let (hooks, id) = (hooks.clone(), handle.id().to_string());
+    crate::observers::when_disposed_while_away(&handle, move || {
+        hooks.replace_owned(&id, || {
+            let handle = observe_validator(
+                &hooks,
+                source,
+                validator,
+                ObserverOptions::default().id(id.clone()),
+            );
+            // No agent waits on this observe, so a refusal is only this log line.
+            let replaced = handle.clone();
+            tokio::spawn(async move {
+                match readiness(&replaced).await {
+                    Readiness::Failed(reason) if replaced.state() == ObserverState::Error => {
+                        tracing::warn!(observer = %replaced.id(), %reason, "post-turn validator not observed again: the engine refused it");
+                    }
+                    _ => {}
+                }
+            });
+            handle
+        });
+    });
+    handle
 }
 
 /// The sessions an agent-created post-turn validator may gate: itself, or
@@ -1972,7 +2057,6 @@ pub(crate) mod tests {
         let has_deadline = resolved_expires_at(wave.lifecycle.as_ref(), 0).is_some();
         assert!(has_deadline, "expires_in_ms resolves to a deadline");
         assert!(state_catchall_advisory(&wave, once).is_none());
-        assert!(armed_wake_advisory(&wave, once, has_deadline).is_none());
     }
 
     #[test]
@@ -2019,26 +2103,78 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn armed_wake_advisory_names_the_exact_key_for_one_shot_state_wakes() {
-        // A one-shot state wake: warned, naming scope/key, with the
-        // sleeps-forever consequence spelled out.
-        let note = armed_wake_advisory(
-            &req(state(Some("run-1"), Some("report_ready"))),
-            true,
-            false,
+    fn only_a_one_shot_wake_that_can_wait_forever_gets_the_default_deadline() {
+        let now = 1_000;
+        let default = Some(now + DEFAULT_WAKE_EXPIRY_MS);
+        let deadline = |body: Value| {
+            let request = req(body);
+            default_wake_deadline(&request, effective_once(&request), now)
+        };
+        assert_eq!(deadline(state(Some("run"), Some("done"))), default);
+        assert_eq!(
+            deadline(json!({ "function_id": "shell::on-job-finished", "args": { "job_id": "j" } })),
+            default
         );
-        let note = note.as_deref().unwrap_or("");
+        // Standing observers are meant to last: an explicit `once: false`, a
+        // call target's default, and a cron's.
+        assert_eq!(
+            deadline(json!({ "function_id": "state::on-changed", "once": false })),
+            None
+        );
+        assert_eq!(
+            deadline(json!({
+                "function_id": "state::on-changed",
+                "target": { "function_id": "state::set" },
+            })),
+            None
+        );
+        assert_eq!(deadline(json!({ "function_id": CRON_ON_TICK_FN })), None);
+        // A timer or a one-shot cron fires by itself, maybe past the default.
+        assert_eq!(
+            deadline(json!({
+                "function_id": crate::timer::ON_TIMER_FN,
+                "args": { "in_ms": 3_600_000 },
+            })),
+            None
+        );
+        assert_eq!(
+            deadline(json!({ "function_id": CRON_ON_TICK_FN, "once": true })),
+            None
+        );
+    }
+
+    #[test]
+    fn the_tool_contract_states_the_default_deadline() {
+        assert_eq!(DEFAULT_WAKE_EXPIRY_MS, 600_000, "10 minutes in the text");
+        assert!(OBSERVE_TOOL_DESC.contains("expires after 10 minutes"));
+        assert!(default_deadline_advisory(
+            &req(state(None, Some("k"))),
+            DEFAULT_WAKE_EXPIRY_MS,
+            true
+        )
+        .contains("10 minutes"));
+        // A leaf's cap below the default is what the note must state, and a leaf
+        // cannot unobserve, so it must not be told to.
+        let leaf = default_deadline_advisory(&req(state(None, Some("k"))), 120_000, false);
+        assert!(leaf.contains("expires in 2 minutes"), "got: {leaf}");
+        assert!(!leaf.contains("unobserve"), "got: {leaf}");
+    }
+
+    #[test]
+    fn default_deadline_advisory_names_the_exact_key_for_state_wakes() {
+        let note = default_deadline_advisory(
+            &req(state(Some("run-1"), Some("report_ready"))),
+            DEFAULT_WAKE_EXPIRY_MS,
+            true,
+        );
         assert!(note.contains("run-1/report_ready"), "got: {note}");
-        assert!(note.contains("sleeps forever"), "got: {note}");
-        // The discovery-run failure modes, named: a DATABASE table with the
-        // watched name does not wake a state observer, and a lifecycle
-        // deadline is what converts eternal silence into a notice.
+        // The discovery-run failure mode, named: a DATABASE table with the
+        // watched name does not wake a state observer.
         assert!(
             note.contains("database table or row with the same name does NOT"),
             "the medium sentence is the advisory's whole point: {note}"
         );
         assert!(note.contains("expires_in_ms"), "got: {note}");
-        assert!(note.contains("expiry notice"), "got: {note}");
         // Every state write wakes it, compare-and-set and update included
         // (the state worker calls state::on-changed for each of them).
         for write in [
@@ -2057,29 +2193,22 @@ pub(crate) mod tests {
         let mut gated = state(Some("run-1"), Some("report_ready"));
         gated["conditions"] =
             json!([{ "function_id": "state::barrier", "config": { "id": "b", "expect": ["a"] } }]);
-        let note = armed_wake_advisory(&req(gated), true, false);
-        assert!(note
-            .as_deref()
-            .unwrap_or("")
-            .contains("that passes its conditions"));
-        // A deadline (expires_in_ms, or a leaf's capped wake) already
-        // converts silence into a notice.
-        let keyed = req(state(Some("run-1"), Some("report_ready")));
-        assert!(armed_wake_advisory(&keyed, true, true).is_none());
-        // A lifecycle without a deadline does not: still warned.
-        for lifecycle in [json!({ "once": true }), json!({ "max_fires": 1 })] {
-            let mut body = state(Some("run-1"), Some("report_ready"));
-            body["lifecycle"] = lifecycle;
-            let r = req(body);
-            let has_deadline = resolved_expires_at(r.lifecycle.as_ref(), 0).is_some();
-            assert!(armed_wake_advisory(&r, true, has_deadline).is_some());
-        }
-        // Standing notifies and other functions are not wakes.
-        assert!(armed_wake_advisory(&req(state(None, Some("k"))), false, false).is_none());
+        let gated = default_deadline_advisory(&req(gated), DEFAULT_WAKE_EXPIRY_MS, true);
+        assert!(gated.contains("that passes its conditions"));
         assert!(
-            armed_wake_advisory(&req(json!({ "function_id": CRON_ON_TICK_FN })), true, false)
-                .is_none()
+            gated.contains("outlast the whole fan-in"),
+            "a barrier misses writes while nothing is armed: {gated}"
         );
+        // Following the note must not leave a twin armed.
+        assert!(note.contains("unobserve this observer"), "got: {note}");
+        // Any other wake hears only about its deadline.
+        let job = default_deadline_advisory(
+            &req(json!({ "function_id": "shell::on-job-finished" })),
+            DEFAULT_WAKE_EXPIRY_MS,
+            true,
+        );
+        assert!(job.contains("expires_in_ms"), "got: {job}");
+        assert!(!job.contains("database"), "got: {job}");
     }
 
     #[test]
@@ -2221,11 +2350,15 @@ pub(crate) mod tests {
     /// warning reads as a redo order and the model starts over.
     #[test]
     fn composed_notes_lead_with_the_outcome() {
-        assert!(compose_note(vec![]).is_none());
-        let note = compose_note(vec!["warning: x.".into(), "note: y.".into()]).unwrap();
+        assert!(compose_note(vec![], true).is_none());
+        let note = compose_note(vec!["warning: x.".into(), "note: y.".into()], true).unwrap();
         assert!(note.starts_with("observer CREATED"), "got: {note}");
         assert!(note.contains("rather than starting over"), "got: {note}");
         assert!(note.contains("warning: x.") && note.contains("note: y."));
+        assert!(note.contains("unobserve it"), "got: {note}");
+        // A leaf is denied unobserve, so the note must not offer it.
+        let leaf = compose_note(vec!["note: y.".into()], false).unwrap();
+        assert!(!leaf.contains("unobserve"), "got: {leaf}");
     }
 
     /// The barrier-armed-late shape: a keyed state observer is checkable for

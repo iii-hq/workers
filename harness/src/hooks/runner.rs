@@ -171,26 +171,39 @@ impl HookRegistry {
         input
     }
 
-    /// Call `point`'s hook function with `input` and read the merged
-    /// outcome. `None` when nobody observes the point: the chain is empty.
-    /// A failed call resolves by the point's default `on_error`.
+    /// Run `point`'s chain for `input` and return the merged outcome. `None`
+    /// when nobody observes the point: the chain is empty. A chain that never
+    /// answers resolves by the point's default `on_error`.
+    ///
+    /// The harness owns the hook functions and holds their observers, so it
+    /// runs the chain here, as the functions' deliver hook does for any other
+    /// caller. Calling its own function through the engine sent the whole
+    /// input (on pre_generate: the prompt, every message and every tool
+    /// schema) out and back once more per point per step.
     async fn call_point(&self, point: HookPoint, input: Value) -> Option<HookChainOutcome> {
-        if !self.iii.is_observed(point.function_id()) {
+        let function_id = point.function_id();
+        if !self.iii.is_observed(function_id) {
             return None;
         }
-        let request = CallRequest {
-            function_id: point.function_id().to_string(),
-            payload: input,
-            action: None,
-            timeout_ms: Some(CHAIN_TIMEOUT_MS),
+        // A hook function returns its input, so the call a filter sees has
+        // the input as its output too.
+        let call = Call {
+            function_id: function_id.to_string(),
+            input: input.clone(),
+            output: Some(input),
+            ..Call::default()
         };
-        let failure = match self.iii.call(request).await {
-            Ok(value) => match serde_json::from_value::<HookChainOutcome>(value) {
+        let observers = self.iii.observers(function_id);
+        // The span the engine used to open for the call: it groups the
+        // observers' calls in the turn's waterfall.
+        let chain = iii_helpers::observability::run_in_span(function_id, None, || {
+            deliver_outcome(self.iii.clone(), point, call, observers)
+        });
+        let failure =
+            match tokio::time::timeout(Duration::from_millis(CHAIN_TIMEOUT_MS), chain).await {
                 Ok(outcome) => return Some(outcome),
-                Err(error) => format!("{} answered no chain outcome: {error}", point.function_id()),
-            },
-            Err(error) => format!("{} failed: {error}", point.function_id()),
-        };
+                Err(_) => format!("{function_id} chain timed out"),
+            };
         if point.default_fail_closed() {
             tracing::warn!(point = point.input_name(), %failure, "hook chain failed closed (deny)");
             Some(HookChainOutcome::deny(failure))
@@ -458,6 +471,15 @@ pub(super) async fn deliver(
     call: Call,
     observers: Vec<Observer>,
 ) -> Value {
+    serde_json::to_value(deliver_outcome(iii, point, call, observers).await).unwrap_or(Value::Null)
+}
+
+async fn deliver_outcome(
+    iii: Arc<IIIClient>,
+    point: HookPoint,
+    call: Call,
+    observers: Vec<Observer>,
+) -> HookChainOutcome {
     let matched: Vec<Observer> = observers
         .into_iter()
         .filter(|obs| obs.matches(&call))
@@ -481,8 +503,7 @@ pub(super) async fn deliver(
             .map(|obs| (obs.id().to_string(), obs))
             .collect(),
     };
-    let outcome = run_chain(point, &invoker, bindings, call.input).await;
-    serde_json::to_value(outcome).unwrap_or(Value::Null)
+    run_chain(point, &invoker, bindings, call.input).await
 }
 
 /// Run `point`'s chain over `bindings` (already in chain order) for `input`.
@@ -739,9 +760,72 @@ async fn invoke(invoker: &dyn HookInvoker, binding: &HookBinding, input: Value) 
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
+    let input = match &binding.input {
+        Some(paths) => project(&input, paths),
+        None => input,
+    };
     match invoker.invoke_value(binding, &point, input).await {
         Ok(value) => parse_output(value),
         Err(message) => on_error(binding, message),
+    }
+}
+
+/// Hook-input fields every target gets, whatever its `input` paths say.
+const ENVELOPE: [&str; 6] = [
+    "point",
+    "session_id",
+    "turn_id",
+    "step",
+    "depth",
+    "metadata",
+];
+
+/// The envelope of `input` plus the fields `paths` name ([`HookArgs::input`]).
+///
+/// [`HookArgs::input`]: super::HookArgs::input
+fn project(input: &Value, paths: &[String]) -> Value {
+    let mut out = Value::Object(Map::new());
+    for key in ENVELOPE {
+        if let Some(value) = input.get(key) {
+            out[key] = value.clone();
+        }
+    }
+    for path in paths {
+        let segments: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+        copy_path(input, &mut out, &segments);
+    }
+    out
+}
+
+/// Copy `segments` of `src` into `dst`, creating the objects and lists on the
+/// way; a `name[]` segment maps the rest of the path over the list `name`.
+fn copy_path(src: &Value, dst: &mut Value, segments: &[&str]) {
+    let Some((first, rest)) = segments.split_first() else {
+        *dst = src.clone();
+        return;
+    };
+    let (name, each) = match first.strip_suffix("[]") {
+        Some(name) => (name, true),
+        None => (*first, false),
+    };
+    let Some(child) = src.get(name) else {
+        return;
+    };
+    if !dst.is_object() {
+        *dst = Value::Object(Map::new());
+    }
+    match (each, child.as_array()) {
+        (true, Some(items)) => {
+            let slot = &mut dst[name];
+            if slot.as_array().map(Vec::len) != Some(items.len()) {
+                *slot = Value::Array(vec![Value::Null; items.len()]);
+            }
+            for (item, out) in items.iter().zip(slot.as_array_mut().into_iter().flatten()) {
+                copy_path(item, out, rest);
+            }
+        }
+        (true, None) => {}
+        (false, _) => copy_path(child, &mut dst[name], rest),
     }
 }
 
@@ -1023,6 +1107,7 @@ mod tests {
             priority,
             timeout_ms: 5000,
             fail_closed: true,
+            input: None,
         }
     }
 
@@ -1357,6 +1442,59 @@ mod tests {
             calls[1].1["generate"]["messages"].as_array().unwrap().len(),
             1
         );
+    }
+
+    /// A target that lists its `input` gets the envelope and those fields
+    /// only; the chain still threads its mutation to the next target.
+    #[tokio::test]
+    async fn pre_generate_sends_a_target_only_the_input_it_lists() {
+        let invoker = Scripted::new(&[(
+            "guidance",
+            Ok(json!({ "mutations": { "system_prompt": "base + guidance" } })),
+        )]);
+        let mut guidance = binding("guidance", 0);
+        guidance.input = Some(vec![
+            "generate.system_prompt".into(),
+            "generate.tools[].name".into(),
+            "generate.absent".into(),
+        ]);
+        let input = json!({
+            "point": "pre_generate", "session_id": "s_1", "turn_id": "t_1", "step": 2, "depth": 0,
+            "generate": {
+                "system_prompt": "base",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tools": [{ "name": "a", "parameters": { "type": "object" } }, { "name": "b" }],
+                "model": "m",
+            },
+        });
+        let outcome = run_chain(
+            HookPoint::PreGenerate,
+            &invoker,
+            vec![guidance, binding("full", 1)],
+            input,
+        )
+        .await;
+        let calls = invoker.calls();
+        assert_eq!(
+            calls[0].1,
+            json!({
+                "point": "pre_generate", "session_id": "s_1", "turn_id": "t_1", "step": 2, "depth": 0,
+                "generate": { "system_prompt": "base", "tools": [{ "name": "a" }, { "name": "b" }] },
+            })
+        );
+        assert_eq!(
+            calls[1].1["generate"]["system_prompt"],
+            json!("base + guidance")
+        );
+        assert_eq!(
+            calls[1].1["generate"]["messages"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            calls[1].1["generate"]["tools"][0]["parameters"]["type"],
+            json!("object")
+        );
+        assert_eq!(outcome.system_prompt.as_deref(), Some("base + guidance"));
     }
 
     /// post_turn template mode sends the template with the result injected,

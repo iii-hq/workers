@@ -43,7 +43,7 @@ free. When a call returns `status: "running"`, poll
 
 ```json
 { "function_id": "stories::on-build", "filters": { "input.workspace": { "$eq": "<ws>" } },
-  "label": "stories-build" }
+  "label": "stories-build", "once": false, "lifecycle": { "expires_in_ms": 600000 } }
 ```
 
 Each delivery is one build state transition (`queued`, `running`, `done`,
@@ -145,7 +145,7 @@ the conversation with `harness::observe`:
 
 ```json
 { "function_id": "stories::on-changed", "args": { "workspace": "<ws>", "kinds": ["direct", "indirect"] },
-  "label": "stories-changes" }
+  "label": "stories-changes", "once": false, "lifecycle": { "expires_in_ms": 3600000 } }
 ```
 
 Each delivery carries the classified `changes` against the previous build,

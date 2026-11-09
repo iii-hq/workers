@@ -440,18 +440,31 @@ export function useQuoteHighlights(
       highlight = new Highlight()
       CSS.highlights.set(QUOTE_HIGHLIGHT, highlight)
     }
-    const added: Range[] = []
-    for (const quote of quotes) {
-      const row = root.querySelector(
-        `[data-message-row="${CSS.escape(quote.messageId)}"]`,
-      )
-      const range = row ? findTextRange(row, quote.text) : null
-      if (!range) continue
-      highlight.add(range)
-      added.push(range)
-    }
-    return () => {
+    let added: Range[] = []
+    const clear = () => {
       for (const range of added) highlight?.delete(range)
+      added = []
+    }
+    const apply = () => {
+      clear()
+      for (const quote of quotes) {
+        const row = root.querySelector(
+          `[data-message-row="${CSS.escape(quote.messageId)}"]`,
+        )
+        const range = row ? findTextRange(row, quote.text) : null
+        if (!range) continue
+        highlight?.add(range)
+        added.push(range)
+      }
+    }
+    apply()
+    // Rows come and go with the transcript's window, with no re-render here.
+    const stack = root.querySelector('.chat-message-stack')
+    const observer = stack ? new MutationObserver(apply) : null
+    if (stack) observer?.observe(stack, { childList: true })
+    return () => {
+      observer?.disconnect()
+      clear()
     }
   }, [rootRef, quotes, version])
 }

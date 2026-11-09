@@ -643,23 +643,6 @@ async function realDisposeObserver(
   await disposeSessionObserver(client, observerId, sessionId)
 }
 
-/** `state::get` non-null → the key exists; errors → null (unknown). */
-async function realStateKeyExists(
-  scope: string | undefined,
-  key: string,
-): Promise<boolean | null> {
-  const client = await getIiiClient()
-  try {
-    const value = await client.call<unknown>('state::get', {
-      scope: scope ?? 'global',
-      key,
-    })
-    return value !== null && value !== undefined
-  } catch {
-    return null
-  }
-}
-
 async function realResolveApproval(
   sessionId: string,
   functionCallId: string,
@@ -867,7 +850,6 @@ export const realBackend: ChatBackend = {
   listObservers: realListObservers,
   onObserversChanged: realOnObserversChanged,
   disposeObserver: realDisposeObserver,
-  stateKeyExists: realStateKeyExists,
   watchApprovals: realWatchApprovals,
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,

@@ -26,6 +26,8 @@ pub struct FloorExpectations<'a> {
     pub terminal_turns: usize,
     /// Distinct trace trees (one per externally initiated send).
     pub traces: usize,
+    /// The session's final status, when no turn in the traces reached it.
+    pub final_status: Option<&'a str>,
 }
 
 impl FloorExpectations<'_> {
@@ -51,6 +53,7 @@ pub fn floor_failure(run: &RunEvidence) -> Option<String> {
             turn_statuses: &statuses,
             terminal_turns: 1,
             traces: 1,
+            final_status: None,
         },
     )
 }
@@ -91,7 +94,9 @@ fn terminal_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<S
     let status = run.status.get("status").and_then(Value::as_str);
     let pending = status_list_len(run, "pending_function_calls");
     let queued = status_list_len(run, "queued");
-    let expected_final = expected.turn_statuses.last().map(String::as_str);
+    let expected_final = expected
+        .final_status
+        .or_else(|| expected.turn_statuses.last().map(String::as_str));
     if status == expected_final && pending == 0 && queued == 0 {
         return None;
     }
@@ -705,6 +710,7 @@ mod tests {
             turn_statuses,
             terminal_turns: turn_statuses.len(),
             traces,
+            final_status: None,
         }
     }
 
@@ -786,6 +792,7 @@ mod tests {
             turn_statuses: &statuses,
             terminal_turns: 1,
             traces: 2,
+            final_status: None,
         };
         assert_eq!(floor_failure_for(&evidence, &parked_one), None);
 

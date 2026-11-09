@@ -432,6 +432,57 @@ jobs:
       - name: Run iii-filesystem tests
         run: cargo test --locked -p iii-filesystem
 
+  # ide ships Darwin builds, and what its jobs rely on (sessions and terminals,
+  # stop reporting, open-file limits) behaves differently there.
+  ide-macos:
+    name: "ide: lint + test (macos)"
+    needs: discover
+    if: contains(needs.discover.outputs.rust, '"ide"')
+    permissions:
+      contents: read
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ide
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+          workspaces: ide -> target
+
+      # ide/build.rs builds the injectable UI (ide/ui) via pnpm.
+      # Version comes from the repo-root package.json `packageManager` field.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build the UI
+        run: cd ui && pnpm install --frozen-lockfile && pnpm build
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --all-features
+
   sandbox-libkrun-vm-linux:
     name: "sandbox-libkrun: KVM VM tests + isolation e2e (linux)"
     needs: discover
@@ -1519,7 +1570,7 @@ jobs:
 
       - name: Run the ${{ matrix.suite }} suite on memory built from this PR
         id: e2e
-        uses: iii-hq/harness-e2e/.github/actions/verify-stack@8ba21985193f44a86eaa64848f71c1a54c251d58
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@36c41f00bf0b23919b82e75ab72c86aec101f485
         with:
           token: ${{ steps.app.outputs.token }}
           comment-token: ${{ github.token }}

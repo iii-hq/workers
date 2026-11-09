@@ -409,8 +409,47 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
         dropped_output.all()
     );
 
+    #[cfg(unix)]
+    a_job_that_stays_stopped_answers_its_observer(&owner, &consumer).await;
+
     consumer.shutdown_async().await;
     owner.shutdown_async().await;
+}
+
+/// A stopped job would never exit by itself, so nothing else would release its
+/// observer. Part of the test above: the worker's completion feed keeps the first
+/// client a process registers.
+#[cfg(unix)]
+async fn a_job_that_stays_stopped_answers_its_observer(owner: &IIIClient, consumer: &IIIClient) {
+    let stopped = format!("e2e-stopped-{}", uuid::Uuid::new_v4());
+    let stopped_events = recorder(consumer, "e2e::jobs::stopped");
+    let _stopped = observe(
+        consumer,
+        job(&stopped).capture([Capture::Output]),
+        "e2e::jobs::stopped",
+    )
+    .await;
+    let request = serde_json::from_value(
+        json!({ "command": "sh -c 'kill -STOP $$'", "job_id": stopped.clone() }),
+    )
+    .unwrap();
+    ide::functions::exec_bg::handle(Arc::new(ShellConfig::default()), owner.clone(), request)
+        .await
+        .unwrap();
+    let handle = ide::jobs::get(&stopped).await.expect("the job is retained");
+    tokio::time::timeout(Duration::from_secs(45), async {
+        while !handle.lock().await.finalized {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("a stopped job is killed after its grace");
+    let events = stopped_events
+        .wait_until("the stopped job", |events| !events.is_empty())
+        .await;
+    assert_eq!(events[0]["status"], "killed");
+    let stderr = handle.lock().await.record.stderr.clone();
+    assert!(stderr.contains("stayed stopped"), "{stderr}");
 }
 
 // --- shell::on-changed -----------------------------------------------------

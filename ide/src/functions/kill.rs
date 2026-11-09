@@ -27,7 +27,7 @@ pub async fn handle(req: KillRequest) -> Result<KillResponse, ExecError> {
     // Branch 1: the in-handle Child is still present (job spawned but its drain
     // task has not yet taken the Child). We still own the un-reaped Child, so
     // the pid cannot have been recycled — SIGKILL the whole process group
-    // (process_group(0) at spawn) so a command that already forked cannot leave
+    // (it leads its session from spawn) so a command that already forked cannot leave
     // descendants running after we report killed: true. The group SIGKILL is
     // the authoritative kill; start_kill() is best-effort on the leader (it can
     // race the group signal and find the leader already a zombie — that error

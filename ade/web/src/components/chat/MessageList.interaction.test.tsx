@@ -179,6 +179,21 @@ describe('historical call details hydration', () => {
     expect(container.querySelector(skeleton)).not.toBeNull()
   })
 
+  it('fetches display placeholders when their page arrives, once', async () => {
+    const load = vi.fn()
+    const spawn: FunctionCallMessage = {
+      ...placeholder,
+      id: 'e_spawn:0',
+      functionCallId: 'spawn-call',
+      functionId: 'harness::spawn',
+      resultEntryId: 'e_spawn_result',
+    }
+    await render([spawn, placeholder], load)
+    expect(load).toHaveBeenCalledExactlyOnceWith(['e_spawn', 'e_spawn_result'])
+    await render([spawn, { ...placeholder }], load)
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
   it('drops a failure that lands after the card closed', async () => {
     let fail: (ok: boolean) => void = () => {}
     const load = vi.fn(

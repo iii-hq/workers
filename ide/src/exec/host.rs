@@ -88,14 +88,28 @@ pub fn build_command(
         // so without this they would become orphaned processes outliving the
         // worker. This is the backstop; main() also runs an explicit kill sweep.
         .kill_on_drop(true);
-    // Put the child in its own process group (it becomes the group leader, so
+    // Start the child in its own session (it leads a new process group, so
     // pgid == pid). Termination then signals the WHOLE group via `-pid`, killing
     // any grandchildren the command spawned — not just the direct child, which
     // `start_kill`/`kill_on_drop` alone would leave orphaned. The group kill is
     // always issued while the caller still owns the un-reaped Child, so the pgid
     // cannot have been reused.
+    //
+    // The session also leaves the worker's controlling terminal behind. In the
+    // worker's session, a command that touches /dev/tty (ssh, sudo, a git
+    // credential prompt) is a background job: SIGTTIN stops the whole group and
+    // wait() never returns. Without a terminal, it cannot stop on one.
     #[cfg(unix)]
-    cmd.process_group(0);
+    // SAFETY: the hook runs in the forked child before exec and only calls
+    // setsid, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     // A scoped exec under `fs.exec_confinement: landlock` may write only under
     // its roots. Fails closed: no confinement, no command.
     if let Some(roots) = &overrides.write_roots {
@@ -106,7 +120,7 @@ pub fn build_command(
 
 /// SIGKILL an entire process group by its leader pid. The caller MUST still own
 /// the un-reaped `Child` for `pid` when calling this, so the pid (and therefore
-/// the pgid, since children are spawned with `process_group(0)`) cannot have been
+/// the pgid, since each child leads the session it is spawned in) cannot have been
 /// reused by the OS — this is what makes signalling by number safe. The negated
 /// pid targets the whole group, terminating grandchildren too. No-op on non-unix;
 /// a vanished process (ESRCH) is ignored.
@@ -123,6 +137,31 @@ pub(crate) fn kill_process_group(pid: Option<u32>) {
 
 #[cfg(not(unix))]
 pub(crate) fn kill_process_group(_pid: Option<u32>) {}
+
+/// The signal holding `pid` stopped, if it is stopped. `wait()` does not report
+/// a stop, so a stopped child otherwise looks like a running one. As with
+/// [`kill_process_group`], the caller MUST still own the un-reaped `Child`.
+/// WNOWAIT leaves the status in place for the next look.
+#[cfg(unix)]
+pub(crate) fn stop_signal(pid: u32) -> Option<i32> {
+    // SAFETY: waitid only writes the zeroed struct it is given, and the siginfo
+    // accessors read the fields it filled in.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        let found = libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WSTOPPED | libc::WNOHANG | libc::WNOWAIT,
+        ) == 0;
+        (found && info.si_pid() != 0).then(|| info.si_status())
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn stop_signal(_pid: u32) -> Option<i32> {
+    None
+}
 
 /// Feed `stdin` (if any) to the child's stdin pipe, then close it so the child
 /// sees EOF. Runs in a detached task so a child that interleaves reading stdin
@@ -535,19 +574,17 @@ mod tests {
         let cfg = test_cfg();
         assert!(cfg.env.inherit, "the test targets the inheriting default");
 
+        // One key, not `env`: a CI runner's whole environment outgrows the output cap.
+        let printenv = vec!["printenv".to_string(), KEY.to_string()];
         let out = run_to_completion(
-            &["env".into()],
+            &printenv,
             &cfg,
             5000,
             &crate::exec::policy::ExecOverrides::default(),
         )
         .await
         .unwrap();
-        assert!(
-            !out.stdout.contains("III_WORKER_NAME="),
-            "identity stripped: {}",
-            out.stdout
-        );
+        assert_eq!(out.stdout.trim(), "", "identity stripped");
 
         let overrides = crate::exec::policy::ExecOverrides {
             env: Some(std::collections::BTreeMap::from([(
@@ -556,14 +593,10 @@ mod tests {
             )])),
             ..Default::default()
         };
-        let out = run_to_completion(&["env".into()], &cfg, 5000, &overrides)
+        let out = run_to_completion(&printenv, &cfg, 5000, &overrides)
             .await
             .unwrap();
-        assert!(
-            out.stdout.contains("III_WORKER_NAME=explicit"),
-            "explicit override lands: {}",
-            out.stdout
-        );
+        assert_eq!(out.stdout.trim(), "explicit", "explicit override lands");
     }
 
     /// A per-call `env` key is visible to the child process, EVEN THOUGH

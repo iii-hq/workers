@@ -594,6 +594,7 @@ async fn stop(deps: &Deps) {
     let req = crate::functions::stop::StopRequest {
         session_id: "s".into(),
         turn_id: None,
+        ..Default::default()
     };
     crate::functions::stop::stop_one(deps, req).await.unwrap();
 }
@@ -742,6 +743,13 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
                 continue;
             }
             let function = message["function_id"].as_str().unwrap().to_string();
+            // The harness runs a hook chain itself and calls each observer's
+            // target through its observer: record and answer that call as
+            // the hook point the observer observes.
+            let function = message["activation"]["observer_id"]
+                .as_str()
+                .and_then(|id| id.strip_prefix("o_"))
+                .map_or(function, str::to_string);
             let data = message["data"].clone();
             observed
                 .lock()

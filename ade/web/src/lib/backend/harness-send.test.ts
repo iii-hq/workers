@@ -51,6 +51,7 @@ describe('stopTurn', () => {
     expect(await stopTurn(client, 's-1')).toBe(true)
     expect(client.call).toHaveBeenCalledWith('harness::stop', {
       session_id: 's-1',
+      quiet_deadlines: true,
     })
   })
 
@@ -59,6 +60,7 @@ describe('stopTurn', () => {
     expect(await stopTurn(client, 's-1', 't-9')).toBe(false)
     expect(client.call).toHaveBeenCalledWith('harness::stop', {
       session_id: 's-1',
+      quiet_deadlines: true,
       turn_id: 't-9',
     })
   })

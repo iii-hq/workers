@@ -11,19 +11,38 @@ use crate::exec::sandbox::{is_engine_timeout, SandboxExecResponse};
 use crate::functions::types::{ExecBgRequest, ExecBgResponse};
 use crate::jobs::{self, JobHandle, JobRecord, JobStatus};
 use crate::target::Target;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
 
 /// Grace for joining a host job's stdout/stderr drain tasks after the child has
 /// exited. A process-group kill closes the pipes so the drains finish at once;
 /// this only bounds the pathological case where the direct child exited but a
 /// grandchild inherited and still holds the pipe — there the job finalizes
 /// (freeing its slot) instead of wedging forever.
-const DRAIN_GRACE_MS: u64 = 10_000;
+const DRAIN_GRACE_MS: u64 = if cfg!(test) { 2_000 } else { 10_000 };
 
 /// Slack added to a sandbox job's in-VM `timeout_ms` to form the client-side RPC
 /// deadline. The engine should answer within timeout_ms; the slack covers
 /// transport + queueing before we declare it unresponsive and finalize the job.
 const SANDBOX_RPC_SLACK_MS: u64 = 30_000;
+
+/// How often a running host job is checked for having stopped.
+const STOP_POLL: Duration = Duration::from_millis(if cfg!(test) { 10 } else { 1_000 });
+
+/// How long a host job may stay stopped before it is killed. Nothing here
+/// resumes it, so without this its `wait()` never returns and
+/// `shell::on-job-finished` never fires. The grace leaves room for an operator's
+/// SIGSTOP and SIGCONT.
+const STOPPED_GRACE: Duration = Duration::from_millis(if cfg!(test) { 1_000 } else { 30_000 });
+
+/// While a job runs, its record holds only this many of the newest bytes of each
+/// stream. `shell::status` then stays small enough to reach an agent and to poll:
+/// the harness replaces a result over 256 KiB, status included, with a marker, and
+/// counts both the result's text and its details. There a control character costs 7
+/// and 6 bytes of JSON, so two streams of this size reach about 213 KB at worst. The
+/// first `max_output_bytes` replace it when the job ends.
+const LIVE_OUTPUT_BYTES: usize = 8 * 1024;
 
 fn resolve_job_id(job_id: Option<String>) -> Result<String, String> {
     match job_id {
@@ -179,31 +198,34 @@ pub(crate) async fn spawn_host_job(
 
         // Drain stdout/stderr concurrently — sequential reads deadlock
         // once the child fills one pipe's ~64 KiB buffer before closing
-        // the other.
+        // the other. Each drain publishes into the record as output arrives, so
+        // shell::status shows a running job's output so far.
         let stdout_task = stdout_pipe.map(|mut out| {
+            let job = handle.clone();
             tokio::spawn(async move {
-                let mut buf = Vec::new();
-                let mut trunc = false;
-                read_bounded(&mut out, limit, &mut buf, &mut trunc).await;
-                (buf, trunc)
+                drain_to_record(&mut out, limit, &job, |r| {
+                    (&mut r.stdout, &mut r.stdout_truncated)
+                })
+                .await
             })
         });
         let stderr_task = stderr_pipe.map(|mut err| {
+            let job = handle.clone();
             tokio::spawn(async move {
-                let mut buf = Vec::new();
-                let mut trunc = false;
-                read_bounded(&mut err, limit, &mut buf, &mut trunc).await;
-                (buf, trunc)
+                drain_to_record(&mut err, limit, &job, |r| {
+                    (&mut r.stderr, &mut r.stderr_truncated)
+                })
+                .await
             })
         });
 
-        // Race the child's exit against (a) the hard cap and (b) an external kill
-        // request (shell::kill / shutdown sweep, delivered via `kill_notify`). On
-        // either trigger we kill the child's WHOLE process group while we still
-        // own the un-reaped Child — so the pid/pgid cannot have been reused and
-        // grandchildren die too — then loop back to reap via wait(). The `if`
-        // guards make the cap and kill arms fire at most once each.
-        let mut timed_out = false;
+        // Race the child's exit against (a) the hard cap, (b) an external kill
+        // request (shell::kill / shutdown sweep, delivered via `kill_notify`) and
+        // (c) the job staying stopped. On any trigger we kill the child's WHOLE
+        // process group while we still own the un-reaped Child — so the pid/pgid
+        // cannot have been reused and grandchildren die too — then loop back to
+        // reap via wait(). The `if` guards make these arms fire at most once.
+        let mut kill_reason: Option<String> = None;
         let mut killed_by_request = false;
         let exit_status = if let Some(mut ch) = child {
             let pid = ch.id();
@@ -217,15 +239,23 @@ pub(crate) async fn spawn_host_job(
                 }
             };
             tokio::pin!(cap);
+            let stopped = stayed_stopped(pid);
+            tokio::pin!(stopped);
             loop {
                 tokio::select! {
                     r = ch.wait() => break r.ok(),
-                    _ = &mut cap, if !timed_out && !killed_by_request => {
-                        timed_out = true;
+                    _ = &mut cap, if kill_reason.is_none() && !killed_by_request => {
+                        kill_reason = Some(format!(
+                            "background job exceeded the host hard cap of {cap_ms}ms and was killed"
+                        ));
                         crate::exec::host::kill_process_group(pid);
                     }
-                    _ = kill_notify.notified(), if !timed_out && !killed_by_request => {
+                    _ = kill_notify.notified(), if kill_reason.is_none() && !killed_by_request => {
                         killed_by_request = true;
+                        crate::exec::host::kill_process_group(pid);
+                    }
+                    signal = &mut stopped, if kill_reason.is_none() && !killed_by_request => {
+                        kill_reason = Some(stopped_note(signal));
                         crate::exec::host::kill_process_group(pid);
                     }
                 }
@@ -240,18 +270,19 @@ pub(crate) async fn spawn_host_job(
         // holds the pipe open — there we abort the reader (freeing the fd) and
         // report what we have as truncated, so the job finalizes and frees its
         // concurrency slot instead of wedging forever.
-        let (stdout_buf, stdout_trunc) = join_drain(stdout_task).await;
-        let (stderr_buf, stderr_trunc) = join_drain(stderr_task).await;
+        let (stdout_kept, stderr_kept) =
+            tokio::join!(join_drain(stdout_task), join_drain(stderr_task));
 
-        // Single finalize critical section: status, exit_code, stdout, stderr and
-        // finished_at_ms are published together, so a poller never observes a
-        // terminal status with empty output (or output with a stale status).
+        // Single finalize critical section: status, exit_code, output and
+        // finished_at_ms are published together, after the drains' last write. Only
+        // shell::kill shows a terminal status sooner: it flips the status first, so
+        // a poller can see `killed` with the live view until this runs.
         let mut h = handle.lock().await;
         // Finalize-once: an external killer (shell::kill / shutdown sweep) may
         // have already flipped status to Killed and stamped finished_at_ms. Never
         // downgrade a terminal status, and never clobber that kill-time timestamp.
         if h.record.status == JobStatus::Running {
-            h.record.status = if timed_out || killed_by_request {
+            h.record.status = if kill_reason.is_some() || killed_by_request {
                 JobStatus::Killed
             } else {
                 match &exit_status {
@@ -261,22 +292,23 @@ pub(crate) async fn spawn_host_job(
             };
         }
         h.record.exit_code = exit_status.and_then(|s| s.code());
-        h.record.stdout = String::from_utf8_lossy(&stdout_buf).into_owned();
-        h.record.stderr = String::from_utf8_lossy(&stderr_buf).into_owned();
-        if timed_out {
+        let record = &mut h.record;
+        publish_kept(
+            (&mut record.stdout, &mut record.stdout_truncated),
+            stdout_kept,
+        );
+        publish_kept(
+            (&mut record.stderr, &mut record.stderr_truncated),
+            stderr_kept,
+        );
+        if let Some(note) = kill_reason {
             // Append the cause without discarding any stderr the child emitted
             // before it was killed.
-            let note =
-                format!("background job exceeded the host hard cap of {cap_ms}ms and was killed");
-            if h.record.stderr.is_empty() {
-                h.record.stderr = note;
-            } else {
+            if !h.record.stderr.is_empty() {
                 h.record.stderr.push('\n');
-                h.record.stderr.push_str(&note);
             }
+            h.record.stderr.push_str(&note);
         }
-        h.record.stdout_truncated = stdout_trunc;
-        h.record.stderr_truncated = stderr_trunc;
         if h.record.finished_at_ms.is_none() {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
@@ -449,55 +481,115 @@ pub(crate) async fn spawn_sandbox_job(
     Ok(ExecBgResponse { job_id: id, argv })
 }
 
-/// Join one drain task under [`DRAIN_GRACE_MS`]. Returns `(bytes, truncated)`.
-/// On grace expiry (a grandchild is holding the pipe open after the child
-/// exited) the reader task is aborted to release its file descriptor and the
-/// stream is reported truncated, so the owning job can still finalize.
-async fn join_drain(task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>) -> (Vec<u8>, bool) {
-    match task {
-        None => (Vec::new(), false),
-        Some(mut t) => {
-            match tokio::time::timeout(std::time::Duration::from_millis(DRAIN_GRACE_MS), &mut t)
-                .await
+/// Resolves with the stop signal once `pid` has stayed stopped for
+/// [`STOPPED_GRACE`]. Only polled while the caller owns the un-reaped child.
+// shortcut: watches the direct child only, so a stopped grandchild that the
+// child waits on is not seen; walk the process tree if that shows up in practice.
+async fn stayed_stopped(pid: Option<u32>) -> i32 {
+    let mut stopped_since = None;
+    loop {
+        tokio::time::sleep(STOP_POLL).await;
+        match pid.and_then(crate::exec::host::stop_signal) {
+            Some(signal)
+                if stopped_since.get_or_insert_with(Instant::now).elapsed() >= STOPPED_GRACE =>
             {
-                Ok(Ok(v)) => v,
-                // Reader task panicked or was cancelled: no recoverable output.
-                Ok(Err(_)) => (Vec::new(), false),
-                // Grace expired: abort the reader to free the fd, report truncated.
-                Err(_) => {
-                    t.abort();
-                    (Vec::new(), true)
-                }
+                return signal;
             }
+            Some(_) => {}
+            None => stopped_since = None,
         }
     }
 }
 
-async fn read_bounded<R: AsyncReadExt + Unpin>(
+/// What a job's stderr says when it was killed for staying stopped.
+fn stopped_note(signal: i32) -> String {
+    format!(
+        "background job was stopped by signal {signal} and stayed stopped for {}s, so it was \
+         killed: nothing would have resumed it",
+        STOPPED_GRACE.as_secs()
+    )
+}
+
+/// What a stream leaves for its job's end: the kept text, and whether it was cut.
+type KeptOutput = (String, bool);
+
+/// Join one drain task under [`DRAIN_GRACE_MS`]; `None` when it had to be
+/// aborted. On grace expiry (a grandchild is holding the pipe open after the
+/// child exited) the reader task is aborted to release its file descriptor, so
+/// the owning job can still finalize with the output published so far.
+async fn join_drain(task: Option<tokio::task::JoinHandle<KeptOutput>>) -> Option<KeptOutput> {
+    let Some(mut task) = task else {
+        return Some(KeptOutput::default());
+    };
+    let grace = Duration::from_millis(DRAIN_GRACE_MS);
+    match tokio::time::timeout(grace, &mut task).await {
+        Ok(joined) => joined.ok(),
+        Err(_) => {
+            task.abort();
+            // Wait it out: an abort lands at the next await, and a write after this
+            // point would overwrite what finalize adds to the record.
+            let _ = task.await;
+            None
+        }
+    }
+}
+
+/// A stream's final text. Without kept output, what the record shows so far stands,
+/// flagged as cut.
+fn publish_kept((text, flag): (&mut String, &mut bool), kept: Option<KeptOutput>) {
+    match kept {
+        Some((kept, truncated)) => {
+            *text = kept;
+            *flag = truncated;
+        }
+        None => *flag = true,
+    }
+}
+
+/// The newest [`LIVE_OUTPUT_BYTES`] of `bytes`, starting on a character.
+fn live_tail(bytes: &[u8]) -> &[u8] {
+    let mut start = bytes.len().saturating_sub(LIVE_OUTPUT_BYTES);
+    while start > 0 && start < bytes.len() && bytes[start] & 0xC0 == 0x80 {
+        start += 1;
+    }
+    &bytes[start..]
+}
+
+/// Read one stream to its end and return its first `limit` bytes. The job's record
+/// holds the newest bytes as they arrive, past `limit` too so a long job's view
+/// keeps moving. The kept bytes wait for the job's end because a stream can close
+/// long before it, and a running job's status must stay small. `field` picks the
+/// stream's text and flag.
+async fn drain_to_record<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     limit: usize,
-    buf: &mut Vec<u8>,
-    truncated: &mut bool,
-) {
+    job: &Mutex<JobHandle>,
+    field: fn(&mut JobRecord) -> (&mut String, &mut bool),
+) -> KeptOutput {
+    let mut buf = Vec::new();
+    let mut newest = Vec::new();
+    let mut truncated = false;
     let mut chunk = [0u8; 8192];
     loop {
         match reader.read(&mut chunk).await {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => {
-                if !*truncated {
-                    if buf.len() + n > limit {
-                        let take = limit.saturating_sub(buf.len());
-                        buf.extend_from_slice(&chunk[..take]);
-                        *truncated = true;
-                        // Keep draining to avoid SIGPIPE on the child.
-                    } else {
-                        buf.extend_from_slice(&chunk[..n]);
-                    }
+                let take = n.min(limit.saturating_sub(buf.len()));
+                buf.extend_from_slice(&chunk[..take]);
+                truncated |= take < n;
+                newest.extend_from_slice(&chunk[..n]);
+                if newest.len() > 2 * LIVE_OUTPUT_BYTES {
+                    newest.drain(..newest.len() - LIVE_OUTPUT_BYTES);
                 }
+                let live = live_tail(&newest);
+                let mut h = job.lock().await;
+                let (text, flag) = field(&mut h.record);
+                *text = String::from_utf8_lossy(live).into_owned();
+                *flag = truncated || live.len() < buf.len();
             }
-            Err(_) => break,
         }
     }
+    (String::from_utf8_lossy(&buf).into_owned(), truncated)
 }
 
 #[cfg(test)]
@@ -525,18 +617,17 @@ mod host_path_tests {
         Arc::new(c)
     }
 
-    /// Poll a job until it is fully finalized (`finished_at_ms` set — the last
-    /// write the detached task makes) or the deadline expires, then return its
-    /// status. Waiting on `finished_at_ms` rather than just a non-Running
-    /// status avoids racing the gap between the status flip and the trailing
-    /// stdout/stderr/finished_at_ms writes. Tighter than a fixed sleep:
+    /// Poll a job until it is fully finalized or the deadline expires, then return
+    /// its status. Waiting on `finalized` rather than a non-Running status or
+    /// `finished_at_ms` avoids racing a kill, which sets both before the trailing
+    /// stdout/stderr writes. Tighter than a fixed sleep:
     /// returns the instant the task finalizes, so the test stays fast.
     async fn await_terminal(job_id: &str, deadline_ms: u64) -> JobStatus {
         let start = std::time::Instant::now();
         loop {
             if let Some(h) = jobs::get(job_id).await {
                 let r = h.lock().await;
-                if r.record.finished_at_ms.is_some() {
+                if r.finalized {
                     return r.record.status.clone();
                 }
             }
@@ -649,6 +740,363 @@ mod host_path_tests {
         // SAFETY: signal 0 performs error checking only; it never delivers a
         // signal or touches process memory.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// The body of [`a_job_cannot_stop_on_the_workers_controlling_terminal`]:
+    /// it runs in a re-executed copy of this test binary, whose controlling
+    /// terminal is a pty, as a worker started from a terminal has.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "run under a pty by a_job_cannot_stop_on_the_workers_controlling_terminal"]
+    async fn job_under_a_controlling_terminal() {
+        assert!(
+            std::fs::File::open("/dev/tty").is_ok(),
+            "this copy must own a controlling terminal, or it proves nothing"
+        );
+        let resp = spawn_host_job(
+            None,
+            None,
+            cfg(0, 16),
+            vec!["sh".into(), "-c".into(), "cat /dev/tty".into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        let status = await_terminal(&resp.job_id, 5_000).await;
+        assert_eq!(
+            status,
+            JobStatus::Failed,
+            "a job reading the terminal fails"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_job_cannot_stop_on_the_workers_controlling_terminal() {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize::default())
+            .expect("openpty");
+        let mut cmd =
+            portable_pty::CommandBuilder::new(std::env::current_exe().expect("test binary"));
+        cmd.args([
+            "--exact",
+            "functions::exec_bg::host_path_tests::job_under_a_controlling_terminal",
+            "--ignored",
+        ]);
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn under the pty");
+        drop(pair.slave);
+        let mut output = pair.master.try_clone_reader().expect("pty reader");
+        let reader = std::thread::spawn(move || {
+            let mut text = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut output, &mut text);
+            String::from_utf8_lossy(&text).into_owned()
+        });
+        let status = tokio::task::spawn_blocking(move || child.wait())
+            .await
+            .expect("join")
+            .expect("wait");
+        drop(pair.master);
+        let text = reader.join().expect("reader");
+        assert!(status.success(), "under the pty:\n{text}");
+        // A renamed inner test would select nothing and still exit 0.
+        assert!(text.contains("1 passed"), "the inner test ran:\n{text}");
+    }
+
+    /// A stopped job looks running to `wait()`. Nothing would resume it, so it
+    /// ends as killed, says why, and frees its observer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_job_that_stays_stopped_is_killed_and_says_why() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let resp = spawn_host_job(
+            None,
+            None,
+            cfg(0, 16),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo before; kill -STOP $$".into(),
+            ],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        assert_eq!(await_terminal(&resp.job_id, 5_000).await, JobStatus::Killed);
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert_eq!(r.record.stdout, "before\n");
+        assert!(
+            r.record.stderr.contains("stayed stopped"),
+            "{}",
+            r.record.stderr
+        );
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    /// A job stopped for less than the grace is an operator's pause, not a hang,
+    /// however many pauses add up past it: each resume restarts the grace.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_job_resumed_within_the_grace_keeps_running() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        // The resume waits to see the stop, so it cannot land first and strand the job.
+        let pause = r#"sh -c 'until ps -o state= -p "$1" | grep -q T; do sleep 0.01; done; sleep 0.2; kill -CONT "$1"' _ $$ & kill -STOP $$;"#;
+        // Six pauses add up past the grace, and the sleeps outlast a stop check, so
+        // each resume is seen.
+        let script = format!("{}echo done", format!("{pause} sleep 0.1; ").repeat(6));
+        let resp = spawn_host_job(
+            None,
+            None,
+            cfg(0, 16),
+            vec!["sh".into(), "-c".into(), script],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        assert_eq!(
+            await_terminal(&resp.job_id, 10_000).await,
+            JobStatus::Finished
+        );
+        let handle = jobs::get(&resp.job_id).await.expect("job exists");
+        assert_eq!(handle.lock().await.record.stdout, "done\n");
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    /// A stream can close long before its job ends, and until then the status must
+    /// stay small enough to reach an agent.
+    #[tokio::test]
+    async fn a_closed_stream_keeps_the_live_view_until_the_job_ends() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let mut roomy = ShellConfig {
+            env: crate::config::EnvConfig::inherit_all(),
+            max_output_bytes: 1024 * 1024,
+            max_concurrent_jobs: 16,
+            ..Default::default()
+        };
+        roomy.compile_denylist().unwrap();
+        let script =
+            "head -c 100000 /dev/zero | tr '\\0' x; echo; echo newest; exec 1>&-; sleep 30";
+        let resp = spawn_host_job(
+            None,
+            None,
+            Arc::new(roomy),
+            vec!["sh".into(), "-c".into(), script.into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        let handle = jobs::get(&resp.job_id).await.expect("job exists");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !handle.lock().await.record.stdout.ends_with("newest\n") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the newest output reaches the record");
+        for _ in 0..20 {
+            assert!(handle.lock().await.record.stdout.len() <= super::LIVE_OUTPUT_BYTES);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(jobs::kill_running_host_jobs().await >= 1);
+        assert_eq!(await_terminal(&resp.job_id, 5_000).await, JobStatus::Killed);
+        assert!(handle.lock().await.record.stdout.len() > 100_000);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    /// A grandchild can hold a pipe past its job's end: the job still ends, showing
+    /// what it showed so far and saying it is partial.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_grandchild_holding_the_pipe_leaves_the_live_view() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let resp = spawn_host_job(
+            None,
+            None,
+            cfg(0, 16),
+            vec!["sh".into(), "-c".into(), "echo out; sleep 8 &".into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        assert_eq!(
+            await_terminal(&resp.job_id, 7_000).await,
+            JobStatus::Finished
+        );
+        let handle = jobs::get(&resp.job_id).await.expect("job exists");
+        {
+            let h = handle.lock().await;
+            assert_eq!(h.record.stdout, "out\n");
+            assert!(h.record.stdout_truncated);
+        }
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn a_running_job_shows_its_output_so_far() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let resp = spawn_host_job(
+            None,
+            None,
+            cfg(0, 16),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo out; echo err >&2; sleep 30".into(),
+            ],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        let handle = jobs::get(&resp.job_id).await.expect("job exists");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                {
+                    let h = handle.lock().await;
+                    assert_eq!(h.record.status, JobStatus::Running);
+                    if h.record.stdout == "out\n" && h.record.stderr == "err\n" {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the output of a running job reaches its record");
+        assert!(jobs::kill_running_host_jobs().await >= 1);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    /// A chatty job's status must stay small while it runs: the harness replaces
+    /// an oversized result with a marker, which would hide `status` itself.
+    #[tokio::test]
+    async fn a_running_job_shows_its_newest_output_then_all_of_it() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let mut roomy = ShellConfig {
+            env: crate::config::EnvConfig::inherit_all(),
+            max_output_bytes: 1024 * 1024,
+            max_concurrent_jobs: 16,
+            ..Default::default()
+        };
+        roomy.compile_denylist().unwrap();
+        let script = "head -c 100000 /dev/zero | tr '\\0' x; echo; echo newest; sleep 30";
+        let resp = spawn_host_job(
+            None,
+            None,
+            Arc::new(roomy),
+            vec!["sh".into(), "-c".into(), script.into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        let handle = jobs::get(&resp.job_id).await.expect("job exists");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !handle.lock().await.record.stdout.ends_with("newest\n") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the newest output reaches the record");
+        {
+            let h = handle.lock().await;
+            assert_eq!(h.record.status, JobStatus::Running);
+            assert!(h.record.stdout.len() <= super::LIVE_OUTPUT_BYTES);
+            assert!(h.record.stdout_truncated, "a partial view says so");
+        }
+        assert!(jobs::kill_running_host_jobs().await >= 1);
+        assert_eq!(await_terminal(&resp.job_id, 5_000).await, JobStatus::Killed);
+        let h = handle.lock().await;
+        assert!(h.record.stdout.len() > 100_000, "all of it once it ended");
+        assert!(!h.record.stdout_truncated);
+        drop(h);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    /// A long job's view must keep moving once the kept output is full.
+    #[tokio::test]
+    async fn the_live_view_keeps_moving_past_the_limit() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let mut small = ShellConfig {
+            env: crate::config::EnvConfig::inherit_all(),
+            max_output_bytes: 4,
+            max_concurrent_jobs: 16,
+            ..Default::default()
+        };
+        small.compile_denylist().unwrap();
+        let resp = spawn_host_job(
+            None,
+            None,
+            Arc::new(small),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo first; sleep 0.2; echo newest; sleep 30".into(),
+            ],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        let handle = jobs::get(&resp.job_id).await.expect("job exists");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !handle.lock().await.record.stdout.contains("newest") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("output past the limit reaches the live view");
+        assert!(handle.lock().await.record.stdout_truncated);
+        assert!(jobs::kill_running_host_jobs().await >= 1);
+        assert_eq!(await_terminal(&resp.job_id, 5_000).await, JobStatus::Killed);
+        assert_eq!(handle.lock().await.record.stdout, "firs", "the kept output");
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[test]
+    fn the_live_view_starts_on_a_character() {
+        let text = "é".repeat(super::LIVE_OUTPUT_BYTES);
+        let tail = super::live_tail(text.as_bytes());
+        assert!(tail.len() <= super::LIVE_OUTPUT_BYTES);
+        assert!(std::str::from_utf8(tail).is_ok());
+        assert_eq!(super::live_tail(b"short"), b"short");
+    }
+
+    #[tokio::test]
+    async fn output_past_the_limit_is_cut_and_flagged() {
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let mut small = ShellConfig {
+            env: crate::config::EnvConfig::inherit_all(),
+            max_output_bytes: 4,
+            max_concurrent_jobs: 16,
+            ..Default::default()
+        };
+        small.compile_denylist().unwrap();
+        let resp = spawn_host_job(
+            None,
+            None,
+            Arc::new(small),
+            vec!["sh".into(), "-c".into(), "echo 0123456789".into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        assert_eq!(
+            await_terminal(&resp.job_id, 5_000).await,
+            JobStatus::Finished
+        );
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert_eq!(r.record.stdout, "0123");
+        assert!(r.record.stdout_truncated);
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
     }
 
     /// End-to-end: the shutdown sweep terminates a real running host child.

@@ -149,7 +149,8 @@ iii.observe(
 From an agent turn, the same observer goes through `harness::observe`:
 
 ```json
-{ "function_id": "worktree::on-landed", "filters": { "input.worktree_id": { "$eq": "<worktree_id>" } } }
+{ "function_id": "worktree::on-landed", "filters": { "input.worktree_id": { "$eq": "<worktree_id>" } },
+  "lifecycle": { "expires_in_ms": 3600000 } }
 ```
 
 All six functions take no args and carry `repo_path`, `worktree_id` and

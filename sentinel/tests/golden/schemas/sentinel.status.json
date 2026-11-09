@@ -152,6 +152,12 @@
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "tick_backlog_dropped": {
+            "description": "Tick trace ids dropped, oldest first, because the engine stayed too slow to read them and the backlog reached its cap. A number that climbs means the engine's trace store, not its ring, is the bottleneck.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
           }
         },
         "required": [
@@ -167,7 +173,8 @@
           "phantom_ticks_dropped",
           "processed_total",
           "queued",
-          "redactions"
+          "redactions",
+          "tick_backlog_dropped"
         ],
         "type": "object"
       },

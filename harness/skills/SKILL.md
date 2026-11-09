@@ -84,7 +84,10 @@ Consumer-facing:
   spawned children and kills the `shell::exec_bg` jobs the stopped sessions
   started through their own tool calls (the harness stamps those with the
   session; jobs started by observer deliveries or `fp::pipe` steps are unowned
-  and survive).
+  and survive). It does not end a session parked on a wake, which ends on its next
+  wake, deadline included. A stop that means no more turns passes
+  `quiet_deadlines: true`: that wake's deadline then starts no turn, and the session
+  ends as cancelled.
 - `harness::status` — read the current turn state for a session; `null` when no
   turn ever ran. For recovery and guards, not rendering.
 - `harness::spawn` — spawn a sub-agent in a child session. Model-facing (invoked
@@ -141,7 +144,9 @@ them (see [Agent observers](#agent-observers)).
 - `harness::on-turn-completed` — a turn reached a terminal status
   (`completed` / `cancelled` / `failed`), carrying the result or error for
   chaining, failure toasts, auto-titling, and result delivery; `terminal` is
-  `false` while the session still owns an armed wake.
+  `false` while the session still owns an armed wake. A turn that ended with a
+  wake armed and was then stopped completes twice: `terminal: false`, then
+  `terminal: true` when its last wake is gone.
 - `harness::on-message-queued`, `harness::on-observers-changed`,
   `harness::on-compaction`, `harness::on-session-tree-deletion` and
   `harness::on-ready` — see the worker README for their events.
@@ -213,11 +218,17 @@ harness::observe {
 }
 ```
 
-Without `lifecycle.expires_in_ms` a one-shot wake waits indefinitely: `once`
-bounds deliveries, not time. When the deadline passes first, the session is
-woken with an expiry notice instead of the write; read the key with `state::get`
-(the child may have written it late) and otherwise treat the child as failed or
-slow: retry, report, or continue without it. For a fan-out, arm one wake per
+Set `lifecycle.expires_in_ms` on every wake except a timer, to how long the work
+should take: `once` bounds deliveries, not time, so a one-shot wake without it
+expires after 10 minutes (`harness::on-timer` and `cron::on-tick` fire by
+themselves and get no default). When the deadline passes first, the session is
+woken with an expiry notice instead of the write. The child may still be running:
+to keep waiting, re-arm first, then read the key with `state::get`, because a
+write made while nothing is armed never reaches the new observer. Retry, report,
+or continue without the child only once you know it failed. A `state::barrier`
+never sees those writes, so its deadline must outlast the whole fan-in. A wake whose
+session was stopped mid-turn, or while parked with `quiet_deadlines`, retires at its
+deadline with no notice. For a fan-out, arm one wake per
 child key, each with a deadline, and read each result with `state::get` once
 woken. A wake is once by default, a call observer is standing; bound standing
 observers with `lifecycle` and remove them with `harness::unobserve { id }`.

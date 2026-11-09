@@ -1,6 +1,6 @@
 //! User-requested Context snapshots, not domain records or background monitors.
 //! Stored beside workspace.json; serialize mutations and fail closed on corrupt data.
-use crate::functions::working_directory::{PRE_CALL_HOOK_FN, PRE_GENERATE_HOOK_FN};
+use crate::functions::working_directory::PRE_CALL_HOOK_FN;
 use crate::workspace_store::WorkspaceStore;
 use iii_sdk::{errors::Error, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
@@ -360,20 +360,18 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     );
     // Pending while the Harness is absent; dropping a handle does not
     // dispose its observer.
-    for (hook, target, args) in [
-        (
-            PRE_CALL_HOOK_FN,
-            crate::functions::working_directory::STAMP_SESSION_ID,
-            json!({"functions":["ade::context::list","ade::context::save","ade::context::remove"],"on_error":"fail_closed"}),
-        ),
-        (
-            PRE_GENERATE_HOOK_FN,
-            "ade::context::inject-guidance",
-            json!({"on_error":"fail_open"}),
-        ),
-    ] {
-        iii.observe(iii_sdk::Source::function(hook).args(args), target);
-    }
+    iii.observe(
+        iii_sdk::Source::function(PRE_CALL_HOOK_FN).args(json!({
+            "functions": ["ade::context::list", "ade::context::save", "ade::context::remove"],
+            "on_error": "fail_closed"
+        })),
+        crate::functions::working_directory::STAMP_SESSION_ID,
+    );
+    crate::functions::working_directory::observe_generation(
+        iii,
+        "ade::context::inject-guidance",
+        json!({"on_error": "fail_open"}),
+    );
 }
 
 #[cfg(test)]

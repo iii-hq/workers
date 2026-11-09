@@ -119,6 +119,16 @@ pub struct WorkerConfig {
     #[serde(default = "default_stream_coalesce_ms")]
     pub stream_coalesce_ms: u64,
 
+    /// How many `harness-turn` steps the queue runs at once, across all
+    /// sessions; one session's steps stay in order whatever the value. A step
+    /// holds its slot for its whole model call, so past this many concurrent
+    /// sessions steps wait in the queue. llm-router admits 64 provider calls
+    /// at once, so a value above 64 only moves the wait there. Applies at the
+    /// next harness start: redefining the queue live would abort the steps
+    /// in flight.
+    #[serde(default = "default_turn_queue_concurrency")]
+    pub turn_queue_concurrency: u32,
+
     /// Cron expression (6-field) for the pending-call expiry sweep. The one
     /// structural field: a change replaces the `cron::on-tick` observer live.
     #[serde(default = "default_sweep_expression")]
@@ -306,6 +316,11 @@ fn default_max_transient_resumes() -> u32 {
 fn default_max_result_bytes() -> usize {
     262_144
 }
+/// Default for [`WorkerConfig::turn_queue_concurrency`]: llm-router's
+/// provider-call ceiling. At 10, 32 concurrent sessions waited ~14 s per turn.
+fn default_turn_queue_concurrency() -> u32 {
+    64
+}
 fn default_prompt_cache_sections() -> bool {
     true
 }
@@ -395,6 +410,7 @@ impl Default for WorkerConfig {
             router_timeout_ms: default_router_timeout_ms(),
             dispatch_timeout_ms: default_dispatch_timeout_ms(),
             stream_coalesce_ms: default_stream_coalesce_ms(),
+            turn_queue_concurrency: default_turn_queue_concurrency(),
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
             default_filesystem_root: None,

@@ -174,8 +174,8 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 | Function | Purpose |
 |---|---|
 | `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (confined to `fs.host_roots` when set, else absolute), `env` (deny-only, gated by a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
-| `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Accepts an optional caller-chosen `job_id` on host and sandbox targets so you can [observe its completion before starting the job](#background-job-completion-shellon-job-finished). Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
-| `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
+| `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Accepts an optional caller-chosen `job_id` on host and sandbox targets so you can [observe its completion before starting the job](#background-job-completion-shellon-job-finished). Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. Host commands run in their own session, without a terminal: one that needs it (a password or host-key prompt) fails, and a job that stays stopped for 30 seconds is killed with the reason in its stderr. |
+| `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A running host job shows the last 8 KiB of each stream, flagged truncated when there is more, and the first `max_output_bytes` once it ends (a stream that a grandchild holds open past the job's end keeps the last 8 KiB). A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
 | `shell::kill` | Terminate a running background job by `job_id`. Sandbox jobs cannot be hard-killed: the record flips to `killed` but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`). |
 | `shell::kill-session-jobs` | *(harness-internal — not agent-callable)* Kill every running background job owned by the given `session_ids`; returns `{ killed }`. The harness stamps the calling session on each agent's `shell::exec_bg`, and `harness::stop` calls this for the stopped session tree. Jobs started outside a harness session have no owner and never match. |
@@ -494,7 +494,8 @@ with their own function as the target, as above:
 {
   "function_id": "shell::on-job-finished",
   "args": { "job_id": "<new-unique-job-id>" },
-  "once": true
+  "once": true,
+  "lifecycle": { "expires_in_ms": 3600000 }
 }
 ```
 
@@ -517,11 +518,11 @@ with the saved observer ID:
 { "id": "<returned-observer-id>" }
 ```
 
-A session that may not remove observers, including a leaf sub-agent, can
-bound the wake when observing with
-`"lifecycle": { "expires_in_ms": 600000 }` (ten minutes in this example).
-An expiry notification reports that the wake ended; it is not a job completion
-event.
+Set `expires_in_ms` to how long the job should take (one hour in this example):
+a one-shot wake without it expires after ten minutes. An expiry notification
+reports that the wake ended; it is not a job completion event, and the job may
+still be running. Observe again to keep waiting: a job that ended in the gap is
+replayed while its record remains in memory.
 
 The job can also start first: call `shell::exec_bg` without `job_id`:
 
@@ -536,7 +537,8 @@ job that already completed is replayed while its record remains in memory:
 {
   "function_id": "shell::on-job-finished",
   "args": { "job_id": "<returned-job-id>" },
-  "once": true
+  "once": true,
+  "lifecycle": { "expires_in_ms": 3600000 }
 }
 ```
 

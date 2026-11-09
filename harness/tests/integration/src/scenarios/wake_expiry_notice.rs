@@ -153,6 +153,14 @@ pub(super) fn scenario() -> ScenarioFixture {
     .verify(|run| {
         run.expect_assistant_texts(["armed and parked", "expiry noted"])?;
 
+        // The agent chose this deadline, so nothing tells it about the default.
+        let armed =
+            Value::Array(run.function_results(OBSERVE).into_iter().cloned().collect()).to_string();
+        anyhow::ensure!(
+            !armed.contains("one-shot wake expires in"),
+            "a wake with its own deadline must not hear about the default: {armed}"
+        );
+
         // No registry-changed notice reached the provider: the registry moved,
         // but nothing this session may call did (matchers never see
         // advisories; the raw router evidence keeps them).

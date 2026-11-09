@@ -38,6 +38,7 @@ pub mod liveness;
 pub mod locks;
 pub mod manifest;
 pub mod observed;
+pub mod observers;
 pub mod policy;
 pub mod projects;
 pub mod prompt;

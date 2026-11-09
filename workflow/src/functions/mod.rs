@@ -48,7 +48,7 @@ pub(crate) async fn harness_stop_session(deps: &Deps, session_id: &str, dispatch
         .iii
         .call(iii_sdk::CallRequest {
             function_id: "harness::stop".into(),
-            payload: serde_json::json!({ "session_id": session_id }),
+            payload: serde_json::json!({ "session_id": session_id, "quiet_deadlines": true }),
             action: None,
             timeout_ms: Some(dispatch_timeout_ms),
         })

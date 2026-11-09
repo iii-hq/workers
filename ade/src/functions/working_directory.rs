@@ -267,13 +267,39 @@ pub fn observe_hooks(iii: &IIIClient) {
         })),
         STAMP_SESSION_ID,
     );
-    iii.observe(
-        Source::function(PRE_GENERATE_HOOK_FN).args(json!({
-            "timeout_ms": 5_000,
-            "on_error": "fail_open"
-        })),
+    observe_generation(
+        iii,
         GUIDANCE_ID,
+        json!({ "timeout_ms": 5_000, "on_error": "fail_open" }),
     );
+}
+
+/// The pre-generate input fields the ADE's guidance targets read.
+pub const GENERATION_INPUT: [&str; 2] = ["generate.system_prompt", "generate.tools[].name"];
+
+/// Observe `harness::hook::on-pre-generate` with `target`, asking for
+/// [`GENERATION_INPUT`] only: the full input carries every message and tool
+/// schema of the turn. A harness older than the hook `input` arg refuses it:
+/// the engine checks observer args against the hook's `args_format`
+/// (`INVALID_ARGS`), and the harness itself answers `CONFIG_ERROR`. The
+/// target then observes again with the whole input.
+pub fn observe_generation(iii: &IIIClient, target: &str, args: Value) {
+    let mut projected = args.clone();
+    projected["input"] = json!(GENERATION_INPUT);
+    let handle = iii.observe(
+        Source::function(PRE_GENERATE_HOOK_FN).args(projected),
+        target,
+    );
+    let (client, target) = (iii.clone(), target.to_string());
+    tokio::spawn(async move {
+        if let Err(Error::Remote { code, .. }) = handle.ready().await {
+            if matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR") {
+                // Leave no refused observer behind to show as an error.
+                let _ = handle.dispose().await;
+                client.observe(Source::function(PRE_GENERATE_HOOK_FN).args(args), &target);
+            }
+        }
+    });
 }
 
 #[cfg(test)]

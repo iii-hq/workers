@@ -123,6 +123,9 @@ export function TmuxPage({
 
   const showTerminal = useCallback(() => {
     setView('terminal')
+    // Touch devices: focusing xterm's hidden textarea pops the on-screen keyboard open.
+    // Only auto-focus with a precise pointer; on touch the user taps the terminal to type.
+    if (window.matchMedia('(pointer: coarse)').matches) return
     window.requestAnimationFrame(() => terminal.focus())
   }, [setView, terminal])
 

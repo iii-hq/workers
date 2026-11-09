@@ -162,7 +162,7 @@ async fn main() -> Result<()> {
     // The queue consumer may restore durable jobs as soon as this definition
     // succeeds. Discovery and `harness::turn` are already ready; do not
     // observe lifecycle events or announce ready unless the queue is usable.
-    queue::ensure_turn_queue(&iii)
+    queue::ensure_turn_queue(&iii, cfg.turn_queue_concurrency)
         .await
         .map_err(anyhow::Error::msg)
         .context("ensuring harness turn and deletion queues before recovery")?;

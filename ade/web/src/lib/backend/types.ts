@@ -387,16 +387,6 @@ export interface ChatBackend {
    */
   disposeObserver?(observerId: string, sessionId: string): Promise<void>
   /**
-   * Whether a state key currently exists (`state::get` non-null). Lets the
-   * observers strip mark a `state::on-changed` observer whose watched key
-   * was never written — the "armed on something nothing produces" stall. `null` =
-   * unknown (call failed).
-   */
-  stateKeyExists?(
-    scope: string | undefined,
-    key: string,
-  ): Promise<boolean | null>
-  /**
    * Server-side cancel of the session's in-flight turn (`harness::stop`).
    * The client-side AbortSignal only stops rendering; without this the
    * harness keeps running the turn to completion.

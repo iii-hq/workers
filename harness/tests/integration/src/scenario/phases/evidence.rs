@@ -132,6 +132,7 @@ impl ScenarioRunner<'_> {
                 turn_statuses: &self.fixture.expected_turn_statuses,
                 terminal_turns: self.fixture.expected_terminal_turns,
                 traces: self.fixture.expected_traces(),
+                final_status: self.fixture.terminal_outside_traces.as_deref(),
             },
         )
         .or_else(|| floor::verify_failure(self.fixture.verify, evidence));

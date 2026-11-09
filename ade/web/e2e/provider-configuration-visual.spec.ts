@@ -222,7 +222,7 @@ for (const item of visualCases) {
       localStorage.setItem('iii-theme', theme)
     }, item.theme)
     await page.goto(live.consoleUrl)
-    await expect(page).toHaveTitle(/iii Console/i)
+    await expect(page).toHaveTitle(/iii ADE/i)
     try {
       await openErrorPanel(page, live, item.pickerSurface)
       await expect(page.locator('html')).toHaveAttribute(

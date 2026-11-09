@@ -1,13 +1,9 @@
 import { isValidElement, type ReactElement, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import {
-  AgentFormSkeleton,
-  COMPOSER_PLACEHOLDER_MAX_CHARS,
-  withComposerPlaceholder,
-} from './agent-fields'
-import { frontmatterBody, readFrontmatterField } from './frontmatter'
+import { AgentFormSkeleton, COMPOSER_PLACEHOLDER_MAX_CHARS, withComposerPlaceholder } from './agent-fields'
 // @ts-expect-error Vite exposes source files imported with the raw query.
 import agentFieldsSource from './agent-fields.tsx?raw'
+import { frontmatterBody, readFrontmatterField } from './frontmatter'
 
 vi.mock('@iii-dev/console-ui', () => ({
   Skeleton: (props: Record<string, unknown>) => <span {...props} />,
@@ -18,9 +14,7 @@ function classesIn(node: ReactNode): string[] {
   if (!isValidElement(node)) return []
   const element = node as ReactElement<Record<string, unknown>>
   if (typeof element.type === 'function') {
-    const Component = element.type as (
-      props: Record<string, unknown>,
-    ) => ReactNode
+    const Component = element.type as (props: Record<string, unknown>) => ReactNode
     return classesIn(Component(element.props))
   }
   const props = element.props as { className?: string; children?: ReactNode }
@@ -28,37 +22,27 @@ function classesIn(node: ReactNode): string[] {
 }
 
 describe('AgentFormSkeleton', () => {
-  it('matches the visible agent form structure', () => {
+  it('matches the visible agent page: identity header, tab strip, settings list', () => {
     const tree = AgentFormSkeleton()
     const props = tree.props as { 'aria-label'?: string }
     const classes = classesIn(tree)
 
-    expect(props['aria-label']).toBe('Loading agent profile')
-    expect(classes).toContain('t-skel-skeleton is-pulsing')
-    expect(classes).toContain('dir-ui-af-profile')
-    expect(classes).toContain('dir-ui-af-settings')
-    // Model + Extends pair up; composer example and the Hidden switch span the row.
-    expect(classes.filter((name) => name === 'dir-ui-af-field')).toHaveLength(2)
-    expect(classes).toContain('dir-ui-af-field is-wide')
-    expect(classes).toContain('dir-ui-af-field is-wide is-switch')
-    expect(classes).toContain('dir-ui-af-prompt dir-ui-af-skeleton-prompt')
-    expect(classes).toContain('dir-ui-af-skills')
-    // Two pickers (skills, preloaded functions) × two lists (selected, available).
-    expect(
-      classes.filter((name) => name === 'dir-ui-af-skill-list-wrap'),
-    ).toHaveLength(4)
+    expect(props['aria-label']).toBe('Loading agent')
+    expect(classes).toContain('t-skel-skeleton')
+    expect(classes).toContain('dir-agent-head')
+    expect(classes).toContain('dir-agent-tabs-skeleton')
+    expect(classes).toContain('dir-agent-settings')
+    // Model, Based on, Composer example, Hide from the new-chat list.
+    expect(classes.filter((name) => name === 'dir-agent-setting')).toHaveLength(4)
   })
 })
 
 describe('composer example field', () => {
-  const draft =
-    '---\nname: Helper\ndescription: "Helps."\nhidden: true\n---\nYou help.\n'
+  const draft = '---\nname: Helper\ndescription: "Helps."\nhidden: true\n---\nYou help.\n'
 
   it('writes a YAML-safe value and keeps every other key and the body', () => {
     const next = withComposerPlaceholder(draft, 'Example: add a task, then "done"')
-    expect(readFrontmatterField(next, ['composer_placeholder']).value).toBe(
-      'Example: add a task, then "done"',
-    )
+    expect(readFrontmatterField(next, ['composer_placeholder']).value).toBe('Example: add a task, then "done"')
     expect(readFrontmatterField(next, ['name']).value).toBe('Helper')
     expect(readFrontmatterField(next, ['hidden']).value).toBe('true')
     expect(frontmatterBody(next)).toBe(frontmatterBody(draft))
@@ -76,22 +60,29 @@ describe('composer example field', () => {
   it('caps input at the server limit and keeps an accessible label', () => {
     expect(COMPOSER_PLACEHOLDER_MAX_CHARS).toBe(200)
     expect(agentFieldsSource).toContain('maxLength={COMPOSER_PLACEHOLDER_MAX_CHARS}')
-    expect(agentFieldsSource).toContain('>Composer example</label>')
+    expect(agentFieldsSource).toMatch(/>\s*Composer example\s*<\/label>/)
     expect(agentFieldsSource).toContain('aria-describedby=')
   })
 })
 
-describe('AgentForm settings grid', () => {
+describe('AgentForm layout', () => {
   const formSource = agentFieldsSource.slice(agentFieldsSource.indexOf('export function AgentForm'))
 
-  it('lays the four profile settings out as grid fields, not fixed-width rows', () => {
-    expect(formSource).toContain('className="dir-ui-af-settings"')
-    expect(formSource).not.toContain('dir-ui-af-model-row')
-    for (const label of ['>Model</span>', '>Extends</span>', '>Composer example</label>']) {
-      expect(formSource).toContain(label)
+  it('lists the four profile settings as label + control rows', () => {
+    expect(formSource).toContain('className="dir-agent-settings"')
+    expect(formSource.match(/className="dir-agent-setting"/g)).toHaveLength(4)
+    for (const label of [/>Model<\/span>/, />Based on<\/span>/, />\s*Composer example\s*<\/label>/]) {
+      expect(formSource).toMatch(label)
     }
-    // Both pickers stretch to their cell instead of a 280px cap.
-    expect(formSource.match(/className="dir-ui-af-field-picker"/g)).toHaveLength(2)
+    // Both pickers stretch to their cell.
+    expect(formSource.match(/className="dir-agent-picker"/g)).toHaveLength(2)
+  })
+
+  it('splits the agent into Overview, Instructions, Skills and Functions tabs', () => {
+    for (const tab of ['overview', 'prompt', 'skills', 'functions']) {
+      expect(formSource).toContain(`<ShadcnTabsTrigger value="${tab}">`)
+      expect(formSource).toContain(`<ShadcnTabsContent value="${tab}"`)
+    }
   })
 
   it('names the Hidden switch by its visible label and describes it with the hint', () => {
@@ -99,19 +90,14 @@ describe('AgentForm settings grid', () => {
     expect(formSource).toMatch(/htmlFor=\{`\$\{fieldId\}-hidden`\}/)
     expect(formSource).toMatch(/aria-describedby=\{`\$\{fieldId\}-hidden-hint`\}/)
     expect(formSource).toMatch(/id=\{`\$\{fieldId\}-hidden-hint`\}/)
-    expect(formSource).not.toContain('aria-label="Hide from the new-session gallery"')
   })
 })
 
 describe('AgentForm loading', () => {
   it('keeps the skeleton and form mounted for the reveal transition', () => {
-    const formSource = agentFieldsSource.slice(
-      agentFieldsSource.indexOf('export function AgentForm'),
-    )
+    const formSource = agentFieldsSource.slice(agentFieldsSource.indexOf('export function AgentForm'))
 
-    expect(formSource).not.toContain(
-      'if (catalogsLoading) return <AgentFormSkeleton />',
-    )
+    expect(formSource).not.toContain('if (catalogsLoading) return <AgentFormSkeleton />')
     expect(formSource).toContain("catalogsLoading ? '' : ' is-revealed'")
     expect(formSource).toContain('className="t-skel-content"')
     expect(formSource).toContain('inert={catalogsLoading}')

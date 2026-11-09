@@ -169,9 +169,9 @@ pub fn observe_terminal_operations(deps: &Arc<Deps>) {
         )
         .metadata(json!({ "internal": true })),
     );
-    let _observer = deps
-        .iii
-        .observe(terminal_watch_source(), TERMINAL_WATCH_FN_ID);
+    let iii = deps.iii.clone();
+    let _observer =
+        crate::observers::keep(move || iii.observe(terminal_watch_source(), TERMINAL_WATCH_FN_ID));
 }
 
 /// The operation a delivered progress event reports finished, if terminal.

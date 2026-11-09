@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::MemoryError;
 use crate::events::ItemEvent;
-use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
+use crate::types::{fingerprint, now_ms, stated_now_ms, Confidence, Memory, Provenance};
 
 /// Normalized entity handles: trimmed, lowercased, empty dropped, capped.
 fn normalize_entities(entities: Vec<String>) -> Vec<String> {
@@ -167,7 +167,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     }
 
     let id = fingerprint(&text);
-    let now = now_ms();
+    let now = stated_now_ms();
     let existing = bank.get(&id).await;
     let (memory, event, created) = save_transition(
         existing,
@@ -301,7 +301,7 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
         // A text edit restates the fact; pin/tag/entity edits do not.
         text_changed = memory.text != text;
         if text_changed {
-            memory.stated_at = Some(now_ms());
+            memory.stated_at = Some(stated_now_ms());
         }
         memory.text = text;
     }

@@ -1098,6 +1098,7 @@ mod tests {
             depth: 0,
             message_preview: None,
             abort: false,
+            exchange_finished: false,
             watermark_entry_id: None,
             stream_request_id: None,
             options: TurnOptions {

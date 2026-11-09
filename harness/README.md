@@ -570,7 +570,8 @@ from a model turn, not directly`.
 ```
 
 - 1–4 questions per call and 2–4 options per question.
-- `header` is 1–16 characters and `question` must not be empty.
+- `header` and `question` must not be empty. A long `header` is fine: the
+  card shows it with an ellipsis and the whole text on hover.
 - `label` is 1–80 characters and unique within its question.
 - `header` and `label` must not contain line breaks (the answer is one line
   per question).
@@ -619,7 +620,7 @@ can react:
 | A sub-agent (depth > 0) or a turn with a JSON output contract | `harness::ask needs a human to answer and none is attached to this turn (sub-agent or structured-output turn); report blocked with your question instead` |
 | A second ask in the same step | `only one harness::ask per step; put all your questions (up to 4) in one call` |
 | Arguments that do not parse | `invalid harness::ask arguments: <serde error>` |
-| A broken limit | the field path and the limit, e.g. `questions[1].header must be at most 16 characters (got 17)` |
+| A broken limit | the field path and the limit, e.g. `questions[1].options[0].label must be at most 80 characters (got 81)` |
 
 **Policy and hooks.** The session's allow/deny policy still applies: a denied
 ask gets the usual `policy_denied` result. The repeated-failure breaker and
@@ -652,7 +653,7 @@ observes only `harness::on-timer` and its own post-turn validator.
 |---|---|---|---|
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
-| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
@@ -690,18 +691,24 @@ with `decision` `continue`, `deny` or `hold`.
 | `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). | `result` (the turn's result) | `decision`, `reason?`, `prompt?` |
 
 Hook args: `{ functions?, sessions?, payload?, result_into?, retry_prompt?,
-priority?, timeout_ms?, on_error?, inject_prompt? }` — `functions` globs select
+priority?, timeout_ms?, on_error?, inject_prompt?, input? }` — `functions` globs select
 the called functions (`on-pre-call`, `on-post-call`), `sessions` globs the
 sessions (omit for every session), `payload` + `result_into` call a plain
 composition function as an `on-post-turn` validator, `timeout_ms` bounds each
 call (default 5000), and `on_error` is `fail_closed` (default for the `pre`
 points and `on-post-turn`) or `fail_open`. A call that fails, times out, or is
-refused (`OVERFLOW`, `OBSERVER_NOT_ACTIVE`) follows `on_error`.
+refused (`OVERFLOW`, `OBSERVER_NOT_ACTIVE`) follows `on_error`. `input` lists the
+input fields the target reads as dotted paths, `[]` mapping over a list
+(`generate.tools[].name` sends each tool as `{ name }`); the target gets those
+plus the envelope (`point`, `session_id`, `turn_id`, `step`, `depth`,
+`metadata`). An `on-pre-generate` input carries the whole prompt, every message
+and every tool schema, so a target that reads a few of them should list them.
 
 ```rust
 iii.observe(
     Source::function("harness::hook::on-pre-generate")
-        .args(json!({ "priority": 100, "timeout_ms": 3000, "on_error": "fail_open" })),
+        .args(json!({ "priority": 100, "timeout_ms": 3000, "on_error": "fail_open",
+            "input": ["generate.messages", "generate.tools[].name"] })),
     "judge::mentions::pre-generate",
 );
 ```
@@ -736,7 +743,9 @@ is the call's `output`) and the payload a source's deliver hook sends through
 the observer (`kanban::on-change`, `stories::on-changed`: the event is the
 payload as sent). The harness counts delivered fires
 itself (`once`, `max_fires`) and runs the conditions before a delivery; the
-lifecycle deadline is also the observer's `expires_in_ms`. The harness waits
+lifecycle deadline is also the observer's `expires_in_ms`. A one-shot wake
+without a deadline gets 10 minutes, unless it observes `harness::on-timer` or
+`cron::on-tick`; when one passes unfired, the session is woken with a notice. The harness waits
 briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,
 `NOT_OBSERVABLE` and a worker's rejection come back to the agent. An observer
 reads every call of the function it observes, other sessions' included, so the

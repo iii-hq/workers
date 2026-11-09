@@ -1441,6 +1441,15 @@ pub(crate) fn unseen(memories: Vec<Memory>, seen: &HashSet<String>) -> Vec<Memor
         .collect()
 }
 
+/// Messages that hooks append with the user role. Each opens its own tag, and none
+/// is what the user asked.
+const HOOK_NOTICE_PREFIXES: [&str; 4] = [
+    "<memory ",
+    "<mention_providers>",
+    "<mentions>",
+    "<discovery_assist ",
+];
+
 /// The newest user message's text — the recall query.
 fn last_user_text(messages: Option<&Value>) -> String {
     let Some(items) = messages.and_then(Value::as_array) else {
@@ -1449,8 +1458,11 @@ fn last_user_text(messages: Option<&Value>) -> String {
     for m in items.iter().rev() {
         if m.get("role").and_then(Value::as_str) == Some("user") {
             let text = crate::extract::content_text(m.get("content"));
-            // Skip our own injected wrapper when the hook chain re-runs.
-            if !text.trim_start().starts_with("<memory ") {
+            let start = text.trim_start();
+            if !HOOK_NOTICE_PREFIXES
+                .iter()
+                .any(|tag| start.starts_with(tag))
+            {
                 return text;
             }
         }
@@ -1556,6 +1568,27 @@ mod tests {
         ]);
         assert_eq!(last_user_text(Some(&messages)), "newest question");
         assert_eq!(last_user_text(None), "");
+    }
+
+    /// A hook earlier in the chain leaves its notice as the newest user message; used
+    /// as the query, its words recall unrelated memories instead of the user's.
+    #[test]
+    fn last_user_text_skips_the_notices_of_other_hooks() {
+        for notice in [
+            "<mention_providers>\nA chat session can reach @database.\n</mention_providers>",
+            "<mentions>\n@database\n</mentions>",
+            "<discovery_assist query=\"x\">try this</discovery_assist>",
+        ] {
+            let messages = json!([
+                { "role": "user", "content": [{ "type": "text", "text": "the real question" }] },
+                { "role": "user", "content": [{ "type": "text", "text": notice }] },
+            ]);
+            assert_eq!(
+                last_user_text(Some(&messages)),
+                "the real question",
+                "{notice}"
+            );
+        }
     }
 
     fn rule(name: &str, content: &str) -> crate::types::Rule {
@@ -3164,6 +3197,73 @@ Formal."
             ..edited
         };
         assert_eq!(pair(legacy), ["fp-new"]);
+    }
+
+    /// Two awaited saves of a change, however fast: the second is the newer.
+    #[tokio::test]
+    async fn a_change_saved_right_after_replaces_the_old_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        for i in 0..50 {
+            let save = |text: String| {
+                crate::functions::items::save(
+                    &deps,
+                    crate::functions::items::SaveRequest {
+                        bank: Some("b".into()),
+                        text,
+                        entities: vec![],
+                        tags: vec![],
+                        pinned: false,
+                        session_id: None,
+                    },
+                )
+            };
+            let old = save(format!("The nightly backup runs at 02:{i:02}."));
+            let old = old.await.unwrap().memory;
+            let new = save(format!("The nightly backup now runs at 04:{i:02}."));
+            let new = new.await.unwrap().memory;
+            let e = words(2, 3, 1.0);
+            let hits = vec![(old, e.clone()), (new.clone(), e)];
+            assert_eq!(kept(hits, &HashSet::new(), 6), [new.id]);
+        }
+    }
+
+    /// Rewriting a line right after it was saved states it again, later.
+    #[tokio::test]
+    async fn a_text_update_right_after_a_save_is_newer() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        for i in 0..50 {
+            let saved = crate::functions::items::save(
+                &deps,
+                crate::functions::items::SaveRequest {
+                    bank: Some("b".into()),
+                    text: format!("The nightly backup runs at 02:{i:02}."),
+                    entities: vec![],
+                    tags: vec![],
+                    pinned: false,
+                    session_id: None,
+                },
+            )
+            .await
+            .unwrap()
+            .memory;
+            let updated = crate::functions::items::update(
+                &deps,
+                crate::functions::items::UpdateRequest {
+                    bank: Some("b".into()),
+                    id: saved.id.clone(),
+                    text: Some(format!("The nightly backup now runs at 04:{i:02}.")),
+                    entities: None,
+                    tags: None,
+                    pinned: None,
+                },
+            )
+            .await
+            .unwrap()
+            .memory;
+            assert!(updated.last_stated() > saved.last_stated(), "{updated:?}");
+        }
     }
 
     #[test]

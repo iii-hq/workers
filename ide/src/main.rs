@@ -129,6 +129,53 @@ fn schema_value<T: schemars::JsonSchema>() -> Value {
     serde_json::to_value(root).expect("schema serializes")
 }
 
+/// Raises the soft open-file limit, which every command this worker runs
+/// inherits. macOS hands processes started from a terminal a soft limit of 256,
+/// which a Rust build or test run exhausts, and the engine's own raise does not
+/// reach the workers Compose starts.
+#[cfg(unix)]
+fn raise_nofile_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit and setrlimit only read and write the owned struct.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let Some(target) = nofile_target(lim.rlim_cur, lim.rlim_max) else {
+        return;
+    };
+    let raised = libc::rlimit {
+        rlim_cur: target,
+        ..lim
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+        tracing::info!(from = lim.rlim_cur, to = target, "raised open file limit");
+    } else {
+        tracing::warn!(
+            limit = lim.rlim_cur,
+            error = %std::io::Error::last_os_error(),
+            "could not raise open file limit; commands may hit EMFILE"
+        );
+    }
+}
+
+/// The soft limit to raise to, or `None` when it is already there. macOS caps at
+/// `OPEN_MAX` (10240), the value setrlimit(2) documents as always accepted there.
+/// Elsewhere the target stops short of the hard limit, which can be a billion in
+/// a container, because some programs loop over every possible descriptor.
+#[cfg(unix)]
+fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_t> {
+    let cap = if cfg!(target_os = "macos") {
+        10_240
+    } else {
+        65_536
+    };
+    let target = hard.min(cap);
+    (soft < target).then_some(target)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -137,6 +184,9 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    #[cfg(unix)]
+    raise_nofile_limit();
 
     let cli = Cli::parse();
     tracing::info!(url = %cli.url, seed_config = %cli.config, "connecting to IIIClient engine");
@@ -321,9 +371,10 @@ async fn main() -> Result<()> {
                  with args { job_id } naming a fresh job_id before calling exec_bg with that \
                  same ID, or omit job_id to generate one. Duplicate retained IDs reject before \
                  execution. Host jobs ignore timeout_ms and use the configured background \
-                 hard cap; read output with shell::status, list jobs with shell::list. \
-                 Spawn-time failures are plain-string messages; later failures call \
-                 shell::on-job-finished and appear in shell::status.",
+                 hard cap; read output with shell::status, list jobs with shell::list. Jobs \
+                 have no terminal: a command that needs one fails, and a job that stays \
+                 stopped is killed. Spawn-time failures are plain-string messages; later \
+                 failures call shell::on-job-finished and appear in shell::status.",
             ),
         );
     }
@@ -364,8 +415,9 @@ async fn main() -> Result<()> {
             })
         })
         .description(
-            "Fetch the full record (status, exit_code, timing) of a background job by job_id. \
-             Errors return { code, message }; common: S211 no such job.",
+            "Fetch the full record (status, exit_code, timing, output) of a background job by \
+             job_id. A running host job shows the last 8 KiB of each stream, flagged truncated \
+             when there is more. Errors return { code, message }; common: S211 no such job.",
         ),
     );
 
@@ -820,6 +872,20 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 mod tests {
     use super::{ws_host_port, Cli};
     use clap::Parser;
+
+    #[cfg(unix)]
+    #[test]
+    fn nofile_target_raises_soft_toward_the_cap_and_never_lowers() {
+        let cap = if cfg!(target_os = "macos") {
+            10_240
+        } else {
+            65_536
+        };
+        assert_eq!(super::nofile_target(256, libc::RLIM_INFINITY), Some(cap));
+        assert_eq!(super::nofile_target(256, 1_024), Some(1_024));
+        assert_eq!(super::nofile_target(1_024, 1_024), None);
+        assert_eq!(super::nofile_target(1_048_576, libc::RLIM_INFINITY), None);
+    }
 
     #[test]
     fn config_defaults_to_local_config_yaml() {

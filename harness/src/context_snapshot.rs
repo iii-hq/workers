@@ -565,6 +565,12 @@ async fn counted_delta(
 /// system prompt and tool schemas are counted once via the provider's
 /// tokenizer (cached by content), and the message window is the remainder.
 /// A rig without a provider counter keeps the heuristic snapshot untouched.
+///
+/// Only cached counts are applied. A provider count is a round trip (~65 ms
+/// on Anthropic) that the step would otherwise wait on, and every new
+/// session's system prompt misses the cache. On a miss the counts are taken
+/// in the background and this step keeps its estimates; the next step on the
+/// same prompt and tools is exact.
 pub async fn exactify(
     snapshot: &mut ContextSnapshotV1,
     router: &RouterClient,
@@ -581,42 +587,44 @@ pub async fn exactify(
         return;
     }
     let provider = snapshot.provider.clone();
-    let provider = provider.as_deref();
     let model = snapshot.model.clone();
+    let system_prompt = system_prompt.filter(|p| !p.is_empty());
+    let skills_prompt = skills_prompt.filter(|p| !p.is_empty());
 
-    // Every part's delta subtracts the same probe base, so count it once for
-    // the whole snapshot rather than once per part.
-    let Some(base) = probe_base(router, &model, provider).await else {
-        return;
+    let from_cache = |part: Option<Part<'_>>| match part {
+        Some(part) => cached(cache_key(
+            &model,
+            provider.as_deref(),
+            part.kind(),
+            &part.content_key(),
+        ))
+        .map(|(tokens, estimator)| Counted { tokens, estimator }),
+        None => Some(Counted::default()),
     };
-
-    let system_part = system_prompt.filter(|p| !p.is_empty()).map(Part::System);
-    let skills_part = skills_prompt.filter(|p| !p.is_empty()).map(Part::Skills);
-    let tools_part = (!tools.is_empty()).then_some(Part::Tools(tools));
-    // Independent round trips: run them together.
-    let (counted_system, counted_skills, counted_tools) = tokio::join!(
-        async {
-            match system_part {
-                Some(part) => counted_delta(router, &model, provider, base, part).await,
-                None => Some(Counted::default()),
-            }
-        },
-        async {
-            match skills_part {
-                Some(part) => counted_delta(router, &model, provider, base, part).await,
-                None => Some(Counted::default()),
-            }
-        },
-        async {
-            match tools_part {
-                Some(part) => counted_delta(router, &model, provider, base, part).await,
-                None => Some(Counted::default()),
-            }
-        },
+    let counted = (
+        cached(cache_key(&model, provider.as_deref(), "base", "")),
+        from_cache(system_prompt.map(Part::System)),
+        from_cache(skills_prompt.map(Part::Skills)),
+        from_cache((!tools.is_empty()).then_some(Part::Tools(tools))),
     );
-    let (Some(counted_system), Some(counted_skills), Some(counted_tools)) =
-        (counted_system, counted_skills, counted_tools)
-    else {
+    let (Some(_), Some(counted_system), Some(counted_skills), Some(counted_tools)) = counted else {
+        let (router, system, skills, tools) = (
+            router.clone(),
+            system_prompt.map(str::to_string),
+            skills_prompt.map(str::to_string),
+            tools.to_vec(),
+        );
+        tokio::spawn(async move {
+            count_parts(
+                &router,
+                &model,
+                provider.as_deref(),
+                system.as_deref(),
+                skills.as_deref(),
+                &tools,
+            )
+            .await;
+        });
         return;
     };
     let estimator = counted_system
@@ -634,6 +642,44 @@ pub async fn exactify(
         &counted_tools,
         estimator,
     );
+}
+
+/// Count every part over the wire into the process cache.
+async fn count_parts(
+    router: &RouterClient,
+    model: &str,
+    provider: Option<&str>,
+    system_prompt: Option<&str>,
+    skills_prompt: Option<&str>,
+    tools: &[AgentFunction],
+) {
+    // Every part's delta subtracts the same probe base, so count it once for
+    // the whole snapshot rather than once per part.
+    let Some(base) = probe_base(router, model, provider).await else {
+        return;
+    };
+
+    let system_part = system_prompt.map(Part::System);
+    let skills_part = skills_prompt.map(Part::Skills);
+    let tools_part = (!tools.is_empty()).then_some(Part::Tools(tools));
+    // Independent round trips: run them together.
+    tokio::join!(
+        count_part(router, model, provider, base, system_part),
+        count_part(router, model, provider, base, skills_part),
+        count_part(router, model, provider, base, tools_part),
+    );
+}
+
+async fn count_part(
+    router: &RouterClient,
+    model: &str,
+    provider: Option<&str>,
+    base: u64,
+    part: Option<Part<'_>>,
+) {
+    if let Some(part) = part {
+        counted_delta(router, model, provider, base, part).await;
+    }
 }
 
 fn apply_exact_counts(

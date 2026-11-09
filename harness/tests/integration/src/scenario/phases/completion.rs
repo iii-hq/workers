@@ -43,11 +43,20 @@ impl ScenarioRunner<'_> {
             let mut actions = self.fixture.probe_actions.clone();
             actions.sort_by_key(|a| a.after_turns);
             for action in actions {
-                if let Err(error) = services
-                    .probe()
-                    .wait_for_completion_turns(action.after_turns, deadline)
-                    .await
-                {
+                let boundary = match action.after_parked {
+                    Some(parked) => {
+                        services
+                            .probe()
+                            .wait_for_parked_completions(parked, deadline)
+                            .await
+                    }
+                    None => services
+                        .probe()
+                        .wait_for_completion_turns(action.after_turns, deadline)
+                        .await
+                        .map(drop),
+                };
+                if let Err(error) = boundary {
                     if deadline.is_expired() {
                         active.timed_out = true;
                         return Ok(());

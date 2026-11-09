@@ -15,6 +15,9 @@ pub struct ScenarioFixture {
     /// (`terminal: false`), declared with `parked_completions(n)` and always
     /// first in the statuses list.
     pub expected_terminal_turns: usize,
+    /// The status of a terminal completion that comes from no turn, so
+    /// `expected_terminal_turns` may be 0. The run still waits for it.
+    pub terminal_outside_traces: Option<String>,
     /// Each completion's lifecycle status, in completion order — parked
     /// completions first, then terminal turns. The last status is also the
     /// durable outcome that the floor requires from `harness::status`.
@@ -88,6 +91,8 @@ pub const OBSERVE_ACTION: &str = "probe::observe";
 #[derive(Debug, Clone)]
 pub struct ProbeAction {
     pub after_turns: usize,
+    /// Wait for this many parked completions instead of `after_turns`.
+    pub after_parked: Option<usize>,
     /// Additionally wait until the controlled function served this many
     /// invocations (probe-side, whole-run) before firing. The only ordering
     /// signal an UNTRACKED session can emit: e.g. fire the next action only
@@ -124,7 +129,7 @@ impl ScenarioFixture {
             "scenario description must not be empty"
         );
         anyhow::ensure!(
-            self.expected_terminal_turns > 0,
+            self.terminal_outside_traces.is_some() || self.expected_terminal_turns > 0,
             "scenario must expect at least one terminal turn"
         );
         anyhow::ensure!(

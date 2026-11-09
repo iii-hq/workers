@@ -185,9 +185,10 @@ export function ConversationRow({
   const rowRef = useRef<HTMLDivElement>(null)
 
   const glyph = resolveGlyph(conversation, depth)
-  // A sub-agent that finished its job: a hollow mark and a quieter title, so
-  // the live ones above it read first. A main chat at rest is not "done".
-  const finished =
+  // An inactive sub-agent (done for now; an observation or the main agent
+  // can start it again): a hollow mark and a quieter title, so the live ones
+  // above it read first. A main chat at rest is not "done".
+  const inactive =
     depth > 0 &&
     conversation.status === 'done' &&
     !isAwaitingAnswer(conversation)
@@ -206,7 +207,7 @@ export function ConversationRow({
       style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
       data-menu-open={menuOpen || undefined}
       data-pinned={pinned || undefined}
-      data-finished={finished || undefined}
+      data-inactive={inactive || undefined}
       data-dragging={reorder?.dragging || undefined}
       data-drop={reorder?.dropEdge}
       draggable={reorder ? !renaming : undefined}
@@ -241,7 +242,7 @@ export function ConversationRow({
       {/* The live state leads the title, where the eye starts reading the
           row: a pulsing dot while the agent works, an amber one while it
           waits on the reader's answer to its question, red on error, and a
-          hollow ring once a sub-agent finished its job. */}
+          hollow ring while a sub-agent is inactive. */}
       {conversation.status === 'working' ? (
         <span className="conversation-row__status">
           <StatusDot tone="accent" pulse title="working" />
@@ -262,17 +263,17 @@ export function ConversationRow({
             title={conversation.statusReason ?? 'error'}
           />
         </span>
-      ) : finished ? (
+      ) : inactive ? (
         <span
           className="conversation-row__status"
-          data-finished-mark=""
-          title="finished"
+          data-inactive-mark=""
+          title="inactive"
         >
           <span
             aria-hidden
             className="inline-block size-1.5 shrink-0 rounded-full ring-1 ring-ink-ghost"
           />
-          <span className="sr-only">finished</span>
+          <span className="sr-only">inactive</span>
         </span>
       ) : null}
       {/* A long title fades at its right edge and slides into view while the
@@ -323,76 +324,78 @@ export function ConversationRow({
             data-pinned-mark=""
           />
         ) : null}
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: a propagation boundary around the menu trigger, not a control. */}
-        <span
-          className="conversation-row__slot"
-          onClick={(e) => e.stopPropagation()}
-          onDoubleClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => e.stopPropagation()}
-        >
+        <span className="conversation-row__slot">
           <span className={uiClasses.treeItemMeta}>
             {formatRelative(conversation.updatedAt)}
           </span>
-          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-            <Hint label="More">
-              <DropdownMenuTrigger
-                className={menuActionClassName}
-                aria-label={`more actions for ${conversation.title}`}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: a propagation boundary around the menu trigger, not a control. */}
+          <span
+            className="inline-flex"
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <Hint label="More">
+                <DropdownMenuTrigger
+                  className={menuActionClassName}
+                  aria-label={`more actions for ${conversation.title}`}
+                >
+                  <Ellipsis aria-hidden />
+                </DropdownMenuTrigger>
+              </Hint>
+              <DropdownMenuContent
+                align="end"
+                sideOffset={6}
+                className="conversation-row-menu min-w-44 p-1.5"
               >
-                <Ellipsis aria-hidden />
-              </DropdownMenuTrigger>
-            </Hint>
-            <DropdownMenuContent
-              align="end"
-              sideOffset={6}
-              className="conversation-row-menu min-w-44 p-1.5"
-            >
-              <DropdownMenuItem
-                className={MENU_ITEM_CLASS}
-                onClick={() => setRenaming(true)}
-              >
-                <Pencil aria-hidden />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className={MENU_ITEM_CLASS}
-                disabled={!onTogglePin}
-                onClick={() => onTogglePin?.()}
-              >
-                <PinIcon aria-hidden />
-                {pinned ? 'Unpin' : 'Pin'}
-              </DropdownMenuItem>
-              {reorder ? (
-                <>
-                  <DropdownMenuItem
-                    className={MENU_ITEM_CLASS}
-                    disabled={!reorder.canMoveUp}
-                    onClick={() => reorder.onMove(-1)}
-                  >
-                    <ArrowUp aria-hidden />
-                    Move up
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className={MENU_ITEM_CLASS}
-                    disabled={!reorder.canMoveDown}
-                    onClick={() => reorder.onMove(1)}
-                  >
-                    <ArrowDown aria-hidden />
-                    Move down
-                  </DropdownMenuItem>
-                </>
-              ) : null}
-              <DropdownMenuSeparator className="my-1.5" />
-              <DropdownMenuItem
-                variant="destructive"
-                className={MENU_ITEM_CLASS}
-                onClick={onRemove}
-              >
-                <Trash2 aria-hidden />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <DropdownMenuItem
+                  className={MENU_ITEM_CLASS}
+                  onClick={() => setRenaming(true)}
+                >
+                  <Pencil aria-hidden />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className={MENU_ITEM_CLASS}
+                  disabled={!onTogglePin}
+                  onClick={() => onTogglePin?.()}
+                >
+                  <PinIcon aria-hidden />
+                  {pinned ? 'Unpin' : 'Pin'}
+                </DropdownMenuItem>
+                {reorder ? (
+                  <>
+                    <DropdownMenuItem
+                      className={MENU_ITEM_CLASS}
+                      disabled={!reorder.canMoveUp}
+                      onClick={() => reorder.onMove(-1)}
+                    >
+                      <ArrowUp aria-hidden />
+                      Move up
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className={MENU_ITEM_CLASS}
+                      disabled={!reorder.canMoveDown}
+                      onClick={() => reorder.onMove(1)}
+                    >
+                      <ArrowDown aria-hidden />
+                      Move down
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
+                <DropdownMenuSeparator className="my-1.5" />
+                <DropdownMenuItem
+                  variant="destructive"
+                  className={MENU_ITEM_CLASS}
+                  onClick={onRemove}
+                >
+                  <Trash2 aria-hidden />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
         </span>
       </span>
       {/* Last in the row, after the trailing cluster, so nothing that

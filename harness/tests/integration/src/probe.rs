@@ -369,6 +369,29 @@ impl ScenarioProbe {
         }
     }
 
+    /// Waits until `expected` turns completed with their session still owning a
+    /// wake (`terminal: false`), which [`Self::wait_for_completion_turns`] skips.
+    pub async fn wait_for_parked_completions(
+        &self,
+        expected: usize,
+        deadline: Deadline,
+    ) -> anyhow::Result<()> {
+        loop {
+            let notified = self.completion_notify.notified();
+            let parked = self
+                .completions
+                .lock()
+                .map_err(|_| anyhow::anyhow!("completion observer lock poisoned"))?
+                .iter()
+                .filter(|observation| !observation.event.terminal)
+                .count();
+            if parked >= expected {
+                return Ok(());
+            }
+            deadline.timeout("parked turn completion", notified).await?;
+        }
+    }
+
     pub async fn wait_for_trace_change(
         &self,
         after_generation: u64,

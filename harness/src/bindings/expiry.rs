@@ -39,6 +39,7 @@ use crate::deps::Deps;
 use crate::subscriptions::fired;
 use crate::timer::OneShots;
 use crate::types::message::AgentMessage;
+use crate::types::turn::TurnStatus;
 
 /// Store reads at a deadline that fail are retried this many times, on a
 /// doubling backoff from [`RETRY_BASE_MS`]. Past that, the next sweep — the
@@ -89,6 +90,8 @@ pub async fn sweep(deps: &Deps) -> usize {
             retired += usize::from(retire_due(deps, &binding.id, now).await);
         } else {
             arm(deps, &binding);
+            // Retries a re-observe after an absence that could not finish.
+            super::gc::spawn_observe_again(deps, &binding.id);
         }
     }
     retired
@@ -233,8 +236,10 @@ enum ExpiredRetirementMode {
     RecordOnly,
 }
 
-fn expired_retirement_mode(binding: &Binding) -> ExpiredRetirementMode {
-    if is_unfired_wake(binding) {
+/// A stopped session gets no notice: it would start the new paid turn the stop asked
+/// not to have.
+fn expired_retirement_mode(binding: &Binding, owner_stopped: bool) -> ExpiredRetirementMode {
+    if is_unfired_wake(binding) && !owner_stopped {
         ExpiredRetirementMode::NotifyAndRecord
     } else {
         ExpiredRetirementMode::RecordOnly
@@ -291,7 +296,12 @@ pub async fn notify_wake_lost(deps: &Deps, binding: &Binding, cause: WakeLost<'_
 /// wake path deliberately delegates to `notify_wake_lost`, which already
 /// emits exactly one notification and one retirement record.
 pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
-    match expired_retirement_mode(binding) {
+    let stopped_turn = if is_unfired_wake(binding) {
+        stopped_turn(deps, wake_session(binding)).await
+    } else {
+        None
+    };
+    match expired_retirement_mode(binding, stopped_turn.is_some()) {
         ExpiredRetirementMode::NotifyAndRecord => {
             notify_wake_lost(deps, binding, WakeLost::Expired).await;
         }
@@ -308,8 +318,52 @@ pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
                 Some(&note),
             )
             .await;
+            if let Some(turn_id) = stopped_turn {
+                crate::turn_loop::finish_stopped_exchange(deps, wake_session(binding), &turn_id)
+                    .await;
+            }
         }
     }
+}
+
+/// Report an unfired wake removed from outside its owner's turn. Same rule as its
+/// deadline: a stopped session gets no notice.
+pub async fn report_wake_removed(deps: &Deps, binding: &Binding, by: &str) {
+    let Some(turn_id) = stopped_turn(deps, wake_session(binding)).await else {
+        notify_wake_lost(deps, binding, WakeLost::Unregistered { by }).await;
+        return;
+    };
+    let note = format!("unregistered by {by} before any fire");
+    emit_retirement_record(
+        deps,
+        binding,
+        fired::FireOutcome::Unregistered,
+        fired::RetirementReason::Unregistered,
+        Some(&note),
+    )
+    .await;
+    crate::turn_loop::finish_stopped_exchange(deps, wake_session(binding), &turn_id).await;
+}
+
+/// The session's last turn, when a stop reached it: cancelled while it ran, or
+/// flagged while parked (`harness::stop`'s `quiet_deadlines`). A failed read is tried
+/// again, because a wrong answer starts the turn the stop ruled out. Past that it
+/// counts as not stopped: better one notice than a stranded session.
+async fn stopped_turn(deps: &Deps, session_id: &str) -> Option<String> {
+    const RETRY_DELAYS_MS: [u64; 2] = [1_000, 2_000];
+    let timeout_ms = deps.cfg().await.session_timeout_ms;
+    let mut record = crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms).await;
+    for delay_ms in RETRY_DELAYS_MS {
+        let Err(error) = &record else { break };
+        tracing::warn!(session_id, %error, "could not read whether a stop reached this session");
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        record = crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms).await;
+    }
+    record
+        .ok()
+        .flatten()
+        .filter(|record| record.status == TurnStatus::Cancelled || record.abort)
+        .map(|record| record.turn_id)
 }
 
 async fn emit_retirement_record(
@@ -363,8 +417,11 @@ fn wake_lost_text(binding: &Binding, cause: &WakeLost<'_>) -> String {
         WakeLost::Expired => format!(
             "[notification] wake expired unfired: {watch} (binding {}) passed its lifecycle \
              deadline (expires_at {}) with 0 fires. Nothing else will wake this session for it — \
-             this is the deadline path: decide the fallback now (report what you know, tear \
-             down, or re-arm a new watch).",
+             this is the deadline path, and the work may still be running. To keep waiting, \
+             re-arm a new watch with a longer `expires_in_ms` first and then read the current \
+             state, because anything that happened while no watch was armed will not reach it. \
+             Otherwise report what you know \
+             or tear down.",
             binding.id,
             binding.lifecycle.expires_at.unwrap_or_default()
         ),
@@ -481,15 +538,20 @@ mod tests {
     fn only_a_never_fired_once_wake_warrants_a_notification() {
         assert!(is_unfired_wake(&wake(None)));
         assert_eq!(
-            expired_retirement_mode(&wake(None)),
+            expired_retirement_mode(&wake(None), false),
             ExpiredRetirementMode::NotifyAndRecord
+        );
+        assert_eq!(
+            expired_retirement_mode(&wake(None), true),
+            ExpiredRetirementMode::RecordOnly,
+            "the notice would restart a stopped session"
         );
 
         let mut fired = wake(None);
         fired.fires = 1;
         assert!(!is_unfired_wake(&fired), "a delivered wake needs no eulogy");
         assert_eq!(
-            expired_retirement_mode(&fired),
+            expired_retirement_mode(&fired, false),
             ExpiredRetirementMode::RecordOnly
         );
 
@@ -500,7 +562,7 @@ mod tests {
             "a standing notify parks nobody"
         );
         assert_eq!(
-            expired_retirement_mode(&standing),
+            expired_retirement_mode(&standing, false),
             ExpiredRetirementMode::RecordOnly
         );
 
@@ -508,7 +570,7 @@ mod tests {
         call.target = BindingTarget::new("state::set");
         assert!(!is_unfired_wake(&call), "a call target delivers to no chat");
         assert_eq!(
-            expired_retirement_mode(&call),
+            expired_retirement_mode(&call, false),
             ExpiredRetirementMode::RecordOnly
         );
     }

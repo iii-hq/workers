@@ -500,10 +500,13 @@ pub fn observe_skill_changes(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms:
         .metadata(json!({ "internal": true })),
     );
 
-    let _observer = iii.observe(
-        Source::function(SKILLS_ON_CHANGE_FN).capture([Capture::Output]),
-        SKILLS_CHANGE_FN_ID,
-    );
+    let iii = iii.clone();
+    let _observer = crate::observers::keep(move || {
+        iii.observe(
+            Source::function(SKILLS_ON_CHANGE_FN).capture([Capture::Output]),
+            SKILLS_CHANGE_FN_ID,
+        )
+    });
 }
 
 #[cfg(test)]

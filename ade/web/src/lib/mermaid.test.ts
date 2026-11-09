@@ -78,6 +78,15 @@ describe('Mermaid rendering boundary', () => {
     expect(render.mock.calls[0][0]).not.toBe(render.mock.calls[1][0])
   })
 
+  it('renders a diagram requested twice before it finishes only once', async () => {
+    const [first, second] = await Promise.all([
+      renderMermaid('requested twice', 'light'),
+      renderMermaid('requested twice', 'light'),
+    ])
+    expect(render).toHaveBeenCalledTimes(1)
+    expect(second).toBe(first)
+  })
+
   it('cleans up failures without blocking later diagrams', async () => {
     const children = document.body.childElementCount
     render.mockRejectedValueOnce(new Error('parse failed'))

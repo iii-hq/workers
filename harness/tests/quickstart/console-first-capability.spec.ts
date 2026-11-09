@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 
 const MODEL_ID = 'claude-sonnet-5-5'
 const MODEL_LABEL = /^sonnet[\s-]+5\.5(?:\s+default)?$/i
@@ -31,6 +31,14 @@ async function selectSonnet(page: Page) {
   await expect(modelPicker).toHaveAccessibleName(
     /^model:\s*claude[\s-]+sonnet[\s-]+5\.5\s+via\s+anthropic,\s*reasoning effort:/i,
   )
+}
+
+// The Console names the model once per turn, in the header of the turn's
+// first reply; the reply after the function call continues under it.
+async function expectTurnModel(userMessage: Locator) {
+  const firstReply = userMessage.locator('xpath=following::article[@data-message-role="assistant"][1]')
+  await expect(firstReply).not.toHaveAttribute('data-continuation')
+  await expect(firstReply.locator(':scope > header')).toContainText(MODEL_ID)
 }
 
 test('completes and reloads the first real Harness capability', async ({ page }) => {
@@ -64,7 +72,7 @@ test('completes and reloads the first real Harness capability', async ({ page })
   })
   await expect(assistant).toHaveCount(1, { timeout: 90_000 })
   await expect(assistant.locator(':scope > div')).toHaveText(RESPONSE_MARKER)
-  await expect(assistant).toContainText(MODEL_ID)
+  await expectTurnModel(userMessage)
   await expect(chat).toHaveAttribute('data-chat-session-hydrated', 'true')
 
   await page.reload()
@@ -74,7 +82,8 @@ test('completes and reloads the first real Harness capability', async ({ page })
     .click()
   const reloaded = page.locator(`[data-chat-session-id="${sessionId}"]`)
   await expect(reloaded).toHaveAttribute('data-chat-session-hydrated', 'true')
-  await expect(reloaded.locator('[data-message-role="user"]', { hasText: PROMPT })).toHaveCount(1)
+  const reloadedUserMessage = reloaded.locator('[data-message-role="user"]', { hasText: PROMPT })
+  await expect(reloadedUserMessage).toHaveCount(1)
   const reloadedFunctionCard = reloaded.locator(`[data-function-id="${CAPABILITY_FUNCTION}"]`)
   await expect(reloadedFunctionCard).toHaveCount(1)
   await expect(reloadedFunctionCard).toHaveAttribute('data-function-status', 'done')
@@ -85,7 +94,7 @@ test('completes and reloads the first real Harness capability', async ({ page })
   const reloadedAssistant = reloaded.locator('[data-message-role="assistant"]', { hasText: RESPONSE_MARKER })
   await expect(reloadedAssistant).toHaveCount(1)
   await expect(reloadedAssistant.locator(':scope > div')).toHaveText(RESPONSE_MARKER)
-  await expect(reloadedAssistant).toContainText(MODEL_ID)
+  await expectTurnModel(reloadedUserMessage)
 
   await mkdir(artifactsRoot, { recursive: true })
   await writeFile(

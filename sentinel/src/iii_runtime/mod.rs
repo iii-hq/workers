@@ -33,6 +33,14 @@ const QUEUE_NAME: &str = "sentinel-ingest";
 /// Logs at WARN and above ride along with a trace's evidence.
 const LOG_SEVERITY_MIN: i32 = 13;
 const LOG_LIMIT: usize = 200;
+/// Waits before retrying a call the engine answered busy: 1, 2 then 4 s.
+const BUSY_RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+const BUSY_RETRY_LAST: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// The engine's answer when every trace-query slot stayed taken.
+fn is_busy(error: &SentinelError) -> bool {
+    error.to_string().contains("observability_busy")
+}
 
 /// Shared call machinery.
 #[derive(Clone)]
@@ -51,6 +59,31 @@ impl Runtime {
     async fn call(&self, function_id: &str, payload: Value) -> Result<Value, SentinelError> {
         self.call_within(function_id, payload, CALL_TIMEOUT_MS)
             .await
+    }
+
+    /// [`Self::call`] for an ingest job's trace reads. The engine answers
+    /// `observability_busy` when its trace queries are all taken; that is a
+    /// wait, not a failure, so it is retried here rather than spending the
+    /// queue's retries and dead-lettering the error. The tick read does not
+    /// use this: its backlog already backs off.
+    async fn call_patiently(
+        &self,
+        function_id: &str,
+        payload: Value,
+    ) -> Result<Value, SentinelError> {
+        let mut wait = BUSY_RETRY_FIRST;
+        loop {
+            match self
+                .call_within(function_id, payload.clone(), CALL_TIMEOUT_MS)
+                .await
+            {
+                Err(error) if wait <= BUSY_RETRY_LAST && is_busy(&error) => {
+                    tokio::time::sleep(wait).await;
+                    wait *= 2;
+                }
+                answer => return answer,
+            }
+        }
     }
 
     async fn call_within(
@@ -260,6 +293,14 @@ impl IiiTelemetry {
     }
 }
 
+fn summaries_of(response: &Value) -> Vec<TraceSummary> {
+    response
+        .get("traces")
+        .and_then(Value::as_array)
+        .map(|traces| traces.iter().map(summary_of).collect())
+        .unwrap_or_default()
+}
+
 #[async_trait]
 impl Telemetry for IiiTelemetry {
     async fn traces(&self, trace_ids: &[String]) -> Result<Vec<TraceSummary>, SentinelError> {
@@ -270,11 +311,21 @@ impl Telemetry for IiiTelemetry {
                 json!({ "trace_ids": trace_ids, "limit": trace_ids.len().max(1) }),
             )
             .await?;
-        Ok(response
-            .get("traces")
-            .and_then(Value::as_array)
-            .map(|traces| traces.iter().map(summary_of).collect())
-            .unwrap_or_default())
+        Ok(summaries_of(&response))
+    }
+
+    async fn traces_patiently(
+        &self,
+        trace_ids: &[String],
+    ) -> Result<Vec<TraceSummary>, SentinelError> {
+        let response = self
+            .runtime
+            .call_patiently(
+                "engine::traces::list",
+                json!({ "trace_ids": trace_ids, "limit": trace_ids.len().max(1) }),
+            )
+            .await?;
+        Ok(summaries_of(&response))
     }
 
     async fn tree(&self, trace_id: &str) -> Result<Vec<Value>, SentinelError> {
@@ -331,7 +382,7 @@ pub(crate) async fn bounded_tree(
     trace_id: &str,
 ) -> Result<Vec<Value>, SentinelError> {
     let span_count = runtime
-        .call(
+        .call_patiently(
             "engine::traces::list",
             json!({ "trace_ids": [trace_id], "limit": 1 }),
         )
@@ -344,7 +395,7 @@ pub(crate) async fn bounded_tree(
         .unwrap_or(0);
     if span_count <= TREE_SPANS_MAX {
         let response = runtime
-            .call("engine::traces::tree", json!({ "trace_id": trace_id }))
+            .call_patiently("engine::traces::tree", json!({ "trace_id": trace_id }))
             .await?;
         return Ok(response
             .get("roots")
@@ -355,7 +406,7 @@ pub(crate) async fn bounded_tree(
     let mut spans = Vec::new();
     while spans.len() < ERROR_SPANS_MAX {
         let page = runtime
-            .call(
+            .call_patiently(
                 "engine::traces::spans",
                 json!({
                     "trace_id": trace_id,

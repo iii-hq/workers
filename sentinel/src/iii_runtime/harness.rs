@@ -116,7 +116,7 @@ impl Harness for IiiHarness {
         self.runtime
             .call(
                 "harness::stop",
-                json!({ "session_id": session_id, "turn_id": turn_id }),
+                json!({ "session_id": session_id, "turn_id": turn_id, "quiet_deadlines": true }),
             )
             .await?;
         Ok(())
@@ -217,9 +217,15 @@ impl EngineWindow for IiiEngineWindow {
         if include_spans {
             let spans = self
                 .runtime
-                .call(
+                .call_patiently(
                     "engine::traces::spans",
-                    json!({ "trace_id": trace_id, "search_all_spans": true, "limit": FLAT_SPANS_MAX }),
+                    // The shape only: events carry the captured payloads.
+                    json!({
+                        "trace_id": trace_id,
+                        "search_all_spans": true,
+                        "include_events": false,
+                        "limit": FLAT_SPANS_MAX,
+                    }),
                 )
                 .await
                 .ok()

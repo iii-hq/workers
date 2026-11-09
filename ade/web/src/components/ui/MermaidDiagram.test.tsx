@@ -9,7 +9,10 @@ import { applyDocumentTheme } from '@/hooks/use-theme'
 import { Markdown } from '@/lib/markdown'
 import { renderMermaid } from '@/lib/mermaid'
 
-vi.mock('@/lib/mermaid', () => ({ renderMermaid: vi.fn() }))
+vi.mock('@/lib/mermaid', () => ({
+  cachedMermaidSvg: vi.fn(),
+  renderMermaid: vi.fn(),
+}))
 
 const renderDiagram = vi.mocked(renderMermaid)
 const createUrl = vi.fn()

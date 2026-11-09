@@ -57,7 +57,6 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/ProviderSettingsForm.tsx': { max: 15, reason: TOUCH },
   'components/chat/ReasoningEffortSlider.tsx': { max: 2, reason: TOUCH },
   'components/chat/SessionAddonsPicker.tsx': { max: 1, reason: TOUCH },
-  'components/chat/SessionObservers.tsx': { max: 3, reason: TOUCH },
   'components/chat/SystemNotice.tsx': { max: 29, reason: TOUCH },
   'components/chat/SystemPromptPicker.tsx': { max: 3, reason: TOUCH },
   'components/chat/engine/ObserveView.tsx': { max: 10, reason: TOUCH },

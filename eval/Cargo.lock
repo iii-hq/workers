@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "eval"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.9.3"
+version = "1.9.4"
 dependencies = [
  "anyhow",
  "async-trait",
