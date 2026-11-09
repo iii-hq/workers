@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { Directory, renderSkill, renderSubagent, slug } from '../src/directory-plugin/directory.js';
-import { normalizeUrl, resolveEngine } from '../src/directory-plugin/engine.js';
-import { createHandler } from '../src/directory-plugin/server.js';
+import { Directory, renderSkill, renderSubagent, slug } from '../src/iii-integration/directory.js';
+import { normalizeUrl, resolveEngine } from '../src/iii-integration/engine.js';
+import { createHandler } from '../src/iii-integration/server.js';
+import { INTEGRATION_FILES } from '../src/iii-integration/assets.generated.js';
+import { buildId, installWith } from '../src/iii-integration/install.js';
 
 const none = async () => false;
 
@@ -24,7 +26,7 @@ describe('resolveEngine', () => {
     expect(
       await resolveEngine({
         argv: [],
-        env: { ...env, III_DIRECTORY_PLUGIN_URL: 'ws://h:1' },
+        env: { ...env, III_INTEGRATION_URL: 'ws://h:1' },
         probe: none,
       }),
     ).toEqual({
@@ -46,7 +48,7 @@ describe('resolveEngine', () => {
   it('ignores an unexpanded user_config placeholder', async () => {
     const r = await resolveEngine({
       argv: [],
-      env: { III_DIRECTORY_PLUGIN_URL: '${user_config.engine_url}', III_URL: 'ws://h:3' },
+      env: { III_INTEGRATION_URL: '${user_config.engine_url}', III_URL: 'ws://h:3' },
       probe: none,
     });
     expect(r.source).toBe('III_URL');
@@ -71,7 +73,7 @@ describe('resolveEngine', () => {
   it('honours custom probe ports and reports what it tried', async () => {
     const r = await resolveEngine({
       argv: [],
-      env: { III_DIRECTORY_PLUGIN_PORTS: '5000', III_DIRECTORY_PLUGIN_HOSTS: 'a' },
+      env: { III_INTEGRATION_PORTS: '5000', III_INTEGRATION_HOSTS: 'a' },
       probe: none,
     });
     expect(r.source).toBe('none');
@@ -185,5 +187,59 @@ describe('renderers', () => {
     expect(renderSkill({ id: 'a/b', description: 'D', body: 'Body' })).toBe(
       '---\nname: a-b\ndescription: "D"\n---\n\nBody\n',
     );
+  });
+});
+
+describe('installer', () => {
+  const files = [
+    { path: '.claude-plugin/plugin.json', content: '{}' },
+    { path: 'server/index.mjs', content: 'x' },
+  ];
+
+  it('ships the plugin inside the worker build', () => {
+    const paths = INTEGRATION_FILES.map((f) => f.path);
+    expect(paths).toEqual(
+      expect.arrayContaining(['.claude-plugin/plugin.json', '.mcp.json', 'server/index.mjs']),
+    );
+    expect(
+      JSON.parse(INTEGRATION_FILES.find((f) => f.path === '.claude-plugin/plugin.json')!.content)
+        .name,
+    ).toBe('claude-cli-iii-integration');
+    // Under the shell worker's common 1 MiB per-file cap.
+    for (const f of INTEGRATION_FILES)
+      expect(Buffer.byteLength(f.content)).toBeLessThan(1024 * 1024);
+  });
+
+  it('writes every file, then the build id, and skips an unchanged install', async () => {
+    const disk: Record<string, string> = {};
+    const read = async (p: string) => disk[p] ?? null;
+    const writes: string[] = [];
+    const write = async (p: string, c: string) => {
+      writes.push(p);
+      disk[p] = c;
+    };
+    expect(await installWith('/w/p', read, write, files)).toEqual({ dir: '/w/p', detail: '' });
+    expect(writes).toEqual([
+      '/w/p/.claude-plugin/plugin.json',
+      '/w/p/server/index.mjs',
+      '/w/p/.build-id',
+    ]);
+    expect(disk['/w/p/.build-id'].trim()).toBe(buildId(files));
+    writes.length = 0;
+    await installWith('/w/p', read, write, files);
+    expect(writes).toEqual([]);
+    await installWith('/w/p', read, write, [...files, { path: 'README.md', content: 'new' }]);
+    expect(writes).toContain('/w/p/README.md');
+  });
+
+  it('reports a build without the embedded server instead of installing half a plugin', async () => {
+    const r = await installWith(
+      '/w/p',
+      async () => null,
+      async () => {},
+      [files[0]],
+    );
+    expect(r.dir).toBe('');
+    expect(r.detail).toContain('build:iii-integration');
   });
 });
