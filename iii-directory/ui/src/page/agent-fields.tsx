@@ -32,6 +32,7 @@ import {
   FlaskConical,
   type LucideIcon,
   Palette,
+  Pencil,
   Search,
   Terminal,
   Trash2,
@@ -386,8 +387,11 @@ function useAutoResizeTextarea(value: string) {
 }
 
 /** The agent's name and description are edited where they are read: plain
- * text you click into (no box, no pencil, no edit mode). The description
- * grows with its text. Escape puts back what was there when you came in. */
+ * text you click into, no edit mode and no box. A quiet pencil after the
+ * text says it can be changed. It selects the whole name, or puts the caret
+ * at the end of the description. While you type, the field keeps a soft fill
+ * and the pencil steps back; Enter (⌘Enter for the description) is done and
+ * Escape puts back what was there when you came in. */
 function InlineTextField({
   id,
   name,
@@ -415,6 +419,8 @@ function InlineTextField({
   onCancel: () => void
 }) {
   const textareaRef = useAutoResizeTextarea(value)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const target = () => (multiline ? textareaRef.current : inputRef.current)
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if (event.key === 'Escape') {
       onCancel()
@@ -439,7 +445,7 @@ function InlineTextField({
     onFocus: onBegin,
     onKeyDown,
   }
-  return multiline ? (
+  const field = multiline ? (
     <textarea
       {...common}
       ref={textareaRef}
@@ -450,10 +456,36 @@ function InlineTextField({
   ) : (
     <input
       {...common}
+      ref={inputRef}
       required
       className="dir-inplace dir-inplace-name"
       onChange={(event) => onChange(event.currentTarget.value)}
     />
+  )
+  if (readOnly) return field
+  const noun = multiline ? 'description' : 'name'
+  return (
+    <div className={`dir-inplace-field ${noun}`}>
+      {field}
+      <button
+        type="button"
+        className="dir-inplace-pencil"
+        aria-label={`Edit ${noun}`}
+        // Off the tab order: the field itself is the stop.
+        tabIndex={-1}
+        // Keep focus where it is until the click lands on the field.
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          const el = target()
+          if (!el) return
+          el.focus()
+          if (multiline) el.setSelectionRange(el.value.length, el.value.length)
+          else el.select()
+        }}
+      >
+        <Pencil aria-hidden />
+      </button>
+    </div>
   )
 }
 

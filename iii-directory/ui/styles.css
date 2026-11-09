@@ -3366,7 +3366,7 @@
   line-height: 21px;
 }
 
-/* ── text edited in place: no box, no pencil — the caret is the cue ── */
+/* ── text edited in place: no box; a pencil says it can be changed ── */
 [data-iii-ui="iii-directory"] .dir-inplace,
 [data-iii-ui="iii-directory"] .dir-inplace-title,
 [data-iii-ui="iii-directory"] .dir-inplace-lead {
@@ -3411,6 +3411,93 @@
 }
 [data-iii-ui="iii-directory"] .dir-inplace-description:focus {
   color: var(--color-ink);
+}
+/* The agent's name and description: the text plus a quiet pencil. Hover
+   lays a soft fill under both (bleeding 6px so the text stays on the column
+   edge); while you type the fill stays and the pencil steps back, so the
+   caret and the fill say "editing" without a box. */
+[data-iii-ui="iii-directory"] .dir-inplace-field {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 4px;
+  margin-inline: -6px;
+  padding: 2px 2px 2px 6px;
+  border-radius: 6px;
+  cursor: text;
+}
+[data-iii-ui="iii-directory"] .dir-inplace-field .dir-inplace {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Where the field can size to its text, the fill hugs it and the pencil
+   sits right after it; elsewhere the field spans the column. */
+@supports (field-sizing: content) {
+  [data-iii-ui="iii-directory"] .dir-inplace-field {
+    align-self: flex-start;
+    max-width: calc(100% + 12px);
+  }
+  [data-iii-ui="iii-directory"] .dir-inplace-field .dir-inplace {
+    flex: 0 1 auto;
+    width: auto;
+    min-width: 4ch;
+    max-width: 100%;
+  }
+}
+[data-iii-ui="iii-directory"] .dir-inplace-field:focus-within {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="iii-directory"] .dir-inplace-pencil {
+  display: flex;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  opacity: 0.6;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+[data-iii-ui="iii-directory"] .dir-inplace-field.description .dir-inplace-pencil {
+  margin-top: -1px;
+}
+[data-iii-ui="iii-directory"] .dir-inplace-pencil svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="iii-directory"] .dir-inplace-field:focus-within .dir-inplace-pencil {
+  opacity: 0;
+  pointer-events: none;
+}
+@media (hover: hover) {
+  [data-iii-ui="iii-directory"] .dir-inplace-field:hover {
+    background: var(--color-surface-hover);
+  }
+  [data-iii-ui="iii-directory"] .dir-inplace-field:hover:not(:focus-within) .dir-inplace-pencil {
+    opacity: 1;
+  }
+  [data-iii-ui="iii-directory"] .dir-inplace-pencil:hover {
+    color: var(--color-ink);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="iii-directory"] .dir-inplace-field {
+    transition: background-color var(--motion-duration-fast) ease-out;
+  }
+  [data-iii-ui="iii-directory"] .dir-inplace-pencil {
+    transition-property: opacity, color, scale;
+    transition-duration: var(--motion-duration-fast);
+    transition-timing-function: ease-out;
+  }
+  [data-iii-ui="iii-directory"] .dir-inplace-pencil:not(:disabled):active {
+    scale: 0.96;
+  }
 }
 [data-iii-ui="iii-directory"] .dir-inplace-lead {
   min-height: 24px;
