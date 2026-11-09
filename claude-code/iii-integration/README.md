@@ -1,4 +1,4 @@
-# claude-cli-iii-integration: a Claude Code plugin for iii
+# iii-integration: a Claude Code plugin for iii
 
 Agent profiles and skills from a running iii engine's `iii-directory` worker,
 served to Claude Code over MCP. It connects with `iii-sdk`, so it works in two
@@ -7,7 +7,7 @@ places:
 - **Inside the `claude-code` worker**, with nothing to install. The worker
   carries the plugin in its own bundle and writes it out wherever Claude Code
   runs: the OS temp dir for headless `claude::run` turns (when `iii_context`
-  is on), and `<workspace>/.claude-cli-iii-integration` on the terminal host
+  is on), and `<workspace>/.iii-integration` on the terminal host
   for terminal sessions (when `setup_workspace` is on). Both get
   `--plugin-dir` for it, and find the engine through the `III_URL` the worker
   exports. A `.build-id` hash means an unchanged plugin is not rewritten.
@@ -15,7 +15,7 @@ places:
 
   ```sh
   npm run build:iii-integration          # once, from claude-code/
-  claude --plugin-dir /path/to/claude-code/claude-cli-iii-integration
+  claude --plugin-dir /path/to/claude-code/iii-integration
   ```
 
 Requires Node 22+. The server is a single bundled file
@@ -59,9 +59,9 @@ If you want the profiles in `/agents` and the skills auto-invoked without
 going through MCP, write them as native Claude Code files:
 
 ```sh
-node claude-cli-iii-integration/server/index.mjs sync                 # ~/.claude/agents/iii-<id>.md
-node claude-cli-iii-integration/server/index.mjs sync --skills        # plus ~/.claude/skills/<id>/SKILL.md
-node claude-cli-iii-integration/server/index.mjs sync --target ./.claude --include-hidden
+node iii-integration/server/index.mjs sync                 # ~/.claude/agents/iii-<id>.md
+node iii-integration/server/index.mjs sync --skills        # plus ~/.claude/skills/<id>/SKILL.md
+node iii-integration/server/index.mjs sync --target ./.claude --include-hidden
 ```
 
 This is a snapshot: run it again to refresh. Profile models are not copied

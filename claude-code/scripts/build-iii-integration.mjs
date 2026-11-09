@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Build the claude-cli-iii-integration plugin.
+ * Build the iii-integration plugin.
  *
  *   1. Bundle its MCP server into one minified file inside the plugin
- *      (`claude-cli-iii-integration/server/index.mjs`), so the directory is
- *      self-contained: `claude --plugin-dir ./claude-cli-iii-integration`
+ *      (`iii-integration/server/index.mjs`), so the directory is
+ *      self-contained: `claude --plugin-dir ./iii-integration`
  *      needs nothing but Node 22.
  *   2. Embed every plugin file into `src/iii-integration/assets.generated.ts`.
  *      `deploy: bundle` ships only `dist/bundle/index.mjs`, so the worker has
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const pluginRoot = join(root, 'claude-cli-iii-integration');
+const pluginRoot = join(root, 'iii-integration');
 
 /** The files that make up the plugin, relative to its root. */
 const FILES = ['.claude-plugin/plugin.json', '.mcp.json', 'README.md', 'server/index.mjs'];

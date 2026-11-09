@@ -204,7 +204,7 @@ describe('installer', () => {
     expect(
       JSON.parse(INTEGRATION_FILES.find((f) => f.path === '.claude-plugin/plugin.json')!.content)
         .name,
-    ).toBe('claude-cli-iii-integration');
+    ).toBe('iii-integration');
     // Under the shell worker's common 1 MiB per-file cap.
     for (const f of INTEGRATION_FILES)
       expect(Buffer.byteLength(f.content)).toBeLessThan(1024 * 1024);

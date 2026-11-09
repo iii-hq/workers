@@ -1,5 +1,5 @@
 /**
- * The claude-cli-iii-integration plugin, installed wherever Claude Code runs.
+ * The iii-integration plugin, installed wherever Claude Code runs.
  *
  * The worker carries the whole plugin inside its bundle (`assets.generated.ts`,
  * written by `scripts/build-iii-integration.mjs`) and writes it out itself, so
@@ -23,10 +23,10 @@ import type { IIIClient } from 'iii-sdk';
 import { readFile as hostRead, writeFile as hostWrite } from '../terminal/host.js';
 import { INTEGRATION_FILES } from './assets.generated.js';
 
-export const INTEGRATION_NAME = 'claude-cli-iii-integration';
+export const INTEGRATION_NAME = 'iii-integration';
 /** Where it lands inside a terminal workspace. */
 export const INTEGRATION_DIR_NAME = `.${INTEGRATION_NAME}`;
-const LOCAL_ROOT = join(tmpdir(), `iii-${INTEGRATION_NAME}`);
+const LOCAL_ROOT = join(tmpdir(), INTEGRATION_NAME);
 const MARKER = '.build-id';
 
 export type PluginFile = { path: string; content: string };

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * claude-cli-iii-integration plugin entry point.
+ * iii-integration plugin entry point.
  *
  *   index.mjs [serve] [--url ws://host:port]
  *       MCP server on stdio (what the plugin's `.mcp.json` runs).
@@ -70,7 +70,7 @@ try {
   }
 } catch (err) {
   console.error(
-    `claude-cli-iii-integration plugin: ${err instanceof Error ? err.message : String(err)}`,
+    `iii-integration plugin: ${err instanceof Error ? err.message : String(err)}`,
   );
   process.exitCode = 1;
 } finally {
