@@ -31,6 +31,12 @@ pub fn worker_options(name: &str) -> InitOptions {
 }
 
 pub async fn isolated_engine() -> Option<Engine> {
+    isolated_engine_with("").await
+}
+
+/// An isolated engine whose config also carries `extra`, top-level YAML
+/// such as an `observers:` section.
+pub async fn isolated_engine_with(extra: &str) -> Option<Engine> {
     let binary = std::env::var_os("III_ENGINE_BIN")
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -52,7 +58,7 @@ pub async fn isolated_engine() -> Option<Engine> {
     let config = dir.path().join("config.yaml");
     std::fs::write(
         &config,
-        format!("workers:\n  - name: iii-worker-manager\n    config:\n      port: {port}\n"),
+        format!("workers:\n  - name: iii-worker-manager\n    config:\n      port: {port}\n{extra}"),
     )
     .ok()?;
     let mut child = std::process::Command::new(binary)

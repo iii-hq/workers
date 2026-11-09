@@ -111,60 +111,146 @@ pub async fn run(deps: &Deps) {
 /// loses them while the durable record stays armed — before this replay the
 /// owner then waited forever on a watch that no longer existed
 /// (console-04e02cb7 postmortem). The store is the authority; the observer is
-/// re-derived at every boot, and reconnects within one process are covered by
-/// the SDK's own observer replay.
+/// re-derived at every boot. Within one process the SDK's own replay covers a
+/// reconnect within the engine's grace period; [`observe_again`] covers a
+/// longer absence.
 async fn replay_observers(deps: &Deps, bindings: Vec<crate::bindings::Binding>) -> (usize, usize) {
-    let store = deps.bindings().await;
-    let now_ms = crate::subscriptions::fired::now_ms();
     let mut rearmed = 0usize;
     let mut caught_up = 0usize;
-    for mut binding in bindings {
+    for binding in bindings {
         // This process already observes it (created after boot).
         if deps.observer_handles.contains(&binding.id) {
             continue;
         }
-        // Deletion owns cleanup. Do not resurrect its observers during
-        // concurrent startup recovery, or deliver a stale catch-up wake.
-        let _topology = deps.topology.lock().await;
-        match crate::functions::delete_session_tree::guard_owner(deps, &binding.owner.session_id)
-            .await
-        {
-            Ok(None) => {}
-            Ok(Some(_)) => continue,
-            Err(error) => {
-                tracing::warn!(%error, "binding rearm blocked by unreadable deletion guard");
-                continue;
-            }
-        }
-        if binding.is_exhausted(now_ms) {
-            // Expiry (bindings::expiry) owns retirement and its owner notice.
-            continue;
-        }
-        let Some(handle) = super::observe_binding(deps, &binding) else {
-            // A record without a source: nothing to observe.
-            continue;
-        };
-        take_over_held_observer_id(deps, &binding, handle);
-        match store.rearm_observer_id(&binding, &binding.id).await {
-            Ok(crate::bindings::AttachOutcome::Attached(current)) => {
-                binding = *current;
-                rearmed += 1;
-            }
-            Ok(crate::bindings::AttachOutcome::Gone) => {
-                super::dispose_observer(deps, &binding.id).await;
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(binding = %binding.id, error = %e, "observer id re-arm failed");
-                // The observer itself is live and delivers by binding id;
-                // only the recorded marker is stale. Keep going.
-            }
-        }
-        super::compose::schedule(deps, &binding);
-        drop(_topology);
-        caught_up += usize::from(catch_up_state_wake(deps, &binding).await);
+        let (armed, caught) = rearm(deps, binding, true).await;
+        rearmed += usize::from(armed);
+        caught_up += usize::from(caught);
     }
     (rearmed, caught_up)
+}
+
+/// The engine disposed `binding_id`'s observer while the harness was away
+/// past its grace period, and the SDK's replay does not bring it back:
+/// observe it again from its record, as the boot replay does, unless it was
+/// retired, disposed or observed again meanwhile. Events of the absence are
+/// lost, as across a restart; a one-shot state wake catches up. The dead
+/// handle stays in [`Deps::observer_handles`] until an observer replaces it,
+/// so every binding sweep ([`super::expiry::sweep`]) retries a pass that
+/// could not finish.
+pub(crate) async fn observe_again(deps: &Deps, binding_id: &str) {
+    if !is_dead(deps, binding_id) {
+        return;
+    }
+    let store = deps.bindings().await;
+    let binding = match store.get(binding_id).await {
+        Ok(Some(binding)) => binding,
+        Ok(None) => {
+            deps.observer_handles.remove(binding_id);
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(binding = %binding_id, %error, "binding not observed again: store unreadable");
+            return;
+        }
+    };
+    // The owner's deletion may have come while the harness was away.
+    if should_gc(owner_state(deps, &binding.owner.session_id).await) {
+        super::dispose_observer(deps, binding_id).await;
+        let _ = store.delete(binding_id).await;
+        return;
+    }
+    let (armed, caught_up) = rearm(deps, binding, false).await;
+    // An unobserve or a retirement that raced the re-arm deleted the record
+    // after the read above, and its dispose missed the new observer.
+    // shortcut: one whose dispose ran before the new observer and whose delete
+    // lands after this read still leaves it until the next sweep's orphan
+    // pass; upgrade by making removals delete before they dispose.
+    let live = deps
+        .observer_handles
+        .get(binding_id)
+        .is_some_and(|handle| handle.state() != iii_sdk::ObserverState::Disposed);
+    if live && matches!(store.get(binding_id).await, Ok(None)) {
+        super::dispose_observer(deps, binding_id).await;
+        return;
+    }
+    tracing::info!(binding = %binding_id, armed, caught_up, "binding observed again after the harness was away");
+}
+
+/// [`observe_again`] in a task of its own when `binding_id`'s observer is
+/// dead, so a binding sweep never waits on its RPCs to retire or arm the rest.
+/// While that task runs, a further request makes it pass once more instead
+/// ([`super::ObservingAgain`]).
+pub(crate) fn spawn_observe_again(deps: &Deps, binding_id: &str) {
+    if !is_dead(deps, binding_id) || !deps.observing_again.start(binding_id) {
+        return;
+    }
+    let (deps, binding_id) = (deps.clone(), binding_id.to_string());
+    tokio::spawn(async move {
+        observe_again(&deps, &binding_id).await;
+        while deps.observing_again.pass_again(&binding_id) {
+            observe_again(&deps, &binding_id).await;
+        }
+    });
+}
+
+fn is_dead(deps: &Deps, binding_id: &str) -> bool {
+    deps.observer_handles
+        .get(binding_id)
+        .is_some_and(|handle| crate::observers::disposed_while_away(&handle))
+}
+
+/// Re-create one surviving binding's observer from its record; whether its
+/// observer id was re-armed, and whether a missed state wake was delivered.
+/// At boot an id another observer holds is taken over; after an absence it
+/// is not, since that holder is a newer harness process.
+async fn rearm(deps: &Deps, mut binding: crate::bindings::Binding, at_boot: bool) -> (bool, bool) {
+    let store = deps.bindings().await;
+    // Deletion owns cleanup. Do not resurrect its observers during
+    // concurrent startup recovery, or deliver a stale catch-up wake.
+    let _topology = deps.topology.lock().await;
+    // Another pass observed it again while this one waited.
+    if !at_boot && !is_dead(deps, &binding.id) {
+        return (false, false);
+    }
+    match crate::functions::delete_session_tree::guard_owner(deps, &binding.owner.session_id).await
+    {
+        Ok(None) => {}
+        Ok(Some(_)) => return (false, false),
+        Err(error) => {
+            tracing::warn!(%error, "binding rearm blocked by unreadable deletion guard");
+            return (false, false);
+        }
+    }
+    if binding.is_exhausted(crate::subscriptions::fired::now_ms()) {
+        // Expiry (bindings::expiry) owns retirement and its owner notice.
+        return (false, false);
+    }
+    let Some(handle) = super::observe_binding(deps, &binding) else {
+        // A record without a source: nothing to observe.
+        return (false, false);
+    };
+    if at_boot {
+        take_over_held_observer_id(deps, &binding, handle);
+    }
+    let mut rearmed = false;
+    match store.rearm_observer_id(&binding, &binding.id).await {
+        Ok(crate::bindings::AttachOutcome::Attached(current)) => {
+            binding = *current;
+            rearmed = true;
+        }
+        Ok(crate::bindings::AttachOutcome::Gone) => {
+            super::dispose_observer(deps, &binding.id).await;
+            return (false, false);
+        }
+        Err(e) => {
+            tracing::warn!(binding = %binding.id, error = %e, "observer id re-arm failed");
+            // The observer itself is live and delivers by binding id;
+            // only the recorded marker is stale. Keep going.
+        }
+    }
+    super::compose::schedule(deps, &binding);
+    drop(_topology);
+    (rearmed, catch_up_state_wake(deps, &binding).await)
 }
 
 /// A binding's observer id held by an observer the engine does not replace

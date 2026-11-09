@@ -43,6 +43,9 @@ pub struct Deps {
     /// Handles of the binding observers this process created; see
     /// [`crate::bindings::ObserverHandles`].
     pub observer_handles: crate::bindings::ObserverHandles,
+    /// The binding re-observe tasks running; see
+    /// [`crate::bindings::ObservingAgain`].
+    pub observing_again: crate::bindings::ObservingAgain,
     /// One deadline timer per binding with an `expires_at`
     /// ([`crate::bindings::expiry`]); the binding store cancels a binding's
     /// timer whenever it deletes the record.
@@ -82,6 +85,7 @@ impl Deps {
             inflight: crate::inflight::InflightSteps::new(),
             projects: ProjectStore::default(),
             observer_handles: crate::bindings::ObserverHandles::default(),
+            observing_again: crate::bindings::ObservingAgain::default(),
             expiry_timers: crate::timer::OneShots::new(),
             kicks: crate::engine_events::RecoveryKicks::default(),
             compactions: crate::compaction::Compactions::default(),

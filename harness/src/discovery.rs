@@ -429,10 +429,13 @@ pub fn observe_function_changes(iii: &Arc<IIIClient>, cell: FunctionsCell, timeo
         .metadata(json!({ "internal": true })),
     );
 
-    let _observer = iii.observe(
-        Source::function(ON_FUNCTIONS_CHANGED_FN).deliver(Deliver::Output),
-        FUNCTIONS_FN_ID,
-    );
+    let iii = iii.clone();
+    let _observer = crate::observers::keep(move || {
+        iii.observe(
+            Source::function(ON_FUNCTIONS_CHANGED_FN).deliver(Deliver::Output),
+            FUNCTIONS_FN_ID,
+        )
+    });
     tracing::info!(
         source = ON_FUNCTIONS_CHANGED_FN,
         function_id = FUNCTIONS_FN_ID,
