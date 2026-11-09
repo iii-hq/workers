@@ -67,17 +67,31 @@ pub struct ChangedEvent {
     pub captured_at: u64,
 }
 
+/// An explicit selection wins over the project that launched ADE. Standalone
+/// ADE retains the daemon's default when neither supplies a file.
+fn status_payload(file: Option<&str>, inherited_file: Option<&str>) -> serde_json::Value {
+    file.or(inherited_file.filter(|file| !file.is_empty()))
+        .map(|file| serde_json::json!({ "file": file }))
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// Keep the full daemon response for browser clients, including container metadata.
+pub async fn compose_status_value(
+    iii: &IIIClient,
+    file: Option<&str>,
+) -> Result<serde_json::Value, Error> {
+    let inherited_file = std::env::var("III_COMPOSE_FILE").ok();
+    iii.call(CallRequest {
+        function_id: "compose::status".to_string(),
+        payload: status_payload(file, inherited_file.as_deref()),
+        action: None,
+        timeout_ms: Some(10_000),
+    })
+    .await
+}
+
 pub async fn compose_status(iii: &IIIClient, file: Option<&str>) -> Result<ComposeStatus, Error> {
-    let value = iii
-        .call(CallRequest {
-            function_id: "compose::status".to_string(),
-            payload: file
-                .map(|file| serde_json::json!({ "file": file }))
-                .unwrap_or_else(|| serde_json::json!({})),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await?;
+    let value = compose_status_value(iii, file).await?;
     serde_json::from_value(value)
         .map_err(|error| Error::Handler(format!("invalid compose::status response: {error}")))
 }
@@ -406,6 +420,31 @@ fn emit_change(iii: &Arc<IIIClient>, location: &ProjectLocation, kind: ChangeKin
 mod tests {
     use super::*;
     use notify::event::ModifyKind;
+
+    #[test]
+    fn status_defaults_to_the_project_that_launched_ade() {
+        assert_eq!(
+            status_payload(None, Some("/projects/custom-stack.yaml")),
+            serde_json::json!({ "file": "/projects/custom-stack.yaml" })
+        );
+    }
+
+    #[test]
+    fn explicit_status_file_overrides_the_inherited_project() {
+        assert_eq!(
+            status_payload(
+                Some("/projects/other.yaml"),
+                Some("/projects/custom-stack.yaml")
+            ),
+            serde_json::json!({ "file": "/projects/other.yaml" })
+        );
+    }
+
+    #[test]
+    fn standalone_ade_retains_the_daemon_default() {
+        assert_eq!(status_payload(None, None), serde_json::json!({}));
+        assert_eq!(status_payload(None, Some("")), serde_json::json!({}));
+    }
 
     fn location() -> ProjectLocation {
         ProjectLocation {

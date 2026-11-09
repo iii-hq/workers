@@ -33,14 +33,16 @@ pub const ON_CHANGED_FN: &str = "ade::compose::on-changed";
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ProjectInput {
-    /// Compose file on the daemon host; defaults to the daemon project.
+    /// Compose file on the daemon host; defaults to ADE's III_COMPOSE_FILE,
+    /// then the daemon default when ADE was started outside Compose.
     pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ContainerInput {
     pub container: String,
-    /// Compose file on the daemon host; defaults to the daemon project.
+    /// Compose file on the daemon host; defaults to ADE's III_COMPOSE_FILE,
+    /// then the daemon default when ADE was started outside Compose.
     pub file: Option<String>,
 }
 
@@ -50,7 +52,8 @@ pub struct VersionsInput {
     pub container: Option<String>,
     /// Or a worker name on the default registry, for one not declared yet.
     pub name: Option<String>,
-    /// Compose file on the daemon host; defaults to the daemon project.
+    /// Compose file on the daemon host; defaults to ADE's III_COMPOSE_FILE,
+    /// then the daemon default when ADE was started outside Compose.
     pub file: Option<String>,
 }
 
@@ -130,6 +133,20 @@ pub fn register(iii: &Arc<IIIClient>) {
             )
             .private(),
     );
+
+    {
+        let iii = iii.clone();
+        iii.clone().register_function(
+            "ade::compose::status",
+            RegisterFunction::new_async(move |input: ProjectInput| {
+                let iii = iii.clone();
+                async move { watch::compose_status_value(&iii, input.file.as_deref()).await }
+            })
+            .description(
+                "Read Compose status for a file, defaulting to the project that launched ADE.",
+            ),
+        );
+    }
 
     {
         let iii = iii.clone();
