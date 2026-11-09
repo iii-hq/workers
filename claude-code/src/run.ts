@@ -13,8 +13,7 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
-import { installLocal } from './iii-integration/install.js';
-import { localPluginDir } from './local-plugin.js';
+import { installLocal } from './iii-plugin/install.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -313,18 +312,13 @@ async function runReserved(
   const iiiContext = payload.iii_context ?? cfg.iii_context;
   const context = iiiContext ? await fetchIiiContext(iii) : null;
   const append = [context?.text ?? '', userAppend].filter(Boolean).join('\n\n');
-  // The same plugin the terminal half loads: the SDK turns a local plugin into
-  // the CLI's own `--plugin-dir`, so a headless turn gets the identical hooks
-  // and the identical iii skill.
-  const plugin = iiiContext ? await localPluginDir(iii) : { dir: '', detail: '' };
-  // The iii-integration plugin, installed from this worker's own
-  // bundle: agent profiles and skills over MCP, read live from this engine (its
-  // server finds it through the inherited III_URL).
-  const integration = iiiContext ? await installLocal() : { dir: '', detail: '' };
-  if (integration.detail) console.warn(`claude-code: ${integration.detail}`);
-  const plugins = [plugin.dir, integration.dir]
-    .filter(Boolean)
-    .map((path) => ({ type: 'local' as const, path }));
+  // The same `iii` plugin the terminal half loads (hooks, runtime skill, MCP
+  // server for profiles and skills, /iii:* commands): the SDK turns a local
+  // plugin into the CLI's own `--plugin-dir`. Its MCP server finds the engine
+  // through the inherited III_URL.
+  const plugin = iiiContext ? await installLocal(iii) : { dir: '', detail: '' };
+  if (plugin.detail) console.warn(`claude-code: ${plugin.detail}`);
+  const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];
   const options: Options = {
     ...(plugins.length ? { plugins } : {}),
     ...(record.model ? { model: record.model } : {}),

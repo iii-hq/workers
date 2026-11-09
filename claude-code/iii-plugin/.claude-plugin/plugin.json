@@ -1,5 +1,5 @@
 {
-  "name": "iii-integration",
+  "name": "iii",
   "description": "Agent profiles and skills from a running iii engine's iii-directory worker, over MCP. Works inside the claude-code worker and in a standalone claude.",
   "version": "0.1.0",
   "author": { "name": "iii claude-code worker" },

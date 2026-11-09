@@ -52,7 +52,7 @@ export type Caller = <T>(function_id: string, payload: Record<string, unknown>) 
  */
 export function pluginWorkerName(env: NodeJS.ProcessEnv = process.env): string {
   delete env.III_WORKER_NAME;
-  return `iii-integration:${hostname()}:${process.pid}`;
+  return `iii-plugin:${hostname()}:${process.pid}`;
 }
 
 export class Directory {
