@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{ObserverHandle, ObserverOptions, Source};
+use iii_sdk::{ObserverHandle, ObserverOptions, ObserverState, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1472,12 +1472,23 @@ fn observe_validator(
     let (hooks, id) = (hooks.clone(), handle.id().to_string());
     crate::observers::when_disposed_while_away(&handle, move || {
         hooks.replace_owned(&id, || {
-            observe_validator(
+            let handle = observe_validator(
                 &hooks,
                 source,
                 validator,
                 ObserverOptions::default().id(id.clone()),
-            )
+            );
+            // No agent waits on this observe, so a refusal is only this log line.
+            let replaced = handle.clone();
+            tokio::spawn(async move {
+                match readiness(&replaced).await {
+                    Readiness::Failed(reason) if replaced.state() == ObserverState::Error => {
+                        tracing::warn!(observer = %replaced.id(), %reason, "post-turn validator not observed again: the engine refused it");
+                    }
+                    _ => {}
+                }
+            });
+            handle
         });
     });
     handle

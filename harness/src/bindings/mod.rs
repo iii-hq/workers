@@ -105,7 +105,7 @@ pub fn observe_binding(deps: &Deps, binding: &Binding) -> Option<ObserverHandle>
     );
     let (again, binding_id) = (deps.clone(), binding.id.clone());
     crate::observers::when_disposed_while_away(&handle, move || {
-        tokio::spawn(async move { gc::observe_again(&again, &binding_id).await });
+        gc::spawn_observe_again(&again, &binding_id);
     });
     deps.observer_handles
         .insert(binding.id.clone(), handle.clone());

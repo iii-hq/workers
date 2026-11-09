@@ -176,6 +176,16 @@ pub(crate) async fn observe_again(deps: &Deps, binding_id: &str) {
     tracing::info!(binding = %binding_id, armed, caught_up, "binding observed again after the harness was away");
 }
 
+/// [`observe_again`] in a task of its own when `binding_id`'s observer is
+/// dead, so a binding sweep never waits on its RPCs to retire or arm the rest.
+pub(crate) fn spawn_observe_again(deps: &Deps, binding_id: &str) {
+    if !is_dead(deps, binding_id) {
+        return;
+    }
+    let (deps, binding_id) = (deps.clone(), binding_id.to_string());
+    tokio::spawn(async move { observe_again(&deps, &binding_id).await });
+}
+
 fn is_dead(deps: &Deps, binding_id: &str) -> bool {
     deps.observer_handles
         .get(binding_id)

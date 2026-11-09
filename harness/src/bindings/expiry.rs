@@ -91,7 +91,7 @@ pub async fn sweep(deps: &Deps) -> usize {
         } else {
             arm(deps, &binding);
             // Retries a re-observe after an absence that could not finish.
-            super::gc::observe_again(deps, &binding.id).await;
+            super::gc::spawn_observe_again(deps, &binding.id);
         }
     }
     retired
