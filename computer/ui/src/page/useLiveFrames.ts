@@ -93,7 +93,6 @@ export function useLiveFrames(
           {
             function_id: ON_FRAME_CHANGED_FUNCTION_ID,
             args: { session_id: sessionId },
-            deliver: 'output',
           },
           `${localFnId}::${host.iii.browserId}`,
         ),

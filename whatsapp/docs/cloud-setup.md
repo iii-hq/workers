@@ -425,8 +425,8 @@ For a target `support::on-cloud-message` registered by a worker in `support`
 and a WhatsApp worker in `messaging`, observe from the `support` worker:
 
 ```ts
-iii.registerFunction('support::on-cloud-message', (event: { kind: string; message_id: string }) => ({
-  message_id: event.message_id,
+iii.registerFunction('support::on-cloud-message', ({ output }: { output: { kind: string; message_id: string } }) => ({
+  message_id: output.message_id,
 }))
 
 const observer = iii.observe(
@@ -438,7 +438,7 @@ const observer = iii.observe(
       'input.chat_id': { $eq: '+15550000001' },
       'input.message_type': { $eq: 'text' },
     },
-    deliver: 'output',
+    capture: ['output'],
   },
   'support::on-cloud-message',
   { metadata: { workflow: 'customer-support' } },
@@ -447,7 +447,8 @@ await observer.ready()
 ```
 
 `namespace` selects the WhatsApp worker; the target resolves in the observing
-worker's namespace. `deliver: 'output'` hands the target the event itself.
+worker's namespace. `capture: ['output']` hands the target the Observed
+envelope; the event is its `output`.
 `metadata` is optional and reaches the target as the call's metadata, separately
 from the event. `ready()` resolves once the observer is active and rejects with
 the engine's code (`INVALID_FILTER`, `FORBIDDEN`, ...). An observer stays
@@ -458,13 +459,16 @@ worker that created it; `observer.dispose()` removes it.
 
 ```go
 if _, err := automation.RegisterFunction("support::on-cloud-message", func(ctx context.Context, raw json.RawMessage) (any, error) {
-    var event struct {
-        Kind      string `json:"kind"`
-        MessageID string `json:"message_id"`
+    var observed struct {
+        Output struct {
+            Kind      string `json:"kind"`
+            MessageID string `json:"message_id"`
+        } `json:"output"`
     }
-    if err := json.Unmarshal(raw, &event); err != nil {
+    if err := json.Unmarshal(raw, &observed); err != nil {
         return nil, err
     }
+    event := observed.Output
     metadata, _ := iii.MetadataFromContext(ctx)
     return map[string]any{"message_id": event.MessageID, "metadata": metadata}, nil
 }); err != nil {
@@ -478,7 +482,7 @@ observer, err := automation.Observe(iii.Source{
         "input.chat_id":      iii.Op{"$eq": "+15550000001"},
         "input.message_type": iii.Op{"$eq": "text"},
     },
-    Deliver: iii.DeliverOutput,
+    Capture: []iii.Capture{iii.CaptureOutput},
 }, "support::on-cloud-message", iii.ObserverOptions{Metadata: json.RawMessage(`{"workflow":"customer-support"}`)})
 if err != nil {
     return err

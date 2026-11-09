@@ -310,8 +310,8 @@ The args choose which calls reach an observer:
 Both functions deliver themselves: for each call the worker picks the
 observers whose args keep it, applies their filters (on the event as
 `input`), and calls each target through its observer, fire-and-forget, with
-the event or its summary. The target receives the event itself, so `deliver`
-and `capture` do not apply. Observer metadata reaches the target as its
+the event or its summary. The target receives the event itself, so `capture`
+does not apply. Observer metadata reaches the target as its
 metadata sidecar. An unknown arg is refused by the engine (`INVALID_ARGS`).
 
 A worker observes them with `iii.observe`:

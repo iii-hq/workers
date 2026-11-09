@@ -16,7 +16,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use bus::{call, engine, git, register_state, registered, request, require, spawn_worker};
-use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
@@ -27,7 +27,8 @@ fn recorder(client: &IIIClient, function_id: &str) -> mpsc::UnboundedReceiver<Va
     client.register_function(
         function_id,
         RegisterFunction::new(move |payload: Value| {
-            let _ = tx.send(payload);
+            // `capture: [output]`: the event is the envelope's output.
+            let _ = tx.send(payload["output"].clone());
             Ok::<_, iii_sdk::Error>(json!({ "ok": true }))
         }),
     );
@@ -123,13 +124,13 @@ async fn end_to_end_child() {
     let this_repo = client.observe(
         Source::function("worktree::on-created")
             .filters(json!({ "input.repo_path": { "$eq": repo_path } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "e2e::worktree-created",
     );
     let other_repo = client.observe(
         Source::function("worktree::on-created")
             .filters(json!({ "input.repo_path": { "$eq": "/no/such/repo" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "e2e::other-repo-created",
     );
     for observer in [&this_repo, &other_repo] {

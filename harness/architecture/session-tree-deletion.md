@@ -12,8 +12,8 @@ selected session to the global root**. Its root is exactly `session_id`.
   saved snapshot, or `null` for an unknown operation.
 - The private function `harness::on-session-tree-deletion` takes no args;
   observers filter on `input.session_id` and `input.operation_id` (both
-  filters are conjunctive). Its output, and the event an observer with
-  `deliver: 'output'` receives, is the snapshot itself, with no wrapper:
+  filters are conjunctive). Its output, which an observer with
+  `capture: ['output']` reads at `payload.output`, is the snapshot itself:
 
 ```json
 {

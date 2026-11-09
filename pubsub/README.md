@@ -31,7 +31,7 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 | Function | Input | Returns | Args | Delivery | Event |
 |---|---|---|---|---|---|
-| `publish` | `{ topic, data }` | `null` | none; filter on `input.topic` | iii delivers every call to each observer whose filters match; observers use `deliver: 'input'` | `{ topic, data }` (the call's input) |
+| `publish` | `{ topic, data }` | `null` | none; filter on `input.topic` | iii delivers every call to each observer whose filters match; observers use `capture: ['input']` and read `payload.input` | `{ topic, data }` (the call's input) |
 
 `publish` is registered under the bare id **`publish`** (matching the builtin
 exactly, so existing callers and the engine's stream bridge keep working).
@@ -49,7 +49,7 @@ Observe `publish` with a filter on the topic, then call it with
 
 ```rust
 use iii_sdk::{
-    errors::Error, register_worker, CallRequest, Deliver, InitOptions, RegisterFunction, Source,
+    errors::Error, register_worker, CallRequest, Capture, InitOptions, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 
@@ -59,9 +59,9 @@ async fn main() -> anyhow::Result<()> {
 
     iii.register_function(
         "orders::on_created",
-        RegisterFunction::new_async(|event: Value| async move {
-            // event: { "topic": "orders", "data": { "id": 42 } }
-            println!("order event: {}", event["data"]);
+        RegisterFunction::new_async(|observed: Value| async move {
+            // observed["input"]: { "topic": "orders", "data": { "id": 42 } }
+            println!("order event: {}", observed["input"]["data"]);
             Ok::<Value, Error>(Value::Null)
         }),
     );
@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     iii.observe(
         Source::function("publish")
             .filters(json!({ "input.topic": { "$eq": "orders" } }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "orders::on_created",
     );
 
@@ -89,12 +89,13 @@ async fn main() -> anyhow::Result<()> {
 
 ```typescript
 iii.observe(
-  { function_id: 'publish', filters: { 'input.topic': { $eq: 'orders' } }, deliver: 'input' },
+  { function_id: 'publish', filters: { 'input.topic': { $eq: 'orders' } }, capture: ['input'] },
   'orders::on-created',
 )
 ```
 
-With `deliver: 'input'` the observer receives `{ topic, data }`, so one
+With `capture: ['input']` the observer receives the `Observed` envelope
+whose `input` is `{ topic, data }`, so one
 target can serve several topics (`{ 'input.topic': { $in: ['orders',
 'invoices'] } }`). Filters read any field of the event, including
 `input.data.*`. Delivery is fire-and-forget: `publish` returns a null result
@@ -144,7 +145,7 @@ fails loudly instead of silently racing the built-in worker for ownership of
 | `publish` success result | null | same |
 | `publish` empty topic | error `topic_not_set` / "Topic is not set" | same (code prefixes the message: `topic_not_set: Topic is not set`) |
 | Selecting a topic | `subscribe` binding `{topic}` | observer filter `{ 'input.topic': { $eq: topic } }` (any operator, any event field) |
-| Delivery payload | raw `data` | `{ topic, data }` with `deliver: 'input'` |
+| Delivery payload | raw `data` | `{ topic, data }` at `payload.input`, with `capture: ['input']` |
 | Delivery semantics | fire-and-forget, results ignored, no retries | same |
 | No subscribers | silent no-op | same |
 | Backends | local (in-process), redis | same |

@@ -28,7 +28,9 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, RegisterFunction, Source};
+use iii_sdk::{Capture, RegisterFunction, Source};
+
+use crate::observed::{delivered_event, Delivered};
 use serde_json::json;
 use tokio::sync::Notify;
 
@@ -129,9 +131,10 @@ pub fn register(deps: &Arc<Deps>) {
     let kicks = deps.kicks.clone();
     deps.iii.register_function(
         ENGINE_CHANGE_FN_ID,
-        RegisterFunction::new_async(move |event: EngineChangeEvent| {
+        RegisterFunction::new_async(move |delivered: Delivered<EngineChangeEvent>| {
             let kicks = kicks.clone();
             async move {
+                let event = delivered_event(delivered).unwrap_or_default();
                 let change = EngineChange::parse(event.event.as_deref());
                 tracing::debug!(
                     event = ?event.event,
@@ -153,7 +156,7 @@ pub fn register(deps: &Arc<Deps>) {
     let iii = deps.iii.clone();
     let _observer = crate::observers::keep(move || {
         iii.observe(
-            Source::function(ON_WORKERS_CHANGED_FN).deliver(Deliver::Output),
+            Source::function(ON_WORKERS_CHANGED_FN).capture([Capture::Output]),
             ENGINE_CHANGE_FN_ID,
         )
     });
@@ -184,6 +187,24 @@ pub async fn run_catalog(deps: Arc<Deps>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The target is called with the `Observed` envelope: the worker
+    /// change is its `output`, so an announce still refreshes the catalogs.
+    #[test]
+    fn the_worker_change_is_read_from_the_envelope() {
+        let envelope = crate::observed::envelope(
+            ON_WORKERS_CHANGED_FN,
+            serde_json::json!({ "event": "worker_metadata_updated", "worker_id": "w-1" }),
+        );
+        let delivered: Delivered<EngineChangeEvent> =
+            serde_json::from_value(envelope).expect("the envelope parses");
+        let event = delivered_event(delivered).unwrap_or_default();
+        assert_eq!(
+            EngineChange::parse(event.event.as_deref()),
+            EngineChange::WorkerAnnounced
+        );
+        assert_eq!(event.worker_id.as_deref(), Some("w-1"));
+    }
 
     #[test]
     fn event_tags_parse_and_unknown_ones_still_drive_recovery() {

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, RegisterFunction, Source,
+    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, RegisterFunction, Source,
 };
 use memory::config::WorkerConfig;
 use memory::deps::Deps;
@@ -119,7 +119,8 @@ fn forward_to_channel(probe: &IIIClient, id: &str) -> mpsc::UnboundedReceiver<Va
     probe.register_function(
         id,
         RegisterFunction::new(move |event: Value| {
-            let _ = tx.send(event);
+            // `capture: [output]`: the event is the envelope's output.
+            let _ = tx.send(event["output"].clone());
             Ok::<_, Error>(Value::Null)
         }),
     );
@@ -184,13 +185,13 @@ async fn change_functions_register_private_and_deliver_writes_to_bank_filtered_o
     let item_observer = probe.observe(
         Source::function(ON_ITEM_CHANGED_FN)
             .filters(blog.clone())
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         ON_ITEM_TARGET,
     );
     let bank_observer = probe.observe(
         Source::function(ON_BANK_CHANGED_FN)
             .filters(blog)
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         ON_BANK_TARGET,
     );
     for observer in [&item_observer, &bank_observer] {

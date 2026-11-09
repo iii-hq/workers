@@ -12,7 +12,7 @@
 //! new observer receives first is a call of the function with metadata
 //! `{ for_observer: <observer id> }`, which the match hook gives to that
 //! observer alone; iii delivers it like every other call, so a target
-//! receives every overview in the shape its observer's `deliver` names.
+//! receives every overview in the shape its observer's `capture` names.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -503,7 +503,7 @@ pub fn observe_skill_changes(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms:
     let iii = iii.clone();
     let _observer = crate::observers::keep(move || {
         iii.observe(
-            Source::function(SKILLS_ON_CHANGE_FN).deliver(Deliver::Output),
+            Source::function(SKILLS_ON_CHANGE_FN).capture([Capture::Output]),
             SKILLS_CHANGE_FN_ID,
         )
     });

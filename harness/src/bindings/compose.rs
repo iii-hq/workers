@@ -21,11 +21,12 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-use iii_sdk::{Deliver, Source};
+use iii_sdk::{Capture, Source};
 use serde_json::{json, Value};
 
 use super::Binding;
 use crate::deps::Deps;
+use crate::observed::{delivered_event, Delivered};
 use crate::types::message::AgentMessage;
 
 const MAX_RECOVERIES: usize = 16;
@@ -153,10 +154,10 @@ pub fn observe_terminal_operations(deps: &Arc<Deps>) {
     let worker = deps.clone();
     deps.iii.register_function(
         TERMINAL_WATCH_FN_ID,
-        iii_sdk::RegisterFunction::new_async(move |event: ComposeOperationEvent| {
+        iii_sdk::RegisterFunction::new_async(move |delivered: Delivered<ComposeOperationEvent>| {
             let deps = worker.clone();
             async move {
-                if let (true, Some(operation_id)) = (event.terminal, event.operation_id) {
+                if let Some(operation_id) = terminal_operation(delivered) {
                     recover_operation(&deps, &operation_id).await;
                 }
                 Ok::<_, iii_sdk::errors::Error>(ComposeOperationAck { ok: true })
@@ -173,12 +174,18 @@ pub fn observe_terminal_operations(deps: &Arc<Deps>) {
         crate::observers::keep(move || iii.observe(terminal_watch_source(), TERMINAL_WATCH_FN_ID));
 }
 
+/// The operation a delivered progress event reports finished, if terminal.
+fn terminal_operation(delivered: Delivered<ComposeOperationEvent>) -> Option<String> {
+    let event = delivered_event(delivered)?;
+    event.terminal.then_some(event.operation_id?)
+}
+
 /// Every terminal progress event of every Compose operation, as the event
 /// itself, in Compose's namespace when the supervisor set one.
 fn terminal_watch_source() -> Source {
     let source = Source::function(crate::functions::observe::COMPOSE_PROGRESS_FN)
         .filters(json!({ "input.terminal": { "$eq": true } }))
-        .deliver(Deliver::Output);
+        .capture([Capture::Output]);
     match crate::functions::observe::compose_namespace() {
         Some(namespace) => source.namespace(namespace),
         None => source,
@@ -547,11 +554,32 @@ mod tests {
         );
         let expected = Source::function(crate::functions::observe::COMPOSE_PROGRESS_FN)
             .filters(json!({ "input.terminal": { "$eq": true } }))
-            .deliver(Deliver::Output);
+            .capture([iii_sdk::Capture::Output]);
         let expected = match crate::functions::observe::compose_namespace() {
             Some(namespace) => expected.namespace(namespace),
             None => expected,
         };
         assert_eq!(source, expected);
+    }
+
+    /// The watch is called with the `Observed` envelope: the progress event
+    /// is its `output`.
+    #[test]
+    fn the_terminal_watch_reads_the_event_from_the_envelope() {
+        let envelope = crate::observed::envelope(
+            crate::functions::observe::COMPOSE_PROGRESS_FN,
+            json!({ "operation_id": "op-1", "terminal": true, "sequence": 3 }),
+        );
+        let delivered: Delivered<ComposeOperationEvent> =
+            serde_json::from_value(envelope).expect("the envelope parses");
+        assert_eq!(terminal_operation(delivered).as_deref(), Some("op-1"));
+
+        let running = crate::observed::envelope(
+            crate::functions::observe::COMPOSE_PROGRESS_FN,
+            json!({ "operation_id": "op-1", "terminal": false }),
+        );
+        let delivered: Delivered<ComposeOperationEvent> =
+            serde_json::from_value(running).expect("the envelope parses");
+        assert_eq!(terminal_operation(delivered), None);
     }
 }

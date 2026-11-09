@@ -17,7 +17,7 @@
 //! completion from a second call of the function once it is accepted. That
 //! call carries metadata `{ "for_observer": <observer id> }`, which the
 //! match hook gives to that observer alone, and iii delivers it as it
-//! delivers the first: with the observer's `deliver`, filters and `on`. The
+//! delivers the first: with the observer's `capture`, filters and firing. The
 //! match hook claims a completion for an observer of its job under one
 //! lock, whichever call comes first, so the observer receives it once each
 //! time iii adds it.

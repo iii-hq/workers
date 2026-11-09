@@ -33,6 +33,7 @@ import {
   isRawCron,
   observeRoutes,
   observeTurnEvents,
+  turnEventOf,
 } from './lib/observers.mjs';
 
 const III_URL = process.env.III_URL || process.env.III_ENGINE_URL || 'ws://localhost:49134';
@@ -1376,7 +1377,7 @@ worker.registerFunction(
   'openwiki::on-turn-completed',
   async (evt) => {
     try {
-      turnbus.deliver(evt);
+      turnbus.deliver(turnEventOf(evt));
     } catch (e) {
       console.warn('[openwiki] turn-event route failed', e?.message || e);
     }
@@ -1394,7 +1395,7 @@ worker.registerFunction(
   'openwiki::on-turn-started',
   async (evt) => {
     try {
-      turnbus.deliverStarted(evt);
+      turnbus.deliverStarted(turnEventOf(evt));
     } catch (e) {
       console.warn('[openwiki] turn-started route failed', e?.message || e);
     }
@@ -1407,7 +1408,8 @@ worker.registerFunction(
   },
 );
 
-// Both observers deliver the event itself (lib/observers.mjs). They stay
+// Both observers capture the output; the targets read the event with
+// turnEventOf (lib/observers.mjs). They stay
 // pending while the harness is absent; generation then uses its synchronous
 // fallback.
 const turnObservers = observeTurnEvents(worker);

@@ -250,7 +250,7 @@ pub fn register_recorder_function(iii: &Arc<IIIClient>) -> String {
                 map.get_or_insert_with(HashMap::new)
                     .entry(fid)
                     .or_default()
-                    .push(payload);
+                    .push(payload["output"].clone());
                 Ok::<_, Error>(json!({ "ok": true }))
             }
         })

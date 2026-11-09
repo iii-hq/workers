@@ -39,7 +39,7 @@ export const ROW_CHANGED_FN = 'database::on-row-changed'
 
 /**
  * Observes `database::on-row-changed` with `args` ({ db, table?, ops? }),
- * delivering each event to `target`. The handle's `ready()` resolves once
+ * capturing each event as the envelope's `output` for `target`. The handle's `ready()` resolves once
  * the observer is active: the worker's added hook has validated the args and
  * installed any native capture, so the next committed write reaches it. It
  * rejects with the worker's code when the observer is refused.
@@ -49,7 +49,12 @@ export function observeRowChanged(
   args: Record<string, unknown>,
   target: string,
 ): ObserverHandle {
-  return iii.observe({ function_id: ROW_CHANGED_FN, args, deliver: 'output' }, target)
+  return iii.observe({ function_id: ROW_CHANGED_FN, args, capture: ['output'] }, target)
+}
+
+/** What a target of `observeRowChanged` receives: the envelope, the event as its `output`. */
+export interface Observed<T> {
+  output: T
 }
 
 /** The code an observer is refused with, or `undefined` once it is active. */

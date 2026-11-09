@@ -68,7 +68,7 @@ To render live instead of polling, register a handler function and observe
 an event function with it:
 
 ```rust
-use iii_sdk::{Deliver, Error, RegisterFunction, Source};
+use iii_sdk::{Capture, Error, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 iii.register_function(
@@ -87,7 +87,7 @@ iii.observe(
             "input.session_id": { "$eq": session_id },
             "input.message.role": { "$in": ["assistant"] },
         }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "my-ui::on-message-updated",
 );
 ```
@@ -146,7 +146,7 @@ role `custom`.
 iii.observe(
     Source::function("session::on-message-added")
         .filters(json!({ "input.session_id": { "$eq": session_id } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "my-ui::on-message-added",
 );
 
@@ -154,19 +154,19 @@ iii.observe(
 iii.observe(
     Source::function("session::on-created")
         .filters(json!({ "input.session_metadata.owner": { "$eq": "u_1" } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "my-ui::on-session-created",
 );
 iii.observe(
     Source::function("session::on-deleted")
         .filters(json!({ "input.session_metadata.owner": { "$eq": "u_1" } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "my-ui::on-session-deleted",
 );
 
 // every status change (a spinner per session)
 iii.observe(
-    Source::function("session::on-status-changed").deliver(Deliver::Output),
+    Source::function("session::on-status-changed").capture([Capture::Output]),
     "my-ui::on-status-changed",
 );
 ```

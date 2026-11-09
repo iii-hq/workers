@@ -269,9 +269,11 @@ nobody observes costs nothing: the event is never built.
 | `computer::on-frame-changed` | `{ session_id }` (required) | the worker's own, below | `{ session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }` |
 
 ```ts
+// each target receives the Observed envelope; the event is its `output`
+
 // every session that ends
 iii.observe(
-  { function_id: 'computer::on-session-stopped', deliver: 'output' },
+  { function_id: 'computer::on-session-stopped', capture: ['output'] },
   'my-worker::on-desktop-gone',
 )
 
@@ -280,7 +282,7 @@ iii.observe(
   {
     function_id: 'computer::on-activity',
     filters: { 'input.session_id': { $eq: 'c1' } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-desktop-activity',
 )

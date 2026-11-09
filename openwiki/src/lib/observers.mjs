@@ -84,12 +84,21 @@ export function createWikiSchedules(worker) {
 
 // Real-time page collection: one broad observer (no filters) of each harness
 // turn event routes every turn to the active generation (turnbus); unowned
-// roots are a cheap map miss. Both deliver the event itself
-// (deliver: 'output'). They stay pending while the harness is absent;
-// generation then uses its synchronous fallback.
+// roots are a cheap map miss. Both capture the output (capture: ['output']):
+// the target reads the event from the envelope with turnEventOf. They stay
+// pending while the harness is absent; generation then uses its synchronous
+// fallback.
+
+// The turn event an observer target receives: the output of the observed
+// harness call, carried in its Observed envelope; null when there is none.
+export function turnEventOf(observed) {
+  const output = observed && typeof observed === 'object' ? observed.output : undefined;
+  return output && typeof output === 'object' ? output : null;
+}
+
 export function observeTurnEvents(worker) {
   return [
-    worker.observe({ function_id: 'harness::on-turn-completed', deliver: 'output' }, 'openwiki::on-turn-completed'),
-    worker.observe({ function_id: 'harness::on-turn-started', deliver: 'output' }, 'openwiki::on-turn-started'),
+    worker.observe({ function_id: 'harness::on-turn-completed', capture: ['output'] }, 'openwiki::on-turn-completed'),
+    worker.observe({ function_id: 'harness::on-turn-started', capture: ['output'] }, 'openwiki::on-turn-started'),
   ];
 }

@@ -27,10 +27,11 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Capture, IIIClient, Observed, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::deps::Deps;
 
@@ -70,6 +71,54 @@ pub(crate) fn register<Req, Resp, F, Fut>(
             async move { handler(deps, req).await }
         })
         .description(description),
+    );
+}
+
+/// The event a `capture: [output]` observer target receives: the output of
+/// the observed call, carried in its Observed envelope. An envelope without
+/// an output (the call returned nothing) is an error naming the function.
+pub fn observed_output<T>(event: Observed<Value, T>) -> Result<T, Error> {
+    event.output.ok_or_else(|| {
+        Error::Handler(format!(
+            "observed call of {} carried no output",
+            event.function_id
+        ))
+    })
+}
+
+/// The source of an event observer: `source`'s calls matching `filters`,
+/// captured as their output.
+pub fn event_source(source: &str, filters: Option<Value>) -> Source {
+    let src = Source::function(source).capture([Capture::Output]);
+    match filters {
+        Some(filters) => src.filters(filters),
+        None => src,
+    }
+}
+
+/// [`register`] for an observer target: the request is the Observed
+/// envelope and `handler` gets the event in its `output`.
+pub(crate) fn register_observed<Req, Resp, F, Fut>(
+    iii: &Arc<IIIClient>,
+    deps: &Arc<Deps>,
+    id: &str,
+    description: &str,
+    handler: F,
+) where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, Error>> + Send + 'static,
+{
+    register(
+        iii,
+        deps,
+        id,
+        description,
+        move |deps, event: Observed<Value, Req>| {
+            let handler = handler.clone();
+            async move { handler(deps, observed_output(event)?).await }
+        },
     );
 }
 

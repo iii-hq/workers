@@ -194,7 +194,7 @@ route's target receives:
 ```
 
 The target always receives the `HttpRequest`, whatever the observer's
-`deliver` option says, and the observer's `metadata` arrives as the target's
+`capture` says, and the observer's `metadata` arrives as the target's
 metadata sidecar:
 
 ```typescript

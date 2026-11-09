@@ -53,7 +53,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -432,7 +432,7 @@ pub fn observe_function_changes(iii: &Arc<IIIClient>, cell: FunctionsCell, timeo
     let iii = iii.clone();
     let _observer = crate::observers::keep(move || {
         iii.observe(
-            Source::function(ON_FUNCTIONS_CHANGED_FN).deliver(Deliver::Output),
+            Source::function(ON_FUNCTIONS_CHANGED_FN).capture([Capture::Output]),
             FUNCTIONS_FN_ID,
         )
     });

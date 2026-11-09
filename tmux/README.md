@@ -146,10 +146,10 @@ windows, panes, agent states, compose stacks or listening ports change. The
 worker polls tmux only while something observes it.
 
 ```ts
-iii.registerFunction('my-worker::on-tmux', async ({ sessions, ports }) => {
+iii.registerFunction('my-worker::on-tmux', async ({ output: { sessions, ports } }) => {
   // compare agent states with the previous overview
 })
-iii.observe({ function_id: 'tmux::on-changed', deliver: 'output' }, 'my-worker::on-tmux')
+iii.observe({ function_id: 'tmux::on-changed', capture: ['output'] }, 'my-worker::on-tmux')
 ```
 
 The Console page's terminal functions, `tmux::terminal::open`, `write`,

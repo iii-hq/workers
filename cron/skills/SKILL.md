@@ -12,7 +12,8 @@ description: >-
 The `cron` worker runs registered functions on recurring cron expressions. A
 schedule is an observer of `cron::on-tick`: the args hold the expression, and
 the target is the function that runs on it:
-`iii.observe({ function_id: 'cron::on-tick', args: { expression }, deliver: 'output' }, target)`.
+`iii.observe({ function_id: 'cron::on-tick', args: { expression }, capture: ['output'] }, target)`;
+the target reads the tick at `payload.output`.
 
 Install it with `iii call compose::add worker=cron`.
 
@@ -79,7 +80,7 @@ Reach for it when:
 2. Observe `cron::on-tick` with the expression as args:
 
 ```typescript
-iii.registerFunction('jobs::cleanup-old-data', async (tick: CronTick) => {
+iii.registerFunction('jobs::cleanup-old-data', async ({ output: tick }: { output: CronTick }) => {
   // tick: { expression, scheduled_time, actual_time }
 })
 
@@ -87,7 +88,7 @@ const cleanup = iii.observe(
   {
     function_id: 'cron::on-tick',
     args: { expression: '0 0 2 * * *' },  // sec min hour dom month dow [year]; daily at 02:00:00 UTC.
-    deliver: 'output',
+    capture: ['output'],
   },
   'jobs::cleanup-old-data',
 )
@@ -99,7 +100,8 @@ await cleanup.ready()
 `INVALID_ARGS`, and an expression that does not parse fails it with
 `INVALID_CRON_EXPRESSION`. The handler's return value is ignored.
 
-With `deliver: 'output'` the handler receives the tick:
+With `capture: ['output']` the handler receives the `Observed` envelope,
+whose `output` is the tick:
 
 ```json
 {

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
+use crate::observed::{delivered_event, Delivered};
 
 /// `session::on-deleted` event (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -17,6 +18,21 @@ pub struct SessionDeletedEvent {
 pub struct SessionDeletedAck {
     pub ok: bool,
     pub removed: u64,
+}
+
+/// The observer target: the deletion event the observer delivered. A
+/// delivery without one is acknowledged with nothing removed.
+pub async fn handle_delivered(
+    deps: &Deps,
+    delivered: Delivered<SessionDeletedEvent>,
+) -> Result<SessionDeletedAck, HarnessError> {
+    match delivered_event(delivered) {
+        Some(event) => handle(deps, event).await,
+        None => Ok(SessionDeletedAck {
+            ok: true,
+            removed: 0,
+        }),
+    }
 }
 
 pub async fn handle(
@@ -53,4 +69,23 @@ pub async fn handle(
         ok: true,
         removed: swept,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The target is called with the `Observed` envelope: the deleted
+    /// session is its `output`.
+    #[test]
+    fn the_deleted_session_is_read_from_the_envelope() {
+        let envelope = crate::observed::envelope(
+            "session::on-deleted",
+            serde_json::json!({ "session_id": "s-1", "deleted_at": 5 }),
+        );
+        let delivered: Delivered<SessionDeletedEvent> =
+            serde_json::from_value(envelope).expect("the envelope parses");
+        let event = delivered_event(delivered).expect("the envelope carries the event");
+        assert_eq!(event.session_id, "s-1");
+    }
 }

@@ -175,7 +175,7 @@ impl TurnEvents {
         // An observer added after boot receives the current ready state once
         // it is active: a call of `harness::on-ready` with metadata
         // `{ for_observer: <its id> }`, which the match hook gives to that
-        // observer alone, so iii delivers it with the observer's `deliver`,
+        // observer alone, so iii delivers it with the observer's `capture`,
         // filters and policy, in the shape of every ready event. Readiness is
         // read after the observer is active: a ready call made before that
         // missed it, and one made after reaches it (a second ready event is

@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use futures::future::BoxFuture;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source,
 };
 use sandbox_code_runner::engine::{CallResult, Engine, ProxyHandler, UnregisterFn};
 use serde_json::{json, Value};
@@ -192,7 +192,8 @@ fn recorder(client: &IIIClient, function_id: &str) -> mpsc::UnboundedReceiver<Va
     client.register_function(
         function_id,
         RegisterFunction::new(move |payload: Value| {
-            let _ = tx.send(payload);
+            // `capture: [output]`: the event is the envelope's output.
+            let _ = tx.send(payload["output"].clone());
             Ok::<_, iii_sdk::Error>(json!({ "ok": true }))
         }),
     );
@@ -229,7 +230,7 @@ async fn observers_of_on_event_start_and_stop_the_fleet_watcher() {
     let first = consumer.observe(
         Source::function("sandbox-code-runner::on-event")
             .filters(json!({ "input.kind": { "$eq": "fleet" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "test::fleet",
     );
     timeout(Duration::from_secs(15), first.ready())
@@ -247,7 +248,7 @@ async fn observers_of_on_event_start_and_stop_the_fleet_watcher() {
 
     // A second observer keeps it running when the first leaves.
     let second = consumer.observe(
-        Source::function("sandbox-code-runner::on-event").deliver(Deliver::Output),
+        Source::function("sandbox-code-runner::on-event").capture([Capture::Output]),
         "test::every-event",
     );
     timeout(Duration::from_secs(15), second.ready())

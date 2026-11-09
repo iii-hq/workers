@@ -135,11 +135,12 @@ Do not observe when:
 ### How to observe
 
 1. Register a handler: `registerFunction('my-worker::on-skills-changed', handler)`.
-2. Observe the change function with it:
+2. Observe the change function with it (the handler receives the `Observed`
+   envelope; the event is its `output`):
 
 ```typescript
 iii.observe(
-  { function_id: 'directory::skills::on-change', deliver: 'output' },
+  { function_id: 'directory::skills::on-change', capture: ['output'] },
   'my-worker::on-skills-changed',
 )
 
@@ -148,7 +149,7 @@ iii.observe(
   {
     function_id: 'directory::skills::on-change',
     filters: { 'input.op': { $eq: 'external' } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-skills-edited',
 )

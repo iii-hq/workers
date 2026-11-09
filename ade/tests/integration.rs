@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::runtime::{IIIConnectionState, WorkerIdentityMode, WorkerMetadata};
 use iii_sdk::{register_worker, IIIClient, InitOptions, ObserverHandle, ObserverState};
-use iii_sdk::{CallRequest, Deliver, Error, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, Error, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -316,6 +316,20 @@ fn recording_target(client: &IIIClient, id: &str) -> UnboundedReceiver<Value> {
     rx
 }
 
+/// Register `id` as a target of an output-only observer: forwards the
+/// envelope's `output` (null when the call carried none).
+fn output_target(client: &IIIClient, id: &str) -> UnboundedReceiver<Value> {
+    let (tx, rx) = unbounded_channel();
+    client.register_function(
+        id,
+        RegisterFunction::new(move |envelope: Value| {
+            let _ = tx.send(envelope.get("output").cloned().unwrap_or(Value::Null));
+            Ok::<_, Error>(json!({}))
+        }),
+    );
+    rx
+}
+
 async fn next_event(rx: &mut UnboundedReceiver<Value>, what: &str) -> Value {
     timeout(Duration::from_secs(10), rx.recv())
         .await
@@ -558,14 +572,14 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
 
     // 6. Observe ade::workspace::on-changed: the console rings a new
     //    observer once it is active.
-    let mut rung = recording_target(client, "integration::workspace-rung");
+    let mut rung = output_target(client, "integration::workspace-rung");
     let observer = client.observe(
-        Source::function("ade::workspace::on-changed").deliver(Deliver::Output),
+        Source::function("ade::workspace::on-changed").capture([Capture::Output]),
         "integration::workspace-rung",
     );
     active(&observer, "the ade::workspace::on-changed observer").await;
-    // The ring is a call of the function for this observer: `deliver: output`
-    // hands the target the function's output, the empty event.
+    // The ring is a call of the function for this observer; its envelope's
+    // `output` is the function's output, the empty event.
     assert_eq!(next_event(&mut rung, "the workspace ring").await, json!({}));
     observer.dispose().await.expect("dispose failed");
 
@@ -618,9 +632,9 @@ async fn ui_assets(client: &IIIClient, base: &str) {
     };
 
     // A tab: its first delivery is the sync, a call for its observer alone.
-    let mut tab_events = recording_target(client, "integration::assets-tab");
+    let mut tab_events = output_target(client, "integration::assets-tab");
     let tab = client.observe(
-        Source::function(ON_ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ON_ASSETS_CHANGED_FN).capture([Capture::Output]),
         "integration::assets-tab",
     );
     active(&tab, "the tab's ade::ui::on-assets-changed observer").await;
@@ -651,9 +665,9 @@ async fn ui_assets(client: &IIIClient, base: &str) {
     assert_eq!(served.text().await.unwrap(), "export const version = 1\n");
 
     // A tab that opens later gets the asset in its sync.
-    let mut late_events = recording_target(client, "integration::assets-late-tab");
+    let mut late_events = output_target(client, "integration::assets-late-tab");
     let late = client.observe(
-        Source::function(ON_ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ON_ASSETS_CHANGED_FN).capture([Capture::Output]),
         "integration::assets-late-tab",
     );
     active(&late, "the late tab's observer").await;
@@ -806,7 +820,7 @@ async fn console_assets_served(client: &IIIClient) {
 /// new observer (the workspace ring, a tab's asset `sync`, an asset's
 /// content fetch) reaches that observer alone, and reaches it in the shape
 /// of every other call of the function: the envelope for a default
-/// observer, the event for a `deliver: output` one.
+/// observer, the same envelope with only `output` for a `capture: [output]` one.
 #[tokio::test]
 async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() {
     if !in_private_home("a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event") {
@@ -820,7 +834,7 @@ async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() 
 
     // ade::workspace::on-changed. A takes the envelope, B the output.
     let mut ring_a = recording_target(client, "integration::ring-envelope");
-    let mut ring_b = recording_target(client, "integration::ring-output");
+    let mut ring_b = output_target(client, "integration::ring-output");
     let a = client.observe(
         Source::function(WORKSPACE_CHANGED_FN),
         "integration::ring-envelope",
@@ -828,7 +842,7 @@ async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() 
     active(&a, "the envelope ring observer").await;
     let own_a = next_event(&mut ring_a, "A's own ring").await;
     let b = client.observe(
-        Source::function(WORKSPACE_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(WORKSPACE_CHANGED_FN).capture([Capture::Output]),
         "integration::ring-output",
     );
     active(&b, "the output ring observer").await;
@@ -852,7 +866,7 @@ async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() 
     // ade::ui::on-assets-changed. Tab A takes the envelope, tab B the
     // output.
     let mut tab_a = recording_target(client, "integration::tab-envelope");
-    let mut tab_b = recording_target(client, "integration::tab-output");
+    let mut tab_b = output_target(client, "integration::tab-output");
     let a = client.observe(
         Source::function(ASSETS_CHANGED_FN),
         "integration::tab-envelope",
@@ -861,7 +875,7 @@ async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() 
     let sync_a = next_event(&mut tab_a, "tab A's sync").await;
     assert_eq!(sync_a["output"]["op"], "sync", "{sync_a:#}");
     let b = client.observe(
-        Source::function(ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ASSETS_CHANGED_FN).capture([Capture::Output]),
         "integration::tab-output",
     );
     active(&b, "the output tab").await;
@@ -1004,9 +1018,9 @@ async fn an_observer_that_reattaches_gets_its_current_state_again() {
     console_assets_served(client).await;
 
     // A tab on the harness's own connection, which stays up.
-    let mut steady = recording_target(client, "integration::steady-tab");
+    let mut steady = output_target(client, "integration::steady-tab");
     let steady_tab = client.observe(
-        Source::function(ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ASSETS_CHANGED_FN).capture([Capture::Output]),
         "integration::steady-tab",
     );
     active(&steady_tab, "the steady tab").await;
@@ -1014,9 +1028,9 @@ async fn an_observer_that_reattaches_gets_its_current_state_again() {
         next_event(&mut steady, "the steady tab's sync").await["op"],
         "sync"
     );
-    let mut steady_ring = recording_target(client, "integration::steady-ring");
+    let mut steady_ring = output_target(client, "integration::steady-ring");
     let steady_ringer = client.observe(
-        Source::function(WORKSPACE_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(WORKSPACE_CHANGED_FN).capture([Capture::Output]),
         "integration::steady-ring",
     );
     active(&steady_ringer, "the steady ring observer").await;

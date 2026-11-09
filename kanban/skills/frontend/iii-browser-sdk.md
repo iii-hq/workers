@@ -102,7 +102,7 @@ add polling, SSE, or a second socket alongside it.
 
 ```ts
 const observer = iii.observe(
-  { function_id: 'state::on-changed', filters: { 'input.scope': { $eq: 'orders' } }, deliver: 'output' },
+  { function_id: 'state::on-changed', filters: { 'input.scope': { $eq: 'orders' } }, capture: ['output'] },
   'ui::refresh', // a function this tab registered
 )
 await observer.dispose()
@@ -110,8 +110,8 @@ await observer.dispose()
 
 `observe` resolves the target in this worker's namespace — correct, because the target function
 is one this tab registered. `state::on-changed` takes no args, so the observer selects changes
-with filters on the event (always with an explicit operator); `deliver: 'output'` hands the
-handler the event itself. Hosting an event function from a browser is rarely right: it only
+with filters on the event (always with an explicit operator); `capture: ['output']` hands the
+handler the `Observed` envelope with the event at `output`. Hosting an event function from a browser is rarely right: it only
 makes sense when the browser itself is the event source. The RBAC listener also decides which
 functions a browser session may observe.
 

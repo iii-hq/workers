@@ -145,14 +145,14 @@ nobody observes is not sent.
 
 ```ts
 iii.observe(
-  { function_id: 'claude::on-agent-event', args: { session_id }, deliver: 'output' },
+  { function_id: 'claude::on-agent-event', args: { session_id }, capture: ['output'] },
   'my::on-claude-event',
   { metadata: { team: 'a' } }, // optional: handed to your function as the metadata sidecar
 );
 ```
 
-With `deliver: 'output'` your function receives one call per frame,
-fire-and-forget:
+With `capture: ['output']` your function receives one call per frame,
+fire-and-forget: the `Observed` envelope, whose `output` is the frame:
 
 ```jsonc
 {

@@ -7,7 +7,7 @@ use dashmap::{DashMap, DashSet};
 use iii_sdk::errors::Error as IiiError;
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{
-    CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -229,7 +229,7 @@ impl AcpHandler {
         self.iii.observe(
             Source::function(function_id)
                 .args(observer_args(session_id))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             self.event_function_id.as_str(),
         )
     }
@@ -1583,8 +1583,8 @@ async fn write_notification(outbound: &Outbound, seq: &AtomicU64, method: &str, 
 // Register the handler every `<namespace>::on-agent-event` observer of this
 // connection targets. Observers themselves are added per owned session
 // (`AcpHandler::own_session`) with args `{ session_id }` and
-// `deliver: output`, so the producer delivers only this connection's
-// sessions and the handler receives each frame as its input.
+// `capture: [output]`, so the producer delivers only this connection's
+// sessions and the handler receives each frame as the envelope's `output`.
 fn register_event_function(iii: &IIIClient, fn_id: &str, sink: &Arc<EventSink>) -> FunctionRef {
     let sink = Arc::clone(sink);
     iii.register_function(
@@ -2206,7 +2206,7 @@ mod tests {
             "source": "cursor",
             "event": { "type": "message_update" }
         });
-        let event = parse_feed_payload(&payload).unwrap();
+        let event = parse_feed_payload(&json!({ "output": payload })).unwrap();
         assert_eq!(event.session_id, "session-one");
         assert_eq!(event.event_id, "cursor-stable-item");
         assert_eq!(event.event["type"], "message_update");

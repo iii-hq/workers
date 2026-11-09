@@ -399,7 +399,8 @@
   }
 
   // Observe `source` (a function id, or `{ function_id, namespace?, args?,
-  // filters?, deliver? }`) with `target`, a registered function. Resolves to
+  // filters?, capture? }`; a legacy `deliver` is still forwarded, deprecated)
+  // with `target`, a registered function. Resolves to
   // a handle whose `dispose()` removes the observer; the observer itself
   // stays pending until its function is registered and accepts it.
   async function observe(source, target, options) {

@@ -32,7 +32,7 @@ use clap::Parser;
 use iii_sdk::protocol::observe_codes;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
     RegisterFunction, Source,
 };
 use serde_json::json;
@@ -42,6 +42,7 @@ use memory::configuration::{self, ConfigCell, StoreCell};
 use memory::deps::Deps;
 use memory::events::{self, Emitter};
 use memory::functions::rest;
+use memory::observed::{delivered_event, Delivered};
 use memory::store::Store;
 use memory::{config, functions, hooks, manifest};
 
@@ -112,12 +113,12 @@ fn seam_observers(extraction_id: String) -> Vec<(Source, &'static str, ObserverO
             ObserverOptions::default(),
         ),
         (
-            Source::function("harness::on-turn-completed").deliver(Deliver::Output),
+            Source::function("harness::on-turn-completed").capture([Capture::Output]),
             hooks::TURN_COMPLETED_FN,
             ObserverOptions::default(),
         ),
         (
-            Source::function("session::on-deleted").deliver(Deliver::Output),
+            Source::function("session::on-deleted").capture([Capture::Output]),
             hooks::SESSION_DELETED_FN,
             ObserverOptions::default(),
         ),
@@ -406,8 +407,9 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     let d = deps.clone();
     iii.register_function(
         hooks::TURN_COMPLETED_FN,
-        RegisterFunction::new_async(move |input: hooks::TurnCompletedInput| {
+        RegisterFunction::new_async(move |delivered: Delivered<hooks::TurnCompletedInput>| {
             let d = d.clone();
+            let input = delivered_event(delivered).unwrap_or_default();
             async move { hooks::turn_completed(&d, input).await }
         })
         .description(hooks::TURN_COMPLETED_DESC)
@@ -428,8 +430,9 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     let d = deps.clone();
     iii.register_function(
         hooks::SESSION_DELETED_FN,
-        RegisterFunction::new_async(move |input: hooks::SessionDeletedInput| {
+        RegisterFunction::new_async(move |delivered: Delivered<hooks::SessionDeletedInput>| {
             let d = d.clone();
+            let input = delivered_event(delivered).unwrap_or_default();
             async move { hooks::session_deleted(&d, input).await }
         })
         .description(hooks::SESSION_DELETED_DESC)

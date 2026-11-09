@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, Call, CallRequest, Deliver, Error, IIIClient, InitOptions, Match,
+    register_worker, Call, CallRequest, Capture, Error, IIIClient, InitOptions, Match,
     ObserveRejection, Observer, ObserverOptions, RegisterFunction, Source,
 };
 use memory::hooks::{extraction_observer_id, EXTRACTION_QUEUE, EXTRACT_JOB_FN, WORKER_NAME};
@@ -323,13 +323,16 @@ fn record_jobs(iii: &IIIClient) -> Arc<Mutex<Vec<String>>> {
     iii.register_function(
         RECORDER,
         RegisterFunction::new(move |input: Value| {
-            let job = input["session_id"].as_str().unwrap_or_default().to_owned();
+            let job = input["input"]["session_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
             seen.lock().unwrap().push(job);
             Ok::<_, Error>(Value::Null)
         }),
     );
     let _ = iii.observe(
-        Source::function(EXTRACT_JOB_FN).deliver(Deliver::Input),
+        Source::function(EXTRACT_JOB_FN).capture([Capture::Input]),
         RECORDER,
     );
     handled

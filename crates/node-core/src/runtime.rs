@@ -2720,7 +2720,7 @@ mod tests {
             &rt,
             "const h = await iii.observe(
                  { function_id: 'state::on-changed',
-                   filters: { 'input.key': { $eq: 'k' } }, deliver: 'output' },
+                   filters: { 'input.key': { $eq: 'k' } }, capture: ['output'] },
                  'test::react',
                  { metadata: { owner: 'test' }, max_in_flight: 1 },
              );
@@ -2739,7 +2739,7 @@ mod tests {
                 "source": {
                     "function_id": "state::on-changed",
                     "filters": { "input.key": { "$eq": "k" } },
-                    "deliver": "output",
+                    "capture": ["output"],
                 },
                 "target": "test::react",
                 "options": { "metadata": { "owner": "test" }, "max_in_flight": 1, "id": id },
@@ -2893,6 +2893,10 @@ mod tests {
             ),
             (
                 "await iii.observe({ function_id: 'a::b', deliver: 'everything' }, 'test::r')",
+                "invalid observe request",
+            ),
+            (
+                "await iii.observe({ function_id: 'a::b', capture: ['everything'] }, 'test::r')",
                 "invalid observe request",
             ),
             (

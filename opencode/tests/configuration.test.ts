@@ -43,7 +43,7 @@ describe('configuration worker integration', () => {
             'input.id': { $eq: 'opencode' },
             'input.event_type': { $eq: 'configuration:updated' },
           },
-          deliver: 'output',
+          capture: ['output'],
         },
         target: 'opencode::on-config-change',
       },

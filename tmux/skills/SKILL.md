@@ -87,8 +87,8 @@ only while the function is observed. It takes no args.
 Register a handler, then observe the function with it:
 
 ```ts
-iii.registerFunction('my-worker::on-tmux', async ({ sessions, ports }) => {
+iii.registerFunction('my-worker::on-tmux', async ({ output: { sessions, ports } }) => {
   // compare agent states with the previous overview
 })
-iii.observe({ function_id: 'tmux::on-changed', deliver: 'output' }, 'my-worker::on-tmux')
+iii.observe({ function_id: 'tmux::on-changed', capture: ['output'] }, 'my-worker::on-tmux')
 ```

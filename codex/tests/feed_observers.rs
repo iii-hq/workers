@@ -14,7 +14,7 @@ use codex::agent_feed::{
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, ObserverHandle,
+    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, ObserverHandle,
     ObserverState, RegisterFunction, Source, WorkerIdentityMode,
 };
 use serde_json::{json, Value};
@@ -88,7 +88,7 @@ impl Inbox {
             RegisterFunction::new_async(move |payload: Value| {
                 let sink = sink.clone();
                 async move {
-                    sink.0.lock().unwrap().push(payload);
+                    sink.0.lock().unwrap().push(payload["output"].clone());
                     Ok::<_, Error>(Value::Null)
                 }
             }),
@@ -105,7 +105,7 @@ fn observe(iii: &IIIClient, function_id: &str, args: Value, target: &str) -> Obs
     iii.observe(
         Source::function(function_id)
             .args(args)
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         target,
     )
 }

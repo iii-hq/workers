@@ -195,7 +195,7 @@ event, then show one `iii.observe` per way a consumer uses it:
 iii.observe(
     Source::function("<worker>::on-change")
         .filters(json!({ "input.op": { "$eq": "register" } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "my-worker::on-register",
 );
 ```

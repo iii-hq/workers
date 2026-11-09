@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, Observed, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -77,6 +77,10 @@ pub async fn probe_presence(iii: &IIIClient) -> bool {
 
 /// An `engine::on-workers-changed` event. It names the worker by id only, so
 /// the handler re-reads `engine::workers::list` for names.
+/// What the watch target receives: the Observed envelope of a
+/// `capture: [output]` observer, the event in its `output`.
+type WorkersChangedWake = Observed<Value, WorkersChangedEvent>;
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 struct WorkersChangedEvent {
     #[serde(default)]
@@ -113,7 +117,7 @@ pub fn start_watch(iii: Arc<IIIClient>, status: Arc<ApprovalGateStatus>) {
     let refreshing = Arc::new(tokio::sync::Mutex::new(()));
     iii.register_function(
         WATCH_FN_ID,
-        RegisterFunction::new_async(move |_event: WorkersChangedEvent| {
+        RegisterFunction::new_async(move |_event: WorkersChangedWake| {
             let status = status.clone();
             let engine = engine.clone();
             let refreshing = refreshing.clone();
@@ -128,12 +132,15 @@ pub fn start_watch(iii: Arc<IIIClient>, status: Arc<ApprovalGateStatus>) {
 
     // The observer lives as long as the worker's connection; dropping the
     // handle does not dispose it.
-    iii.observe(
-        Source::function(ON_WORKERS_CHANGED_FN)
-            .filters(lifecycle_filters())
-            .deliver(Deliver::Output),
-        WATCH_FN_ID,
-    );
+    iii.observe(watch_source(), WATCH_FN_ID);
+}
+
+/// What the watch observes: lifecycle events of `engine::on-workers-changed`,
+/// captured as their output.
+fn watch_source() -> Source {
+    Source::function(ON_WORKERS_CHANGED_FN)
+        .filters(lifecycle_filters())
+        .capture([Capture::Output])
 }
 
 /// Re-read the worker list and record whether the gate is in it. A failed
@@ -193,6 +200,35 @@ async fn list_workers(iii: &IIIClient) -> Result<Vec<EngineWorker>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::Capture;
+
+    #[test]
+    fn watch_observer_captures_the_output() {
+        assert_eq!(
+            watch_source(),
+            Source::function(ON_WORKERS_CHANGED_FN)
+                .filters(lifecycle_filters())
+                .capture([Capture::Output])
+        );
+    }
+
+    #[test]
+    fn watch_target_reads_the_event_from_the_observed_envelope() {
+        let envelope = serde_json::json!({
+            "observer_id": "obs_1",
+            "activation_id": "act_1",
+            "function_id": ON_WORKERS_CHANGED_FN,
+            "invocation_id": "inv_1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "event": "worker_connected", "worker_id": "w1" },
+        });
+        let wake: WorkersChangedWake = serde_json::from_value(envelope).unwrap();
+        let event = wake.output.expect("output captured");
+        assert_eq!(event.event.as_deref(), Some("worker_connected"));
+        assert_eq!(event.worker_id.as_deref(), Some("w1"));
+    }
 
     fn status_with(present: bool, loading: bool) -> ApprovalGateStatus {
         let s = ApprovalGateStatus::new();

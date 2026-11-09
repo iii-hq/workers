@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use iii_sdk::engine::EngineSources;
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -98,7 +98,7 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
 
 /// Register the internal config-change handler and observe
 /// `configuration::on-updated` with it: filters on this worker's entry and on
-/// `configuration:updated`, the event delivered as output. The observer stays
+/// `configuration:updated`, capturing the event (its output). The observer stays
 /// `pending` while the configuration source is not registered.
 pub fn register_config_reload(iii: &IIIClient, cell: ConfigCell) {
     let engine = iii.clone();
@@ -129,7 +129,7 @@ pub fn register_config_reload(iii: &IIIClient, cell: ConfigCell) {
                 "input.id": { "$eq": config_id() },
                 "input.event_type": { "$eq": "configuration:updated" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_FN_ID,
     );
 }

@@ -1,7 +1,7 @@
 //! The worker's four observable functions against a live engine.
 //!
 //! Each test hosts a function on one connection, observes it from another
-//! with args, filters and both `deliver` shapes, produces the event and
+//! with args, filters and both `capture` shapes, produces the event and
 //! checks what each target received, and that a disposed observer receives
 //! nothing more. The engine is `III_ENGINE_WS_URL` (default
 //! `ws://127.0.0.1:49134`); without one the tests skip, and with
@@ -18,7 +18,7 @@ use ide::code::state::ResolverCell;
 use ide::config::ShellConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, Observed, ObserverHandle,
+    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, Observed, ObserverHandle,
     RegisterFunction, Source,
 };
 use serde_json::{json, Value};
@@ -114,6 +114,22 @@ fn recorder(iii: &IIIClient, id: &str) -> Arc<Received> {
     received
 }
 
+/// A recorder of what an observer of `capture: [output]` acts on: the
+/// output its `Observed` envelope carries.
+fn output_recorder(iii: &IIIClient, id: &str) -> Arc<Received> {
+    let received = Arc::new(Received::default());
+    let sink = received.clone();
+    iii.register_function(
+        id,
+        RegisterFunction::new(move |payload: Value| {
+            let output = payload.get("output").cloned().unwrap_or(Value::Null);
+            sink.0.lock().unwrap().push(output);
+            Ok::<_, Error>(json!({ "ok": true }))
+        }),
+    );
+    received
+}
+
 /// Observes `source` into `target` and waits until the observer is active.
 async fn observe(iii: &IIIClient, source: Source, target: &str) -> ObserverHandle {
     let handle = iii.observe(source, target);
@@ -173,7 +189,7 @@ fn job(job_id: &str) -> Source {
 fn failed_only(source: Source) -> Source {
     source
         .filters(json!({ "input.status": { "$eq": "failed" } }))
-        .deliver(Deliver::Output)
+        .capture([Capture::Output])
 }
 
 fn job_ids(events: &[Value]) -> Vec<String> {
@@ -202,7 +218,7 @@ fn envelope_keys(payload: &Value) -> Vec<String> {
 /// A job's completion reaches each observer of it once, whether the
 /// observer was added before the job ended (the live call) or after (the
 /// replay: a call with metadata `{ for_observer }`), in the shape its
-/// `deliver` asks for and only when its filters match. A replay is
+/// `capture` asks for and only when its filters match. A replay is
 /// delivered like the live call and reaches its observer alone: neither an
 /// observer of the job that took the live call nor an observer without a
 /// `job_id` receives it. A disposed observer receives nothing.
@@ -221,22 +237,22 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     let (late, late_failed) = (id("late"), id("late-failed"));
     let dropped = id("dropped");
 
-    let every = recorder(&consumer, "e2e::jobs::every");
+    let every = output_recorder(&consumer, "e2e::jobs::every");
     let every_envelope = recorder(&consumer, "e2e::jobs::every-envelope");
     let live_envelope = recorder(&consumer, "e2e::jobs::live-envelope");
-    let live_output = recorder(&consumer, "e2e::jobs::live-output");
-    let live_failures = recorder(&consumer, "e2e::jobs::live-failures");
+    let live_output = output_recorder(&consumer, "e2e::jobs::live-output");
+    let live_failures = output_recorder(&consumer, "e2e::jobs::live-failures");
     let late_envelope = recorder(&consumer, "e2e::jobs::late-envelope");
-    let late_output = recorder(&consumer, "e2e::jobs::late-output");
-    let late_failures = recorder(&consumer, "e2e::jobs::late-failures");
+    let late_output = output_recorder(&consumer, "e2e::jobs::late-output");
+    let late_failures = output_recorder(&consumer, "e2e::jobs::late-failures");
     let early_envelope = recorder(&consumer, "e2e::jobs::early-envelope");
-    let early_output = recorder(&consumer, "e2e::jobs::early-output");
-    let dropped_output = recorder(&consumer, "e2e::jobs::dropped");
+    let early_output = output_recorder(&consumer, "e2e::jobs::early-output");
+    let dropped_output = output_recorder(&consumer, "e2e::jobs::dropped");
 
     // Observed before the jobs start: the live call.
     let every_handle = observe(
         &consumer,
-        Source::function("shell::on-job-finished").deliver(Deliver::Output),
+        Source::function("shell::on-job-finished").capture([Capture::Output]),
         "e2e::jobs::every",
     )
     .await;
@@ -249,7 +265,7 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     observe(&consumer, job(&live), "e2e::jobs::live-envelope").await;
     observe(
         &consumer,
-        job(&live).deliver(Deliver::Output),
+        job(&live).capture([Capture::Output]),
         "e2e::jobs::live-output",
     )
     .await;
@@ -267,7 +283,7 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     .await;
     let dropped_handle = observe(
         &consumer,
-        job(&dropped).deliver(Deliver::Output),
+        job(&dropped).capture([Capture::Output]),
         "e2e::jobs::dropped",
     )
     .await;
@@ -276,7 +292,7 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     observe(&consumer, job(&late), "e2e::jobs::early-envelope").await;
     observe(
         &consumer,
-        job(&late).deliver(Deliver::Output),
+        job(&late).capture([Capture::Output]),
         "e2e::jobs::early-output",
     )
     .await;
@@ -295,7 +311,7 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     let late_envelope_handle = observe(&consumer, job(&late), "e2e::jobs::late-envelope").await;
     let late_output_handle = observe(
         &consumer,
-        job(&late).deliver(Deliver::Output),
+        job(&late).capture([Capture::Output]),
         "e2e::jobs::late-output",
     )
     .await;
@@ -409,7 +425,7 @@ async fn a_job_that_stays_stopped_answers_its_observer(owner: &IIIClient, consum
     let stopped_events = recorder(consumer, "e2e::jobs::stopped");
     let _stopped = observe(
         consumer,
-        job(&stopped).deliver(Deliver::Output),
+        job(&stopped).capture([Capture::Output]),
         "e2e::jobs::stopped",
     )
     .await;
@@ -450,7 +466,7 @@ fn paths(events: &[Value]) -> Vec<String> {
 }
 
 /// A change reaches the observers of the directory it happened in, in the
-/// shape each one's `deliver` asks for and through its filters, and stops
+/// shape each one's `capture` asks for and through its filters, and stops
 /// reaching an observer once it is disposed.
 #[tokio::test]
 async fn on_changed_reaches_the_observers_of_its_directory_until_disposed() {
@@ -466,13 +482,13 @@ async fn on_changed_reaches_the_observers_of_its_directory_until_disposed() {
     let Some(consumer) = connect("ide-e2e-changed-consumer").await else {
         return;
     };
-    let a_output = recorder(&consumer, "e2e::changed::a-output");
-    let a_kept = recorder(&consumer, "e2e::changed::a-kept");
+    let a_output = output_recorder(&consumer, "e2e::changed::a-output");
+    let a_kept = output_recorder(&consumer, "e2e::changed::a-kept");
     let b_envelope = recorder(&consumer, "e2e::changed::b-envelope");
     let kept = ["keep.txt", "keep-after.txt"];
     let a_handle = observe(
         &consumer,
-        changed(&a).deliver(Deliver::Output),
+        changed(&a).capture([Capture::Output]),
         "e2e::changed::a-output",
     )
     .await;
@@ -480,7 +496,7 @@ async fn on_changed_reaches_the_observers_of_its_directory_until_disposed() {
         &consumer,
         changed(&a)
             .filters(json!({ "input.path": { "$in": kept } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "e2e::changed::a-kept",
     )
     .await;
@@ -587,7 +603,7 @@ fn mentions_index(event: &Value) -> bool {
 }
 
 /// A repository's state change reaches the observers of that repository,
-/// in the shape each one's `deliver` asks for, and stops reaching an
+/// in the shape each one's `capture` asks for, and stops reaching an
 /// observer once it is disposed.
 #[tokio::test]
 async fn on_git_changed_reaches_the_observers_of_its_repository_until_disposed() {
@@ -605,11 +621,11 @@ async fn on_git_changed_reaches_the_observers_of_its_repository_until_disposed()
     let Some(consumer) = connect("ide-e2e-git-consumer").await else {
         return;
     };
-    let one_output = recorder(&consumer, "e2e::git::one-output");
+    let one_output = output_recorder(&consumer, "e2e::git::one-output");
     let two_envelope = recorder(&consumer, "e2e::git::two-envelope");
     let one_handle = observe(
         &consumer,
-        git_changed(&one).deliver(Deliver::Output),
+        git_changed(&one).capture([Capture::Output]),
         "e2e::git::one-output",
     )
     .await;
@@ -667,7 +683,7 @@ async fn on_git_changed_reaches_the_observers_of_its_repository_until_disposed()
 
 /// A stored session record reaches observers whose `input.session_id`
 /// filter it matches, once per coalescing window, in the shape each one's
-/// `deliver` asks for, and nothing reaches an observer once it is disposed.
+/// `capture` asks for, and nothing reaches an observer once it is disposed.
 #[tokio::test]
 async fn turns_on_changed_reaches_the_observers_of_its_session_until_disposed() {
     let Some(owner) = connect("ide-e2e-turns-owner").await else {
@@ -677,13 +693,13 @@ async fn turns_on_changed_reaches_the_observers_of_its_session_until_disposed() 
     let Some(consumer) = connect("ide-e2e-turns-consumer").await else {
         return;
     };
-    let mine = recorder(&consumer, "e2e::turns::mine");
+    let mine = output_recorder(&consumer, "e2e::turns::mine");
     let every = recorder(&consumer, "e2e::turns::every");
     let mine_handle = observe(
         &consumer,
         Source::function("shell::turns::on-changed")
             .filters(json!({ "input.session_id": { "$eq": "s1" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "e2e::turns::mine",
     )
     .await;

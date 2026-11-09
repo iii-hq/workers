@@ -74,11 +74,15 @@ describe('agent feeds', () => {
     expect(fake.deliveries).toHaveLength(1);
     const [delivery] = fake.deliveries;
     expect(delivery.target).toBe('acp::__on_event::c1');
-    expect(Object.keys(delivery.payload).sort()).toEqual(
+    // iii hands the target the Observed envelope; the frame is its output.
+    expect(delivery.payload).toMatchObject({ function_id: functionId, status: 'success' });
+    expect(delivery.payload).not.toHaveProperty('input');
+    const frame = delivery.payload.output as Record<string, unknown>;
+    expect(Object.keys(frame).sort()).toEqual(
       ['epoch', 'event', 'event_id', 'seq', 'session_id', 'source'].sort(),
     );
-    expect(delivery.payload).toMatchObject({ session_id: 's1', seq: 0, source: SOURCE, event });
-    expect(typeof delivery.payload.epoch).toBe('string');
+    expect(frame).toMatchObject({ session_id: 's1', seq: 0, source: SOURCE, event });
+    expect(typeof frame.epoch).toBe('string');
   });
 
   it.each(FEEDS)('%s: an observer of session A never receives session B', async (functionId) => {
@@ -89,7 +93,9 @@ describe('agent feeds', () => {
     await feedOf(functionId).emit('B', { n: 2 });
     await feedOf(functionId).emit('A', { n: 3 });
     const events = (target: string) =>
-      fake.deliveries.filter((d) => d.target === target).map((d) => d.payload.event);
+      fake.deliveries
+        .filter((d) => d.target === target)
+        .map((d) => (d.payload.output as Record<string, unknown>).event);
     expect(events('c::a')).toEqual([{ n: 3 }]);
     expect(events('c::b')).toEqual([{ n: 1 }, { n: 2 }]);
   });

@@ -181,14 +181,14 @@ registers the function.
 |---|---|---|---|
 | `http::on-request` | args `{ method: "POST", path: "/telegram-bot/webhook" }` (webhook adapter only) | `telegram-bot::webhook` | the HTTP request; returns `{ ok }` |
 | `http::on-request` | args `{ method: "POST", path: "/telegram-bot/set-webhook" }` | `telegram-bot::set-webhook` | the HTTP request |
-| `session::on-message-added` | filters `{ "input.message.role": { "$in": ["assistant", "function_result"] } }` | `telegram-bot::on-message-added` | `MessageAddedEvent` (`deliver: output`) |
-| `session::on-message-updated` | filters `{ "input.message.role": { "$in": ["assistant"] } }` | `telegram-bot::on-message-updated` | `MessageUpdatedEvent` (`deliver: output`) |
-| `session::on-status-changed` | none | `telegram-bot::on-status-changed` | `StatusChangedEvent` (`deliver: output`) |
-| `harness::on-turn-completed` | none | `telegram-bot::on-turn-completed` | `TurnCompletedEvent` (`deliver: output`) |
-| `approval::on-pending-created` | none | `telegram-bot::on-pending-created` | `PendingApprovalRecord` (`deliver: output`) |
-| `approval::on-pending-resolved` | none | `telegram-bot::on-pending-resolved` | `PendingResolvedEvent` (`deliver: output`) |
+| `session::on-message-added` | filters `{ "input.message.role": { "$in": ["assistant", "function_result"] } }` | `telegram-bot::on-message-added` | `MessageAddedEvent` (envelope `output`, `capture: [output]`) |
+| `session::on-message-updated` | filters `{ "input.message.role": { "$in": ["assistant"] } }` | `telegram-bot::on-message-updated` | `MessageUpdatedEvent` (envelope `output`, `capture: [output]`) |
+| `session::on-status-changed` | none | `telegram-bot::on-status-changed` | `StatusChangedEvent` (envelope `output`, `capture: [output]`) |
+| `harness::on-turn-completed` | none | `telegram-bot::on-turn-completed` | `TurnCompletedEvent` (envelope `output`, `capture: [output]`) |
+| `approval::on-pending-created` | none | `telegram-bot::on-pending-created` | `PendingApprovalRecord` (envelope `output`, `capture: [output]`) |
+| `approval::on-pending-resolved` | none | `telegram-bot::on-pending-resolved` | `PendingResolvedEvent` (envelope `output`, `capture: [output]`) |
 | `engine::on-workers-changed` | filters `{ "input.event": { "$in": ["worker_connected", "worker_metadata_updated", "worker_disconnected"] } }` | `telegram-bot::__on-approval-gate-worker` | the event; re-reads `engine::workers::list` to track approval-gate presence |
-| `configuration::on-updated` | filters `{ "input.id": { "$eq": "<config id>" }, "input.event_type": { "$eq": "configuration:updated" } }` | `telegram-bot::on-config-change` | the configuration event (`deliver: output`) |
+| `configuration::on-updated` | filters `{ "input.id": { "$eq": "<config id>" }, "input.event_type": { "$eq": "configuration:updated" } }` | `telegram-bot::on-config-change` | the configuration event (envelope `output`, `capture: [output]`) |
 
 The approval observers exist from boot, so an approval-gate that connects
 later is observed with no extra step. In code, a session observer is:
@@ -197,7 +197,7 @@ later is observed with no extra step. In code, a session observer is:
 iii.observe(
     Source::function("session::on-message-updated")
         .filters(json!({ "input.message.role": { "$in": ["assistant"] } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "telegram-bot::on-message-updated",
 );
 ```

@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -344,7 +344,7 @@ pub fn observe_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Kept {
         let handle = iii.observe(
             Source::function(ON_TICK_FN)
                 .args(json!({ "expression": expression }))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             SWEEP_PENDING_ID,
         );
         log_failure(&handle, ON_TICK_FN);
@@ -356,7 +356,7 @@ pub fn observe_session_deleted(iii: &IIIClient) -> Kept {
     let iii = iii.clone();
     crate::observers::keep(move || {
         let handle = iii.observe(
-            Source::function(ON_SESSION_DELETED_FN).deliver(Deliver::Output),
+            Source::function(ON_SESSION_DELETED_FN).capture([Capture::Output]),
             ON_SESSION_DELETED_ID,
         );
         log_failure(&handle, ON_SESSION_DELETED_FN);
@@ -439,7 +439,7 @@ pub fn observe_config_changes(
         iii.observe(
             Source::function(ON_CONFIGURATION_UPDATED_FN)
                 .filters(config_change_filters(config_id()))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             CONFIG_FN_ID,
         )
     })

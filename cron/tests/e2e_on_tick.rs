@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::{
-    CallRequest, Deliver, Error, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+    CallRequest, Capture, Error, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -122,14 +122,14 @@ async fn each_observer_receives_its_expressions_ticks_from_one_job_per_expressio
         .await
         .expect("observer on an every-second schedule");
     let every_output = consumer.observe(
-        on_tick(EVERY_SECOND).deliver(Deliver::Output),
+        on_tick(EVERY_SECOND).capture([Capture::Output]),
         "e2e::tick-output",
     );
     settled(&every_output)
         .await
         .expect("a second observer of the same expression");
     let even_handle = consumer.observe(
-        on_tick(EVEN_SECONDS).deliver(Deliver::Output),
+        on_tick(EVEN_SECONDS).capture([Capture::Output]),
         "e2e::tick-even",
     );
     settled(&even_handle)
@@ -147,11 +147,13 @@ async fn each_observer_receives_its_expressions_ticks_from_one_job_per_expressio
         assert_eq!(payload["input"]["expression"], EVERY_SECOND);
         assert_eq!(payload["output"], payload["input"], "{payload}");
     }
-    // `deliver: output` hands the target the tick itself.
-    let output_times = scheduled_times(&output, |p| p);
+    // `capture: [output]` ships the tick as the envelope's output alone.
+    let output_times = scheduled_times(&output, |p| &p["output"]);
     for payload in output.lock().iter() {
-        assert_eq!(payload["expression"], EVERY_SECOND);
-        let mut fields: Vec<&String> = payload.as_object().unwrap().keys().collect();
+        assert!(payload.get("input").is_none(), "{payload}");
+        let tick = &payload["output"];
+        assert_eq!(tick["expression"], EVERY_SECOND);
+        let mut fields: Vec<&String> = tick.as_object().unwrap().keys().collect();
         fields.sort();
         assert_eq!(fields, ["actual_time", "expression", "scheduled_time"]);
     }
@@ -161,10 +163,10 @@ async fn each_observer_receives_its_expressions_ticks_from_one_job_per_expressio
         enveloped_times.intersection(&output_times).count() >= 2,
         "observers of one expression are served by the same fires"
     );
-    let even_times = scheduled_times(&even, |p| p);
+    let even_times = scheduled_times(&even, |p| &p["output"]);
     assert!(!even_times.is_empty());
     for payload in even.lock().iter() {
-        assert_eq!(payload["expression"], EVEN_SECONDS);
+        assert_eq!(payload["output"]["expression"], EVEN_SECONDS);
     }
     for at in &even_times {
         let at = chrono::DateTime::parse_from_rfc3339(at).unwrap();

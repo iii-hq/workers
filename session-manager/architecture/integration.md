@@ -359,7 +359,7 @@ iii.observe(
       "input.session_id": { $eq: "s_123" },
       "input.message.role": { $in: ["assistant"] },
     },
-    deliver: "output",
+    capture: ["output"], // the target reads the event at payload.output
   },
   "ui::on-message-updated",
 );

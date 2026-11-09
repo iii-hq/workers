@@ -2,8 +2,8 @@ Verified WhatsApp Cloud API messages, delivery statuses, and account/group/calli
 
 ## Observe events
 
-1. Register a target function that accepts the event object below. Replace `automation::on-whatsapp-message` with that function's ID and the example `chat_id` with the contacts you want to monitor.
-2. Observe this function with the following source. `namespace` selects this WhatsApp provider; the target resolves in the observing worker's namespace. `deliver: "output"` hands the target the event itself.
+1. Register a target function that reads the event object below from the `output` of the Observed envelope it receives. Replace `automation::on-whatsapp-message` with that function's ID and the example `chat_id` with the contacts you want to monitor.
+2. Observe this function with the following source. `namespace` selects this WhatsApp provider; the target resolves in the observing worker's namespace. `capture: ["output"]` hands the target the Observed envelope; the event below is its `output`.
 
 ```json
 {
@@ -14,11 +14,11 @@ Verified WhatsApp Cloud API messages, delivery statuses, and account/group/calli
     "input.chat_id": {"$in": ["+15550000009"]},
     "input.message_type": {"$eq": "text"}
   },
-  "deliver": "output"
+  "capture": ["output"]
 }
 ```
 
-In Node: `iii.observe(source, 'automation::on-whatsapp-message', { metadata: { workflow: 'customer-support' } })`. In Go: `client.Observe(iii.Source{FunctionID: ..., Namespace: ..., Filters: ..., Deliver: iii.DeliverOutput}, "automation::on-whatsapp-message", iii.ObserverOptions{Metadata: ...})`. For a newly connected Go SDK client, first wait until `engine::workers::list` shows that client in the intended namespace; `Connect` can return before its namespace is announced.
+In Node: `iii.observe(source, 'automation::on-whatsapp-message', { metadata: { workflow: 'customer-support' } })`. In Go: `client.Observe(iii.Source{FunctionID: ..., Namespace: ..., Filters: ..., Capture: []iii.Capture{iii.CaptureOutput}}, "automation::on-whatsapp-message", iii.ObserverOptions{Metadata: ...})`. For a newly connected Go SDK client, first wait until `engine::workers::list` shows that client in the intended namespace; `Connect` can return before its namespace is announced.
 
 3. Wait for the observer handle to be ready (`ready()` in Node, `Ready(ctx)` in Go). An active observer receives every later event its filters match; observing does not replay earlier events. The observer lives as long as the worker that created it: dispose its handle to stop receiving events. Observer metadata reaches the target as the call's metadata, separate from the event payload. Target return values do not send replies to WhatsApp.
 

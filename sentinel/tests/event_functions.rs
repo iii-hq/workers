@@ -3,7 +3,7 @@
 //! the worker's [`Emitter`] calls them from a provider client, and the test
 //! checks what the consumer receives:
 //!
-//! - every observed call is delivered, with the event as its output;
+//! - every observed call is delivered, the event as the envelope's output;
 //! - occurrence events are merged per group (the newest wins) and delivered
 //!   at the end of the one-second window;
 //! - a creation or a state change is delivered at once, and takes the place
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
     RegisterFunction, Source,
 };
 use sentinel::events::{self, group_event, ON_GROUP_CHANGED_FN, ON_INVESTIGATION_CHANGED_FN};
@@ -96,7 +96,8 @@ fn recorder(consumer: &IIIClient, function_id: &str) -> Received {
     consumer.register_function(
         function_id,
         RegisterFunction::new(move |payload: Value| -> Result<Value, iii_sdk::Error> {
-            let _ = tx.send((Instant::now(), payload));
+            // `capture: [output]`: the event is the envelope's output.
+            let _ = tx.send((Instant::now(), payload["output"].clone()));
             Ok(Value::Null)
         }),
     );
@@ -182,13 +183,13 @@ async fn observed_event_functions_deliver_and_coalesce_occurrences() {
     let group_observer = consumer.observe(
         Source::function(ON_GROUP_CHANGED_FN)
             .filters(json!({ "input.group_id": { "$in": [&a, &b, &c, &d] } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         GROUP_RECORDER,
     );
     let investigation_observer = consumer.observe(
         Source::function(ON_INVESTIGATION_CHANGED_FN)
             .filters(json!({ "input.group_id": { "$eq": &a } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         INVESTIGATION_RECORDER,
     );
     await_active(&group_observer, ON_GROUP_CHANGED_FN).await;

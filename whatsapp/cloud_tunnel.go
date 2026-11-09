@@ -482,7 +482,7 @@ func registerDevelopmentTunnel(ctx context.Context, client *iii.Client, manager 
 	if err := observeFunction(client, iii.Source{
 		FunctionID: "quick-tunnel::on-changed",
 		Filters:    iii.Filters{"input.tunnel_id": iii.Op{"$eq": "webhooks"}},
-		Deliver:    iii.DeliverOutput,
+		Capture:    []iii.Capture{iii.CaptureOutput},
 	}, "whatsapp::cloud::tunnel::changed"); err != nil {
 		return err
 	}

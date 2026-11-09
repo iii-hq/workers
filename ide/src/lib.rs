@@ -15,6 +15,7 @@ pub mod functions;
 pub mod git_events;
 pub mod job_events;
 pub mod jobs;
+pub mod observed;
 pub mod path;
 pub mod pty;
 pub mod scode;

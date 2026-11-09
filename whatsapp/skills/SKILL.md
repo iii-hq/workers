@@ -7,7 +7,7 @@ description: Use the WhatsApp worker to manage linked-device sessions, send auth
 
 1. Discover the relevant registered `whatsapp::*` function and inspect its schema. `--catalog` lists implemented Go functions; [README](https://github.com/iii-hq/workers/blob/main/whatsapp/README.md#limits-and-differences-from-openwa) explains unavailable operations and nullable metadata. Use the current catalog when choosing an operation.
 2. Choose the integration requested by the user. Linked devices use whatsmeow and the selected `session_id`: `sessions::create` creates offline metadata; `sessions::start` connects explicitly after creation or restart. Pair through `sessions::qr` or `sessions::pair_code`, sharing pairing material only with the account owner. Go sessions need fresh storage and pairing; see the README before replacing a Rust instance.
-3. Before operations that need follow-up, observe `whatsapp::on-events` with filters `input.session_id` (`$eq`) and `input.kind` (`$in` the exact kinds), `deliver: output`; it takes no args. Observer metadata reaches the target separately from the event. Read `sessions::get` once after the observer is ready to close races; use engine wake/event mechanisms for ongoing work.
+3. Before operations that need follow-up, observe `whatsapp::on-events` with filters `input.session_id` (`$eq`) and `input.kind` (`$in` the exact kinds), `capture: [output]` (the target reads the event from the envelope's `output`); it takes no args. Observer metadata reaches the target separately from the event. Read `sessions::get` once after the observer is ready to close races; use engine wake/event mechanisms for ongoing work.
 4. Call outbound functions only when the session is connected and the user has authorized the recipient and action. Use string JIDs returned by the worker; preserve `@lid` identities, including device suffixes. Never infer a telephone number from a LID.
 5. Media functions accept bounded base64 bytes. Prepare the requested encoding before sending; the worker performs no transcoding or arbitrary URL fetch. Status publishing is unavailable in this Go version.
 6. Retain returned message IDs and event sequences. A send response is not a delivery/read receipt. A timeout can leave an unknown remote outcome: inspect events/state before retrying a mutation.
@@ -26,7 +26,8 @@ provisioning and historical backfill are unavailable. For credentials or webhook
 setup, read [Official Meta Cloud API](https://github.com/iii-hq/workers/blob/main/whatsapp/README.md#official-meta-cloud-api).
 
 For ongoing Cloud webhook work, observe `whatsapp::cloud::on-events` in the
-worker's namespace with `deliver: output`; it takes no args.
+worker's namespace with `capture: [output]` (the target reads the event from
+the envelope's `output`); it takes no args.
 Read [Cloud events](https://github.com/iii-hq/workers/blob/main/whatsapp/README.md#cloud-events)
 before writing the filters or consuming the payload. Without a filter on
 `input.kind`, an observer receives every kind: filter `input.kind` on

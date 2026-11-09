@@ -341,7 +341,7 @@ match. `completed` describes the monitor, not a validated improvement.
 
 ```ts
 iii.observe(
-  { function_id: 'eval::on-completed', filters: { 'input.evaluation_id': { $eq: id } }, deliver: 'output' },
+  { function_id: 'eval::on-completed', filters: { 'input.evaluation_id': { $eq: id } }, capture: ['output'] },
   'my-worker::on-analysis-done',
 )
 ```
