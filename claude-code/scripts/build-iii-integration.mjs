@@ -55,7 +55,12 @@ async function sha256(path) {
 
 async function inputsHash(inputs) {
   const hash = createHash('sha256');
-  for (const path of inputs) hash.update(path).update('\0').update(await sha256(path)).update('\0');
+  for (const path of inputs)
+    hash
+      .update(path)
+      .update('\0')
+      .update(await sha256(path))
+      .update('\0');
   return hash.digest('hex');
 }
 
@@ -70,12 +75,15 @@ async function check() {
   for (const path of stamp.inputs ?? []) {
     await readFile(join(root, path)).catch(() => missing.push(path));
   }
-  if (missing.length) throw new Error(`build inputs were removed (${missing.join(', ')}); ${REBUILD}`);
+  if (missing.length)
+    throw new Error(`build inputs were removed (${missing.join(', ')}); ${REBUILD}`);
   if ((await inputsHash(stamp.inputs)) !== stamp.inputs_sha256) {
     throw new Error(`${OUTPUT} is out of date with its sources; ${REBUILD}`);
   }
   if ((await sha256(OUTPUT).catch(() => '')) !== stamp.output_sha256) {
-    throw new Error(`${OUTPUT} does not match the build recorded in ${STAMP} (edited by hand?); ${REBUILD}`);
+    throw new Error(
+      `${OUTPUT} does not match the build recorded in ${STAMP} (edited by hand?); ${REBUILD}`,
+    );
   }
   console.log(`${OUTPUT} is up to date (${stamp.inputs.length} inputs)`);
 }

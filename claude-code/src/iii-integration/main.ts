@@ -69,9 +69,7 @@ try {
     process.exitCode = 2;
   }
 } catch (err) {
-  console.error(
-    `iii-integration plugin: ${err instanceof Error ? err.message : String(err)}`,
-  );
+  console.error(`iii-integration plugin: ${err instanceof Error ? err.message : String(err)}`);
   process.exitCode = 1;
 } finally {
   await dir.close();
