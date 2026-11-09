@@ -13,7 +13,7 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
-import { directoryPluginDir } from './directory-plugin/locate.js';
+import { installLocal } from './iii-integration/install.js';
 import { localPluginDir } from './local-plugin.js';
 import {
   lastAssistant,
@@ -317,11 +317,12 @@ async function runReserved(
   // the CLI's own `--plugin-dir`, so a headless turn gets the identical hooks
   // and the identical iii skill.
   const plugin = iiiContext ? await localPluginDir(iii) : { dir: '', detail: '' };
-  // The iii-directory plugin: agent profiles and skills over MCP, read live
-  // from this engine (its server finds it through the inherited III_URL).
-  const directory = iiiContext ? directoryPluginDir() : { dir: '', detail: '' };
-  if (directory.detail) console.warn(`claude-code: ${directory.detail}`);
-  const plugins = [plugin.dir, directory.dir]
+  // The claude-cli-iii-integration plugin, installed from this worker's own
+  // bundle: agent profiles and skills over MCP, read live from this engine (its
+  // server finds it through the inherited III_URL).
+  const integration = iiiContext ? await installLocal() : { dir: '', detail: '' };
+  if (integration.detail) console.warn(`claude-code: ${integration.detail}`);
+  const plugins = [plugin.dir, integration.dir]
     .filter(Boolean)
     .map((path) => ({ type: 'local' as const, path }));
   const options: Options = {

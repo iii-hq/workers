@@ -7,6 +7,7 @@
 
 import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
+import { installOnHost } from '../iii-integration/install.js';
 import { PLUGIN_DIR_NAME, pluginDetail, pluginFiles } from '../plugin.js';
 import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
 import { fetchIiiContext } from '../iii-context.js';
@@ -53,6 +54,7 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   let bridge = '';
   let plugin = '';
+  let integration = '';
   if (config.setup_workspace) {
     // Equipping the workspace is not what makes a terminal usable: a read-only
     // `CLAUDE.md` or an unreadable `.claude/` still leaves a working CLI in a
@@ -66,6 +68,14 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
       if (written.detail) {
         console.warn(`claude-code: ${written.detail}`);
         detail = detail ? `${detail}; ${written.detail}` : written.detail;
+      }
+      // Agent profiles and skills from this engine, over MCP. Shipped inside
+      // this worker, so a session gets it with no install step of its own.
+      const installed = await installOnHost(iii, workspace);
+      integration = installed.dir;
+      if (installed.detail) {
+        console.warn(`claude-code: ${installed.detail}`);
+        detail = detail ? `${detail}; ${installed.detail}` : installed.detail;
       }
       if (!bridge) {
         const mute =
@@ -82,7 +92,8 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   // The plugin is how a session gets its hooks and the iii skill; the flag is
   // the same one the Agent SDK emits for a headless turn.
-  const args = plugin ? [...config.args, '--plugin-dir', plugin] : config.args;
+  const args = [...config.args];
+  for (const dir of [plugin, integration]) if (dir) args.push('--plugin-dir', dir);
   return { ...base, args, executable, detail, bridge, plugin };
 }
 

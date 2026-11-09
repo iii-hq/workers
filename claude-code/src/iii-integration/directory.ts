@@ -48,7 +48,7 @@ export class Directory {
     private readonly resolve: () => Promise<Resolved> = () => resolveEngine(),
     private readonly connect: (url: string) => IIIClient = (url) =>
       registerWorker(url, {
-        workerName: 'claude-code-directory-plugin',
+        workerName: 'claude-cli-iii-integration',
         invocationTimeoutMs: CALL_TIMEOUT_MS,
         // Bounded: a standalone CLI must not retry a dead engine forever.
         reconnectionConfig: { maxRetries: 3, maxDelayMs: 5_000 },

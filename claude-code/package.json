@@ -10,16 +10,16 @@
   },
   "packageManager": "pnpm@10.18.2",
   "scripts": {
-    "build": "npm run build:ui && npm run build:directory-plugin && tsc -b",
-    "build:bundle": "npm run build:ui && npm run build:directory-plugin && node scripts/build-bundle.mjs",
-    "typecheck": "npm run build:ui && tsc -b --noEmit",
+    "build": "npm run build:ui && npm run build:iii-integration && tsc -b",
+    "build:bundle": "npm run build:ui && npm run build:iii-integration && node scripts/build-bundle.mjs",
+    "typecheck": "npm run build:ui && npm run build:iii-integration && tsc -b --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "test": "vitest run",
+    "test": "npm run build:iii-integration && vitest run",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "build:ui": "node ui/build.mjs",
-    "build:directory-plugin": "node scripts/build-directory-plugin.mjs"
+    "build:iii-integration": "node scripts/build-iii-integration.mjs"
   },
   "bin": {
     "claude-code": "./dist/index.js"

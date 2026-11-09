@@ -442,6 +442,6 @@ those keys rather than in one covering span; a headless turn gets both.
 | interactive CLI session | `shell::pty` session on the injected **claude** console page |
 | terminal hook event | `claude::terminal::activity` -> the same `claude::on-agent-event` frames |
 
-## iii-directory plugin
+## claude-cli-iii-integration plugin
 
-`directory-plugin/` is a Claude Code plugin that serves the engine's agent profiles and skills (from the `iii-directory` worker) over MCP. Headless `claude::run` turns load it automatically when `iii_context` is on; it also works in a standalone `claude` on any machine that can reach an engine. Build it with `npm run build:directory-plugin` (part of `build` and `build:bundle`). See [directory-plugin/README.md](directory-plugin/README.md) for engine discovery, configuration and `sync`.
+`claude-cli-iii-integration/` is a Claude Code plugin that serves the engine's agent profiles and skills (from the `iii-directory` worker) over MCP. The worker embeds it in its bundle and installs it automatically: headless `claude::run` turns load it when `iii_context` is on, and terminal sessions get it in their workspace when `setup_workspace` is on. It also works in a standalone `claude` on any machine that can reach an engine. `npm run build:iii-integration` builds it (part of `build`, `build:bundle`, `typecheck` and `test`). See [claude-cli-iii-integration/README.md](claude-cli-iii-integration/README.md) for engine discovery, configuration and `sync`.

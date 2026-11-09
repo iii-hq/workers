@@ -137,11 +137,22 @@ describe('preparing the terminal host', () => {
       'name: iii-runtime',
     );
 
-    // And the session is told to load it.
+    // The claude-cli-iii-integration plugin ships inside the worker and is
+    // installed beside it, server and all.
+    const integration = '/hostroot/claude-code/.claude-cli-iii-integration';
+    expect(JSON.parse(files[`${integration}/.claude-plugin/plugin.json`]).name).toBe(
+      'claude-cli-iii-integration',
+    );
+    expect(files[`${integration}/server/index.mjs`]).toBeTruthy();
+    expect(files[`${integration}/.build-id`]).toBeTruthy();
+
+    // And the session is told to load both.
     expect(prepared.args).toEqual([
       ...DEFAULTS.args,
       '--plugin-dir',
       '/hostroot/claude-code/.iii-plugin',
+      '--plugin-dir',
+      integration,
     ]);
     expect(prepared.plugin).toBe('/hostroot/claude-code/.iii-plugin');
 
