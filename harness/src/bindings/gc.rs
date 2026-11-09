@@ -178,12 +178,19 @@ pub(crate) async fn observe_again(deps: &Deps, binding_id: &str) {
 
 /// [`observe_again`] in a task of its own when `binding_id`'s observer is
 /// dead, so a binding sweep never waits on its RPCs to retire or arm the rest.
+/// While that task runs, a further request makes it pass once more instead
+/// ([`super::ObservingAgain`]).
 pub(crate) fn spawn_observe_again(deps: &Deps, binding_id: &str) {
-    if !is_dead(deps, binding_id) {
+    if !is_dead(deps, binding_id) || !deps.observing_again.start(binding_id) {
         return;
     }
     let (deps, binding_id) = (deps.clone(), binding_id.to_string());
-    tokio::spawn(async move { observe_again(&deps, &binding_id).await });
+    tokio::spawn(async move {
+        observe_again(&deps, &binding_id).await;
+        while deps.observing_again.pass_again(&binding_id) {
+            observe_again(&deps, &binding_id).await;
+        }
+    });
 }
 
 fn is_dead(deps: &Deps, binding_id: &str) -> bool {
