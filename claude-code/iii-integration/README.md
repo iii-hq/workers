@@ -67,3 +67,23 @@ node iii-integration/server/index.mjs sync --target ./.claude --include-hidden
 This is a snapshot: run it again to refresh. Profile models are not copied
 (iii profiles name models across providers); a profile's preloaded skills
 become an instruction to read them with `iii_get_skill`.
+
+## Building and the committed server
+
+`server/index.mjs` is a build output, and it is **committed**: a plugin
+installed from git (a Claude Code marketplace) is a copy of this folder with
+no build step of its own. The worker does not depend on the committed copy:
+CI's deploy build (`build:bundle`) rebuilds the server from source and embeds
+it in the worker bundle.
+
+After changing anything under `src/iii-integration/`, the lockfile, or the
+build script, rebuild and commit both files:
+
+```sh
+pnpm run build:iii-integration   # writes server/index.mjs and server/BUILD.json
+```
+
+`server/BUILD.json` records a hash of every input the bundle was built from
+and of the output. CI runs `npm run check:committed-build`, which fails when
+an input changed without a rebuild, or when `server/index.mjs` was edited by
+hand.

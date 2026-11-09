@@ -1649,6 +1649,19 @@ jobs:
           node-version: 22
           package-manager-cache: false
 
+      # Opt-in: a worker that commits a build output (e.g. claude-code's
+      # iii-integration plugin server, installed from git as a Claude Code
+      # plugin) defines `check:committed-build`, which fails when that output
+      # is stale. Runs before install and tests, which may rebuild it.
+      - name: Committed build is up to date
+        working-directory: ${{ matrix.worker }}
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.['check:committed-build'] ? 0 : 1)"; then
+            npm run check:committed-build
+          else
+            echo "no check:committed-build script; nothing to check"
+          fi
+
       - name: Install dependencies
         working-directory: ${{ matrix.worker }}
         run: |
