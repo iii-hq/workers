@@ -97,6 +97,28 @@
   color: var(--color-ink);
 }
 
+/* The chevron follows the row's ink and turns down once expanded. */
+.conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon {
+  color: inherit;
+}
+
+.conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon > svg {
+  transition: transform 150ms ease;
+}
+
+.conversation-tree
+  .conversation-inactive-toggle[aria-expanded="true"]
+  .iii-ui-tree-item__icon
+  > svg {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon > svg {
+    transition: none;
+  }
+}
+
 /* ── the trailing edge ────────────────────────────────────────────── */
 
 /* Kind tag, pin, then one cell at the far right that the time and the ⋯

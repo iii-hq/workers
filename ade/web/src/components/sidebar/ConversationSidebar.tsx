@@ -1,6 +1,7 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
+  ChevronRight,
   CircleQuestionMark,
   Download,
   FolderPlus,
@@ -777,7 +778,8 @@ export function ConversationSidebar({
 /**
  * The fold under a parent's live sub-agents: how many are inactive (done
  * for now; an observation or the main agent can start them again), and the
- * way to see them. Sits at the sub-agents' indent, quiet until pointed at.
+ * way to see them. Sits at the sub-agents' indent with a disclosure chevron,
+ * quiet until pointed at.
  */
 function InactiveToggle({
   depth,
@@ -798,6 +800,11 @@ function InactiveToggle({
       aria-expanded={expanded}
       onClick={onToggle}
     >
+      {/* A disclosure chevron in the glyph column, like the parent's caret:
+          right while folded, down once the inactive rows show under it. */}
+      <span className={uiClasses.treeItemIcon}>
+        <ChevronRight aria-hidden />
+      </span>
       <span className={uiClasses.treeItemLabel}>
         {expanded ? 'Hide inactive' : `Show ${inactive} inactive`}
       </span>
