@@ -124,7 +124,7 @@ export function createHandler(dir: Directory) {
         return {
           protocolVersion: SUPPORTED.has(asked) ? asked : PROTOCOL,
           capabilities: { tools: {}, prompts: {}, resources: {} },
-          serverInfo: { name: 'claude-cli-iii-integration', version: '0.1.0' },
+          serverInfo: { name: 'iii-integration', version: '0.1.0' },
           instructions:
             'Agent profiles and skills from the running iii engine. Use iii_list_agents / iii_get_agent to adopt an iii agent profile, and iii_list_skills / iii_get_skill to read iii skills.',
         };

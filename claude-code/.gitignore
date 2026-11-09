@@ -1,3 +1,3 @@
 *.tsbuildinfo
-claude-cli-iii-integration/server/
+iii-integration/server/
 src/iii-integration/assets.generated.ts

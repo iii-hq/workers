@@ -317,7 +317,7 @@ async function runReserved(
   // the CLI's own `--plugin-dir`, so a headless turn gets the identical hooks
   // and the identical iii skill.
   const plugin = iiiContext ? await localPluginDir(iii) : { dir: '', detail: '' };
-  // The claude-cli-iii-integration plugin, installed from this worker's own
+  // The iii-integration plugin, installed from this worker's own
   // bundle: agent profiles and skills over MCP, read live from this engine (its
   // server finds it through the inherited III_URL).
   const integration = iiiContext ? await installLocal() : { dir: '', detail: '' };
