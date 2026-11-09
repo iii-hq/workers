@@ -38,7 +38,7 @@ import {
   buildConversationTree,
   type ConvNode,
   flattenConversationTree,
-  isFinishedToggle,
+  isInactiveToggle,
 } from '@/lib/conversation-tree'
 import {
   type ConversationListView,
@@ -88,8 +88,8 @@ interface ConversationSidebarProps {
 }
 
 const TREE_COLLAPSED_KEY = 'iii-chat-tree-collapsed'
-/** Parents whose finished sub-agents the reader chose to show. */
-const FINISHED_SHOWN_KEY = 'iii-chat-tree-finished-shown'
+/** Parents whose inactive sub-agents the reader chose to show. */
+const INACTIVE_SHOWN_KEY = 'iii-chat-tree-inactive-shown'
 const GROUPS_COLLAPSED_KEY = 'iii-chat-groups-collapsed'
 const LIST_VIEW_KEY = 'iii-chat-list-view'
 /** The drag payload of a pinned chat being rearranged. */
@@ -191,16 +191,16 @@ export function ConversationSidebar({
     persistStringSet(TREE_COLLAPSED_KEY, collapsedNodes)
   }, [collapsedNodes])
 
-  /* A parent lists only its live sub-agents; the finished ones fold behind
-     "Show N finished", remembered per parent once opened. */
-  const [finishedShown, setFinishedShown] = useState<Set<string>>(() =>
-    loadStringSet(FINISHED_SHOWN_KEY),
+  /* A parent lists only its live sub-agents; the inactive ones fold behind
+     "Show N inactive", remembered per parent once opened. */
+  const [inactiveShown, setInactiveShown] = useState<Set<string>>(() =>
+    loadStringSet(INACTIVE_SHOWN_KEY),
   )
   useEffect(() => {
-    persistStringSet(FINISHED_SHOWN_KEY, finishedShown)
-  }, [finishedShown])
-  const toggleFinished = useCallback((parentId: string) => {
-    setFinishedShown((prev) => {
+    persistStringSet(INACTIVE_SHOWN_KEY, inactiveShown)
+  }, [inactiveShown])
+  const toggleInactive = useCallback((parentId: string) => {
+    setInactiveShown((prev) => {
       const next = new Set(prev)
       if (next.has(parentId)) next.delete(parentId)
       else next.add(parentId)
@@ -362,7 +362,7 @@ export function ConversationSidebar({
             : flattenConversationTree(
                 group.roots,
                 collapsedNodes,
-                finishedShown,
+                inactiveShown,
                 activeId,
               ),
         }),
@@ -372,7 +372,7 @@ export function ConversationSidebar({
       view.grouping,
       collapsedGroups,
       collapsedNodes,
-      finishedShown,
+      inactiveShown,
       activeId,
       pinned,
     ],
@@ -383,7 +383,7 @@ export function ConversationSidebar({
   /* Once any row carries a sub-agent caret at its end, every row keeps that
      column so timestamps and actions line up down the list. */
   const caretColumn = sections.some((section) =>
-    section.rows.some((row) => !isFinishedToggle(row) && row.hasChildren),
+    section.rows.some((row) => !isInactiveToggle(row) && row.hasChildren),
   )
 
   /* Windowed: only the rows around the viewport are mounted, in normal flow,
@@ -415,8 +415,8 @@ export function ConversationSidebar({
           ...rows.map((row, position) => ({
             kind: 'row' as const,
             // Not by section: a chat changing bucket keeps its menu or dialog.
-            key: isFinishedToggle(row)
-              ? `finished:${row.parentId}`
+            key: isInactiveToggle(row)
+              ? `inactive:${row.parentId}`
               : row.conversation.id,
             row,
             group,
@@ -437,7 +437,7 @@ export function ConversationSidebar({
         held.add(index)
         held.add(index + 1)
       }
-      if (item.kind !== 'row' || isFinishedToggle(item.row)) return
+      if (item.kind !== 'row' || isInactiveToggle(item.row)) return
       const { id } = item.row.conversation
       if (id === activeId || id === pinDrag) held.add(index)
     })
@@ -525,13 +525,13 @@ export function ConversationSidebar({
     row,
     group,
   }: Extract<(typeof items)[number], { kind: 'row' }>) => {
-    if (isFinishedToggle(row)) {
+    if (isInactiveToggle(row)) {
       return (
-        <FinishedToggle
+        <InactiveToggle
           depth={row.depth}
-          finished={row.finished}
+          inactive={row.inactive}
           expanded={row.expanded}
-          onToggle={() => toggleFinished(row.parentId)}
+          onToggle={() => toggleInactive(row.parentId)}
         />
       )
     }
@@ -775,31 +775,31 @@ export function ConversationSidebar({
 }
 
 /**
- * The fold under a parent's live sub-agents: how many finished their job,
- * and the way to see them. Sits at the sub-agents' indent, quiet until
- * pointed at.
+ * The fold under a parent's live sub-agents: how many are inactive (done
+ * for now; an observation or the main agent can start them again), and the
+ * way to see them. Sits at the sub-agents' indent, quiet until pointed at.
  */
-function FinishedToggle({
+function InactiveToggle({
   depth,
-  finished,
+  inactive,
   expanded,
   onToggle,
 }: {
   depth: number
-  finished: number
+  inactive: number
   expanded: boolean
   onToggle: () => void
 }) {
   return (
     <button
       type="button"
-      className={cn(uiClasses.treeItem, 'conversation-finished-toggle')}
+      className={cn(uiClasses.treeItem, 'conversation-inactive-toggle')}
       style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
       aria-expanded={expanded}
       onClick={onToggle}
     >
       <span className={uiClasses.treeItemLabel}>
-        {expanded ? 'Hide finished' : `Show ${finished} finished`}
+        {expanded ? 'Hide inactive' : `Show ${inactive} inactive`}
       </span>
     </button>
   )

@@ -4,7 +4,7 @@ import {
   buildConversationTree,
   type FlatRow,
   flattenConversationTree,
-  isFinishedToggle,
+  isInactiveToggle,
   type TreeRow,
 } from './conversation-tree'
 
@@ -22,9 +22,9 @@ function conv(id: string, parentId?: string, at = clock++): Conversation {
 }
 
 const ids = (rows: TreeRow[]) =>
-  rows.map((r) => (isFinishedToggle(r) ? `+${r.finished}` : r.conversation.id))
+  rows.map((r) => (isInactiveToggle(r) ? `+${r.inactive}` : r.conversation.id))
 const chats = (rows: TreeRow[]) =>
-  rows.filter((r): r is FlatRow => !isFinishedToggle(r))
+  rows.filter((r): r is FlatRow => !isInactiveToggle(r))
 const working = (c: Conversation): Conversation => ({ ...c, status: 'working' })
 
 describe('buildConversationTree', () => {
@@ -104,7 +104,7 @@ describe('flattenConversationTree', () => {
     expect(ids(rows)).toEqual(['a', 'a1'])
   })
 
-  it('folds finished sub-agents behind one toggle under the live ones', () => {
+  it('folds inactive sub-agents behind one toggle under the live ones', () => {
     const roots = buildConversationTree([
       conv('a'),
       conv('done1', 'a'),
@@ -114,7 +114,7 @@ describe('flattenConversationTree', () => {
     const rows = flattenConversationTree(roots, new Set())
     expect(ids(rows)).toEqual(['a', 'live', '+2'])
     const toggle = rows.at(-1)
-    expect(toggle && isFinishedToggle(toggle) && toggle.depth).toBe(1)
+    expect(toggle && isInactiveToggle(toggle) && toggle.depth).toBe(1)
 
     const shown = flattenConversationTree(roots, new Set(), new Set(['a']))
     expect(ids(shown)).toEqual(['a', 'live', 'done2', 'done1', '+2'])
@@ -139,7 +139,7 @@ describe('flattenConversationTree', () => {
     ])
   })
 
-  it('keeps the open chat and a finished parent of a live one in view', () => {
+  it('keeps the open chat and an inactive parent of a live one in view', () => {
     const roots = buildConversationTree([
       conv('a'),
       conv('open', 'a'),

@@ -28,27 +28,28 @@ export interface FlatRow {
 }
 
 /**
- * The fold under a parent's live sub-agents that holds its finished ones:
- * "Show N finished" while they are hidden, "Hide finished" once shown.
+ * The fold under a parent's live sub-agents that holds its inactive ones:
+ * "Show N inactive" while they are hidden, "Hide inactive" once shown.
  */
-export interface FinishedToggleRow {
-  kind: 'finished-toggle'
+export interface InactiveToggleRow {
+  kind: 'inactive-toggle'
   parentId: string
   /** The sub-agents' depth, so the toggle lines up with them. */
   depth: number
-  finished: number
+  inactive: number
   expanded: boolean
 }
 
-export type TreeRow = FlatRow | FinishedToggleRow
+export type TreeRow = FlatRow | InactiveToggleRow
 
-export function isFinishedToggle(row: TreeRow): row is FinishedToggleRow {
-  return 'kind' in row && row.kind === 'finished-toggle'
+export function isInactiveToggle(row: TreeRow): row is InactiveToggleRow {
+  return 'kind' in row && row.kind === 'inactive-toggle'
 }
 
 /**
  * A sub-agent that still wants a look: one working, one waiting on the
- * person's answer, or one that failed. Everything else finished its job.
+ * person's answer, or one that failed. Everything else is inactive: done
+ * for now, but an observation or the main agent can start it again.
  */
 export function isLiveConversation(c: Conversation): boolean {
   return c.status === 'working' || c.status === 'error' || isAwaitingAnswer(c)
@@ -136,14 +137,14 @@ export function buildConversationTree(list: Conversation[]): ConvNode[] {
  */
 /**
  * Depth-first rows for the sidebar. Under each parent only its live
- * sub-agents show; the finished ones fold behind one toggle row unless the
- * parent is in `showFinished`. A finished sub-agent that is open (`keepId`)
+ * sub-agents show; the inactive ones fold behind one toggle row unless the
+ * parent is in `showInactive`. An inactive sub-agent that is open (`keepId`)
  * or has a live one under it stays in view.
  */
 export function flattenConversationTree(
   roots: ConvNode[],
   collapsed: ReadonlySet<string>,
-  showFinished: ReadonlySet<string> = new Set(),
+  showInactive: ReadonlySet<string> = new Set(),
   keepId: string | null = null,
 ): TreeRow[] {
   const out: TreeRow[] = []
@@ -163,14 +164,14 @@ export function flattenConversationTree(
           subtreeLive(child) || (keepId !== null && subtreeHas(child, keepId))
         ;(visible ? shown : folded).push(child)
       }
-      const expanded = showFinished.has(node.conversation.id)
+      const expanded = showInactive.has(node.conversation.id)
       walk(expanded ? node.children : shown)
       if (folded.length > 0)
         out.push({
-          kind: 'finished-toggle',
+          kind: 'inactive-toggle',
           parentId: node.conversation.id,
           depth: node.depth + 1,
-          finished: folded.length,
+          inactive: folded.length,
           expanded,
         })
     }
