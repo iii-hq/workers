@@ -1,0 +1,16 @@
+{
+  "name": "iii-directory",
+  "description": "Agent profiles and skills from a running iii engine's iii-directory worker, over MCP. Works inside the claude-code worker and in a standalone claude.",
+  "version": "0.1.0",
+  "author": { "name": "iii claude-code worker" },
+  "license": "Apache-2.0",
+  "userConfig": {
+    "engine_url": {
+      "type": "string",
+      "title": "iii engine URL",
+      "description": "WebSocket address of the iii engine (ws://host:port, host:port or a port). Leave empty to use III_URL or auto-detect on 127.0.0.1/localhost ports 49134-49136.",
+      "required": false,
+      "default": ""
+    }
+  }
+}
