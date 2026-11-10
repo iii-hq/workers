@@ -257,6 +257,213 @@ async fn sessions_and_windows_lifecycle() {
     assert!(after.sessions.is_empty());
 }
 
+/// A session's windows as `index:name`, `*` on the current one; `None` once
+/// the session is gone.
+async fn windows_line(ctx: &Ctx, session: &str) -> Option<String> {
+    let snapshot = functions::sessions_list(ctx, EmptyInput {}).await.unwrap();
+    let session = snapshot.sessions.iter().find(|s| s.name == session)?;
+    Some(
+        session
+            .windows
+            .iter()
+            .map(|w| format!("{}:{}{}", w.index, w.name, if w.active { "*" } else { "" }))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+#[tokio::test]
+async fn windows_move_between_and_within_sessions() {
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let w = world();
+    let session = |name: &str, window: &str| {
+        sessions::create(
+            &w.ctx,
+            sessions::CreateSessionInput {
+                name: Some(name.into()),
+                cwd: Some("/".into()),
+                command: None,
+                window_name: Some(window.into()),
+            },
+        )
+    };
+    let window = |session: &str, name: &str| {
+        windows::create(
+            &w.ctx,
+            windows::CreateWindowInput {
+                session: session.into(),
+                name: Some(name.into()),
+                cwd: None,
+                command: None,
+                select: Some(false),
+            },
+        )
+    };
+    let arg = |window: &str| WindowArg::Text(window.into());
+    let move_to =
+        |window: &str, from: &str, to: &str, before: Option<&str>, after: Option<&str>| {
+            windows::move_window(
+                &w.ctx,
+                windows::MoveWindowInput {
+                    session: from.into(),
+                    window: arg(window),
+                    target_session: to.into(),
+                    before: before.map(arg),
+                    after: after.map(arg),
+                },
+            )
+        };
+
+    let src = session("src", "a0").await.unwrap();
+    let a1 = window("src", "a1").await.unwrap();
+    let a2 = window("src", "a2").await.unwrap();
+    let dst = session("dst", "b0").await.unwrap();
+    let b1 = window("dst", "b1").await.unwrap();
+    window("dst", "b2").await.unwrap();
+    windows::kill(
+        &w.ctx,
+        windows::WindowInput {
+            session: "dst".into(),
+            window: arg(&b1.window_id),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(windows_line(&w.ctx, "dst").await.unwrap(), "0:b0* 2:b2");
+
+    // A plain move goes after the last window, not into the gap at 1, and
+    // leaves the destination's current window as it was.
+    let moved = move_to(&a1.window_id, "src", &dst.session_id, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            moved.session_id.as_str(),
+            moved.window_id.as_str(),
+            moved.window_index,
+            moved.source_session_closed
+        ),
+        (dst.session_id.as_str(), a1.window_id.as_str(), 3, false)
+    );
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "0:b0* 2:b2 3:a1"
+    );
+    assert_eq!(windows_line(&w.ctx, "src").await.unwrap(), "0:a0* 2:a2");
+
+    // `after` takes the index right after its neighbour (free here).
+    let moved = move_to("2", "src", "dst", None, Some("0")).await.unwrap();
+    assert_eq!(
+        (moved.window_id.as_str(), moved.window_index),
+        (a2.window_id.as_str(), 1)
+    );
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "0:b0* 1:a2 2:b2 3:a1"
+    );
+
+    // Refusals change nothing.
+    let refusals = [
+        (
+            move_to("2", "dst", "dst", None, None).await,
+            "The window is already in that session.",
+        ),
+        (
+            move_to("0", "src", "nope", None, None).await,
+            "session \"nope\" not found",
+        ),
+        (
+            move_to("0", "src", "dst", Some("0"), Some("1")).await,
+            "Give before or after, not both.",
+        ),
+        (
+            move_to("1", "dst", "dst", None, Some("1")).await,
+            "A window can't be moved before or after itself.",
+        ),
+        (
+            move_to("0", "src", "dst", None, Some("@999")).await,
+            &format!("window @999 not found in session {}", dst.session_id),
+        ),
+        (
+            move_to("7", "src", "dst", None, None).await,
+            &format!("window 7 not found in session {}", src.session_id),
+        ),
+    ];
+    for (result, expected) in refusals {
+        assert_eq!(result.unwrap_err(), expected);
+    }
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "0:b0* 1:a2 2:b2 3:a1"
+    );
+    assert_eq!(windows_line(&w.ctx, "src").await.unwrap(), "0:a0*");
+
+    // The last window of a session: tmux closes the session, which the
+    // answer says; the window and its pane carry on in the other one.
+    let moved = move_to(&src.window_id, &src.session_id, "dst", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            moved.window_id.as_str(),
+            moved.window_index,
+            moved.source_session_closed
+        ),
+        (src.window_id.as_str(), 4, true)
+    );
+    assert_eq!(windows_line(&w.ctx, "src").await, None);
+    let snapshot = functions::sessions_list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap();
+    assert_eq!(snapshot.sessions.len(), 1);
+    let carried = snapshot.sessions[0]
+        .windows
+        .iter()
+        .find(|window| window.id == src.window_id)
+        .unwrap();
+    assert_eq!(carried.panes[0].id, src.pane_id);
+
+    // Reordering the current window inside its session keeps it current.
+    let moved = move_to("0", "dst", "dst", None, Some(&src.window_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        (moved.window_index, moved.source_session_closed),
+        (5, false)
+    );
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "1:a2 2:b2 3:a1 4:a0 5:b0*"
+    );
+
+    // `before` shifts the windows from its neighbour on up one index, as
+    // tmux's own -b does; tmux before 3.2 has no -b and gets one sentence.
+    let version = functions::status(&w.ctx, EmptyInput {})
+        .await
+        .unwrap()
+        .version
+        .unwrap();
+    let before = move_to(&src.window_id, "dst", "dst", Some(&a2.window_id), None).await;
+    if tmux::tmux_cli::version_at_least(&version, 3, 2) == Some(false) {
+        assert_eq!(
+            before.unwrap_err(),
+            format!(
+                "Moving a window before another needs tmux 3.2 or later, and this computer has tmux {version}."
+            )
+        );
+        return;
+    }
+    let moved = before.unwrap();
+    assert_eq!(moved.window_index, 1);
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "1:a0 2:a2 3:b2 4:a1 6:b0*"
+    );
+}
+
 #[tokio::test]
 async fn agents_and_ports_are_found_in_their_panes() {
     if !tmux_installed() || which("bash").is_none() || which("python3").is_none() {
