@@ -26,7 +26,7 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['ade/ui/styles.css', '.console-catalog-row[data-selected="true"]'],
   ['computer/ui/styles.css', '.cp-ui-rail-row.active::before'],
   ['memory/ui/styles.css', '.mem-ui-tagbtn.active'],
-  ['iii-directory/ui/styles.css', '.dir-ui-nav-row.active::before'],
+  ['iii-directory/ui/styles.css', '.dir-lib-row[aria-current="true"]'],
   ['worktree/ui/styles.css', '.wt-ui-edge.selected'],
   ['worktree/ui/styles.css', '.wt-ui-node.selected::before'],
   ['database/ui/styles.css', '.db-tree-row.active::before'],
@@ -52,7 +52,7 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   // The terminal tabs mark the open one with an attribute since the tab-row
   // redesign.
   ['ide/ui/styles.css', '.shui-terminal-tab[data-active]'],
-  ['ade/ui/styles.css', '.console-catalog-header-toggle[aria-pressed="true"]'],
+  ['ade/ui/styles.css', '.console-catalog-filter[data-active]'],
   ['sandbox-code-runner/ui/src/styles/page.css', '.cr-page-toggle.on'],
 ]
 

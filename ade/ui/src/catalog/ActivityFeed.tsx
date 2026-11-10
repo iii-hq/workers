@@ -14,7 +14,6 @@
 
 import {
   Button,
-  Eyebrow,
   type Host,
   JsonHighlight,
   SegmentedControl,
@@ -32,12 +31,7 @@ import {
 import { formatRelative } from '@iii-dev/console-ui/format'
 import { ChevronRight, RotateCcw } from 'lucide-react'
 import { Fragment, useCallback, useState } from 'react'
-import {
-  type CallRecord,
-  listCalls,
-  useLiveSignals,
-  useResource,
-} from './engine'
+import { type CallRecord, listCalls, useLiveSignals, useResource } from './engine'
 import { pretty } from './schema'
 import { ErrorNote, Note } from './widgets'
 
@@ -90,10 +84,7 @@ export function ActivityFeed({
   /** Push a recorded input back into the invoke editor. */
   onReplay: (input: unknown) => void
 }) {
-  const load = useCallback(
-    () => listCalls(host, functionId),
-    [host, functionId],
-  )
+  const load = useCallback(() => listCalls(host, functionId), [host, functionId])
   const calls = useResource(load)
   const [open, setOpen] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'failed'>('all')
@@ -116,11 +107,7 @@ export function ActivityFeed({
   }
   if (calls.data === null) {
     return (
-      <div
-        className="console-catalog-calls-loading"
-        role="status"
-        aria-label="Reading recent calls"
-      >
+      <div className="console-catalog-calls-loading" role="status" aria-label="Reading recent calls">
         {[0, 1, 2, 3, 4].map((i) => (
           <Skeleton key={i} className="row" />
         ))}
@@ -130,9 +117,8 @@ export function ActivityFeed({
   if (calls.data.length === 0) {
     return (
       <Note>
-        No recorded calls yet. This list follows the trace stream, so a call
-        made from anywhere (the agent, another worker, the Run tab) shows up
-        here as it happens.
+        No recorded calls yet. This list follows the trace stream, so a call made from anywhere (the agent, another
+        worker, the Run tab) shows up here as it happens.
       </Note>
     )
   }
@@ -167,7 +153,7 @@ export function ActivityFeed({
           ]}
         />
         <span className="console-catalog-activity-summary">
-          median {formatDuration(median)} · slowest {formatDuration(slowest)}
+          Median {formatDuration(median)} · slowest {formatDuration(slowest)}
         </span>
       </div>
       {shown.length === 0 ? (
@@ -193,9 +179,7 @@ export function ActivityFeed({
                     call={call}
                     now={now}
                     open={open === rowId}
-                    onToggle={() =>
-                      setOpen((prev) => (prev === rowId ? null : rowId))
-                    }
+                    onToggle={() => setOpen((prev) => (prev === rowId ? null : rowId))}
                     onReplay={onReplay}
                   />
                 ))}
@@ -239,26 +223,16 @@ function CallRow({
       >
         <TableCell className="status-column">
           <StatusDot tone={call.ok ? 'ok' : 'alert'} />
-          <span className="console-catalog-sr">
-            {call.ok ? 'succeeded' : 'failed'}
-          </span>
+          <span className="console-catalog-sr">{call.ok ? 'succeeded' : 'failed'}</span>
         </TableCell>
         <TableCell className="mono" title={agoLabel(call.startedAtMs, now)}>
           {clockTime(call.startedAtMs)}
         </TableCell>
-        <TableCell className="mono num">
-          {formatDuration(call.durationMs)}
-        </TableCell>
+        <TableCell className="mono num">{formatDuration(call.durationMs)}</TableCell>
         <TableCell className="mono faint input-column">
           <span className="console-catalog-call-input">
-            <span className="text">
-              {call.input === undefined ? '—' : oneLine(call.input)}
-            </span>
-            <ChevronRight
-              className="iii-ui-icon caret"
-              data-open={open}
-              aria-hidden
-            />
+            <span className="text">{call.input === undefined ? '—' : oneLine(call.input)}</span>
+            <ChevronRight className="iii-ui-icon caret" data-open={open} aria-hidden />
           </span>
         </TableCell>
       </TableRow>
@@ -268,41 +242,26 @@ function CallRow({
             <div className="console-catalog-call-body">
               <div className="call-actions">
                 {call.input !== undefined ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    type="button"
-                    onClick={() => onReplay(withoutInjected(call.input))}
-                  >
+                  <Button variant="ghost" size="sm" type="button" onClick={() => onReplay(withoutInjected(call.input))}>
                     <RotateCcw aria-hidden />
                     Replay in Run
                   </Button>
                 ) : null}
-                <span className="console-catalog-hint">
-                  trace {call.traceId}
-                </span>
+                <span className="console-catalog-hint">Trace {call.traceId}</span>
               </div>
               <div className="call-payloads">
                 <div className="payload">
-                  <Eyebrow as="div">Input</Eyebrow>
+                  <h4 className="payload-label">Input</h4>
                   <JsonHighlight
-                    code={
-                      call.input === undefined
-                        ? '(not recorded)'
-                        : pretty(call.input)
-                    }
+                    code={call.input === undefined ? '(not recorded)' : pretty(call.input)}
                     className="console-catalog-json"
                     wrap
                   />
                 </div>
                 <div className="payload">
-                  <Eyebrow as="div">{call.ok ? 'Output' : 'Error'}</Eyebrow>
+                  <h4 className="payload-label">{call.ok ? 'Output' : 'Error'}</h4>
                   <JsonHighlight
-                    code={
-                      call.output === undefined
-                        ? '(not recorded)'
-                        : pretty(call.output)
-                    }
+                    code={call.output === undefined ? '(not recorded)' : pretty(call.output)}
                     className="console-catalog-json"
                     wrap
                   />
