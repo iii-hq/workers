@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
 use crate::tmux_cli::{
-    find_window, resolve_cwd, unescape_separators, validate_command, validate_name,
+    find_window, format_literal, resolve_cwd, unescape_separators, validate_command, validate_name,
     version_at_least, window_target, TmuxError, WindowArg, WindowRef, SEP,
 };
 
@@ -235,7 +235,7 @@ pub async fn create(ctx: &Ctx, input: CreateWindowInput) -> Result<CreatedWindow
     // Without -c, tmux would use the cwd of the process asking (this
     // worker's); the session's own directory is what a caller expects.
     let cwd = match input.cwd.as_deref() {
-        Some(cwd) => resolve_cwd(cwd)?,
+        Some(cwd) => format_literal(&resolve_cwd(cwd)?),
         None => "#{session_path}".to_string(),
     };
     args.extend(["-c".into(), cwd]);

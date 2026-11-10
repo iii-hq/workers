@@ -566,6 +566,13 @@ pub fn window_target(session_id: &str, window: &WindowRef) -> String {
     }
 }
 
+/// `text` as tmux reads it back literally where it expands formats, as in
+/// every `-c` start directory: `#{…}` would be replaced and `#(…)` would run
+/// a shell command, so each `#` is doubled.
+pub fn format_literal(text: &str) -> String {
+    text.replace('#', "##")
+}
+
 /// Expand `~/`, require an absolute existing directory.
 pub fn resolve_cwd(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
@@ -833,6 +840,14 @@ mod tests {
             "error connecting to /tmp/tmux-1000/x (No such file or directory)"
         ));
         assert!(!is_no_server("can't find session: nope"));
+    }
+
+    #[test]
+    fn format_text_is_doubled_hashes() {
+        assert_eq!(format_literal("/home/u/a#b"), "/home/u/a##b");
+        assert_eq!(format_literal("/x/#{session_name}"), "/x/##{session_name}");
+        assert_eq!(format_literal("/x/#(id)"), "/x/##(id)");
+        assert_eq!(format_literal("/plain"), "/plain");
     }
 
     #[test]

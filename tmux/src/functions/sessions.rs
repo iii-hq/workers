@@ -5,7 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
-use crate::tmux_cli::{resolve_cwd, unescape_separators, validate_command, validate_name, SEP};
+use crate::tmux_cli::{
+    format_literal, resolve_cwd, unescape_separators, validate_command, validate_name, SEP,
+};
 
 pub const CREATE: &str = "tmux::sessions::create";
 pub const RENAME: &str = "tmux::sessions::rename";
@@ -115,7 +117,7 @@ pub async fn create(ctx: &Ctx, input: CreateSessionInput) -> Result<CreatedSessi
         Some(cwd) => resolve_cwd(cwd)?,
         None => resolve_cwd("~").unwrap_or_else(|_| "/".to_string()),
     };
-    args.extend(["-c".into(), cwd]);
+    args.extend(["-c".into(), format_literal(&cwd)]);
     if let Some(command) = input.command.as_deref() {
         validate_command(command)?;
         args.extend(["--".into(), command.to_string()]);

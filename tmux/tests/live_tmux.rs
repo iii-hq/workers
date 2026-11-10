@@ -257,6 +257,88 @@ async fn sessions_and_windows_lifecycle() {
     assert!(after.sessions.is_empty());
 }
 
+/// A fresh folder under the system's temp folder, removed on drop.
+struct Folder(std::path::PathBuf);
+
+impl Folder {
+    fn new() -> Self {
+        let path =
+            std::env::temp_dir().join(format!("iii-tmux-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    /// A subfolder named `name`, created.
+    fn sub(&self, name: &str) -> String {
+        let path = self.0.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The current directory of a pane, once its shell has started.
+async fn pane_cwd(ctx: &Ctx, pane_id: &str, expected: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = functions::sessions_list(ctx, EmptyInput {}).await.unwrap();
+        let cwd = snapshot
+            .sessions
+            .iter()
+            .flat_map(|s| &s.windows)
+            .flat_map(|w| &w.panes)
+            .find(|p| p.id == pane_id)
+            .map(|p| p.cwd.clone())
+            .unwrap_or_default();
+        if cwd == expected || Instant::now() > deadline {
+            return cwd;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn start_directories_are_taken_literally() {
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let w = world();
+    let folder = Folder::new();
+    // tmux expands formats in -c: unescaped, these would name other folders.
+    let braces = folder.sub("x#{session_name}y");
+    let doubled = folder.sub("p##q");
+    let session = sessions::create(
+        &w.ctx,
+        sessions::CreateSessionInput {
+            name: Some("literal".into()),
+            cwd: Some(braces.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pane_cwd(&w.ctx, &session.pane_id, &braces).await, braces);
+    let window = windows::create(
+        &w.ctx,
+        windows::CreateWindowInput {
+            session: "literal".into(),
+            name: None,
+            cwd: Some(doubled.clone()),
+            command: None,
+            select: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pane_cwd(&w.ctx, &window.pane_id, &doubled).await, doubled);
+}
+
 /// A session's windows as `index:name`, `*` on the current one; `None` once
 /// the session is gone.
 async fn windows_line(ctx: &Ctx, session: &str) -> Option<String> {
