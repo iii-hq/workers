@@ -375,17 +375,42 @@ export function CodeBlock({
   )
 }
 
-/** Past this many arguments, or this many characters (what the 360px
-    Call it column shows at 13px without scrolling), one goes per line. */
-const INLINE_ARGS = 2
-const INLINE_CHARS = 38
+/**
+ * Edge fades for a sideways scroller, so a line cut off by the card shows
+ * that it goes on: `data-more` is `end`, `start`, `both` or absent.
+ */
+function useScrollEdges<T extends HTMLElement>() {
+  const ref = useRef<T>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () => {
+      // RTL scrolls negative; compare magnitudes.
+      const left = Math.abs(el.scrollLeft)
+      const room = el.scrollWidth - el.clientWidth
+      const start = left > 1
+      const end = left < room - 1
+      const next = start && end ? 'both' : start ? 'start' : end ? 'end' : ''
+      if (next) el.dataset.more = next
+      else delete el.dataset.more
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => {
+      el.removeEventListener('scroll', update)
+      observer.disconnect()
+    }
+  })
+  return ref
+}
 
 /**
- * An `iii call` as a bash prompt, coloured the way a shell theme reads it:
- * the prompt, the program, the subcommand, the function, then each
- * `key=value`. Short calls stay on one line; long ones put an argument per
- * line with `\` continuations. The `$` is decoration — never selected,
- * never copied — and the copy is always the one-line command.
+ * An `iii call` as one bash line, in the Vesper (dark) and Min Light
+ * (light) palettes. It never wraps: the card keeps its width and the line
+ * scrolls sideways, with a fade on whichever edge hides more. The `$` is
+ * decoration — never selected, never copied — and the copy is the command.
  */
 export function TerminalSnippet({
   functionId,
@@ -396,47 +421,33 @@ export function TerminalSnippet({
   args: readonly { key: string; value: string; kind: string }[]
   copy: string
 }) {
-  const multiline = args.length > INLINE_ARGS || copy.length > INLINE_CHARS
-  const arg = (a: { key: string; value: string; kind: string }) => (
-    <>
-      <span className="sh-key">{a.key}</span>
-      <span className="sh-op">=</span>
-      <span className="sh-value" data-kind={a.kind}>
-        {a.value}
-      </span>
-    </>
-  )
+  const scroller = useScrollEdges<HTMLElement>()
   return (
     <CodeBlock label="bash" icon={<SquareTerminal aria-hidden />} copy={copy} copyLabel="Copy command">
-      <pre className="snippet-code" data-lang="bash">
-        <code>
-          <span className="line">
+      {/* The section is the scroller: a scrollable region needs a tab stop
+          (WCAG 2.1.1) and a name. */}
+      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-scrollable */}
+      <section ref={scroller} className="snippet-code" data-lang="bash" tabIndex={0} aria-label={`Command: ${copy}`}>
+        <pre>
+          <code>
             <span className="sh-prompt" aria-hidden>
               $
             </span>
-            <span className="sh-cmd">iii</span> <span className="sh-sub">call</span>{' '}
-            <span className="sh-fn">{functionId}</span>
-            {multiline
-              ? args.length > 0
-                ? <span className="sh-cont"> \</span>
-                : null
-              : args.map((a) => (
-                  <span key={a.key}>
-                    {' '}
-                    {arg(a)}
-                  </span>
-                ))}
-          </span>
-          {multiline
-            ? args.map((a, i) => (
-                <span className="line sh-indent" key={a.key}>
-                  {arg(a)}
-                  {i < args.length - 1 ? <span className="sh-cont"> \</span> : null}
+            <span className="sh-cmd">iii</span> <span className="sh-word">call</span>{' '}
+            <span className="sh-word">{functionId}</span>
+            {args.map((a) => (
+              <span key={a.key}>
+                {' '}
+                <span className="sh-key">{a.key}</span>
+                <span className="sh-op">=</span>
+                <span className="sh-value" data-kind={a.kind}>
+                  {a.value}
                 </span>
-              ))
-            : null}
-        </code>
-      </pre>
+              </span>
+            ))}
+          </code>
+        </pre>
+      </section>
     </CodeBlock>
   )
 }

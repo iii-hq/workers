@@ -1092,14 +1092,31 @@
   }
 }
 
-/* --- code windows: a slim title bar, then the code (bash / json) -------- */
+/* --- code windows: Vesper (dark) and Min Light (light) ------------------
+ * The two editor themes' own colours, from their published theme files
+ * (Shiki's bundled vesper and min-light). Declared once as scope-root
+ * variables — the only place a worker sheet may hold literal colours —
+ * and read by every token rule below. */
+[data-iii-ui="console"] {
+  /* light-dark(Min Light, Vesper): the console sets color-scheme per theme. */
+  --syn-bg: light-dark(#ffffff, #101010);
+  --syn-fg: light-dark(#212121, #ffffff);
+  --syn-punct: light-dark(#212121, #a0a0a0);
+  --syn-op: light-dark(#d32f2f, #a0a0a0);
+  --syn-fn: light-dark(#6f42c1, #ffc799);
+  --syn-key: light-dark(#d32f2f, #ffc799);
+  --syn-string: light-dark(#22863a, #99ffe4);
+  --syn-const: light-dark(#1976d2, #ffc799);
+}
+
 [data-iii-ui="console"] .console-catalog-snippet {
   min-width: 0;
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--color-edge);
   border-radius: var(--radius-lg);
-  background: var(--cat-well);
+  background: var(--syn-bg);
+  color: var(--syn-fg);
 }
 [data-iii-ui="console"] .console-catalog-snippet figcaption {
   display: flex;
@@ -1109,7 +1126,6 @@
   min-height: 36px;
   padding-inline: 12px 4px;
   border-block-end: 1px solid var(--color-edge);
-  background: var(--color-panel);
 }
 [data-iii-ui="console"] .console-catalog-snippet .snippet-lang {
   display: inline-flex;
@@ -1137,71 +1153,91 @@
 [data-iii-ui="console"] .console-catalog-snippet .snippet-body {
   min-width: 0;
 }
-/* Code never wraps mid-token; a long line scrolls sideways. */
+/* Code never wraps: the card keeps its width and a long line scrolls. */
 [data-iii-ui="console"] .console-catalog-snippet :is(.snippet-code, .snippet-json) {
   display: block;
   margin: 0;
   max-height: 260px;
   padding: 12px 14px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
   border: 0;
   border-radius: 0;
   background: transparent;
+  color: var(--syn-fg);
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 22px;
   white-space: pre;
   scrollbar-width: thin;
 }
-/* The highlighter's punctuation is a step too faint on the well (4.18:1).
-   It colours tokens with inline styles, so only !important reaches them. */
-[data-iii-ui="console"] .console-catalog-snippet :is(.token.punctuation, .token.operator) {
-  /* biome-ignore lint/complexity/noImportantStyles: overrides the highlighter's inline token colour */
-  color: var(--color-ink-faint) !important;
+/* The line that runs past the card fades at the edge it hides behind. */
+[data-iii-ui="console"] .snippet-code[data-more="end"] {
+  mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
+}
+[data-iii-ui="console"] .snippet-code[data-more="start"] {
+  mask-image: linear-gradient(to left, black calc(100% - 40px), transparent);
+}
+[data-iii-ui="console"] .snippet-code[data-more="both"] {
+  mask-image: linear-gradient(to right, transparent, black 40px, black calc(100% - 40px), transparent);
+}
+[data-iii-ui="console"] .snippet-code > pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre;
+}
+[data-iii-ui="console"] .snippet-code:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
 }
 
-/* bash, read the way a shell theme colours it */
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .line {
-  display: block;
-}
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-indent {
-  padding-inline-start: 4ch;
-}
+/* bash, in the theme's colours */
 [data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-prompt {
   margin-inline-end: 1ch;
-  color: var(--color-glyph-green);
-  font-weight: 600;
+  color: var(--syn-punct);
   user-select: none;
 }
 [data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-cmd {
-  color: var(--color-ink);
-  font-weight: 600;
+  color: var(--syn-fn);
 }
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-sub {
-  color: var(--color-glyph-blue);
-}
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-fn {
-  color: var(--color-ink);
+[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-word {
+  color: var(--syn-fg);
 }
 [data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-key {
-  color: var(--color-glyph-purple);
+  color: var(--syn-key);
 }
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-op,
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-cont {
-  color: var(--color-ink-faint);
+[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-op {
+  color: var(--syn-op);
 }
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-value[data-kind="string"] {
-  color: var(--color-glyph-green);
-}
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-value[data-kind="number"] {
-  color: var(--color-glyph-amber);
-}
-[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-value[data-kind="keyword"] {
-  color: var(--color-glyph-rose);
-}
+[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-value[data-kind="string"],
 [data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-value[data-kind="json"] {
-  color: var(--color-glyph-teal);
+  color: var(--syn-string);
+}
+[data-iii-ui="console"] .snippet-code[data-lang="bash"] .sh-value:is([data-kind="number"], [data-kind="keyword"]) {
+  color: var(--syn-const);
+}
+
+/* json: the highlighter colours tokens inline, so only !important lands. */
+[data-iii-ui="console"] .console-catalog-snippet .token {
+  /* biome-ignore lint/complexity/noImportantStyles: overrides the highlighter's inline token colour */
+  color: var(--syn-fg) !important;
+  font-style: normal !important;
+}
+[data-iii-ui="console"] .console-catalog-snippet :is(.token.punctuation, .token.operator) {
+  /* biome-ignore lint/complexity/noImportantStyles: overrides the highlighter's inline token colour */
+  color: var(--syn-punct) !important;
+}
+[data-iii-ui="console"] .console-catalog-snippet .token.property {
+  /* biome-ignore lint/complexity/noImportantStyles: overrides the highlighter's inline token colour */
+  color: var(--syn-key) !important;
+}
+[data-iii-ui="console"] .console-catalog-snippet .token.string {
+  /* biome-ignore lint/complexity/noImportantStyles: overrides the highlighter's inline token colour */
+  color: var(--syn-string) !important;
+}
+[data-iii-ui="console"] .console-catalog-snippet :is(.token.number, .token.boolean, .token.null, .token.keyword) {
+  /* biome-ignore lint/complexity/noImportantStyles: overrides the highlighter's inline token colour */
+  color: var(--syn-const) !important;
 }
 
 /* --- the workspace: empty state ----------------------------------------- */
