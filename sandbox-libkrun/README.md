@@ -166,17 +166,31 @@ a build and keeps quiet about it.
   `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
   `worker::destroy` removes them with the rest.
 - **What a `path://` copy leaves out.** One list, the source watcher's ignore
-  list plus `.iii`: a run neither copies nor syncs those names, and its boot
-  cleanup keeps what the build put there.
-  - Dependency, cache, VCS and editor dirs match at any depth: among them
-    `node_modules`, `.venv`, `venv`, `vendor`, `__pycache__`, `.tox`,
-    `.gradle`, `.git`, and Compose's `.build` and `.workers`.
-  - Build-output names that projects also use for source below the root,
-    `build`, `out`, `obj`, `dist`, `coverage`, `deps` and `target`, match at
-    the worker's root only: `src/pkg/build/` is code and syncs.
+  list plus `.iii`: a run neither copies nor syncs those names, so what the
+  build put there is never overwritten by the host's.
+  - Dependency, cache, build-output, VCS and editor dirs match at any depth:
+    among them `node_modules`, `.venv`, `venv`, `vendor`, `target`, `dist`,
+    `__pycache__`, `.tox`, `.gradle`, `.git`, and Compose's `.build` and
+    `.workers`.
+  - `build`, `out`, `obj`, `coverage` and `deps`, which projects also use for
+    source below the root, match only as a directory at the worker's root:
+    `src/pkg/build/` is code and syncs, and so does a root `build` script.
   - A build leaves the same names out of its copy, except `vendor/`, where Go
     keeps vendored source. A `worker::start` without `build`, which still
     installs in the guest, copies as a build does.
+- **What a boot removes from `/workspace`.** Each copy records what it
+  extracted in a manifest outside `/workspace`, on the data disk
+  (`/var/lib/iii/workspace.manifest`; a build's copy writes
+  `/var/lib/iii/build.manifest` into its image). Before its copy, a boot
+  removes only the entries of those manifests that the host no longer has, or
+  has as another kind, deepest first. What the build installed and what the
+  worker wrote in `/workspace` are in no manifest, so they stay across
+  restarts and rebuilds, whatever their name or depth. A directory goes only
+  once empty; one the host turned into a file while it still holds such files
+  is moved aside to `<name>.iii-kept.<pid>`. Without a manifest (a disk an
+  older adapter wrote) a boot skips the cleanup once and logs it. A file the
+  host deletes while the VM runs stays in the guest until the next boot when
+  it is a root `build`, `out`, `obj`, `coverage` or `deps` file.
 
 ## Known limits
 

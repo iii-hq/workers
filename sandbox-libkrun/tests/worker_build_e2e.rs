@@ -928,3 +928,61 @@ async fn a_boot_that_fails_after_the_migration_still_names_the_kept_disk() {
     assert_eq!(std::fs::read_to_string(&kept).unwrap(), "0.26 disk");
     assert!(vm_dir.join("build-mode").is_file());
 }
+
+/// A boot's cleanup removes only what the last copy put in /workspace and the
+/// host deleted: what the worker wrote there survives a restart, and what the
+/// build installed in a nested `dist/` or `target/` survives every boot. A root
+/// `build` script is code: it reaches the build and the run.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn the_workspace_keeps_what_the_build_and_the_worker_wrote() {
+    if !kvm() {
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let t = t.path();
+    let project = t.join("project");
+    python_worker(
+        &project,
+        "sh build && mkdir -p packages/a/dist tools/cli/target/release && echo built-dist > packages/a/dist/index.js && echo built-linux > tools/cli/target/release/cli",
+        r#"mkdir -p /var/lib/iii-test
+echo boot >> /var/lib/iii-test/boots
+n=$(wc -l < /var/lib/iii-test/boots)
+[ -f /workspace/data.db ] || echo "written-at-boot-$n" > /workspace/data.db
+echo "DATA=$(cat /workspace/data.db) DIST=$(cat /workspace/packages/a/dist/index.js) CLI=$(cat /workspace/tools/cli/target/release/cli) OLD=$(cat /workspace/old.txt 2>/dev/null || echo gone) SCRIPT=$(head -n 1 /workspace/build)"
+echo READY
+exec sleep 600
+"#,
+    );
+    write(
+        &project.join("build"),
+        "#!/bin/sh\necho ROOT-BUILD-SCRIPT-RAN\n",
+    );
+    write(&project.join("old.txt"), "old-content");
+    write(&project.join("tools/cli/target/release/cli"), "host-macos");
+    let out = project.join(".build/e2e");
+    let vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    let (iii, mut frames, _) = channel_engine().await;
+    let built = build(&vms, &iii, "keep", local(&project), &out)
+        .await
+        .unwrap();
+    let log = lines(&drain(&mut frames).0);
+    assert!(log.contains("ROOT-BUILD-SCRIPT-RAN"), "{log}");
+
+    let console = console(t, "keep");
+    let base = "DIST=built-dist CLI=built-linux";
+    for (boot, old) in [(1, "old-content"), (2, "gone")] {
+        let started = start(&vms, "keep", local(&project), Some((&built.build_id, &out)))
+            .await
+            .unwrap();
+        let log = wait_for(&console, "READY", 120).await;
+        eprintln!("[boot {boot}] {log}");
+        let want = format!("DATA=written-at-boot-1 {base} OLD={old} SCRIPT=#!/bin/sh");
+        assert!(log.contains(&want), "boot {boot}: {log}");
+        assert!(!log.contains("no workspace manifest yet"), "{log}");
+        stop(&vms, &started).await;
+        // A host deletion leaves the guest at the next boot.
+        std::fs::remove_file(project.join("old.txt")).ok();
+    }
+    destroy(&vms, "keep");
+}

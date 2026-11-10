@@ -32,10 +32,10 @@ pub const DEBOUNCE_MS: u64 = 500;
 /// normal operation — including during the restart itself, which would
 /// otherwise produce an infinite restart loop.
 ///
-/// These match at any depth; [`ROOT_IGNORED_DIR_NAMES`] at the worker's root
-/// only. Both lists, with `.iii`, are what a `path://` worker's copy into the VM
-/// leaves out and what its boot cleanup keeps (`local_worker`): a run never
-/// installs, so what the build put there must stay.
+/// These match at any depth; [`ROOT_IGNORED_DIR_NAMES`] only as a directory at
+/// the worker's root. Both lists, with `.iii`, are what a `path://` worker's
+/// copy into the VM leaves out (`local_worker`): a run never installs, so what
+/// the build put there must not be overwritten.
 pub const IGNORED_DIR_NAMES: &[&str] = &[
     // Node / TypeScript
     "node_modules",
@@ -45,6 +45,9 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".next",
     ".nuxt",
     ".svelte-kit",
+    "dist",
+    // Rust, Maven
+    "target",
     // Python
     ".venv",
     "venv",
@@ -80,11 +83,11 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
 ];
 
 /// Build-output names that projects also use for source in nested dirs
-/// (`src/pkg/build/`, a Go `internal/deps/`): ignored at the worker's root
-/// only, where they are the tool's output (Rust's `target`, .NET's `obj`,
-/// Elixir's `deps`, generic `build`/`out`/`dist`/`coverage`).
-pub const ROOT_IGNORED_DIR_NAMES: &[&str] =
-    &["build", "out", "obj", "dist", "coverage", "deps", "target"];
+/// (`src/pkg/build/`, a Go `internal/deps/`), and for a script at the root (a
+/// `build` file): ignored only as a directory at the worker's root, where they
+/// are the tool's output (.NET's `obj`, Elixir's `deps`, generic
+/// `build`/`out`/`coverage`).
+pub const ROOT_IGNORED_DIR_NAMES: &[&str] = &["build", "out", "obj", "coverage", "deps"];
 
 /// O(1) lookup set for ignore-path classification. Built once; hit on
 /// every notify event, which can fire thousands of times per second
@@ -100,13 +103,13 @@ pub(crate) fn is_compose_state(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(b".iii")
 }
 
-/// Whether the entry `name` is ignored; `at_root` when it sits directly in the
-/// worker's root, where [`ROOT_IGNORED_DIR_NAMES`] apply too.
-fn is_ignored_name(name: &OsStr, at_root: bool) -> bool {
+/// Whether the entry `name` is ignored; `root_dir` when it is a directory
+/// directly in the worker's root, where [`ROOT_IGNORED_DIR_NAMES`] apply too.
+fn is_ignored_name(name: &OsStr, root_dir: bool) -> bool {
     name.to_str().is_some_and(|s| {
         IGNORED_DIR_SET.contains(s)
             || is_compose_state(s.as_bytes())
-            || (at_root && ROOT_IGNORED_DIR_NAMES.contains(&s))
+            || (root_dir && ROOT_IGNORED_DIR_NAMES.contains(&s))
     })
 }
 
@@ -114,7 +117,11 @@ fn is_ignored_name(name: &OsStr, at_root: bool) -> bool {
 ///
 /// A path is ignored when any of its components (after stripping the
 /// project root prefix) matches [`IGNORED_DIR_NAMES`] or is Compose's state,
-/// or its first component matches [`ROOT_IGNORED_DIR_NAMES`]. This correctly
+/// or its first component matches [`ROOT_IGNORED_DIR_NAMES`] as a directory: a
+/// path below it, or the entry itself unless it is a file or a symlink (one
+/// that is gone counts as a directory, so its removal never reaches a guest
+/// dir the build filled; a removed root `build` script leaves the guest at the
+/// next boot's cleanup). This correctly
 /// ignores writes deep inside `node_modules/.cache/...` as well as the
 /// directory itself.
 ///
@@ -127,13 +134,19 @@ pub fn should_ignore_path(path: &Path, project_root: &Path) -> bool {
         Ok(rel) => (rel, true),
         Err(_) => (path, false),
     };
-    rel.components()
+    let names: Vec<&OsStr> = rel
+        .components()
         .filter_map(|component| match component {
             std::path::Component::Normal(os) => Some(os),
             _ => None,
         })
-        .enumerate()
-        .any(|(depth, os)| is_ignored_name(os, rooted && depth == 0))
+        .collect();
+    names.iter().enumerate().any(|(depth, os)| {
+        let root_dir = rooted
+            && depth == 0
+            && (names.len() > 1 || !std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir()));
+        is_ignored_name(os, root_dir)
+    })
 }
 
 /// Register non-recursive watches on every directory under `root`
@@ -427,6 +440,31 @@ mod tests {
             &PathBuf::from("/other/build/x"),
             &root()
         ));
+    }
+
+    #[test]
+    fn a_root_only_name_matches_a_directory_and_not_a_file() {
+        let proj = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        std::fs::write(root.join("build"), "#!/bin/sh\n").unwrap();
+        std::fs::create_dir(root.join("out")).unwrap();
+        std::os::unix::fs::symlink("build", root.join("deps")).unwrap();
+        // A root `build` script and a symlink are code: they sync.
+        assert!(!should_ignore_path(&root.join("build"), &root));
+        assert!(!should_ignore_path(&root.join("deps"), &root));
+        assert!(should_ignore_path(&root.join("out"), &root));
+        assert!(should_ignore_path(&root.join("out/x"), &root));
+        // Deleted: taken for a directory; the next boot's cleanup removes a file.
+        assert!(should_ignore_path(&root.join("coverage"), &root));
+        // `target` and `dist` match at any depth.
+        for path in [
+            "target",
+            "dist/x",
+            "tools/cli/target/release/x",
+            "packages/a/dist/i.js",
+        ] {
+            assert!(should_ignore_path(&root.join(path), &root), "{path}");
+        }
     }
 
     #[test]
