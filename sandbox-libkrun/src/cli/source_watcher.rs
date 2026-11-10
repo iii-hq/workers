@@ -77,6 +77,9 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".idea",
     ".vscode",
     ".DS_Store",
+    // Compose: build images and package copies, inside a `path://.` worker
+    ".build",
+    ".workers",
 ];
 
 /// O(1) lookup set for ignore-path classification. Built once; hit on
@@ -331,6 +334,23 @@ mod tests {
     fn ignores_git_dir() {
         assert!(should_ignore_path(
             &PathBuf::from("/proj/.git/HEAD"),
+            &root()
+        ));
+    }
+
+    /// For `path://.` the worker's dir is the project root, which holds
+    /// Compose's build images and package copies.
+    #[test]
+    fn ignores_compose_build_and_package_dirs() {
+        for path in [
+            "/proj/.build/link/image.erofs",
+            "/proj/.workers/onboarding/index.js",
+            "/proj/.build",
+        ] {
+            assert!(should_ignore_path(&PathBuf::from(path), &root()), "{path}");
+        }
+        assert!(!should_ignore_path(
+            &PathBuf::from("/proj/.builder/x"),
             &root()
         ));
     }

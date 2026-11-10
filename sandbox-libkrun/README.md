@@ -47,7 +47,7 @@ when the call returns. The first call pulls the image, so it is slower. `sandbox
 | `create`, `exec`, `stop`, `list`, `catalog::list`, `run` | Sandbox lifecycle and one-call runs |
 | `fs::ls`, `fs::stat`, `fs::mkdir`, `fs::rm`, `fs::chmod`, `fs::mv`, `fs::grep`, `fs::sed`, `fs::write`, `fs::read` | Files inside a live sandbox |
 | `adapter::info` | Adapter name, version and the sandbox contract version it implements |
-| `worker::prepare`, `worker::start`, `worker::status`, `worker::logs`, `worker::stop`, `worker::destroy` | Compose's worker VMs (see below) |
+| `worker::build`, `worker::prepare`, `worker::start`, `worker::status`, `worker::logs`, `worker::stop`, `worker::destroy` | Compose's worker VMs (see below) |
 
 Every id is prefixed with `sandbox-libkrun::`.
 
@@ -127,6 +127,42 @@ followed by the VM's `state_key`, in lowercase hex), which gets S505 on any othe
 log follower is gone and no client reattaches within 45 s, the adapter stops it
 (SIGTERM, then SIGKILL after 10 s). VMs started with the project token have no
 lease, because Compose supervises them itself.
+
+### Builds
+
+From 0.4.0 (sandbox contract 1.3) the adapter builds a VM's image and boots it,
+so a run never installs anything. It advertises `worker.build` in
+`adapter::info` only in the overlay rootfs mode; the legacy mode
+(`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) cannot boot
+a build and keeps quiet about it.
+
+- **`worker::build`** boots a build VM on the cached base image (pulling it when
+  missing) with a fresh upper, copies the worker's code into `/workspace` (a
+  bundle's whole package; a `path://` worker's code without the dependency dirs,
+  `.build/`, `.workers/` and `.iii`), and runs `scripts.setup` and
+  `scripts.install` there with the request's `env` only. When the script exits
+  0, iii-init writes the merged root, without `/proc`, `/sys`, `/dev`, `/run`,
+  `/tmp`, `/opt/iii` and `/mnt/host-src`, and the host turns it into
+  `<output_dir>/image.erofs`, then `image.id`, each through a temporary file
+  and a rename. The build streams its output into `logs` and writes a
+  one-byte binary frame there at least every 5 s; when the channel closes or a
+  write fails, it stops the build VM, deletes the temporary image, keeps the
+  previous pair and frees the key. One build per `state_key` runs at a time
+  (S509), and a failed step answers S507 with the output's last lines.
+- **`worker::start` with `build`** checks that `build_dir/image.id` names
+  `build_id` (S508 otherwise, or when it is missing) and boots `image.erofs` as
+  the overlay's lower, without setup or install. A `path://` worker's code
+  still syncs in live; a bundle's is in the image.
+- **Data disk.** A VM that boots builds keeps its writes on
+  `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
+  `root/`: they outlive restarts and rebuilds, and only `worker::destroy`
+  removes them. The overlay is mounted without `index`, `metacopy`,
+  `redirect_dir` and `xino`, which lets a rebuild swap the lower under it.
+- **Earlier disks.** The first start of a build writes the seal
+  `<vm_id>/build-mode`. Without it, a 0.3 overlay disk (`root/upper.ext4`)
+  moves to `upper.ext4.pre-build`, and a legacy rootfs clone (`root/`) to
+  `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
+  `worker::destroy` removes them with the rest.
 
 ## Known limits
 

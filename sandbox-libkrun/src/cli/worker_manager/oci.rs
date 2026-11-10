@@ -349,6 +349,16 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// The image a worker's VM starts from: `runtime.base_image`, else the one
+/// for its kind, in the whole form the rootfs cache keys on
+/// (`docker.io/iiidev/node:latest`).
+pub(crate) fn base_image_ref(kind: &str, base_image_override: Option<&str>) -> String {
+    match base_image_override.map(str::trim) {
+        Some(img) if !img.is_empty() => canonicalize_oci_ref(img),
+        _ => canonicalize_oci_ref(oci_image_for_kind(kind)),
+    }
+}
+
 /// Determine the rootfs path for a given `runtime.kind`, optionally
 /// overriding the default base image. If the rootfs doesn't exist
 /// locally, pulls the OCI image and extracts it into the rootfs cache.
@@ -948,11 +958,16 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
 
 /// Read environment variables from the saved OCI image config.
 pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
-    let data = match read_oci_config_contents(rootfs) {
-        Some(d) => d,
-        None => return vec![],
-    };
-    let json: serde_json::Value = match serde_json::from_str(&data) {
+    match read_oci_config_contents(rootfs) {
+        Some(data) => oci_env_from_config(&data),
+        None => vec![],
+    }
+}
+
+/// The `config.Env` of an OCI image config, as the rootfs cache saves it in
+/// `.oci-config.json`; empty when it has none or does not parse.
+pub(crate) fn oci_env_from_config(data: &str) -> Vec<(String, String)> {
+    let json: serde_json::Value = match serde_json::from_str(data) {
         Ok(j) => j,
         Err(_) => return vec![],
     };

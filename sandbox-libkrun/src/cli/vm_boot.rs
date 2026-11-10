@@ -146,6 +146,12 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub source_sync: Option<String>,
 
+    /// A `--mount` host directory served read-only, Compose's state hidden, as
+    /// the `--source-sync` one is, without forwarding its changes: the worker's
+    /// code a build VM copies in.
+    #[arg(long)]
+    pub source_readonly: Option<String>,
+
     /// Enable network egress for the guest. When false, the smoltcp
     /// userspace TCP/IP stack is not initialized and no virtio-net
     /// device is attached, so the VM has no network interface — useful
@@ -269,14 +275,17 @@ fn passthrough_share(dir: &str, read_only: bool) -> Result<iii_filesystem::Passt
 }
 
 /// The read-only backend for a `--mount` entry that shares the
-/// `--source-sync` dir, `None` for any other mount. The guest unmounts that
-/// share after its copy-in, but guest root can mount the tag again, so only
-/// the backend can keep it from writing the host project (`.git/hooks`).
+/// `--source-sync` or `--source-readonly` dir, `None` for any other mount. The
+/// guest unmounts that share after its copy-in, but guest root can mount the
+/// tag again, so only the backend can keep it from writing the host project
+/// (`.git/hooks`).
 fn source_share(
     entry: &VirtiofsMountEntry,
     source_sync: Option<&str>,
+    source_readonly: Option<&str>,
 ) -> Result<Option<SourceShareFs>, String> {
-    if source_sync != Some(entry.host_path.as_str()) {
+    let host = Some(entry.host_path.as_str());
+    if source_sync != host && source_readonly != host {
         return Ok(None);
     }
     passthrough_share(&entry.host_path, true).map(|fs| Some(SourceShareFs(fs)))
@@ -821,7 +830,11 @@ fn boot_vm(
     let shm_bytes_per_mount: usize =
         (args.virtiofs_shm_size_mib as usize).saturating_mul(1024 * 1024);
     for entry in mount_plan.entries {
-        let ro_share = source_share(&entry, args.source_sync.as_deref())?;
+        let ro_share = source_share(
+            &entry,
+            args.source_sync.as_deref(),
+            args.source_readonly.as_deref(),
+        )?;
         let VirtiofsMountEntry { tag, host_path, .. } = entry;
         builder = builder.fs(move |fs| {
             let mut fs = fs.tag(&tag);
@@ -1430,12 +1443,22 @@ mod tests {
         .unwrap();
 
         assert!(
-            source_share(&plan.entries[1], Some(host))
+            source_share(&plan.entries[1], Some(host), None)
                 .unwrap()
                 .is_none()
         );
-        assert!(source_share(&plan.entries[0], None).unwrap().is_none());
-        let fs = source_share(&plan.entries[0], Some(host))
+        assert!(
+            source_share(&plan.entries[0], None, None)
+                .unwrap()
+                .is_none()
+        );
+        // A build VM's read-only copy of the source gets the same backend.
+        assert!(
+            source_share(&plan.entries[0], None, Some(host))
+                .unwrap()
+                .is_some()
+        );
+        let fs = source_share(&plan.entries[0], Some(host), None)
             .unwrap()
             .expect("the source-sync share gets its own backend");
         fs.init(FsOptions::empty()).unwrap();
@@ -1496,7 +1519,9 @@ mod tests {
         std::fs::write(project.path().join("a"), b"src").unwrap();
         let host = project.path().to_str().unwrap();
         let plan = build_virtiofs_mount_plan(&[format!("{host}:/mnt/host-src")]).unwrap();
-        let fs = source_share(&plan.entries[0], Some(host)).unwrap().unwrap();
+        let fs = source_share(&plan.entries[0], Some(host), None)
+            .unwrap()
+            .unwrap();
         fs.init(FsOptions::empty()).unwrap();
         let init = b"init.krun".to_vec();
         for plus in [false, true] {
@@ -1530,7 +1555,9 @@ mod tests {
 
         let host = root.to_str().unwrap();
         let plan = build_virtiofs_mount_plan(&[format!("{host}:/mnt/host-src")]).unwrap();
-        let fs = source_share(&plan.entries[0], Some(host)).unwrap().unwrap();
+        let fs = source_share(&plan.entries[0], Some(host), None)
+            .unwrap()
+            .unwrap();
         fs.init(FsOptions::empty()).unwrap();
         let ctx = Context {
             uid: 0,

@@ -126,6 +126,13 @@ impl ErofsReader {
         self.read_inode_data(&target_inode)
     }
 
+    /// `(uid, gid, mode)` of the entry at `path`.
+    #[cfg(test)]
+    pub(crate) fn owner_and_mode(&mut self, path: &str) -> io::Result<(u32, u32, u16)> {
+        let inode = self.lookup_path(path)?;
+        Ok((inode.uid, inode.gid, inode.mode))
+    }
+
     /// Read a symlink target by path from the EROFS image.
     pub fn read_link(&mut self, path: &str) -> io::Result<Vec<u8>> {
         let target_inode = self.lookup_path(path)?;

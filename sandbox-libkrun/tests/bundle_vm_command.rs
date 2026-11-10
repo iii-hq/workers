@@ -20,6 +20,7 @@ fn over(tmp: &Path) -> VmOverride<'static> {
         state_dir: tmp.join("vm"),
         engine_url: "ws://localhost:49134",
         extra_env: std::collections::HashMap::new(),
+        image: None,
     }
 }
 
@@ -120,6 +121,7 @@ async fn a_valid_bundle_builds_a_boot_command() {
             state_dir: tmp.path().join("vm"),
             engine_url: "ws://localhost:49134",
             extra_env: env,
+            image: None,
         },
     )
     .await

@@ -113,9 +113,9 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
 use crate::sandbox_daemon::errors::{Payload, SandboxErrorWire};
 use crate::wire::{
-    AdapterInfo, AdapterInfoRequest, ContractVersion, FEATURE_LEASE, FEATURE_LOGS_FROM_END,
-    FEATURE_SCOPED_AUTH, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STATUS,
-    WORKER_STOP,
+    AdapterInfo, AdapterInfoRequest, ContractVersion, FEATURE_BUILD, FEATURE_LEASE,
+    FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, WORKER_BUILD, WORKER_DESTROY, WORKER_LOGS,
+    WORKER_PREPARE, WORKER_START, WORKER_STATUS, WORKER_STOP,
 };
 use crate::worker_vm::WorkerVms;
 
@@ -265,9 +265,27 @@ pub fn register_all(
         register_worker_op(
             iii,
             vms.clone(),
+            WORKER_BUILD,
+            "Build the image of `state_key`'s VM into `output_dir` (image.erofs, then \
+             image.id): a build VM on the base image runs scripts.setup and \
+             scripts.install. The output streams into `logs`, and the build ends when its \
+             reader leaves. Needs the project token; S509 while another build of the key \
+             runs, S507 when a step fails.",
+            {
+                let iii = iii.clone();
+                move |vms, req| {
+                    let iii = iii.clone();
+                    async move { vms.build(&iii, req).await }
+                }
+            },
+        ),
+        register_worker_op(
+            iii,
+            vms.clone(),
             WORKER_START,
-            "Boot the worker VM of `state_key` as its next instance. Needs the project \
-             token; S502 while that VM is preparing or running.",
+            "Boot the worker VM of `state_key` as its next instance; with `build`, the \
+             image worker::build wrote (S508 when image.id does not match). Needs the \
+             project token; S502 while that VM is preparing or running.",
             |vms, req| async move { vms.start(req).await },
         ),
         register_worker_op(
@@ -332,13 +350,21 @@ pub fn register_all(
 
 /// This adapter's `adapter::info` reply.
 pub fn adapter_info() -> AdapterInfo {
+    adapter_info_for(crate::cli::overlay::overlay_active())
+}
+
+/// The reply in the overlay rootfs mode or not: only overlay can boot a build,
+/// so only it advertises `worker.build`.
+fn adapter_info_for(overlay: bool) -> AdapterInfo {
+    let mut features = vec![FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END];
+    if overlay {
+        features.push(FEATURE_BUILD);
+    }
     AdapterInfo {
         adapter: ADAPTER_NAME.to_string(),
         adapter_version: env!("CARGO_PKG_VERSION").to_string(),
         contract: ContractVersion::CURRENT,
-        features: [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END]
-            .map(String::from)
-            .to_vec(),
+        features: features.into_iter().map(String::from).collect(),
     }
 }
 
@@ -648,6 +674,7 @@ mod registration_tests {
             "fs::read",
             "adapter::info",
             "worker::prepare",
+            WORKER_BUILD,
             WORKER_START,
             WORKER_STATUS,
             WORKER_LOGS,
@@ -685,6 +712,7 @@ mod registration_tests {
 
         let ids = [
             WORKER_PREPARE,
+            WORKER_BUILD,
             WORKER_START,
             WORKER_STATUS,
             WORKER_LOGS,
@@ -725,19 +753,32 @@ mod registration_tests {
             ),
             ("sandbox-libkrun", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
-        // iii-compose installs ADAPTER_RANGE "^0.3" for contract 1.2, so releases stay 0.3.x.
+        // iii-compose installs ADAPTER_RANGE "^0.4" for contract 1.3, so releases stay 0.4.x.
         assert_eq!(
             (
                 env!("CARGO_PKG_VERSION_MAJOR"),
                 env!("CARGO_PKG_VERSION_MINOR")
             ),
-            ("0", "3")
+            ("0", "4")
         );
-        // 0.3.0 is published on contract 1.1: this build must not report that version.
-        assert_ne!(env!("CARGO_PKG_VERSION"), "0.3.0");
-        // What `iii sandbox run` refuses an adapter without.
+        assert_eq!((i.contract.major, i.contract.minor), (1, 3));
+        // What `iii sandbox run` and `iii sandbox build` refuse an adapter without.
         assert_eq!(
-            i.features,
+            adapter_info_for(true).features,
+            [
+                "worker.scoped_auth",
+                "worker.lease",
+                "worker.logs_from_end",
+                "worker.build"
+            ]
+        );
+    }
+
+    /// Only the overlay mode boots a build: the legacy mode keeps quiet about it.
+    #[test]
+    fn the_legacy_mode_does_not_advertise_worker_build() {
+        assert_eq!(
+            adapter_info_for(false).features,
             ["worker.scoped_auth", "worker.lease", "worker.logs_from_end"]
         );
     }

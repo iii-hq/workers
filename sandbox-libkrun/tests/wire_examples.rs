@@ -42,6 +42,10 @@ const COPIED: &[&str] = &[
     "WorkerStopRequest",
     "WorkerDestroyRequest",
     "WorkerDestroyResponse",
+    "WorkerBuildRef",
+    "WorkerBuildRequest",
+    "WorkerBuildResponse",
+    "BaseImageRef",
 ];
 
 fn round_trips<T: Serialize + DeserializeOwned>(name: &str, example: &Value) {
@@ -75,6 +79,10 @@ fn wire_examples_round_trip() {
             "WorkerStopRequest" => round_trips::<WorkerStopRequest>(name, example),
             "WorkerDestroyRequest" => round_trips::<WorkerDestroyRequest>(name, example),
             "WorkerDestroyResponse" => round_trips::<WorkerDestroyResponse>(name, example),
+            "WorkerBuildRef" => round_trips::<WorkerBuildRef>(name, example),
+            "WorkerBuildRequest" => round_trips::<WorkerBuildRequest>(name, example),
+            "WorkerBuildResponse" => round_trips::<WorkerBuildResponse>(name, example),
+            "BaseImageRef" => round_trips::<BaseImageRef>(name, example),
             other => panic!("fixture type {other} has no copy in sandbox_libkrun::wire"),
         }
         seen.push(name.as_str());
@@ -326,11 +334,17 @@ fn constants_match_the_contract() {
     let fixture: serde_json::Map<String, Value> = serde_json::from_str(FIXTURE).unwrap();
     let version = serde_json::to_value(ContractVersion::CURRENT).unwrap();
     assert_eq!(version, fixture["ContractVersion"]);
-    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 2));
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 3));
     assert_eq!(
         fixture["AdapterInfo"]["features"],
-        json!([FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END])
+        json!([
+            FEATURE_SCOPED_AUTH,
+            FEATURE_LEASE,
+            FEATURE_LOGS_FROM_END,
+            FEATURE_BUILD
+        ])
     );
+    assert_eq!(FEATURE_BUILD, "worker.build");
     assert_eq!(
         [
             WORKER_PREPARE,
@@ -338,7 +352,8 @@ fn constants_match_the_contract() {
             WORKER_STATUS,
             WORKER_LOGS,
             WORKER_STOP,
-            WORKER_DESTROY
+            WORKER_DESTROY,
+            WORKER_BUILD
         ],
         [
             "worker::prepare",
@@ -346,7 +361,8 @@ fn constants_match_the_contract() {
             "worker::status",
             "worker::logs",
             "worker::stop",
-            "worker::destroy"
+            "worker::destroy",
+            "worker::build"
         ]
     );
 }

@@ -86,6 +86,9 @@ fn representative(code_str: &str) -> Option<SandboxError> {
         "S504" => SandboxError::VmNotFound("x".into()),
         "S505" => SandboxError::Unauthorized,
         "S506" => SandboxError::PrepareFailed("x".into()),
+        "S507" => SandboxError::BuildFailed("x".into()),
+        "S508" => SandboxError::BuildMismatch("x".into()),
+        "S509" => SandboxError::BuildInProgress("x".into()),
         _ => return None,
     })
 }
@@ -189,7 +192,10 @@ fn enforce_exhaustive(c: SandboxErrorCode) -> SandboxErrorCode {
         | SandboxErrorCode::S503
         | SandboxErrorCode::S504
         | SandboxErrorCode::S505
-        | SandboxErrorCode::S506 => c,
+        | SandboxErrorCode::S506
+        | SandboxErrorCode::S507
+        | SandboxErrorCode::S508
+        | SandboxErrorCode::S509 => c,
     }
 }
 
@@ -220,6 +226,9 @@ const ALL_VARIANTS: &[SandboxErrorCode] = &[
     SandboxErrorCode::S504,
     SandboxErrorCode::S505,
     SandboxErrorCode::S506,
+    SandboxErrorCode::S507,
+    SandboxErrorCode::S508,
+    SandboxErrorCode::S509,
 ];
 
 #[test]

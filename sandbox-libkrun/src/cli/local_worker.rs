@@ -33,18 +33,30 @@ const RUN_SCRIPT_CMD: &str =
 /// tar could not replace with the file the host now has), and re-extract the
 /// current source. On first boot /workspace is empty so this is a no-op.
 /// (All name lists MUST match the tar --exclude list, except `.iii`: it is
-/// never copied, and this cleanup removes a copy left by an older adapter.)
+/// never copied, and this cleanup removes a copy left by an older adapter.
+/// `.build` and `.workers` are Compose's build images and package copies: for
+/// `path://.` they sit inside the worker's own dir.)
 const WORKSPACE_RESYNC_CLEANUP: &str = r#"find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
-  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
+  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \
+  -o -name .build -o -name .workers \) -prune \
   -o ! -type d -exec rm -f {} +
 find /workspace -mindepth 1 -depth -type d -empty \
   ! -path '*/node_modules/*' ! -path '*/.venv/*' ! -path '*/target/*' ! -path '*/dist/*' \
   ! -path '*/__pycache__/*' ! -path '*/.pytest_cache/*' ! -path '*/.next/*' ! -path '*/.git/*' \
+  ! -path '*/.build/*' ! -path '*/.workers/*' \
   -exec rmdir {} \;
 find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
-  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
+  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \
+  -o -name .build -o -name .workers \) -prune \
   -o -type d ! -exec sh -c '[ -d "$1/${2#/workspace/}" ] && [ ! -L "$1/${2#/workspace/}" ]' sh "$SRC" {} \; \
   -prune -exec rm -rf {} +"#;
+
+/// The `tar --exclude` flags of a `path://` worker's copy-in: the dependency and
+/// build dirs [`WORKSPACE_RESYNC_CLEANUP`] keeps, Compose's `.build`/`.workers`,
+/// and `.iii`, whatever their depth.
+const SOURCE_EXCLUDES: &str = "--exclude=node_modules --exclude=.venv --exclude=target \
+--exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git \
+--exclude=.build --exclude=.workers --exclude=.iii";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -103,6 +115,47 @@ pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
     (r.cpus.unwrap_or(2), r.memory.unwrap_or(2048))
 }
 
+/// How a boot script provisions (`scripts.setup` + `scripts.install`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Provision {
+    /// Legacy clone: the host saw the marker, `prepared` skips the block.
+    Host { prepared: bool },
+    /// Overlay: the marker is on the ext4 upper, so the guest checks it.
+    InGuest,
+    /// The root is a build's image: nothing to install.
+    Image,
+}
+
+/// The shell header every boot script starts with. The script never re-exports
+/// the manifest env: the VM env already holds it merged with the caller's
+/// overrides and the gateway rewrite. The system dirs go after PATH so a PATH
+/// from that env keeps precedence.
+fn script_header() -> Vec<String> {
+    vec![
+        "set -e".to_string(),
+        "export HOME=${HOME:-/root}".to_string(),
+        "export PATH=${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin".to_string(),
+        "export LANG=${LANG:-C.UTF-8}".to_string(),
+    ]
+}
+
+/// The host source share at `$SRC`, checked before anything is copied from it.
+/// The mountpoint check guards against iii-init's mount_virtiofs_shares()
+/// swallowing a mount failure as a warning (leaving the path
+/// existing-but-unmounted), which would otherwise silently copy nothing.
+const SOURCE_SHARE_CHECK: &str = r#"SRC=/mnt/host-src
+mkdir -p /workspace
+if ! { mountpoint -q "$SRC" 2>/dev/null || awk -v s="$SRC" '$5 == s && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
+  echo "iii: ERROR $SRC (host source share) is not a virtiofs mountpoint (share missing or mount failed)" >&2
+  echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
+  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
+  exit 1
+fi
+if ! command -v tar >/dev/null 2>&1; then
+  echo "iii: ERROR workspace copy-in requires 'tar' in the base image" >&2
+  exit 1
+fi"#;
+
 /// Build the boot script that `iii-init` will exec as the worker command.
 ///
 /// No supervisor wrapping: the in-VM `iii-init` binary (PID 1) starts
@@ -117,20 +170,29 @@ pub fn build_libkrun_local_script(
     is_bundle: bool,
     overlay: bool,
 ) -> String {
-    // The script never re-exports the manifest env: the VM env already holds
-    // it merged with the caller's overrides and the gateway rewrite. The
-    // system dirs go after PATH so a PATH from that env keeps precedence.
-    let mut parts = vec![
-        "set -e".to_string(),
-        "export HOME=${HOME:-/root}".to_string(),
-        "export PATH=${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin".to_string(),
-        "export LANG=${LANG:-C.UTF-8}".to_string(),
-    ];
+    let provision = if overlay {
+        Provision::InGuest
+    } else {
+        Provision::Host { prepared }
+    };
+    boot_script(project, is_bundle, provision)
+}
+
+/// The boot script of a VM whose root is a build's image (`worker::start`
+/// with `build`): no `scripts.setup` or `scripts.install`, they ran in the
+/// build. A bundle's code is in the image; a local worker's still syncs in.
+pub fn build_image_run_script(project: &ProjectInfo, is_bundle: bool) -> String {
+    boot_script(project, is_bundle, Provision::Image)
+}
+
+fn boot_script(project: &ProjectInfo, is_bundle: bool, provision: Provision) -> String {
+    let mut parts = script_header();
 
     // Workspace strategy:
     //
     //  - BUNDLE: the immutable install dir is mounted live at /workspace via
     //    virtiofs; vendored deps ship inside it, so no dep handling is needed.
+    //    A build's image holds the bundle's code at /workspace instead.
     //
     //  - LOCAL: the host project is mounted temporarily at /mnt/host-src and
     //    copied into /workspace. The share is detached before user code runs.
@@ -138,12 +200,13 @@ pub fn build_libkrun_local_script(
     //    iii-init, which makes the guest kernel emit native inotify events.
     //    Dependency and build directories remain VM-local and are excluded
     //    from both the initial copy and later synchronization.
-    //
-    // The mountpoint checks guard against iii-init's mount_virtiofs_shares()
-    // swallowing a mount failure as a warning (leaving the path
-    // existing-but-unmounted), which would otherwise silently work against the
-    // wrong backing store.
-    if is_bundle {
+    if is_bundle && provision == Provision::Image {
+        parts.push(
+            r#"cd /workspace
+echo "iii: workspace ready (bundle worker; code from the build image)" >&2"#
+                .to_string(),
+        );
+    } else if is_bundle {
         parts.push(
             r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
   echo "iii: ERROR /workspace is not a virtiofs mountpoint (share missing or mount failed)" >&2
@@ -156,29 +219,16 @@ echo "iii: workspace ready (bundle worker; dep-dir bind-mounts skipped — vendo
                 .to_string(),
         );
     } else {
-        parts.push(
-            r#"SRC=/mnt/host-src
-mkdir -p /workspace
-if ! { mountpoint -q "$SRC" 2>/dev/null || awk -v s="$SRC" '$5 == s && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
-  echo "iii: ERROR $SRC (host source share) is not a virtiofs mountpoint (share missing or mount failed)" >&2
-  echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
-  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
-  exit 1
-fi
-if ! command -v tar >/dev/null 2>&1; then
-  echo "iii: ERROR workspace copy-in requires 'tar' in the base image" >&2
-  exit 1
-fi"#
-            .to_string(),
-        );
+        parts.push(SOURCE_SHARE_CHECK.to_string());
         parts.push(WORKSPACE_RESYNC_CLEANUP.to_string());
         parts.push(
             r#"# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
 # any depth) so VM-local installs persist across a re-copy and host clutter
 # isn't pulled in. Only /mnt/host-src is read; the host project is never
 # written, so no empty dep folders appear there. .iii is Compose's state, which
-# holds the project's token: the guest must never get a copy.
-( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git --exclude=.iii . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
+# holds the project's token: the guest must never get a copy. .build and
+# .workers are Compose's build images and package copies.
+( set -o pipefail; ( cd "$SRC" && tar -cf - __SOURCE_EXCLUDES__ . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
 # Enforce "host project untouched": detach the initial source share before
 # user code runs. Later edits arrive as file operations over iii.source-sync.
 cd /
@@ -187,7 +237,7 @@ mkdir -p /run/iii
 touch /run/iii/source-ready
 cd /workspace
 echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project untouched)" >&2"#
-                .to_string(),
+                .replace("__SOURCE_EXCLUDES__", SOURCE_EXCLUDES),
         );
     }
 
@@ -206,41 +256,46 @@ echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project 
     //     restarts, so install runs once and is skipped thereafter — matching
     //     legacy's skip semantics without needing host visibility. `set -e`
     //     still aborts (and leaves the marker unwritten) if install fails.
-    if overlay {
-        let mut prov = String::new();
-        if !project.setup_cmd.is_empty() {
-            prov.push_str(&project.setup_cmd);
-            prov.push('\n');
-        }
-        if !project.install_cmd.is_empty() {
-            prov.push_str(&project.install_cmd);
-            prov.push('\n');
-        }
-        // `sync` flushes the just-installed deps + the marker from the guest
-        // page cache to the ext4 upper (/dev/vdb) after install finishes.
-        // Without it, a worker that exits within ext4's ~5s commit window tears
-        // the VM down before the write lands, losing both and re-running install
-        // next boot. ponytail: belt-and-suspenders with iii-init's sync-on-exit
-        // (supervisor::sync_and_exit); this also covers a SIGKILL that lands
-        // after install but before the worker exits.
-        parts.push(format!(
-            r#"if [ "$(cat /var/.iii-prepared 2>/dev/null || true)" != "{PREPARED_MARKER_VERSION}" ]; then
+    //   - image: the build ran them; a run never installs.
+    match provision {
+        Provision::InGuest => {
+            let mut prov = String::new();
+            if !project.setup_cmd.is_empty() {
+                prov.push_str(&project.setup_cmd);
+                prov.push('\n');
+            }
+            if !project.install_cmd.is_empty() {
+                prov.push_str(&project.install_cmd);
+                prov.push('\n');
+            }
+            // `sync` flushes the just-installed deps + the marker from the guest
+            // page cache to the ext4 upper (/dev/vdb) after install finishes.
+            // Without it, a worker that exits within ext4's ~5s commit window tears
+            // the VM down before the write lands, losing both and re-running install
+            // next boot. ponytail: belt-and-suspenders with iii-init's sync-on-exit
+            // (supervisor::sync_and_exit); this also covers a SIGKILL that lands
+            // after install but before the worker exits.
+            parts.push(format!(
+                r#"if [ "$(cat /var/.iii-prepared 2>/dev/null || true)" != "{PREPARED_MARKER_VERSION}" ]; then
 rm -f /var/.iii-prepared
 {prov}mkdir -p /var
 printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared
 sync
 fi"#
-        ));
-    } else if !prepared {
-        if !project.setup_cmd.is_empty() {
-            parts.push(project.setup_cmd.clone());
+            ));
         }
-        if !project.install_cmd.is_empty() {
-            parts.push(project.install_cmd.clone());
+        Provision::Host { prepared: false } => {
+            if !project.setup_cmd.is_empty() {
+                parts.push(project.setup_cmd.clone());
+            }
+            if !project.install_cmd.is_empty() {
+                parts.push(project.install_cmd.clone());
+            }
+            parts.push(format!(
+                r#"mkdir -p /var && printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared"#
+            ));
         }
-        parts.push(format!(
-            r#"mkdir -p /var && printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared"#
-        ));
+        Provision::Host { prepared: true } | Provision::Image => {}
     }
 
     // Exec the user command directly; iii-init supervises the one
@@ -255,6 +310,39 @@ fi"#
     // semantics.
     let quoted_run_cmd = format!("'{}'", project.run_cmd.replace('\'', "'\\''"));
     parts.push(format!("exec /bin/sh -c {quoted_run_cmd}"));
+    parts.join("\n")
+}
+
+/// The script of a build VM (`worker::build`): copy the worker's code into
+/// `/workspace`, run `scripts.setup` and `scripts.install` there, and exit.
+/// When it exits 0, iii-init exports the merged root for the image. A local
+/// worker's copy leaves out what its run's copy leaves out; a bundle's is the
+/// whole package but Compose's state.
+pub fn build_image_script(project: &ProjectInfo, is_bundle: bool) -> String {
+    let mut parts = script_header();
+    parts.push(SOURCE_SHARE_CHECK.to_string());
+    let excludes = if is_bundle {
+        "--exclude=.iii"
+    } else {
+        SOURCE_EXCLUDES
+    };
+    parts.push(format!(
+        r#"echo "iii: build: copying the worker's code into /workspace" >&2
+( set -o pipefail; ( cd "$SRC" && tar -cf - {excludes} . ) | ( cd /workspace && tar -xpf - ) ) || {{ echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }}
+cd /
+umount "$SRC" || {{ echo "iii: ERROR could not detach $SRC" >&2; exit 1; }}
+cd /workspace
+echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true"#
+    ));
+    if !project.setup_cmd.is_empty() {
+        parts.push("echo \"iii: build: running scripts.setup\" >&2".to_string());
+        parts.push(project.setup_cmd.clone());
+    }
+    if !project.install_cmd.is_empty() {
+        parts.push("echo \"iii: build: running scripts.install\" >&2".to_string());
+        parts.push(project.install_cmd.clone());
+    }
+    parts.push("echo \"iii: build: scripts done\" >&2".to_string());
     parts.join("\n")
 }
 
@@ -403,6 +491,256 @@ pub struct VmOverride<'a> {
     /// Merged over the manifest's own env, and under the reserved keys
     /// [`build_local_env`] owns.
     pub extra_env: HashMap<String, String>,
+    /// Boot this build instead of the base image, with no setup or install.
+    pub image: Option<BootImage>,
+}
+
+/// A build's image a VM boots (`worker::start` with `build`).
+pub struct BootImage {
+    /// `<build_dir>/image.erofs`, the overlay's read-only lower.
+    pub image: PathBuf,
+    /// The VM's persistent data disk, the overlay's upper.
+    pub upper: PathBuf,
+}
+
+/// iii-init's build-mode switch (`iii_init::export`). Only the host sets it, on
+/// a build VM: a caller's env never carries it into a VM.
+const BUILD_EXPORT_ENV: &str = "III_BUILD_EXPORT";
+/// Where a build VM's iii-init writes the root: the `/opt/iii` share, the
+/// trampoline's `runtime/` on the host.
+const BUILD_EXPORT_GUEST: &str = "/opt/iii/root.tar";
+const BUILD_EXPORT_HOST: &str = "runtime/root.tar";
+
+/// A build VM (`worker::build`), built but not spawned.
+pub struct BuildVm {
+    pub command: super::worker_manager::libkrun::VmCommand,
+    /// The build VM's trampoline root, where iii-init's tar lands once the
+    /// build script exits 0; see [`open_build_export`].
+    pub root: PathBuf,
+    /// The base image the build starts from, as the rootfs cache keys it.
+    pub reference: String,
+    /// Its cached rootfs; the image takes its `.oci-config.json` from there.
+    pub base_rootfs: PathBuf,
+}
+
+/// The tar a build VM exported under its trampoline `root` ([`BuildVm::root`]).
+/// That share was the guest's, so no component of the path is followed through
+/// a symlink, and it must be a regular file.
+pub fn open_build_export(root: &Path) -> std::io::Result<std::fs::File> {
+    super::worker_manager::oci::open_rootfs_file_no_follow(root, Path::new(BUILD_EXPORT_HOST))
+}
+
+/// Builds the build VM of a worker: the base image (pulled if the cache lacks
+/// it) as the lower, a fresh upper in `scratch`, the worker's code shared
+/// read-only at `/mnt/host-src`, and [`build_image_script`] to run. Nothing is
+/// spawned. `env` is the caller's `guest_env`, over the manifest's own env.
+pub(crate) async fn image_build_command(
+    worker_dir: &Path,
+    package: Option<&str>,
+    run_override: Option<&str>,
+    scratch: &Path,
+    env: HashMap<String, String>,
+) -> Result<BuildVm, String> {
+    use super::worker_manager::oci;
+
+    let (project, kind) = validate_source(worker_dir, package, run_override)?;
+    let is_bundle = package.is_some();
+    if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
+        tracing::warn!(error = %e, "failed to ensure libkrunfw");
+    }
+    if !super::worker_manager::libkrun::libkrun_available() {
+        return Err("No runtime available.\n  \
+             Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
+            .to_string());
+    }
+    let reference = oci::base_image_ref(&kind, project.base_image.as_deref());
+    let base_rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
+        .await
+        .map_err(|e| format!("cannot pull the base image {reference}: {e:#}"))?;
+    let lower = {
+        let base = base_rootfs.clone();
+        tokio::task::spawn_blocking(move || crate::cli::erofs::ensure_base_erofs(&base))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("failed to build base erofs: {e}"))?
+    };
+
+    let root = scratch.join("root");
+    std::fs::create_dir_all(&root)
+        .and_then(|()| oci::ensure_rootfs_dir_no_follow(&root, "workspace").map(drop))
+        .map_err(|e| format!("cannot create the build VM's dir {}: {e}", root.display()))?;
+    let upper = crate::cli::upper::ensure_upper_ext4(scratch)
+        .map_err(|e| format!("failed to materialize the build's upper: {e}"))?;
+    let script_dir = write_run_script(&root, true, &build_image_script(&project, is_bundle))
+        .map_err(|e| format!("Failed to write the build script: {e}"))?;
+
+    let mut env_all = project.env.clone();
+    env_all.extend(env);
+    for (key, value) in oci::read_oci_env(&base_rootfs) {
+        env_all.entry(key).or_insert(value);
+    }
+    env_all.insert(BUILD_EXPORT_ENV.to_string(), BUILD_EXPORT_GUEST.to_string());
+
+    let (vcpus, ram) = vm_resources(worker_dir, is_bundle, &project.name);
+    let mounts = [
+        (
+            worker_dir.to_string_lossy().into_owned(),
+            "/mnt/host-src".to_string(),
+        ),
+        (
+            script_dir.to_string_lossy().into_owned(),
+            "/opt/iii".to_string(),
+        ),
+    ];
+    let command = super::worker_manager::libkrun::build_vm_command(
+        "/bin/sh",
+        &["-c".to_string(), RUN_SCRIPT_CMD.to_string()],
+        env_all,
+        vcpus,
+        ram,
+        root.clone(),
+        Some(lower),
+        "overlay".to_string(),
+        Some(upper),
+        &mounts,
+        None,
+        Some(worker_dir),
+    )?;
+    debug_assert_eq!(script_dir.join("root.tar"), root.join(BUILD_EXPORT_HOST));
+    Ok(BuildVm {
+        command,
+        root,
+        reference,
+        base_rootfs,
+    })
+}
+
+/// The env the base image's config sets, from the `.oci-config.json` a build
+/// put into its image; empty when it has none.
+fn image_oci_env(image: &Path) -> Vec<(String, String)> {
+    match crate::cli::erofs::reader::read_file_from_erofs(image, "/.oci-config.json") {
+        Ok(bytes) => {
+            super::worker_manager::oci::oci_env_from_config(&String::from_utf8_lossy(&bytes))
+        }
+        Err(e) => {
+            tracing::warn!(image = %image.display(), error = %e, "the build image has no OCI config");
+            Vec::new()
+        }
+    }
+}
+
+/// The VM of a build (`worker::start` with `build`): the image as the lower,
+/// the VM's data disk as the upper, and [`build_image_run_script`]. A local
+/// worker's source still syncs in; a bundle's code is in the image.
+fn image_run_command(
+    worker_name: &str,
+    project_path: &Path,
+    project: &ProjectInfo,
+    is_bundle: bool,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let BootImage { image, upper } = over.image.expect("a build to boot");
+    if !crate::cli::overlay::overlay_active() {
+        return Err(
+            "booting a build needs the overlay rootfs mode; this adapter runs in \
+             legacy mode (III_ROOTFS_MODE=legacy, or no embedded iii-init)"
+                .to_string(),
+        );
+    }
+    let managed_dir = over.state_dir;
+    std::fs::create_dir_all(&managed_dir)
+        .and_then(|()| {
+            super::worker_manager::oci::ensure_rootfs_dir_no_follow(&managed_dir, "workspace")
+                .map(drop)
+        })
+        .map_err(|e| format!("Failed to create worker dir {}: {e}", managed_dir.display()))?;
+
+    let mut combined_project_env = project.env.clone();
+    combined_project_env.extend(over.extra_env);
+    let mut env = build_local_env(over.engine_url, worker_name, &combined_project_env);
+    for (key, value) in image_oci_env(&image) {
+        env.entry(key).or_insert(value);
+    }
+    env.remove(BUILD_EXPORT_ENV);
+
+    let script_dir = write_run_script(
+        &managed_dir,
+        true,
+        &build_image_run_script(project, is_bundle),
+    )
+    .map_err(|e| format!("Failed to write run script: {e}"))?;
+    let (vcpus, ram) = vm_resources(project_path, is_bundle, worker_name);
+    let mut mounts = if is_bundle {
+        Vec::new()
+    } else {
+        build_local_mounts(project_path, "/mnt/host-src")
+    };
+    mounts.push((
+        script_dir.to_string_lossy().into_owned(),
+        "/opt/iii".to_string(),
+    ));
+    super::worker_manager::libkrun::build_vm_command(
+        "/bin/sh",
+        &["-c".to_string(), RUN_SCRIPT_CMD.to_string()],
+        env,
+        vcpus,
+        ram,
+        managed_dir,
+        Some(image),
+        "overlay".to_string(),
+        Some(upper),
+        &mounts,
+        (!is_bundle).then_some(project_path),
+        None,
+    )
+}
+
+/// vCPUs and MiB of RAM: a bundle's clamped, as its manifest is
+/// publisher-controlled, a local worker's as its manifest asks.
+fn vm_resources(project_path: &Path, is_bundle: bool, worker_name: &str) -> (u32, u32) {
+    if !is_bundle {
+        return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
+    }
+    // Strict clamp at start-time so a publisher-controlled manifest
+    // can't boot a libkrun guest with attacker-chosen resources:
+    // the VM boot re-reads the manifest from the install dir, which
+    // may have changed since install.
+    match super::bundle_download::parse_bundle_resources(
+        project_path,
+        super::bundle_download::ResourceCaps::default(),
+    ) {
+        Ok(r) => {
+            if let Some(req) = r.clamped_cpus {
+                tracing::warn!(
+                    worker = %worker_name,
+                    bundle.requested_cpus = req,
+                    bundle.cpus = r.cpus,
+                    "bundle resources.cpus clamped at start"
+                );
+            }
+            if let Some(req) = r.clamped_memory_mb {
+                tracing::warn!(
+                    worker = %worker_name,
+                    bundle.requested_memory_mb = req,
+                    bundle.memory_mb = r.memory_mb,
+                    "bundle resources.memory clamped at start"
+                );
+            }
+            (r.cpus, r.memory_mb)
+        }
+        Err(e) => {
+            // Manifest was validated at install time. If reading
+            // it fails now, something tampered with the install
+            // dir or the disk is failing. Fall back to safe
+            // defaults rather than booting with raw values.
+            tracing::error!(
+                worker = %worker_name,
+                error = %e,
+                "bundle resource re-clamp failed; using safe defaults"
+            );
+            (2, 2048)
+        }
+    }
 }
 
 /// The checks a worker source must pass before anything is pulled or booted:
@@ -533,6 +871,9 @@ pub(crate) async fn start_worker_impl(
              Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
             .to_string());
     }
+    if over.image.is_some() {
+        return image_run_command(worker_name, project_path, &project, is_bundle, over);
+    }
 
     // 4. Prepare managed dir — clone rootfs on first start
     let managed_dir = over.state_dir;
@@ -636,6 +977,8 @@ pub(crate) async fn start_worker_impl(
     for (key, value) in oci_env {
         env.entry(key).or_insert(value);
     }
+    // A build VM's switch: a caller's env must not turn a run into an export.
+    env.remove(BUILD_EXPORT_ENV);
 
     // 7. Build boot script. No supervisor wrap is emitted — the in-VM
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
@@ -682,51 +1025,7 @@ pub(crate) async fn start_worker_impl(
     }
 
     // 9. Run via libkrun
-    let manifest_path = project_path.join(WORKER_MANIFEST);
-    let (vcpus, ram) = if is_bundle {
-        // Strict clamp at start-time so a publisher-controlled manifest
-        // can't boot a libkrun guest with attacker-chosen resources:
-        // the VM boot re-reads the manifest from the install dir, which
-        // may have changed since install.
-        match super::bundle_download::parse_bundle_resources(
-            project_path,
-            super::bundle_download::ResourceCaps::default(),
-        ) {
-            Ok(r) => {
-                if let Some(req) = r.clamped_cpus {
-                    tracing::warn!(
-                        worker = %worker_name,
-                        bundle.requested_cpus = req,
-                        bundle.cpus = r.cpus,
-                        "bundle resources.cpus clamped at start"
-                    );
-                }
-                if let Some(req) = r.clamped_memory_mb {
-                    tracing::warn!(
-                        worker = %worker_name,
-                        bundle.requested_memory_mb = req,
-                        bundle.memory_mb = r.memory_mb,
-                        "bundle resources.memory clamped at start"
-                    );
-                }
-                (r.cpus, r.memory_mb)
-            }
-            Err(e) => {
-                // Manifest was validated at install time. If reading
-                // it fails now, something tampered with the install
-                // dir or the disk is failing. Fall back to safe
-                // defaults rather than booting with raw values.
-                tracing::error!(
-                    worker = %worker_name,
-                    error = %e,
-                    "bundle resource re-clamp failed; using safe defaults"
-                );
-                (2, 2048)
-            }
-        }
-    } else {
-        parse_manifest_resources(&manifest_path)
-    };
+    let (vcpus, ram) = vm_resources(project_path, is_bundle, worker_name);
 
     // Local workers always copy into /workspace. This is required for native
     // guest file events: later host changes are applied by iii-init rather than
@@ -790,6 +1089,7 @@ pub(crate) async fn start_worker_impl(
         rootfs_upper,
         &mounts,
         (!is_bundle).then_some(project_path),
+        None,
     )
 }
 
@@ -836,6 +1136,139 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "host");
         let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode();
         assert_eq!(victim_mode & 0o111, 0, "the host file was chmodded");
+    }
+
+    /// The build VM's share was the guest's: neither a symlink planted at the
+    /// tar nor one at `runtime` is read through.
+    #[test]
+    fn a_build_export_is_never_read_through_a_guest_symlink() {
+        use std::os::unix::fs::symlink;
+        let t = tempfile::tempdir().unwrap();
+        let host = t.path().join("host");
+        std::fs::create_dir_all(&host).unwrap();
+        std::fs::write(host.join("root.tar"), "host file").unwrap();
+        let root = t.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        symlink(&host, root.join("runtime")).unwrap();
+        assert!(
+            open_build_export(&root).is_err(),
+            "followed runtime -> host"
+        );
+        std::fs::remove_file(root.join("runtime")).unwrap();
+        std::fs::create_dir(root.join("runtime")).unwrap();
+        symlink(host.join("root.tar"), root.join("runtime/root.tar")).unwrap();
+        assert!(
+            open_build_export(&root).is_err(),
+            "followed root.tar -> host"
+        );
+        std::fs::remove_file(root.join("runtime/root.tar")).unwrap();
+        std::fs::write(root.join("runtime/root.tar"), "tar").unwrap();
+        assert!(open_build_export(&root).is_ok());
+    }
+
+    fn project_with(setup: &str, install: &str) -> ProjectInfo {
+        ProjectInfo {
+            name: "test".to_string(),
+            kind: Some("typescript".to_string()),
+            setup_cmd: setup.to_string(),
+            install_cmd: install.to_string(),
+            run_cmd: "node server.js".to_string(),
+            env: HashMap::new(),
+            base_image: None,
+        }
+    }
+
+    /// A build VM copies the code in, installs, and exits for iii-init to
+    /// export: no worker runs, no marker, no source sync.
+    #[test]
+    fn the_build_script_installs_and_exits() {
+        let project = project_with("apt-get install -y git", "npm ci");
+        let script = build_image_script(&project, /*is_bundle=*/ false);
+        assert!(script.contains("apt-get install -y git\necho"));
+        assert!(script.contains("npm ci"));
+        assert!(script.contains(SOURCE_EXCLUDES));
+        assert!(script.contains("umount \"$SRC\""));
+        assert!(!script.contains("exec /bin/sh -c"), "{script}");
+        assert!(!script.contains(".iii-prepared"));
+        assert!(!script.contains("source-ready"));
+        assert!(script.find("apt-get") < script.find("npm ci"));
+        // A bundle's whole package is its code, vendored deps included.
+        let bundle = build_image_script(&project, /*is_bundle=*/ true);
+        assert!(bundle.contains("tar -cf - --exclude=.iii ."), "{bundle}");
+        assert!(!bundle.contains("--exclude=node_modules"));
+    }
+
+    /// The run of a build never installs; a local worker's code still syncs
+    /// in, a bundle's is in the image.
+    #[test]
+    fn the_run_of_a_build_never_installs() {
+        let project = project_with("apt-get install -y git", "npm ci");
+        let local = build_image_run_script(&project, /*is_bundle=*/ false);
+        assert!(
+            !local.contains("apt-get") && !local.contains("npm ci"),
+            "{local}"
+        );
+        assert!(!local.contains(".iii-prepared"));
+        assert!(local.contains(WORKSPACE_RESYNC_CLEANUP));
+        assert!(local.contains(SOURCE_EXCLUDES));
+        assert!(local.contains("touch /run/iii/source-ready"));
+        assert!(local.ends_with("exec /bin/sh -c 'node server.js'"));
+        let bundle = build_image_run_script(&project, /*is_bundle=*/ true);
+        assert!(
+            !bundle.contains("npm ci") && !bundle.contains("mountpoint"),
+            "{bundle}"
+        );
+        assert!(bundle.contains("cd /workspace"));
+        assert!(bundle.ends_with("exec /bin/sh -c 'node server.js'"));
+    }
+
+    /// `.build` and `.workers` hold Compose's images and package copies: for
+    /// `path://.` they are in the worker's dir, and stay out of the copy at
+    /// any depth, as the dependency dirs do.
+    #[test]
+    fn compose_dirs_stay_out_of_the_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let ws = temp.path().join("ws");
+        for file in [
+            "app.js",
+            ".build/w/image.erofs",
+            ".workers/pkg/index.js",
+            "node_modules/dep/index.js",
+            ".iii/token",
+            "sub/.build/x",
+            "sub/code.js",
+        ] {
+            std::fs::create_dir_all(src.join(file).parent().unwrap()).unwrap();
+            std::fs::write(src.join(file), "x").unwrap();
+        }
+        std::fs::create_dir_all(&ws).unwrap();
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "( cd \"$SRC\" && tar -cf - {SOURCE_EXCLUDES} . ) | ( cd \"$WS\" && tar -xpf - )"
+            ))
+            .env("SRC", &src)
+            .env("WS", &ws)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(ws.join("app.js").is_file() && ws.join("sub/code.js").is_file());
+        for gone in [".build", ".workers", "node_modules", ".iii", "sub/.build"] {
+            assert!(!ws.join(gone).exists(), "{gone} was copied");
+        }
+        // The cleanup keeps what the copy leaves out.
+        std::fs::create_dir_all(ws.join(".build")).unwrap();
+        std::fs::write(ws.join(".build/guest"), "x").unwrap();
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
+            .env("SRC", &src)
+            .current_dir(&ws)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(ws.join(".build/guest").is_file());
     }
 
     #[test]
@@ -1197,6 +1630,7 @@ resources:
             state_dir: state.to_path_buf(),
             engine_url: "ws://localhost:49134",
             extra_env: HashMap::new(),
+            image: None,
         }
     }
 
