@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
 use crate::tmux_cli::{
     find_window, format_literal, resolve_cwd, unescape_separators, validate_command, validate_name,
-    version_at_least, window_target, TmuxError, WindowArg, WindowRef, SEP,
+    window_target, TmuxError, WindowArg, WindowRef, HOLD, SEP,
 };
 
 pub const CREATE: &str = "tmux::windows::create";
@@ -16,20 +16,21 @@ pub const RENAME: &str = "tmux::windows::rename";
 pub const KILL: &str = "tmux::windows::kill";
 pub const MOVE: &str = "tmux::windows::move";
 
-const CREATE_DESC: &str = "Create a window in a tmux session. Optional name, working directory (default: the directory the session was created in), a shell command to run instead of the default shell, and whether to make it the current window (default true).";
+const CREATE_DESC: &str = "Create a window in a tmux session. Optional name, working directory (default: the directory the session was created in), a shell command to run instead of the default shell, and whether to make it the current window (default true). With remain_on_exit, its pane stays once its program ends, dead, for tmux::panes::respawn to restart it.";
 const SELECT_DESC: &str = "Make a window the current window of its session. Like tmux itself, every client attached to that session (your terminal included) switches to it.";
 const RENAME_DESC: &str = "Rename a tmux window.";
 const KILL_DESC: &str = "Kill a tmux window and every program running in its panes.";
-const MOVE_DESC: &str = "Move a window to another tmux session, after its last window or just before or after one of its windows (`before` / `after`, which also reorder a window inside its own session). The window keeps its id, panes and programs, and the destination session's current window stays as it was. When it was the last window of its session, tmux closes that session.";
+const MOVE_DESC: &str = "Move a window to another tmux session, after its last window or just before or after one of its windows (`before` / `after`, which need tmux 3.2 or later and also reorder a window inside its own session). The window keeps its id, panes and programs, and the destination session's current window stays as it was. When it was the last window of its session, tmux closes that session.";
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct CreateWindowInput {
     /// Session id (`$5`) or exact name.
     pub session: String,
     /// Window name. No `:` or `.`.
     #[serde(default)]
     pub name: Option<String>,
-    /// Working directory, absolute or `~/…`. Defaults to the directory the session was created in.
+    /// Working directory, absolute or `~/…`. Defaults to the directory the session was created in
+    /// (the home folder on tmux older than 3.2, which can't tell).
     #[serde(default)]
     pub cwd: Option<String>,
     /// Shell command to run instead of the default shell.
@@ -38,6 +39,9 @@ pub struct CreateWindowInput {
     /// Make it the session's current window (default true).
     #[serde(default)]
     pub select: Option<bool>,
+    /// Keep its pane once its program ends, shown dead, so tmux::panes::respawn can restart it (default false: tmux closes it). On tmux before 3.0, which has no pane options, every pane of the window is kept.
+    #[serde(default)]
+    pub remain_on_exit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -97,7 +101,7 @@ pub struct MoveWindowInput {
     /// Put it just before this window of `target_session` (id or index). Needs tmux 3.2 or later.
     #[serde(default)]
     pub before: Option<WindowArg>,
-    /// Put it just after this window of `target_session` (id or index). Without `before` or `after` it goes after the session's last window.
+    /// Put it just after this window of `target_session` (id or index). Needs tmux 3.2 or later. Without `before` or `after` it goes after the session's last window.
     #[serde(default)]
     pub after: Option<WindowArg>,
 }
@@ -122,30 +126,35 @@ enum Side {
 }
 
 impl Side {
-    /// `move-window`'s flag, and the first tmux that has it (tmux's CHANGES:
-    /// `-a` came in 2.1, `-b` in 3.2).
-    fn flag(self) -> (&'static str, u32, u32) {
+    /// `move-window`'s flag. Both need tmux 3.2: `-b` came then, and `-a`
+    /// (from 2.1) only then started to mean "after the window -t names";
+    /// before, it puts the window after the session's current one whatever
+    /// -t says, and inside one session it ends tmux 2.6's and 3.0a's server
+    /// (seen in containers; 3.1c survives it).
+    fn flag(self) -> &'static str {
         match self {
-            Self::Before => ("-b", 3, 2),
-            Self::After => ("-a", 2, 1),
+            Self::Before => "-b",
+            Self::After => "-a",
         }
     }
 
-    /// The one sentence for a tmux without the flag, `version` when known.
-    fn too_old(self, version: Option<&str>) -> String {
-        let (_, major, minor) = self.flag();
+    /// The one sentence for a tmux before 3.2, `version` when known.
+    fn too_old(self, version: &str) -> String {
         let word = match self {
             Self::Before => "before",
             Self::After => "after",
         };
-        match version {
-            Some(version) => format!(
-                "Moving a window {word} another needs tmux {major}.{minor} or later, and this computer has tmux {version}."
-            ),
-            None => format!("Moving a window {word} another needs tmux {major}.{minor} or later."),
+        if version.is_empty() {
+            format!("Moving a window {word} another needs tmux 3.2 or later.")
+        } else {
+            format!(
+                "Moving a window {word} another needs tmux 3.2 or later, and this computer has tmux {version}."
+            )
         }
     }
 }
+
+const INDEX_TAKEN: &str = "Another window took that place just now; move it again.";
 
 /// The new index (first line), then the id of every session left.
 pub fn parse_moved(output: &str) -> Result<(u32, Vec<String>), String> {
@@ -165,7 +174,7 @@ pub fn parse_moved(output: &str) -> Result<(u32, Vec<String>), String> {
 
 /// tmux's refusal of a move, in one sentence where tmux's own words don't
 /// say what to do.
-fn move_error(error: TmuxError, side: Option<Side>, version: Option<&str>) -> String {
+fn move_error(error: TmuxError, side: Option<Side>, version: &str) -> String {
     let message = error.to_string();
     match side {
         // A tmux this check couldn't date (`next-3.2`, `master`) and that
@@ -180,7 +189,9 @@ fn move_error(error: TmuxError, side: Option<Side>, version: Option<&str>) -> St
         _ if message.contains("sessions are grouped") => {
             "Those two sessions are grouped, so they already share their windows.".to_string()
         }
-        _ => message,
+        // A computed index (tmux before 3.2) another client took first.
+        _ if message.contains("index in use") => INDEX_TAKEN.to_string(),
+        _ => error.sentence(),
     }
 }
 
@@ -230,7 +241,7 @@ pub async fn create(ctx: &Ctx, input: CreateWindowInput) -> Result<CreatedWindow
     args.extend(["-t".into(), format!("{session_id}:")]);
     if let Some(name) = input.name.as_deref() {
         validate_name("window", name)?;
-        args.extend(["-n".into(), name.to_string()]);
+        args.extend(["-n".into(), tmux.new_window_name_arg(name)]);
     }
     // Without -c, tmux would use the cwd of the process asking (this
     // worker's); the session's own directory is what a caller expects.
@@ -241,11 +252,16 @@ pub async fn create(ctx: &Ctx, input: CreateWindowInput) -> Result<CreatedWindow
     args.extend(["-c".into(), cwd]);
     if let Some(command) = input.command.as_deref() {
         validate_command(command)?;
-        args.extend(["--".into(), command.to_string()]);
+        let first = if input.remain_on_exit { HOLD } else { command };
+        args.extend(["--".into(), first.to_string()]);
     }
-    let output = tmux.run(&args).await.map_err(|error| error.to_string())?;
-    let created = parse_created(&output)?;
+    let output = tmux.run(&args).await.map_err(|error| error.sentence())?;
     ctx.monitor.poke();
+    let created = parse_created(&output)?;
+    if input.remain_on_exit {
+        tmux.keep_when_done(&created.pane_id, input.command.as_deref())
+            .await?;
+    }
     Ok(created)
 }
 
@@ -257,7 +273,7 @@ pub async fn select(ctx: &Ctx, input: WindowInput) -> Result<SelectedWindow, Str
         &window_target(&session_id, &WindowRef::Id(window_id.clone())),
     ])
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.sentence())?;
     ctx.monitor.poke();
     Ok(SelectedWindow {
         session_id,
@@ -273,10 +289,10 @@ pub async fn rename(ctx: &Ctx, input: RenameWindowInput) -> Result<RenamedWindow
         "-t",
         &window_target(&session_id, &WindowRef::Id(window_id.clone())),
         "--",
-        &input.name,
+        &tmux.name_arg(&input.name),
     ])
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.sentence())?;
     ctx.monitor.poke();
     Ok(RenamedWindow {
         window_id,
@@ -292,15 +308,18 @@ pub async fn kill(ctx: &Ctx, input: WindowInput) -> Result<KilledOutput, String>
         &window_target(&session_id, &WindowRef::Id(window_id)),
     ])
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.sentence())?;
     ctx.monitor.poke();
     Ok(KilledOutput { killed: true })
 }
 
 /// `move-window` keeps the window's id, panes and programs. Its `-t $2:`
 /// would take the first free index, which can be a gap between two windows,
-/// so a plain move names the index after the last window: the window shows
-/// last, where a caller that "moved it to that session" looks for it.
+/// so a plain move goes after the last window: the window shows last, where
+/// a caller that "moved it to that session" looks for it. From tmux 3.2 that
+/// is `-a` after the last window's id, decided by tmux in the same step;
+/// before, `-a` means something else (see [`Side::flag`]), so the index after
+/// the last one is named, which another client can take first.
 pub async fn move_window(ctx: &Ctx, input: MoveWindowInput) -> Result<MovedWindow, String> {
     let next_to = match (&input.before, &input.after) {
         (Some(_), Some(_)) => return Err("Give before or after, not both.".to_string()),
@@ -309,18 +328,14 @@ pub async fn move_window(ctx: &Ctx, input: MoveWindowInput) -> Result<MovedWindo
         (None, None) => None,
     };
     let window = WindowRef::parse(&input.window)?;
-    let version = ctx.collector.tmux_version().await;
+    let tmux = ctx.tmux().await?;
+    let modern = tmux.at_least(3, 2);
     if let Some((side, _)) = &next_to {
-        let (_, major, minor) = side.flag();
-        let known = version
-            .as_deref()
-            .and_then(|version| version_at_least(version, major, minor));
-        if known == Some(false) {
-            return Err(side.too_old(version.as_deref()));
+        if !modern {
+            return Err(side.too_old(&tmux.version));
         }
     }
 
-    let tmux = ctx.tmux().await?;
     let source_id = tmux.resolve_session(&input.session).await?;
     let source_windows = tmux.windows_of(&source_id).await?;
     let moving = find_window(&source_windows, &source_id, &window)?.clone();
@@ -337,8 +352,12 @@ pub async fn move_window(ctx: &Ctx, input: MoveWindowInput) -> Result<MovedWindo
         None if same_session => return Err("The window is already in that session.".to_string()),
         None => {
             args.push("-d".into());
-            match target_windows.iter().map(|w| w.index).max() {
-                Some(last) => format!("{target_id}:{}", last.saturating_add(1)),
+            match target_windows.iter().max_by_key(|w| w.index) {
+                Some(last) if modern => {
+                    args.push("-a".into());
+                    format!("{target_id}:{}", last.id)
+                }
+                Some(last) => format!("{target_id}:{}", last.index.saturating_add(1)),
                 None => format!("{target_id}:"),
             }
         }
@@ -354,7 +373,7 @@ pub async fn move_window(ctx: &Ctx, input: MoveWindowInput) -> Result<MovedWindo
             if !(same_session && moving.active) {
                 args.push("-d".into());
             }
-            args.push(side.flag().0.into());
+            args.push(side.flag().into());
             format!("{target_id}:{}", neighbour.id)
         }
     };
@@ -379,7 +398,7 @@ pub async fn move_window(ctx: &Ctx, input: MoveWindowInput) -> Result<MovedWindo
         move_error(
             error,
             next_to.as_ref().map(|(side, _)| *side),
-            version.as_deref(),
+            &tmux.version,
         )
     })?;
     ctx.monitor.poke();
@@ -444,12 +463,16 @@ mod tests {
     #[test]
     fn a_tmux_without_the_flag_gets_one_sentence() {
         assert_eq!(
-            Side::Before.too_old(Some("3.1c")),
+            Side::Before.too_old("3.1c"),
             "Moving a window before another needs tmux 3.2 or later, and this computer has tmux 3.1c."
         );
         assert_eq!(
-            Side::After.too_old(None),
-            "Moving a window after another needs tmux 2.1 or later."
+            Side::After.too_old("3.0a"),
+            "Moving a window after another needs tmux 3.2 or later, and this computer has tmux 3.0a."
+        );
+        assert_eq!(
+            Side::After.too_old(""),
+            "Moving a window after another needs tmux 3.2 or later."
         );
         // As tmux 2.6 to 3.1c and 3.6 refuse a flag they don't have.
         for refusal in [
@@ -460,21 +483,33 @@ mod tests {
                 move_error(
                     TmuxError::Failed(refusal.into()),
                     Some(Side::Before),
-                    Some("next-3.2")
+                    "next-3.2"
                 ),
                 "Moving a window before another needs tmux 3.2 or later, and this computer has tmux next-3.2."
             );
         }
         assert_eq!(
-            move_error(TmuxError::Failed("index in use: 3".into()), None, None),
-            "index in use: 3",
+            move_error(TmuxError::Failed("index in use: 3".into()), None, "3.1c"),
+            INDEX_TAKEN
+        );
+        assert_eq!(
+            move_error(
+                TmuxError::Failed("can't find window: @9".into()),
+                None,
+                "3.6"
+            ),
+            "There is no window @9."
+        );
+        assert_eq!(
+            move_error(TmuxError::Failed("lost server".into()), None, "3.6"),
+            "lost server",
             "anything else is tmux's own words"
         );
         assert_eq!(
             move_error(
                 TmuxError::Failed("sessions are grouped".into()),
                 Some(Side::After),
-                Some("3.6")
+                "3.6"
             ),
             "Those two sessions are grouped, so they already share their windows."
         );

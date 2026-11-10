@@ -1,5 +1,5 @@
 {
-  "description": "Move a window to another tmux session, after its last window or just before or after one of its windows (`before` / `after`, which also reorder a window inside its own session). The window keeps its id, panes and programs, and the destination session's current window stays as it was. When it was the last window of its session, tmux closes that session.",
+  "description": "Move a window to another tmux session, after its last window or just before or after one of its windows (`before` / `after`, which need tmux 3.2 or later and also reorder a window inside its own session). The window keeps its id, panes and programs, and the destination session's current window stays as it was. When it was the last window of its session, tmux closes that session.",
   "function_id": "tmux::windows::move",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -31,7 +31,7 @@
           }
         ],
         "default": null,
-        "description": "Put it just after this window of `target_session` (id or index). Without `before` or `after` it goes after the session's last window."
+        "description": "Put it just after this window of `target_session` (id or index). Needs tmux 3.2 or later. Without `before` or `after` it goes after the session's last window."
       },
       "before": {
         "anyOf": [

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::{register_fn, spec, Ctx, FunctionSpec};
 use crate::tmux_cli::{
     format_literal, is_pane_id, resolve_cwd, unescape_separators, validate_command, Tmux,
-    TmuxError, SEP,
+    TmuxError, HOLD, SEP,
 };
 
 pub const SELECT: &str = "tmux::panes::select";
@@ -16,8 +16,8 @@ pub const SPLIT: &str = "tmux::panes::split";
 pub const KILL: &str = "tmux::panes::kill";
 pub const RESPAWN: &str = "tmux::panes::respawn";
 
-const SELECT_DESC: &str = "Make a pane the active pane of its window. zoom sets the window's zoom, it never toggles: true zooms the window on this pane (or keeps it zoomed there), false unzooms it, and without zoom the window keeps its zoom state, moved to this pane. A window with one pane can't zoom. Like tmux itself, every client looking at that window follows, your terminal included. It does not change the session's current window (tmux::windows::select does).";
-const SPLIT_DESC: &str = "Split a pane in two: the new pane goes to its right or below it, starts in that pane's current directory (or cwd) and runs the default shell (or command). It becomes the window's active pane unless select is false. Like tmux, splitting a zoomed window unzooms it.";
+const SELECT_DESC: &str = "Make a pane the active pane of its window. zoom sets the window's zoom, it never toggles: true zooms the window on this pane (or keeps it zoomed there), false unzooms it, and without zoom the window keeps its zoom state, moved to this pane. A window with one pane can't zoom: the answer says zoomed false. Like tmux itself, every client looking at that window follows, your terminal included. It does not change the session's current window (tmux::windows::select does).";
+const SPLIT_DESC: &str = "Split a pane in two: the new pane goes to its right or below it, starts in that pane's current directory (or cwd) and runs the default shell (or command). It becomes the window's active pane unless select is false. Like tmux, splitting a zoomed window unzooms it. With remain_on_exit, the new pane stays once its program ends, dead, for tmux::panes::respawn to restart it.";
 const KILL_DESC: &str = "Kill a pane and the program running in it. Killing a window's last pane closes the window, and its session's last window closes the session; the answer says which closed.";
 const RESPAWN_DESC: &str = "Start a pane's program again in the same pane: the command it was started with (or command), in its starting directory (or cwd). A pane whose program is still running is refused unless kill is true, which ends that program first.";
 const CAPTURE_DESC: &str = "The visible screen of one pane as text with its colour and style escapes (capture-pane -e), plus the pane's size, cursor position and whether a full-screen program has the alternate screen. Read-only.";
@@ -92,6 +92,9 @@ pub struct SplitPaneInput {
     /// Make the new pane the window's active pane (default true).
     #[serde(default)]
     pub select: Option<bool>,
+    /// Keep the new pane once its program ends, shown dead, so tmux::panes::respawn can restart it (default false: tmux closes it). On tmux before 3.0, which has no pane options, every pane of its window is kept.
+    #[serde(default)]
+    pub remain_on_exit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -151,25 +154,28 @@ fn field<T: std::str::FromStr + Default>(value: &str) -> T {
     value.trim().parse().unwrap_or_default()
 }
 
+/// After the pane's own id, as [`Tmux::pane_fields`] reads it.
 const SELECTED_FORMAT: [&str; 4] = [
     "#{session_id}",
     "#{window_id}",
-    "#{pane_id}",
     "#{window_zoomed_flag}",
+    "#{window_panes}",
 ];
 
-pub fn parse_selected(output: &str) -> Result<SelectedPane, String> {
-    let line = unescape_separators(output.lines().next().unwrap_or_default());
-    let fields: Vec<&str> = line.split(SEP).collect();
-    if fields.len() != 4 {
-        return Err(format!("unexpected tmux output: {line:?}"));
+/// The pane as [`SELECTED_FORMAT`] read it, and how many panes its window has.
+pub fn parse_selected(pane: &str, fields: &[String]) -> Result<(SelectedPane, u32), String> {
+    match fields {
+        [session_id, window_id, zoomed, panes] => Ok((
+            SelectedPane {
+                session_id: session_id.clone(),
+                window_id: window_id.clone(),
+                pane_id: pane.to_string(),
+                zoomed: zoomed.trim() == "1",
+            },
+            field(panes),
+        )),
+        _ => Err(format!("unexpected tmux output: {fields:?}")),
     }
-    Ok(SelectedPane {
-        session_id: fields[0].to_string(),
-        window_id: fields[1].to_string(),
-        pane_id: fields[2].to_string(),
-        zoomed: fields[3].trim() == "1",
-    })
 }
 
 const CAPTURE_FORMAT: [&str; 5] = [
@@ -200,20 +206,22 @@ pub fn parse_capture(pane_id: &str, output: &str) -> Result<PaneCapture, String>
     })
 }
 
-async fn describe(tmux: &Tmux, pane: &str) -> Result<SelectedPane, String> {
-    let format = SELECTED_FORMAT.join(&SEP.to_string());
-    let output = tmux
-        .run(["display-message", "-p", "-t", pane, format.as_str()])
-        .await
-        .map_err(|error| error.to_string())?;
-    parse_selected(&output)
+async fn describe(tmux: &Tmux, pane: &str) -> Result<(SelectedPane, u32), String> {
+    let fields = tmux.pane_fields(pane, &SELECTED_FORMAT).await?;
+    parse_selected(pane, &fields)
 }
 
+/// tmux only toggles a zoom (`resize-pane -Z`), so setting it takes a read,
+/// then a toggle: not atomic, another client can zoom or unzoom the window
+/// in between. The zoom is read again after each toggle and toggled once
+/// more when it doesn't match, then the answer says what it is. Keeping a
+/// zoom while moving it to another pane is `select-pane -Z` from tmux 3.1;
+/// before, the select drops it and a toggle brings it back.
 pub async fn select(ctx: &Ctx, input: SelectPaneInput) -> Result<SelectedPane, String> {
     let pane = pane_arg(&input.pane)?;
     let tmux = ctx.tmux().await?;
-    // Fails with tmux's own "can't find pane" before anything changes.
-    let before = describe(&tmux, pane).await?;
+    // "There is no pane" before anything changes.
+    let (before, _) = describe(&tmux, pane).await?;
     let run = |args: Vec<&str>| {
         let tmux = tmux.clone();
         let args: Vec<String> = args.into_iter().map(str::to_string).collect();
@@ -221,25 +229,25 @@ pub async fn select(ctx: &Ctx, input: SelectPaneInput) -> Result<SelectedPane, S
             tmux.run(&args)
                 .await
                 .map(drop)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.sentence())
         }
     };
-    match input.zoom {
-        // `-Z` moves an existing zoom to the new pane instead of dropping it.
-        None => run(vec!["select-pane", "-Z", "-t", pane]).await?,
-        Some(true) if before.zoomed => run(vec!["select-pane", "-Z", "-t", pane]).await?,
-        Some(true) => {
-            run(vec!["select-pane", "-t", pane]).await?;
-            run(vec!["resize-pane", "-Z", "-t", pane]).await?
-        }
-        Some(false) => {
-            run(vec!["select-pane", "-t", pane]).await?;
-            if describe(&tmux, pane).await?.zoomed {
-                run(vec!["resize-pane", "-Z", "-t", pane]).await?;
-            }
-        }
+    // Without zoom, the window keeps the zoom it has.
+    let zoom = input.zoom.unwrap_or(before.zoomed);
+    if zoom && before.zoomed && tmux.at_least(3, 1) {
+        run(vec!["select-pane", "-Z", "-t", pane]).await?;
+    } else {
+        run(vec!["select-pane", "-t", pane]).await?;
     }
-    let after = describe(&tmux, pane).await?;
+    for _ in 0..2 {
+        let (now, panes) = describe(&tmux, pane).await?;
+        // A window with one pane can't zoom; tmux ignores the toggle.
+        if now.zoomed == zoom || panes < 2 {
+            break;
+        }
+        run(vec!["resize-pane", "-Z", "-t", pane]).await?;
+    }
+    let (after, _) = describe(&tmux, pane).await?;
     ctx.monitor.poke();
     Ok(after)
 }
@@ -263,7 +271,7 @@ pub async fn capture(ctx: &Ctx, input: PaneInput) -> Result<PaneCapture, String>
             pane,
         ])
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.sentence())?;
     parse_capture(pane, &output)
 }
 
@@ -296,10 +304,12 @@ pub fn parse_kill_counts(output: &str) -> Result<(u32, u32), String> {
 /// tmux refusing a split for want of room, in one sentence.
 fn split_error(error: TmuxError) -> String {
     let message = error.to_string();
-    if message.contains("no space for new pane") || message.contains("pane too small") {
+    // "pane too small" before tmux 3.0, "no space for new pane" up to 3.6,
+    // "no space for a new pane" in 3.8.
+    if message.contains("no space for") || message.contains("pane too small") {
         NO_ROOM.to_string()
     } else {
-        message
+        error.sentence()
     }
 }
 
@@ -313,19 +323,14 @@ pub async fn split(ctx: &Ctx, input: SplitPaneInput) -> Result<NewPane, String> 
         validate_command(command)?;
     }
     let tmux = ctx.tmux().await?;
+    // Also "There is no pane" before anything changes.
+    let here = tmux.pane_fields(pane, &["#{pane_current_path}"]).await?;
     let start = match cwd {
         Some(cwd) => format_literal(&cwd),
-        None => {
-            // Also tmux's own "can't find pane" before anything changes.
-            let here = tmux
-                .run(["display-message", "-p", "-t", pane, "#{pane_current_path}"])
-                .await
-                .map_err(|error| error.to_string())?;
-            match here.trim_end_matches('\n') {
-                "" => "#{session_path}".to_string(),
-                here => format_literal(here),
-            }
-        }
+        None => match here[0].as_str() {
+            "" => "#{session_path}".to_string(),
+            here => format_literal(here),
+        },
     };
     let format = ["#{session_id}", "#{window_id}", "#{pane_id}"].join(&SEP.to_string());
     let direction = match input.direction {
@@ -344,11 +349,17 @@ pub async fn split(ctx: &Ctx, input: SplitPaneInput) -> Result<NewPane, String> 
     }
     args.extend(["-t".into(), pane.into(), "-c".into(), start]);
     if let Some(command) = input.command.as_deref() {
-        args.extend(["--".into(), command.to_string()]);
+        let first = if input.remain_on_exit { HOLD } else { command };
+        args.extend(["--".into(), first.to_string()]);
     }
     let output = tmux.run(&args).await.map_err(split_error)?;
     ctx.monitor.poke();
-    parse_new_pane(&output)
+    let created = parse_new_pane(&output)?;
+    if input.remain_on_exit {
+        tmux.keep_when_done(&created.pane_id, input.command.as_deref())
+            .await?;
+    }
+    Ok(created)
 }
 
 pub async fn kill(ctx: &Ctx, input: PaneInput) -> Result<KilledPane, String> {
@@ -356,7 +367,8 @@ pub async fn kill(ctx: &Ctx, input: PaneInput) -> Result<KilledPane, String> {
     let tmux = ctx.tmux().await?;
     let counts = ["#{window_panes}", "#{session_windows}"].join(&SEP.to_string());
     // Counted in the same tmux command as the kill, so nothing changes in
-    // between; a missing pane stops it at tmux's "can't find pane".
+    // between; a missing pane stops it at the kill ("There is no pane"),
+    // which tmux 3.4's display-message would let through.
     let output = tmux
         .run([
             "display-message",
@@ -370,7 +382,7 @@ pub async fn kill(ctx: &Ctx, input: PaneInput) -> Result<KilledPane, String> {
             pane,
         ])
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.sentence())?;
     ctx.monitor.poke();
     let (panes, windows) = parse_kill_counts(&output)?;
     let window_closed = panes <= 1;
@@ -389,11 +401,8 @@ pub async fn respawn(ctx: &Ctx, input: RespawnPaneInput) -> Result<RespawnedPane
     }
     let kill = input.kill.unwrap_or(false);
     let tmux = ctx.tmux().await?;
-    let dead = tmux
-        .run(["display-message", "-p", "-t", pane, "#{pane_dead}"])
-        .await
-        .map_err(|error| error.to_string())?;
-    if !kill && dead.trim() != "1" {
+    let dead = tmux.pane_fields(pane, &["#{pane_dead}"]).await?;
+    if !kill && dead[0].trim() != "1" {
         return Err(STILL_RUNNING.to_string());
     }
     let mut args: Vec<String> = vec!["respawn-pane".into()];
@@ -408,11 +417,10 @@ pub async fn respawn(ctx: &Ctx, input: RespawnPaneInput) -> Result<RespawnedPane
         args.extend(["--".into(), command.to_string()]);
     }
     tmux.run(&args).await.map_err(|error| {
-        let message = error.to_string();
-        if message.contains("still active") {
+        if error.to_string().contains("still active") {
             STILL_RUNNING.to_string()
         } else {
-            message
+            error.sentence()
         }
     })?;
     ctx.monitor.poke();
@@ -453,19 +461,19 @@ mod tests {
 
     #[test]
     fn selected_output_parses() {
-        let line = ["$3", "@8", "%11", "1"].join(&SEP.to_string());
-        let selected = parse_selected(&format!("{line}\n")).unwrap();
+        let fields: Vec<String> = ["$3", "@8", "1", "2"].map(str::to_string).to_vec();
+        let (selected, panes) = parse_selected("%11", &fields).unwrap();
         assert_eq!(
             (
                 selected.session_id.as_str(),
                 selected.window_id.as_str(),
                 selected.pane_id.as_str(),
-                selected.zoomed
+                selected.zoomed,
+                panes
             ),
-            ("$3", "@8", "%11", true)
+            ("$3", "@8", "%11", true, 2)
         );
-        assert!(parse_selected("$3\\037@8\\037%11\\0370\n").is_ok());
-        assert!(parse_selected("").is_err());
+        assert!(parse_selected("%11", &fields[..3]).is_err());
     }
 
     #[test]
@@ -507,13 +515,14 @@ mod tests {
         // tmux 3.x, then older ones.
         for refusal in [
             "no space for new pane",
+            "no space for a new pane",
             "create pane failed: pane too small",
         ] {
             assert_eq!(split_error(TmuxError::Failed(refusal.into())), NO_ROOM);
         }
         assert_eq!(
             split_error(TmuxError::Failed("can't find pane: %9".into())),
-            "can't find pane: %9"
+            "There is no pane %9."
         );
     }
 

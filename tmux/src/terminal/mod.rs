@@ -294,7 +294,7 @@ impl TerminalManager {
                 &window_target(&session_id, &WindowRef::Id(window_id)),
             ])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         }
 
         let (cols, rows) = (request.cols, request.rows);
@@ -566,7 +566,7 @@ impl TerminalManager {
         };
         tmux.run(["switch-client", "-c", tty, "-t", &session_id])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         if let Some(window_id) = window_id {
             tmux.run([
                 "select-window",
@@ -574,7 +574,7 @@ impl TerminalManager {
                 &window_target(&session_id, &WindowRef::Id(window_id)),
             ])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         }
         (self.on_change)();
         Ok(SwitchResponse { session_id })
@@ -596,7 +596,7 @@ impl TerminalManager {
         let tmux = self.collector.tmux().await?;
         tmux.run(["refresh-client", "-t", tty])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         Ok(OkResponse { ok: true })
     }
 
@@ -903,6 +903,7 @@ mod tests {
             path: "/usr/bin/tmux".into(),
             socket: Socket::Name("work".into()),
             timeout: Duration::from_secs(1),
+            version: "3.6".into(),
         };
         assert_eq!(
             attach_args(&tmux, "$3"),

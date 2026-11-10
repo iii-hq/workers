@@ -1477,6 +1477,7 @@ fn check_server(path: &Path) -> Tmux {
         path: path.to_path_buf(),
         socket: Socket::Name(format!("iii-check-{}", &name[..8])),
         timeout: START_CHECK_LIMIT,
+        version: String::new(),
     }
 }
 

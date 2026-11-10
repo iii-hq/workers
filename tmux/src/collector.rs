@@ -135,6 +135,7 @@ impl Collector {
             path: resolved.path,
             socket: Socket::from_config(&config),
             timeout: Duration::from_millis(config.command_timeout_ms),
+            version: resolved.version,
         })
     }
 
@@ -171,6 +172,7 @@ impl Collector {
             path: resolved.path.clone(),
             socket: Socket::from_config(&config),
             timeout: Duration::from_millis(config.command_timeout_ms),
+            version: resolved.version.clone(),
         };
         let mut info = TmuxInfo {
             available: true,
