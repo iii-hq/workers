@@ -185,12 +185,26 @@ a build and keeps quiet about it.
   removes only the entries of those manifests that the host no longer has, or
   has as another kind, deepest first. What the build installed and what the
   worker wrote in `/workspace` are in no manifest, so they stay across
-  restarts and rebuilds, whatever their name or depth. A directory goes only
-  once empty; one the host turned into a file while it still holds such files
-  is moved aside to `<name>.iii-kept.<pid>`. Without a manifest (a disk an
-  older adapter wrote) a boot skips the cleanup once and logs it. A file the
-  host deletes while the VM runs stays in the guest until the next boot when
-  it is a root `build`, `out`, `obj`, `coverage` or `deps` file.
+  restarts and rebuilds, whatever their name or depth.
+  - A boot never cleans a name its copy leaves out: a run leaves the
+    `vendor/` the build copied whole until the next build, even where the
+    host deleted files from it.
+  - Nothing is removed through a symlink. An entry whose parent in the guest
+    is not a chain of real directories inside `/workspace` (the worker, the
+    install or the sync put a link there) is skipped.
+  - A directory goes only once empty. One the host turned into a file while
+    it still holds such files moves aside to the first free
+    `<name>.iii-kept.<n>` (`.iii-kept.1`, `.iii-kept.2`, ...).
+  - A name with a newline or a backslash is never cleaned: `tar -v` prints
+    it escaped (GNU) or over several lines (busybox), and the cleanup trusts
+    a line only when it is one plain name.
+  - Without a manifest (a disk an older adapter wrote) nothing tells what
+    the host deleted before: it stays in `/workspace` until the worker is
+    destroyed, and the boot logs it. From that boot on, the copies record
+    their manifest.
+  - A file the host deletes while the VM runs stays in the guest until the
+    next boot when it is a root `build`, `out`, `obj`, `coverage` or `deps`
+    file.
 
 ## Known limits
 

@@ -43,14 +43,21 @@ const WORKSPACE_STATE: &str = "/var/lib/iii";
 const BUILD_MANIFEST: &str = "build.manifest";
 const RUN_MANIFEST: &str = "workspace.manifest";
 
-/// `--exclude` flags for every any-depth name of the list but `keep`, and for
-/// `.iii`: Compose's state, which holds the project's token. The root-only
-/// names are left to [`copy_in_script`], which knows whether they are dirs.
-fn source_excludes(keep: &[&str]) -> String {
+/// The names a copy leaves out at any depth: every any-depth name of the list
+/// but `keep`, and `.iii`, Compose's state, which holds the project's token.
+/// The root-only names are left to [`copy_in_script`], which knows whether
+/// they are dirs.
+fn left_out<'a>(keep: &'a [&str]) -> impl Iterator<Item = &'static str> + 'a {
     IGNORED_DIR_NAMES
         .iter()
+        .copied()
         .filter(|name| !keep.contains(name))
-        .chain([&".iii"])
+        .chain([".iii"])
+}
+
+/// `--exclude` flags for [`left_out`].
+fn source_excludes(keep: &[&str]) -> String {
+    left_out(keep)
         .map(|name| format!("--exclude={name}"))
         .collect::<Vec<_>>()
         .join(" ")
@@ -66,7 +73,7 @@ static BUILD_SOURCE_EXCLUDES: LazyLock<String> = LazyLock::new(|| source_exclude
 /// root `build` script still comes along: `--exclude=./<name>` matches the
 /// root's entry only. What tar extracted, one path per line as `tar -v` prints
 /// it (a directory with a trailing `/`), replaces `$IIISTATE/<manifest>` once
-/// the copy succeeded: the next boot's [`WORKSPACE_CLEANUP`] reads it.
+/// the copy succeeded: the next boot's [`workspace_cleanup`] reads it.
 fn copy_in_script(excludes: &str, manifest: &str) -> String {
     let root_only = ROOT_IGNORED_DIR_NAMES.join(" ");
     format!(
@@ -97,37 +104,90 @@ static BUILD_COPY: LazyLock<String> =
 /// the last run's) that the host no longer has, or has as another kind (a file
 /// where a directory was), deepest first. Nothing else goes: what the build
 /// installed and what the worker wrote are in no manifest, whatever their name
-/// or depth. A directory goes only once empty; one that the host turned into a
-/// file but that still holds such things is moved aside to make way for it.
-/// Without a manifest (the first copy, or a disk an older adapter wrote) the
-/// cleanup is skipped, once: the copy writes one. A `.iii` an older adapter
-/// copied in goes in any case: it holds the project's token.
-const WORKSPACE_CLEANUP: &str = r#"find "$WS" -mindepth 1 -name .iii -prune -exec rm -rf {} + 2>/dev/null || true
+/// or depth.
+///
+/// - An entry with a component this boot's copy leaves out (all but `keep` of
+///   [`left_out`]) is never touched: a run neither copies, syncs nor cleans
+///   those names, so the `vendor/` a build copied stays whole until the next
+///   build.
+/// - Nothing is removed, emptied or moved through a symlink: `$WS` and the
+///   entry's parent must be chains of real directories, the parent inside
+///   `$WS`. A link the worker, the install or the sync put there is skipped.
+/// - A directory goes only once empty; one that the host turned into a file
+///   but that still holds such things moves aside, to the first free
+///   `<name>.iii-kept.<n>`, to make way for it.
+/// - Only a line `tar -v` printed as one plain name counts: it starts with
+///   `./`, is not continued on the next line (busybox prints a newline raw)
+///   and has no backslash (GNU tar escapes newlines and backslashes). A name
+///   with a newline or a backslash is never cleaned.
+///
+/// Without a manifest (a disk an older adapter wrote) there is nothing to go
+/// by: what the host deleted before this boot stays until the worker is
+/// destroyed. A `.iii` an older adapter copied in goes in any case: it holds
+/// the project's token.
+fn workspace_cleanup(keep: &[&str]) -> String {
+    let skip = left_out(keep)
+        .map(|name| format!("*/\"{name}\"/*"))
+        .collect::<Vec<_>>()
+        .join("|");
+    WORKSPACE_CLEANUP_SCRIPT.replace("@SKIP@", &skip)
+}
+
+const WORKSPACE_CLEANUP_SCRIPT: &str = r#"find "$WS" -mindepth 1 -name .iii -prune -exec rm -rf {} + 2>/dev/null || true
 if [ -f "$IIISTATE/workspace.manifest" ] || [ -f "$IIISTATE/build.manifest" ]; then
-  cat "$IIISTATE/workspace.manifest" "$IIISTATE/build.manifest" 2>/dev/null | LC_ALL=C sort -ru |
-  while IFS= read -r entry; do
-    rel=${entry#./}
-    rel=${rel%/}
-    case "$rel" in ''|.|..|../*|*/..|*/../*) continue ;; esac
-    ws="$WS/$rel"
-    host="$SRC/$rel"
-    if [ "$entry" != "${entry%/}" ]; then
-      if [ -d "$host" ] && [ ! -L "$host" ]; then continue; fi
-      if [ ! -d "$ws" ] || [ -L "$ws" ]; then continue; fi
-      if rmdir "$ws" 2>/dev/null; then continue; fi
-      if [ -e "$host" ] || [ -L "$host" ]; then
-        mv "$ws" "$ws.iii-kept.$$" && echo "iii: $rel is no longer a directory on the host; what the build or the worker left in it is at $rel.iii-kept.$$" >&2
+  if [ "$(cd -P "$WS" 2>/dev/null && pwd -P)" != "$WS" ]; then
+    echo "iii: $WS is not a real directory; skipping the workspace cleanup" >&2
+  else
+    safe_parent=
+    for manifest in "$IIISTATE/workspace.manifest" "$IIISTATE/build.manifest"; do
+      if [ -f "$manifest" ]; then
+        awk '/^\.\// { if (one) print name; name = $0; one = 1; next } { one = 0 } END { if (one) print name }' "$manifest"
       fi
-    else
-      if [ -e "$host" ] || [ -L "$host" ]; then
-        if [ ! -d "$host" ] || [ -L "$host" ]; then continue; fi
+    done | LC_ALL=C sort -ru |
+    while IFS= read -r entry; do
+      case "$entry" in ./*) ;; *) continue ;; esac
+      case "$entry" in *\\*) continue ;; esac
+      rel=${entry#./}
+      rel=${rel%/}
+      case "$rel" in ''|.|..|../*|*/..|*/../*) continue ;; esac
+      case "/$rel/" in @SKIP@) continue ;; esac
+      ws="$WS/$rel"
+      host="$SRC/$rel"
+      if [ "$entry" != "${entry%/}" ]; then
+        if [ -d "$host" ] && [ ! -L "$host" ]; then continue; fi
+        if [ ! -d "$ws" ] || [ -L "$ws" ]; then continue; fi
+      else
+        if [ -e "$host" ] || [ -L "$host" ]; then
+          if [ ! -d "$host" ] || [ -L "$host" ]; then continue; fi
+        fi
+        if [ ! -L "$ws" ] && { [ ! -e "$ws" ] || [ -d "$ws" ]; }; then continue; fi
       fi
-      if [ -L "$ws" ] || { [ -e "$ws" ] && [ ! -d "$ws" ]; }; then rm -f "$ws"; fi
-    fi
-  done || true
-else
-  echo "iii: no workspace manifest yet: what the host deleted since the last copy stays this boot" >&2
+      parent=${ws%/*}
+      if [ "$parent" != "$safe_parent" ]; then
+        [ "$(cd -P "$parent" 2>/dev/null && pwd -P)" = "$parent" ] || continue
+        safe_parent=$parent
+      fi
+      if [ "$entry" = "${entry%/}" ]; then
+        rm -f "$ws" || true
+      elif rmdir "$ws" 2>/dev/null; then
+        safe_parent=
+      elif [ -e "$host" ] || [ -L "$host" ]; then
+        n=1
+        while [ -e "$ws.iii-kept.$n" ] || [ -L "$ws.iii-kept.$n" ]; do n=$((n + 1)); done
+        mv "$ws" "$ws.iii-kept.$n" && echo "iii: $rel is no longer a directory on the host; what the build or the worker left in it is at $rel.iii-kept.$n" >&2
+        safe_parent=
+      fi
+    done || true
+  fi
+elif [ -n "$(ls -A "$WS" 2>/dev/null)" ]; then
+  echo "iii: no workspace manifest yet (a disk an older adapter wrote): what the host deleted before this boot stays in $WS until the worker is destroyed" >&2
 fi"#;
+
+/// The cleanup before a run's copy.
+static RUN_CLEANUP: LazyLock<String> = LazyLock::new(|| workspace_cleanup(&[]));
+/// The cleanup before the copy of a run that installs in the guest: it copies
+/// as a build does, so it cleans as one would.
+static INSTALL_CLEANUP: LazyLock<String> = LazyLock::new(|| workspace_cleanup(BUILD_COPIES));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -260,9 +320,11 @@ fn boot_script(project: &ProjectInfo, is_bundle: bool, provision: Provision) -> 
     let mut parts = script_header();
     // A guest that installs gets what a build's copy gets (`vendor/` too); a
     // run of a build's image the run's list.
-    let copy = match provision {
-        Provision::Image => RUN_COPY.as_str(),
-        Provision::Host { .. } | Provision::InGuest => INSTALL_COPY.as_str(),
+    let (cleanup, copy) = match provision {
+        Provision::Image => (RUN_CLEANUP.as_str(), RUN_COPY.as_str()),
+        Provision::Host { .. } | Provision::InGuest => {
+            (INSTALL_CLEANUP.as_str(), INSTALL_COPY.as_str())
+        }
     };
 
     // Workspace strategy:
@@ -298,7 +360,7 @@ echo "iii: workspace ready (bundle worker; dep-dir bind-mounts skipped — vendo
     } else {
         parts.push(SOURCE_SHARE_CHECK.to_string());
         parts.push(format!("WS=/workspace\nIIISTATE={WORKSPACE_STATE}"));
-        parts.push(WORKSPACE_CLEANUP.to_string());
+        parts.push(cleanup.to_string());
         // Copy host source into the VM-local /workspace, without the dirs of
         // the list, so what the build or the guest installed persists across
         // a re-copy and host clutter isn't pulled in. Only /mnt/host-src is
@@ -1292,7 +1354,7 @@ mod tests {
             "{local}"
         );
         assert!(!local.contains(".iii-prepared"));
-        assert!(local.contains(WORKSPACE_CLEANUP));
+        assert!(local.contains(RUN_CLEANUP.as_str()));
         assert!(local.contains(SOURCE_EXCLUDES.as_str()));
         assert!(local.contains("touch /run/iii/source-ready"));
         assert!(local.ends_with("exec /bin/sh -c 'node server.js'"));
@@ -1371,9 +1433,17 @@ mod tests {
         }
         // The cleanup reads the manifests the copies write.
         assert!(RUN_COPY.contains(RUN_MANIFEST) && BUILD_COPY.contains(BUILD_MANIFEST));
-        for manifest in [RUN_MANIFEST, BUILD_MANIFEST] {
-            assert!(WORKSPACE_CLEANUP.contains(&format!("$IIISTATE/{manifest}")));
+        for cleanup in [&*RUN_CLEANUP, &*INSTALL_CLEANUP] {
+            for manifest in [RUN_MANIFEST, BUILD_MANIFEST] {
+                assert!(cleanup.contains(&format!("$IIISTATE/{manifest}")));
+            }
+            // It skips what the copy it runs before leaves out.
+            for name in [".iii", "node_modules", "target"] {
+                assert!(cleanup.contains(&format!("*/\"{name}\"/*")), "{name}");
+            }
         }
+        assert!(RUN_CLEANUP.contains(r#"*/"vendor"/*"#));
+        assert!(!INSTALL_CLEANUP.contains(r#"*/"vendor"/*"#));
     }
 
     /// `build`, `out`, `obj`, `coverage` and `deps` often hold source below the
@@ -1561,6 +1631,8 @@ mod tests {
     /// and `$IIISTATE` pointing at `t`'s `src`, `ws` and `state`, under bash
     /// (the host's `sh` may lack `pipefail`, which the guest's has).
     fn fragment(t: &Path, script: &str) -> (bool, String) {
+        // The guest's `$WS` is canonical, and the cleanup checks it is.
+        let t = &std::fs::canonicalize(t).unwrap();
         let out = std::process::Command::new("bash")
             .arg("-c")
             .arg(format!("set -e\n{script}"))
@@ -1585,7 +1657,7 @@ mod tests {
     /// A boot of a `path://` run: the cleanup, then the run's copy.
     fn boot(t: &Path) -> String {
         std::fs::create_dir_all(t.join("ws")).unwrap();
-        let (ok, log) = fragment(t, &format!("{WORKSPACE_CLEANUP}\n{}", *RUN_COPY));
+        let (ok, log) = fragment(t, &format!("{}\n{}", *RUN_CLEANUP, *RUN_COPY));
         assert!(ok, "{log}");
         log
     }
@@ -1601,7 +1673,15 @@ mod tests {
             &["ws/.iii/compose/default/state.json", "ws/sub/.iii/token"],
         );
         put(t, &["src/.iii/compose/default/state.json", "src/app.js"]);
-        boot(t);
+        // A disk an older adapter wrote has no manifest: nothing tells what
+        // the host deleted before, and the boot says it stays.
+        let log = boot(t);
+        assert!(
+            log.contains("no workspace manifest yet")
+                && log.contains("stays in")
+                && log.contains("until the worker is destroyed"),
+            "{log}"
+        );
         assert!(!t.join("ws/.iii").exists() && !t.join("ws/sub/.iii").exists());
         assert!(t.join("ws/app.js").is_file());
     }
@@ -1698,7 +1778,8 @@ mod tests {
                 "src/flip",
             ],
         );
-        assert!(boot(t).contains("no workspace manifest yet"));
+        // A first boot has an empty /workspace: nothing stale to tell about.
+        assert!(!boot(t).contains("no workspace manifest yet"));
         // What the build or the guest installed, and what the worker wrote.
         put(
             t,
@@ -1720,6 +1801,8 @@ mod tests {
         std::fs::write(t.join("src/swapped"), "now a file").unwrap();
         std::fs::remove_file(t.join("src/flip")).unwrap();
         put(t, &["src/flip/inner.js"]);
+        // An earlier boot already moved a `swapped` aside.
+        std::fs::write(t.join("ws/swapped.iii-kept.1"), "earlier").unwrap();
 
         let log = boot(t);
         for kept in [
@@ -1739,20 +1822,17 @@ mod tests {
             std::fs::read_to_string(t.join("ws/swapped")).unwrap(),
             "now a file"
         );
-        let kept: Vec<_> = std::fs::read_dir(t.join("ws"))
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .filter(|n| n.starts_with("swapped.iii-kept."))
-            .collect();
-        assert_eq!(kept.len(), 1, "{log}");
+        // The next free name: the earlier one stays as it was.
         assert!(
-            t.join("ws")
-                .join(&kept[0])
-                .join("node_modules/y.js")
-                .is_file()
+            t.join("ws/swapped.iii-kept.2/node_modules/y.js").is_file(),
+            "{log}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(t.join("ws/swapped.iii-kept.1")).unwrap(),
+            "earlier"
         );
         assert!(
-            log.contains("swapped is no longer a directory on the host"),
+            log.contains("swapped is no longer a directory on the host; what the build or the worker left in it is at swapped.iii-kept.2"),
             "{log}"
         );
         assert!(!log.contains("no workspace manifest yet"), "{log}");
@@ -1783,6 +1863,133 @@ mod tests {
         let manifest = std::fs::read_to_string(t.join("state").join(RUN_MANIFEST)).unwrap();
         assert!(manifest.lines().any(|l| l == "./app.js"), "{manifest}");
         assert!(!manifest.contains("vendor"), "{manifest}");
+    }
+
+    /// The cleanup never acts through a symlink: an entry whose parent in the
+    /// guest is a link (the worker's, the install's, or one the sync applied)
+    /// is skipped, so nothing outside `$WS` is removed, emptied or moved.
+    #[test]
+    fn the_cleanup_never_removes_through_a_symlinked_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &[
+                "src/data/seed.json",
+                "src/data/sub/a.js",
+                "src/lib/deep/x.js",
+            ],
+        );
+        boot(t);
+        // The guest turns data/ and lib/ into links to a dir outside $WS.
+        put(
+            t,
+            &[
+                "victim/seed.json",
+                "victim/sub/a.js",
+                "victim/sub/extra.js",
+                "victim/deep/x.js",
+            ],
+        );
+        std::fs::remove_dir_all(t.join("ws/data")).unwrap();
+        std::os::unix::fs::symlink(t.join("victim"), t.join("ws/data")).unwrap();
+        std::fs::remove_dir_all(t.join("ws/lib")).unwrap();
+        std::os::unix::fs::symlink("../victim", t.join("ws/lib")).unwrap();
+        // The host deletes the files, and turns data/sub into a file.
+        std::fs::remove_file(t.join("src/data/seed.json")).unwrap();
+        std::fs::remove_dir_all(t.join("src/data/sub")).unwrap();
+        std::fs::write(t.join("src/data/sub"), "now a file").unwrap();
+        std::fs::remove_dir_all(t.join("src/lib/deep")).unwrap();
+
+        let (ok, log) = fragment(t, &RUN_CLEANUP);
+        assert!(ok, "{log}");
+        for kept in ["seed.json", "sub/a.js", "sub/extra.js", "deep/x.js"] {
+            assert!(t.join("victim").join(kept).is_file(), "{kept} went: {log}");
+        }
+        let mut victim: Vec<_> = std::fs::read_dir(t.join("victim"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        victim.sort();
+        assert_eq!(victim, ["deep", "seed.json", "sub"], "{log}");
+
+        // Nor through a `$WS` that is itself a link.
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(t, &["real/gone.js", "src/app.js"]);
+        std::os::unix::fs::symlink("real", t.join("ws")).unwrap();
+        std::fs::create_dir_all(t.join("state")).unwrap();
+        std::fs::write(t.join("state").join(RUN_MANIFEST), "./\n./gone.js\n").unwrap();
+        let (ok, log) = fragment(t, &RUN_CLEANUP);
+        assert!(ok, "{log}");
+        assert!(t.join("real/gone.js").is_file(), "{log}");
+        assert!(log.contains("is not a real directory"), "{log}");
+    }
+
+    /// A run neither copies nor syncs `vendor/`, so it does not clean it
+    /// either, though the build's manifest lists what the build copied there:
+    /// the build's `vendor/` stays whole until the next build. A run that
+    /// installs copies `vendor/` as a build does, and cleans it.
+    #[test]
+    fn a_run_leaves_the_vendor_dir_of_the_build_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &["src/app.js", "src/vendor/a/mod.go", "src/vendor/b/old.go"],
+        );
+        std::fs::create_dir_all(t.join("ws")).unwrap();
+        let (ok, log) = fragment(t, &BUILD_COPY);
+        assert!(ok, "{log}");
+        let manifest = std::fs::read_to_string(t.join("state").join(BUILD_MANIFEST)).unwrap();
+        assert!(
+            manifest.lines().any(|l| l == "./vendor/b/old.go"),
+            "{manifest}"
+        );
+        std::fs::remove_dir_all(t.join("src/vendor/b")).unwrap();
+
+        let log = boot(t);
+        assert!(t.join("ws/vendor/b/old.go").is_file(), "{log}");
+        assert!(t.join("ws/vendor/a/mod.go").is_file());
+
+        let (ok, log) = fragment(t, &format!("{}\n{}", *INSTALL_CLEANUP, *INSTALL_COPY));
+        assert!(ok, "{log}");
+        assert!(!t.join("ws/vendor/b").exists(), "{log}");
+        assert!(t.join("ws/vendor/a/mod.go").is_file());
+    }
+
+    /// Only a line `tar -v` printed as one plain name counts. A name with a
+    /// newline (busybox prints it raw, GNU tar escapes it) or a backslash is
+    /// never cleaned, so no fragment or escape of it removes a worker's file.
+    #[test]
+    fn the_cleanup_trusts_plain_manifest_lines_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &[
+                "src/app.js",
+                "ws/app.js",
+                "ws/gone.js",
+                "ws/notes",
+                "ws/frag",
+                "ws/a\\nb",
+                "ws/back\\slash",
+                "ws/tail",
+            ],
+        );
+        std::fs::create_dir_all(t.join("state")).unwrap();
+        std::fs::write(
+            t.join("state").join(RUN_MANIFEST),
+            "./\n./app.js\n./gone.js\n./notes\nfrag\n./a\\nb\n./back\\slash\n./tail\nmore\n",
+        )
+        .unwrap();
+        let (ok, log) = fragment(t, &RUN_CLEANUP);
+        assert!(ok, "{log}");
+        assert!(!t.join("ws/gone.js").exists(), "the cleanup ran: {log}");
+        for kept in ["app.js", "notes", "frag", "a\\nb", "back\\slash", "tail"] {
+            assert!(t.join("ws").join(kept).is_file(), "{kept} went: {log}");
+        }
     }
 
     /// In legacy mode the marker sits on the guest root: a planted symlink
@@ -1834,7 +2041,7 @@ mod tests {
         assert!(script.contains("tar -cf -"));
         // Re-sync deletions: remove what the last copy put there and the host
         // deleted, so it doesn't keep running on the persistent upper.
-        assert!(script.contains(WORKSPACE_CLEANUP));
+        assert!(script.contains(INSTALL_CLEANUP.as_str()));
         // Host-untouched: the unmount is FATAL, not best-effort.
         assert!(script.contains("refusing to run with host source writable"));
         assert!(
