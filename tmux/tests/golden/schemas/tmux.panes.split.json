@@ -1,0 +1,96 @@
+{
+  "description": "Split a pane in two: the new pane goes to its right or below it, starts in that pane's current directory (or cwd) and runs the default shell (or command). It becomes the window's active pane unless select is false. Like tmux, splitting a zoomed window unzooms it.",
+  "function_id": "tmux::panes::split",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SplitDirection": {
+        "description": "Where a split puts the new pane.",
+        "oneOf": [
+          {
+            "description": "To the right of the pane (tmux `split-window -h`).",
+            "enum": [
+              "right"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Below the pane (tmux `split-window -v`).",
+            "enum": [
+              "below"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "command": {
+        "default": null,
+        "description": "Shell command to run instead of the default shell.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cwd": {
+        "default": null,
+        "description": "Working directory, absolute or `~/…`. Defaults to the split pane's current directory.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "direction": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SplitDirection"
+          }
+        ],
+        "description": "Where the new pane goes: `right` or `below`."
+      },
+      "pane": {
+        "description": "Pane id to split, e.g. `%5`.",
+        "type": "string"
+      },
+      "select": {
+        "default": null,
+        "description": "Make the new pane the window's active pane (default true).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "direction",
+      "pane"
+    ],
+    "title": "SplitPaneInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane_id": {
+        "description": "The new pane's id.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session id.",
+        "type": "string"
+      },
+      "window_id": {
+        "description": "Window id holding both panes.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane_id",
+      "session_id",
+      "window_id"
+    ],
+    "title": "NewPane",
+    "type": "object"
+  }
+}

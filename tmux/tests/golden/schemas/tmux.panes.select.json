@@ -1,5 +1,5 @@
 {
-  "description": "Make a pane the active pane of its window, optionally zooming the window on it (zoom: true, like tmux's prefix z) or unzooming it (zoom: false); without zoom the window keeps its zoom state. Like tmux itself, every client looking at that window follows, your terminal included. It does not change the session's current window (tmux::windows::select does).",
+  "description": "Make a pane the active pane of its window. zoom sets the window's zoom, it never toggles: true zooms the window on this pane (or keeps it zoomed there), false unzooms it, and without zoom the window keeps its zoom state, moved to this pane. A window with one pane can't zoom. Like tmux itself, every client looking at that window follows, your terminal included. It does not change the session's current window (tmux::windows::select does).",
   "function_id": "tmux::panes::select",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
