@@ -22,6 +22,11 @@
           "null"
         ]
       },
+      "installable": {
+        "default": false,
+        "description": "tmux is missing and `tmux::install` can try: a supported OS, the configured binary is plain `tmux`, not a path or another name, and this processor has an official build or this computer a package manager.",
+        "type": "boolean"
+      },
       "path": {
         "description": "Resolved tmux binary.",
         "type": [

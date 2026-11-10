@@ -1,0 +1,243 @@
+{
+  "description": "Install the tmux program on this computer, in the background, and answer at once: the system's package manager when this user may run it without a password (Homebrew, MacPorts, apt, dnf, pacman, zypper, apk), otherwise tmux's official build into ~/.local/bin. Starting during a run joins it. Poll tmux::install::status.",
+  "function_id": "tmux::install",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "No parameters.",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "InstallMethod": {
+        "oneOf": [
+          {
+            "description": "`apt-get`.",
+            "enum": [
+              "apt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`dnf`.",
+            "enum": [
+              "dnf"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`pacman`.",
+            "enum": [
+              "pacman"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`zypper`.",
+            "enum": [
+              "zypper"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`apk`.",
+            "enum": [
+              "apk"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Homebrew's `brew`.",
+            "enum": [
+              "homebrew"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "MacPorts' `port`.",
+            "enum": [
+              "macports"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The tmux project's official build, into `~/.local/bin`.",
+            "enum": [
+              "prebuilt"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InstallState": {
+        "oneOf": [
+          {
+            "description": "No install ran since the worker started.",
+            "enum": [
+              "idle"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An install is going on.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "tmux is installed and resolves.",
+            "enum": [
+              "succeeded"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Every way to install it failed.",
+            "enum": [
+              "failed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InstallStep": {
+        "oneOf": [
+          {
+            "description": "Looking at the computer.",
+            "enum": [
+              "checking"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Refreshing the package manager's list.",
+            "enum": [
+              "updating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Fetching the official build.",
+            "enum": [
+              "downloading"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Comparing the download with its checksum.",
+            "enum": [
+              "verifying"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A package manager or the official build is putting tmux in place.",
+            "enum": [
+              "installing"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Checking that tmux resolves.",
+            "enum": [
+              "finishing"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "Where an install is. `tmux::install` and `tmux::install::status` both answer this.",
+    "properties": {
+      "error": {
+        "description": "Why it failed, one sentence for people.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "hints": {
+        "description": "True facts about the step, to alternate with the label.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "label": {
+        "description": "What to show for that step, e.g. `Downloading tmux…`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "log": {
+        "description": "Empty unless the state is `failed`: every command and its output.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "method": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/InstallMethod"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The way being tried, or the one that worked. Null when tmux was already there."
+      },
+      "path": {
+        "description": "Where tmux is, once it resolves.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "progress": {
+        "description": "0 to 1, while the step knows how far it is.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "state": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/InstallState"
+          }
+        ],
+        "description": "`idle` also answers a worker that restarted mid-install."
+      },
+      "step": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/InstallStep"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The step a running install is on."
+      },
+      "version": {
+        "description": "Its version, once it resolves.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "hints",
+      "log",
+      "state"
+    ],
+    "title": "InstallStatus",
+    "type": "object"
+  }
+}
