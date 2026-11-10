@@ -131,13 +131,15 @@ async fn main() -> Result<()> {
         poke,
         engine_observes,
     );
-    // Images pasted into a terminal more than a week ago; each paste sweeps too.
+    // Files pasted into a terminal more than a week ago, and the oldest past
+    // the budget; each upload sweeps too.
     tokio::task::spawn_blocking(|| {
-        if let Ok(folder) = terminal::paste::this_folder() {
-            let removed = terminal::paste::sweep(&folder, terminal::paste::KEEP_FOR);
-            if removed > 0 {
-                tracing::info!(removed, folder = %folder.display(), "old pasted images removed");
-            }
+        let swept = terminal::upload::this_cache_folder()
+            .and_then(|cache| terminal::upload::sweep_at_start(&cache));
+        match swept {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "old uploads removed"),
+            Err(reason) => tracing::warn!(%reason, "uploads not swept"),
         }
     });
 

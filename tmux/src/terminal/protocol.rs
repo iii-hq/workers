@@ -63,22 +63,25 @@ pub struct WriteResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct UploadImageRequest {
+pub struct UploadRequest {
     #[serde(flatten)]
     pub terminal: TerminalRef,
-    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`; the data's first bytes must agree.
-    pub mime: String,
-    /// The image, base64, at most 12 MiB decoded.
+    /// The file's name. Only its base name is kept, made one safe token: characters outside `A-Z a-z 0-9 . _ -` become `-`, no leading dot, at most 100 bytes; empty is `file`. A known image (PNG, JPEG, GIF, WebP) gets the extension its content has.
+    pub name: String,
+    /// The file, base64, any type, at most 12 MiB decoded.
     pub data: String,
+    /// Its type as the page knows it; the answer names what the bytes are when they are a known image.
+    #[serde(default)]
+    pub mime: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct UploadImageResponse {
-    /// Absolute path of the new file, to paste into the terminal as text.
+pub struct UploadResponse {
+    /// Absolute path of the new file, to paste into the terminal as text (no spaces in its name).
     pub path: String,
     /// Its size in bytes.
     pub bytes: usize,
-    /// Its type, as the request named it.
+    /// Its type: what the bytes are when they are a known image, else the request's, else `application/octet-stream`.
     pub mime: String,
 }
 

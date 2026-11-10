@@ -34,14 +34,14 @@ use crate::collector::{Collector, ConsoleClients};
 use crate::tmux_cli::{window_target, Tmux, WindowRef};
 
 mod output_buffer;
-pub mod paste;
 pub mod protocol;
+pub mod upload;
 
 use output_buffer::OutputBuffer;
 use protocol::{
     CloseResponse, OkResponse, OpenRequest, OpenResponse, OutputEvent, Replay, ReplayRequest,
-    ResizeRequest, ResizeResponse, SwitchRequest, SwitchResponse, TerminalRef, UploadImageRequest,
-    UploadImageResponse, WriteRequest, WriteResponse,
+    ResizeRequest, ResizeResponse, SwitchRequest, SwitchResponse, TerminalRef, UploadRequest,
+    UploadResponse, WriteRequest, WriteResponse,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -110,8 +110,8 @@ pub struct TerminalManager {
     /// The engine's observe support (`IIIClient::engine_supports_observe`),
     /// which decides whether the payload's caller stamp may be read.
     engine_observes: Arc<dyn Fn() -> Option<bool> + Send + Sync>,
-    /// Where pasted images go instead of this user's cache folder (tests).
-    paste_folder: Option<PathBuf>,
+    /// The cache folder uploads go under instead of this user's (tests).
+    upload_cache: Option<PathBuf>,
 }
 
 pub fn validate_output_function_id(function_id: &str) -> Result<(), String> {
@@ -245,13 +245,14 @@ impl TerminalManager {
             terminals: Arc::new(RwLock::new(HashMap::new())),
             on_change,
             engine_observes,
-            paste_folder: None,
+            upload_cache: None,
         }
     }
 
-    /// Pasted images go to `folder` instead of this user's cache folder.
-    pub fn with_paste_folder(mut self, folder: PathBuf) -> Self {
-        self.paste_folder = Some(folder);
+    /// Uploads go under `cache` (`cache/iii/tmux/uploads`) instead of this
+    /// user's cache folder.
+    pub fn with_upload_cache(mut self, cache: PathBuf) -> Self {
+        self.upload_cache = Some(cache);
         self
     }
 
@@ -496,30 +497,31 @@ impl TerminalManager {
         Ok(WriteResponse { written })
     }
 
-    /// Writes an image the page is pasting to a new file and answers its
-    /// path; the page pastes the path itself, nothing is typed here.
-    pub async fn upload_image(
-        &self,
-        request: UploadImageRequest,
-    ) -> Result<UploadImageResponse, String> {
+    /// Writes a file the page is pasting to a new folder of its own and
+    /// answers its path; the page pastes the path itself, nothing is typed
+    /// here.
+    pub async fn upload(&self, request: UploadRequest) -> Result<UploadResponse, String> {
         self.authenticated(&request.terminal).await?;
-        let (kind, bytes) = paste::decode(&request.mime, &request.data)?;
-        let folder = match &self.paste_folder {
-            Some(folder) => folder.clone(),
-            None => paste::this_folder()?,
+        let cache = match &self.upload_cache {
+            Some(cache) => cache.clone(),
+            None => upload::this_cache_folder()?,
         };
-        let size = bytes.len();
-        let path = tokio::task::spawn_blocking(move || paste::store(&folder, kind, &bytes))
-            .await
-            .map_err(|error| format!("image write task failed: {error}"))?
-            .map_err(|error| {
-                tracing::warn!(%error, "pasted image not written");
-                format!("The image could not be saved: {error}.")
-            })?;
-        Ok(UploadImageResponse {
-            path: path.to_string_lossy().into_owned(),
-            bytes: size,
-            mime: kind.mime().to_string(),
+        let UploadRequest {
+            name, data, mime, ..
+        } = request;
+        // Decoding up to 16 MiB of base64 blocks as much as the disk does.
+        let saved = tokio::task::spawn_blocking(move || {
+            upload::save(&cache, &name, mime.as_deref(), &data)
+        })
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "upload task ended");
+            "The file could not be saved.".to_string()
+        })??;
+        Ok(UploadResponse {
+            path: saved.path.to_string_lossy().into_owned(),
+            bytes: saved.bytes,
+            mime: saved.mime,
         })
     }
 
@@ -666,7 +668,7 @@ impl TerminalManager {
 /// Registers one `tmux::terminal::*` function. None of them can be observed
 /// (`NOT_OBSERVABLE`): `open` returns the terminal's `access_key`, every other
 /// call carries it, `write` carries the keystrokes typed into the terminal and
-/// `upload-image` the image being pasted.
+/// `upload` the file being pasted.
 macro_rules! register_terminal_fn {
     ($iii:expr, $manager:expr, $id:expr, $desc:expr, $req:ty, $method:ident) => {{
         let manager = $manager.clone();
@@ -691,7 +693,7 @@ pub const FUNCTIONS: [(&str, &str); 8] = [
     ("tmux::terminal::replay", "Re-send buffered output frames after a sequence, for gap repair."),
     ("tmux::terminal::redraw", "Ask tmux to repaint the console terminal's whole screen (refresh-client)."),
     ("tmux::terminal::close", "Detach a console terminal's tmux client. The session keeps running."),
-    ("tmux::terminal::upload-image", "Save an image being pasted into a console terminal (PNG, JPEG, GIF or WebP, base64, at most 12 MiB) as a new file in the cache folder of the user this worker runs as, and answer its path for the page to paste. It types nothing; files there older than 7 days are removed."),
+    ("tmux::terminal::upload", "Save a file being pasted into a console terminal (any type, base64, at most 12 MiB) in a new folder of its own in the cache folder of the user this worker runs as, under its name made safe, and answer its path for the page to paste. It types nothing; uploads older than 7 days, and the oldest past 256 MiB, are removed."),
 ];
 
 pub fn register(iii: &IIIClient, manager: TerminalManager) {
@@ -756,8 +758,8 @@ pub fn register(iii: &IIIClient, manager: TerminalManager) {
         manager,
         FUNCTIONS[7].0,
         FUNCTIONS[7].1,
-        UploadImageRequest,
-        upload_image
+        UploadRequest,
+        upload
     );
 }
 
