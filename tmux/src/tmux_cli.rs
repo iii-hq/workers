@@ -183,30 +183,76 @@ impl Tmux {
         session_id: &str,
         window: &WindowRef,
     ) -> Result<String, String> {
-        let format = format!("#{{window_id}}{SEP}#{{window_index}}");
+        let windows = self.windows_of(session_id).await?;
+        find_window(&windows, session_id, window).map(|found| found.id.clone())
+    }
+
+    /// The windows of `session_id`, in index order.
+    pub async fn windows_of(&self, session_id: &str) -> Result<Vec<SessionWindow>, String> {
+        let format = format!("#{{window_id}}{SEP}#{{window_index}}{SEP}#{{window_active}}");
         let output = self
             .run(["list-windows", "-t", session_id, "-F", format.as_str()])
             .await
             .map_err(|error| error.to_string())?;
-        output
-            .lines()
-            .filter_map(|line| {
-                let line = unescape_separators(line);
-                let (id, index) = line.split_once(SEP)?;
-                Some((id.to_string(), index.to_string()))
-            })
-            .find(|(id, index)| match window {
-                WindowRef::Id(wanted) => id == wanted,
-                WindowRef::Index(wanted) => index.parse::<u32>().ok() == Some(*wanted),
-            })
-            .map(|(id, _)| id)
-            .ok_or_else(|| match window {
-                WindowRef::Id(id) => format!("window {id} not found in session {session_id}"),
-                WindowRef::Index(index) => {
-                    format!("window {index} not found in session {session_id}")
-                }
-            })
+        Ok(parse_session_windows(&output))
     }
+}
+
+/// One window of a session as [`Tmux::windows_of`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionWindow {
+    pub id: String,
+    pub index: u32,
+    /// The session's current window.
+    pub active: bool,
+}
+
+pub fn parse_session_windows(output: &str) -> Vec<SessionWindow> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = unescape_separators(line);
+            let mut fields = line.split(SEP);
+            let id = fields.next()?.to_string();
+            let index = fields.next()?.trim().parse().ok()?;
+            let active = fields.next().is_some_and(flag);
+            Some(SessionWindow { id, index, active })
+        })
+        .collect()
+}
+
+/// `window` among the windows of `session_id`.
+pub fn find_window<'a>(
+    windows: &'a [SessionWindow],
+    session_id: &str,
+    window: &WindowRef,
+) -> Result<&'a SessionWindow, String> {
+    windows
+        .iter()
+        .find(|candidate| match window {
+            WindowRef::Id(wanted) => &candidate.id == wanted,
+            WindowRef::Index(wanted) => candidate.index == *wanted,
+        })
+        .ok_or_else(|| match window {
+            WindowRef::Id(id) => format!("window {id} not found in session {session_id}"),
+            WindowRef::Index(index) => {
+                format!("window {index} not found in session {session_id}")
+            }
+        })
+}
+
+/// Whether tmux `version` (as `-V` prints it: `3.6`, `3.1c`) is `major.minor`
+/// or later. `None` when the version doesn't say (`next-3.7`, `master`,
+/// `openbsd-7.4`): the caller tries and reads tmux's answer instead.
+pub fn version_at_least(version: &str, major: u32, minor: u32) -> Option<bool> {
+    let (have_major, rest) = version.trim().split_once('.')?;
+    let have_major: u32 = have_major.parse().ok()?;
+    let digits = rest.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let have_minor: u32 = digits.parse().ok()?;
+    Some((have_major, have_minor) >= (major, minor))
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +743,74 @@ mod tests {
         assert!(serde_json::from_value::<WindowArg>(serde_json::json!(-1)).is_err());
         assert_eq!(window_target("$1", &WindowRef::Index(2)), "$1:2");
         assert_eq!(window_target("$1", &WindowRef::Id("@9".into())), "$1:@9");
+    }
+
+    #[test]
+    fn session_windows_parse_and_resolve() {
+        let output = [
+            ["@1", "0", "0"].join(&SEP.to_string()),
+            ["@4", "2", "1"].join(&SEP.to_string()),
+            "@9\\0375\\0370".to_string(),
+            "garbage".to_string(),
+        ]
+        .join("\n");
+        let windows = parse_session_windows(&output);
+        assert_eq!(
+            windows,
+            vec![
+                SessionWindow {
+                    id: "@1".into(),
+                    index: 0,
+                    active: false
+                },
+                SessionWindow {
+                    id: "@4".into(),
+                    index: 2,
+                    active: true
+                },
+                SessionWindow {
+                    id: "@9".into(),
+                    index: 5,
+                    active: false
+                },
+            ]
+        );
+        assert_eq!(
+            find_window(&windows, "$1", &WindowRef::Index(2))
+                .unwrap()
+                .id,
+            "@4"
+        );
+        assert_eq!(
+            find_window(&windows, "$1", &WindowRef::Id("@9".into()))
+                .unwrap()
+                .index,
+            5
+        );
+        assert_eq!(
+            find_window(&windows, "$1", &WindowRef::Index(1)).unwrap_err(),
+            "window 1 not found in session $1"
+        );
+        assert_eq!(
+            find_window(&windows, "$1", &WindowRef::Id("@2".into())).unwrap_err(),
+            "window @2 not found in session $1"
+        );
+    }
+
+    #[test]
+    fn versions_compare_by_major_and_minor() {
+        assert_eq!(version_at_least("3.2", 3, 2), Some(true));
+        assert_eq!(version_at_least("3.2a", 3, 2), Some(true));
+        assert_eq!(version_at_least("3.1c", 3, 2), Some(false));
+        assert_eq!(version_at_least("3.10", 3, 2), Some(true));
+        assert_eq!(version_at_least("4.0", 3, 2), Some(true));
+        assert_eq!(version_at_least("2.1", 2, 1), Some(true));
+        assert_eq!(version_at_least("2.0", 2, 1), Some(false));
+        assert_eq!(version_at_least("1.8", 2, 1), Some(false));
+        assert_eq!(version_at_least("next-3.7", 3, 2), None);
+        assert_eq!(version_at_least("master", 3, 2), None);
+        assert_eq!(version_at_least("openbsd-7.4", 3, 2), None);
+        assert_eq!(version_at_least("3.", 3, 2), None);
     }
 
     #[test]

@@ -138,6 +138,16 @@ impl Collector {
         })
     }
 
+    /// The resolved tmux's version as `-V` printed it (`3.6`, `next-3.7`).
+    pub async fn tmux_version(&self) -> Option<String> {
+        let config = self.config();
+        self.binary
+            .get(&config.tmux_binary)
+            .await
+            .ok()
+            .map(|resolved| resolved.version)
+    }
+
     /// Forget what is known and look for tmux again: an install just changed
     /// what's there. Only `-V`, which talks to no server.
     pub async fn resolve_tmux_again(&self) -> Result<Resolved, String> {

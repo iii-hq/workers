@@ -33,6 +33,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::windows::select",
             "tmux::windows::rename",
             "tmux::windows::kill",
+            "tmux::windows::move",
             "tmux::panes::select",
             "tmux::panes::capture",
             "tmux::subagents::transcript",
