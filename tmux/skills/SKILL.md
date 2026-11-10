@@ -102,7 +102,8 @@ that starts waiting for the person, a compose stack that comes up, a session
 that appears or goes away. Each observer receives the full overview
 (`sessions` and `ports`, the same shapes the two list functions return) once
 when it is added and then only when something changed; the worker polls tmux
-only while the function is observed. It takes no args.
+only while the function is observed. It takes no args. Overviews can arrive
+out of order, so keep the one with the highest `sessions.generated_at_ms`.
 
 Register a handler, then observe the function with it:
 

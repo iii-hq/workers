@@ -257,6 +257,13 @@ settings action or with `configuration::set`.
 windows, panes, agent states, compose stacks or listening ports change. The
 worker polls tmux only while something observes it.
 
+Overviews can arrive out of order: each one is its own call, and iii doesn't
+order deliveries across calls, so two sent milliseconds apart (a mutation's
+and the next poll's) may land the other way round, and nothing re-sends until
+something changes again. Keep the overview with the highest
+`sessions.generated_at_ms` (and `ports.generated_at_ms`) and drop an older one
+that comes after it; the same rule settles a `list` answer racing a push.
+
 ```ts
 iii.registerFunction('my-worker::on-tmux', async ({ output: { sessions, ports } }) => {
   // compare agent states with the previous overview
