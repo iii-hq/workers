@@ -173,7 +173,7 @@ async function call(functionId, payload = {}, options) {
     ...(options?.namespace ? { options: structuredClone(options) } : {}),
   })
   switch (functionId) {
-    case 'compose::status':
+    case 'ade::compose::status':
       if (harness.snapshotMode === 'error')
         throw new Error('Mock runtime state is unavailable')
       return {

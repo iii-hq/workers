@@ -23,14 +23,27 @@ use super::ON_CHANGED_FN;
 pub const STATE_FILE: &str = "state.json";
 const COALESCE: Duration = Duration::from_millis(200);
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatusContainer {
     pub container: String,
     pub pid: Option<u32>,
     pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owned: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested: Option<String>,
+    /// Preserve metadata added by newer daemons.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ComposeStatus {
     pub file: Option<String>,
     pub namespace: Option<String>,
@@ -38,6 +51,13 @@ pub struct ComposeStatus {
     pub daemon_pid: Option<u32>,
     #[serde(default)]
     pub containers: Vec<StatusContainer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+    /// Preserve metadata added by newer daemons.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,13 +87,21 @@ pub struct ChangedEvent {
     pub captured_at: u64,
 }
 
+/// An explicit selection wins over the project that launched ADE. Standalone
+/// ADE retains the daemon's default when neither supplies a file.
+fn status_payload(file: Option<&str>, inherited_file: Option<&str>) -> serde_json::Value {
+    file.or(inherited_file.filter(|file| !file.is_empty()))
+        .map(|file| serde_json::json!({ "file": file }))
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// Return a typed interface while preserving daemon and container metadata.
 pub async fn compose_status(iii: &IIIClient, file: Option<&str>) -> Result<ComposeStatus, Error> {
+    let inherited_file = std::env::var("III_COMPOSE_FILE").ok();
     let value = iii
         .call(CallRequest {
             function_id: "compose::status".to_string(),
-            payload: file
-                .map(|file| serde_json::json!({ "file": file }))
-                .unwrap_or_else(|| serde_json::json!({})),
+            payload: status_payload(file, inherited_file.as_deref()),
             action: None,
             timeout_ms: Some(10_000),
         })
@@ -406,6 +434,70 @@ fn emit_change(iii: &Arc<IIIClient>, location: &ProjectLocation, kind: ChangeKin
 mod tests {
     use super::*;
     use notify::event::ModifyKind;
+
+    #[test]
+    fn status_response_has_a_typed_object_schema() {
+        let schema = serde_json::to_value(schemars::schema_for!(ComposeStatus)).unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["containers"]["type"], "array");
+        assert_eq!(
+            schema["definitions"]["StatusContainer"]["properties"]["container"]["type"],
+            "string"
+        );
+        assert!(schema["properties"].get("file").is_some());
+        assert!(schema["properties"].get("target").is_some());
+    }
+
+    #[test]
+    fn status_round_trips_daemon_container_and_future_metadata() {
+        let value = serde_json::json!({
+            "file": "/projects/custom-stack.yaml",
+            "namespace": "app",
+            "state_dir": "/state/app",
+            "daemon_pid": 10,
+            "target": "x86_64-unknown-linux-gnu",
+            "targets": ["x86_64-unknown-linux-gnu"],
+            "future_project_metadata": { "generation": 7 },
+            "containers": [{
+                "container": "harness",
+                "pid": 42,
+                "state": "ready",
+                "owned": true,
+                "log_path": "/state/app/harness.log",
+                "last_error": "previous error",
+                "version": "1.2.3",
+                "requested": "latest",
+                "future_container_metadata": ["retained"]
+            }]
+        });
+        let status: ComposeStatus = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(status).unwrap(), value);
+    }
+
+    #[test]
+    fn status_defaults_to_the_project_that_launched_ade() {
+        assert_eq!(
+            status_payload(None, Some("/projects/custom-stack.yaml")),
+            serde_json::json!({ "file": "/projects/custom-stack.yaml" })
+        );
+    }
+
+    #[test]
+    fn explicit_status_file_overrides_the_inherited_project() {
+        assert_eq!(
+            status_payload(
+                Some("/projects/other.yaml"),
+                Some("/projects/custom-stack.yaml")
+            ),
+            serde_json::json!({ "file": "/projects/other.yaml" })
+        );
+    }
+
+    #[test]
+    fn standalone_ade_retains_the_daemon_default() {
+        assert_eq!(status_payload(None, None), serde_json::json!({}));
+        assert_eq!(status_payload(None, Some("")), serde_json::json!({}));
+    }
 
     fn location() -> ProjectLocation {
         ProjectLocation {

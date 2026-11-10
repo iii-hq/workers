@@ -3790,7 +3790,7 @@ test('refreshes a clean declaration on revisit and explicit Refresh while preser
   const snapshots = await page.evaluate(
     () =>
       window.__WORKERS_HARNESS__.calls.filter(
-        (call) => call.functionId === 'compose::status',
+        (call) => call.functionId === 'ade::compose::status',
       ).length,
   )
   await page.evaluate(() => {
@@ -3804,7 +3804,7 @@ test('refreshes a clean declaration on revisit and explicit Refresh while preser
       page.evaluate(
         () =>
           window.__WORKERS_HARNESS__.calls.filter(
-            (call) => call.functionId === 'compose::status',
+            (call) => call.functionId === 'ade::compose::status',
           ).length,
       ),
     )
