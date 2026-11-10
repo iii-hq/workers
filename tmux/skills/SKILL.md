@@ -56,10 +56,10 @@ client that only the Console drives.
 - The worker never types into panes. `tmux::terminal::*` is the Console
   page's own terminal: it is denied to agents and cannot be observed
   (`NOT_OBSERVABLE`), since its calls carry the terminal's access key and
-  what the person types. Its `upload-image` only writes an image the person
-  pastes to a file under their cache folder (`~/.cache/iii/tmux/paste` or
-  `~/Library/Caches/iii/tmux/paste`, kept 7 days) and answers the path; the
-  page pastes that path, the worker types nothing.
+  what the person types. Its `upload` only writes a file the person pastes
+  to a folder of its own under their cache folder (`~/.cache/iii/tmux/uploads`
+  or `~/Library/Caches/iii/tmux/uploads`, kept 7 days) and answers the path;
+  the page pastes that path, the worker types nothing.
 - Agent state is a reading of the screen: `waiting` means a prompt that needs
   the person is visible, not that the agent's process is blocked. Patterns
   live in the worker configuration and can be tuned per agent.
@@ -78,16 +78,16 @@ client that only the Console drives.
 
 - `tmux::status` — whether tmux is installed, its version and path, and whether a server is running.
 - `tmux::sessions::list` — every session → window → pane with command, cwd, title, size, agent state and session title, compose daemon and ports.
-- `tmux::sessions::create` — start a detached session with an optional name, directory, first window name and command.
+- `tmux::sessions::create` — start a detached session with an optional name, directory, first window name and command; `remain_on_exit: true` keeps its pane, dead, once the command ends.
 - `tmux::sessions::rename` / `tmux::sessions::kill` — rename or kill a session by id (`$5`) or exact name.
-- `tmux::windows::create` — add a window to a session with an optional name, directory, command and `select`.
+- `tmux::windows::create` — add a window to a session with an optional name, directory, command and `select`; `remain_on_exit: true` keeps its pane once the command ends.
 - `tmux::windows::select` — make a window current in its session (every attached client follows).
 - `tmux::windows::rename` / `tmux::windows::kill` — rename or kill a window by id (`@3`) or index.
-- `tmux::windows::move` — move a window to another session (after its last window) or next to one of its windows (`before` / `after`, which also reorder it inside its own session); it keeps its id and programs, and moving a session's last window closes that session (`source_session_closed`).
+- `tmux::windows::move` — move a window to another session (after its last window) or next to one of its windows (`before` / `after`, tmux 3.2 or later, which also reorder it inside its own session); it keeps its id and programs, and moving a session's last window closes that session (`source_session_closed`).
 - `tmux::panes::select` — make a pane (`%5`) active; `zoom: true` zooms the window on it, `zoom: false` unzooms, no `zoom` keeps the window's zoom; it never toggles, and a one-pane window can't zoom (every client of that window follows).
-- `tmux::panes::split` — split a pane `right` or `below`, in its current directory unless `cwd`, with the default shell unless `command`, active unless `select: false`.
+- `tmux::panes::split` — split a pane `right` or `below`, in its current directory unless `cwd`, with the default shell unless `command`, active unless `select: false`; `remain_on_exit: true` keeps it once its program ends.
 - `tmux::panes::kill` — kill a pane and its program; `window_closed` / `session_closed` say when that closed its window and session.
-- `tmux::panes::respawn` — start a pane's program again (its own command unless `command`); a running one needs `kill: true`.
+- `tmux::panes::respawn` — start a pane's program again (its own command unless `command`); a running one needs `kill: true`, a dead one (`remain_on_exit`) doesn't.
 - `tmux::panes::capture` — a pane's visible screen with colour escapes, its size, cursor and alternate-screen flag.
 - `tmux::subagents::transcript` — what one sub-agent of a pane's Claude Code or Codex has done (`pane`, `subagent` from `agent.subagents[].id`): its task, messages, reasoning, tool calls and results, oldest first.
 - `tmux::ports::list` — listening TCP ports with process, iii role, worker, compose namespace and pane, plus each `iii compose` stack.

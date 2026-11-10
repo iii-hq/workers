@@ -96,6 +96,32 @@ iii call tmux::windows::create session=api name=logs
 iii call tmux::ports::list
 ```
 
+Names are taken as typed: tmux 2.7 and later read `#` in a session or window
+name as a format (`#{…}`, or `#(…)`, which runs a command), so the worker
+doubles it there, and only there. A name shaped like an id (`$2`, `@3`, `%4`)
+is refused, since a session is named by its id or its name. A session named
+like that outside the worker never stands in for the session with that id:
+when `$2` is one session's id and another's name the call is refused, saying
+which session to rename. Refusals are one sentence, `There is no pane %9.`
+rather than tmux's `can't find pane: %9`.
+
+A new window without `cwd` starts in the directory its session was created
+in. tmux older than 3.2 can't tell a session's directory, so there it starts in
+the home folder.
+
+A pane whose program ends closes, as in tmux, and so does its window and its
+session when it was their last. With `remain_on_exit: true`,
+`tmux::sessions::create`, `tmux::windows::create` and `tmux::panes::split`
+keep the new pane on screen once its program ends, `dead` in the listing, for
+`tmux::panes::respawn` to start again. The pane first runs a placeholder,
+then remain-on-exit is turned on and the command starts in its place, so even
+a command that fails at once stays. It is the pane's own option from tmux
+3.0; on tmux 2.x, which has no pane options, every pane of its window stays.
+
+```bash
+iii call tmux::windows::create session=api name=build command="npm run build" remain_on_exit=true
+```
+
 A pane running an agent and a pane running `iii compose` look like this in
 `tmux::sessions::list`:
 
@@ -176,9 +202,16 @@ iii call tmux::windows::move session=work window=@3 target_session=work before=0
 
 Without `before` or `after` the window goes after the session's last window,
 even when an index between two windows is free (tmux's own `move-window -t
-work:` would take that gap). `before` and `after` are tmux's `move-window -b`
-and `-a`, so the windows from that spot on move up one index. They need tmux
-3.2 and 2.1 or later; an older tmux gets one sentence saying so. The
+work:` would take that gap): from tmux 3.2 that is `move-window -a` after the
+last window, decided by tmux in one step; before 3.2 the worker names the
+index after the last one, and should another client take it first the answer
+says to move it again. `before` and `after` are tmux's `move-window -b` and
+`-a`: the window takes its neighbour's index (or the next one), and the
+windows from there up to the first free index move up one, so a window past a
+gap keeps its index. Both need tmux 3.2 or later, and an older tmux gets one
+sentence saying so: `-b` came in 3.2, and before it `-a` put the window after
+the session's current window whatever the target, and inside one session
+ended the tmux 2.6 and 3.0a server. The
 destination's current window stays as it was, and a session's current window
 reordered inside it stays current. When the window was the last one of its
 session, tmux closes that session and `source_session_closed` is true; with
@@ -192,7 +225,11 @@ client looking at that window. `zoom` sets the window's zoom and never toggles
 it the way prefix `z` does: `zoom: true` zooms the window on that pane (or keeps
 it zoomed there), `zoom: false` unzooms it, and without `zoom` the window keeps
 its zoom, moved to that pane. A window with one pane can't zoom, and the
-answer's `zoomed` stays false. `tmux::panes::capture` returns a pane's visible
+answer's `zoomed` stays false. tmux itself only toggles a zoom, so this is a
+read and then a toggle, not one step: another client can zoom or unzoom the
+window in between. The worker reads the zoom again after toggling, toggles
+once more if it doesn't match, and the answer says what it ended as.
+`tmux::panes::capture` returns a pane's visible
 screen with its colour escapes, its size and cursor:
 
 ```bash
@@ -203,7 +240,8 @@ iii call tmux::panes::capture pane=%3
 `tmux::panes::split` puts a new pane to the `right` of a pane or `below` it. It
 starts in that pane's current directory unless `cwd` says otherwise, runs the
 default shell unless `command` does, and becomes the active pane unless
-`select: false`. `tmux::panes::kill` kills a pane and its program; when that was
+`select: false`; `remain_on_exit: true` keeps it once its program ends (see
+above). `tmux::panes::kill` kills a pane and its program; when that was
 its window's last pane the window closes too (`window_closed`), and when that
 window was its session's last, the session (`session_closed`).
 `tmux::panes::respawn` starts a pane's program again in the same pane, the
@@ -272,33 +310,48 @@ iii.observe({ function_id: 'tmux::on-changed', capture: ['output'] }, 'my-worker
 ```
 
 The Console page's terminal functions, `tmux::terminal::open`, `write`,
-`resize`, `switch`, `replay`, `redraw`, `close` and `upload-image`, cannot be
+`resize`, `switch`, `replay`, `redraw`, `close` and `upload`, cannot be
 observed (`NOT_OBSERVABLE`): `open` returns the terminal's access key, every
 other call carries it, `write` carries what is typed into the terminal and
-`upload-image` the image being pasted.
+`upload` the file being pasted.
 
-`tmux::terminal::upload-image` is how an image is pasted into a terminal. It
-only writes a file: the image (`mime` `image/png`, `image/jpeg`, `image/gif` or
-`image/webp`, matching the data's first bytes; `data` base64, at most 12 MiB
-decoded) goes to a new file in the cache folder of the user this worker runs
-as, and the answer is that file's absolute path. It types nothing into the
-terminal; the page pastes the path itself, and Claude Code and Codex then
-attach it as `[Image #1]` (Codex only when the paste is that path alone and its
-model takes images; any other program just receives the path as text).
+`tmux::terminal::upload` is how a file is pasted into a terminal. It only
+writes a file: `data` (base64, any type, at most 12 MiB decoded) goes to a new
+folder of its own in the cache folder of the user this worker runs as, under
+`name` made safe, and the answer is that file's absolute path. It types
+nothing into the terminal; the page pastes the path itself, and Claude Code and
+Codex then attach it (an image as `[Image #1]`; Codex only when the paste is
+that path alone and its model takes images); any other program just receives
+the path as text.
 
 ```json
-{ "path": "/home/me/.cache/iii/tmux/paste/20261110-161648-0a1b2c3d.png",
-  "bytes": 48213, "mime": "image/png" }
+{ "path": "/home/me/.cache/iii/tmux/uploads/20261110-161648-0a1b2c3d/Quarterly-report.pdf",
+  "bytes": 48213, "mime": "application/pdf" }
 ```
 
 | Computer | Folder |
 |---|---|
-| Linux | `$XDG_CACHE_HOME/iii/tmux/paste` when that's an absolute path, otherwise `~/.cache/iii/tmux/paste` |
-| macOS | `~/Library/Caches/iii/tmux/paste` |
+| Linux | `$XDG_CACHE_HOME/iii/tmux/uploads` when that's an absolute path, otherwise `~/.cache/iii/tmux/uploads` |
+| macOS | `~/Library/Caches/iii/tmux/uploads` |
 
-The folder is readable by this user only (0700) and so is each file (0600),
-named `<UTC yyyymmdd-hhmmss>-<8 hex>.<png|jpg|gif|webp>` with nothing from the
-caller in it. Files of that name older than 7 days are removed when the worker
-starts and on each upload, and nothing else in that folder is touched. They
-are not removed right away because Codex reads the file only when the message
-it is attached to is sent.
+Each upload gets its own folder, `<UTC yyyymmdd-hhmmss>-<8 hex>`, so its name
+survives. The name keeps only its base name, made one token a shell or Codex
+reads whole: characters outside `A-Z a-z 0-9 . _ -` become `-` (no spaces),
+runs collapse, no leading dot, at most 100 bytes with its extension kept, and
+`file` when nothing is left (`../x` is `x`, `My report (1).pdf` is
+`My-report-1.pdf`). A PNG, JPEG, GIF or WebP, told by its first bytes, gets the
+extension its content has (`photo.HEIC` that is a JPEG is `photo.jpg`), so
+agents read it as an image; `mime` in the answer is then that type, otherwise
+the request's, otherwise `application/octet-stream`.
+
+The folders are readable by this user only (0700) and so is each file (0600),
+never executable. Every folder on the way below the cache folder (`iii`,
+`tmux`, `uploads`) is made one at a time and has to be a real folder of this
+user that no other user can write to, never a symbolic link; a folder of ours
+that is wider is narrowed. A file is written whole to a temporary file and
+then linked under its name, so a kill or a full disk never leaves a cut-short
+file there. Uploads older than 7 days are removed when the worker starts and
+on each upload, then the oldest while all of them add up to more than 256 MiB;
+nothing but folders of that name pattern is touched. They are not removed
+right away because Codex reads a file only when the message it is attached to
+is sent.

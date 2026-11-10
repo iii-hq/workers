@@ -15,8 +15,8 @@
 # a session's last window closes that session) and stay at the needs_approval
 # default. `tmux::install` stays unlisted too: it can run
 # the system's package manager as root. `tmux::install::status` only reads how
-# that install is going. The Console terminal (its upload-image included, which
-# writes a pasted image to the cache folder), the config-reload callback and
+# that install is going. The Console terminal (its upload included, which
+# writes a pasted file to the cache folder), the config-reload callback and
 # the Console asset function are bus-internal.
 version: 1
 
