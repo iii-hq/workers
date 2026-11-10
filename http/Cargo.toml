@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-http"
-version = "0.23.1"
+version = "0.23.2"
 edition = "2021"
 description = "HTTP server worker for iii — serves the routes declared by observers of http::on-request"
 license = "Apache-2.0"
