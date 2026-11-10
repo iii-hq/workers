@@ -10,7 +10,9 @@ criado ao registrar a interface com a configuração padrão.
 Antes de habilitá-lo, abra **GitHub → Webhooks** no Console ou chame
 `github::setup::webhooks-status`. A lista verifica se o worker opcional
 `quick-tunnel` está instalado, se o `cloudflared` está disponível e se o
-listener restrito do `http` foi realmente aberto. O Console só instala
+listener restrito do `http` foi realmente aberto. Quando o quick-tunnel usa o
+provider `opentunnel`, a linha do `cloudflared` dá lugar a `tunnel_provider`,
+sempre `ok`: não há binário para instalar. O Console só instala
 `quick-tunnel` depois da confirmação do operador; ele nunca instala
 `cloudflared` e, quando necessário, mostra o
 [guia oficial de instalação](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
