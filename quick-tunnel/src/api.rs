@@ -70,6 +70,9 @@ pub struct Lease {
     pub consumer_id: String,
     pub tunnel_id: String,
     pub expires_at: DateTime<Utc>,
+    /// The PROXY mode the lease was granted under; a boot with another mode drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_protocol: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -77,7 +80,14 @@ pub struct StatusResponse {
     #[serde(flatten)]
     pub snapshot: Snapshot,
     pub leases: Vec<Lease>,
+    /// Omitted for cloudflared, so its JSON is what older versions sent.
+    #[serde(default, skip_serializing_if = "is_cloudflared")]
+    pub provider: crate::config::ProviderKind,
     /// Whether the operator-provided cloudflared is usable, and where to get it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prerequisites: Option<crate::prerequisites::Prerequisites>,
+}
+
+fn is_cloudflared(p: &crate::config::ProviderKind) -> bool {
+    *p == crate::config::ProviderKind::Cloudflared
 }

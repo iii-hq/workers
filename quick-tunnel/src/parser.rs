@@ -23,10 +23,11 @@ struct Record {
     protocol: Option<String>,
 }
 
-pub fn public_url(input: &str) -> Option<String> {
+/// `https://<one DNS label><suffix>` exactly, e.g. suffix `.trycloudflare.com`.
+pub fn public_url(input: &str, suffix: &str) -> Option<String> {
     // Reject normalization tricks (userinfo, ports, escapes, backslashes, paths).
     let host = input.strip_prefix("https://")?;
-    let label = host.strip_suffix(".trycloudflare.com")?;
+    let label = host.strip_suffix(suffix)?;
     if label.is_empty()
         || label.len() > 63
         || !label.as_bytes().first()?.is_ascii_alphanumeric()
@@ -58,7 +59,7 @@ pub fn parse(line: &str) -> Option<LogEvent> {
             .and_then(|s| s.strip_suffix('|'))
             .unwrap_or(message)
             .trim();
-        if let Some(url) = public_url(candidate) {
+        if let Some(url) = public_url(candidate, ".trycloudflare.com") {
             return Some(LogEvent::Url(url));
         }
     }
@@ -109,7 +110,7 @@ mod tests {
             "https://-a.trycloudflare.com",
             "https://a%2e.trycloudflare.com",
         ] {
-            assert_eq!(public_url(url), None, "{url}");
+            assert_eq!(public_url(url, ".trycloudflare.com"), None, "{url}");
         }
     }
     #[test]
