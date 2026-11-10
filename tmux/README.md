@@ -23,8 +23,8 @@ starts and reports `available: false`, and `tmux::install` can put it there.
 ## Installing tmux
 
 ```bash
-iii trigger tmux::install            # starts or joins the install, answers at once
-iii trigger tmux::install::status    # poll until succeeded or failed
+iii call tmux::install               # starts or joins the install, answers at once
+iii call tmux::install::status       # poll until succeeded or failed
 ```
 
 | Computer | What runs, in order |
