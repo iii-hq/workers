@@ -447,7 +447,9 @@ impl Folder {
         let path =
             std::env::temp_dir().join(format!("iii-tmux-test-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        // tmux reports a pane's folder with links resolved: macOS's temporary
+        // folder is under /var, a link to /private/var.
+        Self(std::fs::canonicalize(&path).unwrap())
     }
 
     /// A subfolder named `name`, created.
