@@ -1968,6 +1968,18 @@ function FunctionCallGroup({
       item.kind === 'function-call' &&
       (item.message.running === true || item.message.pendingApproval === true),
   )
+  // A phase of nothing but observer activity counts what it observed; one
+  // with calls in it says what it called.
+  const observedOnly = row.items.every(
+    (item) => item.kind === 'observer-activity',
+  )
+  const noun = observedOnly
+    ? row.items.length === 1
+      ? 'event'
+      : 'events'
+    : row.items.length === 1
+      ? 'function'
+      : 'functions'
   const failedCount = row.items.filter(
     (item) =>
       item.kind === 'function-call' &&
@@ -2123,7 +2135,7 @@ function FunctionCallGroup({
         type="button"
         aria-expanded={expanded}
         aria-disabled={!canCollapse || undefined}
-        aria-label={`Agent called ${row.items.length} functions · ${expanded ? 'show latest' : 'show all'}`}
+        aria-label={`${observedOnly ? 'Observed' : 'Agent called'} ${row.items.length} ${noun} · ${expanded ? 'show latest' : 'show all'}`}
         aria-controls={contentId}
         onClick={canCollapse ? toggleExpanded : undefined}
         tabIndex={canCollapse ? undefined : -1}
@@ -2133,10 +2145,10 @@ function FunctionCallGroup({
         <span className="chat-tool-group__label">
           <span className="chat-call-disclosure-label">
             <span data-active={live} aria-hidden={!live}>
-              Calling
+              {observedOnly ? 'Observing' : 'Calling'}
             </span>
             <span data-active={!live} aria-hidden={live}>
-              Called
+              {observedOnly ? 'Observed' : 'Called'}
             </span>
           </span>
           <AnimatedCount
@@ -2144,7 +2156,7 @@ function FunctionCallGroup({
             reducedMotion={reducedMotion}
           />
           {/* iii has functions, not "tools": the batch says what it called. */}
-          <span>{row.items.length === 1 ? 'function' : 'functions'}</span>
+          <span>{noun}</span>
         </span>
         {failedCount > 0 ? (
           <span

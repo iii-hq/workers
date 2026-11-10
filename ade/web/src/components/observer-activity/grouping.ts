@@ -119,6 +119,10 @@ function recordPairKey(entryId: string): string | null {
     ['fired', 'fire'],
     ['expired', 'expiry'],
     ['stale', 'stale'],
+    // A skip (a condition that said "not yet") has no wake to pair with, but
+    // it is still observer activity: it joins the phase like any other fire,
+    // so a run of them rolls up instead of stacking as loose rows.
+    ['skip', 'skip'],
   ] as const) {
     const prefix = activityIdPrefix(entryId, kind)
     const rest = prefix ? entryId.slice(prefix.length) : ''
