@@ -149,6 +149,8 @@ a build and keeps quiet about it.
   write fails, it stops the build VM, deletes the temporary image, keeps the
   previous pair and frees the key. One build per `state_key` runs at a time
   (S509), and a failed step answers S507 with the output's last lines.
+  `worker::destroy` of a VM whose build runs answers S509 too: cancel the build
+  (close its `logs`) first.
 - **`worker::start` with `build`** checks that `build_dir/image.id` names
   `build_id` (S508 otherwise, or when it is missing) and boots `image.erofs` as
   the overlay's lower, without setup or install. A `path://` worker's code
@@ -163,6 +165,13 @@ a build and keeps quiet about it.
   moves to `upper.ext4.pre-build`, and a legacy rootfs clone (`root/`) to
   `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
   `worker::destroy` removes them with the rest.
+- **What a `path://` copy leaves out.** One list, the source watcher's ignore
+  list (dependency, build, VCS and editor dirs, among them `node_modules`,
+  `.venv`, `venv`, `vendor`, `target`, `dist`, `build`, `.git`, and Compose's
+  `.build` and `.workers`) plus `.iii`, at any depth: a run neither copies nor
+  syncs those names, and its boot cleanup keeps what the build put there. A
+  build leaves the same names out of its copy, except `vendor/`, where Go keeps
+  vendored source.
 
 ## Known limits
 
@@ -170,6 +179,15 @@ The guards assume bus clients are trusted. A client that registers the
 adapter's function ids or its worker name first, while the adapter is down,
 receives the `auth` token and the guest `env` that Compose sends. The router
 has the same limit for `sandbox::*` forwards.
+
+Two races of a build are accepted:
+
+- `worker::start` checks `image.id`, not the image: a rebuild that renames a new
+  `image.erofs` between that check and the VM opening the file boots the newer
+  image under the older id. The next start answers S508 and asks for a rebuild.
+- A build whose reader leaves between the build's decision to commit and its
+  two renames still renames: the pair stays consistent, the caller gets S507,
+  and the next start against the older `build.json` answers S508.
 
 `.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
 inside a worker's directory puts the token in that guest. The name hides the whole

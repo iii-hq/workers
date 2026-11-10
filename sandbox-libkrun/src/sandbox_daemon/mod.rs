@@ -269,8 +269,8 @@ pub fn register_all(
             "Build the image of `state_key`'s VM into `output_dir` (image.erofs, then \
              image.id): a build VM on the base image runs scripts.setup and \
              scripts.install. The output streams into `logs`, and the build ends when its \
-             reader leaves. Needs the project token; S509 while another build of the key \
-             runs, S507 when a step fails.",
+             reader leaves. Needs the project token or the VM's scoped token; S509 while \
+             another build of the key runs, S507 when a step fails.",
             {
                 let iii = iii.clone();
                 move |vms, req| {
@@ -323,7 +323,7 @@ pub fn register_all(
             vms,
             WORKER_DESTROY,
             "Remove the state of `state_key`'s worker VM. Needs the project token; \
-             S502 while that VM is preparing or running.",
+             S502 while that VM is preparing or running, S509 while a build of it runs.",
             // Off the runtime: removing a legacy rootfs clone takes seconds.
             |vms, req| async move {
                 tokio::task::spawn_blocking(move || vms.destroy(req))

@@ -261,6 +261,10 @@ impl WorkerVms {
                         vm_dir.display()
                     ))
                 })?;
+                // Now: the seal is written, so no later start logs them again.
+                for note in &kept {
+                    tracing::warn!(vm_id = %id, "{note}");
+                }
                 notes = kept;
                 Some(BootImage { image, upper })
             }
@@ -276,8 +280,13 @@ impl WorkerVms {
             Some(package) => bundle_vm_command(package, &req.worker_name, &dir, over).await,
             None => local_vm_command(&req.worker_name, &dir, run_override, over).await,
         }
-        .map_err(SandboxError::BootFailed)?;
-        let started = self.launch(&req.state_key, built.command, built.env_stdin, Some(start))?;
+        .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
+        let started = self
+            .launch(&req.state_key, built.command, built.env_stdin, Some(start))
+            .map_err(|e| match e {
+                SandboxError::BootFailed(e) => SandboxError::BootFailed(with_notes(e, &notes)),
+                e => e,
+            })?;
         if leased {
             self.arm_lease(&started.vm_id);
         }
@@ -285,21 +294,17 @@ impl WorkerVms {
         Ok(started)
     }
 
-    /// Log `notes` to `vm_id`'s console and the adapter's own log.
+    /// Append `notes` to `vm_id`'s console, where its client reads them.
     fn note(&self, vm_id: &str, notes: &[String]) {
         if notes.is_empty() {
             return;
         }
-        let vm = match self.slots().get(vm_id) {
-            Some(Slot::Booted(vm)) => Some(vm.clone()),
-            _ => None,
+        let Some(Slot::Booted(vm)) = self.slots().get(vm_id).cloned() else {
+            return;
         };
+        let mut console = vm.console.lock().unwrap_or_else(PoisonError::into_inner);
         for note in notes {
-            tracing::warn!(%vm_id, "{note}");
-            if let Some(vm) = &vm {
-                let mut console = vm.console.lock().unwrap_or_else(PoisonError::into_inner);
-                let _ = console.append(&LogStream::Stderr, note.as_bytes());
-            }
+            let _ = console.append(&LogStream::Stderr, note.as_bytes());
         }
     }
 
@@ -353,18 +358,23 @@ impl WorkerVms {
         let out = self.admit_output(&req.output_dir)?;
         validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
         let id = vm_id(&req.state_key);
+        // Dropped last of the locals below: the key is free only once the
+        // writer stopped and the scratch dir is gone.
         let _held = self.hold_build(&id)?;
         let vm_dir = self.base.join(&id);
         sweep_build_scratch(&vm_dir);
+        sweep_image_partials(&out);
         let tag = format!(
             "{}-{}",
             std::process::id(),
             self.build_seq.fetch_add(1, Ordering::SeqCst)
         );
         let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
+        let _scratch = RemoveOnDrop(scratch.clone());
         let writer = ChannelWriter::new(iii.address(), &req.logs);
         let mut log = BuildLog::new(&writer);
         let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
+        let image_writer = WriterSlot::default();
         let job = BuildJob {
             worker_name: &req.worker_name,
             dir: &dir,
@@ -375,6 +385,7 @@ impl WorkerVms {
             tag: &tag,
             env: req.env.clone().into_iter().collect(),
             state: state.clone(),
+            image_writer: &image_writer,
         };
         let built = tokio::select! {
             built = job.run(&mut log) => built,
@@ -383,13 +394,9 @@ impl WorkerVms {
             )),
         };
         if built.is_err() {
-            // A writer still in its blocking part sees this and renames nothing.
-            let _ = state.compare_exchange(
-                BUILD_RUNNING,
-                BUILD_CANCELLED,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
+            // The build VM died with the dropped run; a writer still in its
+            // blocking part stops, renames nothing and removes its files.
+            cancel_writer(&image_writer, &state).await;
         }
         match &built {
             Ok(b) => {
@@ -859,11 +866,12 @@ struct BuildJob<'a> {
     tag: &'a str,
     env: HashMap<String, String>,
     state: Arc<AtomicU8>,
+    /// Where the blocking image writer runs, so a cancelled build can wait for it.
+    image_writer: &'a WriterSlot,
 }
 
 impl BuildJob<'_> {
     async fn run(self, log: &mut BuildLog<'_>) -> Result<WorkerBuildResponse, SandboxError> {
-        let _scratch = RemoveOnDrop(self.scratch.to_path_buf());
         std::fs::create_dir_all(self.scratch).map_err(|e| {
             SandboxError::BuildFailed(format!("cannot create {}: {e}", self.scratch.display()))
         })?;
@@ -909,16 +917,13 @@ impl BuildJob<'_> {
             tag: self.tag.to_string(),
             state: self.state.clone(),
         };
-        let build_id = tokio::task::spawn_blocking(move || image.write())
-            .await
-            .map_err(|e| SandboxError::BuildFailed(format!("the image writer died: {e}")))?
-            .map_err(|e| {
-                SandboxError::BuildFailed(format!(
-                    "cannot write the image of {} into {}: {e}",
-                    self.worker_name,
-                    self.out.display()
-                ))
-            })?;
+        let build_id = run_writer(self.image_writer, image).await.map_err(|e| {
+            SandboxError::BuildFailed(format!(
+                "cannot write the image of {} into {}: {e}",
+                self.worker_name,
+                self.out.display()
+            ))
+        })?;
         log.note(format!(
             "iii: built {build_id} into {}",
             self.out.join(IMAGE_FILE).display()
@@ -933,6 +938,66 @@ impl BuildJob<'_> {
             built_at_ms: now_ms(),
         })
     }
+}
+
+/// The blocking image writer of a build. Awaited where the build runs, and,
+/// once the build is cancelled, before its key is freed.
+type WriterSlot = tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<String, String>>>>;
+
+/// Run `image.write()` off the runtime, its handle in `slot` until it ends.
+async fn run_writer(slot: &WriterSlot, image: ImageWrite) -> Result<String, String> {
+    let mut slot = slot.lock().await;
+    let handle = slot.insert(tokio::task::spawn_blocking(move || image.write()));
+    let written = handle.await;
+    // No await between the end and here: a dropped caller leaves the handle.
+    *slot = None;
+    written.map_err(|e| format!("the image writer died: {e}"))?
+}
+
+/// Mark the build cancelled and wait for its writer, if one runs, to stop and
+/// remove its temporary files.
+async fn cancel_writer(slot: &WriterSlot, state: &AtomicU8) {
+    let _ = state.compare_exchange(
+        BUILD_RUNNING,
+        BUILD_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
+    if let Some(handle) = slot.lock().await.as_mut() {
+        let _ = handle.await;
+    }
+}
+
+/// The temporary image files a build of an earlier adapter process left in
+/// `out` (it died while writing): `.image.erofs.<pid>-<n>.partial` and
+/// `.image.id.<pid>-<n>.partial` of another pid. This process's own may be a
+/// running build's.
+fn sweep_image_partials(out: &Path) {
+    let Ok(entries) = std::fs::read_dir(out) else {
+        return;
+    };
+    let mine = std::process::id().to_string();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(tag) = name.to_str().and_then(|name| {
+            [IMAGE_FILE, IMAGE_ID_FILE].iter().find_map(|file| {
+                name.strip_prefix(&format!(".{file}."))?
+                    .strip_suffix(".partial")
+            })
+        }) else {
+            continue;
+        };
+        if pid_seq(tag).is_some_and(|pid| pid != mine) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The pid of a `<pid>-<seq>` build tag.
+fn pid_seq(tag: &str) -> Option<&str> {
+    let (pid, seq) = tag.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (digits(pid) && digits(seq)).then_some(pid)
 }
 
 /// Spawn a build VM and stream its output into `log` until it exits. Dropped
@@ -1098,14 +1163,16 @@ impl ImageWrite {
             .into_iter()
             .collect();
         let state = &self.state;
+        let cancelled = || state.load(Ordering::SeqCst) == BUILD_CANCELLED;
         crate::cli::erofs::build_erofs_from_tar(
             self.export,
             &tmp_image,
             &self.spool,
             &extra,
-            &|| state.load(Ordering::SeqCst) == BUILD_CANCELLED,
+            &cancelled,
         )?;
-        let build_id = sha256_file(&tmp_image).map_err(|e| format!("hash the image: {e}"))?;
+        let build_id =
+            sha256_file(&tmp_image, &cancelled).map_err(|e| format!("hash the image: {e}"))?;
         write_new_file(&tmp_id, format!("{build_id}\n").as_bytes())
             .map_err(|e| format!("{}: {e}", tmp_id.display()))?;
         // Past this point the build is no longer cancelled.
@@ -1131,13 +1198,16 @@ impl ImageWrite {
     }
 }
 
-/// `sha256:<hex>` of a file's bytes.
-fn sha256_file(path: &Path) -> io::Result<String> {
+/// `sha256:<hex>` of a file's bytes; an error once `cancelled` returns true.
+fn sha256_file(path: &Path, cancelled: &dyn Fn() -> bool) -> io::Result<String> {
     let mut file = File::open(path)?;
     file.sync_all()?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
+        if cancelled() {
+            return Err(io::Error::other("cancelled"));
+        }
         let n = file.read(&mut buf)?;
         if n == 0 {
             break;
@@ -1193,17 +1263,22 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-/// Remove the scratch dirs that a build of an earlier adapter process left in
-/// `vm_dir`: this process's own may belong to a cancelled build still writing.
+/// Remove the scratch dirs (`build-<pid>-<seq>`) that a build of an earlier
+/// adapter process left in `vm_dir`; this process's own builds remove theirs.
+/// Nothing else matches: not the `build-mode` seal.
 fn sweep_build_scratch(vm_dir: &Path) {
-    let mine = format!("{BUILD_SCRATCH_PREFIX}{}-", std::process::id());
+    let mine = std::process::id().to_string();
     let Ok(entries) = std::fs::read_dir(vm_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with(BUILD_SCRATCH_PREFIX) && !name.starts_with(&mine) {
+        let stale = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(BUILD_SCRATCH_PREFIX))
+            .and_then(pid_seq)
+            .is_some_and(|pid| pid != mine);
+        if stale && entry.file_type().is_ok_and(|t| t.is_dir()) {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
@@ -1244,6 +1319,16 @@ fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<Str
     }
     let upper = crate::cli::upper::ensure_upper_ext4(vm_dir)?;
     Ok((upper, notes))
+}
+
+/// `error`, followed by the paths a migration kept: a boot that fails after
+/// `adopt_build_mode` must still tell where the old disk went, as no later
+/// start will.
+fn with_notes(error: String, notes: &[String]) -> String {
+    if notes.is_empty() {
+        return error;
+    }
+    format!("{error} ({})", notes.join("; "))
 }
 
 /// A legacy-mode `root/` is a whole rootfs; an overlay trampoline has no `/bin`
@@ -3139,11 +3224,103 @@ mod tests {
         let mine = t.path().join(format!("build-{}-0", std::process::id()));
         let stale = t.path().join("build-1-0");
         let root = t.path().join("root");
-        for dir in [&mine, &stale, &root] {
+        let other = t.path().join("build-cache");
+        for dir in [&mine, &stale, &root, &other] {
             std::fs::create_dir_all(dir).unwrap();
         }
+        // The seal shares the prefix and is no scratch dir.
+        std::fs::write(t.path().join(BUILD_MODE_SEAL), "1\n").unwrap();
+        std::fs::write(t.path().join("build-2-0"), "a file").unwrap();
         sweep_build_scratch(t.path());
-        assert!(mine.is_dir() && root.is_dir() && !stale.exists());
+        assert!(mine.is_dir() && root.is_dir() && other.is_dir() && !stale.exists());
+        assert!(t.path().join(BUILD_MODE_SEAL).is_file());
+        assert!(t.path().join("build-2-0").is_file());
+    }
+
+    /// A build whose adapter died while writing left its temporary image in the
+    /// project; the next build removes it, and only it.
+    #[test]
+    fn the_next_build_sweeps_an_earlier_processs_partial_image() {
+        let t = tempfile::tempdir().unwrap();
+        let mine = format!("{}-3", std::process::id());
+        let names = [
+            ".image.erofs.1-0.partial".to_string(),
+            ".image.id.1-0.partial".to_string(),
+            format!(".image.erofs.{mine}.partial"),
+            format!(".image.id.{mine}.partial"),
+            ".image.erofs.x-0.partial".to_string(),
+            "image.erofs".to_string(),
+            "image.id".to_string(),
+            "build.json".to_string(),
+        ];
+        for name in &names {
+            std::fs::write(t.path().join(name), "x").unwrap();
+        }
+        sweep_image_partials(t.path());
+        for name in &names {
+            let gone = name.contains(".1-0.");
+            assert_eq!(!t.path().join(name).exists(), gone, "{name}");
+        }
+    }
+
+    /// What `export_tar` writes, with `files` files of `size` bytes each.
+    fn big_export_tar(path: &Path, files: usize, size: usize) {
+        let mut tar = tar::Builder::new(File::create(path).unwrap());
+        let data = vec![7u8; size];
+        for i in 0..files {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_mode(0o644);
+            h.set_uid(0);
+            h.set_gid(0);
+            h.set_mtime(0);
+            h.set_size(size as u64);
+            tar.append_data(&mut h, format!("blob-{i}"), &data[..])
+                .unwrap();
+        }
+        tar.finish().unwrap();
+    }
+
+    /// The build's run is dropped (its reader left) while its image is being
+    /// written: the cancel waits for the writer, which stops and removes its
+    /// temporary files, so nothing is left once the key is free, and the
+    /// previous pair stays.
+    #[tokio::test]
+    async fn a_build_cancelled_while_writing_its_image_waits_for_the_writer() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let (write, _) = image_write(t, "v1", BUILD_RUNNING);
+        let id = write.write().unwrap();
+        let out = t.join("out");
+        let image = std::fs::read(out.join(IMAGE_FILE)).unwrap();
+
+        let (mut write, state) = image_write(t, "v2", BUILD_RUNNING);
+        let tar = t.join("big.tar");
+        big_export_tar(&tar, 8, 4 << 20);
+        write.export = File::open(&tar).unwrap();
+        let slot = WriterSlot::default();
+        let partial = out.join(format!(".{IMAGE_FILE}.v2.partial"));
+        let writing = async {
+            while !partial.exists() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        tokio::select! {
+            done = run_writer(&slot, write) => panic!("the image was written before the cancel: {done:?}"),
+            () = writing => {}
+        }
+        cancel_writer(&slot, &state).await;
+
+        assert_eq!(state.load(Ordering::SeqCst), BUILD_CANCELLED);
+        let mut left: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, [IMAGE_FILE, IMAGE_ID_FILE]);
+        assert_eq!(std::fs::read(out.join(IMAGE_FILE)).unwrap(), image);
+        assert_eq!(read_image_id(&out), Some(id));
+        assert!(!t.join("spool").exists());
     }
 
     #[test]

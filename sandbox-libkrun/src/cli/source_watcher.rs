@@ -31,6 +31,10 @@ pub const DEBOUNCE_MS: u64 = 500;
 /// the high-churn artifact directories that tooling writes to during
 /// normal operation — including during the restart itself, which would
 /// otherwise produce an infinite restart loop.
+///
+/// The same list, with `.iii`, is what a `path://` worker's copy into the VM
+/// leaves out and what its boot cleanup keeps (`local_worker`): a run never
+/// installs, so what the build put there must stay.
 pub const IGNORED_DIR_NAMES: &[&str] = &[
     // Node / TypeScript
     "node_modules",

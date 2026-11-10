@@ -9,9 +9,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use super::project::{ProjectInfo, WORKER_MANIFEST, project_from_doc};
 use super::rootfs::clone_rootfs;
+use super::source_watcher::IGNORED_DIR_NAMES;
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 
@@ -22,41 +24,66 @@ const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 const RUN_SCRIPT_CMD: &str =
     "command -v bash >/dev/null && exec bash /opt/iii/dev-run.sh; exec sh /opt/iii/dev-run.sh";
 
+// What stays out of a `path://` worker's `/workspace` copy, at any depth, is one
+// list: the names the source watcher ignores (`IGNORED_DIR_NAMES`: dependency,
+// build, VCS and editor dirs, Compose's `.build` and `.workers`), plus `.iii`.
+// The run copies, syncs and protects by it; the build copies by it too, but for
+// `BUILD_COPIES`.
+
+/// What a build copies although a run leaves it out: Go vendors source in
+/// `vendor/`, and a PHP `composer install` in the build rewrites it anyway.
+const BUILD_COPIES: &[&str] = &["vendor"];
+
+/// `--exclude` flags for every name of the list but `keep`, and for `.iii`:
+/// Compose's state, which holds the project's token.
+fn source_excludes(keep: &[&str]) -> String {
+    IGNORED_DIR_NAMES
+        .iter()
+        .filter(|name| !keep.contains(name))
+        .chain([&".iii"])
+        .map(|name| format!("--exclude={name}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The `tar --exclude` flags of a run's copy.
+static SOURCE_EXCLUDES: LazyLock<String> = LazyLock::new(|| source_excludes(&[]));
+/// The `tar --exclude` flags of a build's copy.
+static BUILD_SOURCE_EXCLUDES: LazyLock<String> = LazyLock::new(|| source_excludes(BUILD_COPIES));
+
 /// Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
 /// only adds/overwrites (never deletes), so a source file removed on the host
 /// would keep running across a watcher restart. Remove every file outside the
-/// VM-local dep/build dirs, at any depth like the tar excludes (they are not
-/// re-copied and install is skipped once prepared, so a nested
-/// `service/node_modules` must persist), then the directories left empty, then
-/// the few left (ancestors of dep dirs) that are no longer a directory in
-/// $SRC, dep dirs included (a stale `old/node_modules`, or a `service/` that
-/// tar could not replace with the file the host now has), and re-extract the
-/// current source. On first boot /workspace is empty so this is a no-op.
-/// (All name lists MUST match the tar --exclude list, except `.iii`: it is
-/// never copied, and this cleanup removes a copy left by an older adapter.
-/// `.build` and `.workers` are Compose's build images and package copies: for
-/// `path://.` they sit inside the worker's own dir.)
-const WORKSPACE_RESYNC_CLEANUP: &str = r#"find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
-  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \
-  -o -name .build -o -name .workers \) -prune \
-  -o ! -type d -exec rm -f {} +
-find /workspace -mindepth 1 -depth -type d -empty \
-  ! -path '*/node_modules/*' ! -path '*/.venv/*' ! -path '*/target/*' ! -path '*/dist/*' \
-  ! -path '*/__pycache__/*' ! -path '*/.pytest_cache/*' ! -path '*/.next/*' ! -path '*/.git/*' \
-  ! -path '*/.build/*' ! -path '*/.workers/*' \
-  -exec rmdir {} \;
-find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
-  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \
-  -o -name .build -o -name .workers \) -prune \
-  -o -type d ! -exec sh -c '[ -d "$1/${2#/workspace/}" ] && [ ! -L "$1/${2#/workspace/}" ]' sh "$SRC" {} \; \
-  -prune -exec rm -rf {} +"#;
-
-/// The `tar --exclude` flags of a `path://` worker's copy-in: the dependency and
-/// build dirs [`WORKSPACE_RESYNC_CLEANUP`] keeps, Compose's `.build`/`.workers`,
-/// and `.iii`, whatever their depth.
-const SOURCE_EXCLUDES: &str = "--exclude=node_modules --exclude=.venv --exclude=target \
---exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git \
---exclude=.build --exclude=.workers --exclude=.iii";
+/// VM-local dirs of [`IGNORED_DIR_NAMES`], at any depth like the tar excludes
+/// (they are not re-copied, and a run never installs: what the build or the
+/// worker put in a nested `service/node_modules` must persist), then the
+/// directories left empty, then the few left (ancestors of those dirs) that are
+/// no longer a directory in $SRC, protected dirs included (a stale
+/// `old/node_modules`, or a `service/` that tar could not replace with the file
+/// the host now has), and re-extract the current source. On first boot
+/// /workspace is empty so this is a no-op. `.iii` is not protected: it is never
+/// copied, and this cleanup removes a copy left by an older adapter.
+static WORKSPACE_RESYNC_CLEANUP: LazyLock<String> = LazyLock::new(|| {
+    let prune = IGNORED_DIR_NAMES
+        .iter()
+        .map(|name| format!("-name {name}"))
+        .collect::<Vec<_>>()
+        .join(" -o ");
+    let inside = IGNORED_DIR_NAMES
+        .iter()
+        .map(|name| format!("! -path '*/{name}/*'"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        r#"find /workspace -mindepth 1 \( {prune} \) -prune \
+  -o ! -type d -exec rm -f {{}} +
+find /workspace -mindepth 1 -depth -type d -empty {inside} \
+  -exec rmdir {{}} \;
+find /workspace -mindepth 1 \( {prune} \) -prune \
+  -o -type d ! -exec sh -c '[ -d "$1/${{2#/workspace/}}" ] && [ ! -L "$1/${{2#/workspace/}}" ]' sh "$SRC" {{}} \; \
+  -prune -exec rm -rf {{}} +"#
+    )
+});
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -220,7 +247,7 @@ echo "iii: workspace ready (bundle worker; dep-dir bind-mounts skipped — vendo
         );
     } else {
         parts.push(SOURCE_SHARE_CHECK.to_string());
-        parts.push(WORKSPACE_RESYNC_CLEANUP.to_string());
+        parts.push(WORKSPACE_RESYNC_CLEANUP.clone());
         parts.push(
             r#"# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
 # any depth) so VM-local installs persist across a re-copy and host clutter
@@ -237,7 +264,7 @@ mkdir -p /run/iii
 touch /run/iii/source-ready
 cd /workspace
 echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project untouched)" >&2"#
-                .replace("__SOURCE_EXCLUDES__", SOURCE_EXCLUDES),
+                .replace("__SOURCE_EXCLUDES__", &SOURCE_EXCLUDES),
         );
     }
 
@@ -316,15 +343,15 @@ fi"#
 /// The script of a build VM (`worker::build`): copy the worker's code into
 /// `/workspace`, run `scripts.setup` and `scripts.install` there, and exit.
 /// When it exits 0, iii-init exports the merged root for the image. A local
-/// worker's copy leaves out what its run's copy leaves out; a bundle's is the
-/// whole package but Compose's state.
+/// worker's copy leaves out what its run's copy leaves out, but `vendor/`
+/// ([`BUILD_COPIES`]); a bundle's is the whole package but Compose's state.
 pub fn build_image_script(project: &ProjectInfo, is_bundle: bool) -> String {
     let mut parts = script_header();
     parts.push(SOURCE_SHARE_CHECK.to_string());
     let excludes = if is_bundle {
         "--exclude=.iii"
     } else {
-        SOURCE_EXCLUDES
+        BUILD_SOURCE_EXCLUDES.as_str()
     };
     parts.push(format!(
         r#"echo "iii: build: copying the worker's code into /workspace" >&2
@@ -1186,7 +1213,7 @@ mod tests {
         let script = build_image_script(&project, /*is_bundle=*/ false);
         assert!(script.contains("apt-get install -y git\necho"));
         assert!(script.contains("npm ci"));
-        assert!(script.contains(SOURCE_EXCLUDES));
+        assert!(script.contains(BUILD_SOURCE_EXCLUDES.as_str()));
         assert!(script.contains("umount \"$SRC\""));
         assert!(!script.contains("exec /bin/sh -c"), "{script}");
         assert!(!script.contains(".iii-prepared"));
@@ -1209,8 +1236,8 @@ mod tests {
             "{local}"
         );
         assert!(!local.contains(".iii-prepared"));
-        assert!(local.contains(WORKSPACE_RESYNC_CLEANUP));
-        assert!(local.contains(SOURCE_EXCLUDES));
+        assert!(local.contains(WORKSPACE_RESYNC_CLEANUP.as_str()));
+        assert!(local.contains(SOURCE_EXCLUDES.as_str()));
         assert!(local.contains("touch /run/iii/source-ready"));
         assert!(local.ends_with("exec /bin/sh -c 'node server.js'"));
         let bundle = build_image_run_script(&project, /*is_bundle=*/ true);
@@ -1246,7 +1273,8 @@ mod tests {
         let status = std::process::Command::new("sh")
             .arg("-c")
             .arg(format!(
-                "( cd \"$SRC\" && tar -cf - {SOURCE_EXCLUDES} . ) | ( cd \"$WS\" && tar -xpf - )"
+                "( cd \"$SRC\" && tar -cf - {} . ) | ( cd \"$WS\" && tar -xpf - )",
+                *SOURCE_EXCLUDES
             ))
             .env("SRC", &src)
             .env("WS", &ws)
@@ -1269,6 +1297,91 @@ mod tests {
             .unwrap();
         assert!(status.success());
         assert!(ws.join(".build/guest").is_file());
+    }
+
+    /// One list: what the run's copy leaves out is what its cleanup keeps and
+    /// what the source sync ignores; the build's copy leaves out the same but
+    /// `vendor`.
+    #[test]
+    fn one_list_drives_the_copy_the_cleanup_and_the_sync() {
+        use super::super::source_watcher::should_ignore_path;
+        let excludes: Vec<&str> = SOURCE_EXCLUDES.split(' ').collect();
+        let build: Vec<&str> = BUILD_SOURCE_EXCLUDES.split(' ').collect();
+        for name in IGNORED_DIR_NAMES {
+            let flag = format!("--exclude={name}");
+            assert!(excludes.contains(&flag.as_str()), "{name} is copied");
+            assert_eq!(
+                build.contains(&flag.as_str()),
+                !BUILD_COPIES.contains(name),
+                "{name} in the build's copy"
+            );
+            assert!(
+                WORKSPACE_RESYNC_CLEANUP.contains(&format!("-name {name} ")),
+                "{name} is not protected"
+            );
+            assert!(should_ignore_path(
+                &PathBuf::from(format!("/p/sub/{name}/x")),
+                Path::new("/p")
+            ));
+        }
+        assert_eq!(excludes.len(), IGNORED_DIR_NAMES.len() + 1);
+        assert_eq!(
+            build.len(),
+            IGNORED_DIR_NAMES.len() + 1 - BUILD_COPIES.len()
+        );
+        for flags in [&excludes, &build] {
+            assert!(flags.contains(&"--exclude=.iii"));
+        }
+        for name in [
+            "venv", "vendor", ".bundle", "deps", "_build", ".tox", ".gradle",
+        ] {
+            assert!(IGNORED_DIR_NAMES.contains(&name), "{name}");
+        }
+        assert!(!WORKSPACE_RESYNC_CLEANUP.contains("-name .iii"));
+    }
+
+    /// A run never installs, so what the build put in a dependency dir must
+    /// survive the boot's cleanup, whatever the host has.
+    #[test]
+    fn the_cleanup_keeps_every_dependency_dir_the_build_filled() {
+        let temp = tempfile::tempdir().unwrap();
+        let (ws, src) = (temp.path().join("ws"), temp.path().join("src"));
+        for file in [
+            "venv/bin/python",
+            "vendor/pkg/a.php",
+            ".bundle/config",
+            "deps/phoenix/mix.exs",
+            "_build/dev/app.beam",
+            "svc/.tox/py/x",
+            "main.py",
+            "gone.py",
+        ] {
+            std::fs::create_dir_all(ws.join(file).parent().unwrap()).unwrap();
+            std::fs::write(ws.join(file), "x").unwrap();
+        }
+        std::fs::create_dir_all(src.join("svc")).unwrap();
+        std::fs::write(src.join("main.py"), "x").unwrap();
+
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
+            .env("SRC", &src)
+            .current_dir(&ws)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        for kept in [
+            "venv/bin/python",
+            "vendor/pkg/a.php",
+            ".bundle/config",
+            "deps/phoenix/mix.exs",
+            "_build/dev/app.beam",
+            "svc/.tox/py/x",
+        ] {
+            assert!(ws.join(kept).is_file(), "{kept} was removed");
+        }
+        assert!(!ws.join("gone.py").exists() && !ws.join("main.py").exists());
     }
 
     #[test]
@@ -1522,7 +1635,7 @@ mod tests {
         assert!(script.contains("tar -cf -"));
         // Re-sync deletions: clear /workspace (minus dep dirs) before extract so
         // host-deleted files don't keep running on the persistent upper.
-        assert!(script.contains(WORKSPACE_RESYNC_CLEANUP));
+        assert!(script.contains(WORKSPACE_RESYNC_CLEANUP.as_str()));
         // Host-untouched: the unmount is FATAL, not best-effort.
         assert!(script.contains("refusing to run with host source writable"));
         assert!(

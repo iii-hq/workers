@@ -35,7 +35,7 @@ use super::tree::{
     DataSpool, DirectoryNode, FileData, FileTree, InodeMetadata, RegularFileId, RegularFileNode,
     SymlinkNode, TreeNode,
 };
-use super::write_erofs;
+use super::{write_erofs, write_erofs_cancellable};
 
 /// Per-call sequence so concurrent builds (even within ONE process — the engine
 /// starts workers as concurrent async tasks) never share a temp path.
@@ -95,8 +95,9 @@ pub struct ImageFile<'a> {
 /// may hold anything; every path goes through the tree's traversal checks. The
 /// caller opens it without following a symlink. File data is spooled to
 /// `spool_path`, removed on return. `extra` is laid over the tree. `cancelled`
-/// is polled between entries; once it returns true the build stops with an
-/// error.
+/// is polled between entries and before every write of the image; once it
+/// returns true the build stops with an error and removes what it wrote of
+/// `out`, created mode 0600.
 ///
 /// Carried as by [`build_erofs`]: regular files, directories, symlinks and hard
 /// links with mode, owner and mtime; device nodes, FIFOs and sockets are not.
@@ -111,7 +112,14 @@ pub fn build_erofs_from_tar(
     let mut spool = DataSpool::new(spool_path)
         .map_err(|e| format!("create erofs spool {}: {e}", spool_path.display()))?;
     let result = tar_tree(tar, &mut spool, extra, cancelled).and_then(|tree| {
-        write_erofs(&tree, out).map_err(|e| format!("write erofs {}: {e}", out.display()))?;
+        if let Err(e) = write_erofs_cancellable(&tree, out, cancelled) {
+            let _ = fs::remove_file(out);
+            return Err(if cancelled() {
+                "cancelled".to_string()
+            } else {
+                format!("write erofs {}: {e}", out.display())
+            });
+        }
         Ok(())
     });
     drop(spool);
@@ -644,6 +652,63 @@ mod tests {
             (two.nid, 2),
             "the hard link is not one inode"
         );
+    }
+
+    /// A cancel that arrives once the tree is read stops the image write and
+    /// leaves no partial image.
+    #[test]
+    fn a_cancel_during_the_image_write_removes_the_partial_image() {
+        use std::sync::atomic::AtomicUsize;
+        let t = tempfile::tempdir().unwrap();
+        let tar_path = t.path().join("root.tar");
+        image_tar(&tar_path);
+        let entries = tar::Archive::new(File::open(&tar_path).unwrap())
+            .entries()
+            .unwrap()
+            .count();
+        let out = t.path().join("image.erofs");
+        let spool = t.path().join("spool");
+        let polls = AtomicUsize::new(0);
+        let polled_in_write = AtomicUsize::new(0);
+        let cancelled = || {
+            let n = polls.fetch_add(1, Ordering::SeqCst);
+            if n >= entries {
+                polled_in_write.fetch_add(1, Ordering::SeqCst);
+            }
+            n >= entries
+        };
+        let tar = File::open(&tar_path).unwrap();
+        let err = build_erofs_from_tar(tar, &out, &spool, &[], &cancelled).unwrap_err();
+        assert_eq!(err, "cancelled");
+        assert!(polled_in_write.load(Ordering::SeqCst) > 0);
+        assert!(!out.exists(), "the partial image stayed");
+        assert!(!spool.exists());
+    }
+
+    /// The image holds the worker's whole tree: private to its owner, and never
+    /// written through a symlink planted at its name.
+    #[test]
+    fn the_image_is_private_and_never_written_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let tar_path = t.path().join("root.tar");
+        image_tar(&tar_path);
+        let out = t.path().join("image.erofs");
+        let spool = t.path().join("spool");
+        let tar = File::open(&tar_path).unwrap();
+        build_erofs_from_tar(tar, &out, &spool, &[], &|| false).unwrap();
+        assert_eq!(
+            fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let victim = t.path().join("victim");
+        fs::write(&victim, "keep").unwrap();
+        let planted = t.path().join("planted.erofs");
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+        let tar = File::open(&tar_path).unwrap();
+        assert!(build_erofs_from_tar(tar, &planted, &spool, &[], &|| false).is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
     }
 
     #[test]

@@ -830,3 +830,101 @@ async fn the_pre_build_disks_are_kept_and_destroy_removes_them() {
     destroy(&vms, "legacy-026");
     assert!(!vm_dir.exists());
 }
+
+/// The build fills dependency dirs beyond the usual few; a run never installs,
+/// so they must survive every boot's cleanup, and the host's copies of them
+/// never reach the guest. `vendor/` alone goes into the build (Go vendors source
+/// there), and still stays out of the run's copy.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn dependency_dirs_the_build_fills_survive_the_boots() {
+    if !kvm() {
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let t = t.path();
+    let project = t.join("project");
+    python_worker(
+        &project,
+        "[ -e venv/bin/marker ] && echo HOST-VENV-REACHED-BUILD; mkdir -p venv/bin vendor/pkg && echo built-venv > venv/bin/marker && echo built-vendor > vendor/pkg/a.php && cat vendor/keep.go > vendor/copied.txt",
+        r#"echo "VENV=$(cat /workspace/venv/bin/marker) VENDOR=$(cat /workspace/vendor/pkg/a.php) COPIED=$(cat /workspace/vendor/copied.txt)"
+echo READY
+exec sleep 600
+"#,
+    );
+    write(&project.join("venv/bin/marker"), "host-venv");
+    write(&project.join("vendor/keep.go"), "host-vendored-src");
+    write(&project.join("vendor/pkg/a.php"), "host-php");
+    let out = project.join(".build/e2e");
+    let vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    let (iii, mut frames, _) = channel_engine().await;
+    let built = build(&vms, &iii, "deps", local(&project), &out)
+        .await
+        .unwrap();
+    let log = lines(&drain(&mut frames).0);
+    assert!(!log.contains("HOST-VENV-REACHED-BUILD"), "{log}");
+
+    let console = console(t, "deps");
+    let want = "VENV=built-venv VENDOR=built-vendor COPIED=host-vendored-src";
+    for boot in 1..=2 {
+        let started = start(&vms, "deps", local(&project), Some((&built.build_id, &out)))
+            .await
+            .unwrap();
+        let log = wait_for(&console, "READY", 120).await;
+        eprintln!("[boot {boot}] {log}");
+        assert!(log.contains(want), "boot {boot}: {log}");
+        stop(&vms, &started).await;
+        // A host edit of a dependency dir never reaches the guest.
+        write(&project.join("venv/bin/marker"), "host-venv-2");
+        write(&project.join("vendor/pkg/a.php"), "host-php-2");
+    }
+    destroy(&vms, "deps");
+}
+
+/// A start that fails after it moved a 0.3 disk aside still names where the
+/// disk went: the seal is written, so no later start will. No VM is needed:
+/// the boot fails at the spawn.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_boot_that_fails_after_the_migration_still_names_the_kept_disk() {
+    if !iii_filesystem::init::has_init() {
+        eprintln!("[skip] no embedded iii-init: a build cannot boot");
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let t = t.path();
+    let project = t.join("project");
+    python_worker(&project, "echo ok", "echo READY\n");
+    let out = project.join(".build/e2e");
+    let id = format!("sha256:{}", "a".repeat(64));
+    write(&out.join("image.erofs"), "not booted");
+    write(&out.join("image.id"), &format!("{id}\n"));
+    let vm_dir = t.join("workers").join(vm_id("fails"));
+    write(&vm_dir.join("root/upper.ext4"), "0.26 disk");
+    let vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+
+    // SAFETY: the tests of this binary run one at a time (#[serial]); the
+    // next one sets it back.
+    unsafe { std::env::set_var("III_TEST_VM_BOOT_BIN", t.join("no-such-vm-boot")) };
+    let failed = start(&vms, "fails", local(&project), Some((&id, &out)))
+        .await
+        .unwrap_err();
+    unsafe {
+        std::env::set_var(
+            "III_TEST_VM_BOOT_BIN",
+            env!("CARGO_BIN_EXE_sandbox-libkrun"),
+        )
+    };
+    eprintln!("[failed boot] {failed}");
+    assert_eq!(failed.code().as_str(), "S300");
+    let kept = vm_dir.join("upper.ext4.pre-build");
+    assert!(
+        failed.to_string().contains(&format!(
+            "w: kept the pre-build data disk at {}",
+            kept.display()
+        )),
+        "{failed}"
+    );
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), "0.26 disk");
+    assert!(vm_dir.join("build-mode").is_file());
+}
