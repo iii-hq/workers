@@ -187,14 +187,40 @@ terminal too) end, so switch a terminal to the target session first. The
 window already in the target session without `before`/`after`, both at once,
 or a window next to itself are refused in one sentence.
 
-Panes work the same way. `tmux::panes::select` makes a pane active and, with
-`zoom: true`, zooms the window on it the way prefix `z` does, for every client
-looking at that window; `zoom: false` unzooms. `tmux::panes::capture` returns a
-pane's visible screen with its colour escapes, its size and cursor:
+Panes work the same way. `tmux::panes::select` makes a pane active, for every
+client looking at that window. `zoom` sets the window's zoom and never toggles
+it the way prefix `z` does: `zoom: true` zooms the window on that pane (or keeps
+it zoomed there), `zoom: false` unzooms it, and without `zoom` the window keeps
+its zoom, moved to that pane. A window with one pane can't zoom, and the
+answer's `zoomed` stays false. `tmux::panes::capture` returns a pane's visible
+screen with its colour escapes, its size and cursor:
 
 ```bash
 iii call tmux::panes::select pane=%3 zoom=true
 iii call tmux::panes::capture pane=%3
+```
+
+`tmux::panes::split` puts a new pane to the `right` of a pane or `below` it. It
+starts in that pane's current directory unless `cwd` says otherwise, runs the
+default shell unless `command` does, and becomes the active pane unless
+`select: false`. `tmux::panes::kill` kills a pane and its program; when that was
+its window's last pane the window closes too (`window_closed`), and when that
+window was its session's last, the session (`session_closed`).
+`tmux::panes::respawn` starts a pane's program again in the same pane, the
+command it was started with unless `command`. A pane whose program still runs
+is refused unless `kill: true`; one kept on screen after its program ended
+(tmux's `remain-on-exit`) is dead and restarts without it.
+
+```bash
+iii call tmux::panes::split pane=%3 direction=below command="npm test" select=false
+iii call tmux::panes::respawn pane=%7 kill=true
+iii call tmux::panes::kill pane=%7
+```
+
+```json
+{ "session_id": "$1", "window_id": "@4", "pane_id": "%7" }
+{ "pane_id": "%7" }
+{ "killed": true, "window_closed": false, "session_closed": false }
 ```
 
 ## Configuration

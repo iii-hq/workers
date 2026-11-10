@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- **Start directories are taken as written.** tmux expands formats in a start directory, so a
+  `cwd` with `#` in it opened `tmux::sessions::create` or `tmux::windows::create` somewhere
+  else, and one with `#(…)` ran that command on the tmux server.
 - **Kill session names its windows again.** The Console's confirm dialog lost its
   `details` list in the ADE redesign (#1528), which also broke the page's type-check and
   with it the worker's build. The Kill session confirmation now names the windows that
@@ -34,6 +37,11 @@
 
 ### Added
 
+- **Splitting, killing and restarting panes.** `tmux::panes::split` puts a new pane to the
+  right of a pane or below it, in that pane's current directory unless `cwd`, running
+  `command` or the default shell. `tmux::panes::kill` kills a pane and says whether its window
+  and session closed with it. `tmux::panes::respawn` starts a pane's program again; one still
+  running needs `kill: true`.
 - **Moving a window to another session.** `tmux::windows::move` moves a window, with its id,
   panes and programs, after another session's last window, or just before or after one of its
   windows (`before` / `after`, which also reorder a window inside its own session; tmux 3.2 and
