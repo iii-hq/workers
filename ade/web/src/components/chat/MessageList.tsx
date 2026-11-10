@@ -41,6 +41,7 @@ import {
 } from '@/components/observer-activity/model'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Button } from '@/components/ui/Button'
+import { Hint } from '@/components/ui/Hint'
 import { ImageViewer } from '@/components/ui/ImageViewer'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -203,6 +204,11 @@ interface MessageListProps {
    * show a failure instead of a skeleton.
    */
   onLoadActivityEntries?: (entryIds: string[]) => Promise<boolean> | undefined
+  /**
+   * Open the side panel's Observers section. Given, a run of observer events
+   * shows as an eye and a count that opens it, not an inline group.
+   */
+  onShowObservers?: () => void
 }
 
 const ACTIVITY_RESULT_DWELL_MS = 250
@@ -604,6 +610,7 @@ export function MessageList({
   history,
   onLoadOlder,
   onLoadActivityEntries,
+  onShowObservers,
 }: MessageListProps) {
   const containerRef = useRef<HTMLElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -1508,6 +1515,7 @@ export function MessageList({
             defaultOpenCalls={defaultOpenCalls}
             focusMessageId={focusMessageId}
             onLoadActivityEntries={onLoadActivityEntries}
+            onShowObservers={onShowObservers}
             onResolveApproval={onResolveApproval}
             onAlwaysAllow={onAlwaysAllow}
             onResolveFilesystemAccess={onResolveFilesystemAccess}
@@ -1856,6 +1864,7 @@ interface FunctionCallGroupProps {
   /** External landing target — a hidden matching item expands the group. */
   focusMessageId?: string | null
   onLoadActivityEntries?: MessageListProps['onLoadActivityEntries']
+  onShowObservers?: () => void
 }
 
 function useDwelledActivityKeys(
@@ -1957,6 +1966,7 @@ function FunctionCallGroup({
   agentName,
   focusMessageId,
   onLoadActivityEntries,
+  onShowObservers,
 }: FunctionCallGroupProps) {
   // A batch observed live opens in full: its rows arrive one by one and the
   // reader watches them settle. Once the agent moves past it, and for a settled
@@ -2107,6 +2117,28 @@ function FunctionCallGroup({
     const ordinal = semanticVisible ? visibleOrdinal++ : -1
     return { item, index, key, semanticVisible, mounted, ordinal }
   })
+
+  if (observedOnly && onShowObservers) {
+    const label = `${row.items.length} observer ${noun}`
+    return (
+      <section ref={sectionRef} data-observer-rollup="">
+        <Hint label="Show in Observers">
+          <button
+            type="button"
+            onClick={onShowObservers}
+            aria-label={`${label} · show in Observers`}
+            className="-ml-2 inline-flex h-8 items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            <ObserverIcon aria-hidden className="size-4 shrink-0 fill-warn" />
+            <span className="font-medium text-ink tabular-nums">
+              {row.items.length}
+            </span>
+            <span>{noun}</span>
+          </button>
+        </Hint>
+      </section>
+    )
+  }
 
   return (
     <section

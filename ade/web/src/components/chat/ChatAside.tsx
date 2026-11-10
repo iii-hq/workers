@@ -65,6 +65,7 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import {
   allGroupsFolded,
   foldAllGroups,
+  revealGroup,
   useContextSections,
   useFoldedGroups,
 } from '@/lib/context-groups'
@@ -87,6 +88,8 @@ export interface AsideRequest {
   tab: AsideTab
   /** A quote just handed over: the composer takes the caret to ask about it. */
   quote?: SideChatQuote
+  /** A Context section to unfold and scroll to (`observers`). */
+  section?: string
 }
 
 const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
@@ -401,6 +404,16 @@ export function ChatAside({
     if (!request || request.seq === handledRequest.current) return
     handledRequest.current = request.seq
     show(request.tab)
+    const section = request.section
+    if (section) {
+      revealGroup(section)
+      // After the tab and the unfold have painted.
+      requestAnimationFrame(() =>
+        contentRef.current
+          ?.querySelector(`[data-reorder-item="${section}"]`)
+          ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+      )
+    }
     if (request.tab !== 'side-chat' || !request.quote) return
     void ensureFork().then((id) => {
       // The composer takes the caret on mount: a remount aims it at the

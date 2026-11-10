@@ -406,6 +406,16 @@ export function ChatView({
       })),
     [],
   )
+  // An observer roll-up in the transcript opens the Observers section.
+  const showObservers = useCallback(
+    () =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab: 'context',
+        section: 'observers',
+      })),
+    [],
+  )
   // The quote waiting in the side chat's composer, and the ones it sent:
   // their source messages stay marked here while the side chat holds them.
   const [pendingQuote, setPendingQuote] = useState<SideChatQuote | null>(null)
@@ -3250,6 +3260,7 @@ export function ChatView({
                   history={side ? undefined : conversation.history}
                   onLoadOlder={side ? undefined : handleLoadOlder}
                   onLoadActivityEntries={handleLoadActivityEntries}
+                  onShowObservers={asideEnabled ? showObservers : undefined}
                 />
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
