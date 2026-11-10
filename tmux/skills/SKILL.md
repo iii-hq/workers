@@ -5,7 +5,8 @@ description: >-
   Claude Code, Codex or another agent CLI and whether it is working, waiting
   for the person or idle; which pane runs `iii compose` and on which ports its
   engine and workers listen; every listening TCP port traced to its pane; and
-  create, rename, select or kill sessions and windows.
+  create, rename, select or kill sessions and windows, or move a window to
+  another session.
 ---
 
 # tmux
@@ -34,14 +35,17 @@ client that only the Console drives.
 - A person asks what is listening on a port, or which tmux window started a
   server.
 - A person wants a new tmux session or window, optionally running a command
-  in a given directory, or wants one renamed or closed.
+  in a given directory, or wants one renamed, moved to another session or
+  closed.
 
 ## Boundaries
 
 - Read functions (`status`, `sessions::list`, `ports::list`,
-  `install::status`) are allowed by default. Creating, renaming, selecting and
-  killing change the person's tmux and are approval-gated; killing ends
-  whatever runs there, so name what will stop before asking. `panes::select`
+  `install::status`) are allowed by default. Creating, renaming, selecting,
+  moving and killing change the person's tmux and are approval-gated; killing
+  ends whatever runs there, so name what will stop before asking. Moving a
+  session's last window closes that session, and the person's terminals
+  attached to it end, so say so too. `panes::select`
   is approval-gated too: a zoom shows on every client looking at that window.
 - `panes::capture` returns whatever is on a pane's screen, which can include
   anything the person typed or a program printed; it needs approval and its
@@ -75,6 +79,7 @@ client that only the Console drives.
 - `tmux::windows::create` — add a window to a session with an optional name, directory, command and `select`.
 - `tmux::windows::select` — make a window current in its session (every attached client follows).
 - `tmux::windows::rename` / `tmux::windows::kill` — rename or kill a window by id (`@3`) or index.
+- `tmux::windows::move` — move a window to another session (after its last window) or next to one of its windows (`before` / `after`, which also reorder it inside its own session); it keeps its id and programs, and moving a session's last window closes that session (`source_session_closed`).
 - `tmux::panes::select` — make a pane (`%5`) active; `zoom: true` zooms the window on it, `zoom: false` unzooms (every client of that window follows).
 - `tmux::panes::capture` — a pane's visible screen with colour escapes, its size, cursor and alternate-screen flag.
 - `tmux::subagents::transcript` — what one sub-agent of a pane's Claude Code or Codex has done (`pane`, `subagent` from `agent.subagents[].id`): its task, messages, reasoning, tool calls and results, oldest first.

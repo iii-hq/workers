@@ -34,6 +34,12 @@
 
 ### Added
 
+- **Moving a window to another session.** `tmux::windows::move` moves a window, with its id,
+  panes and programs, after another session's last window, or just before or after one of its
+  windows (`before` / `after`, which also reorder a window inside its own session; tmux 3.2 and
+  2.1 or later, an older tmux gets one sentence). The destination's current window stays as it
+  was. When the window was its session's last, tmux closes that session and the answer's
+  `source_session_closed` says so.
 - **Installing tmux from the worker.** `tmux::install` puts the tmux program on the
   computer in the background and `tmux::install::status` says how it is going: the
   system's package manager when this user may run it without a password, otherwise tmux's

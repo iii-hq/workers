@@ -1,14 +1,14 @@
 # tmux
 
 tmux as an iii worker. It lists every tmux session, window and pane on the
-host, creates, renames and kills sessions and windows, and tells you what is
-running where: which pane holds Claude Code or Codex and whether that agent is
-working, waiting for you or idle, which pane runs `iii compose` and on which
-port its engine listens, and every TCP port your processes listen on, traced
-back to the pane that started them. Its Console page embeds a terminal that
-is a real tmux client: what you type goes straight into the session, and the
-screen updates as tmux draws it, the same way a second terminal attached with
-`tmux attach` would.
+host, creates, renames and kills sessions and windows, moves windows between
+sessions, and tells you what is running where: which pane holds Claude Code
+or Codex and whether that agent is working, waiting for you or idle, which
+pane runs `iii compose` and on which port its engine listens, and every TCP
+port your processes listen on, traced back to the pane that started them. Its
+Console page embeds a terminal that is a real tmux client: what you type goes
+straight into the session, and the screen updates as tmux draws it, the same
+way a second terminal attached with `tmux attach` would.
 
 ## Install
 
@@ -159,6 +159,33 @@ topic) without the ✳ or spinner in front; it is null while the pane shows
 tmux's default title, the host name. Selecting a window
 (`tmux::windows::select`) works like tmux itself: every client attached to
 that session, your own terminal included, switches to it.
+
+`tmux::windows::move` moves a window to another session, or next to one of
+its windows. The window keeps its id, panes and programs:
+
+```bash
+# After the last window of `work`
+iii call tmux::windows::move session=api window=@3 target_session=work
+# Just before (or after) window 0 of `work`; in the window's own session this reorders it
+iii call tmux::windows::move session=work window=@3 target_session=work before=0
+```
+
+```json
+{ "session_id": "$2", "window_id": "@3", "window_index": 0, "source_session_closed": false }
+```
+
+Without `before` or `after` the window goes after the session's last window,
+even when an index between two windows is free (tmux's own `move-window -t
+work:` would take that gap). `before` and `after` are tmux's `move-window -b`
+and `-a`, so the windows from that spot on move up one index. They need tmux
+3.2 and 2.1 or later; an older tmux gets one sentence saying so. The
+destination's current window stays as it was, and a session's current window
+reordered inside it stays current. When the window was the last one of its
+session, tmux closes that session and `source_session_closed` is true; with
+tmux's default `detach-on-destroy on`, clients attached there (a Console
+terminal too) end, so switch a terminal to the target session first. The
+window already in the target session without `before`/`after`, both at once,
+or a window next to itself are refused in one sentence.
 
 Panes work the same way. `tmux::panes::select` makes a pane active and, with
 `zoom: true`, zooms the window on it the way prefix `z` does, for every client
