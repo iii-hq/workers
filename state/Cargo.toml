@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-state"
-version = "0.23.0"
+version = "0.23.1"
 edition = "2024"
 description = "State worker for iii — key-value state (state::* functions) with an observable change event (state::on-changed)"
 license = "Apache-2.0"
