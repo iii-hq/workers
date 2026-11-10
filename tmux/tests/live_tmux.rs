@@ -957,6 +957,109 @@ async fn panes_zoom_and_capture() {
 }
 
 #[tokio::test]
+async fn pasted_images_are_saved_for_the_terminal_that_asks() {
+    use std::os::unix::fs::PermissionsExt;
+    use tmux::terminal::protocol::UploadImageRequest;
+
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let w = world();
+    sessions::create(
+        &w.ctx,
+        sessions::CreateSessionInput {
+            name: Some("paste".into()),
+            cwd: Some("/".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let folder = Folder::new();
+    let paste = folder.0.join("iii/tmux/paste");
+    let console = ConsoleClients::default();
+    let collector = Arc::new(Collector::new(w.collector_config(), console.clone()));
+    let manager = TerminalManager::new(
+        Arc::new(Captured::default()),
+        collector,
+        console,
+        Arc::new(|| {}),
+        Arc::new(|| Some(false)),
+    )
+    .with_paste_folder(paste.clone());
+    let opened = manager
+        .open(OpenRequest {
+            session: "paste".into(),
+            window: None,
+            cols: 80,
+            rows: 24,
+            output_function_id: OUTPUT.into(),
+            caller_worker_id: Some(CALLER.into()),
+        })
+        .await
+        .unwrap();
+    let reference = TerminalRef {
+        terminal_id: opened.terminal_id.clone(),
+        access_key: opened.access_key.clone(),
+        caller_worker_id: Some(CALLER.into()),
+    };
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01";
+    let upload = |terminal: TerminalRef, mime: &str, data: &[u8]| {
+        manager.upload_image(UploadImageRequest {
+            terminal,
+            mime: mime.into(),
+            data: BASE64.encode(data),
+        })
+    };
+
+    let saved = upload(reference.clone(), "image/png", png).await.unwrap();
+    assert_eq!((saved.bytes, saved.mime.as_str()), (png.len(), "image/png"));
+    let path = std::path::Path::new(&saved.path);
+    assert_eq!(path.parent(), Some(paste.as_path()));
+    assert!(path.is_absolute() && !saved.path.contains(' '));
+    assert_eq!(std::fs::read(path).unwrap(), png);
+    let mode = |path: &std::path::Path| path.metadata().unwrap().permissions().mode() & 0o777;
+    assert_eq!((mode(path), mode(&paste)), (0o600, 0o700));
+    let files = || std::fs::read_dir(&paste).unwrap().count();
+    assert_eq!(files(), 1);
+
+    // Only the page that opened the terminal, with its key.
+    let wrong_key = TerminalRef {
+        access_key: "nope".into(),
+        ..reference.clone()
+    };
+    let foreign = TerminalRef {
+        caller_worker_id: Some("someone-else".into()),
+        ..reference.clone()
+    };
+    for terminal in [wrong_key, foreign] {
+        let refused = upload(terminal, "image/png", png).await.unwrap_err();
+        assert_eq!(refused, "terminal credentials are invalid");
+    }
+    // What isn't a PNG, JPEG, GIF or WebP image, as its first bytes say.
+    assert_eq!(
+        upload(reference.clone(), "image/jpeg", png)
+            .await
+            .unwrap_err(),
+        "The image's data is not image/jpeg, as its type says."
+    );
+    assert_eq!(
+        upload(reference.clone(), "text/plain", b"hello")
+            .await
+            .unwrap_err(),
+        "Only PNG, JPEG, GIF and WebP images can be pasted."
+    );
+    assert_eq!(files(), 1, "a refusal writes nothing");
+
+    manager.close(reference.clone()).await.unwrap();
+    assert!(upload(reference, "image/png", png)
+        .await
+        .unwrap_err()
+        .contains("not found"));
+}
+
+#[tokio::test]
 async fn panes_split_kill_and_respawn() {
     if !tmux_installed() || which("sh").is_none() {
         eprintln!("tmux or sh missing; skipping");
