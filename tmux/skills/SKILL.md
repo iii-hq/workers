@@ -5,8 +5,8 @@ description: >-
   Claude Code, Codex or another agent CLI and whether it is working, waiting
   for the person or idle; which pane runs `iii compose` and on which ports its
   engine and workers listen; every listening TCP port traced to its pane; and
-  create, rename, select or kill sessions and windows, or move a window to
-  another session.
+  create, rename, select or kill sessions and windows, move a window to
+  another session, and split, restart or kill panes.
 ---
 
 # tmux
@@ -56,7 +56,10 @@ client that only the Console drives.
 - The worker never types into panes. `tmux::terminal::*` is the Console
   page's own terminal: it is denied to agents and cannot be observed
   (`NOT_OBSERVABLE`), since its calls carry the terminal's access key and
-  what the person types.
+  what the person types. Its `upload-image` only writes an image the person
+  pastes to a file under their cache folder (`~/.cache/iii/tmux/paste` or
+  `~/Library/Caches/iii/tmux/paste`, kept 7 days) and answers the path; the
+  page pastes that path, the worker types nothing.
 - Agent state is a reading of the screen: `waiting` means a prompt that needs
   the person is visible, not that the agent's process is blocked. Patterns
   live in the worker configuration and can be tuned per agent.

@@ -265,6 +265,33 @@ iii.observe({ function_id: 'tmux::on-changed', capture: ['output'] }, 'my-worker
 ```
 
 The Console page's terminal functions, `tmux::terminal::open`, `write`,
-`resize`, `switch`, `replay`, `redraw` and `close`, cannot be observed
-(`NOT_OBSERVABLE`): `open` returns the terminal's access key, every other call
-carries it, and `write` carries what is typed into the terminal.
+`resize`, `switch`, `replay`, `redraw`, `close` and `upload-image`, cannot be
+observed (`NOT_OBSERVABLE`): `open` returns the terminal's access key, every
+other call carries it, `write` carries what is typed into the terminal and
+`upload-image` the image being pasted.
+
+`tmux::terminal::upload-image` is how an image is pasted into a terminal. It
+only writes a file: the image (`mime` `image/png`, `image/jpeg`, `image/gif` or
+`image/webp`, matching the data's first bytes; `data` base64, at most 12 MiB
+decoded) goes to a new file in the cache folder of the user this worker runs
+as, and the answer is that file's absolute path. It types nothing into the
+terminal; the page pastes the path itself, and Claude Code and Codex then
+attach it as `[Image #1]` (Codex only when the paste is that path alone and its
+model takes images; any other program just receives the path as text).
+
+```json
+{ "path": "/home/me/.cache/iii/tmux/paste/20261110-161648-0a1b2c3d.png",
+  "bytes": 48213, "mime": "image/png" }
+```
+
+| Computer | Folder |
+|---|---|
+| Linux | `$XDG_CACHE_HOME/iii/tmux/paste` when that's an absolute path, otherwise `~/.cache/iii/tmux/paste` |
+| macOS | `~/Library/Caches/iii/tmux/paste` |
+
+The folder is readable by this user only (0700) and so is each file (0600),
+named `<UTC yyyymmdd-hhmmss>-<8 hex>.<png|jpg|gif|webp>` with nothing from the
+caller in it. Files of that name older than 7 days are removed when the worker
+starts and on each upload, and nothing else in that folder is touched. They
+are not removed right away because Codex reads the file only when the message
+it is attached to is sent.

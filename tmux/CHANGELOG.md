@@ -37,6 +37,12 @@
 
 ### Added
 
+- **Pasting an image into a Console terminal.** `tmux::terminal::upload-image` saves a PNG,
+  JPEG, GIF or WebP image (at most 12 MiB, its type checked by its first bytes) as a new file
+  only this user can read in the user's cache folder (`~/.cache/iii/tmux/paste`,
+  `~/Library/Caches/iii/tmux/paste`) and answers its path, which the page pastes; it types
+  nothing. Files there are kept 7 days. Like the other terminal functions it needs the
+  terminal's key and cannot be observed.
 - **Splitting, killing and restarting panes.** `tmux::panes::split` puts a new pane to the
   right of a pane or below it, in that pane's current directory unless `cwd`, running
   `command` or the default shell. `tmux::panes::kill` kills a pane and says whether its window
