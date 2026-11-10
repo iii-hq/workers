@@ -1,5 +1,7 @@
 # quick-tunnel: OpenTunnel provider, and the mesh hub behind a tunnel
 
+> **Note, 2026-11-10.** The install lines mentioned here were removed with the machine node: `mesh::join::code` and `mesh::join::token` no longer return install commands. Join codes, tokens and the public URL are unchanged.
+
 Status: design, ready to implement. Decisions marked **[call]** are the architect's and can be overruled.
 
 ## 1. Summary

@@ -14,7 +14,6 @@ import (
 
 	"github.com/coder/websocket"
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
-	"github.com/iii-hq/workers/mesh/internal/hub"
 )
 
 func fakeWorker(f *fixture, n *testNode, name string) *iii.Client {
@@ -100,43 +99,6 @@ func TestE2ENodeRegistersMeshIDGetsPrefix(t *testing.T) {
 		t.Fatal("node replaced hub function")
 	}
 }
-func TestE2ERevocationWithin5s(t *testing.T) {
-	f := newFixture(t, "default")
-	var calls atomic.Int32
-	if _, err := iii.RegisterFunctionTyped(f.admin, "target::allowed", func(context.Context, json.RawMessage) (map[string]bool, error) {
-		calls.Add(1)
-		return map[string]bool{"ok": true}, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.config.Nodes["evil"] = hub.NodeConfig{Workers: []string{}, Allow: []string{"target::allowed"}}
-	f.reload()
-	n := f.enroll("evil")
-	c := fakeWorker(f, n, "echo")
-	mustCall(t, c, "default", "target::allowed", map[string]any{})
-	start := time.Now()
-	f.config.Nodes["evil"] = hub.NodeConfig{Workers: []string{}, Allow: []string{}}
-	f.reload()
-	deadline := start.Add(5 * time.Second)
-	ctx, cancel := context.WithDeadline(f.ctx, deadline)
-	defer cancel()
-	if err := waitForPolicyRefusal(ctx, func(callCtx context.Context) error {
-		_, err := call(callCtx, c, "default", "target::allowed", map[string]any{})
-		return err
-	}); err != nil {
-		t.Fatalf("existing worker grant not revoked within 5s: %v", err)
-	}
-	enforcedAt := time.Now()
-	if !enforcedAt.Before(deadline) {
-		t.Fatalf("policy refusal completed after 5s: %s", enforcedAt.Sub(start))
-	}
-	baseline := calls.Load()
-	refused(t, c, "default", "target::allowed", map[string]any{}, "forbidden")
-	if calls.Load() != baseline {
-		t.Fatal("revoked invocation reached target")
-	}
-	t.Logf("revocation enforced in %s", enforcedAt.Sub(start))
-}
 func (f *fixture) startFP() {
 	startProcess(f.t, f.dir, "fp", binary(f.t, "MESH_TEST_FP_BIN"), nil, "--url", f.engineURL)
 	eventually(f.t, 15*time.Second, "fp ready", func() error {
@@ -144,12 +106,12 @@ func (f *fixture) startFP() {
 		return err
 	})
 }
-func TestE2ESupervisorUnreachable(t *testing.T) {
+func TestE2ENodeEndpointUnreachable(t *testing.T) {
 	f := newFixture(t, "default")
 	n := f.enroll("laptop")
-	f.startNode(n, false)
+	f.startNode(n)
 	f.startFP()
-	eventually(t, 5*time.Second, "signed supervisor registered", func() error {
+	eventually(t, 5*time.Second, "signed node endpoint registered", func() error {
 		_, err := call(f.ctx, f.admin, "default", "laptop::mesh-node::workers::apply", map[string]any{})
 		if err != nil && strings.Contains(err.Error(), "unsigned") {
 			return nil
@@ -165,7 +127,7 @@ func TestE2ESupervisorUnreachable(t *testing.T) {
 		b, err := call(f.ctx, f.admin, "default", "fp::"+kind, map[string]any{key: []any{map[string]any{"function": "laptop::mesh-node::workers::apply", "payload": map[string]any{}}}})
 		rejection := fmt.Sprintf("%s %v", b, err)
 		if !strings.Contains(rejection, "bus-internal functions are not supported") {
-			t.Fatalf("%s did not refuse supervisor: %s", kind, rejection)
+			t.Fatalf("%s did not refuse node endpoint: %s", kind, rejection)
 		}
 
 	}
@@ -283,7 +245,6 @@ func TestE2EConditionCallbackRefused(t *testing.T) {
 	if called.Load() != 0 {
 		t.Fatal("ungranted condition ran")
 	}
-	f.observeWorker(n, "echo")
 }
 func TestE2ENameSquatting(t *testing.T) {
 	f := newFixture(t, "default")

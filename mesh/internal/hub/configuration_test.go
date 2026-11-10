@@ -98,6 +98,16 @@ func TestConfigurationInitialization(t *testing.T) {
 			if _, ok := schema["required"]; ok {
 				t.Fatalf("a bare compose override such as {mode: client} would fail validation: %s", p["schema"])
 			}
+			var properties map[string]json.RawMessage
+			json.Unmarshal(schema["properties"], &properties)
+			for _, key := range []string{"links", "nodes", "drives"} {
+				if string(properties[key]) != `{"description":"Retired on 2026-11-10; ignored."}` {
+					t.Fatalf("the engine would refuse a stored %s on configuration::get: %s", key, properties[key])
+				}
+			}
+			if string(schema["additionalProperties"]) != "false" {
+				t.Fatalf("schema accepts unknown keys: %s", p["schema"])
+			}
 		})
 	}
 }

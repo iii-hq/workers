@@ -17,7 +17,7 @@ func authHub() *Hub {
 }
 func TestAuthGrants(t *testing.T) {
 	h := authHub()
-	h.config.Nodes["laptop"] = NodeConfig{Allow: []string{"shell::exec"}}
+	h.defaults = GrantDefaults{Allow: []string{"shell::exec"}}
 	ticket := h.Tickets.Mint("laptop")
 	r := AuthRequest{Headers: map[string]string{gateway.TicketHeader: ticket}}
 	got, err := h.Auth(context.Background(), r)

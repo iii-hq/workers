@@ -32,20 +32,19 @@ type SharedStatus struct {
 	Functions []string `json:"functions"`
 }
 
-// Bridge is the client node's WorkerController: its "workers" are the shared
+// Bridge is the client node's WorkerController: its workers are the shared
 // local workers, whose functions it registers on one hub connection and
 // forwards to the local engine.
 type Bridge struct {
 	local     caller
 	namespace string // local project namespace
 
-	mu          sync.Mutex
-	rt          node.Runtime
-	remote      *iii.Client
-	share       []string
-	functions   map[string]function // desired, by local function id
-	refs        map[string]*iii.FunctionRef
-	unsupported []string // workers the hub asked this node to run
+	mu        sync.Mutex
+	rt        node.Runtime
+	remote    *iii.Client
+	share     []string
+	functions map[string]function // desired, by local function id
+	refs      map[string]*iii.FunctionRef
 }
 
 func NewBridge(local caller, namespace string) *Bridge {
@@ -80,21 +79,6 @@ func (b *Bridge) connect(rt node.Runtime) {
 	_ = b.remote.Connect(started)
 }
 
-// Apply answers hub-managed workers without an error so the hub does not retry
-// every second; Status reports them as unsupported.
-func (b *Bridge) Apply(_ context.Context, workers []node.Worker) ([]node.WorkerResult, error) {
-	results := []node.WorkerResult{}
-	names := []string{}
-	for _, w := range workers {
-		results = append(results, node.WorkerResult{Name: w.Name})
-		names = append(names, w.Name)
-	}
-	b.mu.Lock()
-	b.unsupported = names
-	b.mu.Unlock()
-	return results, nil
-}
-
 // Status reads the cached state only; the hub gives mesh-node::status 5 s.
 func (b *Bridge) Status() []node.WorkerStatus {
 	b.mu.Lock()
@@ -102,9 +86,6 @@ func (b *Bridge) Status() []node.WorkerStatus {
 	out := []node.WorkerStatus{}
 	for _, s := range b.shared("") {
 		out = append(out, node.WorkerStatus{Name: s.Worker, State: s.State})
-	}
-	for _, name := range b.unsupported {
-		out = append(out, node.WorkerStatus{Name: name, State: "unsupported"})
 	}
 	return out
 }
@@ -309,7 +290,7 @@ func (b *Bridge) forward(id string) iii.Handler {
 		if hasChannelRefs(data) {
 			return nil, errChannels
 		}
-		// shortcut: fixed 10m timeout (hub node calls use 610s) and a hub-side cancel does not reach the local call; propagate both once the SDK carries cancellation
+		// shortcut: fixed 10m timeout and a hub-side cancel does not reach the local call; propagate both once the SDK carries cancellation
 		out, err := b.local.Call(ctx, iii.CallRequest{FunctionID: id, Namespace: b.namespace, Payload: data, Timeout: 10 * time.Minute})
 		if err != nil {
 			return nil, err

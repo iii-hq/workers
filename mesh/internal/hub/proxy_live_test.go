@@ -49,7 +49,7 @@ func TestRunningProxyMeshClaim(t *testing.T) {
 	h.Namespace = "default"
 	h.config.ProxyURL = proxyURL
 	// Extra operator call grants must never widen observer visibility.
-	h.config.Nodes["laptop"] = NodeConfig{Allow: []string{"hub::collision", "ade::ui::asset", "state::on-changed"}}
+	h.defaults = GrantDefaults{Allow: []string{"hub::collision", "ade::ui::asset", "state::on-changed"}}
 	h.Client = iii.New(engineURL, iii.WithName("mesh"), iii.WithNamespace("default"))
 	defer h.Client.Close()
 	if err := h.Client.Connect(ctx); err != nil {

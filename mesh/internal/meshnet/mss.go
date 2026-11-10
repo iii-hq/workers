@@ -39,8 +39,7 @@ const (
 	// A path of 1280 (a VPN, WSL2 behind a Tailscale adapter) must fragment
 	// that, and one that drops fragments or ICMP drops it: small packets
 	// pass, large ones vanish. A packet of at most this inside is at most 1280
-	// outside; a longer one goes in fragments to a peer whose path may not
-	// carry it (frag.go).
+	// outside.
 	maxInner = 1280 - 80
 
 	// TCP, nearly all the mesh carries, is held to segments whose packet is

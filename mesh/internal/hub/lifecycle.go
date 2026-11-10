@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +20,6 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/gateway"
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
-	"github.com/iii-hq/workers/mesh/internal/registry"
 	"github.com/iii-hq/workers/mesh/internal/relay"
 	"tailscale.com/derp/derpserver"
 )
@@ -41,7 +39,6 @@ type Hub struct {
 	events          *nodeEvents
 	nodeReconciler  *nodeReconciler
 	nodeClient      rpc
-	resolveArtifact func(context.Context, string, string, string) (registry.Artifact, error)
 	nodeDetails     map[string]NodeDetails
 	Coordinator     *coordinator.Coordinator
 	MeshGateway     *gateway.Gateway
@@ -212,14 +209,6 @@ func trustedPrefixes(c Config) []netip.Prefix {
 	return p
 }
 func (h *Hub) applyCoordinator(cfg Config) {
-	h.Coordinator.Link(cfg.Links)
-	ds := make(map[string]coordinator.Drive, len(cfg.Drives))
-	for name, d := range cfg.Drives {
-		ds[name] = coordinator.Drive{Server: d.Server, Nodes: d.Nodes}
-	}
-	for _, err := range h.Coordinator.SetDrives(ds) {
-		log.Printf("mesh drives: %v", err)
-	}
 	h.Coordinator.SetTrustedProxies(trustedPrefixes(cfg))
 	h.syncRelay()
 	h.Coordinator.SetSTUNPort(cfg.StunPort)
@@ -407,7 +396,7 @@ func (h *Hub) applyConfig(ctx context.Context, cfg Config) error {
 	h.Coordinator.SetGatewayPort(cfg.GatewayPort)
 	if hooks.RevokeNode != nil {
 		for _, n := range h.Coordinator.Nodes() {
-			if n.Name != "hub" && (cfg.ProxyURL != old.ProxyURL || !reflect.DeepEqual(old.Nodes[n.Name], cfg.Nodes[n.Name])) {
+			if n.Name != "hub" && cfg.ProxyURL != old.ProxyURL {
 				hooks.RevokeNode(n.Name)
 			}
 		}

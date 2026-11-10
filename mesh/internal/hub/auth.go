@@ -74,7 +74,7 @@ func (h *Hub) Auth(_ context.Context, req AuthRequest) (AuthResult, error) {
 		return AuthResult{}, errors.New("mesh connection is closed")
 	}
 	h.queueNode(node)
-	grants := map[string][]string{h.Namespace: union(h.defaults.Allow, h.Config().Nodes[node].Allow)}
+	grants := map[string][]string{h.Namespace: union(h.defaults.Allow, nil)}
 	grants["default"] = union(grants["default"], append(configurationCalls(), "configuration::on-updated"))
 	return AuthResult{FunctionRegistrationPrefix: node, Namespaces: grants, Context: SessionContext{MeshNode: node, SessionKey: key}}, nil
 }

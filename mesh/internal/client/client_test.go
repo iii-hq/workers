@@ -12,11 +12,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"github.com/iii-hq/workers/mesh/internal/coordinator"
-	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"github.com/iii-hq/workers/mesh/internal/join"
+	"github.com/iii-hq/workers/mesh/internal/meshnet"
+	"tailscale.com/types/key"
 )
 
 func TestConfigValidate(t *testing.T) {
@@ -156,9 +158,6 @@ func TestEnrollFailuresBeforeJoinAreRetried(t *testing.T) {
 // The backend retries a refused secret forever and each refusal spends a hub
 // join attempt, so a refused enrollment is dropped and its value not retried.
 func TestRefusedRegistrationIsNotSavedOrRetried(t *testing.T) {
-	if _, err := elevate.Operator(); err != nil {
-		t.Skip(err)
-	}
 	var joins atomic.Int32
 	hub, err := coordinator.New(t.TempDir(), func(secret, addr string) (string, error) {
 		joins.Add(1)
@@ -203,6 +202,81 @@ func TestStartRefusesMissingVersionBeforeJoining(t *testing.T) {
 	t.Setenv("MESH_JOIN_TEST", "ABCD-EFGH")
 	r.start(context.Background(), Config{Join: "env://MESH_JOIN_TEST"})
 	if s := r.status(); attempts != 0 || s.State != "error" || s.Error == "" {
+		t.Fatalf("attempts %d, status %+v", attempts, s)
+	}
+}
+
+// Security: a token names its hub by identity. A hub that answers at the
+// token's URL with another identity must not be joined.
+func TestEnrollPinsHubIdentity(t *testing.T) {
+	hubPublic, hubKey, _ := ed25519.GenerateKey(nil)
+	front := httptest.NewServer(join.IdentityHandler(hubKey, key.NewMachine().Public()))
+	defer front.Close()
+	other, _, _ := ed25519.GenerateKey(nil)
+	_, forged, err := join.NewToken(front.URL, other, join.TokenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, spent, err := enroll(t.Context(), Config{Name: "laptop"}, forged); err == nil || spent || st.Secret != "" {
+		t.Fatalf("joined a hub with another identity: %+v spent=%v err=%v", st, spent, err)
+	}
+	_, token, err := join.NewToken(front.URL, hubPublic, join.TokenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := join.DecodeToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, spent, err := enroll(t.Context(), Config{Name: "laptop"}, token)
+	if err != nil || spent || st.Secret != envelope.Secret || st.Secret == token || st.PublicURL != front.URL || !st.Identity.Identity.Equal(hubPublic) || st.RequestedName != "laptop" {
+		t.Fatalf("token enrollment: %+v spent=%v err=%v", st, spent, err)
+	}
+
+	// A code learns the identity from /join. An /id that showed enroll another
+	// identity (Redeem's own read sees the hub) must not be joined, and the
+	// code counts as spent.
+	_, impostorKey, _ := ed25519.GenerateKey(nil)
+	impostor, genuine := join.IdentityHandler(impostorKey, key.NewMachine().Public()), join.IdentityHandler(hubKey, key.NewMachine().Public())
+	var reads atomic.Int32
+	code := join.NewCode()
+	mux := http.NewServeMux()
+	mux.Handle("/join", join.Handler(hubKey, func() string { return code }, join.NewLimit(10, 10*time.Minute, time.Now), nil))
+	mux.HandleFunc("/id", func(w http.ResponseWriter, r *http.Request) {
+		if reads.Add(1) == 1 {
+			impostor.ServeHTTP(w, r)
+			return
+		}
+		genuine.ServeHTTP(w, r)
+	})
+	codeFront := httptest.NewServer(mux)
+	defer codeFront.Close()
+	c := Config{Name: "laptop", HubURL: codeFront.URL}
+	if st, spent, err := enroll(t.Context(), c, code); err == nil || !spent || st.Secret != "" {
+		t.Fatalf("code joined a hub with another identity: %+v spent=%v err=%v", st, spent, err)
+	}
+	if st, spent, err = enroll(t.Context(), c, code); err != nil || !spent || st.Secret == "" || !st.Identity.Identity.Equal(hubPublic) {
+		t.Fatalf("code enrollment: %+v spent=%v err=%v", st, spent, err)
+	}
+}
+
+// A node the hub removed must not rejoin on the next tick.
+func TestRemovedMarkerPreventsStart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "mesh"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mesh", meshnet.Removed), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	r := &runner{o: Options{Version: "0.1.0"}, dir: dir, bridge: NewBridge(&fakeLocal{}, "local"), enroll: func(context.Context, Config, string) (joinState, bool, error) {
+		attempts++
+		return joinState{}, true, errors.New("unreachable")
+	}}
+	t.Setenv("MESH_JOIN_TEST", "ABCD-EFGH")
+	r.start(t.Context(), Config{Join: "env://MESH_JOIN_TEST"})
+	if s := r.status(); attempts != 0 || r.done != nil || s.State != removedState {
 		t.Fatalf("attempts %d, status %+v", attempts, s)
 	}
 }

@@ -30,10 +30,10 @@ func (n *Node) Run(ctx context.Context) error {
 	defer closeSession()
 	refresh := func() error {
 		name, named := n.mesh.SelfName()
-		port, advertised := n.mesh.GatewayPort()
+		_, advertised := n.mesh.GatewayPort()
 		url := ""
 		if named && advertised {
-			url = n.gatewayURL(port)
+			url = n.url
 		}
 		if url == activeURL && name == activeName {
 			return nil
@@ -76,8 +76,6 @@ func (n *Node) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-n.restart:
-			return ErrRestartRequired
 		case <-n.mesh.Removed():
 			return ErrRemoved
 		case err := <-connected:

@@ -40,7 +40,7 @@ func TestVerifyRefuses(t *testing.T) {
 				}
 				want = ErrReplay
 			case "wrong function":
-				fn = "mesh-node::update"
+				fn = "mesh-node::workers::apply"
 				want = ErrBadSig
 			}
 			got, err := v.Verify(fn, s, now)

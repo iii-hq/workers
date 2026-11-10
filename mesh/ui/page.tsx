@@ -13,9 +13,9 @@ type ComponentState = { name: string; state: string; functions?: string[] }
 type Node = {
   name: string; address: string; os: string; arch: string; version: string
   online: boolean; last_seen: string; ephemeral: boolean; path: string
-  workers: ComponentState[]; drives: ComponentState[]
+  workers: ComponentState[]
 }
-type Join = { code: string; install: { unix: string; windows: string } }
+type Join = { code: string }
 // The hub's mesh::status has no `mode`; only a client-mode worker reports one.
 type ClientStatus = {
   mode: 'client'; hub_url: string; node: string; namespace: string; state: string; error: string
@@ -73,7 +73,7 @@ const MODE_OPTIONS: { value: Mode; label: string; icon: false }[] = [
   { value: 'hub', label: 'Hub', icon: false }, { value: 'client', label: 'Client', icon: false },
 ]
 const MODE_HELP: Record<Mode, string> = {
-  hub: 'This project is the hub. Other machines join it and run or share workers here.',
+  hub: 'This project is the hub. Other projects join it as clients and share workers here.',
   client: 'This project joins another project\'s hub and shares the workers you pick below.',
 }
 // The mesh worker refuses these; listing them would only offer a switch that fails.
@@ -305,7 +305,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
           {error || data?.nodesError ? <StatusPanel variant="alert" headline="Could not load machines"
             detail={error || data?.nodesError} action={<Button onClick={refresh}>Retry</Button>} /> : null}
           {data?.nodes?.length === 0 ? <EmptyState icon={Network} title="No machines joined"
-            description="Run a join command below on a machine to connect its workers to this project." /> : null}
+            description="Use the hub URL and join code below in another engine's Mesh page to connect it." /> : null}
           <div className="mesh-ui-nodes">{data?.nodes?.map((node) => <article key={node.name} className="mesh-ui-node" aria-label={node.name}>
             <header className="mesh-ui-node-head"><h3><code>{node.name}</code></h3>
               <Badge variant={node.online ? 'ok' : 'default'}>{node.online ? 'Online' : 'Offline'}</Badge>
@@ -318,19 +318,17 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
               <div><dt>Path</dt><dd><code>{node.path || 'Not reported'}</code></dd></div>
               {!node.online ? <div><dt>Last seen</dt><dd>{node.last_seen && !node.last_seen.startsWith('0001-') ? formatRelative(node.last_seen) : 'Not reported'}</dd></div> : null}
               <Components label="Workers" values={node.workers ?? []} />
-              <Components label="Drives" values={node.drives ?? []} />
             </dl>
           </article>)}</div>
         </section>
         <section className="mesh-ui-section" aria-labelledby="mesh-join-title">
-          <div className="mesh-ui-section-head"><h2 id="mesh-join-title">Join a machine</h2></div>
-          <p className="mesh-ui-muted">Run the command as the person who will use the machine. Share the join code only with people you trust.</p>
+          <div className="mesh-ui-section-head"><h2 id="mesh-join-title">Connect another engine</h2></div>
+          <p className="mesh-ui-muted">On the other machine, open Mesh in that project's Console, choose Client, and paste these into Hub URL and Join code or token. If that field takes only a secret://NAME reference, store the code in the secrets worker and enter the reference. Share the join code only with people you trust.</p>
           {data?.joinError ? <StatusPanel variant="warn" headline="Join instructions unavailable" detail={data.joinError}
             action={<Button onClick={refresh}>Retry</Button>} /> : null}
           {data?.join ? <div className="mesh-ui-join">
+            {data.hub?.public_url ? <CopyValue label="Hub URL" value={data.hub.public_url} /> : null}
             <CopyValue label="Join code" value={data.join.code} />
-            <CopyValue label="Linux / macOS command" value={data.join.install.unix} />
-            <CopyValue label="Windows PowerShell command" value={data.join.install.windows} />
           </div> : null}
         </section>
       </>}
@@ -362,7 +360,7 @@ function setAt(value: JsonValue | undefined, path: string[], next: JsonValue): J
 }
 function pointer(path: string[]) { return path.length ? '/' + path.map((s) => s.replaceAll('~', '~0').replaceAll('/', '~1')).join('/') : '' }
 function defaultConfiguration(): JsonValue {
-  return { public_url: '', listen: '0.0.0.0:49180', gateway_port: 49135, proxy_url: 'ws://127.0.0.1:49200', stun_port: 0, trusted_proxies: [], links: [], nodes: {}, drives: {} }
+  return { public_url: '', listen: '0.0.0.0:49180', gateway_port: 49135, proxy_url: 'ws://127.0.0.1:49200', stun_port: 0, trusted_proxies: [] }
 }
 
 type FormFieldProps = { form: ConfigFormProps; path: string[]; label: string; description?: string; numeric?: boolean; literal?: JsonValue }
@@ -399,61 +397,6 @@ function StringList({ form, path, label, description }: FormFieldProps) {
     </div>)}{values.length === 0 ? <p className="mesh-ui-form-empty">No items configured.</p> : null}</SettingsList>
   </SettingsSection>
 }
-function Collection({ form, kind }: { form: ConfigFormProps; kind: 'nodes' | 'drives' }) {
-  const [name, setName] = useState('')
-  const collectionValue = at(form.value, [kind])
-  const title = kind === 'nodes' ? 'Machine workers' : 'Shared drives'
-  if (collectionValue !== undefined && !isRecord(collectionValue)) return <SettingsSection title={title}>
-    <OpaqueValue form={form} path={[kind]} label={title} value={collectionValue} literal={{}} />
-  </SettingsSection>
-  const entries = collectionValue ?? {}
-  const validName = (kind === 'drives' ? /^(?=.{1,31}$)[a-z0-9]+(-[a-z0-9]+)*$/.test(name) : /^[a-z][a-z0-9-]{0,30}$/.test(name)) && !Object.hasOwn(entries, name)
-  const label = kind === 'nodes' ? 'Machine' : 'Drive'
-  const emptyEntry: Record<string, JsonValue> = kind === 'nodes' ? { workers: [], allow: [] } : { server: '', nodes: [] }
-  return <SettingsSection title={title}
-    description={kind === 'nodes' ? 'Choose which workers each machine runs and any additional function grants.' : 'A drive server must be a joined Linux machine. Drive names identify shared mounts.'}>
-    {Object.keys(entries).map((key) => <details className="mesh-ui-config-entry" key={key} open>
-      <summary><code>{key}</code></summary>
-      {!isRecord(entries[key]) ? <OpaqueValue form={form} path={[kind, key]} label={`${label} ${key} settings`} value={entries[key]} literal={emptyEntry} /> : kind === 'nodes' ? <>
-        <StringList form={form} path={[kind, key, 'workers']} label="Workers" description="Worker names, optionally worker@version." />
-        <StringList form={form} path={[kind, key, 'allow']} label="Additional grants" description="Extra hub function patterns allowed for this machine." />
-      </> : <>
-        <Field form={form} path={[kind, key, 'server']} label="Server machine" />
-        <StringList form={form} path={[kind, key, 'nodes']} label="Client machines" description="Use * for every persistent machine, or list machine names." />
-      </>}
-      <Button variant="ghost" size="sm" onClick={() => {
-        const next = { ...entries }; delete next[key]
-        form.onChange(setAt(form.value, [kind], next))
-      }}>Remove {label.toLowerCase()} {key}</Button>
-    </details>)}
-    <div className="mesh-ui-form-add">
-      <Input aria-label={`New ${label.toLowerCase()} name`} placeholder={`${label} name`} value={name} onChange={setName} />
-      <Button size="sm" disabled={!validName} onClick={() => {
-        form.onChange(setAt(form.value, [kind], { ...entries, [name]: emptyEntry }))
-        setName('')
-      }}>Add {label.toLowerCase()}</Button>
-    </div>
-    {name && !validName ? <p role="status" className="mesh-ui-muted">{kind === 'nodes' ? 'Use a unique lowercase name, starting with a letter, up to 31 letters, digits or hyphens.' : 'Use a unique name up to 31 lowercase letters or digits, separated by single hyphens.'}</p> : null}
-  </SettingsSection>
-}
-
-function MachineLinks({ form }: { form: ConfigFormProps }) {
-  const value = at(form.value, ['links'])
-  const pairs = Array.isArray(value) ? value : []
-  const opaque = value !== undefined && !Array.isArray(value)
-  return <SettingsSection title="Machine links" description="Explicit pairs of machines allowed to connect."
-    action={opaque ? undefined : <Button variant="ghost" size="sm" onClick={() => form.onChange(setAt(form.value, ['links'], [...pairs, ['', '']]))}>Add link</Button>}>
-    {opaque ? <OpaqueValue form={form} path={['links']} label="Machine links" value={value} literal={[]} replacementLabel="a link list" /> : null}
-    {pairs.map((pair, i) => <SettingsList key={i}>
-      {!Array.isArray(pair) || pair.length !== 2 ? <OpaqueValue form={form} path={['links', String(i)]} label={`Link ${i + 1}`} value={pair} literal={['', '']} replacementLabel="a machine pair" /> : <>
-        <Field form={form} path={['links', String(i), '0']} label={`Link ${i + 1} first machine`} />
-        <Field form={form} path={['links', String(i), '1']} label={`Link ${i + 1} second machine`} />
-      </>}
-      <Button variant="ghost" size="sm" onClick={() => form.onChange(setAt(form.value, ['links'], pairs.filter((_, index) => index !== i)))}>Remove link {i + 1}</Button>
-    </SettingsList>)}
-  </SettingsSection>
-}
-
 const JOIN_REF = /^(secret|env):\/\/\S+$/
 function MeshConfiguration(form: ConfigFormProps) {
   const root = useRef<HTMLDivElement>(null)
@@ -481,11 +424,8 @@ function MeshConfiguration(form: ConfigFormProps) {
           <Field form={form} path={['stun_port']} label="STUN port" description="Use 0 to disable STUN." numeric />
         </SettingsList>
       </SettingsSection>
-      <Collection form={form} kind="nodes" />
-      <Collection form={form} kind="drives" />
       <details className="mesh-ui-advanced"><summary>Advanced networking</summary>
         <StringList form={form} path={['trusted_proxies']} label="Trusted proxies" description="CIDRs trusted to supply forwarded client addresses." />
-        <MachineLinks form={form} />
       </details>
     </>}
     {form.errors?.size ? <StatusPanel variant="alert" headline="Check the configuration fields" detail={[...form.errors.values()].join(' · ')} /> : null}

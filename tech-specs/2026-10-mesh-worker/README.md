@@ -1,5 +1,7 @@
 # Mesh Worker
 
+> **Removed on 2026-11-10.** The native machine node described here no longer exists. The installer (`install.sh`, `install.ps1`), the `mesh join`, `leave`, `node` and `status` commands, the system service and elevation, Windows native support, node self-update (`mesh-node::update`), the supervisor that ran registry workers on a machine (`nodes.<name>.workers`), shared drives and links were deleted. The mesh worker now runs only inside an iii engine, as a hub or as a client (see `client-mode.md` and `mesh/README.md`). The rest of this document is kept as history.
+
 One iii engine, many machines. `mesh` puts a person's other computers (a Linux
 GPU box, a Mac, a Windows PC) on a private WireGuard network that the engine's
 machine coordinates, and runs ordinary iii workers on each of them, so an agent

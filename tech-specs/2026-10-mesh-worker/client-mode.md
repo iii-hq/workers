@@ -1,5 +1,7 @@
 # Mesh client mode: design
 
+> **Updated on 2026-11-10.** The machine node this design refers to was removed, with its installer, CLI, service, self-update, supervisor, drives and links. Client mode is now the only way to join a hub. Passages about `internal/cli`, `internal/elevate`, `Updater`, `DisableUpdate`, `UnsupportedDrives`, `mesh-node::update` and `mesh-node::drives::apply` describe code that no longer exists. The hub now sends its version in the `mesh-node::status` request and hands the namespace with `mesh-node::workers::apply`.
+
 Paths are relative to the repository root unless a prefix says otherwise.
 - `sdk:` is `$GOMODCACHE/github.com/iii-hq/iii/sdk/packages/go/iii@v0.26.0-rc.5`
 - `ts:` is `tailscale.com@v1.102.4`

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
-	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
 	"github.com/iii-hq/workers/mesh/internal/node"
@@ -137,14 +136,10 @@ func (r *runner) start(ctx context.Context, c Config) {
 		r.set(removedState, nil)
 		return
 	}
-	// node.New refuses these; checked before joining so a bad build never joins
-	// and leaves the hub every tick.
-	operator, err := elevate.Operator()
-	if err == nil && r.o.Version == "" {
-		err = errors.New("binary has no version; build it with make build")
-	}
-	if err != nil {
-		r.set("error", err)
+	// node.New refuses a build without a version; checked before joining so it
+	// never joins and leaves the hub every tick.
+	if r.o.Version == "" {
+		r.set("error", errors.New("binary has no version; build it with make build"))
 		return
 	}
 	st, fresh, err := r.join(ctx, c)
@@ -174,7 +169,7 @@ func (r *runner) start(ctx context.Context, c Config) {
 		}
 		return
 	}
-	n, err := r.newNode(m, st, operator)
+	n, err := r.newNode(m, st)
 	if err != nil {
 		m.Close()
 		r.set("error", err)
@@ -188,12 +183,12 @@ func (r *runner) start(ctx context.Context, c Config) {
 	go func(done chan<- error) { done <- n.Run(runCtx) }(r.done)
 }
 
-func (r *runner) newNode(m *meshnet.Mesh, st *joinState, operator string) (*node.Node, error) {
+func (r *runner) newNode(m *meshnet.Mesh, st *joinState) (*node.Node, error) {
 	url, err := m.Forward()
 	if err != nil {
 		return nil, fmt.Errorf("start forwarder: %w", err)
 	}
-	return node.New(node.Options{Mesh: m, HubIdentity: st.Identity.Identity, Version: r.o.Version, Operator: operator, Workers: r.bridge, Drives: &node.UnsupportedDrives{}, URL: url, DisableUpdate: true})
+	return node.New(node.Options{Mesh: m, HubIdentity: st.Identity.Identity, Version: r.o.Version, Workers: r.bridge, URL: url})
 }
 
 // join loads the enrollment, or enrolls with client.join. A value that may
@@ -293,8 +288,7 @@ func resolveJoin(ctx context.Context, local caller, ref string) (string, error) 
 
 type joinArgs struct{ PublicURL, Code, Token string }
 
-// parseJoin mirrors cli.ParseJoin without importing cli: cli's tests import
-// hub, which imports this package.
+// parseJoin reads client.join: a token carries its hub URL, a code needs client.hub_url.
 func parseJoin(hubURL, value string) (joinArgs, error) {
 	if strings.HasPrefix(value, "iiimj_") {
 		envelope, err := join.DecodeToken(value)
@@ -309,9 +303,9 @@ func parseJoin(hubURL, value string) (joinArgs, error) {
 	return joinArgs{PublicURL: hubURL, Code: value}, nil
 }
 
-// enroll follows mesh join without the install and elevation steps. Only a
-// code's POST /join counts against the hub's join limit; a token is counted
-// when it registers.
+// enroll redeems the join value and pins the hub identity. Only a code's POST
+// /join counts against the hub's join limit; a token is counted when it
+// registers.
 func enroll(ctx context.Context, c Config, value string) (joinState, bool, error) {
 	args, err := parseJoin(c.HubURL, value)
 	if err != nil {

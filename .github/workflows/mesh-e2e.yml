@@ -5,10 +5,6 @@ on:
     paths:
       - 'mesh/**'
       - 'rbac-proxy/**'
-      - 'ide/**'
-      - 'browser/**'
-      - 'computer/**'
-      - 'tmux/**'
       - 'harness/**'
       - 'fp/**'
       - 'state/**'
@@ -27,7 +23,7 @@ concurrency:
 
 jobs:
   e2e:
-    name: Real engine, node workers and adversarial boundaries
+    name: Real engine and hub boundary
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -50,10 +46,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
-            ide
-            browser
-            computer
-            tmux
             rbac-proxy
             harness
             fp
@@ -70,8 +62,8 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - name: Build embedded frontends from frozen dependencies
         run: |
-          pnpm --filter '@iii-workers/shell-ui...' --filter '@iii-workers/harness-ui...' --filter '@iii-workers/state-ui...' --filter '@iii-workers/mesh-ui...' --filter '@iii-workers/browser-ui...' --filter '@iii-workers/browser-native-ui...' --filter '@iii-workers/computer-ui...' --filter '@iii-workers/tmux-ui...' install --frozen-lockfile
-          for directory in ide/ui harness/ui state/ui mesh/ui browser/ui browser/native-ui computer/ui tmux/ui; do
+          pnpm --filter '@iii-workers/harness-ui...' --filter '@iii-workers/state-ui...' --filter '@iii-workers/mesh-ui...' install --frozen-lockfile
+          for directory in harness/ui state/ui mesh/ui; do
             pnpm --dir "$directory" build
           done
           git diff --exit-code -- mesh/assets
@@ -79,14 +71,9 @@ jobs:
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 https://install.iii.dev/iii/main/install.sh | VERSION=0.26.0 sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Install isolated desktop test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tmux xvfb
-          command -v google-chrome
       - name: Build real workers sequentially
         run: |
-          for worker in ide browser computer tmux rbac-proxy harness fp state queue session-manager; do
+          for worker in rbac-proxy harness fp state queue session-manager; do
             cargo build --locked --manifest-path "$worker/Cargo.toml" --bin "$worker"
           done
       - name: Run real mesh suite without privileged networking
@@ -94,7 +81,7 @@ jobs:
           iii --version
           install -d -m 700 mesh/tests/e2e/reports
           install -m 600 /dev/null mesh/tests/e2e/reports/results.log
-          III_BIN=$(command -v iii) MESH_TEST_CHROMIUM_BIN=$(command -v google-chrome) mesh/tests/e2e/run-tests.sh 2>&1 | tee mesh/tests/e2e/reports/results.log
+          III_BIN=$(command -v iii) mesh/tests/e2e/run-tests.sh 2>&1 | tee mesh/tests/e2e/reports/results.log
       - name: Prepare credential-free public report
         if: always()
         run: |

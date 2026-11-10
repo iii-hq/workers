@@ -45,7 +45,7 @@ func ensureConfig(ctx context.Context, client rpc, id string) (Config, error) {
 	// is stored, so the schema must not require hub fields.
 	delete(document, "required")
 	document["example"] = DefaultConfig()
-	payload := map[string]any{"id": id, "name": "Mesh", "description": "Mesh hub networking, nodes and drives", "schema": document, "metadata": map[string]string{"ui_form": "mesh"}, "initial_value": DefaultConfig()}
+	payload := map[string]any{"id": id, "name": "Mesh", "description": "Mesh hub and client networking", "schema": document, "metadata": map[string]string{"ui_form": "mesh"}, "initial_value": DefaultConfig()}
 	_, err = configCall(ctx, client, "configuration::ensure", payload)
 	if err != nil {
 		if !remoteCode(err, "function_not_found") {

@@ -41,7 +41,4 @@ func TestTokenIssueAndRevoke(t *testing.T) {
 	if c.Code() != before {
 		t.Fatal("token changed device code")
 	}
-	if issued.Install.Unix == "" || issued.Install.Windows == "" {
-		t.Fatal("missing installer commands")
-	}
 }

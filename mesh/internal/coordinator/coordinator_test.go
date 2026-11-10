@@ -60,13 +60,12 @@ func registerNode(t *testing.T, c *Coordinator, name string) (key.MachinePublic,
 	}
 	return m, k
 }
-func TestLinksDecideVisibility(t *testing.T) {
+func TestNodesSeeOnlyHub(t *testing.T) {
 	c := newCoordinator(t, t.TempDir())
 	for _, name := range []string{"hub", "a", "b", "c"} {
 		registerNode(t, c, name)
 	}
-	c.Link([][2]string{{"a", "b"}})
-	for name, want := range map[string][]string{"a": {"b", "hub"}, "c": {"hub"}} {
+	for name, want := range map[string][]string{"a": {"hub"}, "b": {"hub"}, "c": {"hub"}, "hub": {"a", "b", "c"}} {
 		sent, host := map[tailcfg.NodeID]uint64{}, ""
 		r, ok := c.delta(c.byName(name), sent, &host, true, nil)
 		if !ok {
@@ -79,13 +78,6 @@ func TestLinksDecideVisibility(t *testing.T) {
 		slices.Sort(got)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s peers %v, want %v", name, got, want)
-		}
-		if name == "a" {
-			c.Link(nil)
-			r, _ = c.delta(c.byName(name), sent, &host, false, nil)
-			if !slices.Contains(r.PeersRemoved, c.byName("b").ID) {
-				t.Fatal("unlinked peer not removed")
-			}
 		}
 	}
 }
@@ -643,9 +635,6 @@ func TestNodeMetadataSurvivesRegistrationActivityAndRestart(t *testing.T) {
 	if joined.Before(before) || joined.After(after) || !n.LastSeen.Equal(joined) {
 		t.Fatalf("registration timestamps: joined=%v seen=%v", joined, n.LastSeen)
 	}
-	if err := c.SetOperator("a", `DOMAIN\Alice User`); err != nil {
-		t.Fatal(err)
-	}
 	reconnect := time.Now().UTC()
 	r := c.register(machine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: k})
 	if !r.MachineAuthorized || n.LastSeen.Before(reconnect) || !n.JoinedAt.Equal(joined) {
@@ -653,7 +642,7 @@ func TestNodeMetadataSurvivesRegistrationActivityAndRestart(t *testing.T) {
 	}
 	next := key.NewNode().Public()
 	r = c.register(machine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: next, Auth: &tailcfg.RegisterResponseAuth{AuthKey: rand.Text()}})
-	if !r.MachineAuthorized || !n.JoinedAt.Equal(joined) || n.Operator != `DOMAIN\Alice User` {
+	if !r.MachineAuthorized || !n.JoinedAt.Equal(joined) {
 		t.Fatal("key rotation replaced durable metadata")
 	}
 	activity := time.Now().UTC()
@@ -667,7 +656,7 @@ func TestNodeMetadataSurvivesRegistrationActivityAndRestart(t *testing.T) {
 	c.Close()
 	c = newCoordinator(t, dir)
 	info := c.Nodes()[0]
-	if info.Operator != `DOMAIN\Alice User` || !info.JoinedAt.Equal(joined) || !info.LastSeen.Equal(seen) {
+	if !info.JoinedAt.Equal(joined) || !info.LastSeen.Equal(seen) {
 		t.Fatalf("metadata changed on restart: %+v", info)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
@@ -680,47 +669,50 @@ func TestNodeMetadataSurvivesRegistrationActivityAndRestart(t *testing.T) {
 	if err := json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"operator", "joined_at", "last_seen"} {
+	for _, field := range []string{"joined_at", "last_seen"} {
 		if _, ok := persisted.Nodes[0][field]; !ok {
 			t.Errorf("state is missing %s", field)
 		}
 	}
 }
 
-func TestOperatorUpdateValidationAndRollback(t *testing.T) {
+func TestStateWithRetiredNodeFieldsLoads(t *testing.T) {
 	dir := t.TempDir()
 	c := newCoordinator(t, dir)
-	_, k := registerNode(t, c, "a")
-	if err := c.SetOperator("a", "alice"); err != nil {
-		t.Fatal(err)
-	}
-	for _, operator := range []string{"", " alice", "alice ", "ali\nce", "ali\x00ce", string([]byte{0xff}), strings.Repeat("a", 257)} {
-		if err := c.SetOperator("a", operator); err == nil {
-			t.Errorf("accepted invalid operator %q", operator)
-		}
-	}
-	if err := c.SetOperator("missing", "alice"); err == nil {
-		t.Fatal("updated unknown node")
-	}
-	file := c.file
-	c.file = filepath.Join(file, "impossible")
-	if err := c.SetOperator("a", "bob"); err == nil {
-		t.Fatal("operator write unexpectedly succeeded")
-	}
-	c.file = file
-	if c.byKey(k).Operator != "alice" {
-		t.Fatal("failed update changed operator")
-	}
+	registerNode(t, c, "a")
 	c.Close()
-	c = newCoordinator(t, dir)
-	if c.Nodes()[0].Operator != "alice" {
-		t.Fatal("invalid or failed operator update was persisted")
-	}
-	if err := c.Remove("a"); err != nil {
+	file := filepath.Join(dir, "state.json")
+	raw, err := os.ReadFile(file)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SetOperator("a", "bob"); err == nil {
-		t.Fatal("updated removed node")
+	var st map[string]json.RawMessage
+	var nodes []map[string]json.RawMessage
+	if json.Unmarshal(raw, &st) != nil || json.Unmarshal(st["nodes"], &nodes) != nil || len(nodes) != 1 {
+		t.Fatalf("state %s", raw)
+	}
+	nodes[0]["operator"], nodes[0]["target"] = json.RawMessage(`"alice"`), json.RawMessage(`"x86_64-unknown-linux-gnu"`)
+	st["nodes"], _ = json.Marshal(nodes)
+	raw, _ = json.Marshal(st)
+	if err = os.WriteFile(file, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c = newCoordinator(t, dir)
+	if got := c.Nodes(); len(got) != 1 || got[0].Name != "a" {
+		t.Fatalf("nodes %+v", got)
+	}
+	if err = c.SetRuntimeMetadata("a", RuntimeMetadata{OS: "linux", Arch: "amd64", Version: "0.1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(file)
+	nodes = nil
+	if json.Unmarshal(raw, &st) != nil || json.Unmarshal(st["nodes"], &nodes) != nil || len(nodes) != 1 {
+		t.Fatalf("state %s", raw)
+	}
+	for _, key := range []string{"operator", "target"} {
+		if _, ok := nodes[0][key]; ok {
+			t.Fatalf("%s survived the next save", key)
+		}
 	}
 }
 

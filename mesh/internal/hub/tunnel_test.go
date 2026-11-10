@@ -124,7 +124,7 @@ func TestTunnelReadyBecomesPublicURL(t *testing.T) {
 		t.Fatalf("ready status %+v %+v", s, s.Tunnel)
 	}
 	code, err := h.JoinCode(ctx, struct{}{})
-	if err != nil || !strings.Contains(code.Install.Unix, f.url) || !strings.Contains(code.Install.Windows, f.url) {
+	if err != nil || code.Code == "" {
 		t.Fatalf("join code %+v %v", code, err)
 	}
 	issued, err := h.JoinToken(ctx, join.TokenOptions{})

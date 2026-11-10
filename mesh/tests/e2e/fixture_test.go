@@ -28,14 +28,12 @@ import (
 )
 
 type fixture struct {
-	restoreHTTP                                        func()
 	t                                                  *testing.T
 	ctx                                                context.Context
 	dir, ns, engineURL, proxyURL, frontURL, hubAddress string
 	admin                                              *iii.Client
 	config                                             hub.Config
 	identity                                           ed25519.PrivateKey
-	workerSeeds                                        map[string]map[string]any
 }
 
 func freePort(t *testing.T) int {
@@ -155,11 +153,6 @@ func newFixture(t *testing.T, ns string) *fixture {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	f := &fixture{t: t, ctx: ctx, ns: ns, dir: t.TempDir()}
-	t.Cleanup(func() {
-		if f.restoreHTTP != nil {
-			f.restoreHTTP()
-		}
-	})
 	enginePort, proxyPort, frontPort := freePort(t), freePort(t), freePort(t)
 	f.engineURL = fmt.Sprintf("ws://127.0.0.1:%d", enginePort)
 	f.proxyURL = fmt.Sprintf("ws://127.0.0.1:%d", proxyPort)
@@ -334,3 +327,5 @@ func (f *fixture) enroll(name string) *testNode {
 	n.url = "ws" + strings.TrimPrefix(forwarding.URL, "http")
 	return n
 }
+
+func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }

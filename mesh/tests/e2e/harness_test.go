@@ -5,9 +5,6 @@ package e2e
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -36,56 +33,6 @@ func (f *fixture) seedTurn(session string, allow []string, root string) {
 func (f *fixture) harnessCall(session, id string, args any) json.RawMessage {
 	return mustCall(f.t, f.admin, f.ns, "harness::function::call", map[string]any{"session_id": session, "call": map[string]any{"id": "call-e2e", "function_id": id, "arguments": args}})
 }
-func TestE2EFsScopeOnRemoteCoder(t *testing.T) {
-	f := newFixture(t, "default")
-	n := f.enroll("laptop")
-	root := f.startIDE(n)
-	f.startHarness()
-	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "private.txt"), []byte("outside-node-root"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "inside.txt"), []byte("inside-node-root"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	f.seedTurn("scope", []string{"laptop::coder::read-file", "fp::pipe", "fp::batch"}, t.TempDir())
-	for _, mode := range []string{"direct", "pipe", "batch"} {
-		t.Run(mode, func(t *testing.T) {
-			for _, probe := range []struct {
-				path   string
-				denied bool
-			}{{filepath.Join(root, "inside.txt"), false}, {filepath.Join(outside, "private.txt"), true}} {
-				payload := map[string]any{"path": probe.path, "fs_scope": map[string]any{"root": outside, "grants": []string{outside}}}
-				id := "laptop::coder::read-file"
-				var args any = payload
-				if mode != "direct" {
-					key := "through"
-					if mode == "batch" {
-						key = "calls"
-					}
-					args = map[string]any{key: []any{map[string]any{"function": id, "payload": payload}}, "fs_scope": map[string]any{"root": outside, "grants": []string{outside}}}
-					id = "fp::" + mode
-				}
-				out := f.harnessCall("scope", id, args)
-				if probe.denied {
-					if strings.Contains(string(out), "outside-node-root") || !strings.Contains(string(out), "C215") {
-						t.Fatalf("outside root was not denied: %s", out)
-					}
-				} else if !strings.Contains(string(out), "inside-node-root") {
-					t.Fatalf("allowed node root failed: %s", out)
-				}
-			}
-		})
-	}
-	for _, frame := range n.snapshot() {
-		if frame.Direction == "hub-to-node" && frame.Data["function_id"] == "coder::read-file" {
-			p, _ := frame.Data["data"].(map[string]any)
-			if _, ok := p["fs_scope"]; ok {
-				t.Fatalf("scope reached remote coder: %s", mustJSON(p))
-			}
-		}
-	}
-}
 func TestE2EHooksRefused(t *testing.T) {
 	f := newFixture(t, "default")
 	f.startHarness()
@@ -112,49 +59,4 @@ func TestE2EHooksRefused(t *testing.T) {
 	if !strings.Contains(string(out), `"is_error":false`) || target.Load() != 1 || hooks.Load() != 0 {
 		t.Fatalf("hook leakage: result=%s target=%d hooks=%d", out, target.Load(), hooks.Load())
 	}
-}
-func TestE2ERefusedRegistrationLogged(t *testing.T) {
-	f := newFixture(t, "default")
-	n := f.enroll("laptop")
-	f.startIDE(n)
-	eventually(t, 5*time.Second, "IDE receives ADE refusal", func() error {
-		for _, frame := range n.snapshot() {
-			if frame.Direction == "hub-to-node" && frame.Data["type"] == "observeresult" && frame.Data["error"] != nil {
-				refusedID := frame.Data["id"]
-				ade := false
-				for _, request := range n.snapshot() {
-					source, _ := request.Data["source"].(map[string]any)
-					target, _ := request.Data["target"].(map[string]any)
-					if request.Connection == frame.Connection && request.Direction == "node-to-hub" && request.Data["type"] == "observe" && request.Data["id"] == refusedID && source["function_id"] == "ade::ui::asset" && target["function_id"] == "ide::ui-content" {
-						ade = true
-					}
-				}
-				failure, _ := frame.Data["error"].(map[string]any)
-				if !ade || failure["code"] != "FORBIDDEN" {
-					continue
-				}
-				return nil
-			}
-		}
-		return fmt.Errorf("no refusal observed")
-	})
-	n.mu.Lock()
-	before := n.connections
-	n.mu.Unlock()
-	time.Sleep(2300 * time.Millisecond)
-	n.mu.Lock()
-	after := n.connections
-	n.mu.Unlock()
-	b, err := os.ReadFile(filepath.Join(f.dir, "laptop-logs", "ide.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.ToLower(string(b)), "observer registration denied") {
-		t.Fatalf("Rust SDK did not log refused registration: %s", b)
-	}
-	if before != after {
-		t.Fatalf("Rust SDK reconnected after refused registration: %d -> %d", before, after)
-	}
-	mustCall(t, f.admin, "default", "laptop::shell::exec", map[string]any{"command": "printf still-connected"})
-	t.Logf("Rust SDK logs refusal and keeps its connection (%d accepted node connections including supervisor)", after)
 }

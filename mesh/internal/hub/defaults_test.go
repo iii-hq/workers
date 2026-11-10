@@ -12,17 +12,13 @@ import (
 
 func TestDefaultsExcludeUnconfinable(t *testing.T) {
 	h := authHub()
-	h.defaults = GrantDefaults{Allow: DefaultAllow()}
-	h.config.Nodes["laptop"] = NodeConfig{Allow: []string{"audit::write"}}
+	h.defaults = GrantDefaults{Allow: append(DefaultAllow(), "audit::write")}
 	result, err := h.Auth(t.Context(), AuthRequest{Headers: map[string]string{gateway.TicketHeader: h.Tickets.Mint("laptop")}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(result.Namespaces["default"], []string{"configuration::get", "configuration::ensure", "configuration::register", "configuration::set", "configuration::on-updated"}) || !slices.Contains(result.Namespaces["proj"], "audit::write") {
 		t.Fatalf("required owned configuration / operator grants missing: %+v", result.Namespaces)
-	}
-	if !reflect.DeepEqual(h.Config().Nodes["laptop"].Allow, []string{"audit::write"}) {
-		t.Fatal("default grants changed operator configuration")
 	}
 
 	for _, target := range []string{"harness::hook::pre-trigger", "state::get", "stream::read", "queue::enqueue", "http::request", "cron::tick", "console:script"} {

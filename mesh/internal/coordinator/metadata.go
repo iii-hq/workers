@@ -6,15 +6,12 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/iii-hq/workers/mesh/internal/registry"
 )
 
 type RuntimeMetadata struct {
 	OS      string `json:"os"`
 	Arch    string `json:"arch"`
 	Version string `json:"version"`
-	Target  string `json:"target"`
 }
 
 // SetRuntimeMetadata accepts authenticated mesh-node status, never Tailscale
@@ -23,7 +20,7 @@ func (c *Coordinator) SetRuntimeMetadata(name string, metadata RuntimeMetadata) 
 	if metadata.OS == "" || metadata.Arch == "" || metadata.Version == "" {
 		return errors.New("incomplete node runtime metadata")
 	}
-	for _, value := range []string{metadata.OS, metadata.Arch, metadata.Version, metadata.Target} {
+	for _, value := range []string{metadata.OS, metadata.Arch, metadata.Version} {
 		if len(value) > 256 || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 			return errors.New("invalid node runtime metadata")
 		}
@@ -32,9 +29,6 @@ func (c *Coordinator) SetRuntimeMetadata(name string, metadata RuntimeMetadata) 
 				return errors.New("invalid node runtime metadata")
 			}
 		}
-	}
-	if metadata.Target != "" && metadata.Target != registry.TargetFor(metadata.OS, metadata.Arch, false) && metadata.Target != registry.TargetFor(metadata.OS, metadata.Arch, true) {
-		return errors.New("node target does not match OS and architecture")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -54,6 +48,5 @@ func (c *Coordinator) SetRuntimeMetadata(name string, metadata RuntimeMetadata) 
 	if old.Version != metadata.Version {
 		c.notifyNode(n, "version")
 	}
-	c.wake()
 	return nil
 }

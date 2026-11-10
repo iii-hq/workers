@@ -217,7 +217,7 @@ func status(ctx context.Context, s *tsnet.Server) (*ipnstate.Status, error) {
 	return client.Status(ctx)
 }
 
-func TestJoinLinkRemove(t *testing.T) {
+func TestJoinIsolateRemove(t *testing.T) {
 	h := newHub(t)
 	a, b := h.enroll(t, "a"), h.enroll(t, "b")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -239,7 +239,7 @@ func TestJoinLinkRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	if before.Peer[b.status.Self.PublicKey] != nil {
-		t.Fatal("a sees b before linking")
+		t.Fatal("a sees b")
 	}
 	ctxBefore, cancelBefore := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	conn, err := a.server.Dial(ctxBefore, "tcp", address)
@@ -248,35 +248,12 @@ func TestJoinLinkRemove(t *testing.T) {
 		conn.Close()
 	}
 	if err == nil {
-		t.Fatal("a dialed b before linking")
+		t.Fatal("a dialed b")
 	}
 
-	ctxLink, cancelLink := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancelLink()
-	h.run.c.Link([][2]string{{"a", "b"}})
-	eventually(t, ctxLink, "linked a can exchange TCP bytes with b", func(ctx context.Context) error {
-		return echo(ctx, a.server, address)
-	})
-	s, err := status(t.Context(), b.server)
-	if err != nil || s.Peer[a.status.Self.PublicKey] == nil {
-		t.Fatalf("b lacks a before removal: status=%v, error=%v", s, err)
-	}
-
-	ctxRemove, cancelRemove := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancelRemove()
 	if err := h.run.c.Remove("a"); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, ctxRemove, "b peer list no longer contains a", func(ctx context.Context) error {
-		s, err := status(ctx, b.server)
-		if err != nil {
-			return err
-		}
-		if s.Peer[a.status.Self.PublicKey] != nil {
-			return errors.New("a is still in b's peer list")
-		}
-		return nil
-	})
 	a.server.Close()
 	fresh := h.client(t, "a", a.secret)
 	ctxRefused, cancelRefused := context.WithTimeout(t.Context(), 5*time.Second)

@@ -1,5 +1,7 @@
 # Local Mesh delivery evidence
 
+> **Removed on 2026-11-10.** The native machine node described here no longer exists. The installer (`install.sh`, `install.ps1`), the `mesh join`, `leave`, `node` and `status` commands, the system service and elevation, Windows native support, node self-update (`mesh-node::update`), the supervisor that ran registry workers on a machine (`nodes.<name>.workers`), shared drives and links were deleted. The mesh worker now runs only inside an iii engine, as a hub or as a client (see `client-mode.md` and `mesh/README.md`). The rest of this document is kept as history.
+
 This records local implementation, the final whole-branch review corrections, and their evidence. The latest user instruction keeps the branch/worktree local: no ticket, push, PR or publication is requested. Native acceptance remains explicitly unverified; the controller owns the scoped re-review.
 
 The branch was clean at `99f65195eb6d467538d7c6318973e75501ec2b08`. Fetch advanced `origin/main` to `60dc4b4ad7efdc4215d6c4f0ccadc7b3447d85e3`; all 48 branch commits rebased without conflict to `2a01cdf5a7448b2af56a6a358b5d44cb7d78963f`. The old merge base was `e466d21d659297c877127f9055ac8a282944562d`; the new merge base is the fetched main commit. A local recovery ref retains the original tip. The Task26 compatibility correction is `9d194cef7`.

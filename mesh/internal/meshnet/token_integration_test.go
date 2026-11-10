@@ -2,8 +2,6 @@ package meshnet_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,15 +43,7 @@ func TestHubTokenRealMeshEnrollment(t *testing.T) {
 	}
 	start := func(dir string) *meshnet.Mesh {
 		t.Helper()
-		shim, err := meshnet.NewShim(env.PublicURL, identity.Control)
-		if err != nil {
-			t.Fatal(err)
-		}
-		hosts := filepath.Join(t.TempDir(), "hosts")
-		if err = os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		m, err := meshnet.StartForTest(dir, shim, env.Secret, "runner", 0, nil, nil, hosts)
+		m, err := meshnet.UpUserspace(dir, env.PublicURL, env.Secret, "runner", identity.Control)
 		if err != nil {
 			t.Fatal(err)
 		}

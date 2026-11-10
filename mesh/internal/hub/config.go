@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/iii-hq/workers/mesh/internal/client"
-	"github.com/iii-hq/workers/mesh/internal/drives"
 	"io"
 	"net"
 	"net/netip"
@@ -16,15 +15,18 @@ import (
 )
 
 type Config struct {
-	PublicURL      string                 `json:"public_url"`
-	Listen         string                 `json:"listen"`
-	TrustedProxies []string               `json:"trusted_proxies"`
-	GatewayPort    int                    `json:"gateway_port"`
-	ProxyURL       string                 `json:"proxy_url"`
-	StunPort       int                    `json:"stun_port"`
-	Links          [][2]string            `json:"links"`
-	Nodes          map[string]NodeConfig  `json:"nodes"`
-	Drives         map[string]DriveConfig `json:"drives"`
+	PublicURL      string   `json:"public_url"`
+	Listen         string   `json:"listen"`
+	TrustedProxies []string `json:"trusted_proxies"`
+	GatewayPort    int      `json:"gateway_port"`
+	ProxyURL       string   `json:"proxy_url"`
+	StunPort       int      `json:"stun_port"`
+	// Retired on 2026-11-10; accepted and ignored. Entries stored before then hold
+	// these keys, and the engine checks a stored value against the schema reflected
+	// from this struct, which refuses unknown keys.
+	Links  json.RawMessage `json:"links,omitempty" jsonschema:"description=Retired on 2026-11-10; ignored."`
+	Nodes  json.RawMessage `json:"nodes,omitempty" jsonschema:"description=Retired on 2026-11-10; ignored."`
+	Drives json.RawMessage `json:"drives,omitempty" jsonschema:"description=Retired on 2026-11-10; ignored."`
 	// Mode and Client are omitempty so stored values without them still decode
 	// and the schema sent to configuration::ensure gains no required field.
 	Mode   string         `json:"mode,omitempty" jsonschema:"enum=hub,enum=client"`
@@ -37,21 +39,11 @@ type TunnelConfig struct {
 	Enabled  bool   `json:"enabled"`
 	TunnelID string `json:"tunnel_id,omitempty"` // default "mesh"
 }
-type NodeConfig struct {
-	Workers []string `json:"workers"`
-	Allow   []string `json:"allow"`
-}
-type DriveConfig struct {
-	Server string   `json:"server"`
-	Nodes  []string `json:"nodes"`
-}
 
 func DefaultConfig() Config {
-	return Config{Listen: "0.0.0.0:49180", GatewayPort: 49135, ProxyURL: "ws://127.0.0.1:49200", TrustedProxies: []string{}, Links: [][2]string{}, Nodes: map[string]NodeConfig{}, Drives: map[string]DriveConfig{}}
+	return Config{Listen: "0.0.0.0:49180", GatewayPort: 49135, ProxyURL: "ws://127.0.0.1:49200", TrustedProxies: []string{}}
 }
 
-var workerPattern = regexp.MustCompile(`^[a-z0-9-]+(@\S+)?$`)
-var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 var tunnelIDPattern = regexp.MustCompile(`^[A-Za-z0-9_:.-]{1,128}$`)
 
 func (c Config) Validate() error {
@@ -102,31 +94,6 @@ func (c Config) Validate() error {
 	for _, s := range c.TrustedProxies {
 		if _, err := netip.ParsePrefix(s); err != nil {
 			return fmt.Errorf("trusted_proxies: %w", err)
-		}
-	}
-	for name, n := range c.Nodes {
-		if !namePattern.MatchString(name) {
-			return fmt.Errorf("invalid node name %q", name)
-		}
-		for _, w := range n.Workers {
-			if !workerPattern.MatchString(w) {
-				return fmt.Errorf("invalid worker %q", w)
-			}
-		}
-	}
-	for name, d := range c.Drives {
-		if !drives.ValidDrive(name) || !drives.ValidNode(d.Server) {
-			return fmt.Errorf("invalid drive %q or server", name)
-		}
-		for _, n := range d.Nodes {
-			if n != "*" && !namePattern.MatchString(n) {
-				return fmt.Errorf("invalid drive node %q", n)
-			}
-		}
-	}
-	for _, l := range c.Links {
-		if l[0] == l[1] || !namePattern.MatchString(l[0]) || !namePattern.MatchString(l[1]) {
-			return errors.New("invalid link")
 		}
 	}
 	return nil

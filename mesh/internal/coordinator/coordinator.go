@@ -41,8 +41,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"golang.org/x/net/http2"
@@ -75,7 +73,6 @@ type node struct {
 	Keys      []key.NodePublic  `json:"keys"`
 	Ephemeral bool              `json:"ephemeral,omitempty"`
 	Removed   bool              `json:"removed,omitempty"`
-	Operator  string            `json:"operator"`
 	JoinedAt  time.Time         `json:"joined_at"`
 	LastSeen  time.Time         `json:"last_seen"`
 	Disco     key.DiscoPublic   `json:"disco"`
@@ -93,7 +90,6 @@ type NodeInfo struct {
 	Name      string     `json:"name"`
 	Addr      netip.Addr `json:"addr"`
 	Online    bool       `json:"online"`
-	Operator  string     `json:"operator"`
 	JoinedAt  time.Time  `json:"joined_at"`
 	LastSeen  time.Time  `json:"last_seen"`
 }
@@ -113,8 +109,6 @@ type Coordinator struct {
 	relayPort    int
 	stunPort     int
 	gatewayPort  int
-	links        map[[2]string]bool
-	drives       map[string]Drive
 	ver          uint64
 	wakes        map[chan struct{}]bool
 	taken        func(string) bool
@@ -183,39 +177,10 @@ func (c *Coordinator) Nodes() []NodeInfo {
 	nodes := make([]NodeInfo, 0, len(c.st.Nodes))
 	for _, n := range c.st.Nodes {
 		if c.authorized(n) {
-			nodes = append(nodes, NodeInfo{RuntimeMetadata: n.RuntimeMetadata, Ephemeral: n.Ephemeral, Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0, Operator: n.Operator, JoinedAt: n.JoinedAt, LastSeen: n.LastSeen})
+			nodes = append(nodes, NodeInfo{RuntimeMetadata: n.RuntimeMetadata, Ephemeral: n.Ephemeral, Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0, JoinedAt: n.JoinedAt, LastSeen: n.LastSeen})
 		}
 	}
 	return nodes
-}
-
-// SetOperator is called by authenticated node integration, never from
-// untrusted registration hostinfo.
-func (c *Coordinator) SetOperator(name, operator string) error {
-	if operator == "" || len(operator) > 256 || !utf8.ValidString(operator) || strings.TrimSpace(operator) != operator {
-		return errors.New("invalid operator account name")
-	}
-	for _, r := range operator {
-		if unicode.IsControl(r) {
-			return errors.New("invalid operator account name")
-		}
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	n := c.byName(name)
-	if !c.authorized(n) {
-		return fmt.Errorf("no authorized node %q", name)
-	}
-	old := n.Operator
-	if old == operator {
-		return nil
-	}
-	n.Operator = operator
-	if err := c.save(); err != nil {
-		n.Operator = old
-		return err
-	}
-	return nil
 }
 
 func (c *Coordinator) Remove(name string) error {
@@ -780,32 +745,11 @@ func (c *Coordinator) delta(n *node, sent map[tailcfg.NodeID]uint64, host *strin
 
 // sees is whether a and b are in each other's map, which is the whole access
 // rule: WireGuard takes packets only from peers in the map, at both ends. The
-// hub sees every node and every node sees it. Two workers see each other
-// only when linked. A removed node sees none and is seen by none.
+// hub sees every node and every node sees only the hub. A removed node sees
+// none and is seen by none.
 func (c *Coordinator) sees(a, b *node) bool {
-	switch {
-	case !c.authorized(a) || !c.authorized(b):
-		return false
-	case a.Name == "hub" || b.Name == "hub":
-		return true
-	}
-	return c.links[pair(a.Name, b.Name)] || c.serves(a, b) || c.serves(b, a)
+	return c.authorized(a) && c.authorized(b) && (a.Name == "hub" || b.Name == "hub")
 }
-
-// Link makes each pair of workers, by name, see each other, and no others,
-// and wakes every map poll to send the change.
-func (c *Coordinator) Link(pairs [][2]string) {
-	links := map[[2]string]bool{}
-	for _, p := range pairs {
-		links[pair(p[0], p[1])] = true
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.links = links
-	c.wake()
-}
-
-func pair(a, b string) [2]string { return [2]string{min(a, b), max(a, b)} }
 
 // tail is headscale's TailNode, trimmed to one address and hub services. A
 // removed node is no longer authorized.

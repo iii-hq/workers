@@ -1,5 +1,7 @@
 # Mesh observer API migration implementation plan
 
+> **Note, 2026-11-10.** The node-worker parts of this plan (supervised workers, their observation reports in `mesh/tests/e2e`, native validation) were removed with the machine node. `mesh::on-node-changed` and the observer policy are unchanged.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox syntax for tracking.
 
 **Goal:** Make Mesh work with the current main engine and observer protocol, proving it on a separate engine without disturbing the running instance.

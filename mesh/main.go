@@ -4,16 +4,12 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"io"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/iii-hq/workers/mesh/internal/cli"
-	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"github.com/iii-hq/workers/mesh/internal/hub"
-	"github.com/iii-hq/workers/mesh/internal/node"
 )
 
 var version string
@@ -21,22 +17,11 @@ var version string
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err := run(ctx, os.Args[1:], os.Stdout); err != nil && err != node.ErrRestartRequired {
+	if err := run(ctx, os.Args[1:]); err != nil {
 		log.Fatal(err)
 	}
 }
-func run(ctx context.Context, args []string, w io.Writer) error {
-	var err error
-	args, err = elevate.Arguments(args)
-	if err != nil {
-		return err
-	}
-	if len(args) > 0 {
-		switch args[0] {
-		case "join", "status", "leave", "node":
-			return cli.Execute(ctx, args, version, w)
-		}
-	}
+func run(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("mesh", flag.ContinueOnError)
 
 	defaultURL := os.Getenv("III_URL")

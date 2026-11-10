@@ -389,32 +389,21 @@ func TestTokenRemovalRollbackKeepsReusableCredential(t *testing.T) {
 		t.Fatal("reusable token unusable after rollback")
 	}
 }
-func TestEphemeralExpiryUpdatesDriveMembership(t *testing.T) {
+func TestEphemeralExpiryRemovesPeerFromHubMap(t *testing.T) {
 	clock := asyncClock{tstest.NewClock(tstest.ClockOpts{})}
 	c, err := newWithClock(t.TempDir(), func(string, string) (string, error) { return "", nil }, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	registerNode(t, c, "server")
-	if err := c.SetRuntimeMetadata("server", RuntimeMetadata{OS: "linux", Arch: "amd64", Version: "0.1.0"}); err != nil {
-		t.Fatal(err)
-	}
+	registerNode(t, c, "hub")
 	_, _, secret := issueToken(t, c, join.TokenOptions{Ephemeral: true, Reusable: true})
 	req := tokenRequest(secret, "runner")
 	if !c.register(key.NewMachine().Public(), "a", req).MachineAuthorized {
 		t.Fatal("join failed")
 	}
-	c.SetDrives(map[string]Drive{"work": {Server: "server", Nodes: []string{"*"}}})
-	if len(c.Desired("runner").Mount) != 0 {
-		t.Fatal("wildcard admitted token ephemeral node")
-	}
-	c.SetDrives(map[string]Drive{"work": {Server: "server", Nodes: []string{"runner"}}})
-	if len(c.Desired("runner").Mount) != 1 || len(c.Desired("server").Serve[0].Clients) != 1 {
-		t.Fatal("explicit membership missing")
-	}
 	sent, host := map[tailcfg.NodeID]uint64{}, ""
-	c.delta(c.byName("server"), sent, &host, true, nil)
+	c.delta(c.byName("hub"), sent, &host, true, nil)
 	id := c.byName("runner").ID
 	gone := make(chan string, 1)
 	c.SetGone(func(name string) { gone <- name })
@@ -424,10 +413,7 @@ func TestEphemeralExpiryUpdatesDriveMembership(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expiry hook missing")
 	}
-	if len(c.Desired("server").Serve[0].Clients) != 0 || len(c.Desired("runner").Mount) != 0 {
-		t.Fatal("expired member remains in drive desired state")
-	}
-	delta, _ := c.delta(c.byName("server"), sent, &host, false, nil)
+	delta, _ := c.delta(c.byName("hub"), sent, &host, false, nil)
 	if delta == nil || !slices.Contains(delta.PeersRemoved, id) {
 		t.Fatal("expired peer not removed from map")
 	}
@@ -562,9 +548,6 @@ func TestTokenAcceptedMachineRotatesKeys(t *testing.T) {
 			if r := c.register(machine, "a", first); !r.MachineAuthorized {
 				t.Fatal(r.Error)
 			}
-			if err := c.SetOperator("runner", "alice"); err != nil {
-				t.Fatal(err)
-			}
 			if err := c.SetRuntimeMetadata("runner", RuntimeMetadata{OS: "linux", Arch: "amd64", Version: "0.1.0"}); err != nil {
 				t.Fatal(err)
 			}
@@ -597,7 +580,7 @@ func TestTokenAcceptedMachineRotatesKeys(t *testing.T) {
 					t.Fatalf("accepted machine cannot rotate with credential=%t: %s", withCredential, r.Error)
 				}
 				current := c.byMachine(machine)
-				if current.ID != before.ID || current.Name != before.Name || current.TokenID != id || current.Ephemeral != before.Ephemeral || current.Operator != before.Operator || current.RuntimeMetadata != before.RuntimeMetadata || current.JoinedAt != before.JoinedAt || !slices.Contains(current.Keys, previous) || current.Key != req.NodeKey || len(c.Nodes()) != 1 {
+				if current.ID != before.ID || current.Name != before.Name || current.TokenID != id || current.Ephemeral != before.Ephemeral || current.RuntimeMetadata != before.RuntimeMetadata || current.JoinedAt != before.JoinedAt || !slices.Contains(current.Keys, previous) || current.Key != req.NodeKey || len(c.Nodes()) != 1 {
 					t.Fatal("rotation replaced accepted-node identity, history or provenance")
 				}
 				if c.Nodes()[0].Addr != c.address(before.ID) {

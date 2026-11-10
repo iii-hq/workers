@@ -13,19 +13,13 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/join"
 )
 
-type Install struct {
-	Unix    string `json:"unix"`
-	Windows string `json:"windows"`
-}
 type JoinResult struct {
-	Code    string  `json:"code"`
-	Install Install `json:"install"`
+	Code string `json:"code"`
 }
 
 type TokenResult struct {
-	TokenID string  `json:"token_id"`
-	Token   string  `json:"token"`
-	Install Install `json:"install"`
+	TokenID string `json:"token_id"`
+	Token   string `json:"token"`
 }
 type RevokeTokenRequest struct {
 	TokenID string `json:"token_id"`
@@ -44,8 +38,7 @@ func (h *Hub) JoinToken(ctx context.Context, opts join.TokenOptions) (TokenResul
 	if err != nil {
 		return TokenResult{}, err
 	}
-	unix, windows := TokenInstallLines(h.Version, token)
-	return TokenResult{TokenID: id, Token: token, Install: Install{Unix: unix, Windows: windows}}, nil
+	return TokenResult{TokenID: id, Token: token}, nil
 }
 func (h *Hub) RevokeToken(ctx context.Context, req RevokeTokenRequest) (RevokeTokenResult, error) {
 	h.mu.RLock()
@@ -102,7 +95,6 @@ type NodeEntry struct {
 	Ephemeral bool             `json:"ephemeral"`
 	Path      string           `json:"path"`
 	Workers   []ComponentState `json:"workers"`
-	Drives    []ComponentState `json:"drives"`
 }
 type NodeDetails struct {
 	NodeEntry
@@ -161,16 +153,13 @@ func (h *Hub) JoinCode(ctx context.Context, _ struct{}) (JoinResult, error) {
 	return h.joinCode()
 }
 func (h *Hub) joinCode() (JoinResult, error) {
-	publicURL := h.publicURLLocked()
-	if publicURL == "" {
+	if h.publicURLLocked() == "" {
 		return JoinResult{}, missingPublicURL(h.config)
 	}
 	if h.Coordinator == nil {
 		return JoinResult{}, errors.New("hub is not running")
 	}
-	code := h.Coordinator.Code()
-	unix, windows := InstallLines(h.Version, publicURL, code)
-	return JoinResult{Code: code, Install: Install{Unix: unix, Windows: windows}}, nil
+	return JoinResult{Code: h.Coordinator.Code()}, nil
 }
 func (h *Hub) CycleCode(ctx context.Context, _ struct{}) (JoinResult, error) {
 	h.reload.Lock()
@@ -208,12 +197,11 @@ func (h *Hub) ListNodes(ctx context.Context, _ struct{}) ([]NodeEntry, error) {
 		if n.Name == "hub" {
 			continue
 		}
-		entry := NodeEntry{Name: n.Name, OS: n.OS, Arch: n.Arch, Version: n.Version, Address: n.Addr.String(), Online: n.Online, LastSeen: n.LastSeen, Ephemeral: n.Ephemeral, Workers: []ComponentState{}, Drives: []ComponentState{}}
+		entry := NodeEntry{Name: n.Name, OS: n.OS, Arch: n.Arch, Version: n.Version, Address: n.Addr.String(), Online: n.Online, LastSeen: n.LastSeen, Ephemeral: n.Ephemeral, Workers: []ComponentState{}}
 		h.mu.RLock()
 		if cached, ok := h.nodeDetails[n.Name]; ok {
 			entry.Path = cached.Path
 			entry.Workers = append(entry.Workers, cached.Workers...)
-			entry.Drives = append(entry.Drives, cached.Drives...)
 		}
 		h.mu.RUnlock()
 		nodes = append(nodes, entry)
@@ -243,7 +231,6 @@ func (h *Hub) GetNode(ctx context.Context, r NodeRequest) (NodeDetails, error) {
 				result.Version = remote.Version
 				result.Path = remote.Path
 				result.Workers = remote.Workers
-				result.Drives = remote.Drives
 			}
 		}
 		return result, nil

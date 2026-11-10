@@ -1,5 +1,7 @@
 # Mesh Worker Implementation Plan
 
+> **Removed on 2026-11-10.** The native machine node described here no longer exists. The installer (`install.sh`, `install.ps1`), the `mesh join`, `leave`, `node` and `status` commands, the system service and elevation, Windows native support, node self-update (`mesh-node::update`), the supervisor that ran registry workers on a machine (`nodes.<name>.workers`), shared drives and links were deleted. The mesh worker now runs only inside an iii engine, as a hub or as a client (see `client-mode.md` and `mesh/README.md`). The rest of this document is kept as history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the `mesh` worker (hub and node modes) and its prerequisites in

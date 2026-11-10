@@ -36,7 +36,7 @@ func TestRemoveReturnsNewCode(t *testing.T) {
 	if err := h.ApplyConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/", "/key", "/verify", "/install.sh", "/derp/private"} {
+	for _, path := range []string{"/", "/key", "/verify", "/derp/private"} {
 		res, err := http.Get(h.FrontURL() + path)
 		if err != nil {
 			t.Fatal(err)
@@ -139,20 +139,7 @@ func TestRemoveReturnsNewCode(t *testing.T) {
 	if _, err := h.GetNode(ctx, NodeRequest{Name: "hub"}); err == nil {
 		t.Fatal("exposed reserved hub")
 	}
-	cfg = h.Config()
-	cfg.Nodes["laptop"] = NodeConfig{Workers: []string{"ide"}}
-	if err := h.ApplyConfig(ctx, cfg); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case name := <-removed:
-		if name != "laptop" {
-			t.Fatal(name)
-		}
-	case <-ctx.Done():
-		t.Fatal("grant change did not revoke sessions")
-	}
-	if len(changed) != 2 {
+	if len(changed) != 1 {
 		t.Fatalf("config notifications=%d", len(changed))
 	}
 	oldCode := h.Coordinator.Code()
@@ -160,7 +147,7 @@ func TestRemoveReturnsNewCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Removed || result.Code == oldCode || !strings.Contains(result.Install.Unix, result.Code) {
+	if !result.Removed || result.Code == oldCode {
 		t.Fatalf("remove result: %+v", result)
 	}
 	select {

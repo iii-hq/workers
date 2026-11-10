@@ -1,5 +1,7 @@
 # mesh
 
+> **Removed on 2026-11-10.** The native machine node described here no longer exists. The installer (`install.sh`, `install.ps1`), the `mesh join`, `leave`, `node` and `status` commands, the system service and elevation, Windows native support, node self-update (`mesh-node::update`), the supervisor that ran registry workers on a machine (`nodes.<name>.workers`), shared drives and links were deleted. The mesh worker now runs only inside an iii engine, as a hub or as a client (see `client-mode.md` and `mesh/README.md`). The rest of this document is kept as history.
+
 Worker prefix: `mesh::*` (hub), `<node>::mesh-node::*` (node service) ·
 Deploy mode: `binary` (Go, release kind `go-binary`, linux/darwin/windows ×
 amd64/arm64) · Config id: `mesh`

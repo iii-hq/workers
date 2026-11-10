@@ -20,8 +20,6 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	for _, bad := range []string{
-		`{"nodes":{"laptop":{"workers":["../ide"]}}}`, `{"nodes":{"laptop":{"workers":["ide@bad version"]}}}`,
-		`{"drives":{"work":{"server":"*"}}}`, `{"links":[["laptop","laptop"]]}`,
 		`{"gateway_port":0}`, `{"stun_port":65536}`, `{"trusted_proxies":["bad"]}`, `{"public_url":"file:///tmp"}`, `{"listen":"bad"}`, `{"proxy_url":"http://localhost"}`,
 	} {
 		t.Run(bad, func(t *testing.T) {
@@ -34,28 +32,27 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
-	c := DefaultConfig()
-	c.Nodes["laptop"] = NodeConfig{Workers: []string{"ide", "shell@1.0.0"}}
-	c.Drives["work"] = DriveConfig{Server: "laptop", Nodes: []string{"*"}}
-	if err := c.Validate(); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestDriveConfigSeparatesNodeAndDriveNames(t *testing.T) {
-	for _, server := range []string{"nas--one", "nas-"} {
-		c := DefaultConfig()
-		c.Drives["7-project"] = DriveConfig{Server: server, Nodes: []string{"client--one", "client-"}}
-		if err := c.Validate(); err != nil {
-			t.Fatal("legal node or drive name refused", err)
+func TestRetiredKeysAreIgnored(t *testing.T) {
+	c, err := parseConfig(json.RawMessage(`{"listen":"127.0.0.1:1","links":[["a","a"]],"nodes":{"laptop":{"workers":["../ide"],"allow":["x::y"]}},"drives":{"work":{"server":"*","nodes":["*"]}}}`))
+	if err != nil || c.Listen != "127.0.0.1:1" {
+		t.Fatalf("retired keys refused: %+v %v", c, err)
+	}
+	b, err := json.Marshal(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"links", "nodes", "drives"} {
+		if strings.Contains(string(b), `"`+key+`"`) {
+			t.Fatalf("a new entry would store %s", key)
 		}
 	}
-	for _, drive := range []string{"proj--one", "proj-", "../proj"} {
-		c := DefaultConfig()
-		c.Drives[drive] = DriveConfig{Server: "nas--one", Nodes: []string{"*"}}
-		if c.Validate() == nil {
-			t.Fatal("invalid drive name accepted", drive)
-		}
+	if _, err := parseConfig(json.RawMessage(`{"bogus":true}`)); err == nil {
+		t.Fatal("unknown key accepted")
+	}
+	if _, err := parseConfig(json.RawMessage(`{"links":[]} {}`)); err == nil {
+		t.Fatal("trailing data accepted")
 	}
 }
 

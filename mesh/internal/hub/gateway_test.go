@@ -177,13 +177,6 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 	}
 	waitClosed(done)
 	_, done = connect(client, "laptop")
-	cfg = h.Config()
-	cfg.Nodes["laptop"] = NodeConfig{Workers: []string{"ide"}}
-	if err := h.ApplyConfig(ctx, cfg); err != nil {
-		t.Fatal(err)
-	}
-	waitClosed(done)
-	_, done = connect(client, "laptop")
 	h.SetGrantDefaults(GrantDefaults{Allow: []string{"shell::exec"}})
 	waitClosed(done)
 	_, done = connect(client, "laptop")
@@ -208,7 +201,6 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 	defer desktopClient.CloseIdleConnections()
 	sibling, siblingDone := connect(desktopClient, "desktop")
 	<-revokeEvents
-	<-revokeEvents
 	if _, err := h.RemoveNode(ctx, NodeRequest{Name: "laptop"}); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +223,7 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitClosed(siblingDone)
-	if closes != 1 || revokes.Load() != 3 || changes != 3 {
+	if closes != 1 || revokes.Load() != 2 || changes != 2 {
 		t.Fatalf("combined hooks: closes=%d revokes=%d changes=%d", closes, revokes.Load(), changes)
 	}
 }

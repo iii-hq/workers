@@ -270,17 +270,13 @@ func waitUntil(t *testing.T, what string, ok func() bool) {
 	}
 }
 
-func TestStatesForMissingWorkerAndHubManagedWorkers(t *testing.T) {
+func TestStateForMissingWorker(t *testing.T) {
 	rows := []map[string]any{}
 	b := newBridge(t, engine(&rows))
 	if err := b.Sync(context.Background(), []string{"probe"}); err != nil {
 		t.Fatal(err)
 	}
-	results, err := b.Apply(context.Background(), []node.Worker{{Name: "ide"}})
-	if err != nil || len(results) != 1 || results[0] != (node.WorkerResult{Name: "ide"}) {
-		t.Fatalf("apply %+v %v; an error makes the hub retry every second", results, err)
-	}
-	want := []node.WorkerStatus{{Name: "probe", State: "not running"}, {Name: "ide", State: "unsupported"}}
+	want := []node.WorkerStatus{{Name: "probe", State: "not running"}}
 	if got := b.Status(); !slices.Equal(got, want) {
 		t.Fatalf("status %+v", got)
 	}

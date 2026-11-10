@@ -5,8 +5,6 @@ import (
 	"tailscale.com/ipn"
 )
 
-var StartForTest = startMesh
-
 func RegistrationErrorForTest(ctx context.Context, m *Mesh) string {
 	var message string
 	m.lb.WatchNotifications(ctx, ipn.NotifyInitialState, nil, func(n *ipn.Notify) bool {

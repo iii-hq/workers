@@ -2,7 +2,6 @@ package meshnet
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log"
 	"net"
@@ -15,9 +14,6 @@ import (
 // resolved per connection, so the URL survives gateway moves. Any local process
 // that reaches the port acts as this node. The listener closes with the Mesh.
 func (m *Mesh) Forward() (string, error) {
-	if m.stack == nil {
-		return "", errors.New("forward requires a userspace mesh")
-	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", err

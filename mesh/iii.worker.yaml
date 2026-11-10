@@ -6,7 +6,7 @@ manifest: package.json
 bin: mesh
 license: MIT
 iii_engine_version: ">=0.26.0"
-description: Mesh hub and node connectivity for iii workers.
+description: "Mesh hub and client: join iii engines and share workers between them."
 tags: [mesh, networking, hub, go]
 dependencies:
   configuration: latest
