@@ -62,7 +62,7 @@ iii.observe(
       'input.scope': { $eq: 'orders' },  // omit to match every scope
       'input.key': { $eq: 'status' },    // omit to match every key in the scope
     },
-    deliver: 'output',
+    capture: ['output'],
   },
   'orders::on-status-change',
 )
@@ -70,4 +70,4 @@ iii.observe(
 
 Filters take explicit operators (`$eq`, `$in`, `$ne`, …). To watch several specific keys, use `{ 'input.key': { $in: ['status', 'total'] } }`. Mutations that emit: `state::set`, `state::update`, `state::delete`, a swapped `state::compare-and-set`.
 
-With `deliver: 'output'` the handler receives the event `{ type: "state", event_type, scope, key, old_value, new_value }`, where `event_type` is one of `state:created`, `state:updated`, or `state:deleted`. With the default `deliver` it receives the `Observed` envelope instead: `output` is the event and `caller.parent` the worker that wrote. Pass `{ metadata }` as the third argument of `iii.observe` to hand the handler a sidecar with every event.
+The handler receives the `Observed` envelope; with `capture: ['output']` its `output` is the event `{ type: "state", event_type, scope, key, old_value, new_value }`, where `event_type` is one of `state:created`, `state:updated`, or `state:deleted`. Add `'caller'` to the capture to also get `caller.parent`, the worker that wrote. Pass `{ metadata }` as the third argument of `iii.observe` to hand the handler a sidecar with every event.

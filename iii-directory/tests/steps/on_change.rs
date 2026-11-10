@@ -1,8 +1,8 @@
 //! Step defs for `tests/features/on_change.feature`.
 //!
 //! Observes the worker's change functions from the shared connection with
-//! `deliver: output`, writes through the worker's own functions, and checks
-//! what each observer's target received. Targets are recorder functions
+//! `capture: [output]`, writes through the worker's own functions, and checks
+//! what each observer's target received: the envelope's `output`. Targets are recorder functions
 //! registered once per process; the observers a scenario creates are
 //! disposed after it (`bdd.rs`).
 
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use cucumber::{given, then, when};
-use iii_sdk::{CallRequest, Deliver, Error, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, Error, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::common::world::IiiSkillsWorld;
@@ -36,8 +36,8 @@ fn recorder(iii: &IIIClient, target: &str) -> Received {
     let sink = received.clone();
     iii.register_function(
         target,
-        RegisterFunction::new(move |event: Value| {
-            sink.lock().unwrap().push(event);
+        RegisterFunction::new(move |observed: Value| {
+            sink.lock().unwrap().push(observed["output"].clone());
             Ok::<_, Error>(json!({ "ok": true }))
         }),
     );
@@ -59,7 +59,7 @@ async fn observe(world: &mut IiiSkillsWorld, source: Source, target: &str) {
         return;
     };
     recorder(&iii, target);
-    let handle = iii.observe(source.deliver(Deliver::Output), target);
+    let handle = iii.observe(source.capture([Capture::Output]), target);
     tokio::time::timeout(Duration::from_secs(10), handle.ready())
         .await
         .expect("observer neither became active nor failed within 10 s")

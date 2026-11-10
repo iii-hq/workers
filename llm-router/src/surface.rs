@@ -18,7 +18,7 @@ use crate::types::router::{
     ModelsReconcileRequest, ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse,
     ProviderChangedEvent, ProviderListRequest, ProviderListResponse, ProviderRegisterRequest,
     ProviderRegisterResponse, ProviderResolveOutput, ProviderResolveRequest, RouteRequest,
-    RouteResponse, RouterAck, RouterReadyEvent, SecretChangedEvent, UpdateCredentialRequest,
+    RouteResponse, RouterAck, RouterReadyEvent, SecretChangedObserved, UpdateCredentialRequest,
     UpdateCredentialResponse,
 };
 
@@ -236,6 +236,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
             ON_FUNCTIONS_CHANGED_ID,
             ON_FUNCTIONS_CHANGED_DESC,
         ),
-        spec::<SecretChangedEvent, RouterAck>(ON_SECRET_CHANGED_ID, ON_SECRET_CHANGED_DESC),
+        spec::<SecretChangedObserved, RouterAck>(ON_SECRET_CHANGED_ID, ON_SECRET_CHANGED_DESC),
     ]
 }

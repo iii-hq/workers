@@ -27,8 +27,7 @@
       "AskQuestion": {
         "properties": {
           "header": {
-            "description": "Short chip label such as `Approach`, 1-16 characters; prefixes the answer line (`Approach: <label>`).",
-            "maxLength": 16,
+            "description": "Short chip label such as `Approach`; prefixes the answer line (`Approach: <label>`). No length limit: the card shows a long one with an ellipsis and the whole text on hover.",
             "minLength": 1,
             "type": "string"
           },
@@ -104,8 +103,7 @@
       "AskQuestion": {
         "properties": {
           "header": {
-            "description": "Short chip label such as `Approach`, 1-16 characters; prefixes the answer line (`Approach: <label>`).",
-            "maxLength": 16,
+            "description": "Short chip label such as `Approach`; prefixes the answer line (`Approach: <label>`). No length limit: the card shows a long one with an ellipsis and the whole text on hover.",
             "minLength": 1,
             "type": "string"
           },

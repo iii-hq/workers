@@ -1,8 +1,8 @@
 //! `tmux::on-changed` through a real engine (`III_ENGINE_BIN`; the test skips
 //! when it is not set): a new observer receives the current overview once,
 //! as a call of the function for it alone, in the shape every overview
-//! reaches it (the envelope for a default observer, the overview itself under
-//! `deliver: output`); the other observers do not receive it, and a change
+//! reaches it (the full envelope for a default observer, the overview at
+//! `output` under `capture: [output]`); the other observers do not receive it, and a change
 //! reaches every observer. `III_TEST_ENGINE_PORT` picks the engine's port
 //! (default: a free one).
 
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tmux::collector::{Collector, ConsoleClients};
@@ -168,6 +168,16 @@ impl Inbox {
         })
     }
 
+    /// A target of an output-only observer: records the envelope's `output`.
+    fn output_function(&self) -> RegisterFunction {
+        let inbox = self.clone();
+        RegisterFunction::new(move |envelope: Value| {
+            let output = envelope.get("output").cloned().unwrap_or(Value::Null);
+            inbox.0.lock().unwrap().push(output);
+            Ok::<_, Error>(json!({ "ok": true }))
+        })
+    }
+
     fn len(&self) -> usize {
         self.0.lock().unwrap().len()
     }
@@ -235,8 +245,8 @@ async fn a_new_observer_receives_the_current_overview_alone_in_its_own_shape() {
     let to_outputs = format!("console-{id}::output");
     let to_late = format!("console-{id}::late");
     watcher.register_function(&to_envelopes, envelopes.function());
-    watcher.register_function(&to_outputs, outputs.function());
-    watcher.register_function(&to_late, late.function());
+    watcher.register_function(&to_outputs, outputs.output_function());
+    watcher.register_function(&to_late, late.output_function());
 
     // A, iii's default delivery: its first overview arrives as an envelope.
     let a = watcher.observe(Source::function(ON_CHANGED_FN), &to_envelopes);
@@ -246,10 +256,10 @@ async fn a_new_observer_receives_the_current_overview_alone_in_its_own_shape() {
         .unwrap();
     envelopes.wait(1).await;
 
-    // B, `deliver: output`: its first overview is the overview itself, and
+    // B, `capture: [output]`: its first overview's output is the overview, and
     // it reaches B alone.
     let b = watcher.observe(
-        Source::function(ON_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ON_CHANGED_FN).capture([Capture::Output]),
         &to_outputs,
     );
     tokio::time::timeout(WAIT, b.ready())
@@ -274,7 +284,7 @@ async fn a_new_observer_receives_the_current_overview_alone_in_its_own_shape() {
     // C, added after the change: its first overview is the current one, and
     // it reaches C alone.
     let c = watcher.observe(
-        Source::function(ON_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(ON_CHANGED_FN).capture([Capture::Output]),
         &to_late,
     );
     tokio::time::timeout(WAIT, c.ready())

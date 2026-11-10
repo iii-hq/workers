@@ -10,7 +10,7 @@ use crate::types::StatusChangedEvent;
 use super::message_added::BindingAck;
 
 pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    super::super::register(
+    super::super::register_observed(
         iii,
         deps,
         super::super::ON_STATUS_CHANGED_ID,

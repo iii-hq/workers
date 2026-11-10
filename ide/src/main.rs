@@ -19,6 +19,7 @@ mod functions;
 mod git_events;
 mod job_events;
 mod jobs;
+mod observed;
 mod path;
 mod pty;
 mod scode;

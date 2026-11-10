@@ -5,7 +5,7 @@
 //! mock delivers by calling its own function. The queue mock's deliver hook
 //! calls through the observer the call is for, as the queue worker does; the
 //! tunnel mock has no deliver hook, so iii delivers each call to every
-//! observer whose filters match, with that observer's `deliver`, as for the
+//! observer whose filters match, with that observer's `capture`, as for the
 //! quick-tunnel worker.
 //! Like the queue worker, the queue keeps one durable subscription per
 //! observer outside a group (`observer:<id>`) and one per group (`@<group>`);

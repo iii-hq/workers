@@ -488,15 +488,25 @@ async fn a_worker_disconnect_event_redrives_an_orphaned_turn() {
     );
 
     // The engine calls `engine::on-workers-changed` and activates the
-    // harness's observer with the event as its output: the worker that held
-    // the turn's step went away.
+    // harness's observer with the `Observed` envelope, the event as its
+    // output (`capture: [output]`): the worker that held the turn's step
+    // went away.
     stack
         .push
         .send(json!({
             "type": "invokefunction",
             "invocation_id": "6f1c1a52-7c1e-4b8e-9d0a-2f3c4b5a6d7e",
             "function_id": harness::engine_events::ENGINE_CHANGE_FN_ID,
-            "data": { "event": "worker_disconnected", "worker_id": "w-gone" },
+            "data": {
+                "observer_id": "engine-change",
+                "activation_id": "act-1",
+                "function_id": "engine::on-workers-changed",
+                "invocation_id": "inv-1",
+                "status": "success",
+                "started_at_ms": 1,
+                "duration_ms": 0.5,
+                "output": { "event": "worker_disconnected", "worker_id": "w-gone" },
+            },
             "activation": { "observer_id": "engine-change", "activation_id": "act-1" },
         }))
         .unwrap();

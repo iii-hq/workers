@@ -1058,11 +1058,12 @@ filters on the event's fields.
 | `directory::agents::on-change` | After a `directory::skills::download` that wrote at least one agent profile, a `directory::agents::update`, `create`, `delete`, a kit apply that wrote profiles or downloaded the bundles of the workers it added or updated, or external file change | `input.op`, `input.name` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` from `directory::skills::download`, `{ "op": "download", "source": "registry" }` from a kit apply's worker bundles; update/create/delete: `{ "op": "<operation>", "name": "<id>" }`; kit: `{ "op": "kit", "kit", "plan_id" }`; external: `{ "op": "external" }` |
 | `directory::kits::on-change` | A kit plan is created or discarded, an apply makes progress or lands, or an update check changes the set of available updates | `input.op`, `input.plan_id`, `input.kit` | `{ "op": "plan", "kit", "plan_id", "kind" }`, `{ "op": "discard", "kit", "plan_id" }`, `{ "op": "progress", "plan_id", "kit", "steps": [{ id, label, state, detail? }], "error"? }`, `{ "op": "apply", "kit", "plan_id", "kind" }`, `{ "op": "updates", "kit"? }` |
 
-Observe one with your own function as the target:
+Observe one with your own function as the target; it receives the `Observed`
+envelope, whose `output` is the event:
 
 ```ts
 iii.observe(
-  { function_id: 'directory::skills::on-change', deliver: 'output' },
+  { function_id: 'directory::skills::on-change', capture: ['output'] },
   'mcp::__on_skills_changed',
 )
 
@@ -1071,7 +1072,7 @@ iii.observe(
   {
     function_id: 'directory::kits::on-change',
     filters: { 'input.op': { $eq: 'progress' }, 'input.plan_id': { $eq: planId } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-kit-progress',
 )

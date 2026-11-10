@@ -4,19 +4,22 @@
 //!
 //! - `harness::on-ready` sends an observer added after boot the ready event as
 //!   a call of the function for that observer alone, delivered in the shape
-//!   its `deliver` asks for, and no other observer receives it;
+//!   its `capture` asks for, and no other observer receives it;
 //! - `harness::observer::deliver` fires a binding from the `Observed`
 //!   envelope of iii's delivery and from the raw payload a source's deliver
 //!   hook sends through the observer;
 //! - a harness back on a new connection under the same worker name replaces
-//!   its binding's suspended observer by observing the same id again.
+//!   its binding's suspended observer by observing the same id again;
+//! - a harness away past the engine's grace period observes its bindings
+//!   again once its connection is back.
 
 #[path = "support/engine.rs"]
 mod engine;
 
-use engine::{isolated_engine, worker_options, Engine};
+use engine::{isolated_engine, isolated_engine_with, worker_options, Engine};
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,7 +30,7 @@ use harness::events::{TurnEvents, ON_READY_FN};
 use harness::functions::observer_deliver::DELIVER_ID;
 use harness::types::turn::FunctionPolicy;
 use iii_sdk::{
-    register_worker, Call, CallAction, CallRequest, Deliver, IIIClient, Observer, RegisterFunction,
+    register_worker, Call, CallAction, CallRequest, Capture, IIIClient, Observer, RegisterFunction,
     Source,
 };
 use serde_json::{json, Value};
@@ -229,7 +232,11 @@ fn sink_binding(id: &str, function_id: &str) -> Binding {
 /// A harness connection under the worker name `harness` with the delivery
 /// hop and every other harness function registered.
 async fn harness_connection(engine: &Engine) -> Arc<Deps> {
-    let iii = Arc::new(register_worker(&engine.url, worker_options("harness")));
+    harness_connection_at(&engine.url).await
+}
+
+async fn harness_connection_at(url: &str) -> Arc<Deps> {
+    let iii = Arc::new(register_worker(url, worker_options("harness")));
     let cfg = WorkerConfig {
         session_timeout_ms: 2_000,
         dispatch_timeout_ms: 2_000,
@@ -300,6 +307,84 @@ async fn emit(source: &IIIClient, function_id: &str, event: Value) {
         })
         .await
         .unwrap_or_else(|error| panic!("{function_id}: {error}"));
+}
+
+/// Waits until the engine lists observer `id` in `state`, or no longer lists
+/// it when `state` is `None`.
+async fn wait_observer_state(client: &IIIClient, id: &str, state: Option<&str>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let listed = client
+            .call(CallRequest::new("engine::observers::list", json!({})))
+            .await
+            .expect("engine::observers::list");
+        let current = listed["observers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|observer| observer["id"] == id)
+            .map(|observer| observer["state"].clone());
+        if current == state.map(|state| json!(state)) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "observer {id} never reached {state:?}: {listed}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A TCP hop between a worker and the engine. `down` closes every connection
+/// through it and refuses new ones until `up`, as a network partition or a
+/// stalled worker process would.
+struct Hop {
+    url: String,
+    open: Arc<AtomicBool>,
+    cut: tokio::sync::watch::Sender<u64>,
+}
+
+impl Hop {
+    async fn to(engine: &Engine) -> Hop {
+        let target = engine.url.trim_start_matches("ws://").to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("hop listener");
+        let url = format!("ws://{}", listener.local_addr().expect("hop address"));
+        let open = Arc::new(AtomicBool::new(true));
+        let (cut, cuts) = tokio::sync::watch::channel(0u64);
+        let accepting = open.clone();
+        tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                if !accepting.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let target = target.clone();
+                let mut cuts = cuts.clone();
+                // Only a cut after this connection opened closes it.
+                cuts.borrow_and_update();
+                tokio::spawn(async move {
+                    let Ok(mut outbound) = tokio::net::TcpStream::connect(&target).await else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => {}
+                        _ = cuts.changed() => {}
+                    }
+                });
+            }
+        });
+        Hop { url, open, cut }
+    }
+
+    fn down(&self) {
+        self.open.store(false, Ordering::SeqCst);
+        self.cut.send_modify(|cuts| *cuts += 1);
+    }
+
+    fn up(&self) {
+        self.open.store(true, Ordering::SeqCst);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -397,24 +482,7 @@ async fn a_restarted_harness_replaces_its_suspended_binding_observer() {
     // The connection goes away without disposing anything: the engine
     // suspends the observer for its grace period.
     first.iii.shutdown_async().await;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let listed = source
-            .call(CallRequest::new("engine::observers::list", json!({})))
-            .await
-            .expect("engine::observers::list");
-        let state = listed["observers"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|observer| observer["id"] == "sub_stable")
-            .map(|observer| observer["state"].clone());
-        if state == Some(json!("suspended")) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "never suspended: {listed}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_observer_state(&source, "sub_stable", Some("suspended")).await;
 
     // The harness back on a new connection observes the same id, under the
     // same worker name: the engine replaces the suspended observer with it.
@@ -450,6 +518,90 @@ async fn a_restarted_harness_replaces_its_suspended_binding_observer() {
     source.shutdown_async().await;
     second.iii.shutdown_async().await;
     stub.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_harness_away_past_the_grace_period_observes_its_bindings_again() {
+    // A grace period this short ends while the harness is away, well within
+    // `disposed_retention_ms`: the engine disposes the binding's observer and
+    // answers the SDK's replay on the way back with that disposal.
+    let Some(engine) = isolated_engine_with("observers:\n  observer_grace_ms: 300\n").await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let stack = Stack::default();
+    let stub = register_worker(&engine.url, worker_options("stack"));
+    stack.register(&stub);
+    stub.wait_until_registered(Duration::from_secs(5))
+        .await
+        .expect("stack registered");
+    let source = event_sources(&engine).await;
+    let hop = Hop::to(&engine).await;
+    let deps = harness_connection_at(&hop.url).await;
+
+    let binding = sink_binding("sub_away", "demo::on-event");
+    stack.insert_binding(&binding);
+    let handle = harness::bindings::observe_binding(&deps, &binding).expect("a source");
+    tokio::time::timeout(Duration::from_secs(10), handle.ready())
+        .await
+        .expect("observer settles")
+        .expect("observer active");
+    emit(&source, "demo::on-event", json!({ "n": 1 })).await;
+    stack.wait_sink(1).await;
+
+    hop.down();
+    wait_observer_state(&source, "sub_away", None).await;
+    hop.up();
+
+    // Back on a new connection, the harness observes the binding again.
+    wait_observer_state(&source, "sub_away", Some("active")).await;
+    emit(&source, "demo::on-event", json!({ "n": 2 })).await;
+    let sink = stack.wait_sink(2).await;
+    assert_eq!(sink[1]["event"], json!({ "n": 2 }), "{sink:?}");
+
+    source.shutdown_async().await;
+    deps.iii.shutdown_async().await;
+    stub.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kept_observer_is_observed_again_after_an_absence_past_the_grace_period() {
+    let Some(engine) = isolated_engine_with("observers:\n  observer_grace_ms: 300\n").await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let source = event_sources(&engine).await;
+    let hop = Hop::to(&engine).await;
+    let keeper = register_worker(&hop.url, worker_options("keeper"));
+    let received = Received::default();
+    received.target(&keeper, "keeper::record");
+    keeper
+        .wait_until_registered(Duration::from_secs(5))
+        .await
+        .expect("keeper registered");
+    let observing = keeper.clone();
+    let _kept = harness::observers::keep(move || {
+        observing.observe_with(
+            Source::function("demo::on-event").capture([Capture::Output]),
+            "keeper::record",
+            iii_sdk::ObserverOptions::default().id("kept"),
+        )
+    });
+    wait_observer_state(&source, "kept", Some("active")).await;
+    emit(&source, "demo::on-event", json!({ "n": 1 })).await;
+    received.wait("keeper::record", 1).await;
+
+    hop.down();
+    wait_observer_state(&source, "kept", None).await;
+    hop.up();
+
+    wait_observer_state(&source, "kept", Some("active")).await;
+    emit(&source, "demo::on-event", json!({ "n": 2 })).await;
+    let got = received.wait("keeper::record", 2).await;
+    assert_eq!(got[1], json!({ "n": 2 }), "{got:?}");
+
+    source.shutdown_async().await;
+    keeper.shutdown_async().await;
 }
 
 /// Payloads each test target function received, by function id.
@@ -546,25 +698,25 @@ async fn a_late_on_ready_observer_receives_the_ready_event_alone_in_its_own_shap
     // Observers present at boot receive the boot ready event.
     let boot_envelope = consumer.observe(Source::function(ON_READY_FN), "test::boot-envelope");
     let boot_output = consumer.observe(
-        Source::function(ON_READY_FN).deliver(Deliver::Output),
+        Source::function(ON_READY_FN).capture([Capture::Output]),
         "test::boot-output",
     );
     boot_envelope.ready().await.expect("boot envelope observer");
     boot_output.ready().await.expect("boot output observer");
     events.emit_ready().await;
     let boot_env_event = received.wait("test::boot-envelope", 1).await.remove(0);
-    let boot_out_event = received.wait("test::boot-output", 1).await.remove(0);
+    let boot_out_event = received.wait("test::boot-output", 1).await.remove(0)["output"].clone();
 
     // Observers added after boot receive the current ready event once each.
     let late_envelope = consumer.observe(Source::function(ON_READY_FN), "test::late-envelope");
     let late_output = consumer.observe(
-        Source::function(ON_READY_FN).deliver(Deliver::Output),
+        Source::function(ON_READY_FN).capture([Capture::Output]),
         "test::late-output",
     );
     late_envelope.ready().await.expect("late envelope observer");
     late_output.ready().await.expect("late output observer");
     let late_env_event = received.wait("test::late-envelope", 1).await.remove(0);
-    let late_out_event = received.wait("test::late-output", 1).await.remove(0);
+    let late_out_event = received.wait("test::late-output", 1).await.remove(0)["output"].clone();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     for target in [
@@ -608,7 +760,8 @@ async fn a_late_on_ready_observer_receives_the_ready_event_alone_in_its_own_shap
         "same envelope shape"
     );
 
-    // `deliver: output`: the ready event itself, as the boot event arrived.
+    // `capture: [output]`: the ready event is the envelope's output, as the
+    // boot event arrived.
     assert_eq!(late_out_event["status"], json!("ready"), "{late_out_event}");
     assert!(late_out_event["timestamp"].is_i64(), "{late_out_event}");
     assert_eq!(

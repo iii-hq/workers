@@ -12,7 +12,7 @@
 //! iii.observe(
 //!     Source::function("memory::on-item-changed")
 //!         .filters(json!({ "input.bank": { "$eq": "blog" } }))
-//!         .deliver(Deliver::Output),
+//!         .capture([Capture::Output]),
 //!     "my-worker::on-memory-changed",
 //! )
 //! ```

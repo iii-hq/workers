@@ -182,7 +182,6 @@ export function subscribeLiveBinding(
         function_id: binding.function_id,
         ...(binding.args ? { args: binding.args as Record<string, unknown> } : {}),
         ...(binding.filters ? { filters: binding.filters as Record<string, unknown> } : {}),
-        deliver: 'output',
       },
       `${localId}::${host.iii.browserId}`,
     )
@@ -289,7 +288,6 @@ export function subscribeSurfaceEvents(
       {
         function_id: STATE_ON_CHANGED_FN,
         filters: { 'input.scope': { $eq: 'a2ui' }, 'input.key': { $eq: sessionId } },
-        deliver: 'output',
       },
       `${EVENTS_FN}::${host.iii.browserId}`,
     )

@@ -2,7 +2,7 @@
 
 [package]
 name = "database"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 publish = false
 

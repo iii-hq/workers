@@ -1,7 +1,7 @@
 //! In-process SDK websocket transport: engine metadata is stamped outside data.
 //! This is not a live-engine ACL test. No credentials, models or real banks.
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{CallRequest, Deliver, Source};
+use iii_sdk::{CallRequest, Capture, Source};
 use memory::{config::WorkerConfig, deps::Deps, events, hook_binding, store::Store};
 use serde_json::{json, Value};
 use std::{
@@ -70,6 +70,11 @@ fn meta(kind: Value) -> Value {
 fn completed() -> Value {
     json!({"session_id":"synthetic-session","turn_id":"synthetic-turn",
         "status":"completed","terminal":true,"timestamp":2})
+}
+fn observed(output: Value) -> Value {
+    json!({"observer_id":"payload-observer-is-not-authority","activation_id":"act-fixture",
+        "function_id":hook_binding::COMPLETION_SOURCE,"invocation_id":"inv-fixture",
+        "status":"success","started_at_ms":1,"duration_ms":0.5,"output":output})
 }
 fn snapshot(path: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(root: &Path, p: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
@@ -151,7 +156,7 @@ impl Stack {
                                     "engine::functions::info" if mode == "public-source" => json!({"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default","worker_name":"source-host","private":false}),
                                     "engine::functions::info" if mode == "wrong-source" => json!({"function_id":hook_binding::SOURCE,"namespace":"default","worker_name":"source-host","private":true}),
                                     "engine::functions::info" => json!({"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default","worker_name":"source-host","private":true}),
-                                    "engine::workers::info" => json!({"worker":{"id":if rotated || mode == "stale-owner" {"owner-two"} else {"owner-one"},"namespace":"default","status":"connected"},"functions":[{"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default"}]}),
+                                    "engine::workers::info" => json!({"worker":{"id":if rotated {"owner-two"} else {"owner-one"},"namespace":"default","status":if mode == "stale-owner" {"disconnected"} else {"connected"}},"functions":[{"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default"}]}),
                                     "session::get" => {
                                         rotated = mode == "rotation";
                                         match mode.as_str() {
@@ -213,7 +218,7 @@ impl Stack {
         events::register_all(&iii);
         hook_binding::register_turn_completed(&iii, &deps);
         let handle = iii.observe(
-            Source::function(hook_binding::COMPLETION_SOURCE).deliver(Deliver::Output),
+            Source::function(hook_binding::COMPLETION_SOURCE).capture([Capture::Output]),
             memory::hooks::TURN_COMPLETED_FN,
         );
         if install_binding {
@@ -235,11 +240,27 @@ impl Stack {
         }
     }
     async fn invoke(&self, data: Value, worker: &str, activation: Option<&str>) {
+        let data = if data.get("fixture_state").is_some() {
+            data
+        } else {
+            observed(data)
+        };
+        self.invoke_delivery(data, worker, activation).await;
+    }
+    async fn invoke_delivery(&self, data: Value, worker: &str, activation: Option<&str>) {
         let (answer, wait) = oneshot::channel();
         self.tx
             .send(Delivery {
                 data,
-                caller: json!({"worker_id":worker,"worker_name":"harness"}),
+                caller: {
+                    let mode = self.recorded.lock().unwrap().mode.clone();
+                    let mut caller = json!({"worker_name":if worker == "owner-one" {"iii-engine"} else {worker},
+                        "function_id":if mode == "wrong-callback-source" {hook_binding::SOURCE} else {hook_binding::COMPLETION_SOURCE}});
+                    if mode == "forged-engine-name" {
+                        caller["worker_id"] = json!("foreign-worker");
+                    }
+                    caller
+                },
                 activation: activation
                     .map(|id| json!({"observer_id":id}))
                     .unwrap_or(Value::Null),
@@ -311,7 +332,7 @@ async fn authenticated_nonuser_emits_operational_only_private_typed_event() {
     // Raw replayable envelope separates SDK metadata from the completion payload.
     println!(
         "positive_loopback_fixture={}",
-        json!({"type":"invokefunction","invocation_id":"00000000-0000-4000-8000-000000000001","function_id":memory::hooks::TURN_COMPLETED_FN,"data":completed(),"caller":{"worker_id":"owner-one","worker_name":"harness"},"activation":{"observer_id":s.handle.id()}})
+        json!({"type":"invokefunction","invocation_id":"00000000-0000-4000-8000-000000000001","function_id":memory::hooks::TURN_COMPLETED_FN,"data":observed(completed()),"caller":{"worker_name":"iii-engine","function_id":hook_binding::COMPLETION_SOURCE},"activation":{"observer_id":s.handle.id()}})
     );
     println!("positive_descriptor={descriptor}");
     println!("positive_decision={}", r.decisions[0]);
@@ -319,6 +340,50 @@ async fn authenticated_nonuser_emits_operational_only_private_typed_event() {
         "positive_counters={}; persisted_bytes_unchanged=true",
         serde_json::to_value(r.counters()).unwrap()
     );
+}
+
+#[tokio::test]
+async fn missing_captured_output_never_looks_up_authority_or_emits_a_skip() {
+    for status in ["success", "error"] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Stack::new(dir.path()).await;
+        let before = snapshot(dir.path());
+        let mut data = observed(completed());
+        data["status"] = json!(status);
+        data["input"] = completed();
+        data["caller"] = json!({"worker_id":"owner-one","worker_name":"harness"});
+        data.as_object_mut().unwrap().remove("output");
+        if status == "error" {
+            data["error"] = json!({"code":"FIXTURE","message":"synthetic failure"});
+        }
+        s.invoke_delivery(data, "owner-one", Some(s.handle.id()))
+            .await;
+        assert_eq!(snapshot(dir.path()), before, "{status}");
+        let r = s.recorded.lock().unwrap();
+        assert!(r.decisions.is_empty(), "{status}");
+        assert!(
+            r.counters().values().all(|count| *count == 0),
+            "{status}: {:?}",
+            r.counters()
+        );
+    }
+}
+
+#[tokio::test]
+async fn payload_caller_cannot_replace_sdk_callback_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Stack::new(dir.path()).await;
+    let before = snapshot(dir.path());
+    let mut data = observed(completed());
+    data["caller"] =
+        json!({"worker_name":"iii-engine","function_id":hook_binding::COMPLETION_SOURCE});
+    s.invoke_delivery(data, "foreign", Some(s.handle.id()))
+        .await;
+    assert_eq!(snapshot(dir.path()), before);
+    let r = s.recorded.lock().unwrap();
+    assert!(r.decisions.is_empty());
+    assert_eq!(r.count("engine::functions::info"), 0);
+    assert_eq!(r.count("engine::workers::info"), 0);
 }
 
 #[tokio::test]
@@ -330,6 +395,8 @@ async fn untrusted_stale_unknown_and_nonterminal_deliveries_never_prove_skip() {
         "owner-error",
         "public-source",
         "wrong-source",
+        "wrong-callback-source",
+        "forged-engine-name",
         "transport-error",
         "rotation",
         "stale-owner",

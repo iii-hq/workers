@@ -42,7 +42,7 @@ export function useStateEventHub(host: Host): Subscribe {
       for (const listener of [...listenersRef.current]) listener(event)
     })
     const dispose = host.iii.observe(
-      { function_id: ON_CHANGED_FN, deliver: 'output' },
+      { function_id: ON_CHANGED_FN },
       `${EVENTS_FN}::${host.iii.browserId}`,
     )
     return () => {

@@ -38,11 +38,11 @@ client that only the Console drives.
 
 ## Boundaries
 
-- Read functions (`status`, `sessions::list`, `ports::list`) are allowed by
-  default. Creating, renaming, selecting and killing change the person's
-  tmux and are approval-gated; killing ends whatever runs there, so name
-  what will stop before asking. `panes::select` is approval-gated too: a
-  zoom shows on every client looking at that window.
+- Read functions (`status`, `sessions::list`, `ports::list`,
+  `install::status`) are allowed by default. Creating, renaming, selecting and
+  killing change the person's tmux and are approval-gated; killing ends
+  whatever runs there, so name what will stop before asking. `panes::select`
+  is approval-gated too: a zoom shows on every client looking at that window.
 - `panes::capture` returns whatever is on a pane's screen, which can include
   anything the person typed or a program printed; it needs approval and its
   text should not be repeated beyond what the question needs.
@@ -58,7 +58,13 @@ client that only the Console drives.
 - Ports are TCP listeners of this user's processes only, and tmux locations
   only exist for processes started inside tmux.
 - tmux is Unix-only; on a host without tmux, `status` reports
-  `available: false` and the lists come back empty.
+  `available: false` and the lists come back empty. `installable: true` there
+  means `install` can try.
+- `install` puts the tmux program on the computer and can run the system's
+  package manager as root, so it needs approval; say so before asking. It never
+  waits for a password: without root or passwordless sudo it uses tmux's
+  official build in `~/.local/bin`. It runs in the background, and it never
+  talks to the person's tmux server. Only install tmux when the person asks.
 
 ## Functions
 
@@ -73,6 +79,8 @@ client that only the Console drives.
 - `tmux::panes::capture` — a pane's visible screen with colour escapes, its size, cursor and alternate-screen flag.
 - `tmux::subagents::transcript` — what one sub-agent of a pane's Claude Code or Codex has done (`pane`, `subagent` from `agent.subagents[].id`): its task, messages, reasoning, tool calls and results, oldest first.
 - `tmux::ports::list` — listening TCP ports with process, iii role, worker, compose namespace and pane, plus each `iii compose` stack.
+- `tmux::install` — install the tmux program on this computer in the background (package manager, else tmux's official build); answers at once, and starting during a run joins it.
+- `tmux::install::status` — where that install is: `idle`, `running` with its step and words, `succeeded` with path and version, or `failed` with one sentence and the log.
 
 ## Reacting to tmux
 
@@ -87,8 +95,8 @@ only while the function is observed. It takes no args.
 Register a handler, then observe the function with it:
 
 ```ts
-iii.registerFunction('my-worker::on-tmux', async ({ sessions, ports }) => {
+iii.registerFunction('my-worker::on-tmux', async ({ output: { sessions, ports } }) => {
   // compare agent states with the previous overview
 })
-iii.observe({ function_id: 'tmux::on-changed', deliver: 'output' }, 'my-worker::on-tmux')
+iii.observe({ function_id: 'tmux::on-changed', capture: ['output'] }, 'my-worker::on-tmux')
 ```

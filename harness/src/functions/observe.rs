@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{ObserverHandle, Source};
+use iii_sdk::{ObserverHandle, ObserverOptions, ObserverState, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1442,9 +1442,11 @@ async fn observe_post_turn(
         .map_err(|e| HarnessError::InvalidRequest(format!("hook args serialize: {e}")))?;
     let topology = deps.topology.lock().await;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
-    let handle = deps.iii.observe(
+    let handle = observe_validator(
+        &deps.hooks,
         Source::function(crate::hooks::ON_POST_TURN_FN).args(args),
-        validator.as_str(),
+        validator,
+        ObserverOptions::default(),
     );
     let observer_id = deps.hooks.record_owned(session_id, handle.clone());
     drop(topology);
@@ -1462,6 +1464,43 @@ async fn observe_post_turn(
              this id when the goal is met."
         )),
     })
+}
+
+/// A post-turn validator's observer. When the engine disposes it while the
+/// harness is away, it is observed again under the same id, the one its agent
+/// holds, as long as the agent still owns it.
+fn observe_validator(
+    hooks: &crate::hooks::HookRegistry,
+    source: Source,
+    validator: String,
+    options: ObserverOptions,
+) -> ObserverHandle {
+    let handle = hooks
+        .iii
+        .observe_with(source.clone(), validator.as_str(), options);
+    let (hooks, id) = (hooks.clone(), handle.id().to_string());
+    crate::observers::when_disposed_while_away(&handle, move || {
+        hooks.replace_owned(&id, || {
+            let handle = observe_validator(
+                &hooks,
+                source,
+                validator,
+                ObserverOptions::default().id(id.clone()),
+            );
+            // No agent waits on this observe, so a refusal is only this log line.
+            let replaced = handle.clone();
+            tokio::spawn(async move {
+                match readiness(&replaced).await {
+                    Readiness::Failed(reason) if replaced.state() == ObserverState::Error => {
+                        tracing::warn!(observer = %replaced.id(), %reason, "post-turn validator not observed again: the engine refused it");
+                    }
+                    _ => {}
+                }
+            });
+            handle
+        });
+    });
+    handle
 }
 
 /// The sessions an agent-created post-turn validator may gate: itself, or

@@ -145,7 +145,11 @@ export const observerInfoSchema = z.object({
     namespace: z.string().optional(),
   }),
   capture: z.array(z.string()).optional(),
+  /** Which outcomes fire the target (`observe.capture` engines). */
+  fires_on: z.array(z.unknown()).optional(),
+  /** Legacy: older engines report the outcomes as `on` (absent = success). */
   on: z.string().optional(),
+  /** Legacy: an older engine's raw delivery (`input` / `output`). */
   deliver: z.string().optional(),
   /** The worker that created the observer. */
   worker: z
@@ -165,6 +169,29 @@ export const observerInfoSchema = z.object({
   created_at_ms: z.number().optional(),
 })
 export type ObserverInfo = z.infer<typeof observerInfoSchema>
+
+export type ObserverOutcome = 'success' | 'error'
+
+/**
+ * The outcomes that fire an observer's target: the engine's `fires_on` when
+ * it lists a known outcome, else the legacy `on` (absent = success, `error`,
+ * `complete` = both). `fires` is the activation count; firing is never
+ * derived from `capture`.
+ */
+export function observerFiresOn(
+  observer: Pick<ObserverInfo, 'fires_on' | 'on'>,
+): ObserverOutcome[] {
+  const listed = observer.fires_on
+  if (Array.isArray(listed)) {
+    const known = (['success', 'error'] as const).filter((o) =>
+      listed.includes(o),
+    )
+    if (known.length) return [...known]
+  }
+  if (observer.on === 'error') return ['error']
+  if (observer.on === 'complete') return ['success', 'error']
+  return ['success']
+}
 
 export const observersListResponseSchema = z.object({
   observers: z.array(observerInfoSchema),

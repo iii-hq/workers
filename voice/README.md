@@ -419,7 +419,7 @@ Follow one dictation session's transcript:
 
 ```ts
 iii.observe(
-  { function_id: 'voice::on-transcript', filters: { 'input.session_id': { $eq: sessionId } }, deliver: 'output' },
+  { function_id: 'voice::on-transcript', filters: { 'input.session_id': { $eq: sessionId } }, capture: ['output'] },
   'my::transcript',
 )
 ```

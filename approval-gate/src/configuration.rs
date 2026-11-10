@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
@@ -277,7 +277,7 @@ pub fn observe_config_changes(iii: &IIIClient, cell: ConfigCell) -> ObserverHand
     iii.observe(
         Source::function(CONFIG_ON_UPDATED_FN)
             .filters(config_update_filters(config_id()))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_FN_ID,
     )
 }

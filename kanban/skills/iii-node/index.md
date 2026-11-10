@@ -270,7 +270,7 @@ Follow [`configuration.md`](./configuration.md). For a configurable worker:
 3. Call `configuration::register` at startup with an id, name, description, JSON Schema, and an `initial_value` only when no value exists.
 4. Read and validate the effective value before constructing resources that depend on it.
 5. Register an internal reload function with accurate request/response schemas and `metadata: { internal: true }` when appropriate.
-6. Observe `configuration::on-updated` with that function as the target, filtered on `input.id` and `input.event_type`, with `deliver: 'output'`.
+6. Observe `configuration::on-updated` with that function as the target, filtered on `input.id` and `input.event_type`, with `capture: ['output']` (the target reads the event at `payload.output`).
 7. In the UI, register a purpose-built form with `host.configForms.register(...)`; never fall back to a raw JSON textarea.
 8. Set `configurationId` on the page registration so the Console exposes the standard settings action.
 
@@ -297,12 +297,12 @@ Contract details the live registry does not advertise:
 - `configuration::register` is hidden from `engine::functions::list` and `engine::functions::info` reports it as not available; it still exists (see `engine::workers::info { name: 'configuration' }`). Its payload is `{ id, name, description, schema, initial_value?, metadata: { ui_form: '<configuration-id>' } }`. Re-registering with `initial_value` **replaces** the stored value, so pass it only when the read below returned nothing.
 - `configuration::get { id }` throws when the id is not registered yet; treat that error as “no value” during startup, register, then read again (with defaults expanded) to obtain the effective value.
 - The persisted file is `<config dir>/<id>.yaml` with `id`, `name`, `description`, `metadata`, and `value`.
-- `configuration::on-updated` is called with `{ id, event_type, name, description, schema, old_value, new_value, type: 'configuration' }` and takes no args; observe it with `filters: { 'input.id': { $eq: '<configuration-id>' }, 'input.event_type': { $eq: 'configuration:updated' } }` and `deliver: 'output'`.
+- `configuration::on-updated` is called with `{ id, event_type, name, description, schema, old_value, new_value, type: 'configuration' }` and takes no args; observe it with `filters: { 'input.id': { $eq: '<configuration-id>' }, 'input.event_type': { $eq: 'configuration:updated' } }` and `capture: ['output']`.
 - Relative paths in configuration should resolve from a stable root. Resolve them against the project root (the nearest ancestor of the worker directory that contains `worker-compose.yaml`, overridable by an env var), not the process cwd, and expose the resolved path through a small `<worker-name>::config::info` function so the settings form can show it.
 
 ## Live updates (own event function)
 
-When other tabs, agents, or workers must react to changes without polling, the worker hosts an event function and calls it after each change. Its handler returns the event, and that return value is what every observer receives:
+When other tabs, agents, or workers must react to changes without polling, the worker hosts an event function and calls it after each change. Its handler returns the event, and that return value is what every observer receives as the `output` of the `Observed` envelope:
 
 ```ts
 import { CallAction } from 'iii-sdk'
@@ -335,7 +335,7 @@ iii.observe(
   {
     function_id: '<worker-name>::on-change',
     filters: { 'input.record_id': { $eq: recordId }, 'input.event': { $in: ['record.updated'] } },
-    deliver: 'output',
+    capture: ['output'],
   },
   '<other-worker>::on-record-changed',
   { metadata: { team: 'ops' } },

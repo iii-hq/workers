@@ -18,7 +18,7 @@
 
 import type { DriverKey } from './dialect.ts'
 import type { TestCase } from './cases.ts'
-import { expect, expectEqual, observeRowChanged, refusalCode } from './cases.ts'
+import { expect, expectEqual, observeRowChanged, refusalCode, type Observed } from './cases.ts'
 
 const EVENT_TIMEOUT_MS = 5_000
 const SILENCE_WINDOW_MS = 500
@@ -170,7 +170,7 @@ async function waitForCaptureReady(
   })
   const fnRef = iii.registerFunction(
     fnId,
-    async (payload: RowChangedEvent) => {
+    async ({ output: payload }: Observed<RowChangedEvent>) => {
       events.push(payload)
       return null
     },
@@ -223,7 +223,7 @@ function crossClientCase(target: NativeTarget): TestCase {
 
       const nativeFn = iii.registerFunction(
         nativeFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           nativeEvents.push(payload)
           return null
         },
@@ -235,7 +235,7 @@ function crossClientCase(target: NativeTarget): TestCase {
       // correctly.
       const classifiedFn = iii.registerFunction(
         classifiedFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           classifiedEvents.push(payload)
           return null
         },
@@ -358,7 +358,7 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
       // silence below would be vacuous (no triggers, nothing to hear).
       const sentinelFn = iii.registerFunction(
         sentinelFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           sentinelEvents.push(payload)
           return null
         },
@@ -371,7 +371,7 @@ function tablelessRejectionCase(target: NativeTarget): TestCase {
       // table) would match the sentinel table's events.
       const tablelessFn = iii.registerFunction(
         tablelessFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           tablelessEvents.push(payload)
           return null
         },
@@ -433,7 +433,7 @@ function txGatingCase(target: NativeTarget): TestCase {
       })
       const fnRef = iii.registerFunction(
         fnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
@@ -558,7 +558,7 @@ function fanOutOpsCase(target: NativeTarget): TestCase {
       })
       const allFn = iii.registerFunction(
         allFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           allEvents.push(payload)
           return null
         },
@@ -569,7 +569,7 @@ function fanOutOpsCase(target: NativeTarget): TestCase {
       // capture install.
       const deletesFn = iii.registerFunction(
         deletesFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           deleteEvents.push(payload)
           return null
         },
@@ -663,7 +663,7 @@ function bulkCoalescingCase(target: NativeTarget): TestCase {
       })
       const fnRef = iii.registerFunction(
         fnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
@@ -741,7 +741,7 @@ function caseSensitivityCase(target: NativeTarget): TestCase {
       })
       const exactFn = iii.registerFunction(
         exactFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           exactEvents.push(payload)
           return null
         },
@@ -750,7 +750,7 @@ function caseSensitivityCase(target: NativeTarget): TestCase {
       const exactObserver = observeRowChanged(iii, { db: target.nativeDb, table }, exactFnId)
       const upperFn = iii.registerFunction(
         upperFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           upperEvents.push(payload)
           return null
         },
@@ -813,7 +813,7 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
       }
       const fnARef = iii.registerFunction(
         fnA,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           eventsA.push(payload)
           return null
         },
@@ -822,7 +822,7 @@ function twoTableIsolationCase(target: NativeTarget): TestCase {
       const observerA = observeRowChanged(iii, { db: target.nativeDb, table: tableA }, fnA)
       const fnBRef = iii.registerFunction(
         fnB,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           eventsB.push(payload)
           return null
         },
@@ -887,7 +887,7 @@ function missingTableRegistrationCase(target: NativeTarget): TestCase {
       await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
       const fnRef = iii.registerFunction(
         fnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
@@ -967,7 +967,7 @@ function keyShapesCase(target: NativeTarget): TestCase {
       })
       const compositeFn = iii.registerFunction(
         compositeFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           compositeEvents.push(payload)
           return null
         },
@@ -976,7 +976,7 @@ function keyShapesCase(target: NativeTarget): TestCase {
       const compositeObserver = observeRowChanged(iii, { db: target.nativeDb, table: composite }, compositeFnId)
       const keylessFn = iii.registerFunction(
         keylessFnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           keylessEvents.push(payload)
           return null
         },
@@ -1055,7 +1055,7 @@ function pgByteCapCase(): TestCase {
       })
       const fnRef = iii.registerFunction(
         fnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },
@@ -1137,7 +1137,7 @@ function sqliteLegacyChangelogCase(): TestCase {
       })
       const fnRef = iii.registerFunction(
         fnId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },

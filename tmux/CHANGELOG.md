@@ -9,6 +9,10 @@
   with it the worker's build. The Kill session confirmation now names the windows that
   end in its sentence, each with its agent, `iii compose` or command, past six as `N more`
   (`0:editor (vim), 1:dev (npm) and 2:logs (tail) end with every process in them…`).
+- **A worker without a UTF-8 locale lists its sessions again.** With no `LANG` (a daemon
+  started by systemd or launchd, a container) tmux printed the listing separator as `_`,
+  so `tmux::sessions::list` came back empty and `tmux::sessions::create` failed. Every tmux
+  command now passes `-u`.
 
 ### Changed
 
@@ -24,9 +28,17 @@
   invocation context the engine stamps (`caller.worker_id`); the payload's
   `_caller_worker_id` is read only on an engine without observe (0.24). A call from an
   observer activation is refused.
+- **tmux is also found outside `PATH`.** Plain `tmux` is looked for in `~/.local/bin`,
+  `/opt/homebrew/bin`, `/usr/local/bin`, `/home/linuxbrew/.linuxbrew/bin` and
+  `/opt/local/bin` after `PATH`.
 
 ### Added
 
+- **Installing tmux from the worker.** `tmux::install` puts the tmux program on the
+  computer in the background and `tmux::install::status` says how it is going: the
+  system's package manager when this user may run it without a password, otherwise tmux's
+  official build (3.7c, pinned by SHA-256) in `~/.local/bin`. `tmux::status` gains
+  `installable`. `--install-tmux` runs the same install with no engine.
 - **tmux sessions and windows as functions.** `tmux::sessions::{list,create,rename,kill}`
   and `tmux::windows::{create,select,rename,kill}` drive the host's tmux server; sessions
   and windows are addressed by id (`$5`, `@3`) or exact name / index, never by prefix.

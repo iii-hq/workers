@@ -66,7 +66,7 @@ struct StubUpstream {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
-    use iii_sdk::{errors::Error, Deliver, RegisterFunction, Source};
+    use iii_sdk::{errors::Error, Capture, RegisterFunction, Source};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let engine = engine_or_skip!();
     let iii = register_worker(&engine.url, test_init_options());
@@ -85,7 +85,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
         RegisterFunction::new_async(move |input: Value| {
             let events_tx = events_tx.clone();
             async move {
-                let _ = events_tx.send(input);
+                let _ = events_tx.send(input["output"].clone());
                 Ok::<_, Error>(json!({}))
             }
         }),
@@ -93,7 +93,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     let observer = iii.observe(
         Source::function("router::models::on-changed")
             .filters(json!({ "input.provider": { "$eq": "xai" } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "probe::discovery_event",
     );
     // The router calls router::models::on-changed only while it is observed:

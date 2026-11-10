@@ -74,7 +74,7 @@ export function useTmuxOverview(iii: ExtensionIii, api: TmuxApi): TmuxOverview {
       setLive(true)
     })
     const offObserver = iii.observe(
-      { function_id: 'tmux::on-changed', deliver: 'output' },
+      { function_id: 'tmux::on-changed' },
       `${CHANGED_HANDLER}::${iii.browserId}`,
     )
     refresh()

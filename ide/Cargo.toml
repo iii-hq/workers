@@ -2,7 +2,7 @@
 
 [package]
 name = "ide"
-version = "0.13.1"
+version = "0.13.4"
 edition = "2021"
 publish = false
 

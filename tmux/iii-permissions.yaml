@@ -10,8 +10,10 @@
 # returns a sub-agent's conversation, tool calls and their output.
 # Creating, renaming, selecting and killing change the person's tmux (a
 # selected window switches their own terminal; a kill ends programs) and stay
-# at the needs_approval default. The Console terminal, the config-reload
-# callback and the Console asset function are bus-internal.
+# at the needs_approval default. `tmux::install` stays unlisted too: it can run
+# the system's package manager as root. `tmux::install::status` only reads how
+# that install is going. The Console terminal, the config-reload callback and
+# the Console asset function are bus-internal.
 version: 1
 
 rules:
@@ -21,3 +23,4 @@ rules:
   - tmux::status
   - tmux::sessions::list
   - tmux::ports::list
+  - tmux::install::status

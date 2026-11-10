@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use secrets::access::CallerDirectory;
 use secrets::api::ids;
 use secrets::crypto::MasterKey;
@@ -31,13 +31,13 @@ fn remote_code(error: Error) -> String {
     }
 }
 
-/// Observe `secrets::on-changed` for one reference, the event delivered as
-/// output, and wait until the observer is active.
+/// Observe `secrets::on-changed` for one reference, capturing the event as
+/// the envelope's output (targets read `output`), and wait until the observer is active.
 async fn observe_changes(iii: &IIIClient, reference: &str, target: &str) -> ObserverHandle {
     let handle = iii.observe(
         Source::function(ids::ON_CHANGED)
             .filters(json!({ "input.ref": { "$eq": reference } }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         target,
     );
     tokio::time::timeout(Duration::from_secs(10), handle.ready())
@@ -91,7 +91,7 @@ async fn console_stores_router_resolves_others_are_refused() {
         RegisterFunction::new_async(move |event: Value| {
             let tx = tx.clone();
             async move {
-                let _ = tx.send(event);
+                let _ = tx.send(event["output"].clone());
                 Ok::<Value, Error>(json!({}))
             }
         }),
@@ -308,7 +308,7 @@ async fn env_variables_are_shared_written_and_followed() {
         RegisterFunction::new_async(move |event: Value| {
             let tx = tx.clone();
             async move {
-                let _ = tx.send(event);
+                let _ = tx.send(event["output"].clone());
                 Ok::<Value, Error>(json!({}))
             }
         }),

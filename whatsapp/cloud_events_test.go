@@ -119,8 +119,12 @@ func TestCloudEventGuideExamplesSelectTheirEvents(t *testing.T) {
 		return value
 	}
 	source := decode(blocks[0])
-	if source["function_id"] != "whatsapp::cloud::on-events" || source["namespace"] != "messaging" || source["deliver"] != "output" {
-		t.Fatalf("guide source does not name this provider: %v", source)
+	capture, _ := source["capture"].([]any)
+	if source["function_id"] != "whatsapp::cloud::on-events" || source["namespace"] != "messaging" || len(capture) != 1 || capture[0] != "output" {
+		t.Fatalf("guide source does not name this provider with capture [output]: %v", source)
+	}
+	if _, deliver := source["deliver"]; deliver {
+		t.Fatalf("guide source sets the removed deliver: %v", source)
 	}
 	if _, takesArgs := source["args"]; takesArgs {
 		t.Fatal("whatsapp::cloud::on-events takes no args")

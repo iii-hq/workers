@@ -110,7 +110,7 @@ function useSessionEvents(host: Host) {
         if (payload && typeof payload === 'object') onEvent(payload as Record<string, unknown>)
       })
       const dispose = host.iii.observe(
-        { function_id: functionId, deliver: 'output' },
+        { function_id: functionId },
         `${handler}::${host.iii.browserId}`,
       )
       return () => {

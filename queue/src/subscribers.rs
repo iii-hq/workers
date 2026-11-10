@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -144,14 +144,35 @@ impl EngineChanges {
     }
 }
 
-/// The event of `engine::on-functions-changed` / `engine::on-workers-changed`,
-/// delivered as output. Only the advisory event tag is read; the larger
-/// fields (`functions`, `worker_id`) are ignored because a change is only a
-/// cue to re-check.
+/// What the engine-change target receives: the activation envelope of an
+/// `engine::on-functions-changed` / `engine::on-workers-changed` call, the
+/// change as its `output` (`capture: ['output']`). Only the advisory event
+/// tag is read; the larger fields (`functions`, `worker_id`) are ignored
+/// because a change is only a cue to re-check.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EngineChangeEvent {
     #[serde(default)]
+    pub output: Option<EngineChange>,
+}
+
+/// The engine change itself, the envelope's `output`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct EngineChange {
+    #[serde(default)]
     pub event: Option<String>,
+}
+
+impl EngineChangeEvent {
+    /// The change's advisory tag, when the envelope carries one.
+    pub fn event(&self) -> Option<&str> {
+        self.output.as_ref()?.event.as_deref()
+    }
+}
+
+/// The observer of one engine change feed: the change rides as the
+/// envelope's output.
+pub fn engine_change_source(source: &str) -> Source {
+    Source::function(source).capture([Capture::Output])
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -172,7 +193,7 @@ pub fn observe_engine_events(iii: &IIIClient) -> EngineEvents {
         RegisterFunction::new_async(move |event: EngineChangeEvent| {
             let events = handler_events.clone();
             async move {
-                tracing::debug!(event = ?event.event, "engine registry changed");
+                tracing::debug!(event = ?event.event(), "engine registry changed");
                 events.notify();
                 Ok::<_, Error>(EngineChangeAck { ok: true })
             }
@@ -186,10 +207,7 @@ pub fn observe_engine_events(iii: &IIIClient) -> EngineEvents {
     for source in [FUNCTIONS_CHANGED_FN, WORKERS_CHANGED_FN] {
         // The observers live as long as the worker's connection; dropping
         // the handles does not dispose them.
-        iii.observe(
-            Source::function(source).deliver(Deliver::Output),
-            ENGINE_CHANGE_FN_ID,
-        );
+        iii.observe(engine_change_source(source), ENGINE_CHANGE_FN_ID);
     }
     events
 }
@@ -746,6 +764,37 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
+
+    #[test]
+    fn engine_change_observers_ship_only_the_output() {
+        for source in [FUNCTIONS_CHANGED_FN, WORKERS_CHANGED_FN] {
+            assert_eq!(
+                engine_change_source(source),
+                Source::function(source).capture([iii_sdk::Capture::Output])
+            );
+        }
+    }
+
+    /// The target receives the activation envelope; the change's tag is
+    /// its `output.event`, never a root field.
+    #[test]
+    fn the_engine_change_target_reads_the_event_from_the_observed_envelope() {
+        let event: EngineChangeEvent = serde_json::from_value(json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": FUNCTIONS_CHANGED_FN,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "event": "function_registered", "functions": ["a::b"] },
+        }))
+        .unwrap();
+        assert_eq!(event.event(), Some("function_registered"));
+        let empty: EngineChangeEvent =
+            serde_json::from_value(json!({ "status": "error" })).unwrap();
+        assert_eq!(empty.event(), None);
+    }
 
     // A change recorded after subscribing but before waiting is not lost; an
     // unbound feed never fires.

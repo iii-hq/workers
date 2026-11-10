@@ -95,10 +95,13 @@ pub struct Tmux {
 impl Tmux {
     /// The binary plus socket arguments. `TMUX` is removed so a worker
     /// started from inside tmux neither talks to a different server than
-    /// configured nor makes `attach` refuse to nest.
+    /// configured nor makes `attach` refuse to nest. `-u` because a daemon
+    /// often has no UTF-8 locale, and then tmux prints [`SEP`] as `_` and no
+    /// listing parses (simple-installs D29).
     pub fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.path);
         command
+            .arg("-u")
             .args(self.socket.args())
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
@@ -550,6 +553,18 @@ pub fn validate_command(command: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_command_asks_for_utf8_before_naming_its_socket() {
+        let tmux = Tmux {
+            path: PathBuf::from("/x/tmux"),
+            socket: Socket::Name("work".to_string()),
+            timeout: Duration::from_secs(1),
+        };
+        let command = tmux.command();
+        let args: Vec<_> = command.as_std().get_args().collect();
+        assert_eq!(args, ["-u", "-L", "work"]);
+    }
 
     fn line(tag: char, fields: &[&str]) -> String {
         let mut out = String::from(tag);

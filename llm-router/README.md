@@ -323,12 +323,11 @@ Delivery is iii's: every call reaches each observer whose filters match, and
 the router calls a function only while it is observed. The ready event is a
 call for one observer: the router calls `router::on-ready` with metadata
 `{ "for_observer": "<observer id>" }`, and only that observer matches it, so
-its target receives the event in the shape its `deliver` names, like any
-other event. Observe with `deliver: 'output'` so the target receives the
-event itself:
+its target receives the `Observed` envelope like any other event. Observe
+with `capture: ['output']` so the envelope carries the event at `output`:
 
 ```ts
-iii.registerFunction('my-worker::on-models-changed', async (event) => {
+iii.registerFunction('my-worker::on-models-changed', async ({ output: event }) => {
   console.log('catalog changed:', event); // { provider, count }
   return {};
 });
@@ -337,7 +336,7 @@ iii.observe(
   {
     function_id: 'router::models::on-changed',
     filters: { 'input.provider': { $eq: 'anthropic' } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-models-changed',
 );

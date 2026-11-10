@@ -402,6 +402,7 @@ func smokeEventNamespace(t *testing.T, engineURL string) {
 	}
 	received := make(chan Event, 1)
 	if _, err = consumer.RegisterFunction("go-smoke::event", func(_ context.Context, raw json.RawMessage) (any, error) {
+		raw = observedOutput(raw)
 		var event Event
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return nil, err
@@ -420,7 +421,7 @@ func smokeEventNamespace(t *testing.T, engineURL string) {
 		FunctionID: "whatsapp::on-events",
 		Namespace:  "go-smoke-producer",
 		Filters:    iii.Filters{"input.session_id": iii.Op{"$eq": "offline"}, "input.kind": iii.Op{"$eq": "message.received"}},
-		Deliver:    iii.DeliverOutput,
+		Capture:    []iii.Capture{iii.CaptureOutput},
 	}, "go-smoke::event")
 	if err != nil {
 		t.Fatal(err)

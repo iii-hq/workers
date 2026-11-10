@@ -59,7 +59,8 @@ and [§5](#5-the-render-state-machine).
 ## 3. Observers of sibling events
 
 `functions::observe_events` observes six sibling event functions, each with
-`deliver: output` so the handler receives the event. An observer of an absent
+`capture: [output]` so the handler reads the event from the Observed
+envelope's `output`. An observer of an absent
 sibling stays `pending` and becomes active when the sibling registers its
 function:
 

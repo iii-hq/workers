@@ -19,7 +19,8 @@ SDK option verbatim, and every message Claude Code emits is published untouched
 on `claude::on-raw-event`. A translated AgentEvent view is published on
 `claude::on-agent-event`, which is what the iii console and the acp worker
 render. Observe either with args `{ session_id }`
-(`iii.observe({ function_id: 'claude::on-agent-event', args: { session_id }, deliver: 'output' }, target)`);
+(`iii.observe({ function_id: 'claude::on-agent-event', args: { session_id }, capture: ['output'] }, target)`;
+the target receives each frame at `payload.output`);
 frames are live only (not stored or replayed), ordered by `(epoch, seq)`.
 
 Requires the `claude` CLI on the host with an existing login or

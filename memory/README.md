@@ -178,7 +178,7 @@ Observe these for live views instead of polling. Both are private (only this wor
 
 ```typescript
 iii.observe(
-  { function_id: 'memory::on-item-changed', filters: { 'input.bank': { $eq: 'blog' } }, deliver: 'output' },
+  { function_id: 'memory::on-item-changed', filters: { 'input.bank': { $eq: 'blog' } }, capture: ['output'] },
   'blog::on-memory-changed',
 )
 ```

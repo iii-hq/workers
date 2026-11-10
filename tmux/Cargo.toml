@@ -2,7 +2,7 @@
 
 [package]
 name = "tmux"
-version = "0.2.0"
+version = "0.2.3"
 edition = "2021"
 publish = false
 description = "tmux worker for iii — sessions and windows as tmux::* functions, agent/compose/port status per pane, and a live console terminal attached as a real tmux client"
@@ -21,6 +21,12 @@ iii-console-ui = { path = "../crates/console-ui" }
 iii-config-client = { path = "../crates/config-client" }
 arc-swap = "1"
 base64 = "0.22"
+# The official tmux build: fetched (already in the graph through iii-sdk, with
+# bundled root certificates), checked and unpacked (simple-installs D4).
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
 libc = "0.2"
 portable-pty = "0.9.0"
 regex = "1"

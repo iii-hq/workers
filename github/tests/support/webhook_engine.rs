@@ -18,8 +18,9 @@
 //! `invocationresult.matched`, when it sends one; none when the host's
 //! deliver hook delivered the call, `invocationresult.delivered`) whose `on`
 //! accepts the outcome and whose filters match the call; each one's target
-//! is called with what the observer's `deliver` names (the output, the
-//! input, or the envelope), as [`Engine::activations`] records.
+//! is called with the `Observed` envelope its `capture` names, or, for a
+//! legacy source `deliver` (which the engine still translates), the raw
+//! output or input, as [`Engine::activations`] records.
 //! Registered function handlers and observer hooks run on their real SDK
 //! connections.
 use futures::{SinkExt, StreamExt};
@@ -62,7 +63,8 @@ struct Observer {
     target: Key,
     /// What the function's host sees (`observeradded.observer`).
     view: Value,
-    /// `source.deliver`: `output`, `input`, or the envelope when absent.
+    /// Legacy `source.deliver` (`output` / `input`), which the engine still
+    /// translates; absent (every current source), the envelope.
     deliver: Option<String>,
     metadata: Option<Value>,
     observing: Sender,
@@ -543,8 +545,9 @@ fn evaluate(
 
 /// iii's delivery of the call `call`, answered with `answer` (with its
 /// `matched` and `delivered`): each observer [`evaluate`] selects gets an
-/// activation, which calls its target with the observer's metadata and what
-/// its `deliver` names: the call's output, its input, or the envelope.
+/// activation, which calls its target with the observer's metadata and the
+/// envelope its `capture` names (or, for a legacy `deliver`, the raw output
+/// or input).
 fn activate(
     state: &State,
     call: &Pending,

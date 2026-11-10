@@ -2327,7 +2327,10 @@ function resolveEmptyState(
     variant: 'ready',
     density,
     errorMessage: harnessStatus.error,
+    action: harnessStatus.action ?? undefined,
     onInstallHarness: harnessStatus.install,
+    onStartHarness: harnessStatus.start,
+    onUpdateHarness: harnessStatus.updateAndStart,
     onRetryInstall: harnessStatus.retry,
     onConfigureProvider,
     ...directory,
@@ -2336,6 +2339,9 @@ function resolveEmptyState(
   if (harnessStatus.error) return { ...base, variant: 'install-failed' }
   if (harnessStatus.installing) return { ...base, variant: 'installing' }
   if (harnessStatus.loading) return base
+  // Declared in compose but down: an add would change nothing, so offer a
+  // start (or an update and start) instead.
+  if (harnessStatus.stopped) return { ...base, variant: 'harness-stopped' }
   if (!harnessStatus.present) return { ...base, variant: 'no-harness' }
   if (catalogLoading) return base
   if (modelOptions.length === 0) return { ...base, variant: 'no-provider' }

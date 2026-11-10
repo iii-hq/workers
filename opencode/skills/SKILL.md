@@ -16,7 +16,8 @@ event OpenCode emits (`step_start`, `text`, `tool_use`, `step_finish`) is
 delivered verbatim on `opencode::on-raw-event`; a translated AgentEvent view
 is delivered on `opencode::on-agent-event`, which the acp worker renders.
 Observe either with args `{ session_id }`
-(`iii.observe({ function_id: 'opencode::on-agent-event', args: { session_id }, deliver: 'output' }, target)`);
+(`iii.observe({ function_id: 'opencode::on-agent-event', args: { session_id }, capture: ['output'] }, target)`;
+the target receives each frame at `payload.output`);
 frames are ephemeral (not stored, not replayed).
 
 Requires the `opencode` CLI on the host and an API key for the LLM provider you

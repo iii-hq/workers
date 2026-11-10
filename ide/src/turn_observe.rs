@@ -392,7 +392,9 @@ mod tests {
     use crate::turns::TurnStore;
 
     fn observers_in(dir: &Path) -> Arc<TurnObservers> {
-        let log = Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)));
+        let log = Arc::new(TurnLog::new(
+            TurnStore::new(dir.join("turns"), 1024 * 1024).with_snapshot_min_free_bytes(0),
+        ));
         TurnObservers::new(log, dir.join("turns"))
     }
 

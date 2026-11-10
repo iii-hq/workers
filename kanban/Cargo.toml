@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-kanban"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Kanban worker for iii — file-backed tickets, comments and agent assignment, the kanban::on-change / kanban::on-comment event functions, and an injectable console board"
 license = "Apache-2.0"

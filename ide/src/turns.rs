@@ -27,11 +27,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+use crate::observed::{delivered_event, Delivered};
 use tokio::sync::Mutex;
 
 use crate::code::functions::create_file::content_revision;
@@ -687,7 +689,9 @@ fn image_from_body(body: &Body, budget: &mut usize) -> PreImage {
             missing: true,
             ..blank
         },
-        Body::TooLarge => PreImage {
+        // Excluded paths are skipped before they get here; either way the
+        // body is unknown, never absent.
+        Body::TooLarge | Body::Excluded => PreImage {
             truncated: true,
             ..blank
         },
@@ -753,6 +757,10 @@ pub struct TurnStore {
     dir: PathBuf,
     max_blob_bytes: u64,
     blob_bytes: Mutex<Option<u64>>,
+    /// Largest file a turn snapshot takes (`turns.snapshot_max_file_bytes`).
+    snapshot_max_file_bytes: u64,
+    /// Free space a turn snapshot needs on the store's disk.
+    snapshot_min_free_bytes: u64,
 }
 
 impl TurnStore {
@@ -761,7 +769,21 @@ impl TurnStore {
             dir,
             max_blob_bytes,
             blob_bytes: Mutex::new(None),
+            snapshot_max_file_bytes: crate::config::DEFAULT_SNAPSHOT_MAX_FILE_BYTES,
+            snapshot_min_free_bytes: crate::turn_snapshot::MIN_FREE_BYTES,
         }
+    }
+
+    /// Tests snapshot on whatever disk they run on.
+    #[cfg(test)]
+    pub fn with_snapshot_min_free_bytes(mut self, bytes: u64) -> Self {
+        self.snapshot_min_free_bytes = bytes;
+        self
+    }
+
+    pub fn with_snapshot_max_file_bytes(mut self, bytes: u64) -> Self {
+        self.snapshot_max_file_bytes = bytes;
+        self
     }
 
     fn session_path(&self, session_id: &str) -> PathBuf {
@@ -1237,10 +1259,16 @@ impl TurnLog {
                 continue;
             };
             let bodies = repo
-                .bodies(tree, &paths, MAX_RESPONSE_BODY_BYTES as u64)
+                .bodies(
+                    tree,
+                    &paths,
+                    MAX_RESPONSE_BODY_BYTES as u64,
+                    self.store.snapshot_max_file_bytes,
+                )
                 .await;
             for (index, rel) in &rels {
-                let Some(body) = bodies.get(rel) else {
+                // A path the snapshots leave out keeps what the hooks saw.
+                let Some(body) = bodies.get(rel).filter(|b| !matches!(b, Body::Excluded)) else {
                     continue;
                 };
                 let file = &mut turn.files[*index];
@@ -1408,7 +1436,14 @@ impl TurnLog {
         };
         let stem = session_file_stem(&target.session_id);
         let taken_at = now_ms();
-        let tree = match repo.snapshot(&stem).await {
+        let tree = match repo
+            .snapshot(
+                &stem,
+                self.store.snapshot_max_file_bytes,
+                self.store.snapshot_min_free_bytes,
+            )
+            .await
+        {
             Ok(tree) => tree,
             Err(e) => {
                 tracing::warn!(
@@ -1779,10 +1814,10 @@ pub fn register(
     resolver: crate::code::state::ResolverCell,
 ) -> Arc<TurnLog> {
     let data_dir = config.resolved_data_dir();
-    let log = Arc::new(TurnLog::new(TurnStore::new(
-        data_dir.clone(),
-        config.max_blob_bytes,
-    )));
+    let log = Arc::new(TurnLog::new(
+        TurnStore::new(data_dir.clone(), config.max_blob_bytes)
+            .with_snapshot_max_file_bytes(config.snapshot_max_file_bytes),
+    ));
     // Surfaces that list a session's turns hear each stored record instead
     // of asking again on a timer.
     log.notify_changes(crate::turn_events::register_turns_changed(iii));
@@ -1918,9 +1953,10 @@ pub fn register(
         let log = log.clone();
         iii.register_function(
             STARTED_FN_ID,
-            RegisterFunction::new_async(move |event: TurnEvent| {
+            RegisterFunction::new_async(move |delivered: Delivered<TurnEvent>| {
                 let log = log.clone();
                 async move {
+                    let event = delivered_event(delivered).unwrap_or_default();
                     if let (Some(session_id), Some(turn_id)) = (event.session_id, event.turn_id) {
                         let parent = event
                             .parent
@@ -1950,10 +1986,11 @@ pub fn register(
         let observers = observers.clone();
         iii.register_function(
             COMPLETED_FN_ID,
-            RegisterFunction::new_async(move |event: TurnEvent| {
+            RegisterFunction::new_async(move |delivered: Delivered<TurnEvent>| {
                 let log = log.clone();
                 let observers = observers.clone();
                 async move {
+                    let event = delivered_event(delivered).unwrap_or_default();
                     if let (Some(session_id), Some(turn_id)) = (event.session_id, event.turn_id) {
                         if let Err(e) = log.on_turn_closed(&session_id, &turn_id).await {
                             tracing::warn!(error = %e, "turn log: turn end not recorded");
@@ -1972,7 +2009,7 @@ pub fn register(
         ("harness::on-turn-completed", COMPLETED_FN_ID),
     ] {
         iii.observe(
-            Source::function(event).deliver(Deliver::Output),
+            Source::function(event).capture([Capture::Output]),
             function_id,
         );
     }
@@ -2175,6 +2212,15 @@ pub fn revert_step(file: &FileRecord) -> RevertStep {
     }
     match file.kind.as_str() {
         "deleted" if missing_before => RevertStep::Skip,
+        // A pre-image that says the file was there, with no body kept: the
+        // watcher's "created" was a truncating write (FSEvents), and
+        // removing the file would lose it.
+        "created" if file.before.as_ref().is_some_and(|before| !before.missing) => {
+            RevertStep::Unavailable(
+                "the file existed before the turn, but its body was not kept \
+                 (too large, or left out of the turn snapshots)",
+            )
+        }
         // The path did not exist before the turn, whatever the watcher
         // called the change.
         "created" => RevertStep::Remove,
@@ -2317,7 +2363,9 @@ impl TurnLog {
             .filter_map(|(index, file)| rel_under(&root, &file.path).map(|rel| (index, rel)))
             .collect();
         let paths: Vec<String> = rels.iter().map(|(_, rel)| rel.clone()).collect();
-        let bodies = repo.bodies(&tree, &paths, u64::MAX).await;
+        let bodies = repo
+            .bodies(&tree, &paths, u64::MAX, self.store.snapshot_max_file_bytes)
+            .await;
         for (index, rel) in rels {
             let image = match bodies.get(&rel) {
                 Some(Body::Bytes(bytes)) => {
@@ -2338,6 +2386,17 @@ impl TurnLog {
                     truncated: false,
                     stored: false,
                     missing: true,
+                    binary: false,
+                },
+                // The tree says nothing about a path the snapshots leave out:
+                // whether it existed is unknown, so a hook's pre-image stays,
+                // and without one the revert must not remove the file.
+                Some(Body::Excluded) if turn.files[index].before.is_none() => PreImage {
+                    revision: None,
+                    content: None,
+                    truncated: true,
+                    stored: false,
+                    missing: false,
                     binary: false,
                 },
                 _ => continue,
@@ -2372,8 +2431,33 @@ impl TurnLog {
 mod tests {
     use super::*;
 
+    /// The turn targets are called with the `Observed` envelope: the turn
+    /// event is its output.
+    #[test]
+    fn the_turn_event_is_read_from_the_envelope() {
+        let envelope = crate::observed::envelope(
+            "harness::on-turn-started",
+            json!({
+                "session_id": "s-1",
+                "turn_id": "t-1",
+                "message_preview": "hello",
+                "parent": { "session_id": "p-1", "turn_id": "pt-1" },
+            }),
+        );
+        let delivered: Delivered<TurnEvent> =
+            serde_json::from_value(envelope).expect("the envelope parses");
+        let event = delivered_event(delivered).unwrap_or_default();
+        assert_eq!(event.session_id.as_deref(), Some("s-1"));
+        assert_eq!(event.turn_id.as_deref(), Some("t-1"));
+        assert_eq!(event.message_preview.as_deref(), Some("hello"));
+        let parent = event.parent.expect("the parent is read");
+        assert_eq!(parent.session_id.as_deref(), Some("p-1"));
+    }
+
     fn log_in(dir: &Path) -> Arc<TurnLog> {
-        Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)))
+        Arc::new(TurnLog::new(
+            TurnStore::new(dir.join("turns"), 1024 * 1024).with_snapshot_min_free_bytes(0),
+        ))
     }
 
     /// The Timeline lists turns again only when told: a stored record must
@@ -2671,6 +2755,119 @@ mod tests {
         assert!(failed.result.unwrap().is_error);
     }
 
+    /// The watcher calls a truncating write to an existing file a creation
+    /// (FSEvents). When the snapshots leave that file out, nothing proves it
+    /// did not exist, so the revert reports it unavailable instead of
+    /// removing it.
+    #[tokio::test]
+    async fn revert_never_removes_a_left_out_file_the_watcher_called_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        if git_in(&root, &["--version"]).await.is_none() {
+            eprintln!("git is not available; skipping");
+            return;
+        }
+        let root = std::fs::canonicalize(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let big = root.join("big.db");
+        std::fs::write(&big, vec![b'a'; 64]).unwrap();
+        let log = Arc::new(TurnLog::new(
+            TurnStore::new(dir.path().join("turns"), 1024 * 1024)
+                .with_snapshot_min_free_bytes(0)
+                .with_snapshot_max_file_bytes(32),
+        ));
+
+        log.on_turn_started("s1", "t1").await.unwrap();
+        log.on_pre_turn(turn_hook("s1", "t1", &root_s)).await;
+        std::fs::write(&big, vec![b'b'; 64]).unwrap();
+        log.fold_observed(
+            "s1",
+            "t1",
+            &root_s,
+            vec![(big.to_string_lossy().into_owned(), "created")],
+        )
+        .await;
+        log.on_post_turn(turn_hook("s1", "t1", &root_s)).await;
+        log.on_turn_completed("s1", "t1").await.unwrap();
+
+        let out = log.revert("s1", "t1", None, &|_| Ok(())).await.unwrap();
+        assert!(big.exists(), "the revert removed a file that existed");
+        let result = out
+            .results
+            .iter()
+            .find(|result| result.path == big.to_string_lossy())
+            .unwrap();
+        assert_eq!(result.action, "unavailable", "{:?}", out.results);
+    }
+
+    /// A file the snapshots leave out (here: over the size cap) has no side
+    /// in the trees. A revert must not read that as "did not exist" and
+    /// delete a file the turn only modified, and the timeline must not call
+    /// it created.
+    #[tokio::test]
+    async fn revert_never_deletes_a_file_the_snapshots_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        if git_in(&root, &["--version"]).await.is_none() {
+            eprintln!("git is not available; skipping");
+            return;
+        }
+        let root = std::fs::canonicalize(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let big = root.join("big.db");
+        std::fs::write(&big, vec![b'a'; 64]).unwrap();
+        let log = Arc::new(TurnLog::new(
+            TurnStore::new(dir.path().join("turns"), 1024 * 1024)
+                .with_snapshot_min_free_bytes(0)
+                .with_snapshot_max_file_bytes(32),
+        ));
+
+        log.on_turn_started("s1", "t1").await.unwrap();
+        log.on_pre_turn(turn_hook("s1", "t1", &root_s)).await;
+        std::fs::write(&big, vec![b'b'; 64]).unwrap();
+        log.fold_observed(
+            "s1",
+            "t1",
+            &root_s,
+            vec![(big.to_string_lossy().into_owned(), "modified")],
+        )
+        .await;
+        log.on_post_turn(turn_hook("s1", "t1", &root_s)).await;
+        log.on_turn_completed("s1", "t1").await.unwrap();
+
+        let record = log.load("s1").await.unwrap();
+        let turn = record.turns[0].clone();
+        assert!(
+            turn.snapshot.as_ref().is_some_and(|s| s.before.is_some()),
+            "trees kept"
+        );
+        let inflated = log.inflate(&record, turn).await;
+        let file = inflated
+            .files
+            .iter()
+            .find(|file| file.path == big.to_string_lossy())
+            .unwrap();
+        assert_eq!(file.kind, "modified");
+        assert!(
+            !file.before.as_ref().is_some_and(|image| image.missing),
+            "a left-out file is not a file that did not exist"
+        );
+
+        let out = log.revert("s1", "t1", None, &|_| Ok(())).await.unwrap();
+        assert!(
+            big.exists(),
+            "the revert deleted a file the turn only modified"
+        );
+        assert_eq!(std::fs::read(&big).unwrap(), vec![b'b'; 64]);
+        assert!(
+            out.results.iter().all(|result| result.action != "removed"),
+            "{:?}",
+            out.results
+        );
+    }
+
     #[tokio::test]
     async fn tree_snapshots_give_exact_sides_to_writes_the_hooks_never_saw() {
         let dir = tempfile::tempdir().unwrap();
@@ -2925,7 +3122,7 @@ mod tests {
     #[tokio::test]
     async fn blob_store_dedupes_and_prunes_oldest_past_the_cap() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TurnStore::new(dir.path().join("turns"), 1000);
+        let store = TurnStore::new(dir.path().join("turns"), 1000).with_snapshot_min_free_bytes(0);
         let a = vec![b'a'; 400];
         let b = vec![b'b'; 400];
         let c = vec![b'c'; 400];

@@ -1362,7 +1362,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "async-trait",
  "clap",
@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "provider-xai"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "clap",
  "futures",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "secrets"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -12,9 +12,10 @@ use tokio::sync::Mutex;
 
 use crate::activity::{ActivityReader, Recorder};
 use crate::agents::{host_names, session_title, AgentSet, AgentTracker};
-use crate::binary::BinaryCache;
+use crate::binary::{BinaryCache, Resolved};
 use crate::compose;
 use crate::config::{SharedConfig, WorkerConfig};
+use crate::install::installable;
 use crate::model::{
     now_ms, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane, PaneRef,
     PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
@@ -137,6 +138,13 @@ impl Collector {
         })
     }
 
+    /// Forget what is known and look for tmux again: an install just changed
+    /// what's there. Only `-V`, which talks to no server.
+    pub async fn resolve_tmux_again(&self) -> Result<Resolved, String> {
+        self.binary.forget();
+        self.binary.get(&self.config().tmux_binary).await
+    }
+
     pub async fn info(&self) -> TmuxInfo {
         let config = self.config();
         let resolved = match self.binary.get(&config.tmux_binary).await {
@@ -144,6 +152,7 @@ impl Collector {
             Err(error) => {
                 return TmuxInfo {
                     error: Some(error),
+                    installable: installable(&config.tmux_binary),
                     ..TmuxInfo::default()
                 }
             }
@@ -265,6 +274,7 @@ impl Collector {
             }
             Err(error) => {
                 info.error = Some(error);
+                info.installable = installable(&config.tmux_binary);
                 None
             }
         };
@@ -565,6 +575,63 @@ mod tests {
     use super::*;
     use crate::model::{AddressFamily, AgentState, ListenerRole};
     use crate::tmux_cli::{RawClient, RawPane, RawSession, RawWindow};
+
+    fn collector_for(binary: &str, found: Result<Resolved, String>) -> Collector {
+        let config = WorkerConfig {
+            tmux_binary: binary.to_string(),
+            ..WorkerConfig::default()
+        };
+        let collector = Collector::new(config.into_shared(), ConsoleClients::default());
+        collector.binary.seed(binary, found);
+        collector
+    }
+
+    // Only where an official build exists is the answer known without looking
+    // for a package manager (simple-installs D52).
+    #[cfg(all(
+        any(target_os = "linux", target_os = "macos"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[tokio::test]
+    async fn a_missing_plain_tmux_is_installable_everywhere_it_is_reported() {
+        let collector = collector_for("tmux", Err("not installed".to_string()));
+        let info = collector.info().await;
+        assert!(!info.available);
+        assert!(info.installable);
+        let overview = collector.overview().await;
+        assert!(!overview.sessions.tmux.available);
+        assert!(overview.sessions.tmux.installable);
+    }
+
+    #[tokio::test]
+    async fn a_configured_path_that_is_missing_is_not_installable() {
+        let collector = collector_for("/opt/tmux/bin/tmux", Err("not installed".to_string()));
+        assert!(!collector.info().await.installable);
+        assert!(!collector.overview().await.sessions.tmux.installable);
+    }
+
+    #[tokio::test]
+    async fn a_tmux_that_is_there_is_not_installable() {
+        // A script, never a real tmux: this reads the default socket.
+        let script = std::env::temp_dir().join(format!(
+            "iii-tmux-collector-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let collector = collector_for(
+            "tmux",
+            Ok(Resolved {
+                path: script.clone(),
+                version: "3.7c".to_string(),
+            }),
+        );
+        let info = collector.info().await;
+        assert!(info.available);
+        assert!(!info.installable);
+        let _ = std::fs::remove_file(script);
+    }
 
     fn raw() -> RawSnapshot {
         RawSnapshot {

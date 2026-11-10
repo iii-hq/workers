@@ -917,6 +917,17 @@
   margin: 0 0 4px;
   padding: 0;
 }
+/* A long header ends in an ellipsis; the chip's title shows the whole text. */
+[data-iii-ui="harness"] .harness-ui-ask-header {
+  max-width: 32ch;
+}
+[data-iii-ui="harness"] .harness-ui-ask-header-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 [data-iii-ui="harness"] .harness-ui-ask-question {
   min-width: 0;
   font-size: 13px;

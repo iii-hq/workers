@@ -113,8 +113,7 @@ are extracted into `path_params`; query string values arrive in
 Filters read the request as the server received it: `input.method`,
 `input.path` (the request's path), `input.query_params`, `input.headers` and
 `input.body`.
-The handler receives the `HttpRequest` whatever the observer's `deliver`
-option, and the observer's `metadata` arrives as its metadata sidecar.
+The handler receives the `HttpRequest` whatever the observer's `capture`, and the observer's `metadata` arrives as its metadata sidecar.
 
 Handler return values become buffered responses with `status_code`, `headers`,
 and `body`; `status_code` defaults to `200` and `body` defaults to an empty

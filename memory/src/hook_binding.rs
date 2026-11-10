@@ -1,4 +1,5 @@
 //! Memory-owned pre-generate registration. Payload metadata is never identity.
+use crate::observed::{delivered_event, Delivered};
 use crate::{deps::Deps, hooks};
 use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{
@@ -47,13 +48,13 @@ impl HookBinding {
     /// No owner cache: each delivery gets bounded, fresh engine-owned host data.
     /// The second lookup includes the function in that worker's actual surface.
     pub async fn authenticates(&self, iii: &IIIClient, ctx: Option<&InvocationCtx>) -> bool {
-        self.authenticates_source(iii, ctx, false).await
+        self.authenticates_source(iii, ctx, false).await.is_some()
     }
     pub async fn authenticates_completion(
         &self,
         iii: &IIIClient,
         ctx: Option<&InvocationCtx>,
-    ) -> bool {
+    ) -> Option<String> {
         self.authenticates_source(iii, ctx, true).await
     }
     async fn authenticates_source(
@@ -61,20 +62,27 @@ impl HookBinding {
         iii: &IIIClient,
         ctx: Option<&InvocationCtx>,
         completion: bool,
-    ) -> bool {
+    ) -> Option<String> {
         let source = if completion {
             COMPLETION_SOURCE
         } else {
             SOURCE
         };
-        let Some(ctx) = ctx.filter(|ctx| self.matches(ctx, iii, completion)) else {
-            return false;
-        };
-        let Some(caller) = ctx.caller.as_ref() else {
-            return false;
-        };
-        let Some(id) = caller.worker_id.as_deref().filter(|id| !id.is_empty()) else {
-            return false;
+        let ctx = ctx.filter(|ctx| self.matches(ctx, iii, completion))?;
+        let caller = ctx.caller.as_ref()?;
+        // Captured calls are delivered by the engine on behalf of the source;
+        // payload.caller is the source call's original caller, not its owner.
+        // Manual pre-generate delivery still carries the actual source host.
+        let id = if completion {
+            if caller.worker_id.is_some()
+                || caller.worker_name.as_deref() != Some("iii-engine")
+                || caller.function_id.as_deref() != Some(source)
+            {
+                return None;
+            }
+            None
+        } else {
+            Some(caller.worker_id.as_deref().filter(|id| !id.is_empty())?)
         };
         let namespace = iii.namespace().unwrap_or_else(|| "default".into());
         let lookup = async {
@@ -112,20 +120,20 @@ impl HookBinding {
                 .await
                 .ok()?;
             let functions = host["functions"].as_array()?;
-            (host["worker"]["id"] == id
+            let owner = host["worker"]["id"].as_str().filter(|id| !id.is_empty())?;
+            (id.is_none_or(|id| owner == id)
                 && host["worker"]["status"] == "connected"
                 && host["worker"]["namespace"] == namespace
                 && functions
                     .iter()
                     .any(|f| f["function_id"] == source && f["namespace"] == namespace))
-            .then_some(())
+            .then(|| owner.to_owned())
         };
-        tokio::time::timeout(std::time::Duration::from_millis(900), lookup)
+        let owner = tokio::time::timeout(std::time::Duration::from_millis(900), lookup)
             .await
             .ok()
-            .flatten()
-            .is_some()
-            && self.matches(ctx, iii, completion)
+            .flatten()?;
+        self.matches(ctx, iii, completion).then_some(owner)
     }
 }
 
@@ -146,10 +154,13 @@ pub fn register_turn_completed(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     let deps = deps.clone();
     iii.register_function(
         hooks::TURN_COMPLETED_FN,
-        RegisterFunction::new_async(move |delivery: CompletionDelivery| {
+        RegisterFunction::new_async(move |delivered: Delivered<CompletionDelivery>| {
             let invocation = iii_sdk::current_invocation();
             let deps = deps.clone();
             async move {
+                let Some(delivery) = delivered_event(delivered) else {
+                    return Ok::<_, iii_sdk::errors::Error>(hooks::AckResponse { ok: true });
+                };
                 let input = delivery.input;
                 // Preserve the existing sub-agent/empty-session path, including
                 // its turn-bank cleanup, before any new authority lookup.
@@ -170,12 +181,13 @@ pub fn register_turn_completed(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
                         delivery.status.as_deref(),
                         Some("completed" | "cancelled" | "failed")
                     );
-                let trusted = correlated
-                    && terminal
-                    && deps
-                        .hook_binding
+                let owner = if correlated && terminal {
+                    deps.hook_binding
                         .authenticates_completion(&deps.iii, invocation.as_ref())
-                        .await;
+                        .await
+                } else {
+                    None
+                };
                 // Same authoritative own SessionMeta lookup used by extraction;
                 // parent links, caller role and input kind never select eligibility.
                 let meta = crate::scope::session_meta(&deps.iii, input.session_id.clone()).await;
@@ -196,12 +208,13 @@ pub fn register_turn_completed(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
                     if let Some(turn) = input.turn_id.as_deref() {
                         crate::scope::take_turn_bank(turn);
                     }
-                    if trusted
+                    if owner.is_some()
                         && meta["session_id"] == input.session_id
                         && deps
                             .hook_binding
                             .authenticates_completion(&deps.iii, invocation.as_ref())
                             .await
+                            == owner
                     {
                         deps.emitter
                             .extraction_skipped(

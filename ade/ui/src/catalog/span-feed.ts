@@ -332,7 +332,8 @@ export function startSpanFeed(
   let offObserver: (() => void) | undefined
   try {
     offObserver = bus.observe(
-      { function_id: ON_SPAN_FN, namespace: 'default', deliver: 'output' },
+      // No capture: the console host hands the handler the span event itself.
+      { function_id: ON_SPAN_FN, namespace: 'default' },
       `${options.handlerId}::${bus.browserId}`,
     )
   } catch {

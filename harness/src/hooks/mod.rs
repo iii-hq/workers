@@ -463,6 +463,15 @@ impl HookRegistry {
         id
     }
 
+    /// Swap in `observe()`'s handle for validator `id` while an agent still
+    /// owns it; nothing is observed once it was removed.
+    pub fn replace_owned(&self, id: &str, observe: impl FnOnce() -> ObserverHandle) {
+        let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((_, handle)) = owned.get_mut(id) {
+            *handle = observe();
+        }
+    }
+
     /// Owner-checked teardown for an agent-created post-turn validator.
     /// `None` = not one of ours (or not this caller's) — fall through to the
     /// binding path.

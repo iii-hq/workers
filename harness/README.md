@@ -570,7 +570,8 @@ from a model turn, not directly`.
 ```
 
 - 1–4 questions per call and 2–4 options per question.
-- `header` is 1–16 characters and `question` must not be empty.
+- `header` and `question` must not be empty. A long `header` is fine: the
+  card shows it with an ellipsis and the whole text on hover.
 - `label` is 1–80 characters and unique within its question.
 - `header` and `label` must not contain line breaks (the answer is one line
   per question).
@@ -619,7 +620,7 @@ can react:
 | A sub-agent (depth > 0) or a turn with a JSON output contract | `harness::ask needs a human to answer and none is attached to this turn (sub-agent or structured-output turn); report blocked with your question instead` |
 | A second ask in the same step | `only one harness::ask per step; put all your questions (up to 4) in one call` |
 | Arguments that do not parse | `invalid harness::ask arguments: <serde error>` |
-| A broken limit | the field path and the limit, e.g. `questions[1].header must be at most 16 characters (got 17)` |
+| A broken limit | the field path and the limit, e.g. `questions[1].options[0].label must be at most 80 characters (got 81)` |
 
 **Policy and hooks.** The session's allow/deny policy still applies: a denied
 ask gets the usual `policy_denied` result. The repeated-failure breaker and
@@ -644,8 +645,8 @@ answered. Typing a reply in the composer instead works the same way.
 
 The harness hosts these functions. Every one is private: observers observe it,
 and only the harness calls it. Each handler returns the event it is called
-with, so observers receive the event as the call's output (`deliver: 'output'`
-gives the event itself). Observe them with `iii.observe` from a worker; an agent
+with, so observers receive the event as the call's output (with `capture:
+['output']` the target reads it at `payload.output`). Observe them with `iii.observe` from a worker; an agent
 observes only `harness::on-timer` and its own post-turn validator.
 
 | Function | Args | Filter on | Event |

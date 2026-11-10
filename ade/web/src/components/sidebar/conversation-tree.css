@@ -77,9 +77,9 @@
   margin-right: 6px;
 }
 
-/* A finished sub-agent reads quieter than the live ones above it, until it
+/* An inactive sub-agent reads quieter than the live ones above it, until it
    is pointed at or open. */
-.conversation-tree .iii-ui-tree-item[data-finished]:not(
+.conversation-tree .iii-ui-tree-item[data-inactive]:not(
     :hover,
     [aria-current="page"]
   )
@@ -87,14 +87,36 @@
   color: var(--color-ink-ghost);
 }
 
-/* "Show N finished": a quiet row at the sub-agents' indent. */
-.conversation-tree .conversation-finished-toggle {
+/* "Show N inactive": a quiet row at the sub-agents' indent. */
+.conversation-tree .conversation-inactive-toggle {
   width: 100%;
   color: var(--color-ink-ghost);
 }
 
-.conversation-tree .conversation-finished-toggle:hover {
+.conversation-tree .conversation-inactive-toggle:hover {
   color: var(--color-ink);
+}
+
+/* The chevron follows the row's ink and turns down once expanded. */
+.conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon {
+  color: inherit;
+}
+
+.conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon > svg {
+  transition: transform 150ms ease;
+}
+
+.conversation-tree
+  .conversation-inactive-toggle[aria-expanded="true"]
+  .iii-ui-tree-item__icon
+  > svg {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon > svg {
+    transition: none;
+  }
 }
 
 /* ── the trailing edge ────────────────────────────────────────────── */

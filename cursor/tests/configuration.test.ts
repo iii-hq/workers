@@ -113,7 +113,7 @@ describe('Cursor configuration', () => {
             'input.id': { $eq: configId() },
             'input.event_type': { $eq: 'configuration:updated' },
           },
-          deliver: 'output',
+          capture: ['output'],
         },
         target: 'cursor::on-config-change',
       },

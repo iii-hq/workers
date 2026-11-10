@@ -9,7 +9,7 @@
 //!   observer that drives the pending-call sweep). On a change the handler
 //!   observes the new expression, then disposes the old observer — a
 //!   fail-safe overlap; the sweep is idempotent — keeping the
-//!   [`ObserverHandle`] in [`LifecycleObservers`].
+//!   [`Kept`] observer in [`LifecycleObservers`].
 //! - Every OTHER field is a per-call tuning knob read from the live snapshot
 //!   via [`Deps::cfg`](crate::deps::Deps::cfg); a change swaps the snapshot.
 //!
@@ -21,12 +21,13 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
 use crate::functions::sweep_pending::SWEEP_PENDING_ID;
+use crate::observers::Kept;
 use crate::subscriptions::ON_SESSION_DELETED_ID;
 
 /// Hot-swappable config snapshot shared with every handler.
@@ -319,14 +320,14 @@ const ON_SESSION_DELETED_FN: &str = "session::on-deleted";
 /// The engine's configuration change event.
 const ON_CONFIGURATION_UPDATED_FN: &str = "configuration::on-updated";
 
-/// Live observer handles retained for the worker lifetime.
+/// Live observers retained for the worker lifetime.
 pub struct LifecycleObservers {
-    pub sweep: std::sync::Mutex<ObserverHandle>,
-    _session_deleted: ObserverHandle,
+    pub sweep: std::sync::Mutex<Kept>,
+    _session_deleted: Kept,
 }
 
 impl LifecycleObservers {
-    pub fn new(sweep: ObserverHandle, session_deleted: ObserverHandle) -> Self {
+    pub fn new(sweep: Kept, session_deleted: Kept) -> Self {
         Self {
             sweep: std::sync::Mutex::new(sweep),
             _session_deleted: session_deleted,
@@ -337,24 +338,30 @@ impl LifecycleObservers {
 /// Observe `cron::on-tick` for the current `sweep_expression`. The observer
 /// stays `pending` while the cron worker is away, and a bad expression ends
 /// it in `error` (`INVALID_CRON_EXPRESSION`), which is logged.
-pub fn observe_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> ObserverHandle {
-    let handle = iii.observe(
-        Source::function(ON_TICK_FN)
-            .args(json!({ "expression": cfg.sweep_expression }))
-            .deliver(Deliver::Output),
-        SWEEP_PENDING_ID,
-    );
-    log_failure(&handle, ON_TICK_FN);
-    handle
+pub fn observe_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Kept {
+    let (iii, expression) = (iii.clone(), cfg.sweep_expression.clone());
+    crate::observers::keep(move || {
+        let handle = iii.observe(
+            Source::function(ON_TICK_FN)
+                .args(json!({ "expression": expression }))
+                .capture([Capture::Output]),
+            SWEEP_PENDING_ID,
+        );
+        log_failure(&handle, ON_TICK_FN);
+        handle
+    })
 }
 
-pub fn observe_session_deleted(iii: &IIIClient) -> ObserverHandle {
-    let handle = iii.observe(
-        Source::function(ON_SESSION_DELETED_FN).deliver(Deliver::Output),
-        ON_SESSION_DELETED_ID,
-    );
-    log_failure(&handle, ON_SESSION_DELETED_FN);
-    handle
+pub fn observe_session_deleted(iii: &IIIClient) -> Kept {
+    let iii = iii.clone();
+    crate::observers::keep(move || {
+        let handle = iii.observe(
+            Source::function(ON_SESSION_DELETED_FN).capture([Capture::Output]),
+            ON_SESSION_DELETED_ID,
+        );
+        log_failure(&handle, ON_SESSION_DELETED_FN);
+        handle
+    })
 }
 
 /// Warn once if the observer ends in `error` or is disposed; a `pending` one
@@ -370,11 +377,11 @@ fn log_failure(handle: &ObserverHandle, source: &'static str) {
 
 /// Keep the freshly created observer, then dispose the old one
 /// (observe-new-then-dispose-old: a fail-safe overlap).
-fn replace_slot(slot: &std::sync::Mutex<ObserverHandle>, new: ObserverHandle) {
+fn replace_slot(slot: &std::sync::Mutex<Kept>, new: Kept) {
     let old = std::mem::replace(&mut *slot.lock().unwrap_or_else(|p| p.into_inner()), new);
     tokio::spawn(async move {
         if let Err(error) = old.dispose().await {
-            tracing::warn!(observer = %old.id(), %error, "disposing the previous sweep observer failed");
+            tracing::warn!(%error, "disposing the previous sweep observer failed");
         }
     });
 }
@@ -404,7 +411,7 @@ pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
     handles: Arc<LifecycleObservers>,
-) -> ObserverHandle {
+) -> Kept {
     let cell_for_fn = cell.clone();
     let handles_for_fn = handles.clone();
     let engine = iii.clone();
@@ -427,12 +434,15 @@ pub fn observe_config_changes(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.observe(
-        Source::function(ON_CONFIGURATION_UPDATED_FN)
-            .filters(config_change_filters(config_id()))
-            .deliver(Deliver::Output),
-        CONFIG_FN_ID,
-    )
+    let iii = iii.clone();
+    crate::observers::keep(move || {
+        iii.observe(
+            Source::function(ON_CONFIGURATION_UPDATED_FN)
+                .filters(config_change_filters(config_id()))
+                .capture([Capture::Output]),
+            CONFIG_FN_ID,
+        )
+    })
 }
 
 /// The calls of `configuration::on-updated` this worker reloads on: updates
