@@ -131,6 +131,7 @@ async fn sessions_and_windows_lifecycle() {
             cwd: Some("/".into()),
             command: None,
             window_name: Some("main".into()),
+            remain_on_exit: false,
         },
     )
     .await
@@ -145,6 +146,7 @@ async fn sessions_and_windows_lifecycle() {
             cwd: None,
             command: None,
             select: Some(false),
+            remain_on_exit: false,
         },
     )
     .await
@@ -165,14 +167,27 @@ async fn sessions_and_windows_lifecycle() {
         vec![("main", true), ("logs", false)],
         "select: false keeps the current window"
     );
+    // Before tmux 3.2 a session's directory can't be read, and tmux starts
+    // the window in the home folder.
+    let version = functions::status(&w.ctx, EmptyInput {})
+        .await
+        .unwrap()
+        .version
+        .unwrap_or_default();
+    let unset = if tmux::tmux_cli::version_at_least(&version, 3, 2) == Some(false) {
+        std::env::var("HOME").unwrap()
+    } else {
+        "/".to_string()
+    };
     // pane_current_path settles once the shell has started.
-    eventually("both panes to report the session directory", || async {
+    eventually("both panes to report their directory", || async {
         let snapshot = functions::sessions_list(&w.ctx, EmptyInput {}).await.ok()?;
-        snapshot.sessions[0]
+        let cwds: Vec<_> = snapshot.sessions[0]
             .windows
             .iter()
-            .all(|window| window.panes[0].cwd == "/")
-            .then_some(())
+            .map(|window| window.panes[0].cwd.clone())
+            .collect();
+        (cwds == ["/".to_string(), unset.clone()]).then_some(())
     })
     .await;
 
@@ -214,9 +229,9 @@ async fn sessions_and_windows_lifecycle() {
     )
     .await
     .unwrap_err();
-    assert!(
-        missing.contains("not found"),
-        "names never prefix-match: {missing}"
+    assert_eq!(
+        missing, "There is no session named \"alpha\".",
+        "names never prefix-match"
     );
 
     sessions::rename(
@@ -255,6 +270,173 @@ async fn sessions_and_windows_lifecycle() {
         .await
         .unwrap();
     assert!(after.sessions.is_empty());
+}
+
+#[tokio::test]
+async fn names_are_taken_literally_and_never_as_ids() {
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let w = world();
+    let raw = |args: &[&str]| {
+        let output = std::process::Command::new("tmux")
+            .args(["-L", &w._server.socket])
+            .args(args)
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    // tmux expands formats in names (2.7 and later; -n from 3.1): `#` is
+    // kept as typed.
+    let created = sessions::create(
+        &w.ctx,
+        sessions::CreateSessionInput {
+            name: Some("a#{session_id}b".into()),
+            window_name: Some("w#{window_id}x".into()),
+            cwd: Some("/".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.session, "a#{session_id}b");
+    windows::create(
+        &w.ctx,
+        windows::CreateWindowInput {
+            session: created.session_id.clone(),
+            name: Some("n##m".into()),
+            select: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    windows::rename(
+        &w.ctx,
+        windows::RenameWindowInput {
+            session: "a#{session_id}b".into(),
+            window: WindowArg::Index(created.window_index),
+            name: "r#(echo hi)s".into(),
+        },
+    )
+    .await
+    .unwrap();
+    sessions::rename(
+        &w.ctx,
+        sessions::RenameSessionInput {
+            session: created.session_id.clone(),
+            name: "s#{host}t".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        windows_line(&w.ctx, "s#{host}t").await.unwrap(),
+        format!(
+            "{}:r#(echo hi)s* {}:n##m",
+            created.window_index,
+            created.window_index + 1
+        )
+    );
+
+    // Names shaped like ids are refused.
+    let id_like =
+        |kind: &str| format!("A {kind} name can't look like a tmux id such as $2, @3 or %4.");
+    let refused = [
+        (
+            sessions::create(
+                &w.ctx,
+                sessions::CreateSessionInput {
+                    name: Some("$9".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(drop),
+            id_like("session"),
+        ),
+        (
+            sessions::rename(
+                &w.ctx,
+                sessions::RenameSessionInput {
+                    session: created.session_id.clone(),
+                    name: "%3".into(),
+                },
+            )
+            .await
+            .map(drop),
+            id_like("session"),
+        ),
+        (
+            windows::create(
+                &w.ctx,
+                windows::CreateWindowInput {
+                    session: created.session_id.clone(),
+                    name: Some("@2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(drop),
+            id_like("window"),
+        ),
+    ];
+    for (result, sentence) in refused {
+        assert_eq!(result.unwrap_err(), sentence);
+    }
+
+    // A session named like an id, made outside this worker, is never taken
+    // for the session that has that id.
+    let named_like_ours = raw(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{session_id}",
+        "-s",
+        &created.session_id,
+    ]);
+    let select = |session: &str| {
+        windows::select(
+            &w.ctx,
+            windows::WindowInput {
+                session: session.into(),
+                window: WindowArg::Index(0),
+            },
+        )
+    };
+    assert_eq!(
+        select(&created.session_id).await.unwrap_err(),
+        format!(
+            "\"{0}\" is session {0}'s id and session {1}'s name; rename session {1} to tell them apart.",
+            created.session_id, named_like_ours
+        )
+    );
+    let stray = raw(&[
+        "new-session",
+        "-d",
+        "-P",
+        "-F",
+        "#{session_id}",
+        "-s",
+        "$99",
+    ]);
+    assert_eq!(
+        select("$99").await.unwrap_err(),
+        format!("There is no session $99; the session named \"$99\" is {stray}.")
+    );
+    assert_eq!(
+        select(&stray).await.unwrap().session_id,
+        stray,
+        "its own id still reaches it"
+    );
 }
 
 /// A fresh folder under the system's temp folder, removed on drop.
@@ -332,6 +514,7 @@ async fn start_directories_are_taken_literally() {
             cwd: Some(doubled.clone()),
             command: None,
             select: Some(false),
+            remain_on_exit: false,
         },
     )
     .await
@@ -354,71 +537,94 @@ async fn windows_line(ctx: &Ctx, session: &str) -> Option<String> {
     )
 }
 
+/// `sessions::create` and `windows::create` for the move tests.
+struct Builder<'a>(&'a Ctx);
+
+impl Builder<'_> {
+    async fn session(&self, name: &str, window: &str) -> sessions::CreatedSession {
+        sessions::create(
+            self.0,
+            sessions::CreateSessionInput {
+                name: Some(name.into()),
+                cwd: Some("/".into()),
+                window_name: Some(window.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn window(&self, session: &str, name: &str) -> windows::CreatedWindow {
+        windows::create(
+            self.0,
+            windows::CreateWindowInput {
+                session: session.into(),
+                name: Some(name.into()),
+                select: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn kill_window(&self, session: &str, window: &str) {
+        windows::kill(
+            self.0,
+            windows::WindowInput {
+                session: session.into(),
+                window: WindowArg::Text(window.into()),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn move_to(
+        &self,
+        window: &str,
+        from: &str,
+        to: &str,
+        before: Option<&str>,
+        after: Option<&str>,
+    ) -> Result<windows::MovedWindow, String> {
+        let arg = |window: &str| WindowArg::Text(window.into());
+        windows::move_window(
+            self.0,
+            windows::MoveWindowInput {
+                session: from.into(),
+                window: arg(window),
+                target_session: to.into(),
+                before: before.map(arg),
+                after: after.map(arg),
+            },
+        )
+        .await
+    }
+}
+
 #[tokio::test]
-async fn windows_move_between_and_within_sessions() {
+async fn windows_move_to_another_session() {
     if !tmux_installed() {
         eprintln!("tmux not installed; skipping");
         return;
     }
     let w = world();
-    let session = |name: &str, window: &str| {
-        sessions::create(
-            &w.ctx,
-            sessions::CreateSessionInput {
-                name: Some(name.into()),
-                cwd: Some("/".into()),
-                command: None,
-                window_name: Some(window.into()),
-            },
-        )
-    };
-    let window = |session: &str, name: &str| {
-        windows::create(
-            &w.ctx,
-            windows::CreateWindowInput {
-                session: session.into(),
-                name: Some(name.into()),
-                cwd: None,
-                command: None,
-                select: Some(false),
-            },
-        )
-    };
-    let arg = |window: &str| WindowArg::Text(window.into());
-    let move_to =
-        |window: &str, from: &str, to: &str, before: Option<&str>, after: Option<&str>| {
-            windows::move_window(
-                &w.ctx,
-                windows::MoveWindowInput {
-                    session: from.into(),
-                    window: arg(window),
-                    target_session: to.into(),
-                    before: before.map(arg),
-                    after: after.map(arg),
-                },
-            )
-        };
-
-    let src = session("src", "a0").await.unwrap();
-    let a1 = window("src", "a1").await.unwrap();
-    let a2 = window("src", "a2").await.unwrap();
-    let dst = session("dst", "b0").await.unwrap();
-    let b1 = window("dst", "b1").await.unwrap();
-    window("dst", "b2").await.unwrap();
-    windows::kill(
-        &w.ctx,
-        windows::WindowInput {
-            session: "dst".into(),
-            window: arg(&b1.window_id),
-        },
-    )
-    .await
-    .unwrap();
+    let b = Builder(&w.ctx);
+    let src = b.session("src", "a0").await;
+    let a1 = b.window("src", "a1").await;
+    let a2 = b.window("src", "a2").await;
+    let dst = b.session("dst", "b0").await;
+    let b1 = b.window("dst", "b1").await;
+    b.window("dst", "b2").await;
+    b.kill_window("dst", &b1.window_id).await;
     assert_eq!(windows_line(&w.ctx, "dst").await.unwrap(), "0:b0* 2:b2");
 
     // A plain move goes after the last window, not into the gap at 1, and
     // leaves the destination's current window as it was.
-    let moved = move_to(&a1.window_id, "src", &dst.session_id, None, None)
+    let moved = b
+        .move_to(&a1.window_id, "src", &dst.session_id, None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -436,42 +642,27 @@ async fn windows_move_between_and_within_sessions() {
     );
     assert_eq!(windows_line(&w.ctx, "src").await.unwrap(), "0:a0* 2:a2");
 
-    // `after` takes the index right after its neighbour (free here).
-    let moved = move_to("2", "src", "dst", None, Some("0")).await.unwrap();
-    assert_eq!(
-        (moved.window_id.as_str(), moved.window_index),
-        (a2.window_id.as_str(), 1)
-    );
-    assert_eq!(
-        windows_line(&w.ctx, "dst").await.unwrap(),
-        "0:b0* 1:a2 2:b2 3:a1"
-    );
-
     // Refusals change nothing.
     let refusals = [
         (
-            move_to("2", "dst", "dst", None, None).await,
-            "The window is already in that session.",
+            b.move_to("2", "dst", "dst", None, None).await,
+            "The window is already in that session.".to_string(),
         ),
         (
-            move_to("0", "src", "nope", None, None).await,
-            "session \"nope\" not found",
+            b.move_to("0", "src", "nope", None, None).await,
+            "There is no session named \"nope\".".to_string(),
         ),
         (
-            move_to("0", "src", "dst", Some("0"), Some("1")).await,
-            "Give before or after, not both.",
+            b.move_to("0", "gone", "dst", None, None).await,
+            "There is no session named \"gone\".".to_string(),
         ),
         (
-            move_to("1", "dst", "dst", None, Some("1")).await,
-            "A window can't be moved before or after itself.",
+            b.move_to("0", "src", "dst", Some("0"), Some("2")).await,
+            "Give before or after, not both.".to_string(),
         ),
         (
-            move_to("0", "src", "dst", None, Some("@999")).await,
-            &format!("window @999 not found in session {}", dst.session_id),
-        ),
-        (
-            move_to("7", "src", "dst", None, None).await,
-            &format!("window 7 not found in session {}", src.session_id),
+            b.move_to("7", "src", "dst", None, None).await,
+            format!("Session {} has no window at index 7.", src.session_id),
         ),
     ];
     for (result, expected) in refusals {
@@ -479,13 +670,16 @@ async fn windows_move_between_and_within_sessions() {
     }
     assert_eq!(
         windows_line(&w.ctx, "dst").await.unwrap(),
-        "0:b0* 1:a2 2:b2 3:a1"
+        "0:b0* 2:b2 3:a1"
     );
-    assert_eq!(windows_line(&w.ctx, "src").await.unwrap(), "0:a0*");
+    assert_eq!(windows_line(&w.ctx, "src").await.unwrap(), "0:a0* 2:a2");
 
     // The last window of a session: tmux closes the session, which the
     // answer says; the window and its pane carry on in the other one.
-    let moved = move_to(&src.window_id, &src.session_id, "dst", None, None)
+    let moved = b.move_to(&a2.window_id, "src", "dst", None, None).await;
+    assert_eq!(moved.unwrap().window_index, 4);
+    let moved = b
+        .move_to(&src.window_id, &src.session_id, "dst", None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -494,9 +688,13 @@ async fn windows_move_between_and_within_sessions() {
             moved.window_index,
             moved.source_session_closed
         ),
-        (src.window_id.as_str(), 4, true)
+        (src.window_id.as_str(), 5, true)
     );
     assert_eq!(windows_line(&w.ctx, "src").await, None);
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "0:b0* 2:b2 3:a1 4:a2 5:a0"
+    );
     let snapshot = functions::sessions_list(&w.ctx, EmptyInput {})
         .await
         .unwrap();
@@ -507,43 +705,134 @@ async fn windows_move_between_and_within_sessions() {
         .find(|window| window.id == src.window_id)
         .unwrap();
     assert_eq!(carried.panes[0].id, src.pane_id);
+}
 
-    // Reordering the current window inside its session keeps it current.
-    let moved = move_to("0", "dst", "dst", None, Some(&src.window_id))
-        .await
-        .unwrap();
-    assert_eq!(
-        (moved.window_index, moved.source_session_closed),
-        (5, false)
-    );
+#[tokio::test]
+async fn windows_move_before_and_after_another() {
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let w = world();
+    let b = Builder(&w.ctx);
+    let src = b.session("src", "a0").await;
+    let a1 = b.window("src", "a1").await;
+    let dst = b.session("dst", "b0").await;
+    let b1 = b.window("dst", "b1").await;
+    b.window("dst", "b2").await;
+    let b3 = b.window("dst", "b3").await;
+    let b4 = b.window("dst", "b4").await;
+    b.kill_window("dst", &b3.window_id).await;
     assert_eq!(
         windows_line(&w.ctx, "dst").await.unwrap(),
-        "1:a2 2:b2 3:a1 4:a0 5:b0*"
+        "0:b0* 1:b1 2:b2 4:b4"
     );
 
-    // `before` shifts the windows from its neighbour on up one index, as
-    // tmux's own -b does; tmux before 3.2 has no -b and gets one sentence.
+    // Before tmux 3.2, -a means "after the current window" whatever the
+    // target, and a move inside one session with it ends tmux 2.6's server:
+    // both sides are refused in one sentence, and nothing moves.
     let version = functions::status(&w.ctx, EmptyInput {})
         .await
         .unwrap()
         .version
         .unwrap();
-    let before = move_to(&src.window_id, "dst", "dst", Some(&a2.window_id), None).await;
     if tmux::tmux_cli::version_at_least(&version, 3, 2) == Some(false) {
+        for (before, after, word) in [(Some("1"), None, "before"), (None, Some("1"), "after")] {
+            assert_eq!(
+                b.move_to(&a1.window_id, "src", "dst", before, after)
+                    .await
+                    .unwrap_err(),
+                format!(
+                    "Moving a window {word} another needs tmux 3.2 or later, and this computer has tmux {version}."
+                )
+            );
+            assert_eq!(
+                b.move_to("0", "dst", "dst", before, after)
+                    .await
+                    .unwrap_err(),
+                format!(
+                    "Moving a window {word} another needs tmux 3.2 or later, and this computer has tmux {version}."
+                )
+            );
+        }
         assert_eq!(
-            before.unwrap_err(),
-            format!(
-                "Moving a window before another needs tmux 3.2 or later, and this computer has tmux {version}."
-            )
+            windows_line(&w.ctx, "dst").await.unwrap(),
+            "0:b0* 1:b1 2:b2 4:b4"
         );
+        assert_eq!(windows_line(&w.ctx, "src").await.unwrap(), "0:a0* 1:a1");
         return;
     }
-    let moved = before.unwrap();
+
+    // `after` takes the index right after its neighbour; the windows from
+    // there up to the first free index move up one (b4 stays at 4).
+    let moved = b
+        .move_to(&a1.window_id, "src", "dst", None, Some("0"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (moved.window_index, moved.source_session_closed),
+        (1, false)
+    );
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "0:b0* 1:a1 2:b1 3:b2 4:b4"
+    );
+
+    // `before`, and the source's last window: its session closes.
+    let moved = b
+        .move_to("0", "src", "dst", Some(&b4.window_id), None)
+        .await
+        .unwrap();
+    assert_eq!((moved.window_index, moved.source_session_closed), (4, true));
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "0:b0* 1:a1 2:b1 3:b2 4:a0 5:b4"
+    );
+
+    // Reordering the current window inside its session keeps it current.
+    let moved = b
+        .move_to("0", "dst", "dst", None, Some(&b4.window_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        (moved.window_index, moved.source_session_closed),
+        (6, false)
+    );
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "1:a1 2:b1 3:b2 4:a0 5:b4 6:b0*"
+    );
+
+    // Refusals change nothing.
+    assert_eq!(
+        b.move_to("1", "dst", "dst", None, Some("1"))
+            .await
+            .unwrap_err(),
+        "A window can't be moved before or after itself."
+    );
+    assert_eq!(
+        b.move_to("1", "dst", "dst", None, Some("@999"))
+            .await
+            .unwrap_err(),
+        format!("Session {} has no window @999.", dst.session_id)
+    );
+    assert_eq!(
+        windows_line(&w.ctx, "dst").await.unwrap(),
+        "1:a1 2:b1 3:b2 4:a0 5:b4 6:b0*"
+    );
+
+    // `before` inside the session shifts from its neighbour up to the gap
+    // the moved window leaves behind.
+    let moved = b
+        .move_to(&b4.window_id, "dst", "dst", Some(&a1.window_id), None)
+        .await
+        .unwrap();
     assert_eq!(moved.window_index, 1);
     assert_eq!(
         windows_line(&w.ctx, "dst").await.unwrap(),
-        "1:a0 2:a2 3:b2 4:a1 6:b0*"
+        "1:b4 2:a1 3:b1 4:b2 5:a0 7:b0*"
     );
+    let _ = (src, b1);
 }
 
 #[tokio::test]
@@ -564,6 +853,7 @@ async fn agents_and_ports_are_found_in_their_panes() {
                     .into(),
             ),
             window_name: None,
+            remain_on_exit: false,
         },
     )
     .await
@@ -578,6 +868,7 @@ async fn agents_and_ports_are_found_in_their_panes() {
                 "python3 -c \"import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); print(s.getsockname()[1], flush=True); time.sleep(60)\"".into(),
             ),
             window_name: None,
+            remain_on_exit: false,
         },
     )
     .await
@@ -863,10 +1154,28 @@ async fn panes_zoom_and_capture() {
             cwd: Some("/".into()),
             command: Some("bash -c \"printf '\\033[1mhello\\033[0m\\n'; exec sleep 60\"".into()),
             window_name: None,
+            remain_on_exit: false,
         },
     )
     .await
     .unwrap();
+    // A window with one pane can't zoom: the answer says zoomed false (the
+    // description's sentence), whichever way it is asked, and no error.
+    for zoom in [Some(true), None, Some(false), Some(true)] {
+        let single = panes::select(
+            &w.ctx,
+            panes::SelectPaneInput {
+                pane: created.pane_id.clone(),
+                zoom,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (single.pane_id.as_str(), single.zoomed),
+            (created.pane_id.as_str(), false)
+        );
+    }
     let split = std::process::Command::new("tmux")
         .args([
             "-L",
@@ -951,15 +1260,15 @@ async fn panes_zoom_and_capture() {
     )
     .await
     .unwrap_err();
-    assert!(missing.contains("can't find pane"), "{missing}");
+    assert_eq!(missing, "There is no pane %999.");
     let invalid = select("@1", Some(true)).await.unwrap_err();
     assert!(invalid.contains("pane must be an id"), "{invalid}");
 }
 
 #[tokio::test]
-async fn pasted_images_are_saved_for_the_terminal_that_asks() {
+async fn uploads_are_saved_for_the_terminal_that_asks() {
     use std::os::unix::fs::PermissionsExt;
-    use tmux::terminal::protocol::UploadImageRequest;
+    use tmux::terminal::protocol::UploadRequest;
 
     if !tmux_installed() {
         eprintln!("tmux not installed; skipping");
@@ -976,53 +1285,112 @@ async fn pasted_images_are_saved_for_the_terminal_that_asks() {
     )
     .await
     .unwrap();
+    let manager_at = |cache: &std::path::Path| {
+        let console = ConsoleClients::default();
+        TerminalManager::new(
+            Arc::new(Captured::default()),
+            Arc::new(Collector::new(w.collector_config(), console.clone())),
+            console,
+            Arc::new(|| {}),
+            Arc::new(|| Some(false)),
+        )
+        .with_upload_cache(cache.to_path_buf())
+    };
+    let open = |manager: &TerminalManager| {
+        let manager = manager.clone();
+        async move {
+            let opened = manager
+                .open(OpenRequest {
+                    session: "paste".into(),
+                    window: None,
+                    cols: 80,
+                    rows: 24,
+                    output_function_id: OUTPUT.into(),
+                    caller_worker_id: Some(CALLER.into()),
+                })
+                .await
+                .unwrap();
+            TerminalRef {
+                terminal_id: opened.terminal_id,
+                access_key: opened.access_key,
+                caller_worker_id: Some(CALLER.into()),
+            }
+        }
+    };
     let folder = Folder::new();
-    let paste = folder.0.join("iii/tmux/paste");
-    let console = ConsoleClients::default();
-    let collector = Arc::new(Collector::new(w.collector_config(), console.clone()));
-    let manager = TerminalManager::new(
-        Arc::new(Captured::default()),
-        collector,
-        console,
-        Arc::new(|| {}),
-        Arc::new(|| Some(false)),
-    )
-    .with_paste_folder(paste.clone());
-    let opened = manager
-        .open(OpenRequest {
-            session: "paste".into(),
-            window: None,
-            cols: 80,
-            rows: 24,
-            output_function_id: OUTPUT.into(),
-            caller_worker_id: Some(CALLER.into()),
-        })
-        .await
-        .unwrap();
-    let reference = TerminalRef {
-        terminal_id: opened.terminal_id.clone(),
-        access_key: opened.access_key.clone(),
-        caller_worker_id: Some(CALLER.into()),
-    };
-    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01";
-    let upload = |terminal: TerminalRef, mime: &str, data: &[u8]| {
-        manager.upload_image(UploadImageRequest {
+    let uploads = folder.0.join("iii/tmux/uploads");
+    let manager = manager_at(&folder.0);
+    let reference = open(&manager).await;
+    let upload = |terminal: TerminalRef, name: &str, mime: Option<&str>, data: &[u8]| {
+        manager.upload(UploadRequest {
             terminal,
-            mime: mime.into(),
+            name: name.into(),
             data: BASE64.encode(data),
+            mime: mime.map(str::to_string),
         })
     };
-
-    let saved = upload(reference.clone(), "image/png", png).await.unwrap();
-    assert_eq!((saved.bytes, saved.mime.as_str()), (png.len(), "image/png"));
-    let path = std::path::Path::new(&saved.path);
-    assert_eq!(path.parent(), Some(paste.as_path()));
-    assert!(path.is_absolute() && !saved.path.contains(' '));
-    assert_eq!(std::fs::read(path).unwrap(), png);
+    let jpeg = b"\xff\xd8\xff\xe0\0\x10JFIF\0\x01";
     let mode = |path: &std::path::Path| path.metadata().unwrap().permissions().mode() & 0o777;
-    assert_eq!((mode(path), mode(&paste)), (0o600, 0o700));
-    let files = || std::fs::read_dir(&paste).unwrap().count();
-    assert_eq!(files(), 1);
+
+    // Any file, each in a folder of its own under its own name made safe.
+    let long = format!("{}.txt", "l".repeat(296));
+    // name, mime, data, the name it is kept under, the type answered
+    type Case<'a> = (&'a str, Option<&'a str>, &'a [u8], &'a str, &'a str);
+    let cases: [Case; 7] = [
+        (
+            "Quarterly report final.pdf",
+            Some("application/pdf"),
+            b"%PDF-1.7",
+            "Quarterly-report-final.pdf",
+            "application/pdf",
+        ),
+        (
+            "relatório ação.md",
+            Some("text/markdown"),
+            b"# oi",
+            "relat-rio-a-o.md",
+            "text/markdown",
+        ),
+        ("../x", None, b"x", "x", "application/octet-stream"),
+        (".hidden", None, b"h", "hidden", "application/octet-stream"),
+        (
+            &long,
+            Some("text/plain"),
+            b"long",
+            &format!("{}.txt", "l".repeat(96)),
+            "text/plain",
+        ),
+        (
+            "IMG_0420.HEIC",
+            Some("image/heic"),
+            jpeg,
+            "IMG_0420.jpg",
+            "image/jpeg",
+        ),
+        ("", None, b"", "file", "application/octet-stream"),
+    ];
+    let mut folders = std::collections::HashSet::new();
+    for (name, mime, data, kept, answered) in cases {
+        let saved = upload(reference.clone(), name, mime, data).await.unwrap();
+        let path = std::path::Path::new(&saved.path);
+        assert!(path.is_absolute() && !saved.path.contains(' '), "{name:?}");
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            kept,
+            "{name:?}"
+        );
+        assert_eq!((saved.bytes, saved.mime.as_str()), (data.len(), answered));
+        assert_eq!(std::fs::read(path).unwrap(), data);
+        let own = path.parent().unwrap();
+        assert_eq!(own.parent(), Some(uploads.as_path()));
+        assert_eq!(
+            (mode(path), mode(own), mode(&uploads)),
+            (0o600, 0o700, 0o700)
+        );
+        assert!(folders.insert(own.to_path_buf()), "a folder per upload");
+    }
+    let count = || std::fs::read_dir(&uploads).unwrap().count();
+    assert_eq!(count(), 7);
 
     // Only the page that opened the terminal, with its key.
     let wrong_key = TerminalRef {
@@ -1034,26 +1402,48 @@ async fn pasted_images_are_saved_for_the_terminal_that_asks() {
         ..reference.clone()
     };
     for terminal in [wrong_key, foreign] {
-        let refused = upload(terminal, "image/png", png).await.unwrap_err();
+        let refused = upload(terminal, "a.txt", None, b"a").await.unwrap_err();
         assert_eq!(refused, "terminal credentials are invalid");
     }
-    // What isn't a PNG, JPEG, GIF or WebP image, as its first bytes say.
     assert_eq!(
-        upload(reference.clone(), "image/jpeg", png)
-            .await
-            .unwrap_err(),
-        "The image's data is not image/jpeg, as its type says."
+        upload(
+            reference.clone(),
+            "a.txt",
+            None,
+            &vec![0u8; 12 * 1024 * 1024 + 1]
+        )
+        .await
+        .unwrap_err(),
+        "The file is larger than 12 MiB."
     );
+    assert_eq!(count(), 7, "a refusal writes nothing");
+
+    // An uploads folder that is a symbolic link is refused, in one sentence
+    // that names no path, and nothing lands where it points.
+    let elsewhere = Folder::new();
+    let linked_cache = Folder::new();
+    std::fs::create_dir_all(linked_cache.0.join("iii/tmux")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere.0, linked_cache.0.join("iii/tmux/uploads")).unwrap();
+    let linked = manager_at(&linked_cache.0);
+    let there = open(&linked).await;
+    let refused = linked
+        .upload(UploadRequest {
+            terminal: there.clone(),
+            name: "a.txt".into(),
+            data: BASE64.encode(b"a"),
+            mime: None,
+        })
+        .await
+        .unwrap_err();
     assert_eq!(
-        upload(reference.clone(), "text/plain", b"hello")
-            .await
-            .unwrap_err(),
-        "Only PNG, JPEG, GIF and WebP images can be pasted."
+        refused,
+        "The folder for uploaded files is a symbolic link, so no file is kept there."
     );
-    assert_eq!(files(), 1, "a refusal writes nothing");
+    assert_eq!(std::fs::read_dir(&elsewhere.0).unwrap().count(), 0);
+    linked.close(there).await.unwrap();
 
     manager.close(reference.clone()).await.unwrap();
-    assert!(upload(reference, "image/png", png)
+    assert!(upload(reference, "a.txt", None, b"a")
         .await
         .unwrap_err()
         .contains("not found"));
@@ -1101,6 +1491,7 @@ async fn panes_split_kill_and_respawn() {
             cwd: Some(away.clone()),
             command: None,
             select: Some(false),
+            remain_on_exit: false,
         },
     )
     .await
@@ -1116,6 +1507,7 @@ async fn panes_split_kill_and_respawn() {
                 cwd: cwd.map(str::to_string),
                 command: command.map(str::to_string),
                 select,
+                remain_on_exit: false,
             },
         )
     };
@@ -1178,7 +1570,7 @@ async fn panes_split_kill_and_respawn() {
     let missing = split("%999", panes::SplitDirection::Right, None, None, None)
         .await
         .unwrap_err();
-    assert!(missing.contains("can't find pane"), "{missing}");
+    assert_eq!(missing, "There is no pane %999.");
     let bad = split(
         &right.pane_id,
         panes::SplitDirection::Right,
@@ -1242,41 +1634,11 @@ async fn panes_split_kill_and_respawn() {
             .then_some(())
     })
     .await;
-    // A dead pane (remain-on-exit) restarts without kill, here with another command.
-    raw(&[
-        "set-option",
-        "-w",
-        "-t",
-        &below.pane_id,
-        "remain-on-exit",
-        "on",
-    ]);
-    respawn(&below.pane_id, Some("sh -c 'exit 3'"), Some(true))
-        .await
-        .unwrap();
-    eventually("the pane's program to exit", || async {
-        (raw(&[
-            "display-message",
-            "-p",
-            "-t",
-            &below.pane_id,
-            "#{pane_dead}",
-        ]) == "1")
-            .then_some(())
-    })
-    .await;
-    respawn(&below.pane_id, Some("sleep 60"), None)
-        .await
-        .unwrap();
+    // A dead pane restarting without kill: see
+    // panes_are_kept_once_their_program_ends_only_when_asked.
     assert_eq!(
-        raw(&[
-            "display-message",
-            "-p",
-            "-t",
-            &below.pane_id,
-            "#{pane_dead}"
-        ]),
-        "0"
+        respawn("%999", None, None).await.unwrap_err(),
+        "There is no pane %999."
     );
 
     // A window with one pane can't zoom; the answer says so.
@@ -1331,16 +1693,193 @@ async fn panes_split_kill_and_respawn() {
     assert!(windows_before > 2);
     let killed = kill(&other.pane_id).await.unwrap();
     assert_eq!((killed.window_closed, killed.session_closed), (true, false));
-    assert!(kill(&other.pane_id)
-        .await
-        .unwrap_err()
-        .contains("can't find pane"));
+    assert_eq!(
+        kill(&other.pane_id).await.unwrap_err(),
+        format!("There is no pane {}.", other.pane_id)
+    );
     let killed = kill(&current.pane_id).await.unwrap();
     assert_eq!((killed.window_closed, killed.session_closed), (true, true));
     let after = functions::sessions_list(&w.ctx, EmptyInput {})
         .await
         .unwrap();
     assert!(after.sessions.is_empty());
+}
+
+#[tokio::test]
+async fn panes_are_kept_once_their_program_ends_only_when_asked() {
+    if !tmux_installed() || which("sh").is_none() {
+        eprintln!("tmux or sh missing; skipping");
+        return;
+    }
+    let w = world();
+    let raw = |args: &[&str]| {
+        let output = std::process::Command::new("tmux")
+            .args(["-L", &w._server.socket])
+            .args(args)
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    let field = |pane: &str, format: &str| raw(&["display-message", "-p", "-t", pane, format]);
+    let exists = |pane: String| {
+        let ctx = &w.ctx;
+        async move {
+            functions::sessions_list(ctx, EmptyInput {})
+                .await
+                .unwrap()
+                .sessions
+                .iter()
+                .flat_map(|s| &s.windows)
+                .flat_map(|w| &w.panes)
+                .any(|p| p.id == pane)
+        }
+    };
+    let anchor = sessions::create(
+        &w.ctx,
+        sessions::CreateSessionInput {
+            name: Some("keep".into()),
+            cwd: Some("/".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let session = |name: &str, command: &str, remain_on_exit| {
+        sessions::create(
+            &w.ctx,
+            sessions::CreateSessionInput {
+                name: Some(name.into()),
+                cwd: Some("/".into()),
+                command: Some(command.into()),
+                remain_on_exit,
+                ..Default::default()
+            },
+        )
+    };
+    let window = |command: &str, remain_on_exit| {
+        windows::create(
+            &w.ctx,
+            windows::CreateWindowInput {
+                session: "keep".into(),
+                command: Some(command.into()),
+                select: Some(false),
+                remain_on_exit,
+                ..Default::default()
+            },
+        )
+    };
+    let split = |command: &str, remain_on_exit| {
+        panes::split(
+            &w.ctx,
+            panes::SplitPaneInput {
+                pane: anchor.pane_id.clone(),
+                direction: panes::SplitDirection::Right,
+                cwd: None,
+                command: Some(command.into()),
+                select: Some(false),
+                remain_on_exit,
+            },
+        )
+    };
+
+    // By default tmux closes a pane whose program ends, with its window and
+    // session when it was their last.
+    let ends = "sh -c 'exit 3'";
+    let gone = [
+        session("ends", ends, false).await.unwrap().pane_id,
+        window(ends, false).await.unwrap().pane_id,
+        split(ends, false).await.unwrap().pane_id,
+    ];
+    for pane in gone {
+        eventually("the pane to close", || {
+            let pane = pane.clone();
+            let exists = &exists;
+            async move { (!exists(pane).await).then_some(()) }
+        })
+        .await;
+    }
+    assert_eq!(windows_line(&w.ctx, "ends").await, None);
+
+    // With remain_on_exit the pane stays, dead, even for a program that
+    // ends at once, and restarts without kill.
+    let kept = [
+        session("kept", ends, true).await.unwrap().pane_id,
+        window(ends, true).await.unwrap().pane_id,
+        split(ends, true).await.unwrap().pane_id,
+    ];
+    for pane in &kept {
+        eventually("the program to end", || async {
+            (field(pane, "#{pane_dead}") == "1").then_some(())
+        })
+        .await;
+    }
+    let snapshot = functions::sessions_list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap();
+    let dead: Vec<bool> = kept
+        .iter()
+        .map(|id| {
+            snapshot
+                .sessions
+                .iter()
+                .flat_map(|s| &s.windows)
+                .flat_map(|w| &w.panes)
+                .find(|p| &p.id == id)
+                .unwrap()
+                .dead
+        })
+        .collect();
+    assert_eq!(dead, vec![true, true, true], "the listing says dead too");
+    // The command it was started with is the caller's, not the placeholder.
+    for pane in &kept {
+        assert!(
+            field(pane, "#{pane_start_command}").contains("exit 3"),
+            "{}",
+            field(pane, "#{pane_start_command}")
+        );
+    }
+    let respawn = |pane: &str, command: Option<&str>| {
+        panes::respawn(
+            &w.ctx,
+            panes::RespawnPaneInput {
+                pane: pane.into(),
+                command: command.map(str::to_string),
+                cwd: None,
+                kill: None,
+            },
+        )
+    };
+    respawn(&kept[0], Some("sleep 60")).await.unwrap();
+    eventually("the restarted pane to run sleep", || async {
+        (field(&kept[0], "#{pane_dead}#{pane_current_command}") == "0sleep").then_some(())
+    })
+    .await;
+    // Restarted as it was started: it ends again and stays again.
+    respawn(&kept[1], None).await.unwrap();
+    eventually("the restarted program to end again", || async {
+        (field(&kept[1], "#{pane_dead}") == "1").then_some(())
+    })
+    .await;
+    // Only that pane is kept (tmux 3.0 and later have pane options).
+    let version = functions::status(&w.ctx, EmptyInput {})
+        .await
+        .unwrap()
+        .version
+        .unwrap();
+    if tmux::tmux_cli::version_at_least(&version, 3, 0) != Some(false) {
+        assert_eq!(
+            raw(&[
+                "show-options",
+                "-p",
+                "-v",
+                "-t",
+                &anchor.pane_id,
+                "remain-on-exit"
+            ]),
+            ""
+        );
+    }
 }
 
 fn which(program: &str) -> Option<std::path::PathBuf> {
