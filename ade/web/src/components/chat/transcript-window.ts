@@ -102,6 +102,15 @@ export function isProseRow(flat: FlatTimelineRow | undefined): boolean {
   )
 }
 
+/** An observer fire notice: one compact row, stacked tight with its neighbors. */
+export function isObserverFireRow(flat: FlatTimelineRow | undefined): boolean {
+  return (
+    flat?.kind === 'message' &&
+    flat.message.role === 'system' &&
+    flat.message.kind === 'observer-fired'
+  )
+}
+
 /**
  * A row still changing on its own. It stays mounted wherever the reader is:
  * unmounting one would drop an in-flight approval (the keyboard commands read

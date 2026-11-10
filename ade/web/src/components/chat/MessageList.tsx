@@ -92,6 +92,7 @@ import {
   flattenTimelineRows,
   isHistoryPrepend,
   isLiveRow,
+  isObserverFireRow,
   isProseRow,
   measureRowSlot,
   observeNonEmptyRect,
@@ -381,6 +382,7 @@ interface LiveTimelineRowProps {
   /** Sibling spacing, from the row model: the neighbor may not be mounted. */
   beforeGroup?: boolean
   afterProse?: boolean
+  afterObserverFire?: boolean
 }
 
 function LiveTimelineRow({
@@ -393,6 +395,7 @@ function LiveTimelineRow({
   rowIndex,
   beforeGroup,
   afterProse,
+  afterObserverFire,
 }: LiveTimelineRowProps) {
   const [present, setPresent] = useState(!animate)
 
@@ -411,6 +414,7 @@ function LiveTimelineRow({
       data-index={rowIndex}
       data-before-group={beforeGroup ? '' : undefined}
       data-after-prose={afterProse ? '' : undefined}
+      data-after-observer-fire={afterObserverFire ? '' : undefined}
       data-message-row={messageRow}
       data-presence={present ? 'present' : 'entering'}
       className={cn('chat-live-row', className)}
@@ -1564,6 +1568,9 @@ export function MessageList({
         rowRef={measureRow}
         rowIndex={index}
         beforeGroup={beforeGroup}
+        afterObserverFire={
+          isObserverFireRow(flat) && isObserverFireRow(flatRows[index - 1])
+        }
         messageRow={flat.key}
         animate={
           !reducedMotion &&
