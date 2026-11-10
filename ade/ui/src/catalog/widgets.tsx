@@ -120,6 +120,15 @@ function useListKeys() {
     const target = event.target as HTMLElement
     if (!target.matches(LIST_STOPS)) return
     if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      // A nested row has nothing to fold: ← goes up to its function row
+      // (the tree pattern), so focus is never lost to a folded group.
+      if (target.matches('[data-nested]')) {
+        if (event.key === 'ArrowLeft') {
+          target.parentElement?.querySelector<HTMLElement>('.console-catalog-row[data-tree]')?.focus()
+          event.preventDefault()
+        }
+        return
+      }
       // A group head folds itself; a function row folds through its twist.
       const toggle = target.matches('.console-catalog-group')
         ? target
@@ -436,10 +445,14 @@ export function TerminalSnippet({
             <span className="sh-cmd">iii</span> <span className="sh-word">call</span>{' '}
             <span className="sh-word">{functionId}</span>
             {args.map((a) => (
-              <span key={a.key}>
+              <span key={a.key || a.value}>
                 {' '}
-                <span className="sh-key">{a.key}</span>
-                <span className="sh-op">=</span>
+                {a.key ? (
+                  <>
+                    <span className="sh-key">{a.key}</span>
+                    <span className="sh-op">=</span>
+                  </>
+                ) : null}
                 <span className="sh-value" data-kind={a.kind}>
                   {a.value}
                 </span>
