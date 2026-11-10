@@ -3887,6 +3887,7 @@ async fn relevance_r5_compound_attribute_and_receipt_intent_keep_direct_authorit
 fn offline(dir: &std::path::Path) -> Arc<Deps> {
     let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
     Arc::new(Deps {
+        hook_binding: Arc::default(),
         emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
         iii,
         store: Arc::new(tokio::sync::RwLock::new(Arc::new(

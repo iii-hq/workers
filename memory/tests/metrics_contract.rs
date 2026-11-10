@@ -869,6 +869,7 @@ mod productive {
                 .unwrap()
                 .unwrap();
             let deps = Arc::new(Deps {
+                hook_binding: Arc::default(),
                 emitter: Arc::new(memory::events::Emitter::new(iii.clone())),
                 iii,
                 store: Arc::new(tokio::sync::RwLock::new(Arc::new(

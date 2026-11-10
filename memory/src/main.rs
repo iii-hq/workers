@@ -148,6 +148,7 @@ fn observe_seam(
         source,
         target,
         options,
+        None,
     ));
 }
 
@@ -181,6 +182,7 @@ async fn keep_observed(
     source: Source,
     target: &'static str,
     options: ObserverOptions,
+    binding: Option<Arc<memory::hook_binding::HookBinding>>,
 ) {
     let mut waits = reobserve_waits();
     loop {
@@ -220,6 +222,13 @@ async fn keep_observed(
             tokio::time::sleep(wait)
         );
         observer = observe_logged(&iii, &source, target, &options);
+        if let Some(binding) = &binding {
+            if target == hooks::TURN_COMPLETED_FN {
+                binding.install_completion(observer.clone());
+            } else {
+                binding.install(observer.clone());
+            }
+        }
     }
 }
 
@@ -323,6 +332,7 @@ async fn main() -> Result<()> {
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
     let deps = Arc::new(Deps {
+        hook_binding: Arc::default(),
         iii: iii.clone(),
         store: store_cell.clone(),
         config: cell.clone(),
@@ -351,7 +361,24 @@ async fn main() -> Result<()> {
         hooks::EXTRACTION_QUEUE,
     );
     for (source, target, options) in seam_observers(extraction_id) {
-        observe_seam(&iii, source, target, options);
+        if target == hooks::PRE_GENERATE_FN || target == hooks::TURN_COMPLETED_FN {
+            let observer = observe_logged(&iii, &source, target, &options);
+            if target == hooks::TURN_COMPLETED_FN {
+                deps.hook_binding.install_completion(observer.clone());
+            } else {
+                deps.hook_binding.install(observer.clone());
+            }
+            tokio::spawn(keep_observed(
+                iii.clone(),
+                observer,
+                source,
+                target,
+                options,
+                Some(deps.hook_binding.clone()),
+            ));
+        } else {
+            observe_seam(&iii, source, target, options);
+        }
     }
     ensure_extraction_queue(iii.clone());
 
@@ -389,30 +416,9 @@ async fn main() -> Result<()> {
 /// The two internal harness-facing handlers. Registered like every other
 /// function so hook invocations show up in traces, but marked internal.
 fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    let d = deps.clone();
-    iii.register_function(
-        hooks::PRE_GENERATE_FN,
-        RegisterFunction::new_async(move |input: hooks::PreGenerateInput| {
-            let d = d.clone();
-            async move { hooks::pre_generate(&d, input).await }
-        })
-        .description(hooks::PRE_GENERATE_DESC)
-        // Deliberately NOT trace_hidden: seeing memory feed each turn (which
-        // bank, which memories) in the trace timeline is a product requirement,
-        // not plumbing noise.
-        .metadata(json!({ "internal": true })),
-    );
+    memory::hook_binding::register_pre_generate(iii, deps);
 
-    let d = deps.clone();
-    iii.register_function(
-        hooks::TURN_COMPLETED_FN,
-        RegisterFunction::new_async(move |input: hooks::TurnCompletedInput| {
-            let d = d.clone();
-            async move { hooks::turn_completed(&d, input).await }
-        })
-        .description(hooks::TURN_COMPLETED_DESC)
-        .metadata(json!({ "internal": true })),
-    );
+    memory::hook_binding::register_turn_completed(iii, deps);
 
     let d = deps.clone();
     iii.register_function(

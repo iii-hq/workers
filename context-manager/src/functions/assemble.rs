@@ -24,7 +24,7 @@ use crate::core::prune::{
     cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes, PruneParams,
 };
 use crate::core::selection::select;
-use crate::core::summary::render_system_prompt;
+use crate::core::summary::{render_system_prompt_with_span, RenderedSummary};
 use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, TurnKnobs};
@@ -228,7 +228,22 @@ pub struct AssembleBreakdown {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+pub struct AssemblySummary {
+    pub assembly_id: String,
+    pub span: RenderedSummary,
+    /// Exact request indices actually handed to this compaction's summarizer.
+    /// None means previous_summary; its authority belongs to the caller ledger.
+    pub summarized_indices: Option<Vec<usize>>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct AssembleResponse {
+    /// Output ordinal -> exact request index; absent if the bounded map cannot fit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_indices: Option<Vec<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_origin: Option<AssemblySummary>,
+
     pub system_prompt: String,
     /// Budgeted, ready to send to llm-router.
     pub messages: Vec<AgentMessage>,
@@ -307,7 +322,9 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     normalize_media(&mut working, resolved.supports_vision);
 
     let base_prompt = req.system_prompt.as_deref();
-    let mut system_prompt = render_system_prompt(base_prompt, options.previous_summary.as_deref());
+    let (mut system_prompt, mut summary_span) =
+        render_system_prompt_with_span(base_prompt, options.previous_summary.as_deref());
+    let mut summarized_indices = None;
     let tools = req.tools.as_deref().unwrap_or_default();
     let request_overhead_tokens = options.request_overhead_tokens.unwrap_or(0);
     let knobs = TurnKnobs {
@@ -439,12 +456,16 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         )
         .await
         {
-            system_prompt = render_system_prompt(base_prompt, Some(&compaction.summary));
+            (system_prompt, summary_span) =
+                render_system_prompt_with_span(base_prompt, Some(&compaction.summary));
+            summarized_indices =
+                (compaction.head_len <= 2048).then(|| view_to_orig[..compaction.head_len].to_vec());
             working = working.split_off(compaction.head_len);
             sizes = sizes.split_off(compaction.head_len);
             prompt_tokens = estimator.text(&system_prompt);
             applied.compacted = true;
             applied.tail_start_index = Some(compaction.tail_start_view.map(|v| view_to_orig[v]));
+            view_to_orig = view_to_orig.split_off(compaction.head_len);
             applied.tokens_before = Some(compaction.tokens_before);
             applied.summarized_head_tokens = Some(compaction.tokens_before);
             applied.summary = Some(compaction.summary);
@@ -539,6 +560,14 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     });
 
     Ok(AssembleResponse {
+        input_indices: (view_to_orig.len() <= 2048).then_some(view_to_orig),
+        summary_origin: summary_span
+            .filter(|_| system_prompt.len() <= 1024 * 1024)
+            .map(|span| AssemblySummary {
+                assembly_id: uuid::Uuid::new_v4().to_string(),
+                span,
+                summarized_indices,
+            }),
         system_prompt,
         messages: working,
         token_count,

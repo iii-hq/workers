@@ -100,6 +100,7 @@ fn deps_at(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
     let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
     let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
     Deps {
+        hook_binding: Arc::default(),
         emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
         iii,
         store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),

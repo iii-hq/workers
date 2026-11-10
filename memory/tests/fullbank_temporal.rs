@@ -101,6 +101,7 @@ async fn boundary(root: &std::path::Path, cache: Option<Value>) -> Boundary {
     wait.await.unwrap();
     Boundary {
         deps: Arc::new(Deps {
+            hook_binding: Arc::default(),
             emitter: Arc::new(Emitter::new(iii.clone())),
             iii,
             store: Arc::new(tokio::sync::RwLock::new(Arc::new(

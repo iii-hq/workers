@@ -1535,10 +1535,12 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # Memory E2E (non-required). A pull request from this repository that
   # changes memory runs harness-e2e's `memory` and `memory-learning` suites on
-  # its stacks/memory.yaml, with memory built from the PR head and the rest
-  # released. Memory is outside the harness graph, so the pr suite above never
-  # builds it. Like that job it warns and never gates; each suite keeps its
-  # own PR comment.
+  # its stacks/memory.yaml, with harness and memory built from the same PR
+  # head and the rest released. Keep the recall_context producer and consumer
+  # paired as their contract evolves; a released harness may lack the envelope
+  # required by this memory. Memory is outside the harness graph, so the pr
+  # suite above never builds it. Each suite keeps its own PR comment and turns
+  # red on a non-passing, non-skipped verdict; this job is non-required.
   # ──────────────────────────────────────────────────────────────
   memory-e2e:
     name: memory e2e (${{ matrix.suite }})
@@ -1568,13 +1570,13 @@ jobs:
           repositories: harness-e2e
           permission-actions: write
 
-      - name: Run the ${{ matrix.suite }} suite on memory built from this PR
+      - name: Run the ${{ matrix.suite }} suite on harness and memory built from this PR
         id: e2e
         uses: iii-hq/harness-e2e/.github/actions/verify-stack@36c41f00bf0b23919b82e75ab72c86aec101f485
         with:
           token: ${{ steps.app.outputs.token }}
           comment-token: ${{ github.token }}
-          pins: '["memory"]'
+          pins: '["harness","memory"]'
           commit: ${{ github.event.pull_request.head.sha }}
           suite: ${{ matrix.suite }}
           stack: memory

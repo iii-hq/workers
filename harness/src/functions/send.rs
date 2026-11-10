@@ -990,6 +990,11 @@ async fn try_enqueue(
         .entry_id
         .map(str::to_string)
         .unwrap_or_else(|| ids::queued_entry_id(&id));
+    let d = Delivery {
+        entry_id: Some(&entry_id),
+        ..*d
+    };
+    record_recall_delivery(deps, session_id, &d).await?;
     let row = crate::state::QueuedMessage {
         id,
         session_id: session_id.to_string(),
@@ -1012,7 +1017,7 @@ async fn try_enqueue(
     let outcome = match recheck {
         Some(r) if !r.status.is_terminal() => {
             if merge_refresh_needed(&r.options, options) {
-                seed_or_merge_queued(deps, cfg, session_id, options, d).await?
+                seed_or_merge_queued(deps, cfg, session_id, options, &d).await?
             } else {
                 StartOutcome {
                     session_id: session_id.to_string(),
@@ -1024,7 +1029,7 @@ async fn try_enqueue(
                 }
             }
         }
-        _ => seed_or_merge_queued(deps, cfg, session_id, options, d).await?,
+        _ => seed_or_merge_queued(deps, cfg, session_id, options, &d).await?,
     };
     Ok(Some((outcome, entry_id)))
 }
@@ -1168,6 +1173,24 @@ where
     operation().await
 }
 
+// Record the route's final transcript identity before append or durable parking.
+// Forwarded origin and metadata never participate in channel classification.
+async fn record_recall_delivery(
+    deps: &Deps,
+    session_id: &str,
+    d: &Delivery<'_>,
+) -> Result<(), HarnessError> {
+    if let Err(error) = crate::hooks::recall::record_delivery(deps, session_id, d).await {
+        if d.continuation_entry_id.is_some() || matches!(&error, HarnessError::InvalidRequest(_)) {
+            return Err(error);
+        }
+        // Provenance storage unavailable: deliver normally, resolve as unknown
+        // (rules only). Memory enrichment must never block an ordinary send.
+        tracing::warn!(session_id, %error, "recall receipt unavailable; delivering without recall authority");
+    }
+    Ok(())
+}
+
 /// The shared delivery tail of every turn-seeding path: park the message when a
 /// step is streaming, else append it and CAS-seed the turn (or merge into the
 /// running one). `start`, `inject` and the sub-agent spawn all end here, so
@@ -1182,25 +1205,6 @@ pub(crate) async fn deliver(
     d: Delivery<'_>,
 ) -> Result<(StartOutcome, String), HarnessError> {
     super::delete_session_tree::ensure_live(deps, session_id).await?;
-    // Mint the entry id before any durable parking. The private receipt is
-    // immutable per delivery and survives queue draining/restarts. Forwarded
-    // origin and metadata never participate in channel classification.
-    let entry_id = d
-        .entry_id
-        .map(str::to_owned)
-        .unwrap_or_else(ids::new_queued_id);
-    let d = Delivery {
-        entry_id: Some(&entry_id),
-        ..d
-    };
-    if let Err(error) = crate::hooks::recall::record_delivery(deps, session_id, &d).await {
-        if d.continuation_entry_id.is_some() || matches!(&error, HarnessError::InvalidRequest(_)) {
-            return Err(error);
-        }
-        // Provenance storage unavailable: deliver normally, resolve as unknown
-        // (rules only). Memory enrichment must never block an ordinary send.
-        tracing::warn!(session_id, %error, "recall receipt unavailable; delivering without recall authority");
-    }
     if d.skills_explicit {
         let active = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
             .await?
@@ -1210,6 +1214,18 @@ pub(crate) async fn deliver(
     if let Some((outcome, row_entry)) = try_enqueue(deps, cfg, session_id, &options, &d).await? {
         return Ok((outcome, row_entry));
     }
+    // Only the queue path mints e_q_ IDs. A direct append uses the session
+    // manager's e_ format; caller-supplied IDs (including e_idem_) stay exact.
+    // Freeze that identity before recording provenance or appending anything.
+    let entry_id = d
+        .entry_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("e_{}", uuid::Uuid::new_v4().simple()));
+    let d = Delivery {
+        entry_id: Some(&entry_id),
+        ..d
+    };
+    record_recall_delivery(deps, session_id, &d).await?;
     let preview = message_preview(d.message);
     if d.skills_explicit {
         return with_delivery_guard(
@@ -1966,6 +1982,10 @@ pub(crate) async fn seed_new(
         reasoning: None,
     })
 }
+
+#[cfg(test)]
+#[path = "send_delivery_tests.rs"]
+mod tests_delivery;
 
 #[cfg(test)]
 mod tests {

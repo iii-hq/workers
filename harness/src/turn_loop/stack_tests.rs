@@ -176,6 +176,7 @@ async fn complete_child(parent_prompt_present: bool) {
         record,
         strategy: crate::contract::OutputStrategy::Text,
         outcome: crate::clients::router::ChatOutcome {
+            generation_id: None,
             message,
             ok: true,
             stop_reason: None,

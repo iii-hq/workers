@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import json
 from pathlib import Path
 import re
 import tomllib
 
+import pytest
 import yaml
 
 
@@ -362,3 +365,138 @@ def test_sandbox_libkrun_rust_steps_build_init_first() -> None:
     assert "cargo test --locked --lib fails_closed" in rust
     assert rust.index("BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh") < rust.index(
         "--features embed-init,embed-libkrunfw -- -D warnings")
+
+
+VERIFY_STACK_ACTION = (
+    "iii-hq/harness-e2e/.github/actions/verify-stack@"
+    "36c41f00bf0b23919b82e75ab72c86aec101f485"
+)
+PR_HEAD = "${{ github.event.pull_request.head.sha }}"
+
+
+def memory_pair_revisions(job: dict, pr_head: str) -> dict[str, str]:
+    """Resolve verify-stack's JSON pins + shared commit, not worker-specific refs."""
+    assert re.fullmatch(r"[0-9a-f]{40}", pr_head)
+    revisions = {}
+    for step in job["steps"]:
+        if "/.github/actions/verify-stack@" not in step.get("uses", ""):
+            continue
+        assert step["uses"] == VERIFY_STACK_ACTION
+        inputs = step["with"]
+        assert "versions" not in inputs, "released versions must not override the pair"
+        pins = json.loads(inputs["pins"])
+        assert isinstance(pins, list) and pins
+        commit = inputs["commit"]
+        resolved = pr_head if commit == PR_HEAD else commit
+        assert re.fullmatch(r"[0-9a-f]{40}", resolved), "mutable commit"
+        for worker in pins:
+            assert worker not in revisions, "duplicate pin"
+            revisions[worker] = resolved
+    assert set(revisions) == {"harness", "memory"}, "producer/consumer pair required"
+    assert revisions["harness"] == revisions["memory"], "mismatched pair"
+    assert all(revision == pr_head for revision in revisions.values()), "not PR head"
+    return revisions
+
+
+def test_memory_e2e_pins_producer_and_consumer_to_each_immutable_pr_head() -> None:
+    job = workflow("ci.yml")["jobs"]["memory-e2e"]
+    action = next(step for step in job["steps"] if step.get("id") == "e2e")
+    assert action["with"]["commit"] == PR_HEAD
+    assert len([
+        step for step in job["steps"]
+        if "/.github/actions/verify-stack@" in step.get("uses", "")
+    ]) == 1
+    for pr_head in ("0123456789abcdef" * 2 + "01234567", "f" * 40):
+        assert memory_pair_revisions(job, pr_head) == {
+            "harness": pr_head, "memory": pr_head,
+        }
+
+
+@pytest.mark.parametrize("pins", [["memory"], ["harness"], []])
+def test_memory_e2e_rejects_incomplete_pairs(pins: list[str]) -> None:
+    job = workflow("ci.yml")["jobs"]["memory-e2e"]
+    action = next(step for step in job["steps"] if step.get("id") == "e2e")
+    action["with"]["pins"] = json.dumps(pins)
+    with pytest.raises(AssertionError):
+        memory_pair_revisions(job, "a" * 40)
+
+
+def test_memory_e2e_rejects_mismatched_immutable_pair() -> None:
+    job = workflow("ci.yml")["jobs"]["memory-e2e"]
+    producer = next(step for step in job["steps"] if step.get("id") == "e2e")
+    consumer = deepcopy(producer)
+    producer["with"].update(pins='["harness"]', commit="a" * 40)
+    consumer["with"].update(pins='["memory"]', commit="b" * 40)
+    job["steps"].append(consumer)
+    with pytest.raises(AssertionError, match="mismatched pair"):
+        memory_pair_revisions(job, "a" * 40)
+
+
+@pytest.mark.parametrize("commit", ["main", "latest", "${{ github.head_ref }}", "b" * 40])
+def test_memory_e2e_rejects_mutable_or_stale_pair(commit: str) -> None:
+    job = workflow("ci.yml")["jobs"]["memory-e2e"]
+    action = next(step for step in job["steps"] if step.get("id") == "e2e")
+    action["with"]["commit"] = commit
+    with pytest.raises(AssertionError):
+        memory_pair_revisions(job, "a" * 40)
+
+
+def test_memory_e2e_preserves_security_suites_and_verdict_policy() -> None:
+    ci = workflow("ci.yml")
+    assert "pull_request_target" not in ci["on"]
+    job = ci["jobs"]["memory-e2e"]
+    assert job["needs"] == "discover"
+    assert " ".join(job["if"].split()) == (
+        "github.event_name == 'pull_request' "
+        "&& github.event.pull_request.head.repo.full_name == github.repository "
+        "&& !startsWith(github.head_ref, 'eval/') "
+        "&& contains(fromJSON(needs.discover.outputs.changed_workers), 'memory')"
+    )
+    assert job["permissions"] == {"contents": "read", "pull-requests": "write"}
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["timeout-minutes"] == "60"
+    assert job["strategy"] == {
+        "fail-fast": "false", "matrix": {"suite": ["memory", "memory-learning"]},
+    }
+    assert job.get("continue-on-error", "false") == "false"
+    assert "env" not in job
+    assert "env" not in ci or not {"MODEL", "PROFILE"}.intersection(ci["env"])
+    assert len(job["steps"]) == 3
+    app, action, verdict = job["steps"]
+    assert app["id"] == "app"
+    assert app["uses"] == (
+        "actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349"
+    )
+    assert app["with"] == {
+        "app-id": "${{ secrets.III_CI_APP_ID }}",
+        "private-key": "${{ secrets.III_CI_APP_PRIVATE_KEY }}",
+        "owner": "iii-hq",
+        "repositories": "harness-e2e",
+        "permission-actions": "write",
+    }
+    assert action["uses"] == VERIFY_STACK_ACTION
+    assert set(action["with"]) == {
+        "token", "comment-token", "pins", "commit", "suite", "stack", "comment-pr",
+    }  # No model/profile override: retain the pinned runner's existing defaults.
+    assert action["with"]["token"] == "${{ steps.app.outputs.token }}"
+    assert action["with"]["comment-token"] == "${{ github.token }}"
+    assert action["with"]["suite"] == "${{ matrix.suite }}"
+    assert action["with"]["stack"] == "memory"
+    assert action["with"]["comment-pr"] == (
+        "${{ github.repository }}#${{ github.event.pull_request.number }}"
+    )
+    assert action["id"] == "e2e"
+    assert action.get("continue-on-error", "false") == "false"
+    assert "if" not in app and "if" not in action
+    assert "env" not in app and "env" not in action
+    assert verdict["if"] == (
+        "steps.e2e.outputs.status != 'passed' && steps.e2e.outputs.status != 'skipped'"
+    )
+    assert verdict.get("continue-on-error", "false") == "false"
+    assert verdict["env"] == {
+        "SUITE": "${{ matrix.suite }}", "SUMMARY": "${{ steps.e2e.outputs.summary }}",
+    }
+    assert verdict["run"].splitlines() == [
+        'echo "::warning::Memory E2E (${SUITE}): ${SUMMARY:-no verdict}"',
+        "exit 1",
+    ]

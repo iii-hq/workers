@@ -176,18 +176,42 @@ pub const SUMMARY_HEADING: &str = "# Conversation summary";
 
 /// Base system prompt + the summary section. An empty base yields just
 /// the section; no summary yields just the base.
-pub fn render_system_prompt(base: Option<&str>, summary: Option<&str>) -> String {
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct RenderedSummary {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub summary_sha256: String,
+    pub system_sha256: String,
+}
+
+pub fn render_system_prompt_with_span(
+    base: Option<&str>,
+    summary: Option<&str>,
+) -> (String, Option<RenderedSummary>) {
+    use sha2::{Digest, Sha256};
     let base = base.unwrap_or("").trim_end();
-    match summary {
-        None => base.to_string(),
-        Some(summary) => {
-            if base.is_empty() {
-                format!("{SUMMARY_HEADING}\n\n{summary}")
-            } else {
-                format!("{base}\n\n{SUMMARY_HEADING}\n\n{summary}")
-            }
-        }
+    let mut rendered = base.to_owned();
+    let Some(summary) = summary else {
+        return (rendered, None);
+    };
+    if !base.is_empty() {
+        rendered.push_str("\n\n");
     }
+    rendered.push_str(SUMMARY_HEADING);
+    rendered.push_str("\n\n");
+    let byte_start = rendered.len();
+    rendered.push_str(summary);
+    let span = RenderedSummary {
+        byte_start,
+        byte_end: rendered.len(),
+        summary_sha256: format!("{:x}", Sha256::digest(summary.as_bytes())),
+        system_sha256: format!("{:x}", Sha256::digest(rendered.as_bytes())),
+    };
+    (rendered, Some(span))
+}
+
+pub fn render_system_prompt(base: Option<&str>, summary: Option<&str>) -> String {
+    render_system_prompt_with_span(base, summary).0
 }
 
 #[cfg(test)]

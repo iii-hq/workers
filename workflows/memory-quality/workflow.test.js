@@ -22,7 +22,7 @@ globalThis.testMemoryQuality = function() {
   s=base();s.units[0].status='failed';s.units[0].attempt=2;s.units[0].attempt_limit=3;o=step(s);check(o.actions[0].type==='dispatch'&&o.actions[0].attempt===3,'authorized extra attempt');
   s=o.state;s.units[0].status='failed';check(step(s).actions[0].reason==='attempts-exhausted','extra attempt ceiling');
   s=base();s.scope_units=['a'];s.units[0].status='accepted';o=step(s);check(o.actions[0].scope_complete===true&&o.actions[0].complete===false&&o.state.units[1].attempt===0,'scope stops next phase');
-  s=base();s.now_ms=100;s.units[0].status='verifying';s.units[0].attempt=1;s.results=[{...r,outcome:'blocked'}];check(step(s).actions[0].type==='finish','terminal result clears busy before deadline gate');
+  s=base();s.now_ms=100;s.units[0].status='verifying';s.units[0].attempt=1;s.results=[{...r,outcome:'blocked',independent:true}];check(step(s).actions[0].type==='finish','terminal result clears busy before deadline gate');
   s=base();s.units[0].status='running';s.units[0].attempt=1;s.results=[{...r,producer_stopped:false}];o=step(s);o.state.results=[r];check(step(o.state).actions[0].type==='verify','not stopped result remains recoverable');
   s=base();s.deadline_ms=null;s.deadline_mode='user-open-ended';s.now_ms=999999;o=step(s);check(o.actions[0].type==='dispatch'&&o.state.units[0].phase_deadline_ms>s.now_ms,'open global deadline still bounds phases');
   s=base();s.units[0].correction_rounds=4;check(step(s).actions[0].type==='finish','per unit correction cap');
@@ -73,3 +73,147 @@ globalThis.testMemoryQuality = function() {
   s=sb();o=step(s);s=o.state;s.stage_continuations=[{id:'safe',attempt:1,revision:'r',producer_stopped:true,kind:'test-receipt',session_id:'fresh-repair'}];o=step(s);check(o.actions[0].continuation&&o.state.parallel_stages[0].attempt===1&&!o.state.parallel_stages[0].correction_rounds,'test receipt resumes stage without extra round');
   return {passed:n};
 };
+
+// Load only the pure transition module, never the effectful workflow entrypoint.
+import('node:test').then(({ test }) => {
+  test('pure memory quality transitions', async t => {
+    const { default: assert } = await import('node:assert/strict');
+    await import('./workflow.js');
+    await t.test('existing transition contracts', () => assert.ok(testMemoryQuality().passed > 0));
+    const base = () => ({run_id:'pure',state_version:0,now_ms:10,deadline_ms:null,deadline_mode:'user-open-ended',code_revision:'r',approved:true,preflight_ok:true,route_verified:true,consumed:{agent_calls:0,no_progress_rounds:0,correction_rounds:0},limits:{agent_calls:30,no_progress_rounds:2,correction_rounds:3,attempts_per_unit:2,phase_ms:20,concurrency:4},units:[{id:'a',status:'pending',attempt:0,depends_on:[]}],results:[]});
+    await t.test('normalized segment overlaps serialize held and batch writers', () => {
+      for (const [left,right,conflict] of [
+        ['/authorized/src','/authorized/src/a.rs',true],
+        ['/authorized/src/a.rs','/authorized/src',true],
+        ['/authorized/./src','/authorized//src/a.rs',true],
+        ['/authorized/src/../lib','/authorized/lib/a.rs',true],
+        ['/','/authorized/a.rs',true],
+        ['/authorized/src','/authorized/src2/a.rs',false],
+        ['/authorized/lib/a.rs','/authorized/lib/b.rs',false]
+      ]) {
+        for (const held of ['batch','running','lock']) {
+          const s = base(); s.units=[]; s.authorization={parallel_implementation:true};
+          s.parallel_stages=[{id:'first',unit:'first',status:'pending',authorized:true,required:true,attempt:0,depends_on:[],session_id:'one',paths:[left]},{id:'second',unit:'second',status:'pending',authorized:true,required:true,attempt:0,depends_on:[],session_id:'two',paths:[right]}];
+          if (held === 'running') Object.assign(s.parallel_stages[0],{status:'running',attempt:1,deadline_ms:100});
+          if (held === 'lock') { s.parallel_stages.shift(); s.write_locks=[{paths:[left]}]; }
+          const o = memoryQualityStep(s);
+          const expected = held === 'batch' ? (conflict ? ['first'] : ['first','second']) : (conflict ? [] : ['second']);
+          assert.deepEqual(o.actions.filter(a=>a.type==='dispatch').map(a=>a.stage_id),expected,held+': '+left+' vs '+right);
+          validateMemoryQualityActions(o,['/']);
+          assert.equal(s.parallel_stages.at(-1).attempt,0,'input remains immutable');
+        }
+      }
+    });
+    await t.test('stage continuation retains locks against nested active or quarantined writers', () => {
+      for (const owner of ['lock','running','expired']) {
+        const s=base(); s.units=[]; s.authorization={parallel_implementation:true};
+        s.parallel_stages=[{id:'p',unit:'p',session_id:'old',status:'delivered',authorized:true,required:true,attempt:1,depends_on:[],paths:['/authorized/src/a']}];
+        if(owner==='lock') s.write_locks=[{paths:['/authorized/./src']}];
+        else s.parallel_stages.push({id:'owner',unit:'owner',session_id:'owner',status:owner,authorized:true,required:true,attempt:1,depends_on:[],deadline_ms:100,needs_reconciliation:owner==='expired',paths:['/authorized//src']});
+        s.stage_continuations=[{id:'p',attempt:1,revision:'r',producer_stopped:true,session_id:'fresh'}];
+        const o=memoryQualityStep(s); assert.equal(o.actions.some(a=>a.type==='dispatch'),false);
+      }
+    });
+    await t.test('lexical authorization normalizes roots and rejects boundary or traversal escapes', () => {
+      for (const [root,path,allowed] of [
+        ['/','/a',true], ['/authorized/','/authorized//./src',true],
+        ['/authorized/./src','/authorized/src/a',true],
+        ['/authorized/src','/authorized/src/../src/a',true],
+        ['/authorized/src','/authorized/src/../outside',false],
+        ['/authorized','/authorized2/a',false], ['/authorized','/authorized/../../authorized/a',false],
+        ['/authorized','relative/a',false], ['/authorized','/authorized/a\0b',false],
+        ['relative','/authorized/a',false]
+      ]) {
+        const s=base(); s.units=[]; s.authorization={parallel_implementation:true};
+        s.parallel_stages=[{id:'p',unit:'p',session_id:'clean',status:'pending',authorized:true,required:true,attempt:0,depends_on:[],paths:[path]}];
+        const o=memoryQualityStep(s);
+        if (allowed) assert.doesNotThrow(()=>validateMemoryQualityActions(o,[root]));
+        else assert.throws(()=>validateMemoryQualityActions(o,[root]),/unauthorized stage path/);
+        const plain={state:base(),actions:[{id:'plain',type:'dispatch',path}]};
+        if (allowed) assert.doesNotThrow(()=>validateMemoryQualityActions(plain,[root]));
+        else assert.throws(()=>validateMemoryQualityActions(plain,[root]),/unauthorized path/);
+      }
+    });
+    await t.test('missing unit result expires and quarantines before retry or global finish', () => {
+      for (const globalDeadline of [null,25]) {
+        let s=base(); s.deadline_ms=globalDeadline;
+        let o=memoryQualityStep(s); assert.equal(o.actions[0].type,'dispatch'); assert.equal(o.state.units[0].phase_deadline_ms,30);
+        s=o.state; s.now_ms=29; o=memoryQualityStep(s); assert.equal(o.actions[0].type,'wait');
+        s=o.state; s.now_ms=30; o=memoryQualityStep(s);
+        assert.equal(o.state.units[0].status,'expired'); assert.equal(o.state.units[0].needs_reconciliation,true);
+        assert.deepEqual(o.actions.map(a=>[a.type,a.reason,a.active]),[['wait','phase-expired',['a']]]);
+        s=o.state; s.now_ms=1000; o=memoryQualityStep(s); assert.equal(o.state.units[0].attempt,1); assert.equal(o.actions[0].type,'wait');
+        s=o.state; s.continuations=[{unit:'a',attempt:1,revision:'r',producer_stopped:false}];
+        o=memoryQualityStep(s); assert.equal(o.actions[0].type,'wait');
+        s=o.state; s.continuations=[{unit:'a',attempt:1,revision:'old',producer_stopped:true}];
+        o=memoryQualityStep(s); assert.equal(o.actions[0].type,'wait');
+        s=o.state; s.continuations=[{unit:'a',attempt:1,revision:'r',producer_stopped:true}];
+        o=memoryQualityStep(s);
+        assert.equal(o.state.units[0].needs_reconciliation,false);
+        assert.equal(o.actions[0].type,globalDeadline===null?'dispatch':'finish');
+        assert.equal(o.state.units[0].attempt,globalDeadline===null?2:1);
+        if(globalDeadline===null) assert.equal(o.state.units[0].phase_deadline_ms,1020);
+      }
+    });
+    await t.test('late stopped delivery proceeds but stale writer cannot replace reviewer or retry', () => {
+      const r={run_id:'pure',unit:'a',attempt:1,revision:'r',event_id:'delivery',producer_stopped:true,outcome:'done',evidence:['proof']};
+      let s=memoryQualityStep(base()).state; s.now_ms=31;
+      let o=memoryQualityStep(s); assert.equal(o.state.units[0].status,'expired');
+      s=o.state; s.results=[r]; o=memoryQualityStep(s);
+      assert.equal(o.actions[0].type,'verify'); assert.equal(o.state.units[0].needs_reconciliation,false); assert.equal(o.state.units[0].phase_deadline_ms,51);
+      s=o.state; s.now_ms=40; s.results=[{...r,event_id:'writer-conflict',outcome:'blocked'}];
+      o=memoryQualityStep(s); assert.equal(o.state.units[0].status,'verifying'); assert.equal(o.actions[0].type,'wait');
+      s=o.state; s.now_ms=51; o=memoryQualityStep(s); assert.equal(o.state.units[0].expired_phase,'verifying');
+      s=o.state; s.results=[{...r,event_id:'late-writer'}]; o=memoryQualityStep(s); assert.equal(o.state.units[0].status,'expired');
+      s=o.state; s.continuations=[{unit:'a',attempt:1,revision:'r',producer_stopped:true,receipt:'stale-writer'}];
+      o=memoryQualityStep(s); assert.equal(o.state.units[0].status,'expired'); assert.equal(o.actions[0].type,'wait');
+      s=o.state; s.results=[{...r,event_id:'review',independent:true,accepted:true}];
+      o=memoryQualityStep(s); assert.equal(o.state.units[0].status,'accepted'); assert.equal(o.actions[0].complete,true);
+      s=o.state; s.results=[{...r,event_id:'after-accept',outcome:'failed'}]; assert.equal(memoryQualityStep(s).state.units[0].status,'accepted');
+      s=memoryQualityStep(base()).state; s.now_ms=31; s=memoryQualityStep(s).state;
+      s.continuations=[{unit:'a',attempt:1,revision:'r',producer_stopped:true}]; s=memoryQualityStep(s).state;
+      assert.equal(s.units[0].attempt,2); s.results=[r]; o=memoryQualityStep(s);
+      assert.equal(o.state.units[0].status,'running'); assert.equal(o.actions[0].type,'wait');
+    });
+    await t.test('reconciled final attempt finishes only after the stopped receipt', () => {
+      const input=base(); input.limits.attempts_per_unit=1;
+      let s=memoryQualityStep(input).state; s.now_ms=30; let o=memoryQualityStep(s);
+      assert.equal(o.actions[0].type,'wait'); assert.equal(o.state.units[0].needs_reconciliation,true);
+      s=o.state; s.continuations=[{unit:'a',attempt:1,revision:'r',producer_stopped:true}]; o=memoryQualityStep(s);
+      assert.equal(o.actions[0].type,'finish'); assert.equal(o.actions[0].reason,'attempts-exhausted'); assert.equal(o.state.units[0].attempt,1);
+    });
+    await t.test('verification and resumed phases receive fresh bounded deadlines', () => {
+      let s=memoryQualityStep(base()).state; s.now_ms=20;
+      s.continuations=[{unit:'a',attempt:1,revision:'r',producer_stopped:true,receipt:'command'}];
+      let o=memoryQualityStep(s); assert.equal(o.actions[0].resume,true); assert.equal(o.state.units[0].phase_deadline_ms,40);
+      s=o.state; s.now_ms=25; s.results=[{run_id:'pure',unit:'a',attempt:1,revision:'r',event_id:'done',producer_stopped:true,outcome:'done',evidence:['proof']}];
+      o=memoryQualityStep(s); assert.equal(o.actions[0].type,'verify'); assert.equal(o.state.units[0].phase_deadline_ms,45);
+      s=o.state; s.now_ms=30; s.continuations=[{unit:'a',attempt:1,revision:'r',producer_stopped:true,kind:'review-correction'}];
+      o=memoryQualityStep(s); assert.equal(o.actions[0].resume,true); assert.equal(o.state.units[0].phase_deadline_ms,50);
+      s=o.state; s.now_ms=50; assert.equal(memoryQualityStep(s).state.units[0].status,'expired');
+    });
+    await t.test('required preparation and stage wait for dispatchable pending or failed dependencies', () => {
+      for (const kind of ['preparation','stage']) for (const status of ['pending','failed']) {
+        let s=base(); s.units[0].status=status; s.units[0].attempt=status==='failed'?1:0;
+        s.authorization={parallel_preparation:true,parallel_implementation:true};
+        if(kind==='preparation') s.preparations=[{id:'prep',unit:'prep',session_id:'clean',status:'pending',read_only:true,required:true,attempt:0,depends_on:['a']}];
+        else s.parallel_stages=[{id:'stage',unit:'stage',session_id:'clean',status:'pending',authorized:true,required:true,attempt:0,depends_on:['a'],paths:['/authorized/a']}];
+        const o=memoryQualityStep(s);
+        assert.equal(o.actions[0].type,'dispatch'); assert.equal(o.actions[0].unit,'a');
+        assert.equal(o.actions[0].attempt,status==='failed'?2:1);
+      }
+      let s=base(); s.authorization={parallel_preparation:true};
+      s.preparations=[{id:'prep',unit:'prep',session_id:'clean',status:'pending',read_only:true,required:true,attempt:0,depends_on:['a']}];
+      let o=memoryQualityStep(s); s=o.state;
+      s.results=[{run_id:'pure',unit:'a',attempt:1,revision:'r',event_id:'invalid',producer_stopped:true,outcome:'done',evidence:[]}];
+      o=memoryQualityStep(s); assert.equal(o.actions[0].type,'dispatch'); assert.equal(o.actions[0].attempt,2);
+      for (const restriction of ['scope','attempts','dependency']) {
+        s=base(); s.preparations=[{required:true,status:'pending'}];
+        if(restriction==='scope') s.scope_units=['other'];
+        if(restriction==='attempts') s.units[0].attempt=2;
+        if(restriction==='dependency') s.units[0].depends_on=['missing'];
+        assert.equal(memoryQualityStep(s).actions[0].reason,'preparation-incomplete');
+      }
+    });
+  });
+});

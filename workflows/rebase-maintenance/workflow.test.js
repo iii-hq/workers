@@ -30,3 +30,49 @@ globalThis.testRebaseMaintenance = function () {
   let rejected=false;try{s=base();s.groups[0].paths=['/root/../escape'];step(s);}catch{rejected=true;}ok(rejected,'path escape');
   return {passed};
 };
+
+// No workflow registration or external effects: import the pure step only.
+import('node:test').then(({ test }) => {
+  test('pure maintenance result transitions', async t => {
+    const { default: assert } = await import('node:assert/strict');
+    await import('./workflow.js');
+    await t.test('existing transition contracts', () => assert.ok(testRebaseMaintenance().passed > 0));
+    const base=()=>({run_id:'pure',version:0,now:10,approved:true,route_verified:true,snapshot_ready:true,no_progress:0,calls:0,limit:4,concurrency:3,input_revision:'r',groups:[{id:'a',session:'clean',paths:['/root/a'],status:'pending',attempt:0}]});
+    const result={group:'a',run_id:'pure',attempt:1,revision:'r',producer_stopped:true,event_id:'delivery',outcome:'done',evidence:['proof']};
+    await t.test('late result releases expiry reconciliation and reaches checks without global deadline', () => {
+      let o=rebaseMaintenanceStep(base()); assert.equal(o.actions[0].type,'dispatch'); assert.equal(o.state.groups[0].expires_at,1200010);
+      let s=o.state; s.now=1200009; o=rebaseMaintenanceStep(s); assert.equal(o.state.groups[0].status,'running');
+      s=o.state; s.now=1200010; o=rebaseMaintenanceStep(s);
+      assert.equal(o.state.groups[0].status,'expired'); assert.equal(o.state.groups[0].reconcile,true); assert.equal(o.actions[0].type,'wait');
+      s=o.state; s.now=1200011; s.results=[result]; o=rebaseMaintenanceStep(s);
+      assert.equal(o.state.groups[0].status,'delivered'); assert.equal(o.state.groups[0].reconcile,false);
+      assert.deepEqual(o.actions.map(a=>[a.type,a.target]),[['verify','coordinator-checks']]);
+      s=o.state; s.checks={acceptable:true}; o=rebaseMaintenanceStep(s); assert.equal(o.actions[0].target,'independent-review');
+    });
+    await t.test('pending attempt zero cannot accept unsolicited delivery or failure', () => {
+      for(const outcome of ['done','blocked']) {
+        const s=base(); s.results=[{...result,attempt:0,outcome}]; const o=rebaseMaintenanceStep(s);
+        assert.equal(o.actions[0].type,'dispatch'); assert.equal(o.state.groups[0].status,'running');
+        assert.equal(o.state.groups[0].attempt,1); assert.equal(o.state.groups[0].processed,undefined);
+      }
+    });
+    await t.test('delivered duplicates and repeated event IDs preserve the first outcome', () => {
+      for(const events of [[result,{...result,event_id:'conflict',outcome:'blocked'}],[result,{...result,outcome:'blocked'}]]) {
+        let s=rebaseMaintenanceStep(base()).state; s.results=events; let o=rebaseMaintenanceStep(s);
+        assert.equal(o.state.groups[0].status,'delivered'); assert.deepEqual(o.state.groups[0].processed,['delivery']);
+        s=o.state; s.results=[{...result,event_id:'after-delivery',outcome:'failed'}]; o=rebaseMaintenanceStep(s);
+        assert.equal(o.state.groups[0].status,'delivered'); assert.deepEqual(o.state.groups[0].processed,['delivery']);
+        assert.equal(o.actions[0].target,'coordinator-checks');
+      }
+      let s=rebaseMaintenanceStep(base()).state; s.results=[{...result,outcome:'blocked'},result]; const o=rebaseMaintenanceStep(s);
+      assert.equal(o.state.groups[0].status,'blocked'); assert.equal(o.actions[0].reason,'incomplete');
+    });
+    await t.test('expired results still require matching run attempt revision and stopped producer', () => {
+      let s=rebaseMaintenanceStep(base()).state; s.now=1200010; s=rebaseMaintenanceStep(s).state;
+      for(const change of [{run_id:'other'},{attempt:0},{revision:'old'},{producer_stopped:false}]) {
+        const input={...s,results:[{...result,...change}]}; const o=rebaseMaintenanceStep(input);
+        assert.equal(o.state.groups[0].status,'expired'); assert.equal(o.state.groups[0].reconcile,true); assert.equal(o.actions[0].type,'wait');
+      }
+    });
+  });
+});

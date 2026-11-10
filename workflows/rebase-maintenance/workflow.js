@@ -6,9 +6,10 @@ globalThis.rebaseMaintenanceStep = function (input) {
   const groups = s.groups || [];
   for (const r of s.results || []) {
     const g = groups.find(x => x.id === r.group);
-    if (!g || r.run_id !== s.run_id || r.attempt !== g.attempt || r.revision !== s.input_revision || !r.producer_stopped || g.processed?.includes(r.event_id)) continue;
+    if (!g || !['running','expired'].includes(g.status) || r.run_id !== s.run_id || r.attempt !== g.attempt || r.revision !== s.input_revision || !r.producer_stopped || g.processed?.includes(r.event_id)) continue;
     g.processed = [...(g.processed || []), r.event_id];
     g.status = r.outcome === 'done' && Array.isArray(r.evidence) && r.evidence.length ? 'delivered' : 'blocked';
+    g.reconcile = false;
   }
   s.results = [];
   for (const g of groups) if (g.status === 'running' && s.now >= g.expires_at) { g.status = 'expired'; g.reconcile = true; }

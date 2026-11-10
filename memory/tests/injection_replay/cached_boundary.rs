@@ -85,6 +85,7 @@ pub(super) async fn boundary(dir: &std::path::Path, cache: Value) -> Boundary {
     ));
     wait.await.unwrap();
     let deps = Arc::new(Deps {
+        hook_binding: Arc::default(),
         emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
         iii,
         store: Arc::new(tokio::sync::RwLock::new(Arc::new(
@@ -138,7 +139,8 @@ async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explici
             let text = fact["text"].as_str().unwrap();
             let cached = &cache["items"][id];
             assert_eq!(cached["text"], text);
-            let at = now_ms() - fact["age_days"].as_u64().unwrap() * 86_400_000;
+            let at =
+                agenda::fixture_clock().now_ms() - fact["age_days"].as_u64().unwrap() * 86_400_000;
             bank.commit(Memory {
                 id: id.into(),
                 text: text.into(),
@@ -222,8 +224,22 @@ async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explici
             );
             let qv: Vec<f32> =
                 serde_json::from_value(cache["items"][query_id]["v"].clone()).unwrap();
+            // Negative agenda control: in November 2027 all unchanged 2026
+            // events are past, including the Berlin trip and December workshop.
+            let clock = if query_id == "q-evt-next-week" {
+                crate::types::EvaluationClock::synthetic(
+                    chrono::NaiveDate::from_ymd_opt(2027, 11, 2)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap()
+                        .and_utc()
+                        .timestamp_millis() as u64,
+                )
+            } else {
+                agenda::fixture_clock()
+            };
             let (ranked, evidence) = bank
-                .recall_evidence(
+                .recall_evidence_at(
                     query,
                     Some(&qv),
                     cache["model"].as_str().unwrap(),
@@ -231,13 +247,15 @@ async fn hybrid_policy_real_cache_pairs_abstain_without_support_and_keep_explici
                     30,
                     false,
                     0.0,
+                    clock,
                 )
                 .await;
             let reasons = admission_reasons(&ranked, &evidence);
             let response = serde_json::to_value(
-                pre_generate(
+                pre_generate_at(
                     &stack.deps,
                     input(&format!("hybrid-policy-{n}"), query, "direct"),
+                    clock,
                 )
                 .await
                 .unwrap(),

@@ -1,4 +1,135 @@
 //! Real temporary persistent Store receipts; no engine, embeddings or model.
+
+fn captured_range(id: &str) -> memory::store::PendingExtraction {
+    memory::store::PendingExtraction::parse(serde_json::json!({
+        "entries":[[id,"user","ORIGINAL_RANGE_CANARY retained verbatim",17]],
+        "bank":"private","derived":false,"agent":null,"turn_id":"original-turn"
+    }))
+    .unwrap()
+}
+
+#[test]
+fn retained_ranges_survive_reopen_and_never_evict_unprocessed_source_at_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().into()).unwrap();
+    let original = captured_range("opaque-first");
+    assert_eq!(original.attempts, 0); // legacy pending shape
+    store
+        .retain_extraction_range("session", original.clone(), false)
+        .unwrap();
+    store
+        .acknowledge_extraction_range("session", &original)
+        .unwrap();
+    assert_eq!(
+        store.extraction_ranges("session").unwrap()[0].pending,
+        original
+    );
+    let stale = Store::open(dir.path().into()).unwrap();
+    for n in 1..128 {
+        store
+            .retain_extraction_range("session", captured_range(&format!("opaque-{n}")), false)
+            .unwrap();
+    }
+    assert!(store
+        .retain_extraction_range("session", captured_range("overflow"), false)
+        .is_err());
+    let before = store.extraction_ranges("session").unwrap();
+    assert_eq!(before.len(), 128);
+    assert_eq!(before[0].pending, original);
+    assert!(before.iter().all(|r| !r.completed));
+    // Old Store generation must read disk, not overwrite newer receipts.
+    stale
+        .retain_extraction_range("session", original.clone(), true)
+        .unwrap();
+    let reopened = Store::open(dir.path().into()).unwrap();
+    let ranges = reopened.extraction_ranges("session").unwrap();
+    assert_eq!(ranges.len(), 128);
+    assert!(ranges[0].completed);
+    assert_eq!(ranges[0].pending, original);
+    assert_eq!(&ranges[1..], &before[1..]);
+    reopened
+        .acknowledge_extraction_range("session", &original)
+        .unwrap();
+    assert_eq!(reopened.extraction_ranges("session").unwrap(), before[1..]);
+}
+
+#[test]
+fn retained_schema_is_versioned_fail_closed_and_io_failure_keeps_pending_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().into()).unwrap();
+    let original = captured_range("opaque");
+    let value = serde_json::to_value(&original).unwrap();
+    store
+        .set_pending_extraction("session", value.clone())
+        .unwrap();
+    store
+        .retain_extraction_range("session", original.clone(), false)
+        .unwrap();
+    let key = serde_json::json!(["ranges", "session"]).to_string();
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for b in key.bytes() {
+        hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    let path = dir
+        .path()
+        .join(".extraction")
+        .join(format!("{hash:016x}.json"));
+    let before = std::fs::read(&path).unwrap();
+    let blocker = path.with_file_name(format!(".{hash:016x}.json.tmp"));
+    std::fs::create_dir(&blocker).unwrap();
+    assert!(store
+        .retain_extraction_range("session", original.clone(), true)
+        .is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        store.pending_extraction("session").unwrap(),
+        Some(value.clone())
+    );
+    std::fs::rename(&blocker, dir.path().join("preserved-blocker")).unwrap();
+    let baseline: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    for mutation in [
+        "version",
+        "field",
+        "pending",
+        "state",
+        "digest",
+        "capture-version",
+    ] {
+        let mut invalid = baseline.clone();
+        match mutation {
+            "version" => invalid["plan"]["version"] = serde_json::json!(2),
+            "field" => invalid["plan"]["authority"] = serde_json::json!(true),
+            "pending" => {
+                invalid["plan"]["ranges"][0]["pending"]["authority"] = serde_json::json!(true)
+            }
+            "digest" => {
+                invalid["plan"]["ranges"][0]["pending"]["source_digest"] = serde_json::json!("bad")
+            }
+            "capture-version" => {
+                invalid["plan"]["ranges"][0]["pending"]["version"] = serde_json::json!(99)
+            }
+            _ => invalid["plan"]["ranges"][0]["completed"] = serde_json::json!("unknown"),
+        }
+        std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        let reopened = Store::open(dir.path().into()).unwrap();
+        assert!(reopened.extraction_ranges("session").is_err());
+        assert!(reopened
+            .retain_extraction_range("session", original.clone(), true)
+            .is_err());
+        assert_eq!(
+            reopened.pending_extraction("session").unwrap(),
+            Some(value.clone())
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            serde_json::to_vec(&invalid).unwrap()
+        );
+    }
+    let mut invalid = value;
+    invalid["version"] = serde_json::json!(99);
+    assert!(memory::store::PendingExtraction::parse(invalid).is_err());
+}
+
 use memory::{
     store::Store,
     types::{Confidence, Memory, Provenance},
@@ -216,4 +347,142 @@ async fn plan_is_exact_source_bound_and_decision_cannot_be_replaced_after_reopen
         store.extraction_plan("Session/A/[entry]").unwrap(),
         Some(plan)
     );
+}
+
+#[tokio::test]
+async fn stale_effect_records_terminal_conflict_without_overwriting_other_sessions() {
+    for mutation in ["pin", "edit", "reinforce"] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().into()).unwrap();
+        let (bank, _) = store.ensure_bank("private", None).await.unwrap();
+        let original = record();
+        bank.commit(original.clone()).await.unwrap();
+        let other_session = Store::open(dir.path().into()).unwrap();
+        let other_bank = other_session.bank("private").await.unwrap();
+        let mut changed = original.clone();
+        changed.revision += 1;
+        match mutation {
+            "pin" => changed.pinned = true,
+            "edit" => changed.text = "Human edit keeps its independent calibration.".into(),
+            "reinforce" => {
+                changed.corroboration += 1;
+                changed.source.as_mut().unwrap().session_id = Some("other-session".into());
+            }
+            _ => unreachable!(),
+        }
+        other_bank
+            .commit_expected(changed.clone(), Some(&original))
+            .await
+            .unwrap();
+        let mut replacement = record();
+        replacement.id = "replacement".into();
+        replacement.text = "Amber instruments now require silver calibration.".into();
+        let receipt =
+            serde_json::json!(["source-session", "private", ["e_request", "e_end"], 0]).to_string();
+        assert!(bank
+            .extraction_expected(&receipt, replacement.clone(), None, Some(&original))
+            .await
+            .unwrap()
+            .is_none());
+        let reopened = Store::open(dir.path().into()).unwrap();
+        let bank = reopened.bank("private").await.unwrap();
+        assert_eq!(bank.get(&original.id).await.unwrap(), changed);
+        assert!(bank.get(&replacement.id).await.is_none());
+        assert!(bank.extraction_seen(&receipt).unwrap());
+        let path = bank.dir().join("memories.jsonl");
+        let records: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records[2],
+            serde_json::json!({"extraction_receipt":receipt,"disposition":"expected_conflict"})
+        );
+        let before = std::fs::read(&path).unwrap();
+        // The original stale plan remains a no-op after restart: neither a
+        // late correction nor a second corroboration can be published.
+        assert!(bank
+            .extraction_expected(&receipt, replacement.clone(), None, Some(&original))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let mut unrelated = record();
+        unrelated.id = "unrelated".into();
+        unrelated.text = "Birch archives retain monthly invoices.".into();
+        assert!(bank
+            .extraction_expected("different-effect", unrelated.clone(), None, None)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(bank.get(&unrelated.id).await.unwrap(), unrelated);
+        assert_eq!(bank.get(&original.id).await.unwrap(), changed);
+        let (other, _) = reopened.ensure_bank("other", None).await.unwrap();
+        assert!(!other.extraction_seen(&receipt).unwrap());
+    }
+}
+
+#[tokio::test]
+async fn only_typed_terminal_receipts_deduplicate_effects_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().into()).unwrap();
+    let (bank, _) = store.ensure_bank("private", None).await.unwrap();
+    let path = bank.dir().join("memories.jsonl");
+    let lines = [
+        serde_json::json!({"extraction_receipt":"published"}),
+        serde_json::json!({"extraction_receipt":"conflict","disposition":"expected_conflict"}),
+        serde_json::json!({"extraction_receipt":"unknown","disposition":"unknown"}),
+        serde_json::json!({"extraction_receipt":"extra","authority":true}),
+        serde_json::json!({"extraction_receipt":null}),
+    ]
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n")
+        + "\n";
+    std::fs::write(&path, lines.as_bytes()).unwrap();
+    let reopened = Store::open(dir.path().into()).unwrap();
+    let bank = reopened.bank("private").await.unwrap();
+    assert!(bank.extraction_seen("published").unwrap());
+    assert!(bank.extraction_seen("conflict").unwrap());
+    assert!(!bank.extraction_seen("unknown").unwrap());
+    assert!(!bank.extraction_seen("extra").unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), lines.as_bytes());
+}
+
+#[tokio::test]
+async fn conflict_receipt_io_failure_is_not_swallowed_as_a_skipped_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().into()).unwrap();
+    let (bank, _) = store.ensure_bank("private", None).await.unwrap();
+    let original = record();
+    bank.commit(original.clone()).await.unwrap();
+    let mut changed = original.clone();
+    changed.pinned = true;
+    changed.revision += 1;
+    bank.commit_expected(changed.clone(), Some(&original))
+        .await
+        .unwrap();
+    let mut replacement = record();
+    replacement.id = "replacement".into();
+    let path = bank.dir().join("memories.jsonl");
+    let before = std::fs::read(&path).unwrap();
+    let blocker = bank.dir().join(".memories.jsonl.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    assert!(bank
+        .extraction_expected("conflict", replacement.clone(), None, Some(&original))
+        .await
+        .is_err());
+    assert!(!bank.extraction_seen("conflict").unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(bank.get(&original.id).await.unwrap(), changed);
+    std::fs::rename(blocker, bank.dir().join("saved-blocker")).unwrap();
+    assert!(bank
+        .extraction_expected("conflict", replacement, None, Some(&original))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(bank.extraction_seen("conflict").unwrap());
 }

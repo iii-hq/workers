@@ -16,6 +16,10 @@ use crate::types::model::{AgentFunction, ThinkingLevel};
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssembleOutput {
     #[serde(default)]
+    pub input_indices: Option<Vec<usize>>,
+    #[serde(default)]
+    pub(crate) summary_origin: Option<crate::clients::router::generation_capture::AssemblySummary>,
+    #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
     pub messages: Vec<AgentMessage>,

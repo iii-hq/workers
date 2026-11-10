@@ -14,6 +14,7 @@ use crate::store::Store;
 
 #[derive(Clone)]
 pub struct Deps {
+    pub hook_binding: Arc<crate::hook_binding::HookBinding>,
     pub iii: Arc<IIIClient>,
     pub store: StoreCell,
     pub config: ConfigCell,

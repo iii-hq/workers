@@ -63,6 +63,7 @@ async fn fixture() -> (tempfile::TempDir, Deps) {
         ..Default::default()
     };
     let deps = Deps {
+        hook_binding: Arc::default(),
         emitter: Arc::new(Emitter::new(iii.clone())),
         iii,
         store: Arc::new(tokio::sync::RwLock::new(store)),

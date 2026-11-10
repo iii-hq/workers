@@ -36,6 +36,7 @@ fn record(id: &str, text: &str, at: u64) -> Memory {
 fn deps(root: &std::path::Path) -> Arc<Deps> {
     let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
     Arc::new(Deps {
+        hook_binding: Arc::default(),
         emitter: Arc::new(Emitter::new(iii.clone())),
         iii,
         store: Arc::new(tokio::sync::RwLock::new(Arc::new(

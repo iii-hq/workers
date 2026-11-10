@@ -61,13 +61,16 @@ fn has_extraction_receipt(log: &[u8], receipt: &str) -> bool {
     log.split(|&byte| byte == b'\n').any(|line| {
         serde_json::from_slice::<serde_json::Value>(line)
             .ok()
-            .and_then(|v| {
-                v.get("extraction_receipt")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned)
+            .is_some_and(|value| {
+                value.as_object().is_some_and(|object| {
+                    (object.len() == 1
+                        || (object.len() == 2
+                            && object.get("disposition")
+                                == Some(&serde_json::json!("expected_conflict"))))
+                        && object.get("extraction_receipt").and_then(|v| v.as_str())
+                            == Some(receipt)
+                })
             })
-            .as_deref()
-            == Some(receipt)
     })
 }
 
@@ -509,6 +512,222 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
     }
 }
 
+/// Captured source is retained independently of the queue's retry lifetime.
+/// Missing `attempts` is the pre-ledger pending format, not new authority.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingExtraction {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub source_digest: Option<String>,
+    pub entries: Vec<(String, String, String, u64)>,
+    pub bank: String,
+    pub derived: bool,
+    pub agent: Option<String>,
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+impl PendingExtraction {
+    /// Conservative escaped JSON budget without creating a Value or digest.
+    fn checked_bytes(&self) -> Result<usize, MemoryError> {
+        for id in std::iter::once(self.bank.as_str())
+            .chain(self.agent.as_deref())
+            .chain(self.turn_id.as_deref())
+            .chain(self.source_digest.as_deref())
+        {
+            extraction_identifier(id)?;
+        }
+        Self::entries_bytes(&self.entries)?;
+        let mut size = 1024;
+        let cap = crate::extraction_proof::HISTORY_BYTES;
+        let strings = std::iter::once(self.bank.as_str())
+            .chain(self.agent.as_deref())
+            .chain(self.turn_id.as_deref())
+            .chain(self.source_digest.as_deref())
+            .chain(
+                self.entries
+                    .iter()
+                    .flat_map(|e| [e.0.as_str(), e.1.as_str(), e.2.as_str()]),
+            );
+        for s in strings {
+            let bytes = s
+                .len()
+                .checked_mul(6)
+                .and_then(|n| n.checked_add(64))
+                .ok_or_else(|| MemoryError::InvalidInput("extraction byte overflow".into()))?;
+            crate::extraction_proof::charge(&mut size, bytes, cap)
+                .map_err(MemoryError::InvalidInput)?;
+        }
+        Ok(size)
+    }
+
+    fn borrowed_identifiers(value: &serde_json::Value) -> Result<(), MemoryError> {
+        for field in ["bank", "agent", "turn_id", "source_digest"] {
+            if let Some(id) = value.get(field).and_then(serde_json::Value::as_str) {
+                extraction_identifier(id)?;
+            }
+        }
+        if let Some(entries) = value.get("entries").and_then(serde_json::Value::as_array) {
+            if entries.len() > 65536 {
+                return Err(MemoryError::InvalidInput("extraction entry bound".into()));
+            }
+            for entry in entries {
+                for index in [0, 1] {
+                    if let Some(id) = entry.get(index).and_then(serde_json::Value::as_str) {
+                        extraction_identifier(id)?;
+                    }
+                }
+                if entry
+                    .get(2)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|text| text.len() > crate::extraction_proof::TEXT_BYTES)
+                {
+                    return Err(MemoryError::InvalidInput(
+                        "extraction text byte bound".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn entries_bytes(
+        entries: &[(String, String, String, u64)],
+    ) -> Result<(), MemoryError> {
+        let mut size = 1024;
+        for (id, role, text, _) in entries {
+            extraction_identifier(id)?;
+            extraction_identifier(role)?;
+            if text.len() > crate::extraction_proof::TEXT_BYTES {
+                return Err(MemoryError::InvalidInput(
+                    "extraction text byte bound".into(),
+                ));
+            }
+            for s in [id.as_str(), role.as_str(), text.as_str()] {
+                let bytes = s
+                    .len()
+                    .checked_mul(6)
+                    .and_then(|n| n.checked_add(64))
+                    .ok_or_else(|| MemoryError::InvalidInput("extraction byte overflow".into()))?;
+                crate::extraction_proof::charge(
+                    &mut size,
+                    bytes,
+                    crate::extraction_proof::HISTORY_BYTES,
+                )
+                .map_err(MemoryError::InvalidInput)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn parse(value: serde_json::Value) -> Result<Self, MemoryError> {
+        Self::borrowed_identifiers(&value)?;
+        crate::extraction_proof::value_bytes(&value, crate::extraction_proof::HISTORY_BYTES)
+            .map_err(MemoryError::Storage)?;
+        let pending: Self = serde_json::from_value(value)
+            .map_err(|e| MemoryError::Storage(format!("invalid pending extraction: {e}")))?;
+        pending.checked_bytes()?;
+        validate_name(&pending.bank)?;
+        if !matches!(
+            (pending.version, pending.source_digest.as_deref()),
+            (0, None) | (1, Some(_))
+        ) || pending.source_digest.as_ref().is_some_and(|digest| {
+            digest.len() != 32 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(MemoryError::Storage(
+                "unsupported pending extraction schema or digest".into(),
+            ));
+        }
+        let mut ids = HashSet::new();
+        if pending.entries.is_empty()
+            || pending.entries.iter().any(|(id, role, _, _)| {
+                id.is_empty()
+                    || !ids.insert(id)
+                    || !matches!(role.as_str(), "user" | "assistant" | "notice")
+            })
+        {
+            return Err(MemoryError::Storage(
+                "invalid pending extraction range".into(),
+            ));
+        }
+        Ok(pending)
+    }
+
+    /// Non-cryptographic change detector over the unredacted ordered source.
+    /// Never authority: exact redacted source AND trusted policy must also match.
+    pub(crate) fn digest(entries: &[(String, String, String, u64)]) -> Result<String, MemoryError> {
+        Self::entries_bytes(entries)?;
+        let bytes = serde_json::to_vec(entries).expect("source tuples serialize");
+        let hash = bytes
+            .iter()
+            .fold(0x6c62272e07bb014262b821756295c58d_u128, |h, b| {
+                (h ^ u128::from(*b)).wrapping_mul(0x0000000001000000000000000000013b)
+            });
+        Ok(format!("{hash:032x}"))
+    }
+
+    /// Legacy captures have no raw digest; they remain retainable but are
+    /// compared against their full saved redacted source, never IDs alone.
+    pub(crate) fn matches_current(&self, current: &Self) -> bool {
+        if self.version == 0 && self.source_digest.is_none() {
+            if current.version == 0 {
+                return self.same_source(current);
+            }
+            // Old redacted-only snapshots cannot prove an unchanged raw secret.
+            // Allow compatibility only when the current raw source was already
+            // identical to its redacted representation; otherwise quarantine.
+            let Ok(digest) = Self::digest(&current.entries) else {
+                return false;
+            };
+            if current.source_digest.as_deref() != Some(digest.as_str()) {
+                return false;
+            }
+            let mut legacy = current.clone();
+            legacy.version = 0;
+            legacy.source_digest = None;
+            self.same_source(&legacy)
+        } else {
+            self.same_source(current)
+        }
+    }
+
+    pub fn same_source(&self, other: &Self) -> bool {
+        self.entries == other.entries
+            && self.version == other.version
+            && self.source_digest == other.source_digest
+            && self.bank == other.bank
+            && self.derived == other.derived
+            && self.agent == other.agent
+            && self.turn_id == other.turn_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractionRange {
+    pub pending: PendingExtraction,
+    pub completed: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtractionRanges {
+    version: u32,
+    ranges: Vec<ExtractionRange>,
+}
+
+fn extraction_identifier(id: &str) -> Result<(), MemoryError> {
+    if !crate::extraction_proof::bounded(id) {
+        return Err(MemoryError::InvalidInput(
+            "extraction identifier byte bound".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Store {
     fn extraction_plan_path(&self, source: &str) -> PathBuf {
         // Hash is only a locator: the exact source is verified on every read.
@@ -531,19 +750,113 @@ impl Store {
         &self,
         source: &str,
     ) -> Result<Option<serde_json::Value>, MemoryError> {
-        let bytes = match std::fs::read(self.extraction_plan_path(source)) {
-            Ok(bytes) => bytes,
+        if source.len() > crate::extraction_proof::SOURCE_BYTES / 6 {
+            return Err(MemoryError::InvalidInput(
+                "extraction source byte bound".into(),
+            ));
+        }
+        // Cap the actual read (including a concurrent file growth) BEFORE
+        // deserialization. This applies to every extraction-plan public reader.
+        let file = match std::fs::File::open(self.extraction_plan_path(source)) {
+            Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        let plan: serde_json::Value =
+        let cap = crate::extraction_proof::RECORD_BYTES;
+        if file.metadata()?.len() > cap as u64 {
+            return Err(MemoryError::Storage("extraction record byte bound".into()));
+        }
+        let mut bytes = Vec::new();
+        file.take(cap as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > cap {
+            return Err(MemoryError::Storage("extraction record byte bound".into()));
+        }
+        let mut plan: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|e| MemoryError::Storage(e.to_string()))?;
+        if !plan.as_object().is_some_and(|object| {
+            object.len() == 2 && object.contains_key("source") && object.contains_key("plan")
+        }) {
+            return Err(MemoryError::Storage(
+                "invalid extraction plan envelope".into(),
+            ));
+        }
         if plan["source"].as_str() != Some(source) {
             return Err(MemoryError::Storage(
                 "extraction source identity mismatch".into(),
             ));
         }
-        Ok(Some(plan["plan"].clone()))
+        crate::extraction_proof::value_bytes(&plan, cap).map_err(MemoryError::Storage)?;
+        Ok(plan
+            .as_object_mut()
+            .and_then(|object| object.remove("plan")))
+    }
+
+    /// Only the authenticated receiver writes these rows; queue payloads never do.
+    pub(crate) fn authenticated_history(
+        &self,
+        session: &str,
+    ) -> Result<Vec<crate::extraction_proof::Row>, MemoryError> {
+        extraction_identifier(session)?;
+        let key = serde_json::json!(["authenticated-history-v1", session]).to_string();
+        Self::decode_authenticated_history(self.extraction_plan(&key)?)
+    }
+
+    fn decode_authenticated_history(
+        value: Option<serde_json::Value>,
+    ) -> Result<Vec<crate::extraction_proof::Row>, MemoryError> {
+        let Some(value) = value else {
+            return Ok(Vec::new());
+        };
+        crate::extraction_proof::value_bytes(&value, crate::extraction_proof::HISTORY_BYTES)
+            .map_err(MemoryError::Storage)?;
+        let array = value
+            .as_array()
+            .filter(|a| a.len() <= 1024)
+            .ok_or_else(|| MemoryError::Storage("invalid history rows".into()))?;
+        for row in array {
+            crate::extraction_proof::value_bytes(row, crate::extraction_proof::ROW_BYTES)
+                .map_err(MemoryError::Storage)?;
+        }
+        let rows: Vec<crate::extraction_proof::Row> = serde_json::from_value(value)
+            .map_err(|e| MemoryError::Storage(format!("invalid authenticated history: {e}")))?;
+        crate::extraction_proof::rows_bytes(&rows).map_err(MemoryError::Storage)?;
+        Ok(rows)
+    }
+
+    /// Bounded, immutable, Memory-owned evidence, persisted before acknowledgement.
+    pub(crate) fn save_authenticated_history(
+        &self,
+        session: &str,
+        incoming: &[crate::extraction_proof::Row],
+    ) -> Result<(), MemoryError> {
+        extraction_identifier(session)?;
+        let key = serde_json::json!(["authenticated-history-v1", session]).to_string();
+        let _log = memory_log_lock();
+        crate::extraction_proof::rows_bytes(incoming).map_err(MemoryError::InvalidInput)?;
+        let mut rows = Self::decode_authenticated_history(self.extraction_plan_unlocked(&key)?)?;
+        // Check the union using borrowed rows before cloning any new strings.
+        let mut additions = Vec::new();
+        for row in incoming {
+            if let Some(old) = rows
+                .iter()
+                .find(|old| old.attestation.turn_id == row.attestation.turn_id)
+            {
+                if old != row {
+                    return Err(MemoryError::InvalidInput("history proof changed".into()));
+                }
+            } else {
+                additions.push(row);
+            }
+        }
+        crate::extraction_proof::rows_bytes_iter(rows.iter().chain(additions.iter().copied()))
+            .map_err(MemoryError::InvalidInput)?;
+        rows.extend(additions.into_iter().cloned());
+        let path = self.extraction_plan_path(&key);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let bytes = serde_json::to_vec(&serde_json::json!({"source":key,"plan":rows}))
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        write_atomic(&path, &bytes)?;
+        Ok(())
     }
 
     pub fn save_extraction_plan(
@@ -551,6 +864,13 @@ impl Store {
         source: &str,
         plan: &serde_json::Value,
     ) -> Result<(), MemoryError> {
+        if source.len() > crate::extraction_proof::SOURCE_BYTES / 6 {
+            return Err(MemoryError::InvalidInput(
+                "extraction source byte bound".into(),
+            ));
+        }
+        crate::extraction_proof::value_bytes(plan, crate::extraction_proof::RECORD_BYTES / 2)
+            .map_err(MemoryError::InvalidInput)?;
         let _log = memory_log_lock();
         if let Some(existing) = self.extraction_plan_unlocked(source)? {
             if existing != *plan {
@@ -574,6 +894,7 @@ impl Store {
         &self,
         session: &str,
     ) -> Result<Option<serde_json::Value>, MemoryError> {
+        extraction_identifier(session)?;
         let key = serde_json::json!(["pending", session]).to_string();
         self.extraction_plan(&key)
             .map(|value| value.filter(|v| !v.is_null()))
@@ -584,12 +905,150 @@ impl Store {
         session: &str,
         value: serde_json::Value,
     ) -> Result<(), MemoryError> {
+        extraction_identifier(session)?;
+        PendingExtraction::borrowed_identifiers(&value)?;
+        crate::extraction_proof::value_bytes(&value, crate::extraction_proof::RECORD_BYTES / 2)
+            .map_err(MemoryError::InvalidInput)?;
+        if session.len() > 256 {
+            return Err(MemoryError::InvalidInput(
+                "extraction session byte bound".into(),
+            ));
+        }
         let key = serde_json::json!(["pending", session]).to_string();
         let _log = memory_log_lock();
         let path = self.extraction_plan_path(&key);
         std::fs::create_dir_all(path.parent().unwrap())?;
         let bytes = serde_json::to_vec(&serde_json::json!({"source":key,"plan":value}))
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        write_atomic(&path, &bytes)?;
+        Ok(())
+    }
+
+    fn extraction_ranges_unlocked(
+        &self,
+        session: &str,
+    ) -> Result<Vec<ExtractionRange>, MemoryError> {
+        extraction_identifier(session)?;
+        let key = serde_json::json!(["ranges", session]).to_string();
+        let Some(value) = self.extraction_plan_unlocked(&key)? else {
+            return Ok(Vec::new());
+        };
+        crate::extraction_proof::value_bytes(&value, crate::extraction_proof::HISTORY_BYTES)
+            .map_err(MemoryError::Storage)?;
+        if let Some(ranges) = value["ranges"].as_array() {
+            for range in ranges {
+                PendingExtraction::borrowed_identifiers(&range["pending"])?;
+            }
+        }
+        let ledger: ExtractionRanges = serde_json::from_value(value)
+            .map_err(|e| MemoryError::Storage(format!("invalid extraction ranges: {e}")))?;
+        if ledger.version != 1 || ledger.ranges.len() > 128 {
+            return Err(MemoryError::Storage(
+                "unsupported extraction ranges version or bound".into(),
+            ));
+        }
+        let mut ids = HashSet::new();
+        for range in &ledger.ranges {
+            range.pending.checked_bytes()?;
+            PendingExtraction::parse(
+                serde_json::to_value(&range.pending)
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?,
+            )?;
+            if range
+                .pending
+                .entries
+                .iter()
+                .any(|e| !ids.insert(e.0.clone()))
+            {
+                return Err(MemoryError::Storage("overlapping extraction ranges".into()));
+            }
+        }
+        Ok(ledger.ranges)
+    }
+
+    /// Internal per-session retention receipts, never permission to publish.
+    pub fn extraction_ranges(&self, session: &str) -> Result<Vec<ExtractionRange>, MemoryError> {
+        let _log = memory_log_lock();
+        self.extraction_ranges_unlocked(session)
+    }
+
+    /// Preserve every entry before releasing the single pending slot. Completed
+    /// ranges are receipts, not a cursor: an unresolved prefix still pins it.
+    pub fn retain_extraction_range(
+        &self,
+        session: &str,
+        pending: PendingExtraction,
+        completed: bool,
+    ) -> Result<(), MemoryError> {
+        extraction_identifier(session)?;
+        pending.checked_bytes()?;
+        PendingExtraction::parse(
+            serde_json::to_value(&pending).map_err(|e| MemoryError::Storage(e.to_string()))?,
+        )?;
+        let _log = memory_log_lock();
+        let mut ranges = self.extraction_ranges_unlocked(session)?;
+        if let Some(existing) = ranges.iter_mut().find(|r| r.pending.same_source(&pending)) {
+            existing.completed |= completed;
+            existing.pending.attempts = existing.pending.attempts.max(pending.attempts);
+        } else {
+            if ranges.len() >= 128
+                || ranges.iter().any(|r| {
+                    r.pending
+                        .entries
+                        .iter()
+                        .any(|e| pending.entries.iter().any(|p| e.0 == p.0))
+                })
+            {
+                return Err(MemoryError::Storage(
+                    "extraction retention bound or overlap".into(),
+                ));
+            }
+            ranges.push(ExtractionRange { pending, completed });
+        }
+        let mut budget = 1024;
+        for range in &ranges {
+            crate::extraction_proof::charge(
+                &mut budget,
+                range.pending.checked_bytes()?,
+                crate::extraction_proof::HISTORY_BYTES,
+            )
+            .map_err(MemoryError::InvalidInput)?;
+        }
+        let key = serde_json::json!(["ranges", session]).to_string();
+        let path = self.extraction_plan_path(&key);
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"source":key,"plan":ExtractionRanges {version:1,ranges}}),
+        )
+        .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        if bytes.len() > 4 * 1024 * 1024 {
+            return Err(MemoryError::Storage(
+                "extraction retention byte bound".into(),
+            ));
+        }
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        write_atomic(&path, &bytes)?;
+        Ok(())
+    }
+
+    /// Remove only a completed range after the caller confirmed its cursor.
+    /// Uncompleted source is never evicted, including at the retention bound.
+    pub fn acknowledge_extraction_range(
+        &self,
+        session: &str,
+        pending: &PendingExtraction,
+    ) -> Result<(), MemoryError> {
+        extraction_identifier(session)?;
+        pending.checked_bytes()?;
+        let _log = memory_log_lock();
+        let mut ranges = self.extraction_ranges_unlocked(session)?;
+        ranges.retain(|range| !(range.completed && range.pending.same_source(pending)));
+        let key = serde_json::json!(["ranges", session]).to_string();
+        let path = self.extraction_plan_path(&key);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"source":key,"plan":ExtractionRanges { version:1, ranges }}),
+        )
+        .map_err(|e| MemoryError::Storage(e.to_string()))?;
         write_atomic(&path, &bytes)?;
         Ok(())
     }
@@ -652,11 +1111,29 @@ impl Store {
         name: &str,
         description: Option<&str>,
     ) -> Result<(Arc<Bank>, bool), MemoryError> {
+        self.ensure_bank_inner(name, description, false).await
+    }
+
+    /// Automatic extraction cannot undo a concurrent explicit deletion.
+    /// The policy check shares the bank-map lock with `trash_bank`.
+    pub(crate) async fn ensure_extraction_bank(
+        &self,
+        name: &str,
+    ) -> Result<(Arc<Bank>, bool), MemoryError> {
+        self.ensure_bank_inner(name, None, true).await
+    }
+
+    async fn ensure_bank_inner(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        reject_deleted: bool,
+    ) -> Result<(Arc<Bank>, bool), MemoryError> {
         validate_name(name)?;
-        if let Some(existing) = self.banks.read().await.get(name) {
-            return Ok((existing.clone(), false));
-        }
         let mut banks = self.banks.write().await;
+        if reject_deleted && self.is_deleted(name) {
+            return Err(MemoryError::BankNotFound(name.to_string()));
+        }
         if let Some(existing) = banks.get(name) {
             return Ok((existing.clone(), false));
         }
@@ -1132,7 +1609,9 @@ impl Bank {
     }
 
     /// Atomically publish one extraction effect and its source-bound receipt.
-    /// `None` means this effect was already committed, including after reopen.
+    /// `None` means this effect was already recorded or its expected snapshot
+    /// conflicted. A conflict records a terminal skipped receipt atomically,
+    /// without publishing either record; unrelated storage errors still fail.
     /// Receipts share the SAME atomic log replacement as both correction records;
     /// an independent state cursor is only an acknowledgment, never the deduper.
     pub async fn extraction_expected(
@@ -1190,7 +1669,12 @@ impl Bank {
         let expected = expected.cloned();
         let old = old.cloned();
         let replacement_id = replacement.id.clone();
-        let published = run_blocking(move || -> Result<bool, MemoryError> {
+        enum Publication {
+            Published,
+            AlreadyRecorded,
+            ExpectedConflict,
+        }
+        let published = run_blocking(move || -> Result<Publication, MemoryError> {
             let _log = memory_log_lock();
             let mut log = match std::fs::read(&path) {
                 Ok(log) => log,
@@ -1198,26 +1682,40 @@ impl Bank {
                 Err(e) => return Err(e.into()),
             };
             if has_extraction_receipt(&log, &receipt) {
-                return Ok(false);
+                return Ok(Publication::AlreadyRecorded);
             }
             if replay_record(&log, &replacement_id) != expected
                 || old
                     .as_ref()
                     .is_some_and(|old| replay_record(&log, &old.id).as_ref() != Some(old))
             {
-                return Err(MemoryError::InvalidInput(
-                    "extraction records changed on disk".into(),
-                ));
+                // This is an expected-snapshot decision, not an I/O error.
+                // Keep the exact source receipt so a retry cannot construct a
+                // fresh reinforcement or redirect this effect after an edit.
+                if !log.is_empty() && !log.ends_with(b"\n") {
+                    log.push(b'\n');
+                }
+                serde_json::to_writer(
+                    &mut log,
+                    &serde_json::json!({
+                        "extraction_receipt":receipt,
+                        "disposition":"expected_conflict"
+                    }),
+                )
+                .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                log.push(b'\n');
+                write_atomic(&path, &log)?;
+                return Ok(Publication::ExpectedConflict);
             }
             if !log.is_empty() && !log.ends_with(b"\n") {
                 log.push(b'\n');
             }
             log.extend_from_slice(&suffix);
             write_atomic(&path, &log)?;
-            Ok(true)
+            Ok(Publication::Published)
         })
         .await?;
-        if !published {
+        if !matches!(published, Publication::Published) {
             return Ok(None);
         }
         if inner
@@ -2565,6 +3063,249 @@ impl Bank {
 mod tests {
     use super::*;
     use crate::types::{fingerprint, Confidence};
+
+    #[test]
+    fn authenticated_history_bytes_are_atomic_across_reopen_and_retry() {
+        use crate::extraction_proof::{Attestation, Row, Terminal};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().into()).unwrap();
+        let row = Row {
+            source_kind: "direct".into(),
+            attestation: Attestation {
+                version: 1,
+                session_id: "synthetic".into(),
+                turn_id: "original".into(),
+                entry_id: "entry".into(),
+                text_sha256: "a".repeat(64),
+                policy: "on".into(),
+                bank: Some("private".into()),
+                layer: None,
+                agent: None,
+                terminal: Terminal {
+                    status: "failed".into(),
+                    exchange_finished: true,
+                },
+            },
+        };
+        store
+            .save_authenticated_history("synthetic", std::slice::from_ref(&row))
+            .unwrap();
+        let key = serde_json::json!(["authenticated-history-v1", "synthetic"]).to_string();
+        let path = store.extraction_plan_path(&key);
+        let bytes = std::fs::read(&path).unwrap();
+        let pending = serde_json::json!({"saved":"original pending"});
+        store
+            .set_pending_extraction("synthetic", pending.clone())
+            .unwrap();
+        let mut huge = row.clone();
+        huge.attestation.turn_id = "retry".into();
+        huge.attestation.bank = Some("b".repeat(17000));
+        assert!(store
+            .save_authenticated_history("synthetic", &[huge])
+            .is_err());
+        assert!(store
+            .save_authenticated_history("synthetic", &[row.clone(), row.clone()])
+            .is_err());
+        let aggregate: Vec<_> = (0..1024)
+            .map(|n| {
+                let mut r = row.clone();
+                r.attestation.turn_id = format!("{n:04}{}", "t".repeat(252));
+                r.attestation.session_id = "s".repeat(256);
+                r.attestation.entry_id = "e".repeat(256);
+                r.attestation.bank = Some("b".repeat(256));
+                r.attestation.layer = Some("l".repeat(256));
+                r.attestation.agent = Some("a".repeat(256));
+                r
+            })
+            .collect();
+        assert!(store
+            .save_authenticated_history("synthetic", &aggregate)
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        // Individually bounded deliveries cannot overflow a persisted union.
+        let union_dir = tempfile::tempdir().unwrap();
+        let union = Store::open(union_dir.path().into()).unwrap();
+        union
+            .save_authenticated_history("synthetic", &aggregate[..350])
+            .unwrap();
+        let union_path = union.extraction_plan_path(&key);
+        let union_before = std::fs::read(&union_path).unwrap();
+        assert!(union
+            .save_authenticated_history("synthetic", &aggregate[350..700])
+            .is_err());
+        assert_eq!(std::fs::read(&union_path).unwrap(), union_before);
+        union
+            .save_authenticated_history("synthetic", std::slice::from_ref(&row))
+            .unwrap();
+        assert_eq!(union.authenticated_history("synthetic").unwrap().len(), 351);
+        let reopened = Store::open(dir.path().into()).unwrap();
+        assert_eq!(
+            reopened.authenticated_history("synthetic").unwrap(),
+            vec![row.clone()]
+        );
+        assert_eq!(
+            reopened.pending_extraction("synthetic").unwrap(),
+            Some(pending.clone())
+        );
+        // The exact raw-file limit remains readable: whitespace counts, but
+        // does not change the authenticated complete JSON record.
+        let mut exact = bytes.clone();
+        exact.resize(crate::extraction_proof::RECORD_BYTES, b' ');
+        std::fs::write(&path, &exact).unwrap();
+        assert_eq!(
+            Store::open(dir.path().into())
+                .unwrap()
+                .authenticated_history("synthetic")
+                .unwrap(),
+            vec![row.clone()]
+        );
+        // A small enough file can still have a forbidden per-row allocation.
+        let mut malformed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        malformed["plan"][0]["attestation"]["bank"] = serde_json::json!("x".repeat(17000));
+        let malformed = serde_json::to_vec(&malformed).unwrap();
+        std::fs::write(&path, &malformed).unwrap();
+        let stale = Store::open(dir.path().into()).unwrap();
+        assert!(stale.authenticated_history("synthetic").is_err());
+        assert!(stale
+            .save_authenticated_history("synthetic", std::slice::from_ref(&row))
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), malformed);
+        // On-disk oversized record must be refused before JSON decoding, even
+        // when trailing whitespace could otherwise deserialize successfully.
+        let mut oversized = bytes.clone();
+        oversized.resize(crate::extraction_proof::RECORD_BYTES + 1, b' ');
+        std::fs::write(&path, &oversized).unwrap();
+        let reopened = Store::open(dir.path().into()).unwrap();
+        assert!(reopened.authenticated_history("synthetic").is_err());
+        assert!(reopened
+            .save_authenticated_history("synthetic", std::slice::from_ref(&row))
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), oversized);
+        assert_eq!(
+            reopened.pending_extraction("synthetic").unwrap(),
+            Some(pending)
+        );
+        std::fs::write(&path, bytes).unwrap();
+        let mut retry = row;
+        retry.attestation.turn_id = "valid-retry".into();
+        // A maximum permitted identifier is a real persisted boundary control.
+        retry.attestation.entry_id = "e".repeat(256);
+        reopened
+            .save_authenticated_history("synthetic", std::slice::from_ref(&retry))
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        reopened
+            .save_authenticated_history("synthetic", &[retry])
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            Store::open(dir.path().into())
+                .unwrap()
+                .authenticated_history("synthetic")
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn extraction_public_identifiers_reject_atomically_before_keys_and_retry() {
+        use serde_json::Value;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().into()).unwrap();
+        let pending = PendingExtraction {
+            version: 0,
+            source_digest: None,
+            entries: vec![("entry".into(), "user".into(), "source".into(), 1)],
+            bank: "private".into(),
+            derived: false,
+            agent: None,
+            turn_id: None,
+            attempts: 0,
+        };
+        let session = "s".repeat(256);
+        store
+            .set_pending_extraction(&session, serde_json::to_value(&pending).unwrap())
+            .unwrap();
+        store
+            .retain_extraction_range(&session, pending.clone(), false)
+            .unwrap();
+        let snapshot = || {
+            let mut files = std::fs::read_dir(dir.path().join(".extraction"))
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (path.clone(), std::fs::read(path).unwrap())
+                })
+                .collect::<Vec<_>>();
+            files.sort();
+            files
+        };
+        let before = snapshot();
+        for invalid in ["s".repeat(257), String::new()] {
+            assert!(store.pending_extraction(&invalid).is_err());
+            assert!(store.extraction_ranges(&invalid).is_err());
+            assert!(store.set_pending_extraction(&invalid, Value::Null).is_err());
+            assert!(store
+                .retain_extraction_range(&invalid, pending.clone(), true)
+                .is_err());
+            assert!(store
+                .acknowledge_extraction_range(&invalid, &pending)
+                .is_err());
+            assert!(store.authenticated_history(&invalid).is_err());
+            assert!(store.save_authenticated_history(&invalid, &[]).is_err());
+            assert_eq!(snapshot(), before);
+        }
+        let oversized_source = "x".repeat(crate::extraction_proof::SOURCE_BYTES / 6 + 1);
+        assert!(store.extraction_plan(&oversized_source).is_err());
+        assert!(store
+            .save_extraction_plan(&oversized_source, &Value::Null)
+            .is_err());
+        let mut bad = pending.clone();
+        bad.entries[0].0 = "i".repeat(257);
+        assert!(store
+            .retain_extraction_range(&session, bad.clone(), true)
+            .is_err());
+        assert!(store.acknowledge_extraction_range(&session, &bad).is_err());
+        assert!(store
+            .set_pending_extraction(&session, serde_json::to_value(&bad).unwrap())
+            .is_err());
+        bad.entries[0].0 = "entry".into();
+        bad.entries[0].2 = "x".repeat(crate::extraction_proof::TEXT_BYTES + 1);
+        assert!(PendingExtraction::digest(&bad.entries).is_err());
+        assert!(store.retain_extraction_range(&session, bad, true).is_err());
+        assert_eq!(snapshot(), before);
+        let mut aggregate = pending.clone();
+        aggregate.entries = (0..9)
+            .map(|n| {
+                (
+                    format!("entry-{n}"),
+                    "user".into(),
+                    "x".repeat(80 * 1024),
+                    1,
+                )
+            })
+            .collect();
+        assert!(store
+            .retain_extraction_range(&session, aggregate.clone(), true)
+            .is_err());
+        assert!(store
+            .set_pending_extraction(&session, serde_json::to_value(aggregate).unwrap())
+            .is_err());
+        assert_eq!(snapshot(), before);
+        let reopened = Store::open(dir.path().into()).unwrap();
+        assert_eq!(
+            reopened.pending_extraction(&session).unwrap(),
+            Some(serde_json::to_value(&pending).unwrap())
+        );
+        reopened
+            .retain_extraction_range(&session, pending.clone(), true)
+            .unwrap();
+        reopened
+            .acknowledge_extraction_range(&session, &pending)
+            .unwrap();
+        assert!(reopened.extraction_ranges(&session).unwrap().is_empty());
+    }
 
     fn memory(text: &str) -> Memory {
         Memory {

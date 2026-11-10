@@ -1071,6 +1071,33 @@
         ],
         "type": "object"
       },
+      "AssemblySummary": {
+        "properties": {
+          "assembly_id": {
+            "type": "string"
+          },
+          "span": {
+            "$ref": "#/definitions/RenderedSummary"
+          },
+          "summarized_indices": {
+            "description": "Exact request indices actually handed to this compaction's summarizer. None means previous_summary; its authority belongs to the caller ledger.",
+            "items": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "assembly_id",
+          "span"
+        ],
+        "type": "object"
+      },
       "ByRoleTokens": {
         "description": "Per-role token breakdown of the `messages` array.",
         "properties": {
@@ -1301,6 +1328,34 @@
         ],
         "type": "string"
       },
+      "RenderedSummary": {
+        "description": "Base system prompt + the summary section. An empty base yields just the section; no summary yields just the base.",
+        "properties": {
+          "byte_end": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "byte_start": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "summary_sha256": {
+            "type": "string"
+          },
+          "system_sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "byte_end",
+          "byte_start",
+          "summary_sha256",
+          "system_sha256"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "description": "Why an assistant message stopped generating.",
         "enum": [
@@ -1379,6 +1434,18 @@
         "minimum": 0.0,
         "type": "integer"
       },
+      "input_indices": {
+        "description": "Output ordinal -> exact request index; absent if the bounded map cannot fit.",
+        "items": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "messages": {
         "description": "Budgeted, ready to send to llm-router.",
         "items": {
@@ -1388,6 +1455,16 @@
       },
       "model_resolved": {
         "$ref": "#/definitions/ModelResolvedWire"
+      },
+      "summary_origin": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AssemblySummary"
+          },
+          {
+            "type": "null"
+          }
+        ]
       },
       "system_prompt": {
         "type": "string"

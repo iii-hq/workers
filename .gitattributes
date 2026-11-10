@@ -1,6 +1,9 @@
 # Goldens are compared byte for byte; Windows checkouts would otherwise turn
 # them into CRLF and fail every schema test.
 computer/tests/golden/** text eol=lf
+# The deterministic pair evaluator hashes these exact checkout bytes.
+iii-directory/tests/local_pair_eval/corpus.json text eol=lf
+iii-directory/Cargo.lock text eol=lf
 sandbox-libkrun/firmware/** binary
 # Store screenshots (<worker>/screenshots/screenshots.yaml) are published by
 # SHA-256: their bytes must never be normalized.

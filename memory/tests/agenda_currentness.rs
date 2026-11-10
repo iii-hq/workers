@@ -60,6 +60,7 @@ async fn setup() -> (tempfile::TempDir, Arc<Deps>, Arc<Bank>) {
         ..WorkerConfig::default()
     };
     let deps = Arc::new(Deps {
+        hook_binding: Arc::default(),
         emitter: Arc::new(Emitter::new(iii.clone())),
         iii,
         store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
@@ -587,7 +588,12 @@ async fn real_wall_wrapper_ignores_wire_clock_and_has_nonzero_live_control() {
         today - Duration::days(14)
     ));
     bank.commit(live.clone()).await.unwrap();
+    let future = fact(&format!(
+        "User has an optometrist appointment at 11:00 on {}.",
+        monday + Duration::days(14)
+    ));
     bank.commit(old.clone()).await.unwrap();
+    bank.commit(future.clone()).await.unwrap();
     let (ids, _) = delivered(
         hooks::pre_generate(&deps, input("real-now", EN))
             .await
@@ -595,6 +601,7 @@ async fn real_wall_wrapper_ignores_wire_clock_and_has_nonzero_live_control() {
     );
     assert_eq!(ids, HashSet::from([live.id]));
     assert!(!ids.contains(&old.id));
+    assert!(!ids.contains(&future.id));
     // Fixed October controls are valid only when outside the ACTUAL next week;
     // this remains robust even if the checker is run in October 2026 someday.
     for key in ["evt-dentist-moved", "evt-palestra-meetup"] {
@@ -762,4 +769,45 @@ async fn inferred_and_source_less_extracted_do_not_certify_personal_events() {
             .collect::<HashSet<_>>(),
         HashSet::from([m.id])
     );
+}
+
+#[tokio::test]
+async fn unchanged_november_trip_and_october_events_use_explicit_opposite_anchors() {
+    let (_dir, deps, bank) = setup().await;
+    let trip = golden("evt-trip-berlin");
+    assert_eq!(trip.text, "User travels to Berlin on 2026-11-16 for a three-day distributed systems conference, returning on 2026-11-19.");
+    let talk = golden("evt-palestra-meetup");
+    bank.commit(trip.clone()).await.unwrap();
+    bank.commit(talk.clone()).await.unwrap();
+    for (date, expected) in [
+        ("2026-10-12", HashSet::from([talk.id.clone()])),
+        ("2026-11-09", HashSet::from([trip.id.clone()])),
+        ("2026-11-23", HashSet::new()),
+    ] {
+        let at = clock(date);
+        let (ids, _) = delivered(
+            hooks::pre_generate_at(&deps, input(&format!("fixed-anchor-{date}"), EN), at)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(ids, expected, "{date}");
+        let req = serde_json::from_value(json!({"bank":"agenda", "query":EN})).unwrap();
+        let response = memory::functions::recall::recall_at(&deps, req, at)
+            .await
+            .unwrap();
+        assert_eq!(
+            response
+                .memories
+                .into_iter()
+                .map(|m| m.memory.id)
+                .collect::<HashSet<_>>(),
+            expected
+        );
+        assert_eq!(
+            agenda::evidence(EN, &trip, at).is_some(),
+            date == "2026-11-09"
+        );
+    }
+    assert_eq!(bank.get(&trip.id).await.unwrap(), trip);
+    assert_eq!(bank.get(&talk.id).await.unwrap(), talk);
 }

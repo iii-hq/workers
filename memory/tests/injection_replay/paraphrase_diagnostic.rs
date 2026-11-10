@@ -35,7 +35,7 @@ async fn paraphrase_comparison(pilot_only: bool) {
             ],
         ),
     ];
-    let fixture_now_ms = now_ms();
+    let fixture_now_ms = agenda::fixture_clock().now_ms();
     let known: HashSet<String> = corpus["memories"]
         .as_array()
         .unwrap()
@@ -174,7 +174,9 @@ async fn paraphrase_comparison(pilot_only: bool) {
                 "recall_context":{"version":1,"session_id":session,"turn_id":format!("t-{session}"),"source":{"kind":"direct","entry_id":"current"},"query":{"entry_id":"current","text":text}},
                 "generate":{"system_prompt":"offline quality comparison","messages":[{"role":"user","content":text}]}})).unwrap();
             let calls_before = boundary.calls.lock().unwrap().len();
-            let response = pre_generate(deps, input).await.unwrap();
+            let response = pre_generate_at(deps, input, agenda::fixture_clock())
+                .await
+                .unwrap();
             let annotations = response.annotations.unwrap_or_default();
             let selected: Vec<String> = serde_json::from_value(
                 annotations
@@ -203,7 +205,7 @@ async fn paraphrase_comparison(pilot_only: bool) {
             let capped = crate::store::cap_query(text);
             let shared = bank.bm25_max(&capped, |_| true).await;
             let (ranked, evidence) = bank
-                .recall_evidence(
+                .recall_evidence_at(
                     &capped,
                     query_vector.as_deref(),
                     cache["model"].as_str().unwrap_or(""),
@@ -211,6 +213,7 @@ async fn paraphrase_comparison(pilot_only: bool) {
                     deps.config().await.decay_half_life_days,
                     false,
                     shared,
+                    agenda::fixture_clock(),
                 )
                 .await;
             let reasons = admission_reasons(&ranked, &evidence);
@@ -277,8 +280,8 @@ async fn paraphrase_comparison(pilot_only: bool) {
                 "policy_decision":"similarity discovers/ranks; independent relation authorizes; factual recall unchanged",
                 "exact_query_cache_present":exact,"embedding_quality_measured":raw.is_some() && exact,"fallback_measured":raw.is_none() || !exact,
                 "provider_calls":0,"generation_calls":0,"monetary_cost":null,"coverage_complete":false,
-                "fixture_now_ms":fixture_now_ms,"calendar_validity_measured":false,
-                "calendar_scope":if query_id=="q-evt-next-week"{"retrieval fixture only: original October absolute dates unchanged; age_days changes stated_at, not calendar dates; no current next-week validity claimed"}else{"calendar reference not evaluated"}})
+                "fixture_now_ms":fixture_now_ms,"calendar_validity_measured":true,
+                "calendar_scope":if query_id=="q-evt-next-week"{"synthetic 2026-10-12 UTC: unchanged October events are next week; fixed 2026-11-16 Berlin trip is outside [2026-10-19,2026-10-26)"}else{"calendar reference not evaluated"}})
             );
             if pilot_only {
                 // The precision-first policy may abstain on this historically

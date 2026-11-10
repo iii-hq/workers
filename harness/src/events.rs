@@ -135,14 +135,22 @@ pub struct CompactionEvent {
 
 /// Registers one event function: private, and its handler returns the event.
 fn register_event(iii: &IIIClient, id: &str, description: &str, format: Value) {
-    iii.register_function(
-        id,
-        RegisterFunction::new(|event: Value| Ok::<Value, Error>(event))
-            .description(description)
-            .request_format(format.clone())
-            .response_format(format)
-            .private(),
-    );
+    let registration = RegisterFunction::new(|event: Value| Ok::<Value, Error>(event))
+        .description(description)
+        .request_format(format.clone())
+        .response_format(format)
+        .private();
+    let registration = if id == crate::clients::router::generation_capture::REQUEST
+        || id == crate::clients::router::generation_capture::RESPONSE
+        || id == crate::clients::router::generation_capture::MEMORY_RECEIPT
+    {
+        registration.args_format_value(serde_json::json!({
+            "type": "object", "additionalProperties": false, "maxProperties": 0
+        }))
+    } else {
+        registration
+    };
+    iii.register_function(id, registration);
 }
 
 /// An observer of a turn event never targets `harness::spawn`: delivery
@@ -170,6 +178,16 @@ impl TurnEvents {
     /// Set the event functions' hooks, then register them, and return the
     /// emitter.
     pub fn register(iii: &Arc<IIIClient>) -> Self {
+        Self::register_with_capture_mode(
+            iii,
+            crate::clients::router::generation_capture::capture_mode_at_boot(),
+        )
+    }
+
+    pub(crate) fn register_with_capture_mode(
+        iii: &Arc<IIIClient>,
+        capture_mode: crate::clients::router::generation_capture::CaptureMode,
+    ) -> Self {
         let ready = Arc::new(AtomicBool::new(false));
 
         // An observer added after boot receives the current ready state once
@@ -232,6 +250,48 @@ impl TurnEvents {
              Filter on input.session_id.",
             schema_value::<ObserversChangedEvent>(),
         );
+        use crate::clients::router::generation_capture::{
+            CaptureMode, GenerationEvent, REQUEST, RESPONSE,
+        };
+        for id in [REQUEST, RESPONSE] {
+            // Private authenticates writers, NOT readers. Only the operator's
+            // isolated synthetic stack boundary permits this unsafe mode.
+            iii.on_observer_added_for(id, move |observer: Observer| async move {
+                if capture_mode != CaptureMode::SyntheticIsolation {
+                    return Err(ObserveRejection::new(
+                        "FORBIDDEN",
+                        "Generation witnesses are disabled; isolated synthetic process opt-in required.",
+                    ));
+                }
+                if !observer.args_value().is_null() && observer.args_value() != &serde_json::json!({}) {
+                    return Err(ObserveRejection::new("FORBIDDEN", "Generation witnesses accept no observation args."));
+                }
+                refuse_spawn_target(observer).await
+            });
+            register_event(
+                iii, id,
+                "Private Harness-owned final SDK dispatch byte witness v2. Default off; only operator process-start III_HARNESS_SYNTHETIC_GENERATION_CAPTURE=1 permits a separate isolated synthetic stack (unsafe otherwise; operator must isolate readers and exclude real data). Malformed values denied. No observation args; correlate request/success/current update and source receipts per generation, not an all-global-sequence fence. Request carries bounded normalized whole-line SHA-256, role and numeric location; response carries success/error/cancelled without raw text. Both complete events and matching internal assistant_entry_id plus independently authenticated Harness assistant update are required (origin.generation_id is a hint, not authority); missing/gaps/truncation are unavailable. No replay. Not provider receipt or Memory provenance. Digests allow finite-source dictionary attacks: restrict observers using engine policy; private authenticates source, not readers.",
+                schema_value::<GenerationEvent>(),
+            );
+        }
+        // Minimal private synthetic bridge; same opt-in and reader policy as
+        // generation witnesses, with no raw hook output or prompt surface.
+        use crate::clients::router::generation_capture::{MemoryReceipt, MEMORY_RECEIPT};
+        iii.on_observer_added_for(MEMORY_RECEIPT, move |observer: Observer| async move {
+            if capture_mode != CaptureMode::SyntheticIsolation
+                || (!observer.args_value().is_null()
+                    && observer.args_value() != &serde_json::json!({}))
+            {
+                return Err(ObserveRejection::new(
+                    "FORBIDDEN",
+                    "Synthetic receipt capture disabled or observation args supplied.",
+                ));
+            }
+            refuse_spawn_target(observer).await
+        });
+        register_event(iii, MEMORY_RECEIPT,
+            "Synthetic-only private producer attestation of the actual Memory observer call. Join independently authenticated Memory output digest and normalized append ordinal/body to v2 SourceSlot; collector activation is not original activation. Missing/evicted receipts unavailable; deduplicate receipt IDs and bind session/turn/step. Digests are dictionary-risk, not anonymous; private authenticates emitter, not reader.",
+            schema_value::<MemoryReceipt>());
         crate::deletion_events::register(iii);
         register_event(
             iii,

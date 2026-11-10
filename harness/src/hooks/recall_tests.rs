@@ -11,6 +11,9 @@ struct Data {
     messages: BTreeMap<String, Vec<Value>>,
     calls: Vec<(String, Value)>,
     hooks: Vec<Value>,
+    memory_response: Value,
+    memory_owner: bool,
+    extraction_cas_conflicts: usize,
 }
 impl Data {
     fn get(&self, scope: &str, key: &str) -> Value {
@@ -49,6 +52,10 @@ impl Data {
                 .collect::<Vec<_>>())),
             "harness::state::compare-and-set" => {
                 let old = self.get(scope, key);
+                if scope == SCOPE && self.extraction_cas_conflicts > 0 {
+                    self.extraction_cas_conflicts -= 1;
+                    return Ok(json!({"swapped":false,"current":old}));
+                }
                 let swapped = old == p["expected"];
                 if swapped {
                     self.state
@@ -75,11 +82,23 @@ impl Data {
                 Ok(json!({"entry_id":id}))
             }
             "engine::workers::register" => Ok(json!({"success":true})),
-            "engine::functions::list" => Ok(json!({"functions":[]})),
+            "engine::functions::list" => Ok(if self.memory_owner && p["worker"] == "memory" {
+                json!({"functions":[{"function_id":"memory::hook::pre-generate"}]})
+            } else {
+                json!({"functions":[]})
+            }),
             "state::claim-namespace" => Ok(json!({"claimed":true})),
+            "memory::hook::pre-generate" => {
+                self.hooks.push(p.clone());
+                Ok(self.memory_response.clone())
+            }
             "offline::capture" => {
                 self.hooks.push(p.clone());
-                Ok(json!({"decision":"continue"}))
+                Ok(if self.memory_response.is_null() {
+                    json!({"decision":"continue"})
+                } else {
+                    self.memory_response.clone()
+                })
             }
             _ => Err(format!("unexpected offline RPC {function}")),
         }
@@ -98,9 +117,15 @@ impl Drop for Stack {
 }
 impl Stack {
     async fn new() -> Self {
+        Self::with_target("offline::capture").await
+    }
+    async fn with_target(target: &'static str) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
-        let data = Arc::new(Mutex::new(Data::default()));
+        let data = Arc::new(Mutex::new(Data {
+            memory_owner: target == "memory::hook::pre-generate",
+            ..Default::default()
+        }));
         let shared = data.clone();
         let (ready, wait) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
@@ -124,7 +149,7 @@ impl Stack {
                 if request["type"] == "registerfunction" {
                     revision += 1;
                     let observers = if request["id"] == crate::hooks::ON_PRE_GENERATE_FN {
-                        json!([{"id":"recall-capture","target":"offline::capture",
+                        json!([{"id":"recall-capture","target":target,
                             "args":{"timeout_ms":1000},"filters":{},
                             "capture":["input","output","caller"],"on":"success"}])
                     } else {
@@ -1104,3 +1129,6 @@ async fn recall_edit_guard_denies_agents_before_rpc_and_preserves_operator_edit(
     assert_eq!(context["source"]["entry_id"], row.entry_id);
     assert_eq!(context["query"]["text"], "Operator replacement");
 }
+
+#[path = "extraction_provenance_tests.rs"]
+mod extraction_provenance_tests;
