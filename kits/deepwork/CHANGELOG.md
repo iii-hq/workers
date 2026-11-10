@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+- **Requires the observe v2 releases of its workers**: `harness` `^1.9.0`, `iii-directory` `>=1.3.0`, `state` `>=0.23.0`, `kanban` `^0.2.0` and `ide` `>=0.13.0`, the first releases built on iii-sdk 0.26. 0.6.0 and 0.7.0 already relied on them but still asked for `kanban` `^0.1.21`, and the published 0.5.2 asks for the same.
+  - On a 0.26 engine, kanban 0.1.x registers its board page and its configuration watch as triggers. The engine drops those registrations, so the Kanban page never appears in the console, while the kanban functions keep answering.
+  - A new project from `iii project init --learn-iii` installs this kit from its setup wizard, so every new 0.26 user got kanban 0.1.34 and no board.
+- **Compatibility.** No profile changed. An installed kit picks the new ranges up when it is updated (`directory::download-kit`), and the update moves `kanban` to 0.2.x.
+
 ## 0.7.0
 
 Lessons from one long dev run: 4 orchestrators, about 60 sessions and US$80. About 30% of the cost went to repairs and reruns, and an external review found as blockers defects the run's own critic had listed as loose ends.
