@@ -802,6 +802,15 @@ export function ChatView({
       ),
     [sessionObservers, firedObservers],
   )
+  // What the observers did here, for the side panel's Observers section.
+  const observerEvents = useMemo(
+    () =>
+      conversation.messages.filter(
+        (m): m is SystemMessage =>
+          m.role === 'system' && m.kind === 'observer-fired',
+      ),
+    [conversation.messages],
+  )
   // Registration lookup for observer-fired cards: a fire record carries only
   // the observer id — the observer's conditions and lifecycle live in these rows.
   const observersById = useMemo(
@@ -3519,6 +3528,7 @@ export function ChatView({
             onSheetOpenChange={setAsideSheetOpen}
             request={asideRequest}
             observers={mergedObservers}
+            observerEvents={observerEvents}
             onDisposeObserver={handleDisposeObserver}
             landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
             pendingQuote={pendingQuote}

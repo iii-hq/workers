@@ -75,7 +75,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { deleteSession, setSessionMeta } from '@/lib/sessions/api'
 import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import { PortalScope } from '@/lib/ui-scope'
-import type { Conversation } from '@/types/chat'
+import type { Conversation, SystemMessage } from '@/types/chat'
 import { ChatContextPanel } from './ChatContextPanel'
 import { ChatView } from './ChatView'
 import { ContextSectionsMenu } from './ContextSectionsMenu'
@@ -141,6 +141,8 @@ interface ChatAsideProps {
   onSheetOpenChange: (open: boolean) => void
   request: AsideRequest | null
   observers: readonly SessionObserverInfo[]
+  /** This chat's observer events, for the Observers section. */
+  observerEvents?: readonly SystemMessage[]
   onDisposeObserver: (observerId: string) => Promise<void> | void
   landBlocked?: boolean
   /** The quote waiting in the side chat's composer (owned by the main chat). */
@@ -166,6 +168,7 @@ export function ChatAside({
   onSheetOpenChange,
   request,
   observers,
+  observerEvents,
   onDisposeObserver,
   landBlocked,
   pendingQuote,
@@ -408,11 +411,30 @@ export function ChatAside({
     if (section) {
       revealGroup(section)
       // After the tab and the unfold have painted.
-      requestAnimationFrame(() =>
-        contentRef.current
-          ?.querySelector(`[data-reorder-item="${section}"]`)
-          ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
-      )
+      requestAnimationFrame(() => {
+        const target = contentRef.current?.querySelector<HTMLElement>(
+          `[data-reorder-item="${section}"]`,
+        )
+        if (!target) return
+        const still = window.matchMedia(
+          '(prefers-reduced-motion: reduce)',
+        ).matches
+        target.scrollIntoView({
+          block: 'nearest',
+          behavior: still ? 'auto' : 'smooth',
+        })
+        // Already in view, the section would not move: a brief ring says
+        // this is where the click landed.
+        if (!still) {
+          target.animate(
+            [
+              { boxShadow: '0 0 0 2px var(--color-warn)' },
+              { boxShadow: '0 0 0 2px transparent' },
+            ],
+            { duration: 1200, easing: 'ease-out' },
+          )
+        }
+      })
     }
     if (request.tab !== 'side-chat' || !request.quote) return
     void ensureFork().then((id) => {
@@ -559,6 +581,7 @@ export function ChatAside({
         conversations={ctx.conversations}
         connectionState={ctx.connectionState}
         observers={observers}
+        observerEvents={observerEvents}
         onDisposeObserver={onDisposeObserver}
         onOpenConversation={ctx.openConversationInPanel}
         shellAvailable={ctx.shellAvailable}
