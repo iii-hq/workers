@@ -375,6 +375,7 @@ impl WorkerVms {
         let mut log = BuildLog::new(&writer);
         let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
         let image_writer = WriterSlot::default();
+        let done = Mutex::new(BuildDone::default());
         let job = BuildJob {
             worker_name: &req.worker_name,
             dir: &dir,
@@ -386,8 +387,9 @@ impl WorkerVms {
             env: req.env.clone().into_iter().collect(),
             state: state.clone(),
             image_writer: &image_writer,
+            done: &done,
         };
-        let built = tokio::select! {
+        let mut built = tokio::select! {
             built = job.run(&mut log) => built,
             gone = reader_gone(&writer, BUILD_KEEPALIVE) => Err(SandboxError::BuildFailed(
                 format!("build cancelled: the reader of `logs` is gone ({gone})")
@@ -396,7 +398,19 @@ impl WorkerVms {
         if built.is_err() {
             // The build VM died with the dropped run; a writer still in its
             // blocking part stops, renames nothing and removes its files.
-            cancel_writer(&image_writer, &state).await;
+            let written = cancel_writer(&image_writer, &state).await;
+            // Unless the image was already in place: then the build is done.
+            let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(response) = done.response.take() {
+                built = Ok(response);
+            } else if let (Some(Ok(build_id)), Some(base_image)) = (written, done.base_image.take())
+            {
+                built = Ok(WorkerBuildResponse {
+                    build_id,
+                    base_image,
+                    built_at_ms: now_ms(),
+                });
+            }
         }
         match &built {
             Ok(b) => {
@@ -868,6 +882,16 @@ struct BuildJob<'a> {
     state: Arc<AtomicU8>,
     /// Where the blocking image writer runs, so a cancelled build can wait for it.
     image_writer: &'a WriterSlot,
+    /// What the build did, for a caller that dropped it after the commit.
+    done: &'a Mutex<BuildDone>,
+}
+
+/// What a build did before it may have been dropped: its base image once its
+/// VM is set up, and its reply once the image is in place.
+#[derive(Default)]
+struct BuildDone {
+    base_image: Option<BaseImageRef>,
+    response: Option<WorkerBuildResponse>,
 }
 
 impl BuildJob<'_> {
@@ -890,6 +914,13 @@ impl BuildJob<'_> {
         )
         .await
         .map_err(SandboxError::BuildFailed)?;
+        self.done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .base_image = Some(BaseImageRef {
+            digest: crate::cli::rootfs_cache::cached_digest(&vm.reference),
+            reference: vm.reference.clone(),
+        });
         log.note(format!("iii: build VM on {}", vm.reference))
             .await?;
         let status = run_build_vm(vm.command, log).await?;
@@ -924,19 +955,30 @@ impl BuildJob<'_> {
                 self.out.display()
             ))
         })?;
-        log.note(format!(
-            "iii: built {build_id} into {}",
-            self.out.join(IMAGE_FILE).display()
-        ))
-        .await?;
-        Ok(WorkerBuildResponse {
+        // The image is in place: the build is done whatever happens to `logs` now.
+        let response = WorkerBuildResponse {
             build_id,
-            base_image: BaseImageRef {
-                digest: crate::cli::rootfs_cache::cached_digest(&vm.reference),
-                reference: vm.reference,
-            },
+            base_image: self
+                .done
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .base_image
+                .clone()
+                .expect("set once the build VM is"),
             built_at_ms: now_ms(),
-        })
+        };
+        self.done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .response = Some(response.clone());
+        let _ = log
+            .note(format!(
+                "iii: built {} into {}",
+                response.build_id,
+                self.out.join(IMAGE_FILE).display()
+            ))
+            .await;
+        Ok(response)
     }
 }
 
@@ -955,17 +997,24 @@ async fn run_writer(slot: &WriterSlot, image: ImageWrite) -> Result<String, Stri
 }
 
 /// Mark the build cancelled and wait for its writer, if one runs, to stop and
-/// remove its temporary files.
-async fn cancel_writer(slot: &WriterSlot, state: &AtomicU8) {
+/// remove its temporary files. Returns what that writer returned: the build id
+/// when it renamed the image into place before the cancel.
+async fn cancel_writer(slot: &WriterSlot, state: &AtomicU8) -> Option<Result<String, String>> {
     let _ = state.compare_exchange(
         BUILD_RUNNING,
         BUILD_CANCELLED,
         Ordering::SeqCst,
         Ordering::SeqCst,
     );
-    if let Some(handle) = slot.lock().await.as_mut() {
-        let _ = handle.await;
-    }
+    let mut slot = slot.lock().await;
+    let handle = slot.as_mut()?;
+    let written = handle.await;
+    *slot = None;
+    Some(
+        written
+            .map_err(|e| format!("the image writer died: {e}"))
+            .and_then(|w| w),
+    )
 }
 
 /// The temporary image files a build of an earlier adapter process left in
@@ -3218,6 +3267,37 @@ mod tests {
         assert!(!t.join("spool").exists());
     }
 
+    /// The build's run is dropped once its image is renamed into place, before
+    /// it saw its writer end: the cancel gets the writer's build id, so the
+    /// build reports the image it installed.
+    #[tokio::test]
+    async fn a_build_dropped_after_its_commit_still_has_its_build_id() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let (write, state) = image_write(t, "v1", BUILD_RUNNING);
+        let slot = WriterSlot::default();
+        let id_file = t.join("out").join(IMAGE_ID_FILE);
+        // Polled first on every wake: it sees the rename before the run sees
+        // its writer end.
+        let committed = std::future::poll_fn(|cx| {
+            if id_file.exists() {
+                std::task::Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        });
+        tokio::select! {
+            biased;
+            () = committed => {}
+            done = run_writer(&slot, write) => panic!("the run saw its writer end first: {done:?}"),
+        }
+        let written = cancel_writer(&slot, &state).await;
+        assert_eq!(state.load(Ordering::SeqCst), BUILD_COMMITTED);
+        let id = written.expect("the writer was still in its slot").unwrap();
+        assert_eq!(read_image_id(&t.join("out")), Some(id));
+    }
+
     #[test]
     fn only_an_earlier_processs_build_scratch_is_swept() {
         let t = tempfile::tempdir().unwrap();
@@ -3309,7 +3389,8 @@ mod tests {
             done = run_writer(&slot, write) => panic!("the image was written before the cancel: {done:?}"),
             () = writing => {}
         }
-        cancel_writer(&slot, &state).await;
+        let written = cancel_writer(&slot, &state).await;
+        assert!(matches!(written, Some(Err(_))), "{written:?}");
 
         assert_eq!(state.load(Ordering::SeqCst), BUILD_CANCELLED);
         let mut left: Vec<_> = std::fs::read_dir(&out)

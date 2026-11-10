@@ -166,12 +166,17 @@ a build and keeps quiet about it.
   `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
   `worker::destroy` removes them with the rest.
 - **What a `path://` copy leaves out.** One list, the source watcher's ignore
-  list (dependency, build, VCS and editor dirs, among them `node_modules`,
-  `.venv`, `venv`, `vendor`, `target`, `dist`, `build`, `.git`, and Compose's
-  `.build` and `.workers`) plus `.iii`, at any depth: a run neither copies nor
-  syncs those names, and its boot cleanup keeps what the build put there. A
-  build leaves the same names out of its copy, except `vendor/`, where Go keeps
-  vendored source.
+  list plus `.iii`: a run neither copies nor syncs those names, and its boot
+  cleanup keeps what the build put there.
+  - Dependency, cache, VCS and editor dirs match at any depth: among them
+    `node_modules`, `.venv`, `venv`, `vendor`, `__pycache__`, `.tox`,
+    `.gradle`, `.git`, and Compose's `.build` and `.workers`.
+  - Build-output names that projects also use for source below the root,
+    `build`, `out`, `obj`, `dist`, `coverage`, `deps` and `target`, match at
+    the worker's root only: `src/pkg/build/` is code and syncs.
+  - A build leaves the same names out of its copy, except `vendor/`, where Go
+    keeps vendored source. A `worker::start` without `build`, which still
+    installs in the guest, copies as a build does.
 
 ## Known limits
 
@@ -184,10 +189,12 @@ Two races of a build are accepted:
 
 - `worker::start` checks `image.id`, not the image: a rebuild that renames a new
   `image.erofs` between that check and the VM opening the file boots the newer
-  image under the older id. The next start answers S508 and asks for a rebuild.
-- A build whose reader leaves between the build's decision to commit and its
-  two renames still renames: the pair stays consistent, the caller gets S507,
-  and the next start against the older `build.json` answers S508.
+  image under the older id.
+- The adapter notices a reader of `logs` that left only at its next write, up
+  to 5 s later. A reader that leaves less than 5 s before a build ends can
+  find the new pair installed: the build still renames it and replies with
+  its build id. A caller that gave up (its `build.json` still names the older
+  build) then gets S508 on its next start, and builds again.
 
 `.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
 inside a worker's directory puts the token in that guest. The name hides the whole

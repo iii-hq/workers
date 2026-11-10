@@ -32,7 +32,8 @@ pub const DEBOUNCE_MS: u64 = 500;
 /// normal operation — including during the restart itself, which would
 /// otherwise produce an infinite restart loop.
 ///
-/// The same list, with `.iii`, is what a `path://` worker's copy into the VM
+/// These match at any depth; [`ROOT_IGNORED_DIR_NAMES`] at the worker's root
+/// only. Both lists, with `.iii`, are what a `path://` worker's copy into the VM
 /// leaves out and what its boot cleanup keeps (`local_worker`): a run never
 /// installs, so what the build put there must stay.
 pub const IGNORED_DIR_NAMES: &[&str] = &[
@@ -44,8 +45,6 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".next",
     ".nuxt",
     ".svelte-kit",
-    // Rust
-    "target",
     // Python
     ".venv",
     "venv",
@@ -62,16 +61,10 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".gradle",
     ".m2",
     // .NET
-    "obj",
     ".nuget",
     // Elixir / Erlang
     "_build",
-    "deps",
-    // Generic build output
-    "dist",
-    "build",
-    "out",
-    "coverage",
+    // Generic caches
     ".cache",
     // VCS
     ".git",
@@ -85,6 +78,13 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".build",
     ".workers",
 ];
+
+/// Build-output names that projects also use for source in nested dirs
+/// (`src/pkg/build/`, a Go `internal/deps/`): ignored at the worker's root
+/// only, where they are the tool's output (Rust's `target`, .NET's `obj`,
+/// Elixir's `deps`, generic `build`/`out`/`dist`/`coverage`).
+pub const ROOT_IGNORED_DIR_NAMES: &[&str] =
+    &["build", "out", "obj", "dist", "coverage", "deps", "target"];
 
 /// O(1) lookup set for ignore-path classification. Built once; hit on
 /// every notify event, which can fire thousands of times per second
@@ -100,15 +100,21 @@ pub(crate) fn is_compose_state(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(b".iii")
 }
 
-fn is_ignored_name(name: &OsStr) -> bool {
-    name.to_str()
-        .is_some_and(|s| IGNORED_DIR_SET.contains(s) || is_compose_state(s.as_bytes()))
+/// Whether the entry `name` is ignored; `at_root` when it sits directly in the
+/// worker's root, where [`ROOT_IGNORED_DIR_NAMES`] apply too.
+fn is_ignored_name(name: &OsStr, at_root: bool) -> bool {
+    name.to_str().is_some_and(|s| {
+        IGNORED_DIR_SET.contains(s)
+            || is_compose_state(s.as_bytes())
+            || (at_root && ROOT_IGNORED_DIR_NAMES.contains(&s))
+    })
 }
 
 /// Returns true if a notify event on this path should be ignored.
 ///
 /// A path is ignored when any of its components (after stripping the
-/// project root prefix) matches [`IGNORED_DIR_NAMES`] or is Compose's state. This correctly
+/// project root prefix) matches [`IGNORED_DIR_NAMES`] or is Compose's state,
+/// or its first component matches [`ROOT_IGNORED_DIR_NAMES`]. This correctly
 /// ignores writes deep inside `node_modules/.cache/...` as well as the
 /// directory itself.
 ///
@@ -116,15 +122,18 @@ fn is_ignored_name(name: &OsStr) -> bool {
 /// ignored — users frequently edit those and expect a restart. Only
 /// named artifact dirs are filtered.
 pub fn should_ignore_path(path: &Path, project_root: &Path) -> bool {
-    let rel = path.strip_prefix(project_root).unwrap_or(path);
-    for component in rel.components() {
-        if let std::path::Component::Normal(os) = component
-            && is_ignored_name(os)
-        {
-            return true;
-        }
-    }
-    false
+    // Outside the root, no component is the root's own entry.
+    let (rel, rooted) = match path.strip_prefix(project_root) {
+        Ok(rel) => (rel, true),
+        Err(_) => (path, false),
+    };
+    rel.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(os) => Some(os),
+            _ => None,
+        })
+        .enumerate()
+        .any(|(depth, os)| is_ignored_name(os, rooted && depth == 0))
 }
 
 /// Register non-recursive watches on every directory under `root`
@@ -141,10 +150,20 @@ pub(crate) fn watch_pruned(
     root: &Path,
     registered: &mut HashSet<PathBuf>,
 ) -> anyhow::Result<()> {
+    watch_pruned_under(watcher, root, root, registered)
+}
+
+/// [`watch_pruned`] from `start`, a directory under the worker's `root`.
+fn watch_pruned_under(
+    watcher: &mut notify::RecommendedWatcher,
+    root: &Path,
+    start: &Path,
+    registered: &mut HashSet<PathBuf>,
+) -> anyhow::Result<()> {
     use std::collections::VecDeque;
 
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
-    queue.push_back(root.to_path_buf());
+    queue.push_back(start.to_path_buf());
 
     while let Some(dir) = queue.pop_front() {
         match watcher.watch(&dir, RecursiveMode::NonRecursive) {
@@ -210,7 +229,7 @@ pub(crate) fn watch_pruned(
             if !ft.is_dir() || ft.is_symlink() {
                 continue;
             }
-            if is_ignored_name(&entry.file_name()) {
+            if is_ignored_name(&entry.file_name(), dir == root) {
                 continue;
             }
             queue.push_back(entry.path());
@@ -288,7 +307,7 @@ pub(crate) fn register_new_dirs(
         }
         // Walk it, not just watch it: on Linux a moved-in tree or
         // `mkdir -p a/b/c` reports only its top directory.
-        if let Err(e) = watch_pruned(watcher, p, registered) {
+        if let Err(e) = watch_pruned_under(watcher, root, p, registered) {
             tracing::debug!(
                 path = %p.display(),
                 error = %e,
@@ -379,6 +398,61 @@ mod tests {
         ] {
             assert!(!should_ignore_path(&PathBuf::from(path), &root()), "{path}");
         }
+    }
+
+    /// Build-output names hold source in nested dirs: they are ignored at the
+    /// worker's root only. The rest are ignored at any depth.
+    #[test]
+    fn root_only_names_are_ignored_at_the_root_only() {
+        for name in ROOT_IGNORED_DIR_NAMES {
+            assert!(
+                should_ignore_path(&PathBuf::from(format!("/proj/{name}/x")), &root()),
+                "{name}"
+            );
+            assert!(
+                !should_ignore_path(
+                    &PathBuf::from(format!("/proj/src/pkg/{name}/x.py")),
+                    &root()
+                ),
+                "{name}"
+            );
+            assert!(!IGNORED_DIR_NAMES.contains(name), "{name} is in both lists");
+        }
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/src/pkg/node_modules/x"),
+            &root()
+        ));
+        // A path outside the root has no root entry.
+        assert!(!should_ignore_path(
+            &PathBuf::from("/other/build/x"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn a_nested_build_dir_is_watched_and_a_root_one_is_not() {
+        let proj = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        for dir in ["build/cache", "src/pkg/build", "src/node_modules/m"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let mut registered: HashSet<PathBuf> = HashSet::new();
+        watch_pruned(&mut watcher, &root, &mut registered).unwrap();
+        assert!(
+            registered.contains(&root.join("src/pkg/build")),
+            "{registered:?}"
+        );
+        assert!(!registered.contains(&root.join("build")));
+        assert!(!registered.contains(&root.join("src/node_modules")));
+
+        // A subtree registered later keeps the root's rule.
+        std::fs::create_dir_all(root.join("lib/out/gen")).unwrap();
+        register_new_dirs(&mut watcher, &[root.join("lib")], &root, &mut registered);
+        assert!(
+            registered.contains(&root.join("lib/out/gen")),
+            "{registered:?}"
+        );
     }
 
     #[test]

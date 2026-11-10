@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 
 use super::project::{ProjectInfo, WORKER_MANIFEST, project_from_doc};
 use super::rootfs::clone_rootfs;
-use super::source_watcher::IGNORED_DIR_NAMES;
+use super::source_watcher::{IGNORED_DIR_NAMES, ROOT_IGNORED_DIR_NAMES};
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 
@@ -24,26 +24,31 @@ const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 const RUN_SCRIPT_CMD: &str =
     "command -v bash >/dev/null && exec bash /opt/iii/dev-run.sh; exec sh /opt/iii/dev-run.sh";
 
-// What stays out of a `path://` worker's `/workspace` copy, at any depth, is one
-// list: the names the source watcher ignores (`IGNORED_DIR_NAMES`: dependency,
-// build, VCS and editor dirs, Compose's `.build` and `.workers`), plus `.iii`.
-// The run copies, syncs and protects by it; the build copies by it too, but for
-// `BUILD_COPIES`.
+// What stays out of a `path://` worker's `/workspace` copy is one list: the
+// names the source watcher ignores, plus `.iii`. `IGNORED_DIR_NAMES`
+// (dependency, cache, VCS and editor dirs, Compose's `.build` and `.workers`)
+// match at any depth, `ROOT_IGNORED_DIR_NAMES` (build output that projects
+// also use for nested source) at the worker's root only. The run copies, syncs
+// and protects by it; the build copies by it too, but for `BUILD_COPIES`.
 
 /// What a build copies although a run leaves it out: Go vendors source in
 /// `vendor/`, and a PHP `composer install` in the build rewrites it anyway.
 const BUILD_COPIES: &[&str] = &["vendor"];
 
 /// `--exclude` flags for every name of the list but `keep`, and for `.iii`:
-/// Compose's state, which holds the project's token.
+/// Compose's state, which holds the project's token. Over `tar -cf - .`, a bare
+/// name matches at any depth and `./<name>` the root's entry only.
 fn source_excludes(keep: &[&str]) -> String {
-    IGNORED_DIR_NAMES
+    let any_depth = IGNORED_DIR_NAMES
         .iter()
         .filter(|name| !keep.contains(name))
         .chain([&".iii"])
-        .map(|name| format!("--exclude={name}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .map(|name| format!("--exclude={name}"));
+    let at_root = ROOT_IGNORED_DIR_NAMES
+        .iter()
+        .filter(|name| !keep.contains(name))
+        .map(|name| format!("--exclude=./{name}"));
+    any_depth.chain(at_root).collect::<Vec<_>>().join(" ")
 }
 
 /// The `tar --exclude` flags of a run's copy.
@@ -54,7 +59,8 @@ static BUILD_SOURCE_EXCLUDES: LazyLock<String> = LazyLock::new(|| source_exclude
 /// Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
 /// only adds/overwrites (never deletes), so a source file removed on the host
 /// would keep running across a watcher restart. Remove every file outside the
-/// VM-local dirs of [`IGNORED_DIR_NAMES`], at any depth like the tar excludes
+/// VM-local dirs of the list (`IGNORED_DIR_NAMES` at any depth,
+/// `ROOT_IGNORED_DIR_NAMES` in /workspace itself), like the tar excludes
 /// (they are not re-copied, and a run never installs: what the build or the
 /// worker put in a nested `service/node_modules` must persist), then the
 /// directories left empty, then the few left (ancestors of those dirs) that are
@@ -67,11 +73,21 @@ static WORKSPACE_RESYNC_CLEANUP: LazyLock<String> = LazyLock::new(|| {
     let prune = IGNORED_DIR_NAMES
         .iter()
         .map(|name| format!("-name {name}"))
+        .chain(
+            ROOT_IGNORED_DIR_NAMES
+                .iter()
+                .map(|name| format!("-path /workspace/{name}")),
+        )
         .collect::<Vec<_>>()
         .join(" -o ");
     let inside = IGNORED_DIR_NAMES
         .iter()
         .map(|name| format!("! -path '*/{name}/*'"))
+        .chain(
+            ROOT_IGNORED_DIR_NAMES
+                .iter()
+                .map(|name| format!("! -path '/workspace/{name}/*'")),
+        )
         .collect::<Vec<_>>()
         .join(" ");
     format!(
@@ -214,6 +230,12 @@ pub fn build_image_run_script(project: &ProjectInfo, is_bundle: bool) -> String 
 
 fn boot_script(project: &ProjectInfo, is_bundle: bool, provision: Provision) -> String {
     let mut parts = script_header();
+    // A guest that installs gets what a build's copy gets (`vendor/` too); a
+    // run of a build's image the run's list.
+    let excludes = match provision {
+        Provision::Image => SOURCE_EXCLUDES.as_str(),
+        Provision::Host { .. } | Provision::InGuest => BUILD_SOURCE_EXCLUDES.as_str(),
+    };
 
     // Workspace strategy:
     //
@@ -264,7 +286,7 @@ mkdir -p /run/iii
 touch /run/iii/source-ready
 cd /workspace
 echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project untouched)" >&2"#
-                .replace("__SOURCE_EXCLUDES__", &SOURCE_EXCLUDES),
+                .replace("__SOURCE_EXCLUDES__", excludes),
         );
     }
 
@@ -1301,12 +1323,13 @@ mod tests {
 
     /// One list: what the run's copy leaves out is what its cleanup keeps and
     /// what the source sync ignores; the build's copy leaves out the same but
-    /// `vendor`.
+    /// `vendor`. Build-output names count at the worker's root only.
     #[test]
     fn one_list_drives_the_copy_the_cleanup_and_the_sync() {
         use super::super::source_watcher::should_ignore_path;
         let excludes: Vec<&str> = SOURCE_EXCLUDES.split(' ').collect();
         let build: Vec<&str> = BUILD_SOURCE_EXCLUDES.split(' ').collect();
+        let synced = |rel: &str| !should_ignore_path(&Path::new("/p").join(rel), Path::new("/p"));
         for name in IGNORED_DIR_NAMES {
             let flag = format!("--exclude={name}");
             assert!(excludes.contains(&flag.as_str()), "{name} is copied");
@@ -1319,25 +1342,115 @@ mod tests {
                 WORKSPACE_RESYNC_CLEANUP.contains(&format!("-name {name} ")),
                 "{name} is not protected"
             );
-            assert!(should_ignore_path(
-                &PathBuf::from(format!("/p/sub/{name}/x")),
-                Path::new("/p")
-            ));
+            assert!(!synced(&format!("sub/{name}/x")), "{name} syncs");
         }
-        assert_eq!(excludes.len(), IGNORED_DIR_NAMES.len() + 1);
-        assert_eq!(
-            build.len(),
-            IGNORED_DIR_NAMES.len() + 1 - BUILD_COPIES.len()
-        );
+        for name in ROOT_IGNORED_DIR_NAMES {
+            let flag = format!("--exclude=./{name}");
+            assert!(excludes.contains(&flag.as_str()), "{name} is copied");
+            assert!(build.contains(&flag.as_str()), "{name} in the build's copy");
+            assert!(!excludes.contains(&format!("--exclude={name}").as_str()));
+            assert!(
+                WORKSPACE_RESYNC_CLEANUP.contains(&format!("-path /workspace/{name} ")),
+                "{name} is not protected"
+            );
+            assert!(!WORKSPACE_RESYNC_CLEANUP.contains(&format!("-name {name} ")));
+            assert!(!synced(&format!("{name}/x")) && synced(&format!("sub/{name}/x")));
+        }
+        let all = IGNORED_DIR_NAMES.len() + ROOT_IGNORED_DIR_NAMES.len();
+        assert_eq!(excludes.len(), all + 1);
+        assert_eq!(build.len(), all + 1 - BUILD_COPIES.len());
         for flags in [&excludes, &build] {
             assert!(flags.contains(&"--exclude=.iii"));
         }
-        for name in [
-            "venv", "vendor", ".bundle", "deps", "_build", ".tox", ".gradle",
-        ] {
+        for name in ["venv", "vendor", ".bundle", "_build", ".tox", ".gradle"] {
             assert!(IGNORED_DIR_NAMES.contains(&name), "{name}");
         }
         assert!(!WORKSPACE_RESYNC_CLEANUP.contains("-name .iii"));
+    }
+
+    /// `build`, `out`, `obj`, `dist`, `coverage`, `deps` and `target` often hold
+    /// source below the root: there they are copied, re-copied by the cleanup
+    /// and synced; at the worker's root they are build output, left out and
+    /// kept.
+    #[test]
+    fn root_only_names_match_at_the_worker_root_only() {
+        use super::super::source_watcher::should_ignore_path;
+        let temp = tempfile::tempdir().unwrap();
+        let (src, ws) = (temp.path().join("src"), temp.path().join("ws"));
+        for file in [
+            "src/pkg/build/x.py",
+            "src/out/y.ts",
+            "lib/deps/z.go",
+            "build/artifact.bin",
+            "target/debug/app",
+            "src/node_modules/m.js",
+        ] {
+            std::fs::create_dir_all(src.join(file).parent().unwrap()).unwrap();
+            std::fs::write(src.join(file), "x").unwrap();
+        }
+        std::fs::create_dir_all(&ws).unwrap();
+        let copy = |excludes: &str| {
+            let status = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "( cd \"$SRC\" && tar -cf - {excludes} . ) | ( cd \"$WS\" && tar -xpf - )"
+                ))
+                .env("SRC", &src)
+                .env("WS", &ws)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        copy(&SOURCE_EXCLUDES);
+        for reached in ["src/pkg/build/x.py", "src/out/y.ts", "lib/deps/z.go"] {
+            assert!(
+                ws.join(reached).is_file(),
+                "{reached} did not reach the guest"
+            );
+        }
+        for left in ["build", "target", "src/node_modules"] {
+            assert!(!ws.join(left).exists(), "{left} reached the guest");
+        }
+        // The build's copy draws the same line.
+        std::fs::remove_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+        copy(&BUILD_SOURCE_EXCLUDES);
+        assert!(ws.join("src/pkg/build/x.py").is_file() && !ws.join("build").exists());
+
+        // The sync draws it too.
+        assert!(!should_ignore_path(&src.join("src/pkg/build/x.py"), &src));
+        assert!(should_ignore_path(&src.join("build/artifact.bin"), &src));
+
+        // The cleanup keeps what the build left in a root `build/`, and drops a
+        // nested `build/` file the host no longer has, as any source file.
+        std::fs::create_dir_all(ws.join("build")).unwrap();
+        std::fs::write(ws.join("build/from-the-image"), "x").unwrap();
+        std::fs::write(ws.join("src/pkg/build/stale.py"), "x").unwrap();
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
+            .env("SRC", &src)
+            .current_dir(&ws)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(ws.join("build/from-the-image").is_file());
+        assert!(!ws.join("src/pkg/build/stale.py").exists());
+    }
+
+    /// A start without a build installs in the guest, after its copy: that
+    /// copy is a build's (`vendor/` included). A run of an image is not.
+    #[test]
+    fn a_start_that_installs_copies_as_a_build_does() {
+        let project = project_with("", "go build ./...");
+        for overlay in [true, false] {
+            let script = build_libkrun_local_script(&project, false, false, overlay);
+            assert!(script.contains(BUILD_SOURCE_EXCLUDES.as_str()), "{script}");
+            assert!(!script.contains("--exclude=vendor "), "{script}");
+        }
+        let image = build_image_run_script(&project, false);
+        assert!(image.contains(SOURCE_EXCLUDES.as_str()));
+        assert!(image.contains("--exclude=vendor "));
     }
 
     /// A run never installs, so what the build put in a dependency dir must
