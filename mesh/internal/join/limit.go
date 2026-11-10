@@ -90,6 +90,17 @@ func (l *Limit) Refused(addr string) {
 	l.m[addr]++
 }
 
+// bucket is the rate-limit key of an address. An IPv6 visitor owns a whole /64,
+// so all of its addresses share one key.
+func bucket(a netip.Addr) string {
+	if a.Is6() {
+		p, _ := a.Prefix(64) // cannot fail for 64 bits of IPv6; drops the zone
+		return p.Addr().String()
+	}
+	return a.String()
+}
+
+// ClientAddr is the rate-limit key of a request: the client's address, or its /64 when it is IPv6.
 func ClientAddr(r *http.Request, trusted []netip.Prefix) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -109,10 +120,10 @@ func ClientAddr(r *http.Request, trusted []netip.Prefix) string {
 		return false
 	}
 	if !isTrusted(peer) {
-		return peer.String()
+		return bucket(peer)
 	}
 	if addr, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))); err == nil {
-		return addr.Unmap().String()
+		return bucket(addr.Unmap())
 	}
 	// Walk from the trusted peer toward the client; entries before the first
 	// untrusted hop may have been supplied by that hop itself.
@@ -124,5 +135,5 @@ func ClientAddr(r *http.Request, trusted []netip.Prefix) string {
 		}
 		peer = addr.Unmap()
 	}
-	return peer.String()
+	return bucket(peer)
 }

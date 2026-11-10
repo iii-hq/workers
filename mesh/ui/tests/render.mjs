@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { randomBytes, randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { readFile, mkdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
@@ -9,8 +10,14 @@ import { createServer } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+// Playwright and Vite come from the Console SPA's install in the workspace pnpm store.
 const require = createRequire(resolve(root, 'ade/web/package.json'))
 const { chromium, expect } = require('@playwright/test')
+// The bundled Playwright browser is not used: MESH_TEST_CHROMIUM_BIN (or the older PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH)
+// names one; otherwise /usr/bin/chromium, then macOS system Chrome. No CI workflow runs this test yet.
+const executablePath = [process.env.MESH_TEST_CHROMIUM_BIN, process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, '/usr/bin/chromium', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
+  .find((path) => path && existsSync(path))
+assert(executablePath, 'set MESH_TEST_CHROMIUM_BIN to a Chromium or Chrome executable')
 const artifacts = process.env.MESH_UI_ARTIFACTS ?? '/tmp/mesh-task22-render'
 const opaqueOnly = process.env.MESH_UI_SCENARIO === 'opaque'
 const focusOnly = process.env.MESH_UI_SCENARIO === 'focus'
@@ -38,11 +45,12 @@ try {
     await delay(250)
   }
   assert(ready, 'isolated Vite server started')
-  browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ?? '/usr/bin/chromium', headless: true })
+  browser = await chromium.launch({ executablePath, headless: true })
   const codeRaw = [...randomBytes(8)].map((n) => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n % 32]).join('')
   const joinCode = `${codeRaw.slice(0, 4)}-${codeRaw.slice(4)}`
   const unix = `curl -fsSL https://raw.githubusercontent.com/iii-hq/workers/mesh/v0.1.0/mesh/install/install.sh | sh -s -- 0.1.0 https://mesh.example.com ${joinCode}`
   const windows = `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iii-hq/workers/mesh/v0.1.0/mesh/install/install.ps1))) 0.1.0 https://mesh.example.com ${joinCode}`
+  const tunnelURL = 'https://r0ute234abcd5678.abc234.opentunnel.xyz'
   const schema = { type: 'object', properties: {
     public_url: { type: 'string' }, listen: { type: 'string' }, gateway_port: { type: 'integer', minimum: 1, maximum: 65535 },
     proxy_url: { type: 'string' }, stun_port: { type: 'integer', minimum: 0, maximum: 65535 },
@@ -55,9 +63,13 @@ try {
     { name: 'travel-laptop', address: 'fd7a:115c:a1e0::3', os: 'darwin', arch: 'arm64', version: '0.0.9', online: false, last_seen: new Date(Date.now() - 3_600_000).toISOString(), path: 'relay', workers: [], drives: [] },
   ]
   const longNodes = [{ ...nodes[0], name: 'engineering-workstation-archive', path: 'relay / ' + 'long-network-path/'.repeat(12), version: '0.1.0-build-' + '1234567890'.repeat(8), workers: [{ name: 'worker-with-a-very-long-name', state: 'waiting for the saved operator to sign in' }], drives: [{ name: 'long-shared-project-directory', state: 'mount error: ' + 'permission denied on remote directory '.repeat(5) }] }]
+  // Local workers the client share list offers; mesh and secrets are never shareable.
+  const localWorkers = ['shell', 'state', 'mesh', 'secrets']
   const results = []
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const theme of ['light', 'dark']) {
+      // The 5 s polling cadence is checked in real time once; other contexts refresh by hand.
+      const timed = viewport.width === 1440 && theme === 'light'
       const context = await browser.newContext({ viewport, permissions: ['clipboard-read', 'clipboard-write'], reducedMotion: 'reduce' })
       const page = await context.newPage()
       const errors = []
@@ -75,6 +87,26 @@ try {
       const calls = []
       let config = structuredClone(initialConfig)
       let activeSchema = schema
+      // What the running worker reports, as mesh::status (hub tunnelStatus, client status) would.
+      let running = 'hub'
+      let tunnelPhase = { state: 'starting' }
+      let clientState = 'connected'
+      // The entry the hub last applied; null follows every save at once. Unset ${VAR} templates expand to their default.
+      let applied = null
+      const hubStatus = () => {
+        const hub = applied ?? config
+        const publicURL = String(hub?.public_url ?? '').replace(/\$\{\w+:?([^}]*)\}/g, '$1')
+        const tunnel = hub?.tunnel?.enabled !== true ? undefined
+          : publicURL ? { enabled: true, tunnel_id: 'mesh', state: 'overridden' }
+          : { enabled: true, tunnel_id: 'mesh', ...tunnelPhase }
+        return { version: '0.1.0', public_url: publicURL || tunnel?.url || '', ...(tunnel ? { tunnel } : {}) }
+      }
+      // Calls named in `hold` wait in `held` until release() answers them.
+      let hold = new Set()
+      const held = []
+      const release = () => held.splice(0).forEach((answer) => answer())
+      const clientStatus = () => ({ mode: 'client', hub_url: config.client?.hub_url ?? '', node: config.client?.name ?? '', namespace: 'project',
+        state: clientState, error: '', shared: [{ worker: 'shell', state: 'running', functions: ['shell::exec'] }] })
       await page.routeWebSocket('**/ws', (socket) => {
         socket.onMessage(async (message) => {
           const frame = JSON.parse(String(message))
@@ -90,23 +122,27 @@ try {
           if (frame.type !== 'invokefunction') return
           calls.push({ id: frame.function_id, namespace: frame.namespace, data: frame.data })
           const send = (result, error) => socket.send(JSON.stringify({ type: 'invocationresult', invocation_id: frame.invocation_id, function_id: frame.function_id, ...(error ? { error: { code: 'UNAVAILABLE', message: error } } : { result }) }))
-          if (frame.function_id.startsWith('mesh::') && frame.function_id !== 'mesh::configuration-id' && mode === 'loading') {
-            waiting.push(() => send(frame.function_id === 'mesh::nodes::list' ? [] : { code: joinCode, install: { unix, windows } }))
-            return
+          const answer = () => {
+            switch (frame.function_id) {
+              case 'mesh::configuration-id': assert.equal(frame.namespace, 'project'); return send({ id: 'mesh-lab' })
+              case 'mesh::nodes::list': return mode === 'error' ? send(null, 'Mesh hub is unavailable. Reconnect, then retry.') : send(mode === 'empty' || mode === 'loading' ? [] : mode === 'long' ? longNodes : nodes)
+              case 'mesh::join::code': return mode === 'error' || mode === 'join-error' ? send(null, 'public_url is not set') : send({ code: joinCode, install: { unix, windows } })
+              case 'mesh::status': return send(running === 'client' ? clientStatus() : hubStatus())
+              case 'compose::restart': assert.deepEqual(frame.data, { container: 'mesh' }); running = config?.mode === 'client' ? 'client' : 'hub'; return send({})
+              case 'configuration::list': return send({ configurations: [{ ...entry, schema: activeSchema }] })
+              case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
+              case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
+              case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
+              case 'engine::functions::list': return send({ functions: localWorkers.map((worker) => ({ function_id: `${worker}::fixture`, worker_name: worker })) })
+              case 'ade::ui-manifest': return send({ warnings: [], disabled: false })
+              case 'harness::sessions::list': return send({ sessions: [] })
+              default: return send({})
+            }
           }
-          switch (frame.function_id) {
-            case 'mesh::configuration-id': assert.equal(frame.namespace, 'project'); return send({ id: 'mesh-lab' })
-            case 'mesh::nodes::list': return mode === 'error' ? send(null, 'Mesh hub is unavailable. Reconnect, then retry.') : send(mode === 'empty' ? [] : mode === 'long' ? longNodes : nodes)
-            case 'mesh::join::code': return mode === 'error' || mode === 'join-error' ? send(null, 'public_url is not set') : send({ code: joinCode, install: { unix, windows } })
-            case 'configuration::list': return send({ configurations: [{ ...entry, schema: activeSchema }] })
-            case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
-            case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
-            case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
-            case 'engine::functions::list': return send({ functions: [] })
-            case 'ade::ui-manifest': return send({ warnings: [], disabled: false })
-            case 'harness::sessions::list': return send({ sessions: [] })
-            default: return send({})
-          }
+          // The page's first reads stay pending until the loading state has been checked.
+          if (frame.function_id.startsWith('mesh::') && frame.function_id !== 'mesh::configuration-id' && mode === 'loading') return void waiting.push(answer)
+          if (hold.has(frame.function_id)) return void held.push(answer)
+          answer()
         })
       })
       const capture = async (name) => {
@@ -118,88 +154,296 @@ try {
         await page.screenshot({ path })
         results.push(path)
       }
+      const statusCalls = () => calls.filter((call) => call.id === 'mesh::status').length
+      const button = (name) => page.getByRole('button', { name, exact: true })
+      const textbox = (name) => page.getByRole('textbox', { name, exact: true })
+      const tunnelSwitch = page.getByRole('switch', { name: 'Expose through a tunnel', exact: true })
+      const tunnelLine = page.locator('.mesh-ui-tunnel')
+      const saveBar = page.locator('.mesh-ui-save-bar')
+      const badge = page.getByText('needed before machines can join', { exact: true })
+      // Page Save: only the edited basics change; every other key, templates included, is written back as read.
+      const savePage = async (expected) => {
+        const count = saved.length
+        await button('Save').click()
+        await expect.poll(() => saved.length).toBe(count + 1)
+        await expect(saveBar).toHaveCount(0)
+        assert.deepEqual(saved.at(-1).value, expected, 'configuration::set receives the stored entry with only the changed keys')
+        return expected
+      }
+      const refreshTo = async (phase) => {
+        tunnelPhase = phase
+        await button('Refresh').click()
+      }
+      const openPage = async () => {
+        await page.goto(`${url}/#/worker/mesh/mesh-manager`)
+        await expect(page.getByRole('radiogroup', { name: 'Mesh mode', exact: true })).toBeVisible()
+      }
       if (!opaqueOnly && !focusOnly) {
         await page.goto(`${url}/#/worker/mesh/mesh-manager`)
         await expect(page.getByText('Loading machines and join instructions…')).toBeVisible()
         await capture('loading')
         await page.keyboard.press('Tab')
-        await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeFocused()
-        mode = 'empty'; waiting.splice(0).forEach((send) => send())
+        await expect(button('Settings')).toBeFocused()
+        mode = 'empty'; waiting.splice(0).forEach((answer) => answer())
         await expect(page.getByText('No machines joined', { exact: true })).toBeVisible()
         await capture('empty')
-        mode = 'error'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+        mode = 'error'; await button('Refresh').click()
         await expect(page.getByText('Could not load machines')).toBeVisible()
         await expect(page.getByText('Join instructions unavailable')).toBeVisible()
         await capture('error')
-        mode = 'populated'; await page.getByRole('button', { name: 'Retry', exact: true }).first().click()
+        mode = 'populated'; await button('Retry').first().click()
         await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
         await expect(page.getByText('Online', { exact: true })).toBeVisible()
         await expect(page.getByText('Offline', { exact: true })).toBeVisible()
         await capture('populated')
-        await page.getByRole('button', { name: 'Copy Join code', exact: true }).click()
+        await button('Copy Join code').click()
         await expect(page.getByText('Copied', { exact: true })).toBeVisible()
         assert.equal(await page.evaluate(() => navigator.clipboard.readText()), joinCode)
-        await page.getByRole('button', { name: 'Copy Linux / macOS command', exact: true }).click()
+        await button('Copy Linux / macOS command').click()
         assert.equal(await page.evaluate(() => navigator.clipboard.readText()), unix)
-        await page.getByRole('button', { name: 'Copy Windows PowerShell command', exact: true }).click()
+        await button('Copy Windows PowerShell command').click()
         assert.equal(await page.evaluate(() => navigator.clipboard.readText()), windows)
         await capture('join-actions')
-        mode = 'join-error'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+        mode = 'join-error'; await button('Refresh').click()
         await expect(page.getByText('Join instructions unavailable')).toBeVisible()
         await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
-        mode = 'long'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+        mode = 'long'; await button('Refresh').click()
         await expect(page.getByRole('heading', { name: longNodes[0].name })).toBeVisible()
         await capture('long')
-        await page.getByRole('button', { name: 'Settings', exact: true }).click()
-        await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
-        const publicUrl = page.getByRole('textbox', { name: 'Public URL', exact: true })
-        await expect(publicUrl).toBeVisible()
-        await publicUrl.fill('https://mesh.example.com')
-        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled()
-        // Reset an unsaved draft so reset and persistence checks have independent baselines.
-        const configCallsBeforeEdit = calls.filter((call) => call.id.startsWith('configuration::'))
-        await publicUrl.fill('https://changed.example.com')
-        try {
-          await expect(publicUrl).toHaveValue('https://changed.example.com')
-          await expect(page.getByRole('button', { name: 'Reset', exact: true })).toBeVisible()
-        } catch (error) {
-          await page.screenshot({ path: resolve(artifacts, 'reset-diagnostic.png') })
-          await writeFile(resolve(artifacts, 'reset-diagnostic.json'), JSON.stringify({ before: configCallsBeforeEdit, after: calls.filter((call) => call.id.startsWith('configuration::')), value: await publicUrl.inputValue(), text: await page.locator('body').innerText() }, null, 2))
-          throw error
+        console.log(`PASS ${viewport.width}px ${theme}: loader, machine states, overflow, clipboard`)
+
+        // Hub mode: the basics are on the page, client fields are not.
+        mode = 'populated'
+        await expect(page.getByRole('radio', { name: 'Hub', exact: true })).toBeChecked()
+        await expect(page.getByText('This project is the hub. Other machines join it and run or share workers here.')).toBeVisible()
+        await expect(page.getByRole('heading', { name: 'Hub address', exact: true })).toBeVisible()
+        await expect(badge).toBeVisible()
+        await expect(tunnelSwitch).not.toBeChecked()
+        await expect(textbox('Public URL')).toHaveValue('')
+        await expect(tunnelLine).toHaveCount(0)
+        await expect(textbox('Hub URL')).toHaveCount(0)
+        await expect(page.getByRole('heading', { name: 'Shared workers' })).toHaveCount(0)
+        await expect(saveBar).toHaveCount(0)
+        await capture('hub')
+        await textbox('Public URL').fill('https://mesh.example.com')
+        await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
+        await button('Discard').click()
+        await expect(saveBar).toHaveCount(0)
+        await expect(textbox('Public URL')).toHaveValue('')
+        assert.equal(saved.length, 0, 'Discard writes nothing')
+
+        // The tunnel switch writes tunnel.enabled and the status line follows the hub's tunnel state.
+        await tunnelSwitch.click()
+        await expect(tunnelSwitch).toBeChecked()
+        await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
+        // An edit typed while the save is in flight is kept, and the page shows what it wrote before it reads again.
+        hold = new Set(['configuration::set'])
+        await button('Save').click()
+        await expect.poll(() => held.length).toBe(1)
+        await textbox('Public URL').fill('https://mesh.example.com')
+        hold = new Set(['mesh::status', 'configuration::get'])
+        release()
+        await expect.poll(() => held.length).toBe(2)
+        let stored = { ...initialConfig, tunnel: { enabled: true } }
+        assert.deepEqual(saved.at(-1).value, stored, 'configuration::set receives the stored entry with only the changed keys')
+        await expect(tunnelSwitch).toBeChecked()
+        await expect(badge).toHaveCount(0)
+        await expect(textbox('Public URL')).toHaveValue('https://mesh.example.com')
+        await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
+        hold = new Set()
+        release()
+        await button('Discard').click()
+        await expect(saveBar).toHaveCount(0)
+        await expect(badge).toHaveCount(0)
+        await expect(tunnelLine).toHaveText('Starting the tunnel…')
+        await capture('tunnel-starting')
+        let before = statusCalls()
+        tunnelPhase = { state: 'ready', url: tunnelURL, proxy_protocol: 'v2' }
+        if (!timed) await button('Refresh').click()
+        await expect(tunnelLine.getByRole('button', { name: 'Copy Tunnel URL' })).toBeVisible({ timeout: 8000 })
+        if (timed) {
+          assert(statusCalls() > before, 'mesh::status is re-read without a click while the tunnel settles')
+          before = statusCalls()
+          await delay(6000)
+          assert.equal(statusCalls(), before, 'polling stops once the tunnel is ready')
         }
-        await page.getByRole('button', { name: 'Reset', exact: true }).click()
-        await expect(publicUrl).toHaveValue('')
-        await publicUrl.fill('https://mesh.example.com')
-        await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('0')
-        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled()
-        await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('49135')
-        await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('constructor')
-        await expect(page.getByRole('button', { name: 'Add machine', exact: true })).toBeEnabled()
-        await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('laptop')
-        await page.getByRole('button', { name: 'Add machine', exact: true }).click()
+        await expect(tunnelLine.locator('code')).toHaveText(tunnelURL)
+        // The line is an item of the settings list and announces what polling finds.
+        await expect(tunnelLine).toHaveAttribute('aria-live', 'polite')
+        await expect(page.getByRole('region', { name: 'Hub address', exact: true }).locator('[role="list"] > :not([role="listitem"])')).toHaveCount(0)
+        await tunnelLine.getByRole('button', { name: 'Copy Tunnel URL' }).click()
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), tunnelURL)
+        await capture('tunnel-ready')
+        await refreshTo({ state: 'reconnecting' })
+        await expect(tunnelLine).toHaveText('Starting the tunnel…')
+        await refreshTo({ state: 'unavailable', error: 'quick-tunnel is not responding' })
+        await expect(tunnelLine.getByText('The tunnel is unavailable', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('quick-tunnel is not responding', { exact: true })).toBeVisible()
+        await capture('tunnel-unavailable')
+        await refreshTo({ state: 'failed', error: 'opentunnel relay unreachable' })
+        await expect(tunnelLine.getByText('The tunnel failed', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('opentunnel relay unreachable', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('The tunnel is unavailable', { exact: true })).toHaveCount(0)
+        if (timed) {
+          before = statusCalls()
+          await delay(6000)
+          assert.equal(statusCalls(), before, 'polling stops once the tunnel failed')
+        }
+        await refreshTo({ state: 'stopped' })
+        await expect(tunnelLine).toHaveCount(0)
+        await expect(tunnelSwitch).toBeChecked()
+        if (timed) {
+          before = statusCalls()
+          await expect.poll(statusCalls, { timeout: 8000 }).toBeGreaterThan(before)
+        }
+        await textbox('Public URL').fill('https://mesh.example.com')
+        await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
+        stored = await savePage({ ...stored, public_url: 'https://mesh.example.com' })
+        await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
+        await capture('tunnel-overridden')
+        // The hub drops the tunnel only when it applies the entry; the page keeps reading until it does.
+        if (timed) applied = config
+        await tunnelSwitch.click()
+        stored = await savePage({ ...stored, tunnel: { enabled: false } })
+        if (timed) {
+          await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
+          before = statusCalls()
+          applied = null
+          await expect(tunnelLine).toHaveCount(0, { timeout: 8000 })
+          assert(statusCalls() > before, 'mesh::status is re-read without a click until the hub drops the tunnel')
+        }
+        await expect(tunnelLine).toHaveCount(0)
+        await expect(badge).toHaveCount(0)
+        // A template that expands to nothing leaves the hub without an address: the page follows what the hub reports.
+        config = { ...stored, public_url: '${MESH_PUBLIC_URL:}' }
+        await button('Refresh').click()
+        await expect(textbox('Public URL')).toHaveValue('${MESH_PUBLIC_URL:}')
+        await expect(badge).toBeVisible()
+        config = { ...config, tunnel: { enabled: true } }
+        tunnelPhase = { state: 'starting' }
+        await button('Refresh').click()
+        await expect(tunnelLine).toHaveText('Starting the tunnel…')
+        await expect(badge).toHaveCount(0)
+        if (timed) {
+          tunnelPhase = { state: 'ready', url: tunnelURL }
+          await expect(tunnelLine.locator('code')).toHaveText(tunnelURL, { timeout: 8000 })
+        }
+        // A raw root belongs to the configuration form: the page never writes its basics over it.
+        config = structuredClone(stored)
+        await button('Refresh').click()
+        await expect(tunnelSwitch).not.toBeChecked()
+        await tunnelSwitch.click()
+        config = '${MESH_CONFIG}'
+        const writes = saved.length
+        await button('Save').click()
+        await expect(page.getByText('Could not save', { exact: true })).toBeVisible()
+        await expect(page.getByText('The mesh settings are one raw value', { exact: true })).toBeVisible()
+        assert.equal(saved.length, writes, 'a raw root is never overwritten by the page')
+        await expect(tunnelSwitch).toHaveCount(0)
+        await expect(page.getByRole('radiogroup', { name: 'Mesh mode' })).toHaveCount(0)
+        await expect(saveBar).toHaveCount(0)
+        await capture('raw-root')
+        config = structuredClone(stored)
+        await button('Refresh').click()
+        await button('Discard').click()
+        await expect(tunnelSwitch).not.toBeChecked()
+        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state, templated address, raw root refused${timed ? ', polling until settled' : ''}`)
+
+        // The configuration form holds only the advanced settings.
+        await button('Settings').click()
+        await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
+        await expect(page.getByText('Mode, hub address, join code and shared workers are set on the Mesh page. These are the advanced settings.')).toBeVisible()
+        for (const label of ['Listen address', 'Gateway port', 'Proxy URL', 'STUN port']) await expect(textbox(label)).toBeVisible()
+        await expect(textbox('Public URL')).toHaveCount(0)
+        await expect(textbox('Hub URL')).toHaveCount(0)
+        await expect(page.getByRole('radiogroup', { name: 'Mesh mode' })).toHaveCount(0)
+        await expect(tunnelSwitch).toHaveCount(0)
+        const proxyUrl = textbox('Proxy URL')
+        await proxyUrl.fill('ws://127.0.0.1:49201')
+        await expect(button('Save changes')).toBeEnabled()
+        await expect(button('Reset')).toBeVisible()
+        await button('Reset').click()
+        await expect(proxyUrl).toHaveValue(initialConfig.proxy_url)
+        await textbox('Gateway port').fill('0')
+        await expect(button('Save changes')).toBeDisabled()
+        await textbox('Gateway port').fill('49135')
+        await textbox('New machine name').fill('constructor')
+        await expect(button('Add machine')).toBeEnabled()
+        await textbox('New machine name').fill('laptop')
+        await button('Add machine').click()
         await page.getByRole('region', { name: 'Workers', exact: true }).getByRole('button', { name: 'Add item' }).click()
-        await page.getByRole('textbox', { name: 'Workers 1', exact: true }).fill('ide')
-        await page.getByRole('textbox', { name: 'New drive name', exact: true }).fill('project')
-        await page.getByRole('button', { name: 'Add drive', exact: true }).click()
-        await page.getByRole('textbox', { name: 'Server machine', exact: true }).fill('laptop')
+        await textbox('Workers 1').fill('ide')
+        await textbox('New drive name').fill('project')
+        await button('Add drive').click()
+        await textbox('Server machine').fill('laptop')
         await page.getByRole('region', { name: 'Client machines', exact: true }).getByRole('button', { name: 'Add item' }).click()
-        await page.getByRole('textbox', { name: 'Client machines 1', exact: true }).fill('*')
+        await textbox('Client machines 1').fill('*')
         await page.getByText('Advanced networking', { exact: true }).click()
-        await page.getByRole('button', { name: 'Add link', exact: true }).click()
-        await page.getByRole('textbox', { name: 'Link 1 first machine', exact: true }).fill('laptop')
-        await page.getByRole('textbox', { name: 'Link 1 second machine', exact: true }).fill('desktop')
+        await button('Add link').click()
+        await textbox('Link 1 first machine').fill('laptop')
+        await textbox('Link 1 second machine').fill('desktop')
         await capture('configuration')
-        await page.getByRole('button', { name: 'Save changes', exact: true }).click()
-        await expect.poll(() => saved.length).toBe(1)
-        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(0)
-        assert.equal(saved[0].value.listen, initialConfig.listen, 'unrelated environment template preserved')
-        assert.deepEqual(saved[0].value.nodes.laptop.workers, ['ide'])
-        assert.deepEqual(saved[0].value.drives.project, { server: 'laptop', nodes: ['*'] })
-        assert.deepEqual(saved[0].value.links, [['laptop', 'desktop']])
+        const count = saved.length
+        await button('Save changes').click()
+        await expect.poll(() => saved.length).toBe(count + 1)
+        await expect(button('Save changes')).toHaveCount(0)
+        assert.equal(saved.at(-1).value.listen, initialConfig.listen, 'unrelated environment template preserved')
+        assert.equal(saved.at(-1).value.public_url, stored.public_url, 'page basics survive a form save')
+        assert.deepEqual(saved.at(-1).value.tunnel, stored.tunnel)
+        assert.deepEqual(saved.at(-1).value.nodes.laptop.workers, ['ide'])
+        assert.deepEqual(saved.at(-1).value.drives.project, { server: 'laptop', nodes: ['*'] })
+        assert.deepEqual(saved.at(-1).value.links, [['laptop', 'desktop']])
+        stored = saved.at(-1).value
+        console.log(`PASS ${viewport.width}px ${theme}: advanced-only form, host validation/save/reset, templates, node/drive/link edits`)
+
+        // Client mode: hub fields go away, client fields and the share list appear, and a restart applies it.
+        // The page is not re-read on return, so its Save must not write back the entry it loaded before the form saved.
+        await openPage()
+        await page.getByRole('radio', { name: 'Client', exact: true }).click()
+        await expect(page.getByText('This project joins another project\'s hub and shares the workers you pick below.')).toBeVisible()
+        await expect(page.getByRole('heading', { name: 'Hub address' })).toHaveCount(0)
+        await expect(tunnelSwitch).toHaveCount(0)
+        await expect(textbox('Public URL')).toHaveCount(0)
+        await expect(page.getByRole('heading', { name: 'Machines', exact: true })).toHaveCount(0)
+        await expect(page.getByRole('heading', { name: 'Hub connection', exact: true })).toBeVisible()
+        await expect(page.locator('[data-field="client.join"]')).toHaveCount(1)
+        await expect(page.getByRole('heading', { name: 'Shared workers', exact: true })).toBeVisible()
+        await expect(page.getByRole('switch', { name: 'Share shell', exact: true })).not.toBeChecked()
+        await expect(page.getByRole('switch', { name: 'Share state', exact: true })).not.toBeChecked()
+        for (const never of ['mesh', 'secrets']) await expect(page.getByRole('switch', { name: `Share ${never}` })).toHaveCount(0)
+        await expect(saveBar).toContainText('Unsaved changes · applied after a restart')
+        await textbox('Hub URL').fill('https://hub.example.com')
+        await textbox('Machine name').fill('Bad Name')
+        await expect(page.getByText('Use lowercase letters, digits or hyphens, starting with a letter.')).toBeVisible()
+        await expect(button('Save')).toBeDisabled()
+        await textbox('Machine name').fill('laptop')
+        await expect(button('Save')).toBeEnabled()
+        await page.getByRole('switch', { name: 'Share shell', exact: true }).click()
+        await expect(page.getByText('shell can run commands on this machine', { exact: true })).toBeVisible()
+        await capture('client')
+        stored = await savePage({ ...stored, mode: 'client', client: { hub_url: 'https://hub.example.com', name: 'laptop', share: ['shell'] } })
+        await expect(page.getByText('Restart the mesh worker to switch to client mode', { exact: true })).toBeVisible()
+        await button('Restart mesh').click()
+        await expect(page.getByText('Restart the mesh worker to switch to client mode')).toHaveCount(0)
+        assert(calls.some((call) => call.id === 'compose::restart'), 'Restart mesh calls compose::restart')
+        await expect(page.getByRole('region', { name: 'Hub connection' }).getByText('connected', { exact: true })).toBeVisible()
+        await expect(page.getByText('joined as')).toContainText('laptop')
+        await expect(page.getByText('shell::exec', { exact: true })).toBeVisible()
+        await capture('client-connected')
+        clientState = 'restart required'
+        await button('Refresh').click()
+        await expect(page.getByText('Restart the mesh worker to apply the new connection', { exact: true })).toBeVisible()
+        // The host form keeps the entry it loaded before the page saved; a fresh document reads the stored one.
+        await page.goto(`${url}/?client=${randomUUID()}#/worker/mesh/mesh-manager`)
+        await button('Settings').click()
+        await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
+        await expect(page.getByText('Client mode has no advanced settings.', { exact: true })).toBeVisible()
+        for (const label of ['Listen address', 'Proxy URL', 'Public URL', 'Hub URL']) await expect(textbox(label)).toHaveCount(0)
+        await expect(page.getByText('Advanced networking', { exact: true })).toHaveCount(0)
         assert(calls.some((call) => call.id === 'configuration::get' && call.data.raw === true && call.namespace === 'default'))
         assert(calls.every((call) => !call.id.startsWith('configuration::') || call.namespace === 'default'))
         assert.deepEqual(errors, [])
-        console.log(`PASS ${viewport.width}px ${theme}: loader, states, overflow, clipboard, dynamic identity, host validation/save/reset, templates, node/drive/link edits`)
+        console.log(`PASS ${viewport.width}px ${theme}: client fields, machine-name validation, share list, restart panel, client-only form`)
       }
       const openDraft = async (value) => {
         config = structuredClone(value)
@@ -207,9 +451,10 @@ try {
         // An unconstrained fixture schema lets the host serialize pre-existing custom shapes.
         activeSchema = {}
         mode = 'populated'
+        running = 'hub'
         await page.goto(`${url}/?draft=${randomUUID()}#/worker/mesh/mesh-manager`)
         try {
-          await page.getByRole('button', { name: 'Settings', exact: true }).click()
+          await button('Settings').click()
         } catch (error) {
           await writeFile(resolve(artifacts, 'host-open-draft-diagnostic.json'), JSON.stringify({ errors, calls, body: await page.locator('body').innerText() }, null, 2))
           throw error
@@ -218,15 +463,17 @@ try {
       }
       const persist = async (expected) => {
         const count = saved.length
-        await page.getByRole('button', { name: 'Save changes', exact: true }).click()
+        await button('Save changes').click()
         await expect.poll(() => saved.length).toBe(count + 1)
-        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(0)
+        await expect(button('Save changes')).toHaveCount(0)
         assert.deepEqual(saved.at(-1).value, expected, 'host receives the entire preserved draft')
       }
-      const replace = (label) => page.getByRole('button', { name: `Replace ${label} raw value with a literal value`, exact: true })
+      const replace = (label) => button(`Replace ${label} raw value with a literal value`)
       const unchanged = async () => {
-        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(0)
+        await expect(button('Save changes')).toHaveCount(0)
       }
+      // public_url moved to the page; the form's unrelated edit is now the Proxy URL.
+      const otherProxy = 'ws://127.0.0.1:49201'
       if (!opaqueOnly) {
         const focusDraft = { ...initialConfig, trusted_proxies: ['127.0.0.1/32'], links: [['laptop', 'desktop']], nodes: { laptop: { workers: ['ide'] } }, drives: { project: { server: 'laptop', nodes: ['*'] } } }
         for (const field of ['trusted_proxies.0', 'links.0.0', 'nodes.laptop.workers.0', 'drives.project.server']) {
@@ -254,8 +501,8 @@ try {
       }
       if (!opaqueCase || opaqueCase === 'root') {
         await openDraft('${MESH_CONFIG}')
-        await expect(page.getByRole('textbox', { name: 'Public URL', exact: true })).toHaveCount(0)
-        const rawRoot = page.getByRole('textbox', { name: 'Mesh configuration', exact: true })
+        await expect(textbox('Listen address')).toHaveCount(0)
+        const rawRoot = textbox('Mesh configuration')
         await expect(rawRoot).toHaveValue('${MESH_CONFIG}')
         await unchanged()
         await capture('opaque-root')
@@ -263,42 +510,43 @@ try {
         await persist('${OTHER_MESH_CONFIG}')
         await openDraft('${MESH_CONFIG}')
         await replace('Mesh configuration').click()
-        await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
-        await persist({ ...initialConfig, listen: '0.0.0.0:49180', public_url: 'https://mesh.example.com' })
+        await textbox('Proxy URL').fill(otherProxy)
+        await persist({ ...initialConfig, listen: '0.0.0.0:49180', proxy_url: otherProxy })
         console.log(`PASS ${viewport.width}px ${theme}: opaque root remains raw until explicit conversion; complete raw/default drafts round-trip through host`)
       }
       if (!opaqueCase || opaqueCase === 'link') {
         const linkDraft = { ...initialConfig, links: ['${MESH_LINK}', ['alpha', 'beta']], unrelated: '${KEEP_THIS}' }
         await openDraft(linkDraft)
         await page.getByText('Advanced networking', { exact: true }).click()
-        await expect(page.getByRole('textbox', { name: 'Link 1 first machine', exact: true })).toHaveCount(0)
-        const rawLink = page.getByRole('textbox', { name: 'Link 1', exact: true })
+        await expect(textbox('Link 1 first machine')).toHaveCount(0)
+        const rawLink = textbox('Link 1')
         await expect(rawLink).toHaveValue('${MESH_LINK}')
         await rawLink.scrollIntoViewIfNeeded()
         await unchanged()
         await capture('opaque-link')
-        await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
-        await persist({ ...linkDraft, public_url: 'https://mesh.example.com' })
+        await textbox('Proxy URL').fill(otherProxy)
+        await persist({ ...linkDraft, proxy_url: otherProxy })
         await openDraft(linkDraft)
         await page.getByText('Advanced networking', { exact: true }).click()
         await replace('Link 1').click()
-        await page.getByRole('textbox', { name: 'Link 1 first machine', exact: true }).fill('laptop')
-        await page.getByRole('textbox', { name: 'Link 1 second machine', exact: true }).fill('desktop')
+        await textbox('Link 1 first machine').fill('laptop')
+        await textbox('Link 1 second machine').fill('desktop')
         await persist({ ...linkDraft, links: [['laptop', 'desktop'], ['alpha', 'beta']] })
         console.log(`PASS ${viewport.width}px ${theme}: opaque link and siblings survive unrelated edits; explicit conversion creates an array pair`)
       }
       if (!opaqueCase && viewport.width === 1440 && theme === 'light') {
         for (const value of [null, false, 42, ['${ROOT_ITEM}']]) {
           await openDraft(value)
-          const raw = page.getByRole('textbox', { name: 'Mesh configuration', exact: true })
+          const raw = textbox('Mesh configuration')
           await expect(raw).toHaveValue(JSON.stringify(value))
           await expect(raw).toHaveJSProperty('readOnly', true)
-          await expect(page.getByRole('textbox', { name: 'Public URL', exact: true })).toHaveCount(0)
+          await expect(textbox('Listen address')).toHaveCount(0)
           await unchanged()
           if (value === 42) await capture('custom-root')
           await replace('Mesh configuration').click()
           await persist({ ...initialConfig, listen: '0.0.0.0:49180' })
         }
+        // The Public URL boundary left with the field: the form no longer renders public_url.
         const boundaries = [
           { name: 'Machine workers', patch: { nodes: '${MESH_NODES}' }, after: { nodes: {} } },
           { name: 'Shared drives', patch: { drives: ['${DRIVE_ITEM}'] }, after: { drives: {} } },
@@ -310,23 +558,23 @@ try {
           { name: 'Trusted proxies', advanced: true, patch: { trusted_proxies: null }, after: { trusted_proxies: [] } },
           { name: 'Machine links', advanced: true, patch: { links: { custom: '${LINKS}' } }, after: { links: [] } },
           { name: 'Link 1', advanced: true, patch: { links: [{ custom: '${PAIR}' }, ['alpha', 'beta']] }, after: { links: [['', ''], ['alpha', 'beta']] } },
-          { name: 'Public URL', patch: { public_url: { custom: '${URL}' } }, after: { public_url: '' } },
+          { name: 'Proxy URL', patch: { proxy_url: { custom: '${PROXY}' } }, after: { proxy_url: '' } },
           { name: 'Gateway port', patch: { gateway_port: '${GATEWAY_PORT}' }, after: { gateway_port: 49135 } },
         ]
         for (const boundary of boundaries) {
           const draft = { ...initialConfig, ...boundary.patch, unrelated: '${KEEP_THIS}' }
           await openDraft(draft)
           if (boundary.advanced) await page.getByText('Advanced networking', { exact: true }).click()
-          const raw = page.getByRole('textbox', { name: boundary.name, exact: true })
+          const raw = textbox(boundary.name)
           await expect(raw).toBeVisible()
           await unchanged()
           if (boundary.name === 'Drive archive settings') {
             await raw.scrollIntoViewIfNeeded()
             await capture('custom-drive')
           }
-          if (boundary.name !== 'Public URL') {
-            await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
-            await persist({ ...draft, public_url: 'https://mesh.example.com' })
+          if (boundary.name !== 'Proxy URL') {
+            await textbox('Proxy URL').fill(otherProxy)
+            await persist({ ...draft, proxy_url: otherProxy })
             await openDraft(draft)
             if (boundary.advanced) await page.getByText('Advanced networking', { exact: true }).click()
           }
@@ -336,13 +584,34 @@ try {
         const absent = { public_url: '', listen: '${KEEP_LISTENER}' }
         await openDraft(absent)
         await unchanged()
-        await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
-        await persist({ ...absent, public_url: 'https://mesh.example.com' })
+        await textbox('Proxy URL').fill(otherProxy)
+        await persist({ ...absent, proxy_url: otherProxy })
         await openDraft(absent)
-        await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('laptop')
-        await page.getByRole('button', { name: 'Add machine', exact: true }).click()
+        await textbox('New machine name').fill('laptop')
+        await button('Add machine').click()
         await persist({ ...absent, nodes: { laptop: { workers: [], allow: [] } } })
         console.log('PASS opaque shape matrix: 4 custom roots, 12 nested boundaries, absent optional parents, explicit conversion and complete sibling/template preservation')
+      }
+      if (timed && !opaqueOnly && !focusOnly) {
+        // A hub that never applies the saved tunnel: polling stops after its limit and the page says so.
+        // Last in this context, because the fake clock stays installed in it.
+        config = { ...initialConfig, tunnel: { enabled: true } }
+        applied = initialConfig
+        await page.clock.install()
+        await page.goto(`${url}/?stall=${randomUUID()}#/worker/mesh/mesh-manager`)
+        await expect(tunnelSwitch).toBeChecked()
+        let before = statusCalls()
+        await expect.poll(statusCalls, { timeout: 8000 }).toBeGreaterThan(before)
+        const stalled = page.getByText('The hub has not reported a tunnel result. Check the mesh and quick-tunnel workers, then refresh.', { exact: true })
+        await expect(stalled).toHaveCount(0)
+        await page.clock.fastForward(13 * 60_000)
+        await expect(stalled).toBeVisible()
+        before = statusCalls()
+        await page.clock.fastForward(30_000)
+        await delay(1000)
+        assert.equal(statusCalls(), before, 'polling stops at its limit')
+        applied = null
+        console.log(`PASS ${viewport.width}px ${theme}: tunnel polling stops after its limit and says so`)
       }
       assert.deepEqual(errors, [], 'opaque drafts render without host/loader errors')
       await context.close()

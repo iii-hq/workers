@@ -42,9 +42,13 @@ func (s *Supervisor) monitor(ctx context.Context, w *worker, path string, cmd *e
 			}
 			restarts++
 			// Recheck the digest before every execution, including automatic retries.
-			err = verifyArtifact(path, w.desired.SHA256)
+			err = verifyArtifact(path, w.desired.SHA256, 0555)
+			var binary string
 			if err == nil {
-				cmd, err = workerCommand(path, w.desired.Name, s.operator, rt, log)
+				binary, err = executable(path, w.desired.Name)
+			}
+			if err == nil {
+				cmd, err = workerCommand(binary, w.desired.Name, s.operator, rt, log)
 			}
 			if err == nil {
 				err = ctx.Err()

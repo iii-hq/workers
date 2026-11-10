@@ -133,7 +133,7 @@ func (a *app) enroll(ctx context.Context, args JoinArgs) error {
 	if err = identity.Verify(pin); err != nil {
 		return err
 	}
-	s := State{PublicURL: args.PublicURL, Secret: secret, Identity: identity, Operator: operator, RequestedName: requestedName(hostname), Port: args.Port}
+	s := State{PublicURL: args.PublicURL, Secret: secret, Identity: identity, Operator: operator, RequestedName: join.RequestedName(hostname), Port: args.Port}
 	if a.resolveOperator != nil {
 		s.Operator, s.OperatorID, err = a.resolveOperator(operator)
 		if err != nil {
@@ -151,25 +151,4 @@ func (a *app) enroll(ctx context.Context, args JoinArgs) error {
 		return fmt.Errorf("saved enrollment but service installation failed (run mesh leave before retrying): %w", err)
 	}
 	return nil
-}
-func requestedName(hostname string) string {
-	hostname = strings.ToLower(strings.SplitN(hostname, ".", 2)[0])
-	var b strings.Builder
-	for _, c := range hostname {
-		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' {
-			b.WriteRune(c)
-		}
-	}
-	name := b.String()
-	if name == "" || name[0] < 'a' || name[0] > 'z' {
-		name = "node-" + name
-	}
-	if len(name) > 31 {
-		name = name[:31]
-	}
-	switch name {
-	case "mesh", "hub", "engine", "iii", "configuration", "harness", "shell", "coder":
-		return "node-" + name
-	}
-	return name
 }

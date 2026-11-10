@@ -40,6 +40,10 @@ func ensureConfig(ctx context.Context, client rpc, id string) (Config, error) {
 	if err = json.Unmarshal(schema, &document); err != nil {
 		return Config{}, err
 	}
+	// parseConfig fills absent fields from DefaultConfig. Compose injects a bare
+	// config_override (for example {mode: client}) on first boot, before any value
+	// is stored, so the schema must not require hub fields.
+	delete(document, "required")
 	document["example"] = DefaultConfig()
 	payload := map[string]any{"id": id, "name": "Mesh", "description": "Mesh hub networking, nodes and drives", "schema": document, "metadata": map[string]string{"ui_form": "mesh"}, "initial_value": DefaultConfig()}
 	_, err = configCall(ctx, client, "configuration::ensure", payload)
@@ -114,6 +118,7 @@ func (h *Hub) onConfigChange(ctx context.Context, client rpc, event ConfigChange
 	if err = h.applyConfig(ctx, cfg); err != nil {
 		return ConfigChangeResult{}, err
 	}
+	h.kickTunnel() // not a direct reconcile: this runs under reload
 	return ConfigChangeResult{OK: true}, nil
 }
 func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, local bool) error {
@@ -128,6 +133,12 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 			return ConfigChangeResult{}, errors.New("configuration reload is unavailable in interface mode")
 		}
 		return h.onConfigChange(ctx, client, e)
+	}, internal); err != nil {
+		return err
+	}
+	// Only wakes the Run loop; the observed payload is never trusted as state.
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::on-tunnel-change", func(_ context.Context, e TunnelChangeEvent) (ConfigChangeResult, error) {
+		return h.onTunnelChange(e), nil
 	}, internal); err != nil {
 		return err
 	}

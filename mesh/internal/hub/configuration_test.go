@@ -93,6 +93,11 @@ func TestConfigurationInitialization(t *testing.T) {
 			if string(p["metadata"]) != `{"ui_form":"mesh"}` {
 				t.Fatal("missing form identity")
 			}
+			var schema map[string]json.RawMessage
+			json.Unmarshal(p["schema"], &schema)
+			if _, ok := schema["required"]; ok {
+				t.Fatalf("a bare compose override such as {mode: client} would fail validation: %s", p["schema"])
+			}
 		})
 	}
 }

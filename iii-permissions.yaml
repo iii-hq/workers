@@ -686,6 +686,7 @@ rules:
   - '!mesh::on-observer-registration'
   - '!mesh::on-node-changed'
   - '!mesh::on-config-change'
+  - '!mesh::on-tunnel-change'
   - '!mesh::ui-content'
   - '!mesh::configuration-id'
   - '!*::shell::pty::*'

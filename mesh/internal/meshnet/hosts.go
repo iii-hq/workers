@@ -62,7 +62,11 @@ func names(nm *netmap.NetworkMap) map[string]netip.Addr {
 	return result
 }
 
+// An empty path is a userspace node, which owns no hosts file.
 func WriteHostsBlock(path string, names map[string]netip.Addr) error {
+	if path == "" {
+		return nil
+	}
 	keys := make([]string, 0, len(names))
 	for name, addr := range names {
 		if !nodeName.MatchString(name) || !addr.IsValid() || addr.Zone() != "" {

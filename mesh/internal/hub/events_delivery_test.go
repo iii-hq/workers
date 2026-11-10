@@ -18,14 +18,14 @@ func TestNodeEventsDeliveryRechecksGenerationAfterDelayedMatch(t *testing.T) {
 		t.Run(transition, func(t *testing.T) {
 			h, _ := nodeCallHub(t)
 			e := newEventWire(t, h)
-			if !e.bind("same", `{"node":"laptop"}`) {
-				t.Fatal("initial observer")
-			}
 			entered, resume := make(chan struct{}), make(chan struct{})
 			var pause sync.Once
 			var release sync.Once
 			unblock := func() { release.Do(func() { close(resume) }) }
 			defer unblock()
+			// The SDK installs a match hook on the function's hook queue, and calls use
+			// the previous hook until then. The bind runs on that queue after it, so its
+			// ack proves the paused hook is the one the next call sees.
 			h.events.client.OnObservationMatchFor("mesh::on-node-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 				var meta struct {
 					ForObserver string `json:"for_observer"`
@@ -34,6 +34,9 @@ func TestNodeEventsDeliveryRechecksGenerationAfterDelayedMatch(t *testing.T) {
 				pause.Do(func() { close(entered); <-resume })
 				return meta.ForObserver == obs.ID
 			}))
+			if !e.bind("same", `{"node":"laptop"}`) {
+				t.Fatal("initial observer")
+			}
 			eventVersion(t, h, "captured-before-"+transition)
 			select {
 			case <-entered:

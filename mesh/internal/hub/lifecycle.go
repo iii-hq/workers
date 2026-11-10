@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
@@ -72,6 +73,17 @@ type Hub struct {
 	shim            *meshnet.Shim
 	limit           *join.Limit
 	cancel          context.CancelFunc
+	tunnelMu        sync.Mutex
+	relayMu         sync.Mutex
+	tunnel          tunnelState
+	tunnelClient    rpc
+	tunnelKick      chan struct{}
+	// Set only by reconcileTunnel. tunnelProxy: PROXY v2 headers from loopback are
+	// quick-tunnel's. tunnelRaw: the tunnel is OpenTunnel, which hands a visitor's
+	// bytes to loopback unchanged, so forwarding headers from loopback are the visitor's.
+	tunnelProxy, tunnelRaw atomic.Bool
+	// Guarded by mu: what reconcileTunnel last saw.
+	tunnelURL, tunnelPhase, tunnelErr string
 }
 
 func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *Hub, err error) {
@@ -82,15 +94,15 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 		o.DataDir = filepath.Join(os.Getenv("III_COMPOSE_DIR"), "data", "mesh")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	h = &Hub{Version: o.Version, Namespace: namespace(), ConfigID: configID(), Client: client, config: cloneConfig(cfg), defaults: GrantDefaults{Allow: DefaultAllow()}, limit: join.NewLimit(10, 10*time.Minute, time.Now), cancel: cancel}
+	h = &Hub{Version: o.Version, Namespace: namespace(), ConfigID: configID(), Client: client, config: cloneConfig(cfg), defaults: GrantDefaults{Allow: DefaultAllow()}, limit: join.NewLimit(10, 10*time.Minute, time.Now), cancel: cancel, tunnelKick: make(chan struct{}, 1)}
 	defer func() {
 		if err != nil {
 			h.Close()
 		}
 	}()
 	h.Coordinator, err = coordinator.New(o.DataDir, func(secret, addr string) (string, error) {
-		if h.Config().PublicURL == "" {
-			return "", errors.New("public_url is not set")
+		if h.publicURL() == "" {
+			return "", missingPublicURL(h.Config())
 		}
 		if join.IsTokenSecret(secret) {
 			if _, err := h.Coordinator.RedeemToken(secret); err != nil {
@@ -139,7 +151,7 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 		return h, err
 	}
 	h.front = &http.Server{Handler: h.frontHandler(), ReadHeaderTimeout: 10 * time.Second}
-	go h.front.Serve(h.frontListener)
+	go h.front.Serve(proxyListener{h.frontListener, h.tunnelProxy.Load})
 	h.applyCoordinator(cfg)
 	h.shim, err = meshnet.NewShim(h.privateURL, h.Coordinator.Public())
 	if err != nil {
@@ -168,13 +180,21 @@ func (h *Hub) frontHandler() http.Handler {
 	relay.Handle(mux, h.derp)
 	mux.Handle("/join", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := h.Config()
-		if cfg.PublicURL == "" {
-			http.Error(w, "public_url is not set", http.StatusServiceUnavailable)
+		if h.publicURL() == "" {
+			http.Error(w, missingPublicURL(cfg).Error(), http.StatusServiceUnavailable)
 			return
 		}
 		join.Handler(h.Coordinator.Identity(), h.Coordinator.Code, h.limit, trustedPrefixes(cfg)).ServeHTTP(w, r)
 	}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// OpenTunnel hands a visitor's bytes to loopback unchanged, so a forwarding
+		// header from a loopback peer is the visitor's, whatever trusted_proxies says.
+		if h.tunnelRaw.Load() {
+			if peer, err := netip.ParseAddrPort(r.RemoteAddr); err == nil && peer.Addr().Unmap().IsLoopback() {
+				r.Header.Del("CF-Connecting-IP")
+				r.Header.Del("X-Forwarded-For")
+			}
+		}
 		switch r.URL.Path {
 		case "/id", "/ts2021", "/derp", "/derp/probe", "/derp/latency-check", "/join":
 			mux.ServeHTTP(w, r)
@@ -201,11 +221,7 @@ func (h *Hub) applyCoordinator(cfg Config) {
 		log.Printf("mesh drives: %v", err)
 	}
 	h.Coordinator.SetTrustedProxies(trustedPrefixes(cfg))
-	relayURL := cfg.PublicURL
-	if relayURL == "" {
-		relayURL = h.privateURL
-	}
-	h.Coordinator.Relay(relayURL)
+	h.syncRelay()
 	h.Coordinator.SetSTUNPort(cfg.StunPort)
 }
 func (h *Hub) Config() Config { h.mu.RLock(); defer h.mu.RUnlock(); return cloneConfig(h.config) }
@@ -366,7 +382,7 @@ func (h *Hub) applyConfig(ctx context.Context, cfg Config) error {
 	if front != nil {
 		h.frontListener = front
 		h.front = &http.Server{Handler: h.frontHandler(), ReadHeaderTimeout: 10 * time.Second}
-		go h.front.Serve(front)
+		go h.front.Serve(proxyListener{front, h.tunnelProxy.Load})
 	}
 	if gateway != nil {
 		h.gatewayListener = gateway

@@ -262,6 +262,24 @@ func (d *signedDrives) Status() []node.DriveStatus {
 	return []node.DriveStatus{}
 }
 
+// linuxNodeRPC reports the in-process node as the Linux machine its drive
+// fixture models. A node reports the OS the tests run on, and the coordinator
+// accepts drive servers only on Linux.
+type linuxNodeRPC struct{ *registeredNodeRPC }
+
+func (r linuxNodeRPC) Call(ctx context.Context, req iii.CallRequest) (json.RawMessage, error) {
+	raw, err := r.registeredNodeRPC.Call(ctx, req)
+	if err != nil || !strings.HasSuffix(req.FunctionID, "::mesh-node::status") {
+		return raw, err
+	}
+	var status node.Status
+	if err = json.Unmarshal(raw, &status); err != nil {
+		return nil, err
+	}
+	status.OS, status.Arch, status.Target = "linux", "amd64", "x86_64-unknown-linux-gnu"
+	return json.Marshal(status)
+}
+
 func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *testing.T) {
 	h, _ := nodeCallHub(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
@@ -298,7 +316,7 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 			t.Fatal("handlers not ready")
 		}
 	}
-	h.nodeClient = r
+	h.nodeClient = linuxNodeRPC{r}
 	var resolveFailure error
 	h.resolveArtifact = func(_ context.Context, worker, version, target string) (registry.Artifact, error) {
 		if worker == "unsupported" && resolveFailure != nil {
@@ -455,7 +473,7 @@ func TestStalledRegistryDoesNotBlockSignedDesiredState(t *testing.T) {
 			}))
 			t.Cleanup(registryServer.Close)
 			t.Cleanup(cancel)
-			h.nodeClient = r
+			h.nodeClient = linuxNodeRPC{r}
 			h.resolveArtifact = func(ctx context.Context, worker, version, target string) (registry.Artifact, error) {
 				return registry.Resolve(ctx, nil, registryServer.URL, worker, version, target)
 			}

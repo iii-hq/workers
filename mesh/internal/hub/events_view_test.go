@@ -125,22 +125,24 @@ func TestNodeEventsRemovalAfterViewRefreshReleasesBinding(t *testing.T) {
 func TestNodeEventsCapturedViewCannotDeliverAfterRefresh(t *testing.T) {
 	h, _ := nodeCallHub(t)
 	e := newEventWire(t, h)
-	if !e.bind("same", `{"node":"laptop"}`) {
-		t.Fatal("initial observer")
-	}
-	h.events.mu.Lock()
-	binding := h.events.bindings["same"]
-	h.events.mu.Unlock()
 	entered, resume := make(chan struct{}), make(chan struct{})
 	var pause, release sync.Once
 	unblock := func() { release.Do(func() { close(resume) }) }
 	defer unblock()
+	// Queued on the SDK's hook queue ahead of the bind, whose ack then proves
+	// this hook, not the previous one, sees the next call.
 	h.events.client.OnObservationMatchFor("mesh::on-node-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 		var meta nodeEventMetadata
 		_ = json.Unmarshal(call.Metadata, &meta)
 		pause.Do(func() { close(entered); <-resume })
 		return meta.ForObserver == obs.ID
 	}))
+	if !e.bind("same", `{"node":"laptop"}`) {
+		t.Fatal("initial observer")
+	}
+	h.events.mu.Lock()
+	binding := h.events.bindings["same"]
+	h.events.mu.Unlock()
 	eventVersion(t, h, "captured-old-view")
 	select {
 	case <-entered:

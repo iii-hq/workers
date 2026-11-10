@@ -40,7 +40,7 @@ func (h *Hub) JoinToken(ctx context.Context, opts join.TokenOptions) (TokenResul
 	if _, err := h.joinCode(); err != nil {
 		return TokenResult{}, err
 	}
-	id, token, err := h.Coordinator.IssueToken(h.config.PublicURL, opts)
+	id, token, err := h.Coordinator.IssueToken(h.publicURLLocked(), opts)
 	if err != nil {
 		return TokenResult{}, err
 	}
@@ -119,7 +119,7 @@ func (h *Hub) Status() StatusResult {
 	cfg, closed, hooks := h.config, h.closed, h.hooks
 	front, gateway := h.front, h.gateway
 	h.mu.RUnlock()
-	s := StatusResult{Version: h.Version, PublicURL: cfg.PublicURL, FrontDoor: "not running", Gateway: "gateway is not configured", Proxy: "proxy ownership is not configured"}
+	s := StatusResult{Version: h.Version, PublicURL: h.publicURL(), FrontDoor: "not running", Gateway: "gateway is not configured", Proxy: "proxy ownership is not configured", Tunnel: h.tunnelStatus(cfg)}
 	if h.Coordinator == nil {
 		return s
 	}
@@ -161,14 +161,15 @@ func (h *Hub) JoinCode(ctx context.Context, _ struct{}) (JoinResult, error) {
 	return h.joinCode()
 }
 func (h *Hub) joinCode() (JoinResult, error) {
-	if h.config.PublicURL == "" {
-		return JoinResult{}, errors.New("public_url is not set")
+	publicURL := h.publicURLLocked()
+	if publicURL == "" {
+		return JoinResult{}, missingPublicURL(h.config)
 	}
 	if h.Coordinator == nil {
 		return JoinResult{}, errors.New("hub is not running")
 	}
 	code := h.Coordinator.Code()
-	unix, windows := InstallLines(h.Version, h.config.PublicURL, code)
+	unix, windows := InstallLines(h.Version, publicURL, code)
 	return JoinResult{Code: code, Install: Install{Unix: unix, Windows: windows}}, nil
 }
 func (h *Hub) CycleCode(ctx context.Context, _ struct{}) (JoinResult, error) {

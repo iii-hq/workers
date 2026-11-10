@@ -55,6 +55,11 @@ type Options struct {
 	Drives      DriveController
 	BinaryPath  string
 	HTTPClient  *http.Client
+	// URL, when set, replaces the gateway address once the gateway is
+	// authenticated (client mode dials through a loopback forwarder).
+	URL string
+	// DisableUpdate refuses mesh-node::update and never touches the binary.
+	DisableUpdate bool
 }
 type Node struct {
 	mesh              Network
@@ -64,9 +69,11 @@ type Node struct {
 	workers           WorkerController
 	drives            DriveController
 	updater           *Updater
+	url               string
 	applyMu           sync.Mutex
 	statusMu          sync.RWMutex
 	workerErrors      []WorkerStatus
+	wantedVersion     string
 	namespace         string
 	restart           chan struct{}
 	restartOnce       sync.Once
@@ -82,23 +89,40 @@ func New(o Options) (*Node, error) {
 	if platform.Target == "" {
 		return nil, fmt.Errorf("%w: %s/%s", ErrUnsupportedTarget, platform.OS, platform.Arch)
 	}
-	if o.BinaryPath == "" {
-		path, err := os.Executable()
-		if err != nil {
-			return nil, err
+	var updater *Updater
+	if !o.DisableUpdate {
+		if o.BinaryPath == "" {
+			path, err := os.Executable()
+			if err != nil {
+				return nil, err
+			}
+			o.BinaryPath, err = filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil, err
+			}
 		}
-		o.BinaryPath, err = filepath.EvalSymlinks(path)
-		if err != nil {
-			return nil, err
-		}
+		updater = &Updater{BinaryPath: o.BinaryPath, Client: o.HTTPClient}
 	}
-	return &Node{mesh: o.Mesh, verifier: NewVerifier(o.HubIdentity, time.Minute), version: o.Version, operator: o.Operator, platform: platform, workers: o.Workers, drives: o.Drives, updater: &Updater{BinaryPath: o.BinaryPath, Client: o.HTTPClient}, restart: make(chan struct{})}, nil
+	return &Node{mesh: o.Mesh, verifier: NewVerifier(o.HubIdentity, time.Minute), version: o.Version, operator: o.Operator, platform: platform, workers: o.Workers, drives: o.Drives, updater: updater, url: o.URL, restart: make(chan struct{})}, nil
 }
 func GatewayURL(port uint16) string {
 	if port == 0 {
 		return DefaultURL
 	}
 	return fmt.Sprintf("ws://hub.iii.internal:%d", port)
+}
+func (n *Node) gatewayURL(port uint16) string {
+	if n.url != "" {
+		return n.url
+	}
+	return GatewayURL(port)
+}
+
+// WantedVersion is the version the hub last asked a DisableUpdate node to run.
+func (n *Node) WantedVersion() string {
+	n.statusMu.RLock()
+	defer n.statusMu.RUnlock()
+	return n.wantedVersion
 }
 func (n *Node) setRuntime(ctx context.Context, namespace string) error {
 	name, ok := n.mesh.SelfName()
@@ -109,5 +133,5 @@ func (n *Node) setRuntime(ctx context.Context, namespace string) error {
 	if !ok {
 		return errors.New("authenticated gateway is not available")
 	}
-	return n.workers.SetRuntime(ctx, Runtime{Node: name, Namespace: namespace, URL: GatewayURL(port)})
+	return n.workers.SetRuntime(ctx, Runtime{Node: name, Namespace: namespace, URL: n.gatewayURL(port)})
 }

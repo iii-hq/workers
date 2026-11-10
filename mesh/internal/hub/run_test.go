@@ -238,7 +238,7 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 					t.Fatalf("%v primary=%v default=%v", ctx.Err(), names, defaultNames)
 				}
 			}
-			for _, id := range []string{"mesh::ui-content", "mesh::status", "mesh::nodes::list", "mesh::nodes::get", "mesh::nodes::remove", "mesh::join::code", "mesh::join::cycle", "mesh::configuration-id", "mesh::on-config-change", "mesh::auth", "mesh::middleware", "mesh::on-observer-registration"} {
+			for _, id := range []string{"mesh::ui-content", "mesh::status", "mesh::nodes::list", "mesh::nodes::get", "mesh::nodes::remove", "mesh::join::code", "mesh::join::cycle", "mesh::configuration-id", "mesh::on-config-change", "mesh::on-tunnel-change", "mesh::auth", "mesh::middleware", "mesh::on-observer-registration"} {
 				if !names[id] {
 					t.Fatalf("missing %s", id)
 				}

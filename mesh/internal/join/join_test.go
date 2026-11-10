@@ -109,7 +109,11 @@ func TestClientAddrTrustsOnlyListedProxies(t *testing.T) {
 		{"forged leftmost", "127.0.0.1:1", "", "192.0.2.1, 198.51.100.4", "198.51.100.4", loopback},
 		{"trusted chain", "127.0.0.1:1", "", "198.51.100.4, 127.0.0.1", "198.51.100.4", loopback},
 		{"invalid headers", "127.0.0.1:1", "bad", "bad", "127.0.0.1", loopback},
-		{"IPv6 peer", "[2001:db8::1]:1", "198.51.100.4", "", "2001:db8::1", nil},
+		{"IPv6 peer", "[2001:db8::1]:1", "198.51.100.4", "", "2001:db8::", nil},
+		{"IPv6 same /64", "[2001:db8::ffff:1]:1", "", "", "2001:db8::", nil},
+		{"IPv6 other /64", "[2001:db8:0:1::1]:1", "", "", "2001:db8:0:1::", nil},
+		{"trusted CF IPv6", "127.0.0.1:1", "2001:db8::2", "", "2001:db8::", loopback},
+		{"IPv4-mapped peer", "[::ffff:203.0.113.9]:1", "", "", "203.0.113.9", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/join", nil)

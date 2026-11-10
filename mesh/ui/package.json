@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "test": "pnpm build && node tests/render.mjs"
   },
   "dependencies": { "@iii-dev/console-ui": "workspace:*" },
   "devDependencies": {

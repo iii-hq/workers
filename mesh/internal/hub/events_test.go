@@ -32,7 +32,9 @@ type eventWire struct {
 
 func newEventWire(t *testing.T, h *Hub) *eventWire {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	// One deadline bounds every wait on the wire. Bringing a tsnet peer up behind
+	// it takes over 3s on an idle machine and close to 10s on a starved one.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	e := &eventWire{t: t, ctx: ctx, frames: make(chan map[string]json.RawMessage, 32)}
 	connected := make(chan *websocket.Conn, 1)
@@ -79,6 +81,11 @@ func newEventWire(t *testing.T, h *Hub) *eventWire {
 	client := iii.New("ws"+strings.TrimPrefix(server.URL, "http"), iii.WithNamespace("hub-project"), iii.WithReconnectConfig(iii.ReconnectConfig{InitialDelay: 2 * time.Second, MaxDelay: 2 * time.Second, MaxRetries: -1}))
 	t.Cleanup(func() { client.Close() })
 	if err := client.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// SDK v0.26.0-rc.5 race: a private function registered while the greeting is being
+	// handled is sent twice on one connection. The wire expects one registration.
+	if err := client.WaitUntilRegistered(ctx); err != nil {
 		t.Fatal(err)
 	}
 	e.conn = <-connected
@@ -297,7 +304,7 @@ func TestNodeEventsBoundedQueueDoesNotBlockCoordinator(t *testing.T) {
 		t.Fatal("bind")
 	}
 	eventVersion(t, h, "old-0")
-	e.delivery("laptop", "outdated")
+	stuck := e.delivery("laptop", "outdated")
 	published := make(chan error, 1)
 	go func() {
 		for i := 1; i <= 300; i++ {
@@ -313,14 +320,33 @@ func TestNodeEventsBoundedQueueDoesNotBlockCoordinator(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	// Every transition is an fsynced commit: these 301 take about 1.6s on macOS
+	// with no observer at all. The bound stays under the 5s delivery timeout, so a
+	// publisher that waits for the unacknowledged delivery cannot pass.
+	case <-time.After(4500 * time.Millisecond):
 		t.Fatal("slow SDK blocked committed transitions")
 	}
 	if len(h.Coordinator.Nodes()) != 0 {
 		t.Fatal("remove blocked")
 	}
-	if len(h.events.queue) >= 300 {
-		t.Fatal("delivery queue grew without bound")
+	// The overflow was dropped, not kept elsewhere: once the stuck delivery is
+	// answered, only what the queue held (plus one taken if it timed out) arrives.
+	e.ack(stuck)
+	delivered := 0
+	for quiet := false; !quiet; {
+		select {
+		case f := <-e.frames:
+			if string(f["type"]) != `"invokefunction"` {
+				t.Fatalf("got %s, want invokefunction", f)
+			}
+			e.ack(f)
+			delivered++
+		case <-time.After(500 * time.Millisecond):
+			quiet = true
+		}
+	}
+	if delivered > nodeEventCapacity+1 {
+		t.Fatalf("%d of 301 events delivered through a %d-slot queue", delivered, nodeEventCapacity)
 	}
 	h.Close()
 }
@@ -399,6 +425,24 @@ func TestNodeEventsReconnectDropsOldBindingsAndKeepsNamespace(t *testing.T) {
 	f := e.next("registerfunction")
 	if string(f["id"]) != `"mesh::on-node-changed"` {
 		t.Fatalf("reconnected type %s", f)
+	}
+	// The hub resumes the binding on reconnect and drops it once the SDK has
+	// applied the engine's empty observer list, which runs on the SDK's hook
+	// queue. An event published before that still reaches the old observer: the
+	// known gap in the StateConnected listener (events.go), which this test does
+	// not cover. It checks what follows the drop.
+	for {
+		h.events.mu.Lock()
+		n := len(h.events.bindings)
+		h.events.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		select {
+		case <-e.ctx.Done():
+			t.Fatal("reconnect kept a binding the engine no longer has")
+		case <-time.After(time.Millisecond):
+		}
 	}
 	eventVersion(t, h, "before-rebinding")
 	if !e.bind("same", `{}`) {

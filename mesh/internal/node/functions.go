@@ -116,6 +116,12 @@ func (n *Node) handle(ctx context.Context, fn string, s Signed) (json.RawMessage
 		if err = json.Unmarshal(raw, &request); err != nil {
 			return nil, err
 		}
+		if n.updater == nil {
+			n.statusMu.Lock()
+			n.wantedVersion = request.Version
+			n.statusMu.Unlock()
+			return nil, errors.New("client-mode node does not self-update; upgrade the project's mesh worker")
+		}
 		if err = n.updater.Apply(ctx, request); err != nil {
 			return nil, err
 		}
@@ -148,6 +154,7 @@ func (n *Node) handle(ctx context.Context, fn string, s Signed) (json.RawMessage
 		}
 		n.statusMu.Lock()
 		n.workerErrors = failures
+		n.wantedVersion = "" // the hub only applies workers once the versions match
 		n.statusMu.Unlock()
 		var results []WorkerResult
 		results, err = n.workers.Apply(ctx, runnable)

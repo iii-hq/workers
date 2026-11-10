@@ -45,7 +45,7 @@ func (s *Supervisor) artifact(ctx context.Context, d Desired) (string, error) {
 	}
 	path := filepath.Join(dir, filename)
 	if _, err = os.Lstat(path); err == nil {
-		return path, verifyArtifact(path, d.SHA256)
+		return path, verifyArtifact(path, d.SHA256, 0555)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
@@ -106,12 +106,12 @@ func (s *Supervisor) artifact(ctx context.Context, d Desired) (string, error) {
 	}
 	return path, nil
 }
-func verifyArtifact(path, digest string) error {
+func verifyArtifact(path, digest string, mode os.FileMode) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm() != 0555 {
+	if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm() != mode {
 		return fmt.Errorf("unsafe cached artifact permissions: %s", path)
 	}
 	if err = checkArtifact(path, info); err != nil {

@@ -10,9 +10,15 @@ import (
 )
 
 func TestRemovedStatusListenerOwnership(t *testing.T) {
+	// t.TempDir() embeds the test name under $TMPDIR and overflows the 104-byte
+	// unix socket path limit on macOS.
+	dir, err := os.MkdirTemp("/tmp", "mesh-status-")
+	if err != nil {
+		t.Fatal(err)
+	}
 	old := socket
-	socket = filepath.Join(t.TempDir(), "status.sock")
-	t.Cleanup(func() { socket = old })
+	socket = filepath.Join(dir, "status.sock")
+	t.Cleanup(func() { socket = old; os.RemoveAll(dir) })
 	server, err := ServeStatus(func() string { return "removed from the mesh by its hub\nHub: https://hub.example\n" })
 	if err != nil {
 		t.Fatal(err)

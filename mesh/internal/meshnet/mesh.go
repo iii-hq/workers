@@ -57,7 +57,9 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
+	"tailscale.com/types/nettype"
 	"tailscale.com/wgengine"
+	"tailscale.com/wgengine/netstack"
 	"tailscale.com/wgengine/router"
 )
 
@@ -71,6 +73,7 @@ type Mesh struct {
 	monitor        *netmon.Monitor
 	dialer         *tsdial.Dialer
 	health         *health.Tracker
+	stack          *netstack.Impl
 	shim           *Shim
 	pinned         key.MachinePublic
 	unwatch        context.CancelFunc
@@ -85,6 +88,8 @@ type Mesh struct {
 	report         atomic.Pointer[func() string]
 	gateway        atomic.Uint32
 	gatewayChanges chan struct{}
+	errors         chan string
+	done           chan struct{}
 }
 
 func Up(dir, publicURL, secret, name string, pinned key.MachinePublic) (*Mesh, error) {
@@ -122,10 +127,23 @@ func UpWithPort(dir, publicURL, secret, name string, pinned key.MachinePublic, u
 	return m, nil
 }
 
+// UpUserspace joins without root: no TUN, router, hosts file or status socket,
+// and an OS-chosen UDP port so it can run beside a daemon on the same host.
+func UpUserspace(dir, publicURL, secret, name string, pinned key.MachinePublic) (*Mesh, error) {
+	if !nodeName.MatchString(name) {
+		return nil, fmt.Errorf("invalid node name %q", name)
+	}
+	shim, err := NewShim(publicURL, pinned)
+	if err != nil {
+		return nil, err
+	}
+	return startMesh(dir, shim, secret, name, 0, nil, nil, "")
+}
+
 // Passing a device and router transfers their ownership to the backend. A nil
-// device selects upstream's userspace TUN, so local checks need no host changes.
+// device selects upstream's userspace TUN plus a netstack that only dials out.
 func startMesh(dir string, shim *Shim, secret, name string, udpPort uint16, dev tun.Device, rt router.Router, hostsFile string) (_ *Mesh, err error) {
-	m := &Mesh{gatewayChanges: make(chan struct{}, 1), sys: tsd.NewSystem(), shim: shim, pinned: shim.pinned, watched: make(chan struct{}), removed: make(chan struct{}), hostsFile: hostsFile}
+	m := &Mesh{gatewayChanges: make(chan struct{}, 1), errors: make(chan string, 1), done: make(chan struct{}), sys: tsd.NewSystem(), shim: shim, pinned: shim.pinned, watched: make(chan struct{}), removed: make(chan struct{}), hostsFile: hostsFile}
 	watcherStarted := false
 	defer func() {
 		if err != nil {
@@ -186,10 +204,27 @@ func startMesh(dir string, shim *Shim, secret, name string, udpPort uint16, dev 
 	wrapper := m.sys.Tun.Get()
 	wrapper.PreFilterPacketInboundFromWireGuard = clamped(wrapper.PreFilterPacketInboundFromWireGuard)
 	wrapper.PostFilterPacketOutboundToWireGuard = clamped(wrapper.PostFilterPacketOutboundToWireGuard)
+	if dev == nil {
+		envknob.Setenv("TS_NETSTACK_KEEPALIVE_IDLE", "15s")
+		envknob.Setenv("TS_NETSTACK_KEEPALIVE_INTERVAL", "5s")
+		if m.stack, err = netstack.Create(logf, wrapper, m.engine, m.sys.MagicSock.Get(), m.dialer, m.sys.DNSManager.Get(), m.sys.ProxyMapper()); err != nil {
+			return nil, err
+		}
+		m.sys.Set(m.stack)
+		m.stack.ProcessLocalIPs = true
+		// Security: netstack would otherwise forward unclaimed inbound flows to host services (UDP to 127.0.0.1).
+		m.stack.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (func(net.Conn), bool) { return nil, true }
+		m.stack.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (func(nettype.ConnPacketConn), bool) { return nil, true }
+	}
 	wrapper.Start()
 	m.lb, err = ipnlocal.NewLocalBackend(logf, logid.PublicID{}, m.sys, controlclient.LocalBackendStartKeyOSNeutral)
 	if err != nil {
 		return nil, err
+	}
+	if m.stack != nil {
+		if err = m.stack.Start(m.lb); err != nil {
+			return nil, err
+		}
 	}
 	m.lb.SetVarRoot(dir)
 	ctx, unwatch := context.WithCancel(context.Background())
@@ -199,6 +234,12 @@ func startMesh(dir string, shim *Shim, secret, name string, udpPort uint16, dev 
 		defer close(m.watched)
 		removed := false
 		m.lb.WatchNotifications(ctx, ipn.NotifyInitialState|ipn.NotifyInitialNetMap|ipn.NotifyPeerChanges, nil, func(n *ipn.Notify) bool {
+			if n.ErrMessage != nil {
+				select {
+				case m.errors <- *n.ErrMessage:
+				default:
+				}
+			}
 			if removed = n.State != nil && *n.State == ipn.NeedsMachineAuth; removed {
 				return false
 			}
@@ -237,6 +278,10 @@ func startMesh(dir string, shim *Shim, secret, name string, udpPort uint16, dev 
 
 func (m *Mesh) Report(f func() string)   { m.report.Store(&f) }
 func (m *Mesh) Removed() <-chan struct{} { return m.removed }
+
+// Errors carries backend errors such as a registration the hub refused, which
+// the backend keeps retrying. Unread errors past the first are dropped.
+func (m *Mesh) Errors() <-chan string { return m.errors }
 func (m *Mesh) Self() netip.Addr {
 	if nm := m.lb.NetMapWithPeers(); nm != nil && nm.GetAddresses().Len() > 0 {
 		return nm.GetAddresses().At(0).Addr()
@@ -276,6 +321,10 @@ func (m *Mesh) release() {
 	m.resources.Do(func() {
 		m.gateway.Store(0)
 		close(m.gatewayChanges)
+		close(m.done)
+		if m.stack != nil {
+			m.stack.Close()
+		}
 		if m.lb != nil {
 			m.lb.Shutdown()
 		} else if m.engine != nil {

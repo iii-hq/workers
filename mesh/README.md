@@ -154,6 +154,82 @@ proxy endpoint, update that entry to match; mesh does not overwrite it.
 when that variable is absent. Persist this directory to retain the hub identity
 and enrollment state. Node worker configuration IDs are `<node>__<worker>`.
 
+## Expose through a tunnel
+
+Without a front door of your own, the hub can borrow a public address from the
+quick-tunnel worker. Turn on "Expose through a tunnel" on the Mesh page, or set:
+
+```yaml
+tunnel:
+  enabled: true
+  tunnel_id: mesh      # optional, defaults to mesh
+```
+
+List the hub's `listen` port as a target in the quick-tunnel configuration;
+mesh never edits another worker's config. `targets` replaces quick-tunnel's
+default list, so keep `webhooks` for github:
+
+```yaml
+provider: opentunnel
+targets:
+  webhooks: http://127.0.0.1:3112
+  mesh: http://127.0.0.1:49180
+proxy_protocol: [mesh]
+```
+
+The public URL is `public_url` when set, otherwise the tunnel URL once the
+tunnel is `ready`, otherwise empty. While `public_url` is set the hub holds no
+lease and `mesh::status` reports the tunnel as `overridden`. The hub holds a
+10-minute lease, renews it when under 5 minutes remain and releases it on
+shutdown, so quick-tunnel's `max_lease_seconds` must be at least 600. A failed
+quick-tunnel call keeps the last URL while the lease is unexpired.
+`mesh::status` reports `tunnel.state` (`starting`, `ready`,
+`reconnecting`, `failed`, `stopped`, `unavailable` or `overridden`),
+`tunnel.error` and `tunnel.proxy_protocol` (`v2` while the hub reads visitor
+addresses from the tunnel). A tunnel carries no UDP, so STUN still requires `public_url`.
+
+- **Use `provider: opentunnel`.** Its URL is stable. With cloudflared the URL
+  changes whenever the tunnel process restarts, including every hub restart.
+  Machines already joined and tokens already issued keep the old URL and stop
+  working; the hub does not notify them.
+- **The URL is hard to guess, not secret.** It is
+  `https://<route>.<id>.opentunnel.xyz`. Certificate Transparency logs list
+  `<id>.opentunnel.xyz` as soon as its certificate is issued, and scanners
+  read them, but that name does not answer. `<route>` is a random name kept by
+  quick-tunnel that is in no certificate. DNS resolvers, the relay, everyone
+  holding a join command, and every local worker or agent allowed to call
+  `mesh::status` or `quick-tunnel::status` still see it, so join codes and
+  tokens remain the only protection.
+- **List the target in `proxy_protocol`.** quick-tunnel then starts every
+  tunnel connection with a PROXY protocol v2 header that carries the visitor's
+  address, and the join rate limit (10 attempts per 10 minutes) counts each
+  visitor separately; an IPv6 visitor is counted by its /64. `mesh::status`
+  shows `tunnel.proxy_protocol: v2` when it is in use. Without it every
+  visitor reaches the hub as `127.0.0.1` and they share one bucket: anyone who
+  sends 10 junk `POST /join` requests every 10 minutes blocks every join
+  through the tunnel, join codes and tokens alike. List only the target that
+  points at this hub's `listen` port: quick-tunnel checks that targets sharing
+  a port agree, not that the port is the hub's.
+- The hub reads that header only from loopback, and only while quick-tunnel
+  lists the hub's lease with `proxy_protocol: v2`. If quick-tunnel stops
+  answering, the hub stops reading it and tunnel visitors get `400` until it
+  answers again. While it is on, any local process that connects to `listen`
+  can state a visitor address, and so can any other tool that forwards raw
+  connections to that port (an SSH forward, a container port mapping that
+  makes outside peers look like loopback); the address itself is the one the
+  OpenTunnel relay reports. A mesh worker older than this feature answers
+  `400` to every tunnel visitor when its target is listed.
+- **`trusted_proxies` and the provider.** With cloudflared set
+  `trusted_proxies: [127.0.0.1/32, ::1/128]`: cloudflared connects from
+  loopback and Cloudflare sets `CF-Connecting-IP`; `proxy_protocol` does not
+  exist there. With opentunnel a forwarding header is written by the visitor,
+  so while the tunnel runs on opentunnel the hub drops `CF-Connecting-IP` and
+  `X-Forwarded-For` from loopback peers and a loopback entry in
+  `trusted_proxies` has no effect. Remove it anyway when you switch provider:
+  a mesh worker older than this feature still honors it.
+- Only the front door (`listen`) is exposed, the same surface `public_url`
+  already publishes. The loopback admission listener is not routed.
+
 ## Join a machine
 
 Have an operator call `iii call --engine ws://127.0.0.1:49834 mesh::join::code` and run the returned platform
@@ -344,6 +420,70 @@ membership and node revocation hooks. Local tests cover issuance, real Mesh
 enrollment, restart, removal and both installer boundaries; native elevated
 installation and published artifacts remain unverified.
 
+## Client mode
+
+A client is a project's own mesh worker joined to another project's hub as a
+machine, without root, publishing chosen local workers there. The hub sees them
+as `<machine>::<function>`, for example `harness-mbp::mesh-probe::echo`, and
+each call is forwarded to the local engine. Networking runs in userspace: no
+TUN, `/etc/hosts`, service or `/var/run` socket, so a client can run beside a
+joined machine's root service. The hub needs no change. A client opens no hub
+listener and writes no hub state.
+
+```yaml
+mode: client                          # absent means hub
+client:
+  hub_url: https://mesh.example.com   # needed with a join code; a token carries its URL
+  join: secret://MESH_JOIN            # secret://NAME or env://NAME, never the code itself
+  name: harness-mbp                   # requested; the hub may assign harness-mbp-2
+  share: [mesh-probe]                 # local worker names; [] shares nothing
+```
+
+Store the hub's join code or `iiimj_` token as secret `MESH_JOIN` with
+consumers `[mesh]`; the Console's mesh form does this. The value is used once to
+enroll. State lives in `$III_COMPOSE_DIR/data/mesh-client` (0700, `join.json`
+0600) and later boots reuse its node key. The hub allows 10 join attempts per
+address per 10 minutes, so a join the hub refused waits until the join value
+changes; an unreachable hub or a missing `hub_url` is retried. `join.json` is
+written only after the hub accepts the node.
+After the hub removes the node, delete `data/mesh-client` to rejoin. Seed the
+mode from compose so the first boot is already a client:
+
+```yaml
+  mesh:
+    worker: path://../../mesh
+    start_after: [secrets]
+    config_override: { mode: client }   # override only mode; the Console edits client.*
+    scripts: { pre_run: make build, run: ./bin/mesh }
+```
+
+`share` changes apply within about five seconds; other changes need a restart.
+`mesh::status` and the Console's Mesh page report the hub, assigned name, hub
+namespace, state and each shared worker with its hub function IDs.
+
+Anyone in the hub project can call shared workers, and calls reach the local
+engine as caller `mesh`. Sharing `ide`, `harness` or any worker that runs
+commands gives the hub project remote code execution on this machine. `mesh`,
+`secrets`, `configuration` and `rbac-proxy` cannot be shared, and functions
+under `engine::`, `mesh::`, `mesh-node::`, `secrets::`, `configuration::` and
+`rbac-proxy::` are never published. Inbound tailnet connections to the client
+are refused and the local `III_TOKEN` is not sent to the hub. The hub gateway is
+reached through a random loopback port, so any local process that reaches it
+acts as this node toward the hub.
+
+The hub only shares with nodes running its exact version, and a client never
+self-updates. On a mismatch the status shows the version the hub wants and
+nothing is shared. Build with `make build`, which stamps the `package.json`
+version (a plain `go build` has none and fails), and bump clients with the hub.
+
+Bridging is request/response only. Channel refs in a payload or result are
+refused with `channels_unsupported`; triggers, observers and events are not
+mirrored; local calls time out after 10 minutes and a hub caller's cancellation
+does not reach them. Only whole workers can be shared, local workers cannot call
+hub functions, and hub-managed workers or drives are reported as unsupported.
+Windows clients and payloads over 16 MiB are unsupported. Live acceptance
+against a running hub remains unverified.
+
 ## Local state and removal
 
 Linux and macOS install the executable at `/usr/local/bin/mesh`. Worker binaries
@@ -356,6 +496,15 @@ them without reading private enrollment credentials.
 | Private state | `/var/lib/iii-mesh` | `/Library/Application Support/iii-mesh` | `%ProgramData%\iii-mesh` |
 | Worker cache | `/var/cache/iii-mesh/workers` | `/Library/Caches/iii-mesh/workers` | `%ProgramData%\iii-mesh-workers` |
 | Service logs | systemd journal (`iii-mesh.service`) | `node.log` under private state | `node.log` under private state |
+
+A registry worker artifact that is a gzip tar package is verified against its
+SHA256, extracted beside the cached archive into `<sha256>.d/`, and compared
+with that archive again before every start; only regular files and directories
+are accepted, up to 1024 entries and 1 GiB, and the supervisor runs the root
+executable named after the worker, or the only executable in the package.
+A node self-update (`mesh-node::update`) takes the `mesh` executable from such a
+package with the same checks before replacing its binary, and refuses zip
+packages and, on Windows, any package.
 
 Windows installs `mesh.exe` and pinned Wintun 0.14.1 beside each other under
 `%ProgramFiles%\iii-mesh`. The known system folders are resolved through the
@@ -432,7 +581,7 @@ The UI uses the shared Console build driver, workspace catalog and lockfile.
 Mesh E2E CI rebuilds the frontend and checks that committed bundles match.
 Release builds use the embedded bundles without installing frontend packages.
 For browser checks, install the Console SPA's dependencies too, then run
-`node mesh/ui/tests/render.mjs` from the repository root. The check starts an
+`pnpm --dir mesh/ui test` from the repository root (it builds the page first). The check starts an
 isolated local Console with controlled bus fixtures and writes screenshots to
 `/tmp/mesh-task22-render` (override `MESH_UI_ARTIFACTS`). It does not verify
 native machine installation, tunnels or mounts.

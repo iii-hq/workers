@@ -96,6 +96,10 @@ func (h *Hub) registerNodeEvents(ctx context.Context, client *iii.Client) error 
 			if b.ctx.Err() != nil && e.ctx.Err() == nil {
 				// A resumed observer starts a new generation. Queued deliveries still
 				// hold the canceled generation and can never turn into replayed history.
+				// shortcut: the binding resumes before the SDK applies the engine's observer
+				// set for this connection, so an event published in that window goes to an
+				// observer the engine dropped (rejected there) or not yet re-acked (lost);
+				// gate deliveries on that set once the SDK exposes when it is applied.
 				e.bindings[id] = e.newBinding(b.observer, b.node)
 			}
 		}

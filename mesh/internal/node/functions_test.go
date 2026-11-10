@@ -85,10 +85,15 @@ func (w *testWorkers) Status() []WorkerStatus {
 }
 func testNode(t *testing.T) (*Node, ed25519.PrivateKey, *testNetwork, *testWorkers) {
 	t.Helper()
+	return testNodeWith(t, Options{})
+}
+func testNodeWith(t *testing.T, o Options) (*Node, ed25519.PrivateKey, *testNetwork, *testWorkers) {
+	t.Helper()
 	pub, k, _ := ed25519.GenerateKey(rand.Reader)
 	m := &testNetwork{port: 50222, name: "laptop-2", changes: make(chan struct{}, 8), removed: make(chan struct{})}
 	w := &testWorkers{}
-	n, err := New(Options{Mesh: m, HubIdentity: pub, Version: "0.1.0", Operator: "alice", Workers: w})
+	o.Mesh, o.HubIdentity, o.Version, o.Operator, o.Workers = m, pub, "0.1.0", "alice", w
+	n, err := New(o)
 	if err != nil {
 		t.Fatal(err)
 	}

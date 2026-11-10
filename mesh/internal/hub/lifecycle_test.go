@@ -2,10 +2,12 @@ package hub
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -209,5 +211,154 @@ func TestJoinDisabledWithoutPublicURL(t *testing.T) {
 	defer node.Close()
 	if _, err := node.Up(ctx); err == nil || !strings.Contains(err.Error(), "public_url is not set") {
 		t.Fatalf("join with unpublished hub: %v", err)
+	}
+}
+
+// proxyForwarder stands in for quick-tunnel with proxy_protocol: each connection to
+// the returned URL reaches front after a PROXY v2 header naming visitor.
+func proxyForwarder(t *testing.T, front string, visitor netip.AddrPort) string {
+	t.Helper()
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	src := visitor.Addr().As4()
+	header := append(append([]byte{}, proxySignature...), 0x21, 0x11, 0, 12)
+	header = append(append(header, src[:]...), 0, 0, 0, 0)
+	header = binary.BigEndian.AppendUint16(binary.BigEndian.AppendUint16(header, visitor.Port()), 443)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				up, err := net.Dial("tcp", front)
+				if err != nil {
+					return
+				}
+				defer up.Close()
+				if _, err := up.Write(header); err != nil {
+					return
+				}
+				go func() { io.Copy(up, c); up.(*net.TCPConn).CloseWrite() }()
+				io.Copy(c, up)
+			}()
+		}
+	}()
+	return "http://" + l.Addr().String()
+}
+
+func postJoin(t *testing.T, base string, header http.Header) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+"/join", strings.NewReader("junk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	return res.StatusCode
+}
+
+// Tunnel visitors behind a PROXY v2 header get their own join buckets, and the
+// upgraded control and relay connections work through the wrapped connection.
+func TestFrontDoorBehindProxyProtocol(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.Listen = "127.0.0.1:0"
+	cfg.GatewayPort = 50271
+	h, err := Start(ctx, Options{DataDir: t.TempDir(), Version: "0.1.0"}, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	cfg = h.Config()
+	cfg.PublicURL = h.FrontURL()
+	if err := h.ApplyConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	h.tunnelProxy.Store(true)
+	front := strings.TrimPrefix(h.FrontURL(), "http://")
+	a := proxyForwarder(t, front, netip.MustParseAddrPort("203.0.113.7:4000"))
+	for i := range 10 {
+		if code := postJoin(t, a, nil); code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d refused early", i+1)
+		}
+	}
+	if code := postJoin(t, a, nil); code != http.StatusTooManyRequests {
+		t.Fatalf("11th attempt from one visitor: %d", code)
+	}
+	if code := postJoin(t, proxyForwarder(t, front, netip.MustParseAddrPort("203.0.113.8:4000")), nil); code == http.StatusTooManyRequests {
+		t.Fatal("another visitor shares the bucket")
+	}
+	if code := postJoin(t, h.FrontURL(), nil); code == http.StatusTooManyRequests {
+		t.Fatal("a local client without a header shares the visitor's bucket")
+	}
+
+	c := proxyForwarder(t, front, netip.MustParseAddrPort("203.0.113.9:4000"))
+	secret, _, err := join.Redeem(ctx, c, h.Coordinator.Code())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim, err := meshnet.NewShim(c, h.Coordinator.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shim.Close()
+	node := &tsnet.Server{Dir: t.TempDir(), Hostname: "laptop", ControlURL: shim.URL(), AuthKey: secret, Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
+	defer node.Close()
+	if _, err := node.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.SetHooks(Hooks{Gateway: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "gateway") })})
+	client := &http.Client{Transport: &http.Transport{DialContext: node.Dial, DisableKeepAlives: true}, Timeout: 10 * time.Second}
+	res, err := client.Get(fmt.Sprintf("http://[%s]:50271/", h.Status().HubAddress))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if b, _ := io.ReadAll(res.Body); string(b) != "gateway" {
+		t.Fatalf("gateway: %s", b)
+	}
+}
+
+// B8: while the tunnel runs on OpenTunnel, a forwarding header from loopback is
+// the visitor's, so a loopback entry in trusted_proxies must not honor it.
+func TestOpenTunnelIgnoresLoopbackForwardingHeaders(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.Listen = "127.0.0.1:0"
+	cfg.GatewayPort = 50272
+	cfg.TrustedProxies = []string{"127.0.0.1/32"}
+	cfg.PublicURL = "https://hub.example"
+	h, err := Start(ctx, Options{DataDir: t.TempDir(), Version: "0.1.0"}, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	post := func(cf string) int { return postJoin(t, h.FrontURL(), http.Header{"Cf-Connecting-Ip": {cf}}) }
+	for i := 1; i <= 11; i++ {
+		if code := post(fmt.Sprintf("198.51.100.%d", i)); code == http.StatusTooManyRequests {
+			t.Fatalf("trusted proxy header %d refused", i)
+		}
+	}
+	h.tunnelRaw.Store(true)
+	for i := 101; i <= 110; i++ {
+		if code := post(fmt.Sprintf("198.51.100.%d", i)); code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d refused early", i-100)
+		}
+	}
+	if code := post("198.51.100.111"); code != http.StatusTooManyRequests {
+		t.Fatalf("forged header opened a new bucket: %d", code)
 	}
 }

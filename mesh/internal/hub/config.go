@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/iii-hq/workers/mesh/internal/client"
 	"github.com/iii-hq/workers/mesh/internal/drives"
 	"io"
 	"net"
@@ -24,6 +25,17 @@ type Config struct {
 	Links          [][2]string            `json:"links"`
 	Nodes          map[string]NodeConfig  `json:"nodes"`
 	Drives         map[string]DriveConfig `json:"drives"`
+	// Mode and Client are omitempty so stored values without them still decode
+	// and the schema sent to configuration::ensure gains no required field.
+	Mode   string         `json:"mode,omitempty" jsonschema:"enum=hub,enum=client"`
+	Client *client.Config `json:"client,omitempty"`
+	// Hub mode only. Without public_url the hub leases a quick-tunnel target and
+	// uses its URL as the public URL.
+	Tunnel *TunnelConfig `json:"tunnel,omitempty"`
+}
+type TunnelConfig struct {
+	Enabled  bool   `json:"enabled"`
+	TunnelID string `json:"tunnel_id,omitempty"` // default "mesh"
 }
 type NodeConfig struct {
 	Workers []string `json:"workers"`
@@ -40,8 +52,28 @@ func DefaultConfig() Config {
 
 var workerPattern = regexp.MustCompile(`^[a-z0-9-]+(@\S+)?$`)
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
+var tunnelIDPattern = regexp.MustCompile(`^[A-Za-z0-9_:.-]{1,128}$`)
 
 func (c Config) Validate() error {
+	switch c.Mode {
+	case "", "hub", "client":
+	default:
+		return fmt.Errorf("invalid mode %q", c.Mode)
+	}
+	// Checked in every mode: a running client applies client.share whatever the mode says.
+	if cc := c.Client; cc != nil {
+		if cc.HubURL != "" {
+			if err := validURL(cc.HubURL, "http", "https"); err != nil {
+				return fmt.Errorf("client.hub_url: %w", err)
+			}
+		}
+		if err := cc.Validate(); err != nil {
+			return fmt.Errorf("client: %w", err)
+		}
+	}
+	if t := c.Tunnel; t != nil && t.TunnelID != "" && !tunnelIDPattern.MatchString(t.TunnelID) {
+		return fmt.Errorf("invalid tunnel.tunnel_id %q", t.TunnelID)
+	}
 	if c.PublicURL != "" {
 		if err := validURL(c.PublicURL, "http", "https"); err != nil {
 			return fmt.Errorf("public_url: %w", err)

@@ -237,11 +237,15 @@ func (s *Supervisor) start(ctx context.Context, w *worker) (err error) {
 	if err != nil {
 		return err
 	}
+	binary, err := executable(path, w.desired.Name)
+	if err != nil {
+		return err
+	}
 	log, err := openLog(s.logDir, w.desired.Name)
 	if err != nil {
 		return err
 	}
-	cmd, err := workerCommand(path, w.desired.Name, s.operator, s.runtime, log)
+	cmd, err := workerCommand(binary, w.desired.Name, s.operator, s.runtime, log)
 	if err == nil {
 		err = ctx.Err()
 	}
