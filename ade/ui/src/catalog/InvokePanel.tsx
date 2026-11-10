@@ -19,6 +19,7 @@ import { Button, CodeEditor, type Host, JsonHighlight, StatusDot, StatusPanel } 
 import { Play } from 'lucide-react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDuration } from './ActivityFeed'
+import { asCliCommand } from './cli-command'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
 import { pretty, templateFromSchema } from './schema'
@@ -44,47 +45,6 @@ function missingRequired(schema: unknown, payload: unknown): string[] {
     ? schema.required.filter((k): k is string => typeof k === 'string')
     : []
   return required.filter((key) => payload[key] === undefined || payload[key] === '')
-}
-
-/** One `key=value` argument of an `iii call`, with what kind of value it is. */
-export interface CliArg {
-  key: string
-  /** The value as typed on the command line, quotes included. */
-  value: string
-  kind: 'string' | 'number' | 'keyword' | 'json'
-}
-
-/**
- * The body as `iii call` arguments. A scalar copies verbatim and anything
- * nested copies as JSON — exactly the difference between a command that
- * runs and one that does not. An empty value keeps its quotes, or `key=`
- * reads as a typo.
- */
-export function cliArgs(payload: unknown): CliArg[] {
-  if (!isRecord(payload)) return []
-  return Object.entries(payload).map(([key, raw]) => {
-    const kind: CliArg['kind'] =
-      typeof raw === 'string'
-        ? 'string'
-        : typeof raw === 'number'
-          ? 'number'
-          : raw === null || typeof raw === 'boolean'
-            ? 'keyword'
-            : 'json'
-    const literal = typeof raw === 'string' ? raw : (JSON.stringify(raw) ?? '')
-    if (literal !== '' && !/[\s"']/.test(literal)) return { key, value: literal, kind }
-    // A single quote cannot appear inside single quotes: close the segment,
-    // emit an escaped quote, reopen.
-    return { key, value: `'${literal.replaceAll("'", `'\\''`)}'`, kind }
-  })
-}
-
-/** The same call as one CLI line, ready to paste. */
-export function asCliCommand(functionId: string, payload: unknown): string {
-  const args = cliArgs(payload)
-  return args.length === 0
-    ? `iii call ${functionId}`
-    : `iii call ${functionId} ${args.map((arg) => `${arg.key}=${arg.value}`).join(' ')}`
 }
 
 export function InvokePanel({

@@ -52,10 +52,10 @@ import {
   useLiveSignals,
   useResource,
 } from './engine'
-import { observerDeliveryFacts } from './observer-info'
 import { HttpTester } from './HttpTester'
 import { InvokePanel } from './InvokePanel'
 import { familyKeyName, familyName, sentence } from './names'
+import { observerDeliveryFacts } from './observer-info'
 import {
   cronExpression,
   type Family,
@@ -733,7 +733,11 @@ function ObserverDocument({
         busyLabel="Disposing…"
         tone="danger"
         onConfirm={async () => {
-          await disposeObserver(host, observer.id)
+          // The engine answers `false` when it keeps the observer; throwing
+          // keeps the dialog open with the reason instead of closing as if
+          // it had worked.
+          const disposed = await disposeObserver(host, observer.id)
+          if (!disposed) throw new Error('The engine kept this observer. Refresh and try again.')
           onDisposed()
         }}
       />

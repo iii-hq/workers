@@ -54,6 +54,7 @@ import {
   useState,
 } from 'react'
 import { ActivityFeed, agoLabel, formatDuration } from './ActivityFeed'
+import { asCliCommand, cliArgs } from './cli-command'
 import { nextCronRun, untilLabel } from './cron'
 import {
   type FunctionDetail,
@@ -68,7 +69,7 @@ import {
   useLiveSignals,
   useResource,
 } from './engine'
-import { asCliCommand, cliArgs, InvokePanel } from './InvokePanel'
+import { InvokePanel } from './InvokePanel'
 import { LastCallMeta, useLiveActivity } from './live'
 import { familyName } from './names'
 import { CRON_FN, cronExpression, familyOf, summarize } from './observer-kinds'
