@@ -138,6 +138,15 @@ if [ -f "$IIISTATE/workspace.manifest" ] || [ -f "$IIISTATE/build.manifest" ]; t
   if [ "$(cd -P "$WS" 2>/dev/null && pwd -P)" != "$WS" ]; then
     echo "iii: $WS is not a real directory; skipping the workspace cleanup" >&2
   else
+    # safe_parent caches the last parent proven a chain of real directories
+    # inside $WS. The cache stays true only because nothing else writes
+    # /workspace during this loop (the sync waits for /run/iii/source-ready,
+    # touched after the copy, and the worker is not up yet) and the loop
+    # never makes a link: it removes files and links, removes empty dirs,
+    # moves dirs to free names, and resets the cache after each rmdir and mv.
+    # `sort -ru` puts every child before its parent, so no removal changes an
+    # ancestor of an entry still to come. Starting the sync before the copy
+    # would open a window between the check and the removal.
     safe_parent=
     for manifest in "$IIISTATE/workspace.manifest" "$IIISTATE/build.manifest"; do
       if [ -f "$manifest" ]; then

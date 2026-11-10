@@ -224,6 +224,13 @@ Two races of a build are accepted:
   its build id. A caller that gave up (its `build.json` still names the older
   build) then gets S508 on its next start, and builds again.
 
+The boot cleanup of `/workspace` trusts a manifest line only when it is one
+plain name, but busybox tar (alpine images) prints names raw. A name that holds
+a newline followed by `./` (`a<newline>./b`) prints as two lines that each look
+like a valid entry, and the first (`./a`) can remove a file of that name that
+the worker wrote in `/workspace` and the host does not have. GNU tar escapes such
+names, so it never happens with it.
+
 `.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
 inside a worker's directory puts the token in that guest. The name hides the whole
 directory, so a VM also misses anything else a project keeps there, such as
