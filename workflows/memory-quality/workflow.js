@@ -57,8 +57,11 @@ globalThis.memoryQualityStep = function(snapshot) {
   const preps = s.preparations || [];
   for (const r of s.preparation_results || []) {
     const p=preps.find(p=>p.id===r.id);
-    if(!p||r.run_id!==s.run_id||r.attempt!==p.attempt||r.revision!==s.code_revision||p.processed?.includes(r.event_id)||!r.producer_stopped) continue;
+    if(!p||!['running','expired','delivered'].includes(p.status)||r.run_id!==s.run_id||r.attempt!==p.attempt||r.revision!==s.code_revision||typeof r.event_id!=='string'||!r.event_id||p.processed?.includes(r.event_id)||r.producer_stopped!==true) continue;
+    if(p.status==='delivered'&&r.independent!==true) continue;
     p.processed=[...(p.processed||[]),r.event_id];
+    p.needs_reconciliation=false;
+    delete p.expired_phase;
     p.status=r.outcome==='done'&&Array.isArray(r.evidence)&&r.evidence.length?(r.independent===true&&r.accepted===true?'accepted':'delivered'):(r.outcome==='blocked'?'blocked':'failed');
   }
   s.preparation_results=[];
@@ -66,16 +69,42 @@ globalThis.memoryQualityStep = function(snapshot) {
   const stages=s.parallel_stages||[];
   for(const r of s.stage_results||[]){
     const p=stages.find(p=>p.id===r.id);
-    if(!p||r.run_id!==s.run_id||r.attempt!==p.attempt||r.revision!==s.code_revision||p.processed?.includes(r.event_id)||!r.producer_stopped)continue;
+    if(!p||!['running','verifying','expired'].includes(p.status)||r.run_id!==s.run_id||r.attempt!==p.attempt||r.revision!==s.code_revision||typeof r.event_id!=='string'||!r.event_id||p.processed?.includes(r.event_id)||r.producer_stopped!==true)continue;
+    const phase=p.status==='expired'?p.expired_phase:p.status;
+    if(phase!=='running'&&!(phase==='verifying'&&r.independent===true))continue;
     p.processed=[...(p.processed||[]),r.event_id];
+    p.needs_reconciliation=false;
+    delete p.expired_phase;
     if(r.outcome!=='done'||!Array.isArray(r.evidence)||!r.evidence.length){p.status=r.outcome==='blocked'?'blocked':'failed';continue;}
-    if(p.status==='verifying'&&r.independent===true&&r.accepted===true)p.status='accepted';else if(p.status==='running')p.status='delivered';
+    p.status=phase==='running'?'delivered':r.accepted===true?'accepted':'failed';
   }
   s.stage_results=[];
-  for(const p of stages)if(['running','verifying'].includes(p.status)&&s.now_ms>=p.deadline_ms){p.status='expired';p.needs_reconciliation=true;}
+  for(const p of stages)if(['running','verifying'].includes(p.status)&&s.now_ms>=p.deadline_ms){p.expired_phase=p.status;p.status='expired';p.needs_reconciliation=true;}
   const prepPending=preps.some(p=>p.required&&p.status!=='accepted')||stages.some(p=>p.required&&p.status!=='accepted');
   const correctionOpen = s.limits.correction_mode === 'user-unbounded' && s.authorization?.correction_rounds_unbounded === true;
   const correctionAvailable = u => correctionOpen || (u.correction_rounds || 0) < (u.correction_limit ?? s.limits.correction_rounds);
+  // A stopped continuation may release quarantine before global limits are
+  // evaluated, but must pass the same authorization, locks and correction cap.
+  const stageContinuationEligible = (c,p) => {
+    if(!p||s.authorization?.parallel_implementation!==true||p.authorized!==true||c.producer_stopped!==true||c.revision!==s.code_revision||c.attempt!==p.attempt||!['running','verifying','delivered','blocked','failed','expired'].includes(p.status))return false;
+    if(c.run_id!==undefined&&c.run_id!==s.run_id||c.event_id!==undefined&&(typeof c.event_id!=='string'||!c.event_id||p.processed?.includes(c.event_id)))return false;
+    if(p.status==='expired') {
+      if(!p.needs_reconciliation||c.run_id!==s.run_id||typeof c.event_id!=='string'||!c.event_id||!['running','verifying'].includes(p.expired_phase))return false;
+      if(p.expired_phase==='verifying'&&(c.kind!=='review-correction'||c.independent!==true))return false;
+    } else if(p.needs_reconciliation)return false;
+    return typeof c.session_id==='string'&&c.session_id.trim().length>0&&(c.kind!=='review-correction'||correctionAvailable(p))&&!(p.paths||[]).some(path=>[...(s.write_locks||[]).flatMap(l=>l.paths||[]),...stages.filter(x=>x!==p&&(['running','verifying'].includes(x.status)||x.needs_reconciliation)).flatMap(x=>x.paths||[])].some(held=>memoryQualityOverlap(path,held)))&&[...s.units.filter(u=>['running','verifying'].includes(u.status)),...preps.filter(p=>p.status==='running'||p.needs_reconciliation),...stages.filter(p=>['running','verifying'].includes(p.status)||p.needs_reconciliation)].filter(x=>x.id!==p.id).length<Math.min(8,s.limits.concurrency||4);
+  };
+  const stoppedStageContinuation=(s.stage_continuations||[]).find(c=>{
+    const p=stages.find(p=>p.id===c.id);
+    return p?.status==='expired'&&stageContinuationEligible(c,p);
+  });
+  if(stoppedStageContinuation){
+    const p=stages.find(p=>p.id===stoppedStageContinuation.id);
+    p.status='failed';p.reason='phase-expired';p.needs_reconciliation=false;
+    delete p.expired_phase;
+    // Keep the receipt queued until dispatch: another guard or preparation may
+    // use this step's action without losing the authorized continuation.
+  }
   const busy = [...s.units.filter(u => ['running','verifying'].includes(u.status)),...preps.filter(p=>p.status==='running'||p.needs_reconciliation),...stages.filter(p=>['running','verifying'].includes(p.status)||p.needs_reconciliation)];
   if (unreconciled.length) return emit('wait', { reason: 'phase-expired', active: unreconciled.map(u => u.id) });
   if (!prepPending && s.scope_units?.length && s.scope_units.every(id => s.units.find(u => u.id === id)?.status === 'accepted')) return emit('finish', { complete: s.units.every(u => u.status === 'accepted'), scope_complete: true, reason: 'authorized-scope-complete' });
@@ -91,12 +120,10 @@ globalThis.memoryQualityStep = function(snapshot) {
     if(ready.length){const actions=ready.map(p=>{p.attempt++;p.status='running';p.deadline_ms=s.now_ms+(p.watchdog_ms||1200000);s.consumed.agent_calls++;return {id:[s.run_id,s.state_version,'dispatch','preparation',p.id,p.attempt].join(':'),type:'dispatch',unit:p.unit,preparation:true,preparation_id:p.id,attempt:p.attempt,read_only:true,session_id:p.session_id};});return {state:s,actions};}
   }
   if(s.authorization?.parallel_implementation===true){
-    const continuation=(s.stage_continuations||[]).find(c=>{
-      const p=stages.find(p=>p.id===c.id);
-      return p&&p.authorized===true&&c.producer_stopped===true&&c.revision===s.code_revision&&c.attempt===p.attempt&&!p.needs_reconciliation&&!(p.paths||[]).some(path=>[...(s.write_locks||[]).flatMap(l=>l.paths||[]),...stages.filter(x=>x!==p&&(['running','verifying'].includes(x.status)||x.needs_reconciliation)).flatMap(x=>x.paths||[])].some(held=>memoryQualityOverlap(path,held)))&&['running','verifying','delivered','blocked','failed'].includes(p.status)&&typeof c.session_id==='string'&&c.session_id.trim().length>0&&(c.kind!=='review-correction'||correctionOpen||(p.correction_rounds||0)<(p.correction_limit??s.limits.correction_rounds))&&busy.filter(x=>x.id!==p.id).length<Math.min(8,s.limits.concurrency||4);
-    });
+    const continuation=stoppedStageContinuation||(s.stage_continuations||[]).find(c=>stageContinuationEligible(c,stages.find(p=>p.id===c.id)));
     if(continuation){
       const p=stages.find(p=>p.id===continuation.id);p.status='running';p.session_id=continuation.session_id;p.deadline_ms=s.now_ms+(p.watchdog_ms||1200000);
+      if(continuation.event_id&&!p.processed?.includes(continuation.event_id))p.processed=[...(p.processed||[]),continuation.event_id];
       if(continuation.kind==='review-correction'){p.correction_rounds=(p.correction_rounds||0)+1;s.consumed.correction_rounds++;}
       s.stage_continuations=s.stage_continuations.filter(c=>c!==continuation);s.consumed.agent_calls++;
       return {state:s,actions:[{id:[s.run_id,s.state_version,'dispatch','stage',p.id,p.attempt,'correction',p.correction_rounds||0].join(':'),type:'dispatch',unit:p.unit,stage_id:p.id,attempt:p.attempt,correction_round:p.correction_rounds||0,session_id:p.session_id,paths:p.paths,continuation:true,receipt:continuation.receipt}]};

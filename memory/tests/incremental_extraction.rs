@@ -2298,8 +2298,104 @@ mod productive {
     }
 
     #[tokio::test]
+    async fn oversized_delta_quarantines_full_source_and_publishes_only_later_owner() {
+        let later_text = "Birch archives retain monthly invoices.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("large", &"a".repeat(1000000)),
+                stamped("large-end", "large-turn", "private", true),
+                message("later", later_text),
+                stamped("end", "later-turn", "other", true),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            observe_events: true,
+            model_items: VecDeque::from([fact(later_text)]),
+            ..Script::default()
+        })
+        .await;
+        let mut owner = job("large-end");
+        owner.turn_id = Some("large-turn".into());
+        assert!(stack.run(&owner).await.unwrap_err().contains("quarantined"));
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+        let ranges = stack
+            .deps
+            .store()
+            .await
+            .extraction_ranges("incremental-fixture")
+            .unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].pending.version, 2);
+        assert_eq!(
+            ranges[0].pending.entries[0].2,
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+        assert!(!ranges[0].completed);
+        assert!(serde_json::to_vec(&ranges).unwrap().len() < 4096);
+        assert!(stack
+            .deps
+            .store()
+            .await
+            .retain_extraction_range("incremental-fixture", ranges[0].pending.clone(), true)
+            .is_err());
+        stack
+            .deps
+            .store()
+            .await
+            .ensure_bank("private", None)
+            .await
+            .unwrap();
+        stack
+            .deps
+            .store()
+            .await
+            .trash_bank("private")
+            .await
+            .unwrap();
+        let stack = stack.restart().await;
+        let mut later = job("end");
+        later.bank = Some("other".into());
+        later.turn_id = Some("later-turn".into());
+        stack.run(&later).await.unwrap();
+        stack.run(&later).await.unwrap();
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        assert!(stack.log_records("private").is_empty());
+        let records = stack.log_records("other");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].text, later_text);
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
+        assert_eq!(
+            stack
+                .script
+                .lock()
+                .unwrap()
+                .count("memory::on-item-changed"),
+            1
+        );
+        assert_eq!(stack.script.lock().unwrap().count("state::set"), 0);
+        assert!(stack
+            .deps
+            .store()
+            .await
+            .pending_extraction("incremental-fixture")
+            .unwrap()
+            .is_none());
+        let ranges = stack
+            .deps
+            .store()
+            .await
+            .extraction_ranges("incremental-fixture")
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert!(!ranges[0].completed);
+        assert!(ranges[1].completed);
+    }
+
+    #[tokio::test]
     async fn public_fetch_byte_limits_preserve_recovery_and_allow_attested_retry() {
-        const TEXT: usize = 96 * 1024;
+        const TEXT: usize = 1024 * 1024;
         for root_recovery in [false, true] {
             let first = "Amber instruments require copper calibration.";
             let second = "Birch archives retain monthly invoices.";

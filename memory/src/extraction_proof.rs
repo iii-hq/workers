@@ -45,8 +45,8 @@ struct History {
     missing: String,
     rows: Vec<Row>,
 }
-// Conservative byte budgets, not truncation: 96KB is four 24KB extraction
-// calls; full admissible text is hashed unchanged, never a recall prefix.
+// Conservative budgets, not truncation: pending snapshots retain at most
+// 96KiB text; larger bounded sources retain full SHA-256 provenance instead.
 // JSON keys/strings reserve six bytes per UTF-8 byte for escaping. Checks
 // begin AFTER SDK network JSON decoding; they cannot bound that decoding.
 pub(crate) const ROW_BYTES: usize = 16 * 1024;
@@ -164,6 +164,70 @@ pub(crate) fn bounded(s: &str) -> bool {
     s.len() <= 256 && !s.trim().is_empty()
 }
 
+// Intake and persisted model snapshots have independent finite budgets.
+pub(crate) const SOURCE_TEXT_BYTES: usize = 1024 * 1024;
+
+/// Actual JSON cost for known text only; unknown fields keep the conservative
+/// sixfold budget and depth/node limits before any source clone.
+pub(crate) fn source_bytes(item: &Value) -> Result<usize, String> {
+    fn string_bytes(text: &str) -> Result<usize, String> {
+        let mut size = 2;
+        for byte in text.bytes() {
+            let cost = match byte {
+                b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+                0..=31 => 6,
+                _ => 1,
+            };
+            charge(&mut size, cost, SOURCE_BYTES)?;
+        }
+        Ok(size)
+    }
+    let mut size = 2;
+    let object = item.as_object().ok_or("history source schema")?;
+    for (key, value) in object {
+        charge(&mut size, key.len() * 6 + 4, SOURCE_BYTES)?;
+        if key != "message" {
+            charge(&mut size, value_bytes(value, SOURCE_BYTES)?, SOURCE_BYTES)?;
+            continue;
+        }
+        let message = value.as_object().ok_or("history message schema")?;
+        for (key, value) in message {
+            charge(&mut size, key.len() * 6 + 4, SOURCE_BYTES)?;
+            if key != "content" {
+                charge(&mut size, value_bytes(value, SOURCE_BYTES)?, SOURCE_BYTES)?;
+                continue;
+            }
+            content_bytes(Some(value))?;
+            if let Some(text) = value.as_str() {
+                charge(&mut size, string_bytes(text)?, SOURCE_BYTES)?;
+            } else if let Some(parts) = value.as_array() {
+                charge(&mut size, 2, SOURCE_BYTES)?;
+                if parts.len() > 4096 {
+                    return Err("history content block bound".into());
+                }
+                for part in parts {
+                    if part["type"] == "text" && part.is_object() {
+                        charge(&mut size, 3, SOURCE_BYTES)?;
+                        for (key, value) in part.as_object().unwrap() {
+                            charge(&mut size, key.len() * 6 + 4, SOURCE_BYTES)?;
+                            let bytes = match (key.as_str(), value.as_str()) {
+                                ("text", Some(text)) => string_bytes(text)?,
+                                _ => value_bytes(value, SOURCE_BYTES)?,
+                            };
+                            charge(&mut size, bytes, SOURCE_BYTES)?;
+                        }
+                    } else {
+                        charge(&mut size, value_bytes(part, SOURCE_BYTES)?, SOURCE_BYTES)?;
+                    }
+                }
+            } else {
+                charge(&mut size, value_bytes(value, SOURCE_BYTES)?, SOURCE_BYTES)?;
+            }
+        }
+    }
+    Ok(size)
+}
+
 /// Measure before joining; separators count even for empty text blocks.
 pub(crate) fn content_bytes(content: Option<&Value>) -> Result<usize, String> {
     let mut bytes = 0;
@@ -175,13 +239,13 @@ pub(crate) fn content_bytes(content: Option<&Value>) -> Result<usize, String> {
             .filter_map(|part| part["text"].as_str())
         {
             if !first {
-                charge(&mut bytes, 1, TEXT_BYTES)?;
+                charge(&mut bytes, 1, SOURCE_TEXT_BYTES)?;
             }
             first = false;
-            charge(&mut bytes, text.len(), TEXT_BYTES)?;
+            charge(&mut bytes, text.len(), SOURCE_TEXT_BYTES)?;
         }
     } else if let Some(text) = content.and_then(Value::as_str) {
-        charge(&mut bytes, text.len(), TEXT_BYTES)?;
+        charge(&mut bytes, text.len(), SOURCE_TEXT_BYTES)?;
     }
     Ok(bytes)
 }
@@ -189,7 +253,12 @@ pub(crate) fn content_bytes(content: Option<&Value>) -> Result<usize, String> {
 /// Validate the borrowed SDK reply before DeltaReader or root recovery can
 /// clone IDs, pagination, envelopes or content. SDK network decode is earlier.
 pub(crate) fn source_page(reply: &Value, total: &mut usize) -> Result<(), String> {
-    charge(total, value_bytes(reply, PATH_BYTES)?, PATH_BYTES)?;
+    for (key, value) in reply.as_object().ok_or("history page schema")? {
+        charge(total, key.len() * 6 + 4, PATH_BYTES)?;
+        if key != "messages" {
+            charge(total, value_bytes(value, PATH_BYTES)?, PATH_BYTES)?;
+        }
+    }
     if let Some(cursor) = reply.get("next_cursor").and_then(Value::as_str) {
         if !bounded(cursor) {
             return Err("history cursor byte bound".into());
@@ -200,7 +269,7 @@ pub(crate) fn source_page(reply: &Value, total: &mut usize) -> Result<(), String
         .filter(|items| items.len() <= 100)
         .ok_or("history page bound")?;
     for item in items {
-        value_bytes(item, SOURCE_BYTES)?;
+        charge(total, source_bytes(item)?, PATH_BYTES)?;
         if !item["entry_id"].as_str().is_some_and(bounded) {
             return Err("history entry id byte bound".into());
         }
@@ -290,7 +359,7 @@ pub(crate) async fn import(
             .ok_or("history path schema")?;
         source_page(&reply, &mut path_bytes)?;
         for item in entries {
-            value_bytes(item, SOURCE_BYTES)?;
+            source_bytes(item)?;
             join_text(item.pointer("/message/content"))?;
             let id = item["entry_id"]
                 .as_str()
@@ -431,7 +500,7 @@ pub(crate) async fn import(
 impl Row {
     pub(crate) fn matches_source(&self, item: &Value) -> bool {
         let a = &self.attestation;
-        if value_bytes(item, SOURCE_BYTES).is_err() {
+        if source_bytes(item).is_err() {
             return false;
         }
         let Ok(text) = join_text(item.pointer("/message/content")) else {
@@ -501,7 +570,7 @@ fn join_text(content: Option<&Value>) -> Result<String, String> {
 }
 
 // SHA-256 over the full joined text, with no new dependency or model service.
-fn sha256(input: &[u8]) -> String {
+pub(crate) fn sha256(input: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -579,8 +648,8 @@ mod tests {
             "6e03ec5e819aa1579fd8d3e35ea4a88cddbedc2707f1bae3fd3c08710a515831"
         );
         let overflow = serde_json::json!([
-            {"type":"text","text":"a".repeat(super::TEXT_BYTES / 2)},
-            {"type":"text","text":"a".repeat(super::TEXT_BYTES / 2)}]);
+            {"type":"text","text":"a".repeat(super::SOURCE_TEXT_BYTES / 2)},
+            {"type":"text","text":"a".repeat(super::SOURCE_TEXT_BYTES / 2)}]);
         assert!(super::join_text(Some(&overflow)).is_err());
         let value = serde_json::json!("a");
         assert_eq!(super::value_bytes(&value, 8).unwrap(), 8);

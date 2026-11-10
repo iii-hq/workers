@@ -192,6 +192,170 @@ import('node:test').then(({ test }) => {
       o=memoryQualityStep(s); assert.equal(o.actions[0].resume,true); assert.equal(o.state.units[0].phase_deadline_ms,50);
       s=o.state; s.now_ms=50; assert.equal(memoryQualityStep(s).state.units[0].status,'expired');
     });
+    const checked = s => validateMemoryQualityActions(memoryQualityStep(s), ['/authorized']);
+    const parallel = (kind, status='running') => {
+      const s=base(); s.units=[]; s.authorization={parallel_preparation:true,parallel_implementation:true};
+      const p={id:'p',unit:'p',session_id:'clean',status,required:true,attempt:1,depends_on:[],deadline_ms:20,watchdog_ms:20};
+      if(kind==='preparation') { p.read_only=true; s.preparations=[p]; }
+      else { p.authorized=true; p.paths=['/authorized/src/a']; s.parallel_stages=[p]; }
+      return s;
+    };
+    const receipt = (event_id='delivery') => ({id:'p',run_id:'pure',attempt:1,revision:'r',event_id,producer_stopped:true,outcome:'done',evidence:['proof']});
+    const stopped = (extra={}) => ({...receipt('stop'),session_id:'fresh',kind:'test-receipt',...extra});
+    await t.test('expired preparations release actual busy and permit later independent acceptance', () => {
+      let s=parallel('preparation'); s.now_ms=20;
+      let o=checked(s); assert.equal(o.state.preparations[0].needs_reconciliation,true);
+      s=o.state; s.preparation_results=[receipt()]; o=checked(s);
+      assert.equal(o.state.preparations[0].status,'delivered'); assert.equal(o.state.preparations[0].needs_reconciliation,false);
+      assert.equal(o.actions[0].type,'finish'); assert.equal(o.actions[0].reason,'preparation-incomplete');
+      s=o.state; s.preparation_results=[{...receipt('review'),independent:true,accepted:true}]; o=checked(s);
+      assert.equal(o.state.preparations[0].status,'accepted'); assert.equal(o.actions[0].complete,true);
+    });
+    await t.test('expired stage delivery preserves its phase and starts independent verification', () => {
+      let s=parallel('stage'); s.now_ms=20; let o=checked(s);
+      assert.equal(o.state.parallel_stages[0].expired_phase,'running');
+      s=o.state; s.stage_results=[{...receipt(),independent:true,accepted:true}]; o=checked(s);
+      assert.equal(o.actions[0].type,'verify'); assert.equal(o.state.parallel_stages[0].status,'verifying');
+      assert.equal(o.state.parallel_stages[0].needs_reconciliation,false); assert.equal(o.state.parallel_stages[0].deadline_ms,40);
+      assert.equal(o.state.parallel_stages[0].expired_phase,undefined);
+      s=o.state; s.now_ms=40; o=checked(s); assert.equal(o.state.parallel_stages[0].expired_phase,'verifying');
+      s=o.state; s.stage_results=[{...receipt('review'),independent:true,accepted:true}]; o=checked(s);
+      assert.equal(o.state.parallel_stages[0].status,'accepted'); assert.equal(o.state.parallel_stages[0].needs_reconciliation,false);
+      assert.equal(o.actions[0].complete,true);
+    });
+    await t.test('receipts cannot mutate stale, pending, delivered writer, accepted or unknown phases', () => {
+      for(const kind of ['preparation','stage']) {
+        const field=kind==='preparation'?'preparations':'parallel_stages', results=kind==='preparation'?'preparation_results':'stage_results';
+        for(const patch of [{run_id:'other'},{revision:'old'},{attempt:0},{producer_stopped:false},{event_id:'seen'},{event_id:undefined}]) {
+          let s=parallel(kind); s.now_ms=20; s=checked(s).state; s[field][0].processed=['seen'];
+          const before=structuredClone(s[field][0]); s[results]=[{...receipt(),...patch}];
+          const o=checked(s); assert.deepEqual(o.state[field][0],before,kind+JSON.stringify(patch)); assert.equal(o.actions[0].type,'wait');
+        }
+        for(const status of ['pending','accepted','failed','blocked','delivered']) {
+          const s=parallel(kind,status); s.authorization={}; s[field][0].attempt=2;
+          const before=structuredClone(s[field][0]); s[results]=[{...receipt(),attempt:2,outcome:'blocked'}];
+          assert.deepEqual(checked(s).state[field][0],before,kind+': '+status);
+        }
+        let s=parallel(kind); s.now_ms=20; s=checked(s).state;
+        if(kind==='stage') s.parallel_stages[0].expired_phase='delivered';
+        else s.preparations[0].status='accepted';
+        const before=structuredClone(s[field][0]); s[results]=[receipt()];
+        assert.deepEqual(checked(s).state[field][0],before);
+      }
+    });
+    await t.test('writer receipts cannot release expired review and replay cannot mutate acceptance', () => {
+      let s=parallel('stage','verifying'); s.now_ms=20; s=checked(s).state;
+      const before=structuredClone(s.parallel_stages[0]);
+      for(const outcome of ['done','blocked','failed']) {
+        s.stage_results=[{...receipt('writer-'+outcome),outcome,accepted:true}]; const o=checked(s);
+        assert.deepEqual(o.state.parallel_stages[0],before); assert.equal(o.actions[0].type,'wait'); s=o.state;
+      }
+      s.stage_results=[{...receipt('review'),independent:true,accepted:true}]; s=checked(s).state;
+      const accepted=structuredClone(s.parallel_stages[0]);
+      s.stage_results=[{...receipt('review'),outcome:'failed',independent:true},{...receipt('new'),outcome:'blocked',independent:true}];
+      assert.deepEqual(checked(s).state.parallel_stages[0],accepted);
+    });
+    await t.test('independent nonacceptance and invalid stopped results terminate finitely', () => {
+      for(const kind of ['preparation','stage']) for(const phase of (kind==='stage'?['running','verifying']:['running'])) {
+        for(const patch of [{outcome:'blocked'},{outcome:'failed'},{evidence:[]},{outcome:'unexpected'},...(phase==='verifying'?[{accepted:false}]:[])]) {
+          let s=parallel(kind,phase); s.now_ms=20; s=checked(s).state;
+          const field=kind==='stage'?'parallel_stages':'preparations';
+          s[kind==='stage'?'stage_results':'preparation_results']=[{...receipt(),independent:phase==='verifying',...patch}];
+          const o=checked(s); assert.equal(o.state[field][0].status,patch.outcome==='blocked'?'blocked':'failed');
+          assert.equal(o.state[field][0].needs_reconciliation,false); assert.equal(o.actions[0].type,'finish');
+        }
+      }
+    });
+    await t.test('global deadline and call ceiling finish after release but wait for actual producers', () => {
+      for(const kind of ['preparation','stage']) for(const limit of ['deadline','calls']) {
+        let s=parallel(kind); s.now_ms=20;
+        if(limit==='deadline') s.deadline_ms=20; else s.consumed.agent_calls=s.limits.agent_calls;
+        s=checked(s).state; assert.equal(checked(s).actions[0].type,'wait');
+        s[kind==='stage'?'stage_results':'preparation_results']=[receipt()]; let o=checked(s);
+        assert.equal(o.actions[0].type,'finish'); assert.equal(o.actions[0].reason,'limit');
+        assert.equal(o.state[kind==='stage'?'parallel_stages':'preparations'][0].status,'delivered');
+        s=parallel(kind); s.now_ms=20; s.deadline_ms=20;
+        s.units=[{id:'busy',status:'running',attempt:1,depends_on:[],phase_deadline_ms:100}]; s=checked(s).state;
+        s[kind==='stage'?'stage_results':'preparation_results']=[receipt()]; o=checked(s);
+        assert.equal(o.actions[0].type,'wait'); assert.deepEqual(o.actions[0].active,['busy']);
+      }
+    });
+    await t.test('stopped expired stage continuation releases and retries without changing attempt', () => {
+      for(const phase of ['running','verifying']) {
+        let s=parallel('stage',phase); s.now_ms=20; s=checked(s).state;
+        const c=stopped(phase==='verifying'?{kind:'review-correction',independent:true}:{});
+        s.stage_continuations=[c]; const o=checked(s), p=o.state.parallel_stages[0];
+        assert.equal(o.actions[0].continuation,true); assert.equal(p.status,'running'); assert.equal(p.attempt,1);
+        assert.equal(p.needs_reconciliation,false); assert.equal(p.expired_phase,undefined); assert.equal(p.deadline_ms,40);
+        assert.deepEqual(p.processed,['stop']); assert.equal(p.correction_rounds||0,phase==='verifying'?1:0);
+        const again=o.state; again.stage_continuations=[c]; const next=checked(again);
+        assert.equal(next.actions[0].type,'wait'); assert.equal(next.state.consumed.agent_calls,o.state.consumed.agent_calls);
+      }
+    });
+    await t.test('expired continuation retains matching, authorization, locks and correction bounds', () => {
+      for(const patch of [{run_id:'other'},{run_id:undefined},{revision:'old'},{attempt:0},{producer_stopped:false},{event_id:undefined},{event_id:'seen'},{session_id:' '}]) {
+        let s=parallel('stage'); s.now_ms=20; s=checked(s).state; s.parallel_stages[0].processed=['seen'];
+        const before=structuredClone(s.parallel_stages[0]); s.stage_continuations=[stopped(patch)]; const o=checked(s);
+        assert.deepEqual(o.state.parallel_stages[0],before); assert.equal(o.actions[0].type,'wait');
+      }
+      for(const restriction of ['authorization','stage-authorization','lock','active-lock','budget','wrong-kind','writer-review']) {
+        let s=parallel('stage','verifying'); s.now_ms=20; s=checked(s).state;
+        s.stage_continuations=[stopped({kind:'review-correction',independent:true})];
+        if(restriction==='authorization') s.authorization.parallel_implementation=false;
+        if(restriction==='stage-authorization') s.parallel_stages[0].authorized=false;
+        if(restriction==='lock') s.write_locks=[{paths:['/authorized/./src']}];
+        if(restriction==='active-lock') s.parallel_stages.push({...s.parallel_stages[0],id:'other',status:'running',deadline_ms:100,needs_reconciliation:false});
+        if(restriction==='budget') s.parallel_stages[0].correction_rounds=3;
+        if(restriction==='wrong-kind') s.stage_continuations[0].kind='test-receipt';
+        if(restriction==='writer-review') s.stage_continuations[0].independent=false;
+        const before=structuredClone(s.parallel_stages[0]), o=checked(s);
+        assert.deepEqual(o.state.parallel_stages[0],before,restriction); assert.equal(o.actions[0].type,'wait');
+      }
+      for(const limit of ['deadline','calls']) {
+        let s=parallel('stage'); s.now_ms=20; s=checked(s).state;
+        if(limit==='deadline') s.deadline_ms=20; else s.consumed.agent_calls=s.limits.agent_calls;
+        s.stage_continuations=[stopped()]; const o=checked(s);
+        assert.equal(o.state.parallel_stages[0].needs_reconciliation,false); assert.equal(o.state.parallel_stages[0].status,'failed');
+        assert.equal(o.actions[0].type,'finish'); assert.equal(o.actions[0].reason,'limit');
+      }
+    });
+    await t.test('released continuation stays queued if another action or quarantined unit delays dispatch', () => {
+      for(const delay of ['preparation','unit']) {
+        let s=parallel('stage'); s.now_ms=20; s=checked(s).state;
+        if(delay==='preparation') s.preparations=[{id:'prep',unit:'prep',session_id:'reader',status:'pending',required:true,read_only:true,attempt:0,depends_on:[]}];
+        else s.units=[{id:'u',status:'expired',expired_phase:'running',needs_reconciliation:true,attempt:1,depends_on:[]}];
+        s.stage_continuations=[stopped()]; let o=checked(s);
+        assert.equal(o.state.parallel_stages[0].needs_reconciliation,false);
+        assert.equal(o.actions[0].type,delay==='preparation'?'dispatch':'wait');
+        assert.equal(o.actions[0].continuation,undefined); assert.equal(o.state.stage_continuations.length,1);
+        s=o.state;
+        if(delay==='unit') s.results=[{run_id:'pure',unit:'u',attempt:1,revision:'r',event_id:'u-stop',producer_stopped:true,outcome:'blocked',evidence:['proof']}];
+        o=checked(s); assert.equal(o.actions[0].continuation,true); assert.deepEqual(o.state.parallel_stages[0].processed,['stop']);
+        assert.equal(o.state.stage_continuations.length,0);
+      }
+    });
+    await t.test('expired review continuation requires explicit renewed or unbounded correction budget', () => {
+      for(const mode of ['renewed','unbounded','unauthorized']) {
+        let s=parallel('stage','verifying'); s.now_ms=20; s=checked(s).state;
+        s.parallel_stages[0].correction_rounds=3;
+        if(mode==='renewed') s.parallel_stages[0].correction_limit=4;
+        else { s.limits.correction_mode='user-unbounded'; s.authorization.correction_rounds_unbounded=mode==='unbounded'; }
+        s.stage_continuations=[stopped({kind:'review-correction',independent:true})]; const o=checked(s);
+        assert.equal(o.actions[0].continuation,mode==='unauthorized'?undefined:true);
+        assert.equal(o.state.parallel_stages[0].correction_rounds,mode==='unauthorized'?3:4);
+        assert.equal(o.state.parallel_stages[0].needs_reconciliation,mode==='unauthorized');
+      }
+      for(const status of ['pending','accepted']) {
+        const s=parallel('stage',status); s.authorization.parallel_implementation=false;
+        const before=structuredClone(s.parallel_stages[0]); s.stage_continuations=[stopped()];
+        assert.deepEqual(checked(s).state.parallel_stages[0],before);
+      }
+      let s=parallel('stage'); s.now_ms=20; s=checked(s).state; s.deadline_ms=20;
+      s.parallel_stages.push({...s.parallel_stages[0],id:'other',paths:['/authorized/other']});
+      s.stage_continuations=[stopped()]; const o=checked(s);
+      assert.equal(o.actions[0].type,'wait'); assert.deepEqual(o.actions[0].active,['other']);
+      assert.equal(o.state.parallel_stages[0].needs_reconciliation,false); assert.equal(o.state.parallel_stages[1].needs_reconciliation,true);
+    });
     await t.test('required preparation and stage wait for dispatchable pending or failed dependencies', () => {
       for (const kind of ['preparation','stage']) for (const status of ['pending','failed']) {
         let s=base(); s.units[0].status=status; s.units[0].attempt=status==='failed'?1:0;

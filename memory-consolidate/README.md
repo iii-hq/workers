@@ -12,10 +12,15 @@ Requires the `memory` worker. Scheduling reuses the cron worker: `memory-consoli
 
 ## Quickstart
 
-Plan without writing, then look at what a pass would do:
+Plan without writing; read the deterministic candidate plan in the `run` response:
 
 ```bash
 iii call memory-consolidate::run dry_run=true
+```
+
+Check the schedule and previous real pass separately; a dry run leaves `last_report` and `last_run` unchanged:
+
+```bash
 iii call memory-consolidate::status
 ```
 
@@ -76,7 +81,7 @@ Every change goes through `memory::supersede` and carries the judge's one-senten
   - Transport, auth or quota errors stop the tier for that bank with a note, and the cursor stays put.
   - An unparseable or truncated reply bisects the batch down to one memory. A memory that still fails is listed in `semantic_failed` and skipped, so it cannot wedge the tier.
 - **Cursor.** Progress is a per-bank cursor in the state worker, keyed by `(updated_at, id)`, so edited or resurrected records are judged again. It advances only over batches that were fully judged and fully applied.
-- **Dry runs** judge and report the plan without writing or moving the cursor.
+- **Dry runs** return only the deterministic candidate plan in the `run` response, with `checkpointed: false`. Enabled optional LLM and semantic tiers are skipped with an `unevaluated` note; they make no recall, embedding, model or rule calls. No memories or semantic cursor are written, and the handler returns before persisting `last_report` or `last_run`, leaving scheduling state and the previous real-pass report unchanged.
 
 Config: `semantic_batch` (8 memories per LLM call), `semantic_candidates` (4 per arm), `semantic_max_per_run` (48 per bank per pass). The model comes from `llm_model`. `router::complete` has no temperature control, so the provider default applies.
 

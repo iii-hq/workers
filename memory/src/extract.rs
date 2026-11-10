@@ -1195,7 +1195,12 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                 && entries.iter().any(|e| e.0 == row.attestation.entry_id)
         })
     });
-    if !retained.is_empty() || terminal || deleted_interval || authenticated_cut {
+    let oversized = intervals.iter().any(|(_, _, entries)| {
+        entries
+            .iter()
+            .any(|e| e.2.len() > crate::extraction_proof::TEXT_BYTES)
+    });
+    if !retained.is_empty() || terminal || deleted_interval || authenticated_cut || oversized {
         return retained_pass(deps, &cfg, job, resolved.as_ref(), intervals, saved).await;
     }
     if job.skip && intervals.iter().any(|(scope, _, _)| scope.is_some()) {
@@ -1519,6 +1524,28 @@ fn capture_run(
     turn: Option<&str>,
     entries: &[Entry],
 ) -> Result<PendingExtraction, String> {
+    if entries
+        .iter()
+        .any(|e| e.2.len() > crate::extraction_proof::TEXT_BYTES)
+    {
+        // A full digest is provenance, never a model decision or an extracted
+        // prefix. Version 2 is a durable unprocessed gap; only later disjoint,
+        // independently authenticated jobs may proceed around it.
+        let provenance: Vec<_> = entries
+            .iter()
+            .map(|(id, role, text, ts)| {
+                (
+                    id.clone(),
+                    role.clone(),
+                    crate::extraction_proof::sha256(text.as_bytes()),
+                    *ts,
+                )
+            })
+            .collect();
+        let mut capture = capture_run(scope, turn, &provenance)?;
+        capture.version = 2;
+        return Ok(capture);
+    }
     PendingExtraction::entries_bytes(entries).map_err(|e| e.to_string())?;
     for id in std::iter::once(scope.bank.as_str())
         .chain(scope.agent.as_deref())
@@ -1643,6 +1670,7 @@ async fn retained_pass(
     let mut asked = false;
     let mut calls = 0;
     let mut tail = false;
+    let mut quarantined_owner = false;
     for (scope, turn, entries) in intervals {
         for run in pass_runs(entries, cfg.extraction_window) {
             if invalid.iter().any(|range| {
@@ -1708,6 +1736,15 @@ async fn retained_pass(
                 && ranges.iter().any(|r| r.pending.same_source(&capture));
             let own = !job.skip && resolved == Some(scope) && (stamped_owner || legacy_owner);
             let deleted = scope.bank != cfg.default_bank && store.is_deleted(&scope.bank);
+            if capture.version == 2 {
+                store
+                    .retain_extraction_range(session, capture, false)
+                    .map_err(|e| e.to_string())?;
+                gap = true;
+                quarantined_owner |=
+                    own && !deleted || run.last().map(|e| e.0.as_str()) == job.until.as_deref();
+                continue;
+            }
             if !own || deleted || calls >= PASS_CALLS {
                 store
                     .retain_extraction_range(session, capture, false)
@@ -1745,6 +1782,9 @@ async fn retained_pass(
                     .map_err(|e| e.to_string())?;
             }
         }
+    }
+    if quarantined_owner {
+        return Err("extraction source quarantined: full provenance retained; oversized text remains unprocessed".into());
     }
     if tail {
         return Err("extraction pending: remaining runs require retry".into());
@@ -2965,7 +3005,7 @@ pub(crate) async fn messages_tail(iii: &IIIClient, session_id: &str) -> Option<V
 /// what a person sends carries none. So is a workflow's reply, which
 /// `harness::send` delivers without one but under its own entry id.
 fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
-    crate::extraction_proof::value_bytes(item, crate::extraction_proof::SOURCE_BYTES).ok()?;
+    crate::extraction_proof::source_bytes(item).ok()?;
     if item["entry_id"]
         .as_str()
         .is_some_and(|id| !crate::extraction_proof::bounded(id))
@@ -3041,9 +3081,8 @@ pub fn content_text(content: Option<&Value>) -> String {
 }
 
 fn checked_content_text(content: Option<&Value>) -> Result<String, String> {
-    if let Some(value) = content {
-        crate::extraction_proof::value_bytes(value, crate::extraction_proof::SOURCE_BYTES)?;
-    }
+    // Source envelopes are bounded before this join; model replies remain
+    // separately bounded by their caller.
     let size = crate::extraction_proof::content_bytes(content)?;
     let mut text = String::with_capacity(size);
     let Some(parts) = content.and_then(Value::as_array) else {
@@ -3295,6 +3334,11 @@ fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, St
             message["error_kind"].as_str().unwrap_or("unknown"),
             message["error_message"].as_str().unwrap_or("")
         ));
+    }
+    if crate::extraction_proof::content_bytes(message.get("content"))?
+        > crate::extraction_proof::TEXT_BYTES
+    {
+        return Err("extraction reply text byte bound".into());
     }
     let items = parse_items(&checked_content_text(message.get("content"))?)?;
     if message["stop_reason"] == "length" {

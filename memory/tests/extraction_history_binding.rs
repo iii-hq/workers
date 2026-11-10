@@ -534,6 +534,164 @@ async fn authenticated_failed_request_recovers_original_bank_after_restart_and_e
 }
 
 #[tokio::test]
+async fn registered_receiver_large_source_keeps_full_digest_and_later_owned_progress() {
+    for (content, digest) in [
+        (
+            json!([{"type":"text","text":"a".repeat(1000000)}]),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+        ),
+        // Oracle: Perl emits exact UTF-8 bytes and escapes into openssl dgst.
+        (
+            json!([{"type":"text","text":"é".repeat(60000)},
+            {"type":"file","path":"ignored"},
+            {"type":"text","text":format!("{}{}", "\u{0001}\"\\", "\n\u{0001}\"\\".repeat(9999))}]),
+            "01364dc84e9c5385a5275e9b3a153a8626f4f09dff14310160e246ffd079a9ca",
+        ),
+    ] {
+        for policy in ["on", "off", "unknown"] {
+            let dir = tempfile::tempdir().unwrap();
+            let stack = Stack::new(dir.path()).await;
+            let mut cfg = (*stack.deps.config().await).clone();
+            cfg.extraction_model = "fixture-only".into();
+            *stack.deps.config.write().await = Arc::new(cfg);
+            let mut item = source();
+            item["message"]["content"] = content.clone();
+            item["message"]["timestamp"] = json!(1700000000000u64);
+            stack.fixture.lock().unwrap().path = vec![item.clone()];
+            let mut delivery = input("large");
+            let a = &mut delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"];
+            a["text_sha256"] = json!(digest);
+            a["policy"] = json!(policy);
+            stack
+                .invoke(delivery.clone(), "owner-one", Some(stack.handle.id()))
+                .await;
+            let proof = stack.deps.store().await.extraction_plan(&key()).unwrap();
+            assert!(
+                proof.is_some(),
+                "native receiver authenticates full bounded source"
+            );
+            for bad in ["digest", "missing-digest", "path", "tail"] {
+                let mut invalid = delivery.clone();
+                let mut changed = item.clone();
+                match bad {
+                    "digest" => {
+                        invalid["recall_context"]["extraction_history"]["rows"][0]["attestation"]
+                            ["text_sha256"] = json!("0".repeat(64))
+                    }
+                    "missing-digest" => {
+                        invalid["recall_context"]["extraction_history"]["rows"][0]["attestation"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("text_sha256");
+                    }
+                    "path" => changed["entry_id"] = json!("other-path"),
+                    "tail" => {
+                        changed["message"]["content"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(json!({"type":"text","text":"changed-tail"}));
+                    }
+                    _ => unreachable!(),
+                }
+                stack.fixture.lock().unwrap().path = vec![changed];
+                stack
+                    .invoke(invalid, "owner-one", Some(stack.handle.id()))
+                    .await;
+                assert_eq!(
+                    stack.deps.store().await.extraction_plan(&key()).unwrap(),
+                    proof
+                );
+                assert!(stack.fixture.lock().unwrap().cursor.is_null());
+            }
+            let mut next = source();
+            next["entry_id"] = json!("next-request");
+            next["message"]["timestamp"] = json!(1700000001000u64);
+            next["message"]["content"] =
+                json!([{"type":"text","text":"I prefer copper instruments for calibration."}]);
+            let end = json!({"entry_id":"next-end","origin":{"turn_id":"next-turn","memory_extraction":true,"memory_bank":"new-bank"},
+                "message":{"role":"assistant","timestamp":1700000002000u64,"content":[{"type":"text","text":"Noted."}]}});
+            stack.fixture.lock().unwrap().path = vec![item.clone(), next, end];
+            let later = memory::hooks::ExtractJobInput {
+                session_id: "synthetic-session".into(),
+                turn_id: Some("next-turn".into()),
+                bank: Some("new-bank".into()),
+                until: Some("next-end".into()),
+                ..Default::default()
+            };
+            let result = memory::extract::try_run(&stack.deps, &later).await;
+            if policy == "unknown" {
+                assert!(result.unwrap_err().contains("unknown policy"));
+                assert!(stack.fixture.lock().unwrap().prompts.is_empty());
+                assert!(stack.fixture.lock().unwrap().cursor.is_null());
+                continue;
+            }
+            result.unwrap();
+            let ranges = stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("synthetic-session")
+                .unwrap();
+            assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
+            assert!(!dir.path().join("old-bank/memories.jsonl").exists());
+            if policy == "on" {
+                assert!(stack.fixture.lock().unwrap().cursor.is_null());
+                assert_eq!(ranges.len(), 2);
+                assert!(!ranges[0].completed);
+                assert_eq!(ranges[0].pending.version, 2);
+                assert_eq!(ranges[0].pending.entries[0].2, digest);
+                assert_eq!(ranges[0].pending.bank, "old-bank");
+                assert_eq!(ranges[0].pending.turn_id.as_deref(), Some("old-large"));
+                assert!(serde_json::to_vec(&ranges).unwrap().len() < 4096);
+                *stack.deps.store.write().await = Arc::new(Store::open(dir.path().into()).unwrap());
+                memory::extract::try_run(&stack.deps, &later).await.unwrap();
+                assert_eq!(
+                    stack.fixture.lock().unwrap().prompts.len(),
+                    1,
+                    "completed later receipt is idempotent"
+                );
+                let old = memory::hooks::ExtractJobInput {
+                    session_id: "synthetic-session".into(),
+                    turn_id: Some("old-large".into()),
+                    bank: Some("old-bank".into()),
+                    until: Some("opaque-entry".into()),
+                    ..Default::default()
+                };
+                assert!(memory::extract::try_run(&stack.deps, &old)
+                    .await
+                    .unwrap_err()
+                    .contains("quarantined"));
+                for wrong in ["bank", "turn", "skip"] {
+                    let mut job: memory::hooks::ExtractJobInput =
+                        serde_json::from_value(serde_json::to_value(&old).unwrap()).unwrap();
+                    match wrong {
+                        "bank" => job.bank = Some("wrong-bank".into()),
+                        "turn" => job.turn_id = Some("wrong-turn".into()),
+                        _ => job.skip = true,
+                    }
+                    assert!(memory::extract::try_run(&stack.deps, &job).await.is_err());
+                }
+                assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
+                assert!(stack.fixture.lock().unwrap().cursor.is_null());
+                assert!(stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("synthetic-session")
+                    .unwrap()
+                    .is_none());
+            } else {
+                assert_eq!(
+                    stack.fixture.lock().unwrap().cursor,
+                    json!({"last_entry_id":"next-end"})
+                );
+                assert!(ranges.is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn registered_receiver_validates_full_128_by_8_digest_blocks_and_atomic_bounds() {
     let dir = tempfile::tempdir().unwrap();
     let stack = Stack::new(dir.path()).await;
@@ -785,18 +943,18 @@ async fn registered_receiver_caps_full_join_and_path_before_copying_without_pref
         let mut item = boundary.clone();
         let mut path = Vec::new();
         match bad {
-            "text" => item["message"]["content"][0]["text"] = json!("a".repeat(96 * 1024 + 1)),
+            "text" => item["message"]["content"][0]["text"] = json!("a".repeat(1024 * 1024 + 1)),
             // Individual blocks fit; separators plus aggregate text do not.
             "blocks" => {
                 item["message"]["content"] = json!([
-                {"type":"text","text":"a".repeat(48 * 1024)},
-                {"type":"text","text":"a".repeat(48 * 1024)}])
+                {"type":"text","text":"a".repeat(512 * 1024)},
+                {"type":"text","text":"a".repeat(512 * 1024)}])
             }
             "metadata" => item["unknown_metadata"] = json!("x".repeat(180000)),
             "path" => {
-                // Each entry fits; the full path budget does not. Only eight
+                // Each entry fits; the full path budget does not. Forty-eight
                 // modest buffers are needed, not an absurd multi-GiB input.
-                for n in 0..8 {
+                for n in 0..48 {
                     let mut extra = boundary.clone();
                     extra["entry_id"] = json!(format!("extra-{n}"));
                     path.push(extra);

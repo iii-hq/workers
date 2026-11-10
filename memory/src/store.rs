@@ -633,12 +633,22 @@ impl PendingExtraction {
         validate_name(&pending.bank)?;
         if !matches!(
             (pending.version, pending.source_digest.as_deref()),
-            (0, None) | (1, Some(_))
+            (0, None) | (1 | 2, Some(_))
         ) || pending.source_digest.as_ref().is_some_and(|digest| {
             digest.len() != 32 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
         }) {
             return Err(MemoryError::Storage(
                 "unsupported pending extraction schema or digest".into(),
+            ));
+        }
+        if pending.version == 2
+            && pending
+                .entries
+                .iter()
+                .any(|e| e.2.len() != 64 || !e.2.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(MemoryError::Storage(
+                "invalid quarantined source digest".into(),
             ));
         }
         let mut ids = HashSet::new();
@@ -949,6 +959,11 @@ impl Store {
         }
         let mut ids = HashSet::new();
         for range in &ledger.ranges {
+            if range.completed && range.pending.version == 2 {
+                return Err(MemoryError::Storage(
+                    "quarantined source cannot be completed".into(),
+                ));
+            }
             range.pending.checked_bytes()?;
             PendingExtraction::parse(
                 serde_json::to_value(&range.pending)
@@ -981,6 +996,11 @@ impl Store {
         completed: bool,
     ) -> Result<(), MemoryError> {
         extraction_identifier(session)?;
+        if completed && pending.version == 2 {
+            return Err(MemoryError::InvalidInput(
+                "quarantined source cannot be completed".into(),
+            ));
+        }
         pending.checked_bytes()?;
         PendingExtraction::parse(
             serde_json::to_value(&pending).map_err(|e| MemoryError::Storage(e.to_string()))?,
