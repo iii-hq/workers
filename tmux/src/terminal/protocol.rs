@@ -63,6 +63,26 @@ pub struct WriteResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct UploadImageRequest {
+    #[serde(flatten)]
+    pub terminal: TerminalRef,
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`; the data's first bytes must agree.
+    pub mime: String,
+    /// The image, base64, at most 12 MiB decoded.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct UploadImageResponse {
+    /// Absolute path of the new file, to paste into the terminal as text.
+    pub path: String,
+    /// Its size in bytes.
+    pub bytes: usize,
+    /// Its type, as the request named it.
+    pub mime: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ResizeRequest {
     #[serde(flatten)]
     pub terminal: TerminalRef,

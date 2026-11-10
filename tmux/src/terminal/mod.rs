@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,13 +34,14 @@ use crate::collector::{Collector, ConsoleClients};
 use crate::tmux_cli::{window_target, Tmux, WindowRef};
 
 mod output_buffer;
+pub mod paste;
 pub mod protocol;
 
 use output_buffer::OutputBuffer;
 use protocol::{
     CloseResponse, OkResponse, OpenRequest, OpenResponse, OutputEvent, Replay, ReplayRequest,
-    ResizeRequest, ResizeResponse, SwitchRequest, SwitchResponse, TerminalRef, WriteRequest,
-    WriteResponse,
+    ResizeRequest, ResizeResponse, SwitchRequest, SwitchResponse, TerminalRef, UploadImageRequest,
+    UploadImageResponse, WriteRequest, WriteResponse,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -108,6 +110,8 @@ pub struct TerminalManager {
     /// The engine's observe support (`IIIClient::engine_supports_observe`),
     /// which decides whether the payload's caller stamp may be read.
     engine_observes: Arc<dyn Fn() -> Option<bool> + Send + Sync>,
+    /// Where pasted images go instead of this user's cache folder (tests).
+    paste_folder: Option<PathBuf>,
 }
 
 pub fn validate_output_function_id(function_id: &str) -> Result<(), String> {
@@ -241,7 +245,14 @@ impl TerminalManager {
             terminals: Arc::new(RwLock::new(HashMap::new())),
             on_change,
             engine_observes,
+            paste_folder: None,
         }
+    }
+
+    /// Pasted images go to `folder` instead of this user's cache folder.
+    pub fn with_paste_folder(mut self, folder: PathBuf) -> Self {
+        self.paste_folder = Some(folder);
+        self
     }
 
     fn caller(&self, stamped: Option<&str>) -> Result<String, String> {
@@ -485,6 +496,33 @@ impl TerminalManager {
         Ok(WriteResponse { written })
     }
 
+    /// Writes an image the page is pasting to a new file and answers its
+    /// path; the page pastes the path itself, nothing is typed here.
+    pub async fn upload_image(
+        &self,
+        request: UploadImageRequest,
+    ) -> Result<UploadImageResponse, String> {
+        self.authenticated(&request.terminal).await?;
+        let (kind, bytes) = paste::decode(&request.mime, &request.data)?;
+        let folder = match &self.paste_folder {
+            Some(folder) => folder.clone(),
+            None => paste::this_folder()?,
+        };
+        let size = bytes.len();
+        let path = tokio::task::spawn_blocking(move || paste::store(&folder, kind, &bytes))
+            .await
+            .map_err(|error| format!("image write task failed: {error}"))?
+            .map_err(|error| {
+                tracing::warn!(%error, "pasted image not written");
+                format!("The image could not be saved: {error}.")
+            })?;
+        Ok(UploadImageResponse {
+            path: path.to_string_lossy().into_owned(),
+            bytes: size,
+            mime: kind.mime().to_string(),
+        })
+    }
+
     pub async fn resize(&self, request: ResizeRequest) -> Result<ResizeResponse, String> {
         validate_size(request.cols, request.rows)?;
         let terminal = self.authenticated(&request.terminal).await?;
@@ -627,8 +665,8 @@ impl TerminalManager {
 
 /// Registers one `tmux::terminal::*` function. None of them can be observed
 /// (`NOT_OBSERVABLE`): `open` returns the terminal's `access_key`, every other
-/// call carries it, and `write` carries the keystrokes typed into the
-/// terminal.
+/// call carries it, `write` carries the keystrokes typed into the terminal and
+/// `upload-image` the image being pasted.
 macro_rules! register_terminal_fn {
     ($iii:expr, $manager:expr, $id:expr, $desc:expr, $req:ty, $method:ident) => {{
         let manager = $manager.clone();
@@ -645,7 +683,7 @@ macro_rules! register_terminal_fn {
     }};
 }
 
-pub const FUNCTIONS: [(&str, &str); 7] = [
+pub const FUNCTIONS: [(&str, &str); 8] = [
     ("tmux::terminal::open", "Attach a console terminal to a tmux session as a real tmux client running in a PTY. Output is pushed to the page's handler."),
     ("tmux::terminal::write", "Write base64 keyboard input to a console terminal's tmux client."),
     ("tmux::terminal::resize", "Resize a console terminal; also its heartbeat."),
@@ -653,6 +691,7 @@ pub const FUNCTIONS: [(&str, &str); 7] = [
     ("tmux::terminal::replay", "Re-send buffered output frames after a sequence, for gap repair."),
     ("tmux::terminal::redraw", "Ask tmux to repaint the console terminal's whole screen (refresh-client)."),
     ("tmux::terminal::close", "Detach a console terminal's tmux client. The session keeps running."),
+    ("tmux::terminal::upload-image", "Save an image being pasted into a console terminal (PNG, JPEG, GIF or WebP, base64, at most 12 MiB) as a new file in the cache folder of the user this worker runs as, and answer its path for the page to paste. It types nothing; files there older than 7 days are removed."),
 ];
 
 pub fn register(iii: &IIIClient, manager: TerminalManager) {
@@ -711,6 +750,14 @@ pub fn register(iii: &IIIClient, manager: TerminalManager) {
         FUNCTIONS[6].1,
         TerminalRef,
         close
+    );
+    register_terminal_fn!(
+        iii,
+        manager,
+        FUNCTIONS[7].0,
+        FUNCTIONS[7].1,
+        UploadImageRequest,
+        upload_image
     );
 }
 

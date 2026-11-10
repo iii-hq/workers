@@ -131,6 +131,15 @@ async fn main() -> Result<()> {
         poke,
         engine_observes,
     );
+    // Images pasted into a terminal more than a week ago; each paste sweeps too.
+    tokio::task::spawn_blocking(|| {
+        if let Ok(folder) = terminal::paste::this_folder() {
+            let removed = terminal::paste::sweep(&folder, terminal::paste::KEEP_FOR);
+            if removed > 0 {
+                tracing::info!(removed, folder = %folder.display(), "old pasted images removed");
+            }
+        }
+    });
 
     functions::register_all(
         &iii,
