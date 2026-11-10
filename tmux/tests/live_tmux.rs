@@ -956,6 +956,290 @@ async fn panes_zoom_and_capture() {
     assert!(invalid.contains("pane must be an id"), "{invalid}");
 }
 
+#[tokio::test]
+async fn panes_split_kill_and_respawn() {
+    if !tmux_installed() || which("sh").is_none() {
+        eprintln!("tmux or sh missing; skipping");
+        return;
+    }
+    let w = world();
+    let folder = Folder::new();
+    let away = folder.sub("away #{pane_id}");
+    let raw = |args: &[&str]| {
+        let output = std::process::Command::new("tmux")
+            .args(["-L", &w._server.socket])
+            .args(args)
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    let current = sessions::create(
+        &w.ctx,
+        sessions::CreateSessionInput {
+            name: Some("panes".into()),
+            cwd: Some("/".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    // Not the session's current window: its pane's own folder must be used.
+    let other = windows::create(
+        &w.ctx,
+        windows::CreateWindowInput {
+            session: "panes".into(),
+            name: Some("other".into()),
+            cwd: Some(away.clone()),
+            command: None,
+            select: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pane_cwd(&w.ctx, &other.pane_id, &away).await, away);
+
+    let split = |pane: &str, direction, cwd: Option<&str>, command: Option<&str>, select| {
+        panes::split(
+            &w.ctx,
+            panes::SplitPaneInput {
+                pane: pane.into(),
+                direction,
+                cwd: cwd.map(str::to_string),
+                command: command.map(str::to_string),
+                select,
+            },
+        )
+    };
+    let right = split(
+        &other.pane_id,
+        panes::SplitDirection::Right,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (right.session_id.as_str(), right.window_id.as_str()),
+        (current.session_id.as_str(), other.window_id.as_str())
+    );
+    assert_eq!(pane_cwd(&w.ctx, &right.pane_id, &away).await, away);
+    let below = split(
+        &right.pane_id,
+        panes::SplitDirection::Below,
+        Some("/"),
+        Some("sleep 60"),
+        Some(false),
+    )
+    .await
+    .unwrap();
+    let snapshot = functions::sessions_list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap();
+    let window = snapshot.sessions[0]
+        .windows
+        .iter()
+        .find(|window| window.id == other.window_id)
+        .unwrap();
+    let layout: Vec<(&str, bool)> = window
+        .panes
+        .iter()
+        .map(|p| (p.id.as_str(), p.active))
+        .collect();
+    assert_eq!(
+        layout,
+        vec![
+            (other.pane_id.as_str(), false),
+            (right.pane_id.as_str(), true),
+            (below.pane_id.as_str(), false)
+        ],
+        "a split is active unless select: false"
+    );
+    assert_eq!(
+        raw(&[
+            "display-message",
+            "-p",
+            "-t",
+            &right.pane_id,
+            "#{pane_at_right}#{pane_at_left}"
+        ]),
+        "10",
+        "right means to the right"
+    );
+    let missing = split("%999", panes::SplitDirection::Right, None, None, None)
+        .await
+        .unwrap_err();
+    assert!(missing.contains("can't find pane"), "{missing}");
+    let bad = split(
+        &right.pane_id,
+        panes::SplitDirection::Right,
+        Some("rel"),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(bad.contains("absolute"), "{bad}");
+
+    // Splitting until there's no room ends in one sentence.
+    let mut refusal = None;
+    for _ in 0..40 {
+        if let Err(error) = split(
+            &below.pane_id,
+            panes::SplitDirection::Below,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            refusal = Some(error);
+            break;
+        }
+    }
+    assert_eq!(refusal.as_deref(), Some("The pane is too small to split."));
+
+    // A running program is only restarted with kill.
+    let respawn = |pane: &str, command: Option<&str>, kill| {
+        panes::respawn(
+            &w.ctx,
+            panes::RespawnPaneInput {
+                pane: pane.into(),
+                command: command.map(str::to_string),
+                cwd: None,
+                kill,
+            },
+        )
+    };
+    let pid = |pane: &str| raw(&["display-message", "-p", "-t", pane, "#{pane_pid}"]);
+    let before = pid(&below.pane_id);
+    assert_eq!(
+        respawn(&below.pane_id, None, None).await.unwrap_err(),
+        "The pane's program is still running; pass kill to restart it."
+    );
+    assert_eq!(pid(&below.pane_id), before, "refused, nothing changed");
+    let restarted = respawn(&below.pane_id, None, Some(true)).await.unwrap();
+    assert_eq!(restarted.pane_id, below.pane_id);
+    assert_ne!(pid(&below.pane_id), before);
+    // The command it was started with, once the new process has exec'd.
+    eventually("the pane to run sleep again", || async {
+        (raw(&[
+            "display-message",
+            "-p",
+            "-t",
+            &below.pane_id,
+            "#{pane_current_command}",
+        ]) == "sleep")
+            .then_some(())
+    })
+    .await;
+    // A dead pane (remain-on-exit) restarts without kill, here with another command.
+    raw(&[
+        "set-option",
+        "-w",
+        "-t",
+        &below.pane_id,
+        "remain-on-exit",
+        "on",
+    ]);
+    respawn(&below.pane_id, Some("sh -c 'exit 3'"), Some(true))
+        .await
+        .unwrap();
+    eventually("the pane's program to exit", || async {
+        (raw(&[
+            "display-message",
+            "-p",
+            "-t",
+            &below.pane_id,
+            "#{pane_dead}",
+        ]) == "1")
+            .then_some(())
+    })
+    .await;
+    respawn(&below.pane_id, Some("sleep 60"), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        raw(&[
+            "display-message",
+            "-p",
+            "-t",
+            &below.pane_id,
+            "#{pane_dead}"
+        ]),
+        "0"
+    );
+
+    // A window with one pane can't zoom; the answer says so.
+    let single = panes::select(
+        &w.ctx,
+        panes::SelectPaneInput {
+            pane: current.pane_id.clone(),
+            zoom: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!single.zoomed);
+
+    // Killing: a pane, then a window's last pane, then the session's last.
+    let kill = |pane: &str| {
+        panes::kill(
+            &w.ctx,
+            panes::PaneInput {
+                pane: pane.to_string(),
+            },
+        )
+    };
+    let windows_before = functions::sessions_list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap()
+        .sessions[0]
+        .windows
+        .iter()
+        .find(|window| window.id == other.window_id)
+        .unwrap()
+        .panes
+        .len();
+    for pane in functions::sessions_list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap()
+        .sessions[0]
+        .windows
+        .iter()
+        .find(|window| window.id == other.window_id)
+        .unwrap()
+        .panes
+        .iter()
+        .skip(1)
+    {
+        let killed = kill(&pane.id).await.unwrap();
+        assert_eq!(
+            (killed.killed, killed.window_closed, killed.session_closed),
+            (true, false, false)
+        );
+    }
+    assert!(windows_before > 2);
+    let killed = kill(&other.pane_id).await.unwrap();
+    assert_eq!((killed.window_closed, killed.session_closed), (true, false));
+    assert!(kill(&other.pane_id)
+        .await
+        .unwrap_err()
+        .contains("can't find pane"));
+    let killed = kill(&current.pane_id).await.unwrap();
+    assert_eq!((killed.window_closed, killed.session_closed), (true, true));
+    let after = functions::sessions_list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap();
+    assert!(after.sessions.is_empty());
+}
+
 fn which(program: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
