@@ -99,6 +99,10 @@ fn failed_sentence(message: &str) -> String {
     if let Some(session) = missing("session") {
         return no_session(session);
     }
+    // `can't find client: /dev/pts/3`: the console's tmux client ended.
+    if missing("client").is_some() {
+        return "The terminal's tmux client is gone.".to_string();
+    }
     // `error connecting to /tmp/tmux-1000/default (Permission denied)`
     if let Some(rest) = line.strip_prefix("error connecting to ") {
         let reason = rest
@@ -962,6 +966,14 @@ mod tests {
             (
                 "error connecting to /tmp/tmux-1000/default (Permission denied)",
                 "The tmux server can't be reached (Permission denied).",
+            ),
+            (
+                "can't find client: /dev/pts/3",
+                "The terminal's tmux client is gone.",
+            ),
+            (
+                "can't find client /dev/ttys003",
+                "The terminal's tmux client is gone.",
             ),
             ("index in use: 3", "index in use: 3"),
         ] {
