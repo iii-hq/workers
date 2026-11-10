@@ -26,8 +26,6 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['ade/ui/styles.css', '.console-catalog-row[data-selected="true"]'],
   ['computer/ui/styles.css', '.cp-ui-rail-row.active::before'],
   ['memory/ui/styles.css', '.mem-ui-tagbtn.active'],
-  // The Directory redesign (7a742b7e0) swapped the nav rows' edge rail for a
-  // wash across the selected library row.
   ['iii-directory/ui/styles.css', '.dir-lib-row[aria-current="true"]'],
   ['worktree/ui/styles.css', '.wt-ui-edge.selected'],
   ['worktree/ui/styles.css', '.wt-ui-node.selected::before'],
@@ -54,7 +52,7 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   // The terminal tabs mark the open one with an attribute since the tab-row
   // redesign.
   ['ide/ui/styles.css', '.shui-terminal-tab[data-active]'],
-  ['ade/ui/styles.css', '.console-catalog-header-toggle[aria-pressed="true"]'],
+  ['ade/ui/styles.css', '.console-catalog-filter[data-active]'],
   ['sandbox-code-runner/ui/src/styles/page.css', '.cr-page-toggle.on'],
 ]
 

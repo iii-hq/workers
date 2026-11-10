@@ -13,7 +13,7 @@
  * the agent thinking out loud.
  */
 
-import { Eyebrow, type Host, StatusDot } from '@iii-dev/console-ui'
+import type { Host } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { agoLabel, formatDuration } from './ActivityFeed'
 import { type SpanEvent, useSpanFeed } from './engine'
@@ -32,9 +32,7 @@ export interface LiveActivity {
 
 export function useLiveActivity(host: Host): LiveActivity {
   const [feed, setFeed] = useState<readonly SpanEvent[]>([])
-  const [lastCall, setLastCall] = useState<ReadonlyMap<string, SpanEvent>>(
-    new Map(),
-  )
+  const [lastCall, setLastCall] = useState<ReadonlyMap<string, SpanEvent>>(new Map())
   const [pulsing, setPulsing] = useState<ReadonlySet<string>>(new Set())
   const timers = useRef<Map<string, number>>(new Map())
 
@@ -54,9 +52,7 @@ export function useLiveActivity(host: Host): LiveActivity {
             merged.set(key, span)
           }
         }
-        return [...merged.values()]
-          .sort((a, b) => b.atMs - a.atMs)
-          .slice(0, FEED_LENGTH)
+        return [...merged.values()].sort((a, b) => b.atMs - a.atMs).slice(0, FEED_LENGTH)
       })
       setLastCall((prev) => {
         const next = new Map(prev)
@@ -99,64 +95,16 @@ export function useLiveActivity(host: Host): LiveActivity {
   return { feed, lastCall, pulsing }
 }
 
-/**
- * The strip under the page head: recent function calls, newest on the left.
- * Clicking one jumps to that function.
- */
-export function NowStrip({
-  activity,
-  onSelect,
-}: {
-  activity: LiveActivity
-  onSelect?: (functionId: string) => void
-}) {
-  // A ticking clock would re-render the whole page each second; the strip
-  // re-renders on arrival anyway, so relative times refresh with traffic.
-  const shown = activity.feed.slice(0, 6)
-
-  if (shown.length === 0) {
-    return (
-      <div className="console-catalog-nowstrip" data-empty="true">
-        <Eyebrow className="console-catalog-nowstrip-label">Recent calls</Eyebrow>
-        <span className="quiet">No calls recorded since this page opened</span>
-      </div>
-    )
-  }
-
-  const now = Date.now()
-  return (
-    <div className="console-catalog-nowstrip">
-      <Eyebrow className="console-catalog-nowstrip-label">Recent calls</Eyebrow>
-      <div className="console-catalog-nowstrip-track">
-        {shown.map((span) => (
-          <button
-            key={`${span.functionId}-${span.atMs}`}
-            type="button"
-            className="console-catalog-nowentry"
-            onClick={() => onSelect?.(span.functionId)}
-            title={`${span.worker} · ${agoLabel(span.atMs, now)}`}
-          >
-            <StatusDot tone={span.ok ? 'accent' : 'alert'} />
-            <span className="fn">{span.functionId}</span>
-            <span className="dur">
-              {span.durationMs > 0
-                ? formatDuration(span.durationMs)
-                : 'running'}
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 /** The quiet live meta a row shows once its function has been seen running. */
 export function LastCallMeta({ span }: { span: SpanEvent | undefined }) {
   if (!span) return null
   return (
-    <span className="console-catalog-lastcall" data-ok={span.ok}>
-      {span.ok ? '' : 'failed · '}
-      {span.durationMs > 0 ? `${formatDuration(span.durationMs)} · ` : ''}
+    <span
+      className="console-catalog-lastcall"
+      data-ok={span.ok}
+      title={`Last call ${span.durationMs > 0 ? formatDuration(span.durationMs) : 'running'}`}
+    >
+      {span.ok ? '' : 'Failed · '}
       {agoLabel(span.atMs, Date.now())}
     </span>
   )
