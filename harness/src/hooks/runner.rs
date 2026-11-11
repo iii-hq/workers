@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use super::{ordered, HookBinding, HookPoint, HookRegistry};
+use crate::clients::router::generation_capture::{capture_mode, AppendSource, CaptureMode};
+use crate::clients::session::LoadedEntry;
 use crate::types::content::ContentBlock;
 use crate::types::turn::TurnRecord;
 
@@ -76,6 +78,9 @@ pub struct HookChainOutcome {
     /// on-pre-generate: messages appended by the chain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub append_messages: Vec<Value>,
+    /// Capture mode only: the trusted Memory source of each appended message.
+    #[serde(skip)]
+    pub(crate) append_sources: Vec<Option<AppendSource>>,
     /// on-pre-call: the arguments as the chain left them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Value>,
@@ -101,10 +106,11 @@ impl HookChainOutcome {
 }
 
 /// Outcome of the `pre_generate` chain.
-pub enum PreGenerateOutcome {
+pub(crate) enum PreGenerateOutcome {
     Continue {
         system_prompt: Option<String>,
         append_messages: Vec<Value>,
+        append_sources: Vec<Option<AppendSource>>,
         annotations: Map<String, Value>,
     },
     Deny(String),
@@ -146,6 +152,15 @@ impl HookRegistry {
             "step": step,
             "depth": record.depth,
         });
+        if let Some(context) = &record.recall_context {
+            let mut context = context.clone();
+            // Interrupted/older records may already contain a cached history;
+            // never treat that public snapshot as fresh private proof.
+            if let Some(context) = context.as_object_mut() {
+                context.remove("extraction_history");
+            }
+            v["recall_context"] = context;
+        }
         if let Some(m) = &record.options.metadata {
             v["metadata"] = m.clone();
         }
@@ -181,6 +196,17 @@ impl HookRegistry {
     /// input (on pre_generate: the prompt, every message and every tool
     /// schema) out and back once more per point per step.
     async fn call_point(&self, point: HookPoint, input: Value) -> Option<HookChainOutcome> {
+        self.call_point_with(point, input, None).await
+    }
+
+    /// [`Self::call_point`] for the turn loop's pre_generate call, which hands
+    /// the Memory hook the transcript the step already loaded.
+    async fn call_point_with(
+        &self,
+        point: HookPoint,
+        input: Value,
+        trusted_entries: Option<&[LoadedEntry]>,
+    ) -> Option<HookChainOutcome> {
         let function_id = point.function_id();
         if !self.iii.is_observed(function_id) {
             return None;
@@ -197,7 +223,7 @@ impl HookRegistry {
         // The span the engine used to open for the call: it groups the
         // observers' calls in the turn's waterfall.
         let chain = iii_helpers::observability::run_in_span(function_id, None, || {
-            deliver_outcome(self.iii.clone(), point, call, observers)
+            deliver_outcome(self.iii.clone(), point, call, observers, trusted_entries)
         });
         let failure =
             match tokio::time::timeout(Duration::from_millis(CHAIN_TIMEOUT_MS), chain).await {
@@ -229,7 +255,7 @@ impl HookRegistry {
     /// Observers with a static `inject_prompt` are not called: the turn loop
     /// applied them before assembly ([`with_static_prompts`]).
     #[allow(clippy::too_many_arguments)]
-    pub async fn run_pre_generate(
+    pub(crate) async fn run_pre_generate(
         &self,
         record: &TurnRecord,
         step: u64,
@@ -237,6 +263,7 @@ impl HookRegistry {
         base_messages: &[Value],
         functions_generation: u64,
         tools: &[crate::types::model::AgentFunction],
+        entries: &[LoadedEntry],
     ) -> PreGenerateOutcome {
         let mut input = self.envelope(HookPoint::PreGenerate, record, step);
         input["generate"] = serde_json::json!({
@@ -256,10 +283,14 @@ impl HookRegistry {
                 .map(|functions| functions.expose)
                 .unwrap_or_default(),
         });
-        match self.call_point(HookPoint::PreGenerate, input).await {
+        match self
+            .call_point_with(HookPoint::PreGenerate, input, Some(entries))
+            .await
+        {
             None => PreGenerateOutcome::Continue {
                 system_prompt: base_system_prompt,
                 append_messages: Vec::new(),
+                append_sources: Vec::new(),
                 annotations: Map::new(),
             },
             Some(outcome) if outcome.decision == ChainDecision::Deny => PreGenerateOutcome::Deny(
@@ -270,6 +301,7 @@ impl HookRegistry {
             Some(outcome) => PreGenerateOutcome::Continue {
                 system_prompt: outcome.system_prompt.or(base_system_prompt),
                 append_messages: outcome.append_messages,
+                append_sources: outcome.append_sources,
                 annotations: outcome.annotations,
             },
         }
@@ -420,6 +452,15 @@ const RESUME_AFTER: &str = "resume_after";
 /// How the chain calls one observer's target.
 #[async_trait]
 pub(crate) trait HookInvoker: Send + Sync {
+    /// Typed private return path. Ordinary/fake JSON responses carry no authority.
+    async fn invoke_with_source(
+        &self,
+        binding: &HookBinding,
+        point: &str,
+        payload: Value,
+    ) -> (Result<Value, String>, Option<AppendSource>) {
+        (self.invoke_value(binding, point, payload).await, None)
+    }
     async fn invoke_value(
         &self,
         binding: &HookBinding,
@@ -430,22 +471,101 @@ pub(crate) trait HookInvoker: Send + Sync {
 
 /// The production invoker: a call through the binding's observer, bounded by
 /// its `timeout_ms`.
-struct ThroughObservers {
+struct ThroughObservers<'a> {
     iii: Arc<IIIClient>,
     observers: HashMap<String, Observer>,
+    /// The transcript the turn loop loaded for this step. Set only by
+    /// [`HookRegistry::run_pre_generate`], never by the public deliver hook:
+    /// externally delivered hook calls can never project or record proof.
+    trusted_entries: Option<&'a [LoadedEntry]>,
+    /// Registry ownership of the Memory hook, asked at most once per chain.
+    memory_owned: tokio::sync::OnceCell<bool>,
+}
+
+impl<'a> ThroughObservers<'a> {
+    fn new(
+        iii: Arc<IIIClient>,
+        observers: HashMap<String, Observer>,
+        trusted_entries: Option<&'a [LoadedEntry]>,
+    ) -> Self {
+        Self {
+            iii,
+            observers,
+            trusted_entries,
+            memory_owned: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The step's transcript when this call is the trusted turn's call of the
+    /// Memory pre_generate hook, owned by the registered Memory worker. A target
+    /// name alone does not authenticate the source of a call.
+    async fn memory_call(&self, binding: &HookBinding, point: &str) -> Option<&'a [LoadedEntry]> {
+        let entries = self.trusted_entries?;
+        if point != "pre_generate"
+            || binding.target != MEMORY_PRE_GENERATE
+            || !self.observers.contains_key(&binding.observer_id)
+        {
+            return None;
+        }
+        let owned = self
+            .memory_owned
+            .get_or_init(|| memory_target_owned(&self.iii, binding.timeout_ms))
+            .await;
+        owned.then_some(entries)
+    }
 }
 
 #[async_trait]
-impl HookInvoker for ThroughObservers {
-    async fn invoke_value(
+impl HookInvoker for ThroughObservers<'_> {
+    async fn invoke_with_source(
         &self,
         binding: &HookBinding,
         point: &str,
         payload: Value,
+    ) -> (Result<Value, String>, Option<AppendSource>) {
+        let capture = capture_mode() == CaptureMode::SyntheticIsolation
+            && binding.observer_id.len() <= 256
+            && self.memory_call(binding, point).await.is_some();
+        let receipt_input = capture.then(|| payload.clone());
+        let result = self.invoke_value(binding, point, payload).await;
+        let source = (capture && result.is_ok()).then(|| AppendSource {
+            observer_id: binding.observer_id.clone(),
+            append_ordinal: 0,
+        });
+        if let (Some(input), Ok(output), Some(source)) = (receipt_input, &result, &source) {
+            crate::clients::router::generation_capture::emit_memory_receipt(
+                &self.iii, &input, output, source,
+            )
+            .await;
+        }
+        (result, source)
+    }
+    async fn invoke_value(
+        &self,
+        binding: &HookBinding,
+        point: &str,
+        mut payload: Value,
     ) -> Result<Value, String> {
         let Some(observer) = self.observers.get(&binding.observer_id) else {
             return Err(format!("hook {} has no active observer", binding.target));
         };
+        if let Some(context) = payload
+            .get_mut("recall_context")
+            .and_then(Value::as_object_mut)
+        {
+            context.remove("extraction_history");
+        }
+        let memory_entries = self.memory_call(binding, point).await;
+        if let Some(entries) = memory_entries {
+            super::recall::project_extraction_history(
+                &self.iii,
+                &mut payload,
+                entries,
+                binding.timeout_ms,
+            )
+            .await;
+        }
+        let source_input = memory_entries.map(|entries| (payload.clone(), entries));
         let baggage = [("iii.tag.kind", "harness.hook"), ("iii.hook.point", point)];
         let request = CallRequest::observer(observer, payload)
             .timeout(Duration::from_millis(binding.timeout_ms));
@@ -456,11 +576,100 @@ impl HookInvoker for ThroughObservers {
         )
         .await;
         match bounded {
-            Ok(Ok(value)) => Ok(value),
+            Ok(Ok(value)) => {
+                if let Some((input, entries)) = source_input {
+                    if let Err(error) = super::recall::acknowledge_extraction(
+                        &self.iii,
+                        &input,
+                        &value,
+                        entries,
+                        binding.timeout_ms,
+                    )
+                    .await
+                    {
+                        tracing::warn!(%error, "Memory acknowledgement provenance unavailable");
+                    }
+                }
+                Ok(value)
+            }
             Ok(Err(e)) => Err(format!("hook {} failed: {e}", binding.target)),
             Err(_) => Err(format!("hook {} timed out", binding.target)),
         }
     }
+}
+
+/// Test seam: exercise the real invoker, including absent bindings, without
+/// granting any JSON caller a trusted-turn capability.
+#[cfg(test)]
+pub(crate) async fn test_memory_invocation(
+    iii: Arc<IIIClient>,
+    input: Value,
+    external: bool,
+    absent_binding: bool,
+    point: HookPoint,
+) {
+    let observers = iii.observers(super::ON_PRE_GENERATE_FN);
+    if external {
+        deliver(
+            iii,
+            point,
+            Call {
+                function_id: point.function_id().into(),
+                input: input.clone(),
+                output: Some(input),
+                ..Default::default()
+            },
+            observers,
+        )
+        .await;
+        return;
+    }
+    let binding = HookBinding::from_observer(point, &observers[0]).unwrap();
+    let invoker = ThroughObservers::new(
+        iii,
+        if absent_binding {
+            HashMap::new()
+        } else {
+            observers
+                .into_iter()
+                .map(|o| (o.id().to_owned(), o))
+                .collect()
+        },
+        Some(&[]),
+    );
+    let _ = invoker
+        .invoke_with_source(&binding, point.input_name(), input)
+        .await;
+}
+
+const MEMORY_PRE_GENERATE: &str = "memory::hook::pre-generate";
+
+/// Engine registry ownership, not a payload/metadata caller claim. The engine
+/// and the registered Memory worker are trusted; this is not a human/operator ACL.
+async fn memory_target_owned(iii: &IIIClient, timeout_ms: u64) -> bool {
+    let Ok(value) = iii
+        .call(CallRequest {
+            function_id: "engine::functions::list".into(),
+            payload: json!({"worker":"memory", "prefix":MEMORY_PRE_GENERATE}),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await
+    else {
+        return false;
+    };
+    value
+        .get("functions")
+        .and_then(Value::as_array)
+        .is_some_and(|functions| {
+            functions.iter().any(|function| {
+                function
+                    .get("function_id")
+                    .or_else(|| function.get("id"))
+                    .and_then(Value::as_str)
+                    == Some(MEMORY_PRE_GENERATE)
+            })
+        })
 }
 
 /// The deliver hook of every hook function: run `point`'s chain over the
@@ -471,7 +680,8 @@ pub(super) async fn deliver(
     call: Call,
     observers: Vec<Observer>,
 ) -> Value {
-    serde_json::to_value(deliver_outcome(iii, point, call, observers).await).unwrap_or(Value::Null)
+    serde_json::to_value(deliver_outcome(iii, point, call, observers, None).await)
+        .unwrap_or(Value::Null)
 }
 
 async fn deliver_outcome(
@@ -479,6 +689,7 @@ async fn deliver_outcome(
     point: HookPoint,
     call: Call,
     observers: Vec<Observer>,
+    trusted_entries: Option<&[LoadedEntry]>,
 ) -> HookChainOutcome {
     let matched: Vec<Observer> = observers
         .into_iter()
@@ -496,13 +707,14 @@ async fn deliver_outcome(
             })
             .collect(),
     );
-    let invoker = ThroughObservers {
+    let invoker = ThroughObservers::new(
         iii,
-        observers: matched
+        matched
             .into_iter()
             .map(|obs| (obs.id().to_string(), obs))
             .collect(),
-    };
+        trusted_entries,
+    );
     run_chain(point, &invoker, bindings, call.input).await
 }
 
@@ -567,6 +779,8 @@ async fn chain_pre_generate(
         .unwrap_or_default();
     let mut system_prompt: Option<String> = None;
     let mut appended: Vec<Value> = Vec::new();
+    let mut append_sources = Vec::new();
+    let capture = capture_mode() == CaptureMode::SyntheticIsolation;
     let mut annotations = Map::new();
     for binding in bindings {
         // Already in the assembled prompt (`with_static_prompts`).
@@ -579,10 +793,39 @@ async fn chain_pre_generate(
         let mut messages = base_messages.clone();
         messages.extend(appended.iter().cloned());
         input["generate"]["messages"] = Value::Array(messages);
-        match invoke(invoker, binding, input.clone()).await {
+        let projected = match &binding.input {
+            Some(paths) => project(&input, paths),
+            None => input.clone(),
+        };
+        let (result, source) = invoker
+            .invoke_with_source(binding, "pre_generate", projected)
+            .await;
+        // Bound the authority path before cloning any descriptor; ordinary
+        // hook behavior stays independent of capture eligibility.
+        let source = source.filter(|_| {
+            result.as_ref().ok().is_some_and(|v| {
+                crate::clients::router::generation_capture::message_digest(v).is_some()
+            })
+        });
+        let outcome = match result {
+            Ok(value) => parse_output(value),
+            Err(error) => on_error(binding, error),
+        };
+        match outcome {
             HookOutcome::Continue(m) => {
                 if m.system_prompt.is_some() {
                     system_prompt = m.system_prompt;
+                }
+                if capture {
+                    let remaining = 2048usize.saturating_sub(append_sources.len());
+                    append_sources.extend((0..m.append_messages.len().min(remaining)).map(
+                        |ordinal| {
+                            source.clone().map(|mut source| {
+                                source.append_ordinal = ordinal;
+                                source
+                            })
+                        },
+                    ));
                 }
                 appended.extend(m.append_messages);
                 merge(&mut annotations, m.annotations);
@@ -594,6 +837,7 @@ async fn chain_pre_generate(
     HookChainOutcome {
         system_prompt,
         append_messages: appended,
+        append_sources,
         annotations,
         ..HookChainOutcome::default()
     }

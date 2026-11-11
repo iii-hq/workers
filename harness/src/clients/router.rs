@@ -21,6 +21,9 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::sync::{watch, Notify};
 
+#[path = "generation_capture.rs"]
+pub(crate) mod generation_capture;
+
 use crate::error::HarnessError;
 use crate::types::event::{
     AssistantMessageEvent, ErrorKind, FunctionCallArgumentsPreview, StopReason,
@@ -84,6 +87,10 @@ pub trait StreamSink: Send + Sync {
 
 /// Inputs for one `router::chat` turn.
 pub struct ChatParams {
+    /// Internal sidecar, never serialized into the provider request.
+    pub(crate) source_hints: generation_capture::SourceHints,
+    pub turn_id: String,
+    pub step: u64,
     pub request_id: String,
     pub session_id: String,
     pub model: String,
@@ -137,6 +144,8 @@ impl ChatError {
 
 /// The assembled result of one stream.
 pub struct ChatOutcome {
+    /// Internal dispatch identity, absent for a replay without a new dispatch.
+    pub generation_id: Option<String>,
     pub message: AssistantMessage,
     pub ok: bool,
     pub stop_reason: Option<StopReason>,
@@ -223,6 +232,7 @@ fn catalog_lists(models: &[Value], id: &str) -> bool {
 #[derive(Clone)]
 pub struct RouterClient {
     iii: Arc<IIIClient>,
+    capture_mode: generation_capture::CaptureMode,
     timeout_ms: u64,
     coalesce_ms: u64,
 }
@@ -231,6 +241,7 @@ impl RouterClient {
     pub fn new(iii: Arc<IIIClient>, timeout_ms: u64, coalesce_ms: u64) -> Self {
         Self {
             iii,
+            capture_mode: generation_capture::capture_mode(),
             timeout_ms,
             coalesce_ms,
         }
@@ -247,7 +258,37 @@ impl RouterClient {
         &self,
         params: ChatParams,
         sink: &dyn StreamSink,
+        abort_rx: watch::Receiver<bool>,
+    ) -> Result<ChatOutcome, HarnessError> {
+        // The capture witness exists only in capture mode.
+        let mut generation =
+            (self.capture_mode == generation_capture::CaptureMode::SyntheticIsolation).then(|| {
+                generation_capture::GenerationEvent::new(
+                    &params.session_id,
+                    &params.turn_id,
+                    params.step,
+                )
+            });
+        let result = self
+            .chat_dispatch(params, sink, abort_rx, generation.as_mut())
+            .await;
+        if let Some(generation) = generation.as_mut().filter(|g| g.phase == "request") {
+            let phase = match &result {
+                Ok(outcome) if outcome.stop_reason == Some(StopReason::Aborted) => "cancelled",
+                Ok(outcome) if outcome.ok => "success",
+                _ => "error",
+            };
+            generation.finish(&self.iii, phase).await;
+        }
+        result
+    }
+
+    async fn chat_dispatch(
+        &self,
+        params: ChatParams,
+        sink: &dyn StreamSink,
         mut abort_rx: watch::Receiver<bool>,
+        mut generation: Option<&mut generation_capture::GenerationEvent>,
     ) -> Result<ChatOutcome, HarnessError> {
         let channel = create_channel(&self.iii, None)
             .await
@@ -325,6 +366,22 @@ impl RouterClient {
         if let Some(options) = &params.provider_options {
             payload["provider_options"] = options.clone();
         }
+
+        if let Some(generation) = generation.as_deref_mut() {
+            generation.phase = "request".into();
+            if self.iii.is_observed(generation_capture::REQUEST)
+                && self.iii.is_observed(generation_capture::RESPONSE)
+            {
+                generation.capture(&payload);
+                generation.bind_sources(&payload, &params.source_hints);
+                generation
+                    .emit(&self.iii, generation_capture::REQUEST)
+                    .await;
+            } else {
+                generation.complete = false;
+            }
+        }
+        let generation_id = generation.map(|g| g.generation_id.clone());
 
         // Run the held-open call concurrently with frame consumption.
         //
@@ -446,6 +503,7 @@ impl RouterClient {
                             });
                         message.stop_reason = StopReason::Aborted;
                         return Ok(ChatOutcome {
+                            generation_id,
                             ok: false,
                             stop_reason: Some(StopReason::Aborted),
                             message,
@@ -602,6 +660,7 @@ impl RouterClient {
             })
         });
         Ok(ChatOutcome {
+            generation_id,
             ok: !failed,
             message,
             stop_reason,

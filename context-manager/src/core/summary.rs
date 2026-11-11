@@ -174,6 +174,16 @@ fn strip_image(block: &ContentBlock) -> ContentBlock {
 /// round trip).
 pub const SUMMARY_HEADING: &str = "# Conversation summary";
 
+/// Byte span of the summary inside the rendered system prompt, plus the
+/// SHA-256 of the summary and of the whole prompt.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct RenderedSummary {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub summary_sha256: String,
+    pub system_sha256: String,
+}
+
 /// Base system prompt + the summary section. An empty base yields just
 /// the section; no summary yields just the base.
 pub fn render_system_prompt(base: Option<&str>, summary: Option<&str>) -> String {
@@ -188,6 +198,23 @@ pub fn render_system_prompt(base: Option<&str>, summary: Option<&str>) -> String
             }
         }
     }
+}
+
+/// [`render_system_prompt`] plus where the summary sits in it: the summary is
+/// always the rendered prompt's suffix.
+pub fn render_system_prompt_with_span(
+    base: Option<&str>,
+    summary: Option<&str>,
+) -> (String, Option<RenderedSummary>) {
+    use sha2::{Digest, Sha256};
+    let rendered = render_system_prompt(base, summary);
+    let span = summary.map(|summary| RenderedSummary {
+        byte_start: rendered.len() - summary.len(),
+        byte_end: rendered.len(),
+        summary_sha256: format!("{:x}", Sha256::digest(summary.as_bytes())),
+        system_sha256: format!("{:x}", Sha256::digest(rendered.as_bytes())),
+    });
+    (rendered, span)
 }
 
 #[cfg(test)]

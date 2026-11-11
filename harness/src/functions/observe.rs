@@ -405,6 +405,7 @@ fn agent_call_forbidden(function_id: &str) -> bool {
     function_id.starts_with("harness::delete-session-tree")
         || function_id == crate::state::CLAIM_NAMESPACE_ID
         || function_id == crate::bindings::OBSERVERS_DISPOSE_ID
+        || function_id == crate::functions::EDIT_QUEUED_ID
         // `harness::function::call` takes the session lock a running step
         // already holds: an agent calling it for its own session deadlocks,
         // and recursive pipeline invocation is never an agent need.

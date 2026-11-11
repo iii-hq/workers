@@ -521,6 +521,7 @@ async fn generate_step(
             record,
             strategy,
             outcome: crate::clients::router::ChatOutcome {
+                generation_id: None,
                 stop_reason: Some(message.stop_reason),
                 message,
                 ok: true,
@@ -635,6 +636,7 @@ async fn generate_step(
 
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
+    record.recall_context = crate::hooks::recall::resolve(deps, &record, &entries).await;
     // The previous step's watermark marks which entries arrived while that
     // step was generating (the window moves them past the reply they
     // interrupted — see crate::window::build). The new watermark is
@@ -832,6 +834,7 @@ async fn generate_step(
         generation_input_tokens,
         generation_max_output_tokens,
         assembly_pruned,
+        source_hints,
     ) = loop {
         let assembled = match assemble_context(
             deps,
@@ -841,6 +844,7 @@ async fn generate_step(
             &window,
             payload.step,
             ContextAssemblyInputs {
+                entries: &entries,
                 system_prompt: assembly_system_prompt.clone(),
                 tools: &tools,
                 response_format: response_format.as_ref(),
@@ -862,7 +866,7 @@ async fn generate_step(
 
         // pre_generate hooks: extend the system prompt / append bounded messages,
         // or veto. Annotations ride the assistant entry's origin (audit trail).
-        let (gen_system_prompt, appended, gen_annotations) = match deps
+        let (gen_system_prompt, appended, append_sources, gen_annotations) = match deps
             .hooks
             .run_pre_generate(
                 &record,
@@ -871,14 +875,16 @@ async fn generate_step(
                 &assembled.messages,
                 current_generation,
                 &decision_tools,
+                &entries,
             )
             .await
         {
             crate::hooks::runner::PreGenerateOutcome::Continue {
                 system_prompt,
                 append_messages,
+                append_sources,
                 annotations,
-            } => (system_prompt, append_messages, annotations),
+            } => (system_prompt, append_messages, append_sources, annotations),
             crate::hooks::runner::PreGenerateOutcome::Deny(reason) => {
                 return finalize_failed(
                     deps,
@@ -903,17 +909,78 @@ async fn generate_step(
         // the newest user message) and before their appends (hook messages
         // stay last, closest to the decision point).
         // Hook appends are sent exactly as every later step replays them.
-        let new_notices = crate::window::unsent_notices(
-            &entries,
-            &ids::assistant_entry_id(&record.turn_id, payload.step),
-            &notice_prefix,
-            step_notices.iter().cloned().chain(
-                appended
-                    .iter()
-                    .filter_map(crate::window::replayed)
-                    .map(|m| (HOOK_NOTICE_KIND, m)),
-            ),
-        );
+        use crate::clients::router::generation_capture as witness;
+        let mut source_hints = assembled.source_hints.clone();
+        let new_notices = if witness::capture_mode() != witness::CaptureMode::SyntheticIsolation {
+            crate::window::unsent_notices(
+                &entries,
+                &ids::assistant_entry_id(&record.turn_id, payload.step),
+                &notice_prefix,
+                step_notices.iter().cloned().chain(
+                    appended
+                        .iter()
+                        .filter_map(crate::window::replayed)
+                        .map(|m| (HOOK_NOTICE_KIND, m)),
+                ),
+            )
+        } else {
+            // Capture mode: one notice at a time, so each fresh Memory append
+            // is bound to the message slot and notice entry it lands in.
+            let persisted = entries
+                .iter()
+                .filter(|e| e.entry_id.starts_with(&notice_prefix))
+                .count();
+            let candidates = step_notices
+                .iter()
+                .cloned()
+                .map(|(kind, m)| (kind, m, None))
+                .chain(appended.iter().enumerate().filter_map(|(ordinal, m)| {
+                    Some((
+                        HOOK_NOTICE_KIND,
+                        crate::window::replayed(m)?,
+                        append_sources.get(ordinal).cloned().flatten(),
+                    ))
+                }));
+            let mut new_notices = Vec::new();
+            let mut fresh_sources = Vec::new();
+            for (kind, message, source) in candidates {
+                if crate::window::unsent_notices(
+                    &entries,
+                    &ids::assistant_entry_id(&record.turn_id, payload.step),
+                    &notice_prefix,
+                    std::iter::once((kind, message.clone())),
+                )
+                .is_empty()
+                {
+                    continue;
+                }
+                if let Some(source) = source {
+                    if let Some(digest) =
+                        witness::message_digest(&message).filter(|_| fresh_sources.len() < 2048)
+                    {
+                        fresh_sources.push(witness::SourceSlot {
+                            message_index: assembled.messages.len() + new_notices.len(),
+                            entry_id: ids::notice_entry_id(
+                                &record.turn_id,
+                                payload.step,
+                                persisted + new_notices.len(),
+                            ),
+                            message_sha256: digest,
+                            observer_id: source.observer_id,
+                            append_ordinal: source.append_ordinal,
+                            source: "fresh_memory".into(),
+                        });
+                    }
+                }
+                new_notices.push((kind, message));
+            }
+            if source_hints.slots.len().saturating_add(fresh_sources.len()) <= 2048 {
+                source_hints.slots.extend(fresh_sources);
+            } else {
+                source_hints.complete = false;
+            }
+            new_notices
+        };
         let hook_appended = !new_notices.is_empty();
         let mut gen_messages = assembled.messages.clone();
         gen_messages.extend(new_notices.iter().map(|(_, m)| m.clone()));
@@ -924,6 +991,8 @@ async fn generate_step(
         // fully paired — patch the assembled copy only.
         let patched = patch_orphaned_calls(&mut gen_messages);
         if patched > 0 {
+            source_hints.slots.clear();
+            source_hints.complete = false;
             tracing::warn!(
                 session_id = %record.session_id,
                 turn_id = %record.turn_id,
@@ -1025,6 +1094,7 @@ async fn generate_step(
                 final_request_tokens,
                 max_output_tokens,
                 assembled.pruned,
+                source_hints,
             );
         }
         if reassembled {
@@ -1072,15 +1142,20 @@ async fn generate_step(
             %message,
             "notice appended to the generate request"
         );
+        let id = ids::notice_entry_id(&record.turn_id, payload.step, persisted + index);
         session
             .append_custom(
                 &record.session_id,
                 crate::window::MODEL_NOTICE,
                 crate::window::notice_data(kind, message),
-                &ids::notice_entry_id(&record.turn_id, payload.step, persisted + index),
+                &id,
                 Some(&origin(&record.turn_id)),
             )
             .await?;
+        // Empty unless capture mode bound a fresh Memory slot.
+        if let Some(slot) = source_hints.slots.iter().find(|s| s.entry_id == id) {
+            crate::clients::router::generation_capture::remember(&record.session_id, slot);
+        }
     }
 
     // A stop that landed during context assembly is visible through the
@@ -1265,6 +1340,9 @@ async fn generate_step(
         );
     }
     let params = ChatParams {
+        source_hints,
+        turn_id: record.turn_id.clone(),
+        step: payload.step,
         request_id: format!("{}:{}", record.turn_id, payload.step),
         session_id: record.session_id.clone(),
         model: record.options.model.clone(),
@@ -1456,6 +1534,18 @@ async fn generate_step(
                 "context snapshot store failed"
             );
         }
+    }
+
+    // Capture mode only: origin on the update event names the current
+    // dispatch, unlike the stored append origin (which survives step
+    // redelivery). Consumers must use this authenticated Harness update, never
+    // the stale transcript origin. Origin alone is not authority: session
+    // writers can supply their own annotations.
+    let mut assistant_origin = assistant_origin;
+    if crate::clients::router::generation_capture::capture_mode()
+        == crate::clients::router::generation_capture::CaptureMode::SyntheticIsolation
+    {
+        assistant_origin["generation_id"] = json!(outcome.generation_id);
     }
 
     // Persist the final assistant message into the streamed entry.
@@ -2424,7 +2514,7 @@ fn count_model_visible(rows: &[crate::state::QueuedMessage]) -> usize {
 /// appends under its stored deterministic entry id, and rows are deleted only
 /// after the append lands — a redelivered step re-drains as a no-op and reports
 /// zero, since there is nothing left to drain.
-async fn drain_queued(
+pub(crate) async fn drain_queued(
     deps: &Deps,
     session: &SessionClient,
     session_id: &str,
@@ -2769,6 +2859,12 @@ async fn finalize_completed(
     record.updated_at = AgentMessage::now_ms();
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    crate::hooks::recall::finish_extraction(
+        deps,
+        record,
+        turn_is_terminal(deps, &record.session_id).await,
+    )
+    .await;
     deps.cancels.clear(&record.turn_id);
     crate::session_status::project(session, record).await;
     deps.events
@@ -3032,6 +3128,7 @@ async fn finalize_failed(
     record_failure_telemetry(record, detail, failure);
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
     let _ = session
         .append_custom(
@@ -3253,6 +3350,7 @@ pub(crate) async fn finalize_cancelled(
     record.updated_at = AgentMessage::now_ms();
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
     append_stopped_notice(session, record).await;
     crate::session_status::project(session, record).await;
@@ -3728,6 +3826,9 @@ async fn assemble_context(
             .await?;
     }
     let candidate = &window.candidate;
+    let entries = inputs.entries;
+    use crate::clients::router::generation_capture as witness;
+    let capture = witness::capture_mode() == witness::CaptureMode::SyntheticIsolation;
 
     let candidate_values: Vec<Value> = candidate
         .iter()
@@ -3757,6 +3858,7 @@ async fn assemble_context(
         // model that binds thinking to the prefix that drops the reasoning
         // of every later step. Compaction still bounds the window.
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
+        provenance: capture,
     };
 
     let mut out = match context.assemble(params).await {
@@ -3813,6 +3915,7 @@ async fn assemble_context(
             ),
         }
     }
+    let mut summary_persisted = false;
     if out.applied.compacted {
         if let Some(summary) = &out.applied.summary {
             let tail_entry = out
@@ -3831,7 +3934,7 @@ async fn assemble_context(
                 "usable_input_tokens": out.usable,
                 "effective_max_output_tokens": out.effective_max_output_tokens,
             });
-            let _ = session
+            summary_persisted = session
                 .append_custom(
                     &record.session_id,
                     "compaction",
@@ -3839,7 +3942,8 @@ async fn assemble_context(
                     &ids::compaction_entry_id(&record.turn_id, step),
                     Some(&origin(&record.turn_id)),
                 )
-                .await;
+                .await
+                .is_ok();
         }
     }
 
@@ -3857,7 +3961,71 @@ async fn assemble_context(
         .iter()
         .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
         .collect();
+    let mut source_hints = witness::SourceHints::default();
+    // Capture mode only (context-manager returns provenance only when asked).
+    // Mapping comes from this actual context::assemble call, never text lookup.
+    // Summary authority is built from the renderer receipt and actual inputs.
+    if let Some(origin) = out.summary_origin.as_ref().filter(|_| capture) {
+        source_hints.invalid = witness::valid_span(&out.system_prompt, &origin.span).is_none();
+        let previous = anchor.summary.as_ref().and_then(|summary| {
+            entries
+                .get(anchor.record_index)
+                .map(|entry| (entry.entry_id.as_str(), witness::raw_digest(summary)))
+        });
+        source_hints.summary = witness::bind_summary(
+            &record.session_id,
+            origin,
+            &out.system_prompt,
+            candidate,
+            previous
+                .as_ref()
+                .map(|(entry, digest)| (*entry, digest.as_str())),
+        );
+        if summary_persisted {
+            if let Some(summary) = &source_hints.summary {
+                witness::remember_summary(
+                    &record.session_id,
+                    &ids::compaction_entry_id(&record.turn_id, step),
+                    summary,
+                );
+            }
+        }
+    }
+    if let Some(indices) = out
+        .input_indices
+        .as_ref()
+        .filter(|m| capture && m.len() == messages.len() && m.len() <= 2048)
+    {
+        source_hints.complete = !summarized || source_hints.summary.is_some();
+        let mut seen = std::collections::HashSet::new();
+        for (index, input) in indices.iter().enumerate() {
+            if !seen.insert(*input) {
+                source_hints.complete = false;
+                source_hints.slots.clear();
+                break;
+            }
+            let Some((id, _)) = candidate.get(*input) else {
+                source_hints.complete = false;
+                source_hints.slots.clear();
+                break;
+            };
+            if let Some(slot) =
+                witness::replay_slot(&record.session_id, id, &messages[index], index)
+            {
+                source_hints.slots.push(slot);
+            } else if entries.iter().any(|entry| {
+                entry.entry_id == *id
+                    && entry
+                        .custom
+                        .as_ref()
+                        .is_some_and(|custom| custom.custom_type == crate::window::MODEL_NOTICE)
+            }) {
+                source_hints.complete = false;
+            }
+        }
+    }
     Ok(Assembled {
+        source_hints,
         system_prompt: Some(out.system_prompt),
         messages,
         usable: out.usable,
@@ -4185,6 +4353,7 @@ fn policy_aid(policy: Option<&FunctionPolicy>) -> Option<String> {
 }
 
 struct Assembled {
+    source_hints: crate::clients::router::generation_capture::SourceHints,
     system_prompt: Option<String>,
     messages: Vec<Value>,
     usable: u64,
@@ -4206,6 +4375,7 @@ struct Assembled {
 }
 
 struct ContextAssemblyInputs<'a> {
+    entries: &'a [crate::clients::session::LoadedEntry],
     system_prompt: Option<String>,
     tools: &'a [AgentFunction],
     response_format: Option<&'a Value>,
