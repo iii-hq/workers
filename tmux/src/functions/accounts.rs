@@ -3,13 +3,82 @@
 use std::sync::Arc;
 
 use iii_sdk::IIIClient;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use super::{register_fn, spec, Ctx, EmptyInput, FunctionSpec};
-use crate::model::ClaudeSnapshot;
+use super::{register_fn, spec, Ctx, EmptyInput, EmptyOutput, FunctionSpec};
+use crate::model::{ClaudeAccount, ClaudeSnapshot};
+use crate::tmux_cli::{format_literal, resolve_cwd, HOLD, SEP};
 
 pub const LIST: &str = "tmux::accounts::list";
+pub const ADD: &str = "tmux::accounts::add";
+pub const LOGIN: &str = "tmux::accounts::login";
+pub const UPDATE: &str = "tmux::accounts::update";
+pub const REMOVE: &str = "tmux::accounts::remove";
 
 const LIST_DESC: &str = "The Claude Code accounts on this computer: each one's name, colour, config folder, email, plan, whether it is signed in, the Claude Code panes running on it and its latest usage reading; which one is global (what plain `claude` gets in new tmux windows); the rules for when the global account runs low, any suggestion and the latest switch. Without `accounts.json` there is one account, `default` (~/.claude).";
+const ADD_DESC: &str = "Add a Claude Code account: a config folder of its own (CLAUDE_CONFIG_DIR) under the accounts folder, sharing with ~/.claude what `shared` names (settings, extensions, plugins, conversations; all of them by default) through links. It starts signed out: tmux::accounts::login signs it in.";
+const LOGIN_DESC: &str = "Sign a Claude Code account in: opens a window named `login` in `session` running `claude auth login` for that account's folder, which prints a sign-in link and waits for the code. The window closes when the command ends; the account then shows signed in.";
+const UPDATE_DESC: &str = "Rename or recolour a Claude Code account, or change what it shares with ~/.claude (links are made for groups added and the worker's links removed for groups dropped; files of the account's own are never touched).";
+const REMOVE_DESC: &str = "Take a Claude Code account off the list. Not the default account (~/.claude) nor the global one. Claude Code panes on it keep running. With delete_files, its folder (sign-in, history of its own) is deleted too, never what its links point at; refused while Claude Code runs on it.";
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddAccountInput {
+    /// What people call it, e.g. `Personal`; its id is made from it.
+    pub name: String,
+    /// `blue`, `green`, `violet`, `orange` or `pink`.
+    pub color: String,
+    /// What it shares with ~/.claude: `settings` (settings.json, CLAUDE.md, keybindings.json), `extensions` (skills, agents, commands, output styles), `plugins` (plugins, and a copy of the MCP servers), `conversations` (projects, history, todos, plans). Default: all four.
+    #[serde(default)]
+    pub shared: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AccountOutput {
+    pub account: ClaudeAccount,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LoginInput {
+    /// Account id (`default` for ~/.claude).
+    pub account: String,
+    /// Session id (`$5`) or exact name the `login` window opens in.
+    pub session: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LoginWindow {
+    /// Session id.
+    pub session_id: String,
+    /// The `login` window's id.
+    pub window_id: String,
+    /// Its pane, running `claude auth login`.
+    pub pane_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateAccountInput {
+    /// Account id.
+    pub account: String,
+    /// New name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// New colour: `blue`, `green`, `violet`, `orange` or `pink`.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// What it shares from now on (see tmux::accounts::add). Not for `default`.
+    #[serde(default)]
+    pub shared: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RemoveAccountInput {
+    /// Account id.
+    pub account: String,
+    /// Delete its folder too (default false: the folder stays where it was).
+    #[serde(default)]
+    pub delete_files: bool,
+}
 
 pub async fn list(ctx: &Ctx, _input: EmptyInput) -> Result<ClaudeSnapshot, String> {
     ctx.collector.accounts().mark_watched();
@@ -20,10 +89,122 @@ pub async fn list(ctx: &Ctx, _input: EmptyInput) -> Result<ClaudeSnapshot, Strin
         .ok_or_else(|| "Claude Code accounts are not available.".to_string())
 }
 
+/// Account `id` as the feed shows it now.
+async fn account(ctx: &Ctx, id: &str) -> Result<ClaudeAccount, String> {
+    ctx.monitor.poke();
+    ctx.collector
+        .overview()
+        .await
+        .usage
+        .and_then(|usage| usage.claude.accounts.into_iter().find(|a| a.id == id))
+        .ok_or_else(|| crate::accounts::manage::no_account(id))
+}
+
+/// Run blocking file work off the async threads.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("The worker failed to finish ({error})."))?
+}
+
+pub async fn add(ctx: &Ctx, input: AddAccountInput) -> Result<AccountOutput, String> {
+    let accounts = ctx.collector.accounts().clone();
+    let id = blocking(move || accounts.add(&input.name, &input.color, input.shared)).await?;
+    Ok(AccountOutput {
+        account: account(ctx, &id).await?,
+    })
+}
+
+pub async fn update(ctx: &Ctx, input: UpdateAccountInput) -> Result<AccountOutput, String> {
+    let accounts = ctx.collector.accounts().clone();
+    let id = input.account.clone();
+    blocking(move || {
+        accounts.update(
+            &input.account,
+            input.name.as_deref(),
+            input.color.as_deref(),
+            input.shared,
+        )
+    })
+    .await?;
+    Ok(AccountOutput {
+        account: account(ctx, &id).await?,
+    })
+}
+
+pub async fn remove(ctx: &Ctx, input: RemoveAccountInput) -> Result<EmptyOutput, String> {
+    let running = ctx
+        .collector
+        .claude_panes(true)
+        .await
+        .values()
+        .filter(|pane| pane.claude_pid.is_some())
+        .filter(|pane| pane.info.account.as_deref() == Some(input.account.as_str()))
+        .count() as u32;
+    let accounts = ctx.collector.accounts().clone();
+    blocking(move || accounts.remove(&input.account, input.delete_files, running)).await?;
+    ctx.monitor.poke();
+    Ok(EmptyOutput {})
+}
+
+pub async fn login(ctx: &Ctx, input: LoginInput) -> Result<LoginWindow, String> {
+    let accounts = ctx.collector.accounts().clone();
+    let id = input.account.clone();
+    let command = blocking(move || accounts.login_command(&id)).await?;
+    let tmux = ctx.tmux().await?;
+    let session_id = tmux.resolve_session(&input.session).await?;
+    let format = [
+        "#{session_id}",
+        "#{window_id}",
+        "#{window_index}",
+        "#{pane_id}",
+    ]
+    .join(&SEP.to_string());
+    let home = resolve_cwd("~").unwrap_or_else(|_| "/".to_string());
+    let args: Vec<String> = vec![
+        "new-window".into(),
+        "-P".into(),
+        "-F".into(),
+        format,
+        "-t".into(),
+        format!("{session_id}:"),
+        "-n".into(),
+        tmux.new_window_name_arg("login"),
+        "-c".into(),
+        format_literal(&home),
+        "--".into(),
+        HOLD.into(),
+    ];
+    let output = tmux.run(&args).await.map_err(|error| error.sentence())?;
+    let created = super::windows::parse_created(&output)?;
+    // The window closes when the sign-in ends, whatever the user's
+    // remain-on-exit says.
+    tmux.start_held(&created.pane_id, false, Some(&command))
+        .await?;
+    ctx.monitor.poke();
+    Ok(LoginWindow {
+        session_id: created.session_id,
+        window_id: created.window_id,
+        pane_id: created.pane_id,
+    })
+}
+
 pub fn catalog() -> Vec<FunctionSpec> {
-    vec![spec::<EmptyInput, ClaudeSnapshot>(LIST, LIST_DESC)]
+    vec![
+        spec::<EmptyInput, ClaudeSnapshot>(LIST, LIST_DESC),
+        spec::<AddAccountInput, AccountOutput>(ADD, ADD_DESC),
+        spec::<LoginInput, LoginWindow>(LOGIN, LOGIN_DESC),
+        spec::<UpdateAccountInput, AccountOutput>(UPDATE, UPDATE_DESC),
+        spec::<RemoveAccountInput, EmptyOutput>(REMOVE, REMOVE_DESC),
+    ]
 }
 
 pub fn register(iii: &IIIClient, ctx: &Arc<Ctx>) {
     register_fn!(iii, ctx, LIST, LIST_DESC, EmptyInput, list);
+    register_fn!(iii, ctx, ADD, ADD_DESC, AddAccountInput, add);
+    register_fn!(iii, ctx, LOGIN, LOGIN_DESC, LoginInput, login);
+    register_fn!(iii, ctx, UPDATE, UPDATE_DESC, UpdateAccountInput, update);
+    register_fn!(iii, ctx, REMOVE, REMOVE_DESC, RemoveAccountInput, remove);
 }

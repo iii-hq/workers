@@ -45,6 +45,10 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::install::status",
             "tmux::usage::read",
             "tmux::accounts::list",
+            "tmux::accounts::add",
+            "tmux::accounts::login",
+            "tmux::accounts::update",
+            "tmux::accounts::remove",
         ]
     );
 }

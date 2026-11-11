@@ -269,8 +269,21 @@ impl Tmux {
     /// tmux command could set the option. Its own option from tmux 3.0; tmux
     /// 2.x has no pane options, so there it is its window's.
     pub async fn keep_when_done(&self, pane: &str, command: Option<&str>) -> Result<(), String> {
+        self.start_held(pane, true, command).await
+    }
+
+    /// Sets new pane `pane`'s remain-on-exit, then starts `command` in it
+    /// (see [`Tmux::keep_when_done`]); `false` closes the pane when its
+    /// program ends even where the user's options keep panes.
+    pub async fn start_held(
+        &self,
+        pane: &str,
+        remain_on_exit: bool,
+        command: Option<&str>,
+    ) -> Result<(), String> {
         let scope = if self.at_least(3, 0) { "-p" } else { "-w" };
-        let mut args = vec!["set-option", scope, "-t", pane, "remain-on-exit", "on"];
+        let value = if remain_on_exit { "on" } else { "off" };
+        let mut args = vec!["set-option", scope, "-t", pane, "remain-on-exit", value];
         if let Some(command) = command {
             args.extend([";", "respawn-pane", "-k", "-t", pane, "--", command]);
         }

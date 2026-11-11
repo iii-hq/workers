@@ -64,6 +64,10 @@ fn spec<Req: JsonSchema, Resp: JsonSchema>(
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EmptyInput {}
 
+/// Nothing to return.
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct EmptyOutput {}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct KilledOutput {
     /// Always true.

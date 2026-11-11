@@ -13,9 +13,12 @@
 pub mod codex;
 pub mod credentials;
 pub mod daemon;
+pub mod launch;
+pub mod manage;
 pub mod panes;
 pub mod paths;
 pub mod registry;
+pub mod shared;
 pub mod time;
 pub mod usage;
 
@@ -273,6 +276,18 @@ impl Accounts {
     /// Forget account `id`'s sign-in so the next look reads it again.
     pub fn forget_credentials(&self, id: &str) {
         self.lock().credentials.remove(id);
+    }
+
+    /// Forget all about account `id`, which was removed.
+    fn forget(&self, id: &str) {
+        let readings = {
+            let mut state = self.lock();
+            self.load_readings(&mut state);
+            state.credentials.remove(id);
+            state.readings.remove(id);
+            state.readings.clone()
+        };
+        self.save_readings(&readings);
     }
 
     fn profile(&self, state: &mut State, id: &str) -> Option<Profile> {

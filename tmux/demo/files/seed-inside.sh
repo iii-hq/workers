@@ -24,7 +24,17 @@ start "$(pane_of agents:0)" "$P" global 0 "FAKE_CLAUDE_TITLE='Fix the login flow
 tmux new-window -d -t agents: -n codex -c /home/dev/projects/api cat
 start "$(pane_of agents:1)" /home/dev/projects/api - 0 "FAKE_CODEX_TITLE='Review PR 1444' codex"
 tmux new-session -d -s review -n claude -c "$P" -x 200 -y 50 cat
-start "$(pane_of review:0)" "$P" side-project 1 "FAKE_CLAUDE_TITLE='Triage the flaky tests' env CLAUDE_CONFIG_DIR=/home/dev/.local/share/iii/claude-accounts/side-project claude --dangerously-skip-permissions"
+# Pinned to Side project, or to the account the demo has instead (an
+# unregistered folder would be taken, and "Add account" would then make
+# side-project-2).
+registry=/home/dev/.local/share/iii/claude-accounts/accounts.json
+pin=default; on="env -u CLAUDE_CONFIG_DIR"
+for id in side-project personal; do
+  if [[ -f $registry ]] && grep -q "\"id\": \"$id\"" "$registry"; then
+    pin=$id; on="env CLAUDE_CONFIG_DIR=/home/dev/.local/share/iii/claude-accounts/$id"; break
+  fi
+done
+start "$(pane_of review:0)" "$P" "$pin" 1 "FAKE_CLAUDE_TITLE='Triage the flaky tests' $on claude --dangerously-skip-permissions"
 tmux new-window -d -t review: -n logs -c "$P"
 tmux new-session -d -s work -n editor -c "$P" -x 200 -y 50
 tmux new-window -d -t work: -n claude -c "$P" cat

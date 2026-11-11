@@ -129,10 +129,12 @@ impl Registry {
         self.accounts.iter_mut().find(|entry| entry.id == id)
     }
 
-    /// A new id for `name`: its slug, made unique.
-    pub fn new_id(&self, name: &str) -> String {
+    /// A new id for `name`: its slug, made unique among the accounts, the
+    /// reserved words and what `also_taken` says (a folder left behind).
+    pub fn new_id(&self, name: &str, also_taken: impl Fn(&str) -> bool) -> String {
         let base = slug(name);
-        let taken = |id: &str| self.has(id) || id == DEFAULT || id == super::GLOBAL;
+        let taken =
+            |id: &str| self.has(id) || id == DEFAULT || id == super::GLOBAL || also_taken(id);
         if !taken(&base) {
             return base;
         }
@@ -361,8 +363,8 @@ mod tests {
     #[test]
     fn new_ids_skip_taken_and_reserved_ones() {
         let mut registry = Registry::default();
-        assert_eq!(registry.new_id("Default"), "default-2");
-        assert_eq!(registry.new_id("global"), "global-2");
+        assert_eq!(registry.new_id("Default", |_| false), "default-2");
+        assert_eq!(registry.new_id("global", |_| false), "global-2");
         registry.accounts.push(Entry {
             id: "personal".into(),
             name: "Personal".into(),
@@ -370,7 +372,7 @@ mod tests {
             shared: vec![],
             created_at_ms: 1,
         });
-        assert_eq!(registry.new_id("Personal"), "personal-2");
+        assert_eq!(registry.new_id("Personal", |_| false), "personal-2");
         let long = "y".repeat(40);
         registry.accounts.push(Entry {
             id: slug(&long),
@@ -379,7 +381,11 @@ mod tests {
             shared: vec![],
             created_at_ms: 1,
         });
-        let id = registry.new_id(&long);
+        let id = registry.new_id(&long, |_| false);
+        assert_eq!(
+            registry.new_id("Side project", |id| id == "side-project"),
+            "side-project-2"
+        );
         assert_eq!(id.len(), 32);
         assert!(id.ends_with("-2"));
     }

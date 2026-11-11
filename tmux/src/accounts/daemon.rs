@@ -19,6 +19,8 @@ pub type Observed = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub fn spawn(collector: Arc<Collector>, monitor: Arc<Monitor>, observed: Observed) {
     tokio::spawn(async move {
+        let accounts = collector.accounts().clone();
+        let _ = tokio::task::spawn_blocking(move || accounts.relink_all()).await;
         loop {
             tick(&collector, &monitor, &observed).await;
             tokio::time::sleep(TICK).await;

@@ -1,0 +1,331 @@
+{
+  "description": "Rename or recolour a Claude Code account, or change what it shares with ~/.claude (links are made for groups added and the worker's links removed for groups dropped; files of the account's own are never touched).",
+  "function_id": "tmux::accounts::update",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "account": {
+        "description": "Account id.",
+        "type": "string"
+      },
+      "color": {
+        "default": null,
+        "description": "New colour: `blue`, `green`, `violet`, `orange` or `pink`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "default": null,
+        "description": "New name.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "shared": {
+        "default": null,
+        "description": "What it shares from now on (see tmux::accounts::add). Not for `default`.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "account"
+    ],
+    "title": "UpdateAccountInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ClaudeAccount": {
+        "description": "A Claude Code account (agent-accounts D1): one config folder.",
+        "properties": {
+          "color": {
+            "description": "`blue`, `green`, `violet`, `orange` or `pink`.",
+            "type": "string"
+          },
+          "dir": {
+            "description": "Its config folder, absolute.",
+            "type": "string"
+          },
+          "dir_display": {
+            "description": "Its config folder with `~` for the home folder.",
+            "type": "string"
+          },
+          "email": {
+            "default": null,
+            "description": "The signed-in email.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`default` for `~/.claude`, else a slug of its first name.",
+            "type": "string"
+          },
+          "is_default": {
+            "description": "It is the built-in account (`~/.claude`, `CLAUDE_CONFIG_DIR` unset).",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The name people gave it.",
+            "type": "string"
+          },
+          "organization": {
+            "default": null,
+            "description": "The organization it belongs to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "panes": {
+            "description": "Claude Code panes running on it now.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "plan": {
+            "default": null,
+            "description": "`pro`, `max`, `team`, `enterprise` or what Claude Code recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shared": {
+            "description": "The groups it shares with `~/.claude`: `settings`, `extensions`, `plugins`, `conversations`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "signed_in": {
+            "description": "It holds a Claude sign-in.",
+            "type": "boolean"
+          },
+          "tier": {
+            "default": null,
+            "description": "The rate-limit tier, e.g. `default_claude_max_20x`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_expired": {
+            "description": "Its sign-in expired; running Claude Code there renews it.",
+            "type": "boolean"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ClaudeUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The latest usage reading."
+          }
+        },
+        "required": [
+          "color",
+          "dir",
+          "dir_display",
+          "id",
+          "is_default",
+          "name",
+          "panes",
+          "shared",
+          "signed_in",
+          "token_expired"
+        ],
+        "type": "object"
+      },
+      "ClaudeUsage": {
+        "description": "One reading of a Claude Code account's usage.",
+        "properties": {
+          "as_of_ms": {
+            "description": "When this reading was taken.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error": {
+            "default": null,
+            "description": "Why the latest attempt to read failed: `rate_limited`, `unauthorized`, `network`, `token_expired`, `not_signed_in`, `unreadable`. The windows are then the last good reading, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extra": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ExtraUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Usage beyond the plan."
+          },
+          "five_hour": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The current 5-hour window."
+          },
+          "week": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, all models."
+          },
+          "week_models": {
+            "default": [],
+            "description": "Every per-model weekly window the account has, Opus and Sonnet included.",
+            "items": {
+              "$ref": "#/definitions/ModelLimit"
+            },
+            "type": "array"
+          },
+          "week_opus": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, Opus only."
+          },
+          "week_sonnet": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, Sonnet only."
+          }
+        },
+        "required": [
+          "as_of_ms"
+        ],
+        "type": "object"
+      },
+      "ExtraUsage": {
+        "description": "Usage beyond the plan.",
+        "properties": {
+          "enabled": {
+            "description": "Extra usage is turned on for the account.",
+            "type": "boolean"
+          },
+          "used_percent": {
+            "default": null,
+            "description": "How much of its monthly limit is used, 0 to 100, when there is one.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "Limit": {
+        "description": "One usage window of an account.",
+        "properties": {
+          "reset_since_read": {
+            "default": false,
+            "description": "The window reset after the reading, so `used_percent` is 0 until the next reading.",
+            "type": "boolean"
+          },
+          "resets_at_ms": {
+            "default": null,
+            "description": "When the window starts again.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "used_percent": {
+            "description": "How much of the window is used, 0 to 100.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "used_percent"
+        ],
+        "type": "object"
+      },
+      "ModelLimit": {
+        "description": "A weekly window of one model family (Claude Code's `weekly_scoped` limits).",
+        "properties": {
+          "limit": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              }
+            ],
+            "description": "The window."
+          },
+          "name": {
+            "description": "The model's display name, e.g. `Opus`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "limit",
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "account": {
+        "$ref": "#/definitions/ClaudeAccount"
+      }
+    },
+    "required": [
+      "account"
+    ],
+    "title": "AccountOutput",
+    "type": "object"
+  }
+}
