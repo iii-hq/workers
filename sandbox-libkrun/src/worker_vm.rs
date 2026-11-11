@@ -3954,17 +3954,15 @@ mod tests {
             "the writer ended within one poll: {first:?}"
         );
         // The writer commits while the run is never polled again, as when the
-        // build's caller left: then the run goes.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !id_file.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the writer never committed"
-            );
+        // build's caller left: then the run goes. The writer flushes the image
+        // and the directory, which a loaded disk can take a while to do.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        while !id_file.exists() && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         drop(run);
         let written = cancel_writer(&slot, &state).await;
+        assert!(id_file.exists(), "the writer never committed: {written:?}");
         assert_eq!(state.load(Ordering::SeqCst), BUILD_COMMITTED);
         let id = written.expect("the writer was still in its slot").unwrap();
         assert_eq!(read_image_id(&t.join("out")), Some(id));
