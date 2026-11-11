@@ -21,7 +21,7 @@ const SELECT_DESC: &str = "Make a pane the active pane of its window. zoom sets 
 const SPLIT_DESC: &str = "Split a pane in two: the new pane goes to its right or below it, starts in that pane's current directory (or cwd) and runs the default shell (or command). It becomes the window's active pane unless select is false. Like tmux, splitting a zoomed window unzooms it. With remain_on_exit, the new pane stays once its program ends, dead, for tmux::panes::respawn to restart it.";
 const KILL_DESC: &str = "Kill a pane and the program running in it. Killing a window's last pane closes the window, and its session's last window closes the session; the answer says which closed.";
 const RESPAWN_DESC: &str = "Start a pane's program again in the same pane: the command it was started with (or command), in its starting directory (or cwd). A pane whose program is still running is refused unless kill is true, which ends that program first.";
-const ACCOUNT_DESC: &str = "Choose the Claude Code account of a pane: `global` follows the global account (and moves with it), an account id pins the pane there. When Claude Code runs on another account, it moves: it stops and starts again there, resuming its conversation (copied to that account if it doesn't share conversations). An idle pane moves now; one that is working or waiting moves once its turn ends (`after_turn`). Choosing the account it already runs on changes no process, and cancels a move that waits (`cancelled`).";
+const ACCOUNT_DESC: &str = "Choose the Claude Code account of a pane: `global` follows the global account (and moves with it), an account id pins the pane there. When Claude Code runs on another account (which must be signed in), it moves: it stops and starts again there, resuming its conversation (copied to that account if it doesn't share conversations). An idle pane moves now (looked at again right before it stops); one that is working or waiting moves once its turn ends (`after_turn`). Choosing the account it already runs on changes no process, and cancels a move that waits (`cancelled`).";
 const CAPTURE_DESC: &str = "The visible screen of one pane as text with its colour and style escapes (capture-pane -e), plus the pane's size, cursor position and whether a full-screen program has the alternate screen. Read-only.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -471,7 +471,14 @@ pub async fn account(ctx: &Ctx, input: PaneAccountInput) -> Result<PaneAccountOu
         format!("Claude Code is not running in pane {pane}, and it has no account.")
     })?;
     let accounts = ctx.collector.accounts();
+    accounts.load_now().await;
     let plan = moves::plan(state, &accounts.registry(), &input.account)?;
+    // Claude Code only moves to an account it can start on.
+    if let moves::Plan::Now { to, .. } | moves::Plan::AfterTurn { to, .. } = &plan {
+        if !accounts.is_signed_in(to) {
+            return Err(moves::not_signed_in(accounts, to));
+        }
+    }
     let done = moves::apply(&tmux, accounts, state, &plan).await;
     ctx.monitor.poke();
     let state = match done? {

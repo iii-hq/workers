@@ -16,10 +16,11 @@ use serde_json::Value;
 use super::time::{json_time_ms, parse_rfc3339_ms};
 use crate::model::{CodexCredits, CodexUsage, Limit};
 
-/// How many of the newest rollouts are looked through for an event.
+/// How many of the newest rollouts may be looked through for an event.
 const ROLLOUTS_TRIED: usize = 6;
-/// How far back each one is read.
-const TAIL_LIMIT: u64 = 8 * 1024 * 1024;
+/// How far back one is read, and all of them together.
+const TAIL_LIMIT: u64 = 4 * 1024 * 1024;
+const READ_BUDGET: u64 = 8 * 1024 * 1024;
 const CHUNK: u64 = 256 * 1024;
 
 /// One `token_count` line, if it carries rate limits.
@@ -103,17 +104,23 @@ pub fn settle(usage: &mut CodexUsage, now_ms: u64) {
     }
 }
 
-/// The last event with rate limits in `file` (its last `TAIL_LIMIT` bytes).
-fn last_event(path: &Path) -> Option<CodexUsage> {
-    let mut file = File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
+/// The last event with rate limits in `file`, read from its end, at most
+/// `limit` bytes; and how many bytes were read.
+fn last_event(path: &Path, limit: u64) -> (Option<CodexUsage>, u64) {
+    let Ok(mut file) = File::open(path) else {
+        return (None, 0);
+    };
+    let Ok(len) = file.metadata().map(|meta| meta.len()) else {
+        return (None, 0);
+    };
     let mut end = len;
     let mut carry: Vec<u8> = Vec::new();
-    while end > 0 && len - end < TAIL_LIMIT {
+    while end > 0 && len - end < limit {
         let start = end.saturating_sub(CHUNK);
         let mut buffer = vec![0; (end - start) as usize];
-        file.seek(SeekFrom::Start(start)).ok()?;
-        file.read_exact(&mut buffer).ok()?;
+        if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut buffer).is_err() {
+            return (None, len - end);
+        }
         buffer.extend_from_slice(&carry);
         let first_break = if start == 0 {
             0
@@ -129,13 +136,13 @@ fn last_event(path: &Path) -> Option<CodexUsage> {
         };
         for line in buffer[first_break..].rsplit(|b| *b == b'\n') {
             if let Some(usage) = std::str::from_utf8(line).ok().and_then(parse_event) {
-                return Some(usage);
+                return (Some(usage), len - start);
             }
         }
         carry = buffer[..first_break.saturating_sub(1)].to_vec();
         end = start;
     }
-    None
+    (None, len - end)
 }
 
 /// Sub-folders (or files) of `dir`, newest name first.
@@ -180,12 +187,43 @@ fn newest_rollouts(sessions: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Codex's latest usage under `codex_home`. Blocking.
+fn epoch_ms(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Codex's latest usage under `codex_home`: the newest rollouts, last
+/// written first, each read from its end until an event is found; one
+/// written before the event found can't hold a newer one, so the look
+/// stops there (and after [`READ_BUDGET`] bytes in all). Blocking.
 pub fn read(codex_home: &Path) -> Option<CodexUsage> {
-    newest_rollouts(&codex_home.join("sessions"))
-        .iter()
-        .filter_map(|path| last_event(path))
-        .max_by_key(|usage| usage.as_of_ms)
+    let mut files: Vec<(u64, PathBuf)> = newest_rollouts(&codex_home.join("sessions"))
+        .into_iter()
+        .filter_map(|path| {
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            Some((epoch_ms(modified), path))
+        })
+        .collect();
+    files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    let mut budget = READ_BUDGET;
+    let mut best: Option<CodexUsage> = None;
+    for (modified, path) in files {
+        if best.as_ref().is_some_and(|best| modified < best.as_of_ms) || budget == 0 {
+            break;
+        }
+        let (found, read) = last_event(&path, budget.min(TAIL_LIMIT));
+        budget = budget.saturating_sub(read);
+        if let Some(found) = found {
+            if best
+                .as_ref()
+                .is_none_or(|best| found.as_of_ms > best.as_of_ms)
+            {
+                best = Some(found);
+            }
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -260,6 +298,25 @@ mod tests {
         .unwrap();
         let usage = read(&home).unwrap();
         assert_eq!(usage.week.as_ref().unwrap().used_percent, 16.0);
+        // The older day's file, written last (a session still going on from
+        // yesterday), is looked at first and its newer event wins.
+        let ongoing = older.join("rollout-2026-09-30T10-00-00-a.jsonl");
+        std::fs::write(
+            &ongoing,
+            PRO_LINE
+                .replace("16.0", "21.0")
+                .replace("2026-10-23T14:26:30.073Z", "2026-10-23T15:00:00Z")
+                + "\n",
+        )
+        .unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&ongoing)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(read(&home).unwrap().week.unwrap().used_percent, 21.0);
         let mut settled = usage.clone();
         settle(&mut settled, 1_793_303_337_000);
         assert!(settled.week.as_ref().unwrap().reset_since_read);

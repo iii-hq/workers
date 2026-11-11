@@ -387,6 +387,13 @@
             "description": "The worker can move this pane to another account.",
             "type": "boolean"
           },
+          "move_error": {
+            "description": "Why the last move of this pane (one that waited for its turn, or a switch of the global account) failed, in one sentence; cleared by the next account change of the pane.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "not_movable_reason": {
             "description": "Why it can't, in one sentence, when `movable` is false.",
             "type": [

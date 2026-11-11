@@ -28,7 +28,7 @@ const LOGIN_DESC: &str = "Sign a Claude Code account in: opens a window named `l
 const UPDATE_DESC: &str = "Rename or recolour a Claude Code account, or change what it shares with ~/.claude (links are made for groups added and the worker's links removed for groups dropped; files of the account's own are never touched).";
 const REMOVE_DESC: &str = "Take a Claude Code account off the list. Not the default account (~/.claude) nor the global one. Claude Code panes on it keep running. With delete_files, its folder (sign-in, history of its own) is deleted too, never what its links point at; refused while Claude Code runs on it.";
 
-const GLOBAL_DESC: &str = "Make a Claude Code account the global one: what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.";
+const GLOBAL_DESC: &str = "Make a Claude Code account the global one (it must be signed in): what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.";
 const MOVE_IDLE_DESC: &str = "Move the idle Claude Code panes running on account `from` to account `to` and pin them there, resuming their conversations: those that follow the global account, are pinned to `from` or were started by hand (never those pinned elsewhere, nor working or waiting ones).";
 
 const RULES_DESC: &str = "Change the rules for when the global Claude Code account runs low (what is left out stays): mode `off`, `suggest` (a suggestion in the feed) or `switch` (the worker makes another account global by itself, even with the app closed, and leaves `last_switch`); `at` `week_80`, `week_90` or `limit`; `five_hour` also acts when the 5-hour window is full; `move_idle` moves the idle windows that follow the global account on a switch (else they stay pinned where they run); `back_after_reset` switches back once the old account's window resets; `order` the accounts to try first, then the one with most room this week.";
@@ -197,9 +197,11 @@ pub struct MoveIdleOutput {
 }
 
 pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, String> {
-    use crate::accounts::moves::{switch_global, SwitchMode};
+    use crate::accounts::moves::{switch_global, SwitchBy, SwitchMode};
     let tmux = ctx.tmux().await?;
     let panes = ctx.collector.claude_panes(true).await;
+    // Signed in as of now: a sign-in may have just finished.
+    ctx.collector.accounts().load_now().await;
     let mode = match input.move_mode {
         GlobalMove::IdleNowWorkingAfter => SwitchMode::IdleNowWorkingAfter,
         GlobalMove::NewOnly => SwitchMode::NewOnly,
@@ -210,6 +212,7 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
         &panes,
         &input.account,
         mode,
+        SwitchBy::Person,
     )
     .await;
     ctx.monitor.poke();
@@ -225,6 +228,7 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
 pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput, String> {
     let tmux = ctx.tmux().await?;
     let panes = ctx.collector.claude_panes(true).await;
+    ctx.collector.accounts().load_now().await;
     let moved = crate::accounts::moves::move_idle(
         &tmux,
         ctx.collector.accounts(),
@@ -309,6 +313,7 @@ pub async fn dismiss(ctx: &Ctx, input: DismissInput) -> Result<EmptyOutput, Stri
 
 pub async fn list(ctx: &Ctx, _input: EmptyInput) -> Result<ClaudeSnapshot, String> {
     ctx.collector.accounts().mark_watched();
+    ctx.collector.accounts().load_now().await;
     let overview = ctx.collector.overview().await;
     overview
         .usage
@@ -318,6 +323,7 @@ pub async fn list(ctx: &Ctx, _input: EmptyInput) -> Result<ClaudeSnapshot, Strin
 
 /// Account `id` as the feed shows it now.
 async fn account(ctx: &Ctx, id: &str) -> Result<ClaudeAccount, String> {
+    ctx.collector.accounts().load_now().await;
     ctx.monitor.poke();
     ctx.collector
         .overview()

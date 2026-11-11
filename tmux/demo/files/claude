@@ -11,6 +11,11 @@ changes what it shows. SIGTERM ends it cleanly, as it does Claude Code.
 Environment: CLAUDE_CONFIG_DIR (else ~/.claude), FAKE_CLAUDE_STATE_DIR (where
 claude-state leaves states, /tmp/fake-claude), FAKE_CLAUDE_TITLE (a new
 session's title), FAKE_CLAUDE_STATE (the first state).
+
+It runs only inside the demo container (/.dockerenv and DEMO_CONTAINER=1),
+or in a test's sandbox: FAKE_CLAUDE_SANDBOX names a folder that holds its
+home folder, its config folder and its state folder. Anywhere else it would
+write into the real ~/.claude, so it refuses.
 """
 import json
 import os
@@ -28,6 +33,28 @@ ACCOUNT = "default" if CONFIG_ENV is None or os.path.realpath(CONFIG) == os.path
     os.path.join(HOME, ".claude")) else os.path.basename(CONFIG.rstrip("/"))
 STATE_DIR = os.environ.get("FAKE_CLAUDE_STATE_DIR") or "/tmp/fake-claude"
 PID = os.getpid()
+
+
+def allowed():
+    if os.path.exists("/.dockerenv") and os.environ.get("DEMO_CONTAINER") == "1":
+        return True
+    sandbox = os.environ.get("FAKE_CLAUDE_SANDBOX")
+    if not sandbox:
+        return False
+    root = os.path.realpath(sandbox)
+
+    def inside(path):
+        real = os.path.realpath(path)
+        return real == root or real.startswith(root + os.sep)
+
+    json_path = os.path.join(HOME, ".claude.json") if CONFIG_ENV is None else os.path.join(
+        CONFIG, ".claude.json")
+    return all(inside(path) for path in (HOME, CONFIG, STATE_DIR, json_path))
+
+
+if not allowed():
+    sys.stderr.write("this fake claude runs only inside the demo container or a test sandbox\n")
+    sys.exit(2)
 
 
 def write_json(path, value):

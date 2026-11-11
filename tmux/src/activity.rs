@@ -164,23 +164,7 @@ impl ActivityReader {
     /// directory `dir`; `start_ticks` is the process's start time when known,
     /// to tell its file from one a reused pid left behind.
     fn claude_at(&mut self, dir: &Path, pid: u32, start_ticks: Option<u64>) -> Option<Activity> {
-        let text =
-            std::fs::read_to_string(dir.join("sessions").join(format!("{pid}.json"))).ok()?;
-        let session: ClaudeSession = serde_json::from_str(&text).ok()?;
-        if session.pid != pid {
-            return None;
-        }
-        if let (Some(recorded), Some(actual)) = (
-            session
-                .proc_start
-                .as_deref()
-                .and_then(|s| s.parse::<u64>().ok()),
-            start_ticks,
-        ) {
-            if recorded != actual {
-                return None;
-            }
-        }
+        let session = read_claude_session(dir, pid, start_ticks)?;
         let state = claude_state(session.status.as_deref(), session.waiting_for.as_deref());
         let subagents = if state == Some(AgentState::Working) {
             match self.transcript_dir(dir, &session) {
@@ -539,6 +523,43 @@ fn codex_pids(table: &ProcTable, pid: u32) -> Vec<u32> {
                 .is_some_and(|proc| proc.names().any(|name| name == "codex"))
         })
         .collect()
+}
+
+/// `<dir>/sessions/<pid>.json` when process `pid` (started at `start_ticks`,
+/// when known) wrote it, not a reused pid.
+fn read_claude_session(dir: &Path, pid: u32, start_ticks: Option<u64>) -> Option<ClaudeSession> {
+    let text = std::fs::read_to_string(dir.join("sessions").join(format!("{pid}.json"))).ok()?;
+    let session: ClaudeSession = serde_json::from_str(&text).ok()?;
+    if session.pid != pid {
+        return None;
+    }
+    if let (Some(recorded), Some(actual)) = (
+        session
+            .proc_start
+            .as_deref()
+            .and_then(|s| s.parse::<u64>().ok()),
+        start_ticks,
+    ) {
+        if recorded != actual {
+            return None;
+        }
+    }
+    Some(session)
+}
+
+/// What Claude Code process `pid` records about itself right now (its
+/// config folder from its environment, its `sessions/<pid>.json`), read
+/// afresh: `None` when it is gone or has not recorded its session.
+/// Blocking.
+pub fn claude_record_now(pid: u32) -> Option<ClaudeRecord> {
+    let dir = claude_config_dir(pid)?;
+    let session = read_claude_session(&dir, pid, procs::start_ticks(pid))?;
+    Some(ClaudeRecord {
+        config_dir: dir,
+        session_id: Some(session.session_id).filter(|id| !id.is_empty()),
+        status: session.status,
+        cwd: session.cwd,
+    })
 }
 
 /// `CLAUDE_CONFIG_DIR` of the process, else `~/.claude` of its home.

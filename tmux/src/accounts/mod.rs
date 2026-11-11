@@ -32,9 +32,10 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::model::{now_ms, ClaudeAccount, ClaudeSnapshot, CodexUsage, UsageSnapshot};
-use credentials::{Credentials, FileCache, Profile, SecretStore};
+use credentials::{Credentials, Profile, SecretStore};
 use paths::ClaudePaths;
 use registry::{Registry, Store};
+use sha2::{Digest, Sha256};
 use usage::{CacheFile, Reading, UsageClient};
 
 /// The built-in account: `~/.claude`, `CLAUDE_CONFIG_DIR` unset.
@@ -45,8 +46,8 @@ pub const GLOBAL: &str = "global";
 /// How long the app counts as watching after a `tmux::usage::read` or while
 /// the live feed is observed (D12).
 pub const WATCH_MS: u64 = 10 * 60_000;
-/// How old the global account's reading may get while nobody watches and the
-/// rules are on.
+/// How old the global account's reading may get while nobody watches, the
+/// rules are on and another account could take over (O1).
 pub const UNWATCHED_GLOBAL_EVERY_MS: u64 = 10 * 60_000;
 /// How long Codex's records are not looked at again.
 const CODEX_EVERY_MS: u64 = 30_000;
@@ -54,6 +55,9 @@ const CODEX_EVERY_MS: u64 = 30_000;
 const KEYCHAIN_TTL_MS: u64 = 5 * 60_000;
 /// How long "is Claude Code here" is kept.
 const AVAILABLE_TTL_MS: u64 = 60_000;
+/// How often the feed has sign-ins and profiles looked at again (in the
+/// background).
+const LOAD_EVERY_MS: u64 = 1_000;
 
 type Stamp = Option<(SystemTime, u64)>;
 
@@ -63,23 +67,38 @@ fn stamp(path: &Path) -> Stamp {
         .and_then(|meta| Some((meta.modified().ok()?, meta.len())))
 }
 
+/// The sign-in last read for an account.
 struct CachedCredentials {
+    /// Its `.credentials.json` and `.claude.json` when it was read.
     stamps: (Stamp, Stamp),
     read_at_ms: u64,
     value: Result<Option<Credentials>, String>,
 }
 
+/// The `.claude.json` last read for an account.
+struct CachedProfile {
+    stamp: Stamp,
+    value: Option<Profile>,
+}
+
+/// What the worker last read about the accounts. Filled by
+/// [`Accounts::load_blocking`], which never holds the lock while it reads;
+/// the snapshot only looks here.
 #[derive(Default)]
 struct State {
-    store: Option<Store>,
     credentials: HashMap<String, CachedCredentials>,
-    profiles: FileCache<Profile>,
+    profiles: HashMap<String, CachedProfile>,
+    /// A digest of each account's token, in memory only: a new token lifts
+    /// the endpoint's refusal (`rejected`), wherever the sign-in lives.
+    token_digests: HashMap<String, [u8; 32]>,
     readings: HashMap<String, Reading>,
     readings_loaded: bool,
     codex: Option<(u64, Option<CodexUsage>)>,
     available: Option<(u64, bool)>,
     /// When the global account's current reason to switch was first seen.
     first_seen: HashMap<String, u64>,
+    /// When the last load finished; 0 before the first.
+    loaded_at_ms: u64,
 }
 
 /// One account as the snapshot needs it.
@@ -97,25 +116,76 @@ pub struct Accounts {
     secrets: Box<dyn SecretStore>,
     keychain: bool,
     client: Option<UsageClient>,
+    /// `accounts.json`, under a lock of its own (small file work only).
+    store: Mutex<Option<Store>>,
     state: Mutex<State>,
+    /// One load of sign-ins, profiles and Codex at a time.
+    load_gate: Arc<tokio::sync::Mutex<()>>,
     watched_until_ms: AtomicU64,
     /// One round of readings at a time.
     reading: tokio::sync::Mutex<()>,
     /// The panes being moved now (one move at a time each).
     pub moving: moves::Moving,
-    /// Some pane may carry `@iii_claude_pending` (§3.7); true at start so
-    /// the first look finds those a restart left.
+    /// Some pane may carry `@iii_claude_pending` (§3.7) that no look has
+    /// seen yet; true at start so the first look finds those a restart left.
     pending: AtomicBool,
+    /// The panes whose move waits for their turn to end, with the Claude
+    /// Code process last seen there.
+    waiting: Mutex<HashMap<String, Option<u32>>>,
+    /// Why the last move of a pane failed, by pane id.
+    move_errors: Mutex<HashMap<String, String>>,
 }
 
 impl Accounts {
     /// From this process's environment and this platform's sign-in store.
+    /// In the worker's own unit tests, a sandbox instead: no test reads
+    /// this computer's Claude Code sign-in.
     pub fn from_env() -> Arc<Self> {
+        #[cfg(test)]
+        {
+            let dir = std::env::temp_dir().join(format!(
+                "tmux-accounts-sandbox-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            Self::sandbox(&dir)
+        }
+        #[cfg(not(test))]
         Arc::new(Self::new(
             ClaudePaths::from_env(),
             credentials::platform_store(),
             cfg!(target_os = "macos"),
         ))
+    }
+
+    /// Accounts that live in `dir` alone, for tests: its own home folder,
+    /// `~/.claude`, accounts folder, Codex folder and cache, sign-ins read
+    /// from files only (never a Keychain), and a usage client that never
+    /// sends anything ([`Accounts::can_fetch`] is false).
+    pub fn sandbox(dir: &Path) -> Arc<Self> {
+        let home = dir.join("home");
+        let vars: HashMap<&str, String> = HashMap::from([
+            ("HOME", home.to_string_lossy().into_owned()),
+            (
+                "III_CLAUDE_HOME",
+                home.join(".claude").to_string_lossy().into_owned(),
+            ),
+            (
+                "III_CLAUDE_ACCOUNTS_DIR",
+                dir.join("accounts").to_string_lossy().into_owned(),
+            ),
+            (
+                "CODEX_HOME",
+                home.join(".codex").to_string_lossy().into_owned(),
+            ),
+            (
+                "XDG_CACHE_HOME",
+                dir.join("cache").to_string_lossy().into_owned(),
+            ),
+        ]);
+        let paths = ClaudePaths::from_vars(|key| vars.get(key).cloned(), false);
+        let mut accounts = Self::new(paths, Box::new(credentials::FileStore), false);
+        accounts.client = None;
+        Arc::new(accounts)
     }
 
     /// `keychain`: sign-ins come from a store that is slow to ask, so they
@@ -132,14 +202,15 @@ impl Accounts {
             secrets,
             keychain,
             client,
-            state: Mutex::new(State {
-                store,
-                ..State::default()
-            }),
+            store: Mutex::new(store),
+            state: Mutex::new(State::default()),
+            load_gate: Arc::new(tokio::sync::Mutex::new(())),
             watched_until_ms: AtomicU64::new(0),
             reading: tokio::sync::Mutex::new(()),
             moving: moves::Moving::default(),
             pending: AtomicBool::new(true),
+            waiting: Mutex::new(HashMap::new()),
+            move_errors: Mutex::new(HashMap::new()),
         }
     }
 
@@ -147,14 +218,27 @@ impl Accounts {
         self.paths.as_ref()
     }
 
+    /// Whether readings can be asked for at all (a sandbox can't).
+    pub fn can_fetch(&self) -> bool {
+        self.client.is_some()
+    }
+
+    /// The origin readings would be asked from, if any.
+    pub fn usage_origin(&self) -> Option<&str> {
+        self.client.as_ref().map(UsageClient::origin)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    fn store(&self) -> std::sync::MutexGuard<'_, Option<Store>> {
+        self.store.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// The registry (the implicit one without `accounts.json`).
     pub fn registry(&self) -> Registry {
-        let mut state = self.lock();
-        match state.store.as_mut() {
+        match self.store().as_mut() {
             Some(store) => store.current(),
             None => Registry::default(),
         }
@@ -162,8 +246,7 @@ impl Accounts {
 
     /// `accounts.json` exists and reads.
     pub fn managed(&self) -> bool {
-        let mut state = self.lock();
-        state.store.as_mut().is_some_and(Store::managed)
+        self.store().as_mut().is_some_and(Store::managed)
     }
 
     /// Change the registry and save it.
@@ -171,8 +254,7 @@ impl Accounts {
         &self,
         change: impl FnOnce(&mut Registry) -> Result<T, String>,
     ) -> Result<T, String> {
-        let mut state = self.lock();
-        match state.store.as_mut() {
+        match self.store().as_mut() {
             Some(store) => store.update(change),
             None => Err("This computer's user has no home folder for Claude Code accounts.".into()),
         }
@@ -203,15 +285,68 @@ impl Accounts {
             .map(|entry| entry.id.clone())
     }
 
-    /// A pane got (or was seen with) a pending move.
+    /// A look found a pane with a pending move, or the worker started:
+    /// the next pending round looks at every pane once.
     pub fn note_pending(&self) {
         self.pending.store(true, Ordering::Relaxed);
     }
 
-    /// Whether a pane may have a pending move, clearing the flag: whoever
-    /// looks re-notes the ones still waiting.
+    /// Whether every pane should be looked at for pending moves, clearing
+    /// the flag.
     pub fn take_pending(&self) -> bool {
         self.pending.swap(false, Ordering::Relaxed)
+    }
+
+    /// `pane`'s move waits for its turn; `claude_pid` runs there.
+    pub fn note_waiting(&self, pane: &str, claude_pid: Option<u32>) {
+        self.waiting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(pane.to_string(), claude_pid);
+    }
+
+    /// The panes whose move waits, with their Claude Code process.
+    pub fn waiting(&self) -> Vec<(String, Option<u32>)> {
+        let mut out: Vec<_> = self
+            .waiting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(pane, pid)| (pane.clone(), *pid))
+            .collect();
+        out.sort();
+        out
+    }
+
+    pub fn forget_waiting(&self, pane: &str) {
+        self.waiting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(pane);
+    }
+
+    /// The last move of `pane` failed with `error`.
+    pub fn note_move_error(&self, pane: &str, error: &str) {
+        self.move_errors
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(pane.to_string(), error.to_string());
+    }
+
+    /// `pane`'s account changed again: its last failure is old news.
+    pub fn clear_move_error(&self, pane: &str) {
+        self.move_errors
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(pane);
+    }
+
+    /// Why the last move of each pane failed; panes not in `alive` are
+    /// dropped.
+    pub fn move_errors(&self, alive: &std::collections::HashSet<&str>) -> HashMap<String, String> {
+        let mut errors = self.move_errors.lock().unwrap_or_else(|p| p.into_inner());
+        errors.retain(|pane, _| alive.contains(pane.as_str()));
+        errors.clone()
     }
 
     /// The app looked at usage just now (D12).
@@ -224,18 +359,40 @@ impl Accounts {
         self.watched_until_ms.load(Ordering::Relaxed) > now_ms
     }
 
-    fn load_readings(&self, state: &mut State) {
-        if state.readings_loaded {
+    /// Whether the worker may read usage while nobody watches (O1):
+    /// `accounts.json` exists and another account than the global one is
+    /// signed in, so a switch could happen. With one account, never.
+    pub fn may_read_unwatched(&self) -> bool {
+        if !self.managed() {
+            return false;
+        }
+        let (registry, views) = self.views();
+        views
+            .iter()
+            .any(|view| view.id != registry.global && view.signed_in)
+    }
+
+    fn read_cache_file(&self) -> HashMap<String, Reading> {
+        let Some(file) = self.paths.as_ref().and_then(|p| p.cache_file.clone()) else {
+            return HashMap::new();
+        };
+        std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| serde_json::from_str::<CacheFile>(&text).ok())
+            .map(|cache| cache.claude)
+            .unwrap_or_default()
+    }
+
+    /// The readings, from the cache file the first time. Blocking.
+    fn ensure_readings(&self) {
+        if self.lock().readings_loaded {
             return;
         }
-        state.readings_loaded = true;
-        let Some(file) = self.paths.as_ref().and_then(|p| p.cache_file.clone()) else {
-            return;
-        };
-        if let Ok(text) = std::fs::read_to_string(&file) {
-            if let Ok(cache) = serde_json::from_str::<CacheFile>(&text) {
-                state.readings = cache.claude;
-            }
+        let read = self.read_cache_file();
+        let mut state = self.lock();
+        if !state.readings_loaded {
+            state.readings = read;
+            state.readings_loaded = true;
         }
     }
 
@@ -251,80 +408,27 @@ impl Accounts {
         }
     }
 
-    /// The sign-in of account `id`, read again when its files change (and,
-    /// from a Keychain, at most every five minutes).
-    fn credentials(
-        &self,
-        state: &mut State,
-        id: &str,
-        now: u64,
-    ) -> Result<Option<Credentials>, String> {
-        let Some(paths) = self.paths.as_ref() else {
-            return Ok(None);
-        };
-        let dir = paths.account_dir(id);
-        let stamps = (
-            stamp(&dir.join(".credentials.json")),
-            stamp(&paths.account_json(id)),
-        );
-        if let Some(cached) = state.credentials.get(id) {
-            let fresh = cached.stamps == stamps
-                && (!self.keychain || now.saturating_sub(cached.read_at_ms) < KEYCHAIN_TTL_MS);
-            if fresh {
-                return cached.value.clone();
-            }
-        }
-        let value = self.secrets.read(&dir, self.env_dir(id).as_deref());
-        // A new sign-in is a new token: the endpoint's refusal no longer holds.
-        if let Some(reading) = state.readings.get_mut(id) {
-            if state
-                .credentials
-                .get(id)
-                .is_none_or(|cached| cached.stamps != stamps)
-            {
-                reading.rejected = false;
-            }
-        }
-        state.credentials.insert(
-            id.to_string(),
-            CachedCredentials {
-                stamps,
-                read_at_ms: now,
-                value: value.clone(),
-            },
-        );
-        value
-    }
-
-    /// Forget account `id`'s sign-in so the next look reads it again.
+    /// Forget account `id`'s sign-in so the next load reads it again.
     pub fn forget_credentials(&self, id: &str) {
         self.lock().credentials.remove(id);
     }
 
     /// Forget all about account `id`, which was removed.
     fn forget(&self, id: &str) {
+        self.ensure_readings();
         let readings = {
             let mut state = self.lock();
-            self.load_readings(&mut state);
             state.credentials.remove(id);
+            state.profiles.remove(id);
+            state.token_digests.remove(id);
             state.readings.remove(id);
             state.readings.clone()
         };
         self.save_readings(&readings);
     }
 
-    fn profile(&self, state: &mut State, id: &str) -> Option<Profile> {
-        let path = self.paths.as_ref()?.account_json(id);
-        state.profiles.get(&path, credentials::parse_profile)
-    }
-
-    fn available(&self, state: &mut State, now: u64) -> bool {
-        if let Some((at, value)) = state.available {
-            if now.saturating_sub(at) < AVAILABLE_TTL_MS {
-                return value;
-            }
-        }
-        let on_path = std::env::var_os("PATH").is_some_and(|path| {
+    fn claude_on_path() -> bool {
+        std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|dir| {
                 let candidate = dir.join("claude");
                 std::fs::metadata(&candidate)
@@ -334,47 +438,168 @@ impl Accounts {
                     })
                     .unwrap_or(false)
             })
-        });
-        let value = on_path
-            || self
-                .paths
+        })
+    }
+
+    /// Read what the snapshot shows (M2): the sign-ins whose files changed
+    /// (from a Keychain, at most every five minutes), the `.claude.json`
+    /// files that changed, Codex's records every 30 seconds and whether
+    /// Claude Code is here. Blocking, slow at times (`security` waits for a
+    /// locked Keychain; Codex's records can be large), so the state lock is
+    /// only taken to see what is due and to store what was read.
+    pub fn load_blocking(&self) {
+        let Some(paths) = self.paths.clone() else {
+            self.lock().loaded_at_ms = now_ms();
+            return;
+        };
+        self.ensure_readings();
+        let registry = self.registry();
+        let now = now_ms();
+        let (known_credentials, known_profiles, codex_due, available_due) = {
+            let state = self.lock();
+            let credentials: HashMap<String, ((Stamp, Stamp), u64)> = state
+                .credentials
+                .iter()
+                .map(|(id, cached)| (id.clone(), (cached.stamps, cached.read_at_ms)))
+                .collect();
+            let profiles: HashMap<String, Stamp> = state
+                .profiles
+                .iter()
+                .map(|(id, cached)| (id.clone(), cached.stamp))
+                .collect();
+            let codex_due = state
+                .codex
                 .as_ref()
-                .is_some_and(|paths| paths.claude_home.is_dir());
-        state.available = Some((now, value));
-        value
-    }
-
-    fn codex(&self, state: &mut State, now: u64) -> Option<CodexUsage> {
-        let paths = self.paths.as_ref()?;
-        let stale = state
-            .codex
-            .as_ref()
-            .is_none_or(|(at, _)| now.saturating_sub(*at) >= CODEX_EVERY_MS);
-        if stale {
-            state.codex = Some((now, codex::read(&paths.codex_home)));
+                .is_none_or(|(at, _)| now.saturating_sub(*at) >= CODEX_EVERY_MS);
+            let available_due = state
+                .available
+                .is_none_or(|(at, _)| now.saturating_sub(at) >= AVAILABLE_TTL_MS);
+            (credentials, profiles, codex_due, available_due)
+        };
+        let mut credentials = Vec::new();
+        let mut profiles = Vec::new();
+        for entry in &registry.accounts {
+            let dir = paths.account_dir(&entry.id);
+            let json = paths.account_json(&entry.id);
+            let stamps = (stamp(&dir.join(".credentials.json")), stamp(&json));
+            let fresh = known_credentials.get(&entry.id).is_some_and(|(seen, at)| {
+                *seen == stamps && (!self.keychain || now.saturating_sub(*at) < KEYCHAIN_TTL_MS)
+            });
+            if !fresh {
+                let value = self.secrets.read(&dir, self.env_dir(&entry.id).as_deref());
+                credentials.push((entry.id.clone(), stamps, value));
+            }
+            let profile_stamp = stamps.1;
+            if known_profiles.get(&entry.id) != Some(&profile_stamp) {
+                let value = profile_stamp
+                    .and_then(|_| std::fs::read_to_string(&json).ok())
+                    .and_then(|text| credentials::parse_profile(&text));
+                profiles.push((entry.id.clone(), profile_stamp, value));
+            }
         }
-        let mut usage = state.codex.as_ref()?.1.clone()?;
-        codex::settle(&mut usage, now);
-        Some(usage)
+        let codex = codex_due.then(|| codex::read(&paths.codex_home));
+        let available = available_due.then(|| Self::claude_on_path() || paths.claude_home.is_dir());
+
+        let mut state = self.lock();
+        for (id, stamps, value) in credentials {
+            let digest = value
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .and_then(|c| c.token.as_ref())
+                .map(|token| -> [u8; 32] { Sha256::digest(token.expose().as_bytes()).into() });
+            // A new token (or the first look since the worker started) is
+            // worth asking the endpoint again.
+            if state.token_digests.get(&id).copied() != digest {
+                if let Some(reading) = state.readings.get_mut(&id) {
+                    reading.rejected = false;
+                }
+            }
+            match digest {
+                Some(digest) => state.token_digests.insert(id.clone(), digest),
+                None => state.token_digests.remove(&id),
+            };
+            state.credentials.insert(
+                id,
+                CachedCredentials {
+                    stamps,
+                    read_at_ms: now,
+                    value,
+                },
+            );
+        }
+        for (id, stamp, value) in profiles {
+            state.profiles.insert(id, CachedProfile { stamp, value });
+        }
+        if let Some(codex) = codex {
+            state.codex = Some((now, codex));
+        }
+        if let Some(available) = available {
+            state.available = Some((now, available));
+        }
+        let ids: std::collections::HashSet<&str> =
+            registry.accounts.iter().map(|e| e.id.as_str()).collect();
+        state.credentials.retain(|id, _| ids.contains(id.as_str()));
+        state.profiles.retain(|id, _| ids.contains(id.as_str()));
+        state.loaded_at_ms = now_ms();
     }
 
-    /// Every account with what the worker knows of it.
+    /// Load now, off the async threads, and wait for it.
+    pub async fn load_now(self: &Arc<Self>) {
+        let _gate = self.load_gate.lock().await;
+        let this = self.clone();
+        let _ = tokio::task::spawn_blocking(move || this.load_blocking()).await;
+    }
+
+    /// Load in the background when the last load is a second old (the
+    /// first time, wait for it): the feed never waits for a Keychain.
+    pub async fn load_soon(self: &Arc<Self>) {
+        let loaded_at = self.lock().loaded_at_ms;
+        if loaded_at == 0 {
+            self.load_now().await;
+            return;
+        }
+        if now_ms().saturating_sub(loaded_at) < LOAD_EVERY_MS {
+            return;
+        }
+        if let Ok(gate) = self.load_gate.clone().try_lock_owned() {
+            let this = self.clone();
+            tokio::spawn(async move {
+                let _ = tokio::task::spawn_blocking(move || this.load_blocking()).await;
+                drop(gate);
+            });
+        }
+    }
+
+    fn cached_credentials(state: &State, id: &str) -> Result<Option<Credentials>, String> {
+        state
+            .credentials
+            .get(id)
+            .map(|cached| cached.value.clone())
+            .unwrap_or(Ok(None))
+    }
+
+    /// Whether account `id` is signed in, as last loaded.
+    pub fn is_signed_in(&self, id: &str) -> bool {
+        Self::cached_credentials(&self.lock(), id)
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.signed_in())
+    }
+
+    /// Every account with what the worker last loaded of it.
     pub fn views(&self) -> (Registry, Vec<AccountView>) {
         let now = now_ms();
-        let mut state = self.lock();
-        let registry = match state.store.as_mut() {
-            Some(store) => store.current(),
-            None => Registry::default(),
-        };
+        let registry = self.registry();
         let Some(paths) = self.paths.clone() else {
             return (registry, Vec::new());
         };
-        self.load_readings(&mut state);
+        let state = self.lock();
         let views = registry
             .accounts
             .iter()
             .map(|entry| {
-                let credentials = self.credentials(&mut state, &entry.id, now).ok().flatten();
+                let credentials = Self::cached_credentials(&state, &entry.id).ok().flatten();
                 let rejected = state.readings.get(&entry.id).is_some_and(|r| r.rejected);
                 AccountView {
                     id: entry.id.clone(),
@@ -387,24 +612,31 @@ impl Accounts {
         (registry, views)
     }
 
-    /// The usage part of the feed. `panes` counts the Claude Code panes
-    /// running on each account; `following`, those that follow the global one.
+    /// The usage part of the feed, from what was last loaded (no file is
+    /// read here). `panes` counts the Claude Code panes running on each
+    /// account; `following`, those that follow the global one.
     pub fn snapshot(&self, panes: &HashMap<String, u32>, following: u32) -> UsageSnapshot {
         let now = now_ms();
+        let managed = self.managed();
+        let registry = self.registry();
         let mut state = self.lock();
-        let managed = state.store.as_mut().is_some_and(Store::managed);
-        let registry = match state.store.as_mut() {
-            Some(store) => store.current(),
-            None => Registry::default(),
-        };
-        self.load_readings(&mut state);
-        let available = self.available(&mut state, now);
-        let codex = self.codex(&mut state, now);
+        let available = state.available.is_some_and(|(_, value)| value);
+        let codex = state
+            .codex
+            .as_ref()
+            .and_then(|(_, usage)| usage.clone())
+            .map(|mut usage| {
+                codex::settle(&mut usage, now);
+                usage
+            });
         let mut accounts = Vec::new();
         if let Some(paths) = self.paths.clone() {
             for entry in &registry.accounts {
-                let credentials = self.credentials(&mut state, &entry.id, now);
-                let profile = self.profile(&mut state, &entry.id);
+                let credentials = Self::cached_credentials(&state, &entry.id);
+                let profile = state
+                    .profiles
+                    .get(&entry.id)
+                    .and_then(|cached| cached.value.clone());
                 let reading = state.readings.entry(entry.id.clone()).or_default();
                 if let Some((at, value)) = profile.as_ref().and_then(|p| p.cached_usage.clone()) {
                     reading.adopt(usage::parse_usage(&value, at));
@@ -482,25 +714,23 @@ impl Accounts {
     /// are due: older than five minutes, or than one with `force` (D12).
     /// Accounts without a sign-in, or whose sign-in expired, are not asked
     /// (D11). Returns whether any reading changed.
-    pub async fn refresh(&self, ids: Option<&[String]>, force: bool) -> bool {
+    pub async fn refresh(self: &Arc<Self>, ids: Option<&[String]>, force: bool) -> bool {
         let Some(client) = self.client.clone() else {
             return false;
         };
         let _round = self.reading.lock().await;
+        // The sign-ins as they are now (a login may have just finished).
+        self.load_now().await;
         let now = now_ms();
+        let registry = self.registry();
         let mut asks = Vec::new();
         {
             let mut state = self.lock();
-            let registry = match state.store.as_mut() {
-                Some(store) => store.current(),
-                None => Registry::default(),
-            };
-            self.load_readings(&mut state);
             for entry in &registry.accounts {
                 if ids.is_some_and(|ids| !ids.contains(&entry.id)) {
                     continue;
                 }
-                let Ok(Some(credentials)) = self.credentials(&mut state, &entry.id, now) else {
+                let Ok(Some(credentials)) = Self::cached_credentials(&state, &entry.id) else {
                     continue;
                 };
                 let Some(token) = credentials.token.clone() else {
@@ -510,18 +740,18 @@ impl Accounts {
                 if credentials.expired(now) || reading.rejected || !reading.due(now, force) {
                     continue;
                 }
-                asks.push((entry.id.clone(), token));
+                asks.push((entry.id.clone(), entry.created_at_ms, token));
             }
         }
         if asks.is_empty() {
             return false;
         }
         let mut tasks = tokio::task::JoinSet::new();
-        for (id, token) in asks {
+        for (id, created_at_ms, token) in asks {
             let client = client.clone();
             tasks.spawn(async move {
                 let outcome = client.fetch(&token).await;
-                (id, outcome)
+                (id, created_at_ms, outcome)
             });
         }
         let mut results = Vec::new();
@@ -531,9 +761,15 @@ impl Accounts {
             }
         }
         let now = now_ms();
+        // An account removed (or removed and added again) while it was
+        // asked keeps no reading of the old one.
+        let registry = self.registry();
         let readings = {
             let mut state = self.lock();
-            for (id, outcome) in results {
+            for (id, created_at_ms, outcome) in results {
+                if registry.get(&id).map(|entry| entry.created_at_ms) != Some(created_at_ms) {
+                    continue;
+                }
                 if let Err(error) = &outcome {
                     tracing::info!(account = %id, error = %error.word(), "usage not read");
                 }
@@ -594,12 +830,15 @@ pub(crate) mod test_support {
             Self { dir, paths }
         }
 
-        pub fn accounts(&self) -> Accounts {
-            Accounts::new(
+        /// Accounts on this home; sign-ins and profiles are loaded once.
+        pub fn accounts(&self) -> Arc<Accounts> {
+            let accounts = Arc::new(Accounts::new(
                 Some(self.paths.clone()),
                 Box::new(credentials::FileStore),
                 false,
-            )
+            ));
+            accounts.load_blocking();
+            accounts
         }
 
         pub fn sign_in(&self, dir: &Path, token: &str, expires_at_ms: u64) {
@@ -638,6 +877,8 @@ mod tests {
         .unwrap();
         let accounts = home.accounts();
         let snapshot = accounts.snapshot(&HashMap::from([("default".into(), 2)]), 2);
+        assert!(accounts.can_fetch());
+        assert_eq!(accounts.usage_origin(), Some("http://127.0.0.1:9"));
         let claude = snapshot.claude;
         assert!(!claude.managed);
         assert!(claude.available);
@@ -673,6 +914,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        accounts.load_blocking();
         let registry = accounts.registry();
         let personal = home.paths.account_dir("personal");
         assert_eq!(
@@ -708,6 +950,104 @@ mod tests {
         let snapshot = accounts.snapshot(&HashMap::new(), 0);
         let work = &snapshot.claude.accounts[0];
         assert!(work.signed_in && work.token_expired);
+    }
+
+    #[test]
+    fn a_new_token_lifts_a_refusal() {
+        let home = Home::new("rejected");
+        home.sign_in(&home.paths.claude_home, "demo-old", now_ms() + 3_600_000);
+        let accounts = home.accounts();
+        accounts
+            .lock()
+            .readings
+            .entry("default".into())
+            .or_default()
+            .record(Err(usage::FetchError::Unauthorized), now_ms());
+        assert!(
+            accounts.views().1[0].token_expired,
+            "refused: counts as expired"
+        );
+        // Same token read again (a Keychain looks the same on disk): still refused.
+        accounts.forget_credentials("default");
+        accounts.load_blocking();
+        assert!(accounts.views().1[0].token_expired);
+        // Signed in again: a new token, asked again.
+        home.sign_in(&home.paths.claude_home, "demo-new", now_ms() + 3_600_000);
+        accounts.forget_credentials("default");
+        accounts.load_blocking();
+        assert!(!accounts.views().1[0].token_expired);
+    }
+
+    #[test]
+    fn nobody_watching_reads_only_when_another_account_could_take_over() {
+        let home = Home::new("unwatched");
+        home.sign_in(&home.paths.claude_home, "demo-work", now_ms() + 3_600_000);
+        let accounts = home.accounts();
+        assert!(!accounts.may_read_unwatched(), "no accounts.json");
+        let id = accounts.add("Personal", "green", Some(vec![])).unwrap();
+        accounts.load_blocking();
+        assert!(
+            !accounts.may_read_unwatched(),
+            "the other one is signed out"
+        );
+        home.sign_in(
+            &home.paths.account_dir(&id),
+            "demo-personal",
+            now_ms() + 3_600_000,
+        );
+        accounts.load_blocking();
+        assert!(accounts.may_read_unwatched());
+        // The global one alone signed in: nobody could take over.
+        std::fs::remove_file(home.paths.claude_home.join(".credentials.json")).unwrap();
+        accounts
+            .update_registry(|registry| {
+                registry.global = id.clone();
+                Ok(())
+            })
+            .unwrap();
+        accounts.load_blocking();
+        assert!(!accounts.may_read_unwatched());
+    }
+
+    #[test]
+    fn the_snapshot_reads_nothing_itself() {
+        let home = Home::new("cached");
+        let accounts = home.accounts();
+        assert!(!accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+        home.sign_in(&home.paths.claude_home, "demo-work", now_ms() + 3_600_000);
+        assert!(
+            !accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in,
+            "not loaded yet"
+        );
+        accounts.load_blocking();
+        assert!(accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+    }
+
+    #[test]
+    fn a_sandbox_never_reads_this_computer_nor_asks_the_endpoint() {
+        let dir =
+            std::env::temp_dir().join(format!("tmux-sandbox-{}", uuid::Uuid::new_v4().simple()));
+        let accounts = Accounts::sandbox(&dir);
+        let paths = accounts.paths().unwrap();
+        for path in [
+            &paths.home,
+            &paths.claude_home,
+            &paths.root,
+            &paths.codex_home,
+        ] {
+            assert!(path.starts_with(&dir), "{}", path.display());
+        }
+        assert!(paths.default_json.starts_with(&dir));
+        assert!(!accounts.can_fetch());
+        // The worker's own unit tests get a sandbox from `from_env` too.
+        let from_env = Accounts::from_env();
+        assert!(!from_env.can_fetch());
+        assert!(from_env
+            .paths()
+            .unwrap()
+            .home
+            .starts_with(std::env::temp_dir()));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

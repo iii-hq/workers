@@ -390,6 +390,11 @@ pub struct PaneClaude {
     /// Why it can't, in one sentence, when `movable` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_movable_reason: Option<String>,
+    /// Why the last move of this pane (one that waited for its turn, or a
+    /// switch of the global account) failed, in one sentence; cleared by
+    /// the next account change of the pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_error: Option<String>,
 }
 
 /// One usage window of an account.

@@ -5,8 +5,9 @@
 //! the login Keychain, as a generic password whose service is
 //! `Claude Code-credentials` for the default account and
 //! `Claude Code-credentials-<first 8 hex of sha256(CLAUDE_CONFIG_DIR)>` for
-//! any other (Claude Code 2.1.322 hashes the variable's value as given, NFC
-//! normalised), and whose account is `$USER`; the file is its fallback there.
+//! any other (Claude Code 2.1.322 hashes the variable's value NFC-normalised:
+//! `createHash("sha256").update(dir.normalize("NFC"))`), and whose account
+//! is `$USER`; the file is its fallback there.
 //! The token is never logged, printed or sent anywhere but the usage endpoint.
 //!
 //! The profile (email, organization, plan) and the usage reading Claude Code
@@ -102,6 +103,7 @@ pub fn keychain_service(config_dir_env: Option<&str>) -> String {
     match config_dir_env.filter(|dir| !dir.is_empty()) {
         None => "Claude Code-credentials".to_string(),
         Some(dir) => {
+            let dir = icu_normalizer::ComposingNormalizerBorrowed::new_nfc().normalize(dir);
             let digest = Sha256::digest(dir.as_bytes());
             let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
             format!("Claude Code-credentials-{hex}")
@@ -370,6 +372,19 @@ mod tests {
         assert_eq!(
             keychain_service(Some("/tmp/x")).len(),
             "Claude Code-credentials-".len() + 8
+        );
+        // NFC: "é" written as e + U+0301 names the same item as U+00E9.
+        assert_eq!(
+            keychain_service(Some("/Users/me/caf\u{65}\u{301}")),
+            keychain_service(Some("/Users/me/caf\u{e9}"))
+        );
+        let digest = Sha256::digest("/Users/me/caf\u{e9}".as_bytes());
+        assert_eq!(
+            keychain_service(Some("/Users/me/caf\u{65}\u{301}")),
+            format!(
+                "Claude Code-credentials-{:02x}{:02x}{:02x}{:02x}",
+                digest[0], digest[1], digest[2], digest[3]
+            )
         );
         assert_eq!(keychain_account(Some("sergio")), "sergio");
         assert_eq!(keychain_account(Some("José")), "claude-code-user");

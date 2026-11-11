@@ -2,6 +2,11 @@
 # Runs as `dev` in the demo container: fake accounts and Codex records (once),
 # the mock usage endpoint on loopback, then the worker against the engine.
 set -euo pipefail
+# Only ever inside the demo container (demo/Dockerfile sets DEMO_CONTAINER=1):
+# on a host this would write to the real home folder or talk to its tmux.
+if [[ ! -f /.dockerenv || "${DEMO_CONTAINER:-}" != 1 ]]; then
+  echo "$(basename "$0") runs only inside the demo container" >&2; exit 2
+fi
 : "${ENGINE_URL:?ENGINE_URL is required, e.g. ws://127.0.0.1:49370}"
 : "${MOCK_PORT:?MOCK_PORT is required}"
 export III_CLAUDE_USAGE_URL="http://127.0.0.1:${MOCK_PORT}"

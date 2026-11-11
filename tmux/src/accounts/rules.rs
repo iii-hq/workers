@@ -204,10 +204,13 @@ pub struct Decision {
 /// What mode `switch` (and `back_after_reset`) does now, if anything.
 pub fn decide(registry: &Registry, accounts: &[ClaudeAccount], now_ms: u64) -> Option<Decision> {
     let rules = &registry.rules;
-    if rules.mode == RulesMode::Off {
+    // Only mode `switch` switches, back after a reset included.
+    if rules.mode != RulesMode::Switch {
         return None;
     }
-    // Back to the account it switched away from, once that one has reset.
+    // Back to the account it switched away from, once that one has reset;
+    // a switch someone made since cleared `back_at_ms` (and the global
+    // account must still be the one the rules switched to).
     if let Some(last) = registry.last_switch.as_ref() {
         let back_due = last.auto
             && last.reason.as_deref() != Some("back")
@@ -228,9 +231,6 @@ pub fn decide(registry: &Registry, accounts: &[ClaudeAccount], now_ms: u64) -> O
                 });
             }
         }
-    }
-    if rules.mode != RulesMode::Switch {
-        return None;
     }
     let global = accounts
         .iter()
@@ -488,6 +488,15 @@ mod tests {
             account("personal", Some(12.0), None),
         ];
         assert_eq!(decide(&registry, &reset, 9_500).unwrap().to, "default");
+        // Suggest mode never switches back either.
+        registry.rules.mode = RulesMode::Suggest;
+        assert!(decide(&registry, &reset, 9_500).is_none());
+        registry.rules.mode = RulesMode::Switch;
+        // A switch by hand clears the way back, even once the global one is
+        // the rules' target again (personal → side → personal by hand).
+        let mut by_hand = registry.clone();
+        by_hand.last_switch.as_mut().unwrap().back_at_ms = None;
+        assert!(decide(&by_hand, &reset, 9_500).is_none());
         // Someone switched by hand since: no going back.
         registry.global = "default".into();
         assert!(decide(&registry, &reset, 9_500).is_none());

@@ -1755,6 +1755,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures-util",
+ "icu_normalizer",
  "iii-config-client",
  "iii-console-ui",
  "iii-sdk",

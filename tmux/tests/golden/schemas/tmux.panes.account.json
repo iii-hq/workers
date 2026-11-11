@@ -1,5 +1,5 @@
 {
-  "description": "Choose the Claude Code account of a pane: `global` follows the global account (and moves with it), an account id pins the pane there. When Claude Code runs on another account, it moves: it stops and starts again there, resuming its conversation (copied to that account if it doesn't share conversations). An idle pane moves now; one that is working or waiting moves once its turn ends (`after_turn`). Choosing the account it already runs on changes no process, and cancels a move that waits (`cancelled`).",
+  "description": "Choose the Claude Code account of a pane: `global` follows the global account (and moves with it), an account id pins the pane there. When Claude Code runs on another account (which must be signed in), it moves: it stops and starts again there, resuming its conversation (copied to that account if it doesn't share conversations). An idle pane moves now (looked at again right before it stops); one that is working or waiting moves once its turn ends (`after_turn`). Choosing the account it already runs on changes no process, and cancels a move that waits (`cancelled`).",
   "function_id": "tmux::panes::account",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

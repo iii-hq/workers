@@ -3,9 +3,9 @@
 # the worker makes them (agent-accounts §3.5, D4): a placeholder first, the
 # marks, then the program. Run as dev inside the demo container.
 set -euo pipefail
-# Only ever inside the demo container: it replaces the demo sessions of the
-# tmux server it reaches.
-if [[ ! -f /.dockerenv || ! -f /opt/demo/entrypoint.sh || "$(id -un)" != dev ]]; then
+# Only ever inside the demo container (demo/Dockerfile sets DEMO_CONTAINER=1):
+# it replaces the demo sessions of the tmux server it reaches.
+if [[ ! -f /.dockerenv || "${DEMO_CONTAINER:-}" != 1 || "$(id -un)" != dev ]]; then
   echo "seed-inside.sh runs only inside the demo container" >&2; exit 2
 fi
 unset TMUX TMUX_PANE

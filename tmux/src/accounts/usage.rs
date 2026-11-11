@@ -184,6 +184,8 @@ impl UsageClient {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            // No proxy from the environment ever sees the token.
+            .no_proxy()
             .user_agent(concat!("iii-tmux/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_default();
@@ -193,14 +195,19 @@ impl UsageClient {
         }
     }
 
+    /// The origin it asks.
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
     /// One reading. The token goes to the endpoint and nowhere else.
     pub async fn fetch(&self, token: &Secret) -> Result<Value, FetchError> {
-        if !super::paths::origin_allowed(&self.origin) {
-            return Err(FetchError::NotAllowed);
-        }
+        let url = super::paths::allowed_origin(&self.origin)
+            .and_then(|origin| origin.join(USAGE_PATH).ok())
+            .ok_or(FetchError::NotAllowed)?;
         let response = self
             .http
-            .get(format!("{}{USAGE_PATH}", self.origin))
+            .get(url)
             .header("Authorization", format!("Bearer {}", token.expose()))
             .header("anthropic-beta", OAUTH_BETA)
             .header("Content-Type", "application/json")

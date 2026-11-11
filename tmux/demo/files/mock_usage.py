@@ -165,6 +165,10 @@ def value(text):
 
 
 def main():
+    # Only ever inside the demo container (demo/Dockerfile sets
+    # DEMO_CONTAINER=1): it writes ~/demo/usage.json.
+    if not (os.path.exists("/.dockerenv") and os.environ.get("DEMO_CONTAINER") == "1"):
+        sys.exit("mock_usage.py runs only inside the demo container")
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     command = sys.argv[1]

@@ -11,8 +11,18 @@ import argparse
 import datetime as dt
 import json
 import os
+import sys
 import time
 import uuid
+
+
+def require_container(what):
+    """Only ever inside the demo container (demo/Dockerfile sets
+    DEMO_CONTAINER=1): on a host this would write to the real home folder."""
+    if not (os.path.exists("/.dockerenv") and os.environ.get("DEMO_CONTAINER") == "1"):
+        sys.stderr.write("%s runs only inside the demo container\n" % what)
+        sys.exit(2)
+
 
 HOME = os.path.expanduser("~")
 ROOT = os.path.join(HOME, ".local/share/iii/claude-accounts")
@@ -38,6 +48,7 @@ def write_json(path, value, mode=0o600):
 
 
 def sign_in(config_dir, account_json, account_id):
+    require_container("setup_demo.sign_in")
     email, org, org_type, plan, tier = PEOPLE.get(
         account_id, ("%s@example.dev" % account_id, "Example", "claude_pro", "pro",
                      "default_claude_pro"))
@@ -100,6 +111,7 @@ def codex_rollout():
 
 
 def main():
+    require_container("setup_demo.py")
     parser = argparse.ArgumentParser()
     parser.add_argument("--accounts", choices=["all", "two", "one"], default="all")
     args = parser.parse_args()

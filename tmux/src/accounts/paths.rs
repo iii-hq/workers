@@ -139,24 +139,34 @@ pub fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Whether the usage endpoint may be sent a sign-in: the real one, or a
-/// loopback address for tests and demos (agent-accounts D11).
-pub fn origin_allowed(origin: &str) -> bool {
-    if origin == ANTHROPIC_API {
-        return true;
+/// The usage endpoint's origin as a URL, when a sign-in may be sent there:
+/// the real one, or a loopback address for tests and demos (agent-accounts
+/// D11). Parsed, so `http://127.0.0.1:8787@evil.example` (userinfo before
+/// another host) is refused; no userinfo, query or fragment, nothing but
+/// `/` as its path.
+pub fn allowed_origin(origin: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(origin).ok()?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+    {
+        return None;
     }
-    let Some(rest) = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    let host = rest.split('/').next().unwrap_or_default();
-    let host = match host.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or_default(),
-        None => host.rsplit_once(':').map_or(host, |(host, _)| host),
-    };
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
+    let real = url.scheme() == "https"
+        && url.host_str() == Some("api.anthropic.com")
+        && url.port().is_none();
+    // The parser writes hosts in their canonical form (`127.1` is
+    // `127.0.0.1`, IPv6 in brackets).
+    let loopback = matches!(url.scheme(), "http" | "https")
+        && matches!(url.host_str()?, "localhost" | "127.0.0.1" | "[::1]");
+    (real || loopback).then_some(url)
+}
+
+/// Whether the usage endpoint may be sent a sign-in (see [`allowed_origin`]).
+pub fn origin_allowed(origin: &str) -> bool {
+    allowed_origin(origin).is_some()
 }
 
 #[cfg(test)]
@@ -251,5 +261,14 @@ mod tests {
         assert!(!origin_allowed("http://10.0.0.2:8787"));
         assert!(!origin_allowed("http://127.0.0.1.nip.io"));
         assert!(!origin_allowed("ftp://127.0.0.1"));
+        // Userinfo before another host: the host is evil.example.
+        assert!(!origin_allowed("http://127.0.0.1:8787@evil.example"));
+        assert!(!origin_allowed("http://user@127.0.0.1:8787"));
+        assert!(!origin_allowed("https://api.anthropic.com:8443"));
+        assert!(!origin_allowed("http://api.anthropic.com"));
+        assert!(!origin_allowed("http://127.0.0.1:8787/elsewhere"));
+        assert!(!origin_allowed("http://127.0.0.1:8787/?x=1"));
+        assert!(!origin_allowed("http://127.0.0.2:8787"));
+        assert!(origin_allowed("https://api.anthropic.com/"));
     }
 }

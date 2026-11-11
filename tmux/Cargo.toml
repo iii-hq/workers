@@ -26,6 +26,9 @@ base64 = "0.22"
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
+# NFC, as Claude Code normalises CLAUDE_CONFIG_DIR before naming its Keychain
+# item; already in the graph through reqwest (url, idna).
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
 tar = { version = "0.4", default-features = false }
 libc = "0.2"
 portable-pty = "0.9.0"

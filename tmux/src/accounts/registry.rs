@@ -96,8 +96,16 @@ impl Registry {
     /// naming accounts that exist.
     pub fn normalize(&mut self) {
         let mut seen = std::collections::HashSet::new();
-        self.accounts
-            .retain(|entry| !entry.id.is_empty() && seen.insert(entry.id.clone()));
+        self.accounts.retain(|entry| {
+            // An id becomes a folder name and a tmux option value: one that
+            // could name another folder (`..`, `/`) or the word `global` is
+            // dropped, whatever a hand edit wrote.
+            if !valid_id(&entry.id) {
+                tracing::warn!(id = %entry.id, "accounts.json: invalid account id ignored");
+                return false;
+            }
+            seen.insert(entry.id.clone())
+        });
         match self.accounts.iter().position(|entry| entry.id == DEFAULT) {
             Some(0) => {}
             Some(at) => {
@@ -148,6 +156,18 @@ impl Registry {
             .find(|id| !taken(id))
             .expect("some suffix is free")
     }
+}
+
+/// An id an entry may have: `default`, or 1 to 32 of `[a-z0-9-]` starting
+/// with a letter or digit, never `global`.
+pub fn valid_id(id: &str) -> bool {
+    id == DEFAULT
+        || (id != super::GLOBAL
+            && (1..=ID_MAX).contains(&id.len())
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !id.starts_with('-'))
 }
 
 /// `[a-z0-9-]`, at most 32 characters, never empty.
@@ -270,11 +290,16 @@ impl Store {
     }
 
     /// Change the registry and write it; refused while the file is
-    /// unreadable, so a hand edit gone wrong is never overwritten.
+    /// unreadable, so a hand edit gone wrong is never overwritten. Another
+    /// process changing it at the same time waits for this one
+    /// (`accounts.lock`, an advisory lock), and the file is read again
+    /// under the lock.
     pub fn update<T>(
         &mut self,
         change: impl FnOnce(&mut Registry) -> Result<T, String>,
     ) -> Result<T, String> {
+        let _lock = FileLock::take(&self.path.with_file_name("accounts.lock"))?;
+        self.loaded = false;
         self.refresh();
         let mut registry = match &self.state {
             Ok(Some(registry)) => registry.clone(),
@@ -287,6 +312,50 @@ impl Store {
         self.loaded = false;
         self.refresh();
         Ok(out)
+    }
+}
+
+/// An exclusive `flock` on a file, released when dropped (or when the
+/// process ends).
+struct FileLock(std::fs::File);
+
+/// How long a change of `accounts.json` waits for another process's.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl FileLock {
+    fn take(path: &Path) -> Result<Self, String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::io::AsRawFd;
+        if let Some(folder) = path.parent() {
+            make_private_dir(folder)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| format!("Could not open {} ({error}).", path.display()))?;
+        let started = std::time::Instant::now();
+        loop {
+            // SAFETY: flock on a descriptor this function owns.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self(file));
+            }
+            if started.elapsed() > LOCK_WAIT {
+                return Err("accounts.json is being changed by another process; try again.".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: as above; closing the file would release it too.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
@@ -411,6 +480,68 @@ mod tests {
         assert_eq!(registry.rules.at, Threshold::Week90, "a partial rule set");
         assert!(registry.rules.move_idle);
         assert_eq!(registry.rules.order, vec!["p"]);
+    }
+
+    #[test]
+    fn ids_from_disk_are_checked() {
+        let ids = [
+            "ok-1".to_string(),
+            "../x".into(),
+            "a/b".into(),
+            "global".into(),
+            "-lead".into(),
+            "UPPER".into(),
+            String::new(),
+            "y".repeat(33),
+        ];
+        let accounts: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|id| serde_json::json!({"id": id, "name": "N", "color": "green"}))
+            .collect();
+        let mut registry: Registry =
+            serde_json::from_value(serde_json::json!({"global": "../x", "accounts": accounts}))
+                .unwrap();
+        registry.normalize();
+        assert_eq!(
+            registry
+                .accounts
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default", "ok-1"]
+        );
+        assert_eq!(registry.global, "default");
+        assert!(valid_id("default") && valid_id("side-project-2"));
+        assert!(!valid_id("global") && !valid_id("a.b") && !valid_id(".."));
+    }
+
+    #[test]
+    fn changes_wait_for_another_process() {
+        let dir = temp_dir("lock");
+        let path = dir.join("accounts.json");
+        let held = FileLock::take(&dir.join("accounts.lock")).unwrap();
+        let mut store = Store::new(path.clone());
+        let started = std::time::Instant::now();
+        let busy = store.update(|_| Ok(()));
+        assert!(busy.is_err(), "another holder: refused after the wait");
+        assert!(started.elapsed() >= LOCK_WAIT);
+        drop(held);
+        // Another process wrote meanwhile: the change starts from its file.
+        let mut other = Store::new(path.clone());
+        other
+            .update(|registry| {
+                registry.rules.five_hour = true;
+                Ok(())
+            })
+            .unwrap();
+        store.current();
+        store
+            .update(|registry| {
+                assert!(registry.rules.five_hour, "read again under the lock");
+                Ok(())
+            })
+            .unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

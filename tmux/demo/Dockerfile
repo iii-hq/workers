@@ -11,6 +11,9 @@ RUN apt-get update -qq \
  && (id -u ubuntu >/dev/null 2>&1 && userdel -r ubuntu || true) \
  && useradd -m -u 1000 -s /bin/bash dev
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+# What every demo script checks (with /.dockerenv) before it writes a file or
+# talks to tmux: they never run on the host.
+ENV DEMO_CONTAINER=1
 COPY files/claude files/codex files/claude-state /usr/local/bin/
 COPY files/entrypoint.sh files/mock_usage.py files/setup_demo.py files/seed-inside.sh /opt/demo/
 RUN chmod 755 /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/claude-state /opt/demo/*.sh /opt/demo/*.py

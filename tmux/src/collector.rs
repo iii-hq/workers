@@ -95,6 +95,17 @@ impl Collector {
         Self::with_accounts(config, console, Accounts::from_env())
     }
 
+    /// For tests: accounts in a temporary folder of their own (see
+    /// [`Accounts::sandbox`]), so no test reads this computer's Claude Code
+    /// sign-in or asks the usage endpoint.
+    pub fn sandboxed(config: SharedConfig, console: ConsoleClients) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "tmux-collector-sandbox-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        Self::with_accounts(config, console, Accounts::sandbox(&dir))
+    }
+
     pub fn with_accounts(
         config: SharedConfig,
         console: ConsoleClients,
@@ -383,7 +394,9 @@ impl Collector {
             }
             None => (HashMap::new(), HashMap::new()),
         };
-        let claude = self.claude_states(&raw, &statuses, &records, &procs.table);
+        // tmux before 3.0 keeps the account marks per window (D4).
+        let window_marks = tmux.as_ref().is_some_and(|tmux| tmux.pane_scope() == "-w");
+        let claude = self.claude_states(&raw, &statuses, &records, &procs.table, window_marks);
         let mut counts: HashMap<String, u32> = HashMap::new();
         let mut following = 0;
         for state in claude.values() {
@@ -405,6 +418,8 @@ impl Collector {
             .collect();
         *self.claude_seen.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((Instant::now(), claude));
+        // Sign-ins and profiles are read in the background (M2).
+        self.accounts.load_soon().await;
         let usage = self.accounts.snapshot(&counts, following);
         let sessions = build_sessions(
             &raw,
@@ -434,20 +449,34 @@ impl Collector {
 
     /// Each pane that runs Claude Code or carries an account mark. A pane
     /// running another agent (Codex) gets no account (BadgeStyles).
+    /// `window_marks`: tmux keeps the marks per window (before 3.0), so
+    /// two Claude Code panes in one window can't have marks of their own.
     fn claude_states(
         &self,
         raw: &RawSnapshot,
         statuses: &HashMap<String, AgentStatus>,
         records: &HashMap<String, ClaudeRecord>,
         table: &ProcTable,
+        window_marks: bool,
     ) -> HashMap<String, PaneState> {
         let registry = self.accounts.registry();
+        let mut claude_per_window: HashMap<&str, u32> = HashMap::new();
+        for pane in &raw.panes {
+            if statuses
+                .get(&pane.id)
+                .is_some_and(|agent| agent.id == "claude")
+            {
+                *claude_per_window
+                    .entry(pane.window_id.as_str())
+                    .or_default() += 1;
+            }
+        }
+        let alive: std::collections::HashSet<&str> =
+            raw.panes.iter().map(|pane| pane.id.as_str()).collect();
+        let move_errors = self.accounts.move_errors(&alive);
         let mut out = HashMap::new();
         for pane in &raw.panes {
             let marks = Marks::from_raw(&pane.claude_mark, pane.skip_mark, &pane.pending_mark);
-            if marks.pending.is_some() {
-                self.accounts.note_pending();
-            }
             let agent = statuses.get(&pane.id);
             let claude = match agent {
                 Some(agent) if agent.id == "claude" => Some(ClaudeProc {
@@ -458,11 +487,23 @@ impl Collector {
                 None => None,
             };
             let claude_pid = claude.as_ref().map(|c| c.pid);
-            let Some(info) =
+            if marks.pending.is_some() {
+                self.accounts.note_waiting(&pane.id, claude_pid);
+            }
+            let marks_shared = window_marks
+                && claude_per_window
+                    .get(pane.window_id.as_str())
+                    .is_some_and(|count| *count > 1);
+            let Some(mut info) =
                 pane_claude(&self.accounts, &registry, table, pane.pid, &marks, claude)
             else {
                 continue;
             };
+            if marks_shared {
+                info.movable = false;
+                info.not_movable_reason = Some(crate::accounts::panes::SHARED_MARKS.to_string());
+            }
+            info.move_error = move_errors.get(&pane.id).cloned();
             out.insert(
                 pane.id.clone(),
                 PaneState {
@@ -477,6 +518,7 @@ impl Collector {
                     kind: claude_pid.and_then(|pid| {
                         crate::accounts::panes::move_kind(table, pane.pid, pid).ok()
                     }),
+                    marks_shared,
                 },
             );
         }

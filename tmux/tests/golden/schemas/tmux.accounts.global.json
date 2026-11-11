@@ -1,5 +1,5 @@
 {
-  "description": "Make a Claude Code account the global one: what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.",
+  "description": "Make a Claude Code account the global one (it must be signed in): what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.",
   "function_id": "tmux::accounts::global",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

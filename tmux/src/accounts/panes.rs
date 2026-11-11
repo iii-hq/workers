@@ -96,6 +96,13 @@ pub fn move_kind(
     }
 }
 
+/// Claude Code's own status says it is between turns (D7).
+pub fn is_idle_status(status: &str) -> bool {
+    status == "idle"
+}
+
+pub const SHARED_MARKS: &str = "tmux before 3.0 keeps one account mark per window, and this window has more than one Claude Code pane.";
+
 /// The process runs without permission prompts.
 pub fn skips_permissions(argv: &[String]) -> bool {
     argv.iter().enumerate().any(|(at, arg)| {
@@ -124,17 +131,20 @@ pub struct PaneState {
     pub cwd: String,
     /// How Claude Code would be moved, when it runs and can be.
     pub kind: Option<MoveKind>,
+    /// tmux before 3.0 keeps marks per window, and another Claude Code pane
+    /// shares this one's window: its marks can't be its own.
+    pub marks_shared: bool,
 }
 
 impl PaneState {
     /// Claude Code is between turns: its own status is exactly `idle`
-    /// (`shell` means a background command still runs), or, without a
-    /// status, its screen says so (D7).
+    /// (`shell` means a background command still runs). Without a status
+    /// it is not: the screen is no proof (D7).
     pub fn idle(&self) -> bool {
-        match self.record.as_ref().and_then(|r| r.status.as_deref()) {
-            Some(status) => status == "idle",
-            None => self.agent_state == Some(crate::model::AgentState::Idle),
-        }
+        self.record
+            .as_ref()
+            .and_then(|r| r.status.as_deref())
+            .is_some_and(is_idle_status)
     }
 }
 
@@ -168,6 +178,7 @@ pub fn pane_claude(
             session_id: None,
             movable: false,
             not_movable_reason: Some(NOT_RUNNING.to_string()),
+            move_error: None,
         });
     };
     let record = claude.record;
@@ -192,6 +203,7 @@ pub fn pane_claude(
         session_id,
         movable: movable.is_ok(),
         not_movable_reason: movable.err().map(str::to_string),
+        move_error: None,
     })
 }
 

@@ -156,6 +156,9 @@ fn world(name: &str) -> World {
         Box::new(FileStore),
         false,
     ));
+    // No test reads this computer's sign-in or asks the real endpoint (O2).
+    assert!(paths.claude_home.starts_with(&dir) && paths.default_json.starts_with(&dir));
+    assert_eq!(accounts.usage_origin(), Some("http://127.0.0.1:9"));
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -194,6 +197,8 @@ fn world(name: &str) -> World {
         .env("HOME", &home)
         .env("PATH", path)
         .env("FAKE_CLAUDE_STATE_DIR", dir.join("state"))
+        // The fake refuses to run outside a folder that holds all it writes.
+        .env("FAKE_CLAUDE_SANDBOX", &dir)
         .current_dir(&home)
         .output()
         .unwrap();
@@ -537,6 +542,13 @@ async fn panes_move_between_accounts_between_turns() {
         .await
         .unwrap();
     }
+    for dir in [
+        w.paths.claude_home.clone(),
+        w.paths.account_dir("personal"),
+        w.paths.account_dir("side"),
+    ] {
+        signed_in(&dir);
+    }
     let personal_dir = w.paths.account_dir("personal");
 
     // An idle pane that follows the global account moves at once, and
@@ -703,6 +715,7 @@ async fn claude_started_by_hand_moves_through_its_shell() {
     )
     .await
     .unwrap();
+    signed_in(&w.paths.account_dir("personal"));
     let shell = windows::create(&w.ctx, window("shell", None))
         .await
         .unwrap()
@@ -737,10 +750,9 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// A signed-in account folder whose Claude Code cached a usage reading
-/// (`cachedUsageUtilization` in its `.claude.json`): the week at `week` %,
-/// resetting at `resets_ms`.
-fn signed_in_with_usage(dir: &Path, json: &Path, week: f64, resets_ms: u64) {
+/// An account folder signed in with a demo token: a move only goes to a
+/// signed-in account.
+fn signed_in(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(
         dir.join(".credentials.json"),
@@ -749,6 +761,13 @@ fn signed_in_with_usage(dir: &Path, json: &Path, week: f64, resets_ms: u64) {
         .to_string(),
     )
     .unwrap();
+}
+
+/// A signed-in account folder whose Claude Code cached a usage reading
+/// (`cachedUsageUtilization` in its `.claude.json`): the week at `week` %,
+/// resetting at `resets_ms`.
+fn signed_in_with_usage(dir: &Path, json: &Path, week: f64, resets_ms: u64) {
+    signed_in(dir);
     std::fs::write(
         json,
         serde_json::json!({
@@ -879,4 +898,151 @@ async fn rules_suggest_switch_and_switch_back() {
         ("personal", "default", Some("back"))
     );
     assert_eq!(w.settled_on(&a, "default").await.follow, Follow::Global);
+}
+
+#[tokio::test]
+async fn a_person_switching_calls_off_the_switch_back() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("back");
+    for name in ["Personal", "Side"] {
+        account_fns::add(
+            &w.ctx,
+            account_fns::AddAccountInput {
+                name: name.into(),
+                color: "green".into(),
+                shared: Some(vec![]),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let reset_at = now_ms() + 2_000;
+    signed_in_with_usage(&w.paths.claude_home, &w.paths.default_json, 95.0, reset_at);
+    for id in ["personal", "side"] {
+        signed_in_with_usage(
+            &w.paths.account_dir(id),
+            &w.paths.account_json(id),
+            10.0,
+            now_ms() + 86_400_000,
+        );
+    }
+    account_fns::rules(
+        &w.ctx,
+        account_fns::RulesInput {
+            mode: Some(tmux::model::RulesMode::Switch),
+            order: Some(vec!["personal".into()]),
+            back_after_reset: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(tmux::accounts::daemon::run_rules(&w.collector).await);
+    let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
+    assert_eq!(listed.global, "personal");
+    assert_eq!(listed.last_switch.unwrap().back_at_ms, Some(reset_at));
+
+    // Someone picks another account: the rules never undo that choice.
+    account_fns::global(
+        &w.ctx,
+        account_fns::GlobalInput {
+            account: "side".into(),
+            move_mode: account_fns::GlobalMove::IdleNowWorkingAfter,
+        },
+    )
+    .await
+    .unwrap();
+    let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
+    assert_eq!(listed.last_switch.unwrap().back_at_ms, None);
+    tokio::time::sleep(Duration::from_millis(
+        reset_at.saturating_sub(now_ms()) + 200,
+    ))
+    .await;
+    assert!(!tmux::accounts::daemon::run_rules(&w.collector).await);
+    assert_eq!(
+        account_fns::list(&w.ctx, EmptyInput {})
+            .await
+            .unwrap()
+            .global,
+        "side"
+    );
+
+    // A signed-out account is never made global.
+    std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
+    let refused = account_fns::global(
+        &w.ctx,
+        account_fns::GlobalInput {
+            account: "personal".into(),
+            move_mode: account_fns::GlobalMove::IdleNowWorkingAfter,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("not signed in"), "{refused}");
+}
+
+#[tokio::test]
+async fn before_tmux_3_two_claude_panes_in_a_window_stay_put() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("shared");
+    let a = windows::create(&w.ctx, window("pair", claude("global", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    w.claude(&a).await;
+    assert!(w.claude(&a).await.movable, "alone in its window");
+    // Through the worker's tmux and by its full path: the fake, never the
+    // computer's own `claude` (tmux would give the pane this test's PATH).
+    let fake = w.sandbox.dir.join("bin/claude");
+    let split = std::process::Command::new(w.sandbox.dir.join("tmux"))
+        .args([
+            "-L",
+            &w.sandbox.socket,
+            "split-window",
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])
+        .args(["-t", &a])
+        .arg(fake.to_string_lossy().as_ref())
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .output()
+        .unwrap();
+    let b = String::from_utf8_lossy(&split.stdout).trim().to_string();
+    assert!(b.starts_with('%'), "{split:?}");
+    w.claude(&b).await;
+    assert!(w.screen(&b).contains("(demo)"), "the fake Claude Code");
+    let old = w.tmux_out(&["-V"]).starts_with("tmux 2.");
+    for pane in [&a, &b] {
+        let info = w.claude(pane).await;
+        if old {
+            // One mark per window there: neither pane can keep its own account.
+            assert!(!info.movable, "{info:?}");
+            assert_eq!(
+                info.not_movable_reason.as_deref(),
+                Some(tmux::accounts::panes::SHARED_MARKS)
+            );
+        } else {
+            assert!(info.movable, "{info:?}");
+        }
+    }
+    if old {
+        let refused = panes::account(
+            &w.ctx,
+            panes::PaneAccountInput {
+                pane: a.clone(),
+                account: "default".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused, tmux::accounts::panes::SHARED_MARKS);
+    }
 }
