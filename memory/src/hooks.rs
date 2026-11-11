@@ -135,11 +135,71 @@ pub struct PreGenerateInput {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub generate: Option<GenerateInput>,
-    /// Delivery context the harness attaches to this hook call. Recall never
-    /// reads it (it reads the last user message): only its
-    /// `extraction_history` is imported, then dropped before the hook runs.
+    /// Delivery context the harness attaches to this hook call. Absent on a
+    /// harness that predates it: recall then reads the last user message.
+    /// Its `extraction_history` is imported, then dropped before the hook runs.
     #[serde(default)]
     pub recall_context: Option<Value>,
+}
+
+/// `recall_context`, version 1: which entry opened the turn, how it was
+/// delivered, and the text recall reads.
+#[derive(Deserialize)]
+struct RecallContext {
+    version: u64,
+    session_id: String,
+    turn_id: String,
+    source: RecallSource,
+    #[serde(default)]
+    query: Option<RecallQuery>,
+    /// An earlier user entry this one continues ("go on", "do it"): recall
+    /// reads its text, not the continuation's.
+    #[serde(default)]
+    continuation: Option<RecallQuery>,
+}
+
+#[derive(Deserialize)]
+struct RecallSource {
+    /// `direct`, `invoked-agent`, `notification` or `unknown`.
+    kind: String,
+    entry_id: String,
+}
+
+#[derive(Deserialize)]
+struct RecallQuery {
+    entry_id: String,
+    text: String,
+}
+
+/// What the turn's opening step recalls for; `None` recalls nothing (rules
+/// still go in). Without a delivery context, the last user message. With
+/// one, only a message the user or an invoking agent sent recalls, on the
+/// earlier message it continues when it names one; a notification, an
+/// unknown delivery or a context that does not match this turn recalls nothing.
+fn recall_query(input: &PreGenerateInput) -> Option<String> {
+    if input.step != 0 {
+        return None;
+    }
+    let Some(context) = &input.recall_context else {
+        return Some(last_user_text(input.generate.as_ref().map(|g| &g.messages)));
+    };
+    let context: RecallContext = serde_json::from_value(context.clone()).ok()?;
+    let valid = |q: &RecallQuery| !q.entry_id.is_empty() && !q.text.trim().is_empty();
+    if context.version != 1
+        || context.session_id != input.session_id
+        || Some(context.turn_id.as_str()) != input.turn_id.as_deref()
+        || !matches!(context.source.kind.as_str(), "direct" | "invoked-agent")
+    {
+        return None;
+    }
+    let current = context
+        .query
+        .filter(|q| valid(q) && q.entry_id == context.source.entry_id)?;
+    match context.continuation {
+        Some(prior) if valid(&prior) && prior.entry_id != current.entry_id => Some(prior.text),
+        Some(_) => None,
+        None => Some(current.text),
+    }
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -321,10 +381,9 @@ pub async fn pre_generate(
 
     // Recall only on the step that opens the turn: the appended message is
     // persisted and replayed on later steps, so re-recalling would stack copies.
-    let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
-    let query = (input.step == 0).then_some(query.as_str());
+    let query = recall_query(&input);
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
-    let injected = injection(deps, &cfg, &bank_name, &layers, query, &seen).await;
+    let injected = injection(deps, &cfg, &bank_name, &layers, query.as_deref(), &seen).await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -807,8 +866,13 @@ pub fn select(
         .filter(|(_, newer)| newer.is_none())
         .map(|((m, _), _)| ev(m).relevance)
         .fold(0.0, f32::max);
-    // Holds two of the question's words, or its one.
-    let on_words = |e: &Evidence| !e.matched.is_empty() && e.matched.len() >= e.terms.min(2);
+    // Holds two of the question's words, or its one; or two of those it uses
+    // outside its requested slot, or its one ("live" in "In which city do I
+    // live?": the answer need not say "city"). The slot only adds support.
+    let on =
+        |matched: &[String], terms: usize| !matched.is_empty() && matched.len() >= terms.min(2);
+    let on_words =
+        |e: &Evidence| on(&e.matched, e.terms) || on(e.relation_words(), e.relation_term_count());
     // Stands on its own evidence, whatever the turn's best.
     let alone = |e: &Evidence| {
         let words = e.matched.len();
@@ -2487,6 +2551,255 @@ Formal."
             .into_iter()
             .map(|(id, _)| id)
             .collect()
+    }
+
+    /// A bank of `(id, text, entities)`, stated in that order.
+    fn bank_of(rows: &[(&str, &str, &[&str])]) -> Vec<Memory> {
+        rows.iter()
+            .enumerate()
+            .map(|(n, (id, text, entities))| tagged(id, text, 1 + n as u64, entities))
+            .collect()
+    }
+
+    /// Recorded on the recall before the requested slot was read: the same
+    /// ids are told. No word of the question makes `user` a subject ("EU"),
+    /// and no word of it vetoes a fact the question shares two words with.
+    #[tokio::test]
+    async fn plain_questions_tell_what_they_told_before_the_slot_was_read() {
+        let cases: [(&str, Vec<Memory>, &[&str]); 4] = [
+            (
+                "Which EU region do we deploy to?",
+                bank_of(&[
+                    ("fp-name", "User is called Ana Souza.", &["user"]),
+                    ("fp-home", "User lives in Lisbon.", &["user"]),
+                    (
+                        "fp-region",
+                        "payments-api is deployed to the eu-west-1 region.",
+                        &["payments-api"],
+                    ),
+                ]),
+                &["fp-region"],
+            ),
+            (
+                "How do I prevent flaky tests in next week's release?",
+                bank_of(&[
+                    (
+                        "fp-flaky",
+                        "User quarantines flaky tests before every release.",
+                        &["user"],
+                    ),
+                    (
+                        "fp-dentist",
+                        "User has a dentist appointment next week.",
+                        &["user"],
+                    ),
+                    ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+                ]),
+                &["fp-flaky", "fp-dentist"],
+            ),
+            (
+                "Where was I born?",
+                bank_of(&[
+                    (
+                        "fp-born",
+                        "User was born in Lisbon on 3 May 1990.",
+                        &["user"],
+                    ),
+                    ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+                ]),
+                &["fp-born"],
+            ),
+            (
+                "Which framework do I usually use for my backend services?",
+                bank_of(&[
+                    (
+                        "fp-chi",
+                        "User writes most of her backend services in Go with chi.",
+                        &["user"],
+                    ),
+                    ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+                ]),
+                &["fp-chi"],
+            ),
+        ];
+        for (query, memories, before) in cases {
+            assert_eq!(told_ids(memories, query).await, before, "{query}");
+        }
+    }
+
+    /// A question whose slot is read ("in which repository") tells every
+    /// line it told before. The long ledger line stands only on two of the
+    /// question's words, one of them in the slot: counting the words outside
+    /// the slot alone would drop it.
+    #[tokio::test]
+    async fn a_read_slot_tells_no_fewer_lines() {
+        let query = "In which repository did I enable dependabot alerts?";
+        let words = crate::index::tokenize(query);
+        assert!(crate::query_projection::requested_slot(query, &words).is_some());
+        let memories = bank_of(&[
+            (
+                "fp-billing",
+                "Dependabot alerts are enabled in the billing repository.",
+                &["billing"],
+            ),
+            (
+                "fp-ledger",
+                "User turned on dependabot for the ledger repository after the spring audit, \
+                 beside branch protection, signed commits, two required reviews and a merge queue.",
+                &["user", "ledger"],
+            ),
+            (
+                "fp-notion",
+                "User keeps the repository list in Notion.",
+                &["user"],
+            ),
+            ("fp-alerts", "User mutes pager alerts at night.", &["user"]),
+            ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+        ]);
+        // Recorded before the slot was read.
+        let before = ["fp-billing", "fp-ledger", "fp-alerts"];
+        let told = told_ids(memories, query).await;
+        assert!(
+            before.iter().all(|id| told.contains(&id.to_string())),
+            "{told:?}"
+        );
+    }
+
+    /// One word outside the slot is the question's whole relation: a line
+    /// holding it stands without repeating the slot's noun.
+    #[test]
+    fn a_line_on_the_one_word_outside_the_slot_stands() {
+        let e = Evidence {
+            matched: vec!["anchor".into()],
+            relation_matched: vec!["anchor".into()],
+            relation_terms: 1,
+            requested_slot: Some(0..3),
+            terms: 2,
+            lexical: 0.1,
+            relevance: 0.1,
+            ..Evidence::default()
+        };
+        assert_eq!(selected(vec![("fp-harbor", e.clone())], 6), ["fp-harbor"]);
+        // Unread, the same match is one of two words: it does not stand alone.
+        let unread = Evidence {
+            requested_slot: None,
+            ..e
+        };
+        assert!(selected(vec![("fp-harbor", unread)], 6).is_empty());
+    }
+
+    fn hook_input(context: Option<Value>) -> PreGenerateInput {
+        serde_json::from_value(json!({
+            "session_id": "s1",
+            "turn_id": "t1",
+            "step": 0,
+            "generate": { "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "the transcript's question" }] },
+            ] },
+            "recall_context": context,
+        }))
+        .unwrap()
+    }
+
+    fn context(kind: &str, continuation: Option<(&str, &str)>) -> Value {
+        json!({
+            "version": 1,
+            "session_id": "s1",
+            "turn_id": "t1",
+            "source": { "kind": kind, "entry_id": "e2" },
+            "query": { "entry_id": "e2", "text": "go on" },
+            "continuation": continuation.map(|(id, text)| json!({ "entry_id": id, "text": text })),
+        })
+    }
+
+    #[test]
+    fn without_a_delivery_context_recall_reads_the_last_user_message() {
+        let input = hook_input(None);
+        assert_eq!(
+            recall_query(&input).as_deref(),
+            Some("the transcript's question")
+        );
+        let later = PreGenerateInput { step: 1, ..input };
+        assert_eq!(recall_query(&later), None);
+    }
+
+    #[test]
+    fn a_direct_or_invoked_message_recalls_on_its_own_text() {
+        for kind in ["direct", "invoked-agent"] {
+            let input = hook_input(Some(context(kind, None)));
+            assert_eq!(recall_query(&input).as_deref(), Some("go on"), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_continuation_recalls_on_the_earlier_message() {
+        let input = hook_input(Some(context(
+            "direct",
+            Some(("e1", "which harbor does the ferry leave from?")),
+        )));
+        assert_eq!(
+            recall_query(&input).as_deref(),
+            Some("which harbor does the ferry leave from?")
+        );
+        // A continuation of itself, or of nothing, recalls nothing.
+        for prior in [("e2", "go on"), ("e1", "  "), ("", "text")] {
+            let input = hook_input(Some(context("direct", Some(prior))));
+            assert_eq!(recall_query(&input), None, "{prior:?}");
+        }
+    }
+
+    #[test]
+    fn a_notification_or_a_mismatched_context_recalls_nothing() {
+        for kind in ["notification", "unknown", "other"] {
+            assert_eq!(
+                recall_query(&hook_input(Some(context(kind, None)))),
+                None,
+                "{kind}"
+            );
+        }
+        for (key, value) in [
+            ("version", json!(2)),
+            ("session_id", json!("s9")),
+            ("turn_id", json!("t9")),
+            ("source", json!({ "kind": "direct", "entry_id": "e9" })),
+            ("query", Value::Null),
+        ] {
+            let mut ctx = context("direct", None);
+            ctx[key] = value;
+            assert_eq!(recall_query(&hook_input(Some(ctx))), None, "{key}");
+        }
+        assert_eq!(recall_query(&hook_input(Some(json!("direct")))), None);
+    }
+
+    #[tokio::test]
+    async fn a_notification_still_gets_the_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(6);
+        let deps = offline_deps(dir.path(), cfg.clone());
+        let (bank, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        bank.set_rule("style", "No em-dashes.").unwrap();
+        bank.commit(memory("fp-go", "the transcript's question is about go"))
+            .await
+            .unwrap();
+        let input = hook_input(Some(context("notification", None)));
+        let out = injection(
+            &deps,
+            &cfg,
+            "w-abc123",
+            &[],
+            recall_query(&input).as_deref(),
+            &HashSet::new(),
+        )
+        .await;
+        assert!(out.section.contains("No em-dashes."), "{}", out.section);
+        assert_eq!(out.rules, 1);
+        assert!(out.memories.is_empty());
+        assert_eq!(out.retrieval, "none");
     }
 
     #[tokio::test]

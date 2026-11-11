@@ -22,6 +22,7 @@ pub mod hooks;
 pub mod index;
 pub mod manifest;
 pub mod observed;
+mod query_projection;
 pub mod redact;
 pub mod scope;
 pub mod store;
