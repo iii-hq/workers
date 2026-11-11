@@ -2124,20 +2124,40 @@ function FunctionCallGroup({
 
   if (rollsUp && !expanded) {
     const label = `${row.items.length} observer ${noun}`
+    // Which observers the run came from, most recent first: two names, then
+    // a count, so a run from several observers says so.
+    const names: string[] = []
+    for (let i = row.items.length - 1; i >= 0; i--) {
+      const fired = row.items[i].message
+      const name =
+        fired.role === 'system'
+          ? (fired.observer?.label ?? fired.observer?.action)
+          : undefined
+      if (name && !names.includes(name)) names.push(name)
+    }
+    const sources =
+      names.length > 2
+        ? `${names.slice(0, 2).join(', ')} +${names.length - 2}`
+        : names.join(', ')
     return (
       <section ref={sectionRef} data-observer-rollup="">
         <Hint label="Show in Observers">
           <button
             type="button"
             onClick={onShowObservers}
-            aria-label={`${label} · show in Observers`}
-            className="-ml-2 inline-flex h-8 items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            aria-label={`${label}${sources ? ` from ${sources}` : ''} · show in Observers`}
+            className="-ml-2 inline-flex h-8 max-w-full items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <ObserverIcon aria-hidden className="size-4 shrink-0 fill-warn" />
             <span className="font-medium text-ink tabular-nums">
               {row.items.length}
             </span>
             <span>{noun}</span>
+            {sources ? (
+              <span className="min-w-0 truncate" data-observer-sources="">
+                · {sources}
+              </span>
+            ) : null}
           </button>
         </Hint>
       </section>

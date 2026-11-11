@@ -131,7 +131,11 @@ import {
   type SubagentVisualStatus,
 } from './active-subagents'
 import { ContextTrackingBody, useContextTracking } from './ContextTracking'
-import { ObserverDetailDialog } from './ObserverDetailDialog'
+import {
+  ObserverDetailDialog,
+  ObserverStatus,
+  observerTrigger,
+} from './ObserverDetailDialog'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
 
 /**
@@ -463,12 +467,14 @@ export function ChatContextPanel({
   // times, and each check is a transcript event. Ended observers stay while
   // this chat holds their events, so the transcript's roll-up has a row here.
   const observerListing = useMemo(() => {
-    const counts = new Map<string, number>()
+    const eventsOf = new Map<string, SystemMessage[]>()
     const latest = new Map<string, NonNullable<SystemMessage['observer']>>()
     for (const event of observerEvents) {
       const fired = event.observer
       if (!fired) continue
-      counts.set(fired.observer_id, (counts.get(fired.observer_id) ?? 0) + 1)
+      const list = eventsOf.get(fired.observer_id) ?? []
+      list.push(event)
+      eventsOf.set(fired.observer_id, list)
       latest.set(fired.observer_id, fired)
     }
     const live = new Set(liveObservers.map((observer) => observer.id))
@@ -483,7 +489,7 @@ export function ChatContextPanel({
         if (observersListed || listed?.fired || fired.retired) ended.add(id)
         return listed ?? firedGhostRow(fired)
       })
-    return { rows: [...liveObservers, ...others], counts, ended, live }
+    return { rows: [...liveObservers, ...others], eventsOf, ended, live }
   }, [observerEvents, liveObservers, observers, observersListed])
   const [openObserverId, setOpenObserverId] = useState<string | null>(null)
   const [busyObserverId, setBusyObserverId] = useState<string | null>(null)
@@ -957,12 +963,15 @@ export function ChatContextPanel({
               observer.label ?? observer.action ?? observer.functionId
             const ended = observerListing.ended.has(observer.id)
             const removable = observerListing.live.has(observer.id)
-            const events = observerListing.counts.get(observer.id) ?? 0
+            const events =
+              observerListing.eventsOf.get(observer.id)?.length ?? 0
+            // The count first: it is what the transcript's roll-up counted,
+            // and a long trigger truncates after it, not over it.
             const summary = [
               events > 0
                 ? `${events} ${events === 1 ? 'event' : 'events'}`
                 : null,
-              ended ? 'ended' : null,
+              observerTrigger(observer),
             ]
               .filter(Boolean)
               .join(' · ')
@@ -973,23 +982,20 @@ export function ChatContextPanel({
                 icon={
                   <ObserverIcon
                     size={16}
-                    className={ended ? 'fill-ink-ghost' : 'fill-current'}
+                    className={ended ? 'fill-ink-ghost' : 'fill-warn'}
                     aria-hidden
                   />
                 }
                 label={label}
                 mono={label === observer.functionId}
+                description={
+                  <span className="truncate text-xs text-ink-faint">
+                    {summary}
+                  </span>
+                }
                 onActivate={() => setOpenObserverId(observer.id)}
                 ariaLabel={`Show ${label}`}
-                meta={
-                  summary ? (
-                    <span className={uiClasses.treeItemMeta}>{summary}</span>
-                  ) : label === observer.functionId ? null : (
-                    <span className={cn(uiClasses.treeItemMeta, 'font-mono')}>
-                      {observer.functionId}
-                    </span>
-                  )
-                }
+                meta={<ObserverStatus ended={ended} />}
                 actions={
                   !removable ? undefined : (
                     <Hint label="Remove">
@@ -1106,6 +1112,14 @@ export function ChatContextPanel({
 
         <ObserverDetailDialog
           observer={openObserver}
+          ended={
+            openObserver !== null && observerListing.ended.has(openObserver.id)
+          }
+          events={
+            openObserver
+              ? (observerListing.eventsOf.get(openObserver.id) ?? [])
+              : []
+          }
           busy={openObserver !== null && busyObserverId === openObserver.id}
           onOpenChange={(open) => {
             if (!open) setOpenObserverId(null)

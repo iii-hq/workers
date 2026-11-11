@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
-import { deliveryLabel, lifecycleNote } from './ObserverDetailDialog'
+import type { SystemMessage } from '@/types/chat'
+import {
+  cronInWords,
+  deliveryLabel,
+  eventInWords,
+  lifecycleNote,
+  observerTrigger,
+  whenInWords,
+} from './ObserverDetailDialog'
 
 function observer(
   overrides: Partial<SessionObserverInfo>,
@@ -98,5 +106,68 @@ describe('lifecycleNote', () => {
 
   it('is null when nothing lifecycle-worthy is set', () => {
     expect(lifecycleNote(observer({ once: false, fires: 0 }))).toBeNull()
+  })
+})
+
+describe('observer wording', () => {
+  it('reads common cron schedules', () => {
+    expect(cronInWords('*/5 * * * * * *')).toBe('every 5 seconds')
+    expect(cronInWords('0 */15 * * * * *')).toBe('every 15 minutes')
+    expect(cronInWords('0 0 * * * * *')).toBe('every hour')
+    expect(cronInWords('0 30 9 * * * *')).toBe('every day at 09:30')
+    expect(cronInWords('0 30 9 * * MON *')).toBeNull()
+  })
+
+  it('names the trigger of the sources it knows', () => {
+    expect(
+      observerTrigger(
+        observer({
+          functionId: 'state::on-changed',
+          filters: { 'input.scope': { $eq: 'orders' } },
+        }),
+      ),
+    ).toBe('When orders changes')
+    expect(
+      observerTrigger(
+        observer({ functionId: 'harness::on-timer', args: { in_ms: 45000 } }),
+      ),
+    ).toBe('Once, after 45 seconds')
+    expect(observerTrigger(observer({ functionId: 'kanban::on-change' }))).toBe(
+      'When kanban::on-change runs',
+    )
+  })
+
+  it('says today and tomorrow', () => {
+    const now = new Date('2026-11-11T10:00:00').getTime()
+    expect(whenInWords(new Date('2026-11-11T18:43:00').getTime(), now)).toMatch(
+      /^today at /,
+    )
+    expect(whenInWords(new Date('2026-11-12T09:30:00').getTime(), now)).toMatch(
+      /^tomorrow at /,
+    )
+  })
+
+  it('never shows an expiry as the thing it watched for', () => {
+    const event = (id: string): SystemMessage => ({
+      id,
+      role: 'system',
+      kind: 'observer-fired',
+      content: 'x',
+      observer: {
+        observer_id: 'sub_1',
+        target: 'harness::send',
+        action: 'The build finished',
+        once: false,
+        retired: true,
+        fired_at: 1,
+      },
+      createdAt: 1,
+    })
+    expect(eventInWords(event('e_obsexpired_sub_1')).text).toBe(
+      'Time ran out, stopped watching',
+    )
+    expect(eventInWords(event('e_obsfired_sub_1_1')).text).toBe(
+      'The build finished',
+    )
   })
 })

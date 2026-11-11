@@ -52,7 +52,10 @@ describe('a run of observer events', () => {
     const button = container.querySelector<HTMLButtonElement>(
       '[data-observer-rollup] button',
     )
-    expect(button?.textContent).toBe('3events')
+    expect(button?.textContent).toContain('3events')
+    expect(
+      container.querySelector('[data-observer-sources]')?.textContent,
+    ).toContain('A send-over-time batch changed in Resend')
     expect(
       container.querySelectorAll('[data-message-role="observer-activity"]'),
     ).toHaveLength(0)
