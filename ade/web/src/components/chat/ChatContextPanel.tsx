@@ -157,6 +157,8 @@ interface ChatContextPanelProps {
    * in the transcript counts. Listed even after their observer has ended.
    */
   observerEvents?: readonly SystemMessage[]
+  /** The observer list has loaded: an observer missing from it has ended. */
+  observersListed?: boolean
   onDisposeObserver: (observerId: string) => Promise<void> | void
   onOpenConversation: (sessionId: string) => void
   /** git is read through `shell::exec`, so the folder's state needs that worker. */
@@ -208,6 +210,7 @@ export function ChatContextPanel({
   connectionState,
   observers,
   observerEvents = [],
+  observersListed = false,
   onDisposeObserver,
   onOpenConversation,
   shellAvailable,
@@ -469,15 +472,19 @@ export function ChatContextPanel({
       latest.set(fired.observer_id, fired)
     }
     const live = new Set(liveObservers.map((observer) => observer.id))
-    const ended = [...latest]
+    // Ended when something says so: the loaded list leaves it out, or a
+    // retirement record. Absent from a list still loading (or that failed)
+    // says nothing, and such a row must not claim it ended.
+    const ended = new Set<string>()
+    const others = [...latest]
       .filter(([id]) => !live.has(id))
-      .map(
-        ([id, fired]) =>
-          observers.find((observer) => observer.id === id) ??
-          firedGhostRow(fired),
-      )
-    return { rows: [...liveObservers, ...ended], counts }
-  }, [observerEvents, liveObservers, observers])
+      .map(([id, fired]) => {
+        const listed = observers.find((observer) => observer.id === id)
+        if (observersListed || listed?.fired || fired.retired) ended.add(id)
+        return listed ?? firedGhostRow(fired)
+      })
+    return { rows: [...liveObservers, ...others], counts, ended, live }
+  }, [observerEvents, liveObservers, observers, observersListed])
   const [openObserverId, setOpenObserverId] = useState<string | null>(null)
   const [busyObserverId, setBusyObserverId] = useState<string | null>(null)
   const [confirmObserver, setConfirmObserver] =
@@ -948,7 +955,8 @@ export function ChatContextPanel({
           {observerRows.shown.map((observer) => {
             const label =
               observer.label ?? observer.action ?? observer.functionId
-            const ended = observer.fired === true
+            const ended = observerListing.ended.has(observer.id)
+            const removable = observerListing.live.has(observer.id)
             const events = observerListing.counts.get(observer.id) ?? 0
             const summary = [
               events > 0
@@ -983,7 +991,7 @@ export function ChatContextPanel({
                   )
                 }
                 actions={
-                  ended ? undefined : (
+                  !removable ? undefined : (
                     <Hint label="Remove">
                       <button
                         type="button"

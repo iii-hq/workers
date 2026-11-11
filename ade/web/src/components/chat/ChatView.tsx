@@ -3529,6 +3529,7 @@ export function ChatView({
             request={asideRequest}
             observers={mergedObservers}
             observerEvents={observerEvents}
+            observersListed={observersSnapshotSessionId === conversation.id}
             onDisposeObserver={handleDisposeObserver}
             landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
             pendingQuote={pendingQuote}

@@ -28,6 +28,8 @@ let root: Root
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  // jsdom has no scrolling; a landing scrolls to its row.
+  Element.prototype.scrollTo ??= () => {}
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -56,6 +58,34 @@ describe('a run of observer events', () => {
     ).toHaveLength(0)
     await act(() => button?.click())
     expect(onShowObservers).toHaveBeenCalledOnce()
+  })
+
+  it('shows a single event as itself', async () => {
+    await act(() =>
+      root.render(
+        <MessageList messages={[wait(1)]} onShowObservers={() => {}} />,
+      ),
+    )
+    expect(container.querySelector('[data-observer-rollup]')).toBeNull()
+    expect(
+      container.querySelector('[data-message-role="observer-activity"]'),
+    ).not.toBeNull()
+  })
+
+  it('opens the run when a landing targets one of its events', async () => {
+    await act(() =>
+      root.render(
+        <MessageList
+          messages={run}
+          onShowObservers={() => {}}
+          focusMessageId={run[1].id}
+        />,
+      ),
+    )
+    expect(container.querySelector('[data-observer-rollup]')).toBeNull()
+    expect(
+      container.querySelector(`[data-message-row~="${run[1].id}"]`),
+    ).not.toBeNull()
   })
 
   it('stays an inline group where there is no side panel', async () => {

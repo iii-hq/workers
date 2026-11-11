@@ -157,6 +157,30 @@ describe('groupTimelineActivities', () => {
     ).toHaveLength(3)
   })
 
+  it('keeps a condition wait out of the calls that follow it', () => {
+    const hex = '0123456789abcdef0123456789abcdef'
+    const grouped = groupTimelineActivities(
+      observerActivityRows([
+        row(fired(`e_obsskip_sub_1_condition_${hex}`)),
+        {
+          kind: 'function-call-group',
+          id: 'function-call-group:call-1',
+          calls: [call('call-1'), call('call-2')],
+        },
+        row(fired(`e_obsskip_sub_1_condition_${hex.replace('0', '1')}`)),
+      ]),
+    )
+    expect(
+      grouped.map((g) =>
+        g.kind === 'activity-group' ? g.items.map((i) => i.kind) : g.kind,
+      ),
+    ).toEqual([
+      ['observer-activity'],
+      ['function-call', 'function-call'],
+      ['observer-activity'],
+    ])
+  })
+
   it('groups a fired event with the function calls it woke', () => {
     const paired = observerActivityRows([
       row(notification('e_fire_obs_1_3')),

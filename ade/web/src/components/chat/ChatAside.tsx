@@ -143,6 +143,8 @@ interface ChatAsideProps {
   observers: readonly SessionObserverInfo[]
   /** This chat's observer events, for the Observers section. */
   observerEvents?: readonly SystemMessage[]
+  /** The observer list has loaded: an observer missing from it has ended. */
+  observersListed?: boolean
   onDisposeObserver: (observerId: string) => Promise<void> | void
   landBlocked?: boolean
   /** The quote waiting in the side chat's composer (owned by the main chat). */
@@ -169,6 +171,7 @@ export function ChatAside({
   request,
   observers,
   observerEvents,
+  observersListed,
   onDisposeObserver,
   landBlocked,
   pendingQuote,
@@ -582,6 +585,7 @@ export function ChatAside({
         connectionState={ctx.connectionState}
         observers={observers}
         observerEvents={observerEvents}
+        observersListed={observersListed}
         onDisposeObserver={onDisposeObserver}
         onOpenConversation={ctx.openConversationInPanel}
         shellAvailable={ctx.shellAvailable}

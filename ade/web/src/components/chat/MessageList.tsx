@@ -2056,12 +2056,16 @@ function FunctionCallGroup({
     item.message.id === focusMessageId ||
     (item.kind === 'observer-activity' &&
       item.notification?.id === focusMessageId)
+  // A run of observer events shows as an eye and a count that opens the side
+  // panel. One event shows as itself: its text is the news.
+  const rollsUp = observedOnly && !!onShowObservers && row.items.length > 1
   if (
     !expanded &&
     focusMessageId != null &&
-    !collapsedItems.some(ownsFocusTarget) &&
+    (rollsUp || !collapsedItems.some(ownsFocusTarget)) &&
     row.items.some(ownsFocusTarget)
   ) {
+    // A landing needs the target's row on screen: the roll-up has none.
     setExpanded(true)
   }
   const hiddenCount = row.items.length - collapsedItems.length
@@ -2118,7 +2122,7 @@ function FunctionCallGroup({
     return { item, index, key, semanticVisible, mounted, ordinal }
   })
 
-  if (observedOnly && onShowObservers) {
+  if (rollsUp && !expanded) {
     const label = `${row.items.length} observer ${noun}`
     return (
       <section ref={sectionRef} data-observer-rollup="">

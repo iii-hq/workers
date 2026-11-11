@@ -239,6 +239,12 @@ export function groupTimelineActivities(
     trailingThoughts = []
   }
 
+  // A condition that answered "not yet" woke nothing, so it never owns the
+  // calls after it and never joins the agent's own batch: a check that lands
+  // mid-batch would otherwise be counted as one of its functions.
+  const isWait = (item: TimelineActivityItem) =>
+    item.kind === 'observer-activity' &&
+    activityIdPrefix(item.message.id, 'skip') !== null
   for (const row of rows) {
     if (row.kind === 'message' && row.message.role === 'thought') {
       const thoughts = items.length === 0 ? leadingThoughts : trailingThoughts
@@ -246,10 +252,14 @@ export function groupTimelineActivities(
       continue
     }
     if (row.kind === 'observer-activity') {
+      if (isWait(row) && items.some((item) => item.kind === 'function-call')) {
+        flush()
+      }
       items.push(row)
       continue
     }
     if (row.kind === 'function-call-group') {
+      if (items.some(isWait)) flush()
       items.push(
         ...row.calls.map(
           (message): TimelineActivityItem => ({
