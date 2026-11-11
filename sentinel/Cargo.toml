@@ -45,7 +45,7 @@ uuid = { version = "1", features = ["v7"] }
 [dev-dependencies]
 # The same driver the `database` worker runs SQLite on, so the store's
 # statements are tested against the engine they will actually meet.
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # The same statements against Postgres, when `SENTINEL_TEST_POSTGRES_URL`
 # names one (see tests/support/postgres.rs).
 tokio-postgres = "0.7"
