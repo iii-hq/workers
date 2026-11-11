@@ -662,7 +662,9 @@ pub async fn move_now(
             })?;
         }
     }
-    accounts.forget_credentials(to);
+    // Claude Code may renew `to`'s token: read it again on the next load,
+    // while `to` still counts as signed in for the next pane of a switch.
+    accounts.reread_credentials(to);
     accounts.clear_move_error(id);
     Ok(())
 }

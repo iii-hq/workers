@@ -184,7 +184,7 @@ impl Accounts {
                 tracing::warn!(account = %id, %error, "shared items not linked");
             }
         }
-        self.forget_credentials(id);
+        self.reread_credentials(id);
         let target = Target::of(id, self.env_dir(id).as_deref())?;
         Ok(login_command(&target))
     }

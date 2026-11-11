@@ -1298,3 +1298,101 @@ async fn a_pane_pinned_during_a_switch_stays_where_it_was_pinned() {
     assert!(moved.is_empty(), "{moved:?}");
     assert_eq!(w.claude_pid(&a).await, pid, "not moved");
 }
+
+/// The Android lane's P15: a pane that went along with a switch after its
+/// turn goes along with the next switch too. Each move used to drop its
+/// account's sign-in from the cache, so the next pane of the same switch (or
+/// of the same pending round, or of "move the idle ones") found that account
+/// "not signed in".
+#[tokio::test]
+async fn panes_that_went_along_once_go_along_again() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("again");
+    account_fns::add(
+        &w.ctx,
+        account_fns::AddAccountInput {
+            name: "Personal".into(),
+            color: "green".into(),
+            shared: Some(vec![]),
+        },
+    )
+    .await
+    .unwrap();
+    for dir in [w.paths.claude_home.clone(), w.paths.account_dir("personal")] {
+        signed_in(&dir);
+    }
+    let mut both = Vec::new();
+    for name in ["a", "b"] {
+        let pane = windows::create(&w.ctx, window(name, claude("global", false)))
+            .await
+            .unwrap()
+            .pane_id;
+        w.claude(&pane).await;
+        both.push(pane);
+    }
+    both.sort();
+    let (a, b) = (both[0].clone(), both[1].clone());
+    let global = |account: &str| {
+        account_fns::global(
+            &w.ctx,
+            account_fns::GlobalInput {
+                account: account.into(),
+                move_mode: account_fns::GlobalMove::IdleNowWorkingAfter,
+            },
+        )
+    };
+
+    // b works: a goes now, b once its turn ends.
+    w.set_state(&b, "working").await;
+    let switched = global("personal").await.unwrap();
+    assert_eq!(switched.moved, vec![a.clone()]);
+    assert_eq!(switched.after_turn, vec![b.clone()]);
+    w.set_state(&b, "idle").await;
+    w.pending_tick().await;
+    for pane in [&a, &b] {
+        assert_eq!(w.settled_on(pane, "personal").await.follow, Follow::Global);
+    }
+
+    // Back: both idle, both go, one after the other.
+    let switched = global("default").await.unwrap();
+    assert_eq!(switched.moved, both, "{switched:?}");
+    assert!(switched.stayed.is_empty() && switched.after_turn.is_empty());
+    for pane in [&a, &b] {
+        let info = w.settled_on(pane, "default").await;
+        assert_eq!(info.follow, Follow::Global);
+        assert_eq!(info.move_error, None);
+    }
+
+    // Both waiting for their turns: one pending round moves both.
+    for pane in [&a, &b] {
+        w.set_state(pane, "working").await;
+    }
+    let switched = global("personal").await.unwrap();
+    assert_eq!(switched.after_turn, both, "{switched:?}");
+    for pane in [&a, &b] {
+        w.set_state(pane, "idle").await;
+    }
+    w.pending_tick().await;
+    for pane in [&a, &b] {
+        let info = w.settled_on(pane, "personal").await;
+        assert_eq!(info.move_error, None);
+    }
+
+    // "Move the idle ones": both go.
+    let moved = account_fns::move_idle(
+        &w.ctx,
+        account_fns::MoveIdleInput {
+            from: "personal".into(),
+            to: "default".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(moved.moved, both);
+    for pane in [&a, &b] {
+        assert_eq!(w.settled_on(pane, "default").await.follow, Follow::Pinned);
+    }
+}

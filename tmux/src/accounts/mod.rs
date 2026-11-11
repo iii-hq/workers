@@ -73,6 +73,10 @@ struct CachedCredentials {
     stamps: (Stamp, Stamp),
     read_at_ms: u64,
     value: Result<Option<Credentials>, String>,
+    /// Since when it is to be read again on the next load, whatever the
+    /// stamps and the Keychain's age say ([`Accounts::reread_credentials`]).
+    /// `value` stands until then.
+    reread_since: Option<u64>,
 }
 
 /// The `.claude.json` last read for an account.
@@ -447,9 +451,15 @@ impl Accounts {
         }
     }
 
-    /// Forget account `id`'s sign-in so the next load reads it again.
-    pub fn forget_credentials(&self, id: &str) {
-        self.lock().credentials.remove(id);
+    /// Read account `id`'s sign-in again on the next load, whatever its
+    /// files' stamps and the Keychain's age say: Claude Code just started
+    /// on it (and may renew its token), or someone signs it in. What was
+    /// read stands until then: an account a pane just moved to still counts
+    /// as signed in for the next pane of the same switch.
+    pub fn reread_credentials(&self, id: &str) {
+        if let Some(cached) = self.lock().credentials.get_mut(id) {
+            cached.reread_since = Some(now_ms());
+        }
     }
 
     /// Forget all about account `id`, which was removed.
@@ -503,10 +513,13 @@ impl Accounts {
         let now = now_ms();
         let (known_credentials, known_profiles, codex_due, available_due) = {
             let state = self.lock();
-            let credentials: HashMap<String, ((Stamp, Stamp), u64)> = state
+            let credentials: HashMap<String, ((Stamp, Stamp), u64, bool)> = state
                 .credentials
                 .iter()
-                .map(|(id, cached)| (id.clone(), (cached.stamps, cached.read_at_ms)))
+                .map(|(id, cached)| {
+                    let reread = cached.reread_since.is_some();
+                    (id.clone(), (cached.stamps, cached.read_at_ms, reread))
+                })
                 .collect();
             let profiles: HashMap<String, Stamp> = state
                 .profiles
@@ -531,9 +544,13 @@ impl Accounts {
             let dir = paths.account_dir(&entry.id);
             let json = paths.account_json(&entry.id);
             let stamps = (stamp(&dir.join(".credentials.json")), stamp(&json));
-            let fresh = known_credentials.get(&entry.id).is_some_and(|(seen, at)| {
-                *seen == stamps && (!self.keychain || now.saturating_sub(*at) < KEYCHAIN_TTL_MS)
-            });
+            let fresh = known_credentials
+                .get(&entry.id)
+                .is_some_and(|(seen, at, reread)| {
+                    !reread
+                        && *seen == stamps
+                        && (!self.keychain || now.saturating_sub(*at) < KEYCHAIN_TTL_MS)
+                });
             if !fresh {
                 let value = self.secrets.read(&dir, self.env_dir(&entry.id).as_deref());
                 credentials.push((entry.id.clone(), stamps, value));
@@ -568,12 +585,20 @@ impl Accounts {
                 Some(digest) => state.token_digests.insert(id.clone(), digest),
                 None => state.token_digests.remove(&id),
             };
+            // Asked to read it again after this load began: what was read
+            // here may be older than that.
+            let reread_since = state
+                .credentials
+                .get(&id)
+                .and_then(|cached| cached.reread_since)
+                .filter(|since| *since >= now);
             state.credentials.insert(
                 id,
                 CachedCredentials {
                     stamps,
                     read_at_ms: now,
                     value,
+                    reread_since,
                 },
             );
         }
@@ -1044,12 +1069,12 @@ mod tests {
             "refused: counts as expired"
         );
         // Same token read again (a Keychain looks the same on disk): still refused.
-        accounts.forget_credentials("default");
+        accounts.reread_credentials("default");
         accounts.load_blocking();
         assert!(accounts.views().1[0].token_expired);
         // Signed in again: a new token, asked again.
         home.sign_in(&home.paths.claude_home, "demo-new", now_ms() + 3_600_000);
-        accounts.forget_credentials("default");
+        accounts.reread_credentials("default");
         accounts.load_blocking();
         assert!(!accounts.views().1[0].token_expired);
     }
@@ -1117,6 +1142,32 @@ mod tests {
         accounts.load_soon().await;
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         assert!(accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+    }
+
+    #[tokio::test]
+    async fn an_account_moved_to_stays_signed_in_until_read_again() {
+        let home = Home::new("reread");
+        home.sign_in(&home.paths.claude_home, "demo-work", now_ms() + 3_600_000);
+        let asked = Arc::new(AtomicU64::new(0));
+        let accounts = Arc::new(Accounts::new(
+            Some(home.paths.clone()),
+            Box::new(CountingStore(asked.clone())),
+            true,
+        ));
+        accounts.load_accounts_now(vec![DEFAULT.into()]).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        // A pane just moved there: the next pane of the same switch still
+        // finds it signed in.
+        accounts.reread_credentials(DEFAULT);
+        assert!(accounts.is_signed_in(DEFAULT));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        // Read again on the next load, though nothing changed on disk and
+        // the Keychain's last read is recent.
+        accounts.load_accounts_now(vec![DEFAULT.into()]).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert!(accounts.is_signed_in(DEFAULT));
+        accounts.load_accounts_now(vec![DEFAULT.into()]).await;
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "once");
     }
 
     #[tokio::test]
