@@ -12,12 +12,13 @@ Requires the `memory` worker. Scheduling reuses the cron worker: `memory-consoli
 
 ## Quickstart
 
-Plan without writing, then look at what a pass would do:
+Plan without writing; the `run` response is the plan:
 
 ```bash
 iii call memory-consolidate::run dry_run=true
-iii call memory-consolidate::status
 ```
+
+A dry run is read-only: it reports the deterministic groups, skips the LLM and semantic tiers (no recall, embedding, model or rule calls), and writes no memory, cursor, `last_report` or `last_run`, so `memory-consolidate::status` keeps showing the last real pass.
 
 Apply for one bank only:
 
@@ -70,17 +71,17 @@ Every change goes through `memory::supersede` and carries the judge's one-senten
 
 - **Candidates.** Neighbours come from the raw lexical and raw semantic `memory::recall` arms, interleaved, because a fused rank buries the near-duplicate.
 - **Targets.** The judge may only pair a memory with one of its *own* candidates, through short per-batch aliases.
-- **Validation.** Before anything is written, every action is checked: pinned records are never retired; direction follows `last stated`; a merge may not drop a number the survivor lacks; the reason is required; the per-run cap applies.
+- **Validation.** Before anything is written, every action is checked: pinned records are never retired; direction follows `last stated`; a merge may not drop a number the survivor lacks or change an operator or sign; the reason is required; the per-run cap applies.
 - **Freshness.** Each record is re-read right before the write, so a record edited since the judge read it drops its action.
 - **Failure handling.**
   - Transport, auth or quota errors stop the tier for that bank with a note, and the cursor stays put.
   - An unparseable or truncated reply bisects the batch down to one memory. A memory that still fails is listed in `semantic_failed` and skipped, so it cannot wedge the tier.
 - **Cursor.** Progress is a per-bank cursor in the state worker, keyed by `(updated_at, id)`, so edited or resurrected records are judged again. It advances only over batches that were fully judged and fully applied.
-- **Dry runs** judge and report the plan without writing or moving the cursor.
+- **Dry runs** skip this tier with an `unevaluated` note.
 
 Config: `semantic_batch` (8 memories per LLM call), `semantic_candidates` (4 per arm), `semantic_max_per_run` (48 per bank per pass). The model comes from `llm_model`. `router::complete` has no temperature control, so the provider default applies.
 
-**Judge eval.** `tests/judge_golden.rs` runs the real prompt and validator over 18 cases from memory's recall golden set: 8 supersedes, 4 merges and 6 keeps. It reports accuracy and **harmful** actions, which must be 0. With `claude-sonnet-5-5` the result was 18/18 with 0 harmful. `UPDATE_CONSOLIDATION=1` records the decisions into memory's `tests/recall_quality/consolidation.json`, which memory's recall eval replays in its `hybrid-consolidated` mode: traps go from 2 to 0 and duplicate pollution from 23 to 0.
+**Judge eval.** `tests/judge_golden.rs` runs the real prompt and validator over 18 cases from memory's recall golden set: 8 supersedes, 4 merges and 6 keeps. It reports accuracy and **harmful** actions, which must be 0. With `claude-sonnet-5-5` the result was 18/18 with 0 harmful. Without an engine, `tests/offline_safety.rs` replays the golden merge pairs as supplied decisions through the validator on every `cargo test`. `UPDATE_CONSOLIDATION=1` records the decisions into memory's `tests/recall_quality/consolidation.json`, which memory's recall eval replays in its `hybrid-consolidated` mode: traps go from 2 to 0 and duplicate pollution from 23 to 0.
 
 ```bash
 III_NAMESPACE=<ns> cargo test --test judge_golden -- --ignored --nocapture
@@ -88,10 +89,13 @@ III_NAMESPACE=<ns> cargo test --test judge_golden -- --ignored --nocapture
 
 ## What counts as a duplicate
 
-v1 is deterministic and deliberately conservative: two live memories merge only when their normalized text matches (case, punctuation, and whitespace insensitive) or their token sets are equal (word-order shuffles). One differing word is NOT a duplicate — "always publishes" and "never publishes" must never merge. Survivor choice is stable: pinned first, then highest corroboration, then the oldest record (it carries the original provenance). Semantic near-duplicate merging is a later, LLM-assisted tier.
+v1 is deterministic and deliberately conservative: two live memories merge only when their normalized text matches (case, punctuation, and whitespace insensitive). Equal token sets (word-order shuffles) are only reported, and merge only when the LLM tier's judge confirms them. One differing word is NOT a duplicate — "always publishes" and "never publishes" must never merge. Survivor choice is stable: pinned first, then highest corroboration, then the oldest record (it carries the original provenance). Semantic near-duplicate merging is a later, LLM-assisted tier.
+
+Normalization keeps operators and signs (`<`, `<=`, `!=`, `+`, `#`, `-5`) and any `-`, `.`, `,`, `:` or `/` between two letters or digits, so "timeout > 5s" and "timeout < 5s", "C++" and "C#", or "0.05" and "005" never merge.
 
 ## Boundaries
 
 - Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call) — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::on-item-changed` events.
 - Pinned memories are never superseded, even inside a duplicate group.
+- Every `memory::supersede` carries `expected_memory` and `expected_superseded_by`, both records as this pass read them, so a memory worker that knows these guards refuses a record edited since; the pass reports the error and stays due. An older memory worker ignores the fields.
 - Not extraction (the memory worker captures), not recall, not rule management. One job: keep banks clean.

@@ -1,0 +1,43 @@
+{
+  "decision_origin": "synthetic inputs, not semantic-quality evidence",
+  "deterministic": [
+    {"name":"plain_duplicate","texts":["User prefers concise answers.","user prefers concise answers!"],"retire":["b"],"review":false},
+    {"name":"port_duplicate","texts":["The API port is 3000","the api port is 3000."],"retire":["b"],"review":false},
+    {"name":"apostrophe_folds","texts":["We can't publish","We can t publish"],"retire":["b"],"review":false},
+    {"name":"comparators","texts":["limit < 5","limit > 5"],"retire":[],"review":false},
+    {"name":"inclusive_boundary","texts":["limit < 5","limit <= 5"],"retire":[],"review":false},
+    {"name":"not_equal","texts":["a != b","a = b"],"retire":[],"review":false},
+    {"name":"negative_number","texts":["temperature -5 C","temperature 5 C"],"retire":[],"review":false},
+    {"name":"numeric_separator","texts":["dose 0.05 mg","dose 0 05 mg"],"retire":[],"review":false},
+    {"name":"decimal_detail","texts":["dose 0.05 mg","dose 0.5 mg"],"retire":[],"review":false},
+    {"name":"code_symbols","texts":["Use C++","Use C#","Use C"],"retire":[],"review":false},
+    {"name":"word_boundary","texts":["Use re-sign","Use re sign"],"retire":[],"review":false},
+    {"name":"negation","texts":["User can publish","User cannot publish"],"retire":[],"review":false},
+    {"name":"different_people","texts":["Alice manages Bob","Bob manages Alice"],"retire":[],"review":true},
+    {"name":"different_details","texts":["User prefers tea","User prefers tea at night"],"retire":[],"review":false},
+    {"name":"punctuation_only","texts":["   ","?!"],"retire":[],"review":false},
+    {"name":"duplicate_beside_operator_variant","texts":["limit < 5","limit < 5.","limit > 5"],"retire":["b"],"review":false}
+  ],
+  "semantic_inputs": [
+    {"name":"provided_paraphrase","pending":{"id":"new","text":"Every morning the user drinks tea.","created_at":20,"updated_at":20},"candidate":{"id":"old","text":"User drinks tea every morning.","created_at":10,"updated_at":10},"reply":{"actions":[{"type":"merge","survivor":"c1","retired":"n1","reason":"Synthetic supplied equivalence decision."}]}},
+    {"name":"provided_distinct_details","pending":{"id":"new","text":"User prefers tea at night.","created_at":20,"updated_at":20},"candidate":{"id":"old","text":"User prefers tea in the morning.","created_at":10,"updated_at":10},"reply":{"actions":[]}},
+    {"name":"lost_number","pending":{"id":"new","text":"dose 0.05 mg","created_at":20,"updated_at":20},"candidate":{"id":"old","text":"dose 0.5 mg","created_at":10,"updated_at":10},"reply":{"actions":[{"type":"merge","survivor":"c1","retired":"n1","reason":"Deliberately unsafe synthetic proposal."}]}},
+    {"name":"symbol_collision","pending":{"id":"new","text":"limit < 5","created_at":20,"updated_at":20},"candidate":{"id":"old","text":"limit > 5","created_at":10,"updated_at":10},"reply":{"actions":[{"type":"merge","survivor":"c1","retired":"n1","reason":"Deliberately unsafe synthetic proposal."}]}},
+    {"name":"sign_flip","pending":{"id":"new","text":"delta is 5","created_at":20,"updated_at":20},"candidate":{"id":"old","text":"delta is -5","created_at":10,"updated_at":10},"reply":{"actions":[{"type":"merge","survivor":"c1","retired":"n1","reason":"Deliberately unsafe synthetic proposal."}]}},
+    {"name":"pinned_loser","pending":{"id":"new","text":"User prefers tea","pinned":true,"created_at":20,"updated_at":20},"candidate":{"id":"old","text":"User prefers tea","created_at":10,"updated_at":10},"reply":{"actions":[{"type":"merge","survivor":"c1","retired":"n1","reason":"Deliberately unsafe synthetic proposal."}]}},
+    {"name":"legacy_newer","pending":{"id":"new","text":"User moved to Lisbon","created_at":20,"updated_at":20},"candidate":{"id":"old","text":"User lives in Porto","created_at":10,"updated_at":30},"reply":{"actions":[{"type":"supersede","new":"n1","old":"c1","reason":"Deliberately reversed synthetic proposal."}]}},
+    {"name":"equal_statement_time","pending":{"id":"new","text":"User moved to Lisbon","updated_at":20,"stated_at":10},"candidate":{"id":"old","text":"User lives in Porto","updated_at":30,"stated_at":10},"reply":{"actions":[{"type":"supersede","new":"n1","old":"c1","reason":"Direction is not established at equal timestamps."}]}},
+    {"name":"stated_not_edited","pending":{"id":"new","text":"User moved to Lisbon","created_at":20,"updated_at":20,"stated_at":20},"candidate":{"id":"old","text":"User lives in Porto","created_at":10,"updated_at":30,"stated_at":10},"reply":{"actions":[{"type":"supersede","new":"n1","old":"c1","reason":"Synthetic supplied state-change decision."}]}}
+  ],
+  "semantic_expected": {
+    "provided_paraphrase":{"retire":["new"],"rejected":0},
+    "provided_distinct_details":{"retire":[],"rejected":0},
+    "lost_number":{"retire":[],"rejected":1},
+    "symbol_collision":{"retire":[],"rejected":1},
+    "sign_flip":{"retire":[],"rejected":1},
+    "pinned_loser":{"retire":[],"rejected":1},
+    "legacy_newer":{"retire":[],"rejected":1},
+    "equal_statement_time":{"retire":[],"rejected":1},
+    "stated_not_edited":{"retire":["old"],"rejected":0}
+  }
+}
