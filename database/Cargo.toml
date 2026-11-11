@@ -54,7 +54,6 @@ mysql_async = { version = "0.34", default-features = false, features = ["minimal
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
-rustls-pki-types = "1"
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "aws-lc-rs"] }
 
 # SQLite (sync; wrapped in spawn_blocking)

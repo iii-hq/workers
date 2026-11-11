@@ -1290,7 +1290,6 @@ dependencies = [
  "diffy",
  "dirs",
  "fastembed",
- "futures",
  "glob",
  "iii-config-client",
  "iii-console-ui",

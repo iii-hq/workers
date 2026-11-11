@@ -1192,7 +1192,6 @@ name = "rbac-proxy"
 version = "1.1.2"
 dependencies = [
  "anyhow",
- "async-trait",
  "axum",
  "clap",
  "futures-util",
@@ -1203,7 +1202,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tracing",

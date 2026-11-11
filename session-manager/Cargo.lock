@@ -1846,7 +1846,6 @@ dependencies = [
  "clap",
  "cucumber",
  "dirs",
- "futures",
  "iii-helpers",
  "iii-sdk",
  "iii-worker-paths",

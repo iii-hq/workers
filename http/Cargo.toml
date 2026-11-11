@@ -27,7 +27,6 @@ iii-helpers = "=0.26.0-rc.5"
 # W3C trace-context parent propagation on `tracing::Span` (`OpenTelemetrySpanExt`).
 # 0.33 pairs with opentelemetry 0.32 (same as iii-sdk 0.26.0).
 tracing-opentelemetry = "0.33"
-async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

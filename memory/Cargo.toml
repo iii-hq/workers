@@ -33,7 +33,6 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
-async-trait = "0.1"
 # Local-time dates for extraction excerpts and injected memories.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 regex = "1"

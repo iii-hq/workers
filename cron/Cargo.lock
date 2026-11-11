@@ -716,7 +716,6 @@ name = "iii-cron"
 version = "0.22.1"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
  "clap",
  "cron",

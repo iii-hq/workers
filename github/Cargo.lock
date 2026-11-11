@@ -599,7 +599,6 @@ name = "github"
 version = "0.5.2"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
  "clap",
  "futures",
@@ -962,7 +961,6 @@ name = "iii-http"
 version = "0.23.2"
 dependencies = [
  "anyhow",
- "async-trait",
  "axum",
  "chrono",
  "clap",

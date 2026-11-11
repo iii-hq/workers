@@ -74,8 +74,6 @@ serde_json = "1"
 tempfile = "3"
 # BDD test runner. Drives Gherkin .feature files under tests/features/.
 cucumber = "0.22"
-# Used by step defs that need to drive multiple awaits in fixed order.
-futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
 # Mock HTTP server for the registry-source tests.
