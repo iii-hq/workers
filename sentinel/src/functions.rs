@@ -572,7 +572,7 @@ async fn on_trace_activity<E: EngineRegistry + 'static>(
         };
     }
     let (wanted, phantom_dropped) = match &event.error_trace_ids {
-        Some(errored) => deps.ingest.filter_errored_tick(errored),
+        Some(errored) => deps.ingest.filter_errored_tick(errored).await,
         None => deps.ingest.filter_tick(&event.trace_ids).await,
     };
     let queued = queue_traces(deps, wanted).await;
