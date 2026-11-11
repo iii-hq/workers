@@ -43,6 +43,4 @@ testkit = []
 # Self-reference enabling the `testkit` feature for the integration tests
 # (which link the lib) so `cargo test` works without `--all-features`.
 approval-gate = { path = ".", features = ["testkit"] }
-futures = "0.3"
-uuid = { version = "1", features = ["v4"] }
 harness = { path = "../harness" }

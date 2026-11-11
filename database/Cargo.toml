@@ -54,15 +54,14 @@ mysql_async = { version = "0.34", default-features = false, features = ["minimal
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
-rustls-pki-types = "1"
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "aws-lc-rs"] }
 
 # SQLite (sync; wrapped in spawn_blocking)
 # `limits` + `hooks`: every pooled connection runs with SQLITE_LIMIT_ATTACHED
 # = 0 and an authorizer that refuses ATTACH and schema-corrupting pragmas.
-rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype", "limits", "hooks"] }
+rusqlite = { version = "0.41", features = ["bundled", "chrono", "column_decltype", "limits", "hooks"] }
 r2d2 = "0.8"
-r2d2_sqlite = "0.24"
+r2d2_sqlite = "0.36"
 # Filesystem watch for sqlite native capture (inotify wake-up; the changelog
 # table is the source of truth, fs events only decide when to look).
 notify = "8"

@@ -42,7 +42,6 @@ aws-config = { version = "1", default-features = false, features = ["behavior-ve
 aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = "1"
-aws-sigv4 = "1"
 aws-smithy-runtime-api = "1"
 aws-smithy-types = "1"
 # GCS: yoshidan's google-cloud-rust crates were renamed to gcloud-* in their
@@ -52,7 +51,6 @@ gcloud-auth = "1"
 gcloud-pubsub = "1"
 reqwest = { version = "0.12", features = ["rustls-tls", "multipart"], default-features = false }
 axum = { version = "0.7", features = ["multipart"] }
-tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 hmac = "0.12"
 sha2 = "0.10"

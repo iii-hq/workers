@@ -870,7 +870,6 @@ name = "memory"
 version = "0.3.2"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
  "clap",
  "iii-console-ui",

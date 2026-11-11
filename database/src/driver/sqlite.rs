@@ -88,7 +88,6 @@ fn read(
     }
     let columns: Vec<ColumnMeta> = stmt
         .columns()
-        .into_iter()
         .map(|col| ColumnMeta {
             name: col.name().to_string(),
             ty: col.decl_type().unwrap_or("").to_string(),
@@ -511,7 +510,6 @@ pub async fn execute(
                 if statement_returns_rows(&stmt) {
                     let columns: Vec<ColumnMeta> = stmt
                         .columns()
-                        .into_iter()
                         .map(|col| ColumnMeta {
                             name: col.name().to_string(),
                             ty: col.decl_type().unwrap_or("").to_string(),
@@ -679,7 +677,6 @@ fn run_tx_steps(
         if statement_returns_rows(&prepared) {
             let columns: Vec<ColumnMeta> = prepared
                 .columns()
-                .into_iter()
                 .map(|col| ColumnMeta {
                     name: col.name().to_string(),
                     ty: col.decl_type().unwrap_or("").to_string(),
@@ -837,7 +834,6 @@ pub async fn tx_execute(
                     if statement_returns_rows(&stmt) {
                         let columns: Vec<ColumnMeta> = stmt
                             .columns()
-                            .into_iter()
                             .map(|col| ColumnMeta {
                                 name: col.name().to_string(),
                                 ty: col.decl_type().unwrap_or("").to_string(),
@@ -931,7 +927,6 @@ pub async fn run_prepared(
                 .map_err(|e| enrich_schema_err(c, &sql, map_err(e)))?;
                 let columns: Vec<ColumnMeta> = stmt
                     .columns()
-                    .into_iter()
                     .map(|col| ColumnMeta {
                         name: col.name().to_string(),
                         ty: col.decl_type().unwrap_or("").to_string(),

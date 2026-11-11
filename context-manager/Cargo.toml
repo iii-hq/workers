@@ -45,7 +45,6 @@ tempfile = "3"
 which = "8"
 # BDD test runner. Drives Gherkin .feature files under tests/features/.
 cucumber = "0.22"
-futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 
