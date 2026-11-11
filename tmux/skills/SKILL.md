@@ -84,8 +84,9 @@ client that only the Console drives.
 - The worker reads Claude Code's sign-in only to ask its usage; it never
   refreshes, prints or returns a token.
 - The worker never types into panes, except to move Claude Code started by
-  hand in a shell: it types the command that starts it on the other account
-  into that shell. `tmux::terminal::*` is the Console
+  hand in a shell: once that shell has the terminal back, it types the
+  command that starts it on the other account into it (nothing otherwise).
+  A move only goes to a signed-in account. `tmux::terminal::*` is the Console
   page's own terminal: it is denied to agents and cannot be observed
   (`NOT_OBSERVABLE`), since its calls carry the terminal's access key and
   what the person types. Its `upload` only writes a file the person pastes

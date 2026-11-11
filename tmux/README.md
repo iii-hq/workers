@@ -347,11 +347,16 @@ starts, when the global account changes and every 15 seconds after that, so a
 tmux server started later gets it too. Every window tmux opens from then on
 inherits it; shells already open keep the environment they started with.
 
-`tmux::accounts::global` makes another account global. `move` says what
-happens to the panes that follow it: `idle_now_working_after` (the default)
-moves the idle ones now and the working or waiting ones once their turn ends;
-`new_only` leaves them running where they are, pinned there. The answer lists
-the panes `moved`, `after_turn` and `stayed`.
+Once `accounts.json` exists, the worker owns tmux's global `CLAUDE_CONFIG_DIR`:
+a value set in `tmux.conf` or by hand is replaced within 15 seconds by the
+global account's. Without `accounts.json` the worker never sets or unsets it.
+
+`tmux::accounts::global` makes another account global; it must be signed in.
+`move` says what happens to the panes that follow it: `idle_now_working_after`
+(the default) moves the idle ones now and the working or waiting ones once
+their turn ends; `new_only` leaves them running where they are, pinned there.
+The answer lists the panes `moved`, `after_turn` and `stayed`; a pane that
+could not move says why in its `move_error`.
 
 ### Windows on an account
 
@@ -374,39 +379,54 @@ it (`runs_as_root` in the accounts snapshot).
 Marks are tmux user options of the pane: `@iii_claude_account` (`global` or
 an account id), `@iii_skip_permissions` (`1`) and `@iii_claude_pending` (the
 account a move waits to reach). tmux before 3.0 has no pane options, so there
-they are options of the pane's window. Each pane running Claude Code has a
+they are options of the pane's window, and a window with more than one Claude
+Code pane can't keep an account per pane: its panes are not movable there.
+Each pane running Claude Code has a
 `claude` object in `tmux::sessions::list`: the `account` its process uses (read
 from that process's `CLAUDE_CONFIG_DIR`, so a `claude` started by hand counts
 too), `config_dir`, `follow` (`global`, `pinned`, or `manual` when unmarked),
 `pending`, `skip_permissions` (the flag, `--permission-mode
-bypassPermissions` or the mark), `session_id`, and `movable` with
-`not_movable_reason` when it is false.
+bypassPermissions` or the mark), `session_id`, `movable` with
+`not_movable_reason` when it is false, and `move_error` when its last move
+failed (cleared by its next account change).
 
 ### Moving a pane
 
 `tmux::panes::account` with `account: global` makes a pane follow the global
 account, with an account id pins it there. When Claude Code runs on another
-account, the pane moves:
+account, which must be signed in, the pane moves:
 
-1. The target account is made to see the conversation: if its
-   `projects/<project>/<session>.jsonl` is not the same file (accounts sharing
-   conversations link the same folder), the transcript and its `<session>/`
-   folder are copied there.
+1. Right before, the worker looks again: the pane must still run the same
+   Claude Code process, in the same conversation, with the status `idle`.
+   Otherwise nothing is stopped and the move waits for the turn
+   (`after_turn`).
 2. Claude Code gets SIGTERM and up to 10 seconds to end; it saves and runs
    its `SessionEnd` hooks first. One that doesn't end is left running and the
-   move is refused.
-3. Claude Code starts again on the target account with `--resume <session>`
+   move is refused. A pane the worker started is kept on screen meanwhile
+   with a temporary `remain-on-exit`, put back as it was afterwards (unset
+   stays unset).
+3. The target account is made to see the conversation: if its
+   `projects/<project>/<session>.jsonl` is not the same file (accounts sharing
+   conversations link the same folder), the transcript and its `<session>/`
+   folder are copied there. A copy already there is only replaced by a longer
+   or equally long and newer one; when the account has a longer copy, Claude
+   Code starts again on the account it ran on, resuming the conversation, and
+   the move fails.
+4. Claude Code starts again on the target account with `--resume <session>`
    (and `--dangerously-skip-permissions` again when it had it). A pane the
-   worker started is respawned in place, kept on screen meanwhile with a
-   temporary `remain-on-exit`; Claude Code started by hand in a shell is
-   started again by typing the command into that shell.
+   worker started is respawned in place. Claude Code started by hand in a
+   shell is started again by typing into that shell (`C-e`, `C-u`, the
+   command, Enter), only once the shell has the terminal back within 3
+   seconds; otherwise nothing is typed and the move fails.
 
 A pane moves only when Claude Code's own status is `idle`. Working, waiting
-for a permission answer or running a background command, it answers
-`after_turn`: the pending mark is set, and the worker moves it within 2
-seconds of its turn ending, also after a worker restart (the mark is tmux's).
-Choosing the account it runs on changes no process and cancels a waiting move
-(`cancelled`).
+for a permission answer, running a background command or with no status, it
+answers `after_turn`: the pending mark is set, and the worker moves it within
+2 seconds of its turn ending, also after a worker restart (the mark is
+tmux's). A waiting move that can no longer happen (its account was removed
+or signed out, the pane can't move) is dropped and the pane says why in
+`move_error`. Choosing the account it runs on changes no process and cancels
+a waiting move (`cancelled`).
 
 `tmux::accounts::move_idle` moves every idle pane on account `from` to `to`
 and pins it there: those that follow the global account, are pinned to `from`
@@ -432,16 +452,20 @@ last reading kept); a window whose reset time has passed reads 0 %
 Readings are kept at most 5 minutes old while someone watches (a
 `tmux::usage::read` call or an observer of `tmux::on-changed` in the last 10
 minutes); `refresh: true` reads again at once, at most once a minute per
-account. With nobody watching, the worker reads only the global account,
-every 10 minutes, and only while the rules are not `off` (it reads the others
-when the global one runs low). A 429 pauses an account's readings for 15
-minutes; a 401 counts the sign-in as expired until it changes; any other
-failure is tried again after a minute. The latest readings,
-without tokens, are kept in `~/.cache/iii/tmux/usage.json`
-(`~/Library/Caches/iii/tmux/usage.json` on macOS).
+account. With nobody watching, the worker reads nothing unless `accounts.json`
+exists and an account other than the global one is signed in (one that could
+take over); then it reads only the global account, every 10 minutes, while
+the rules are not `off`, and the others when the global one runs low.
 
-Codex's usage is read from what Codex records: the last `token_count` event of
-its newest session under `~/.codex/sessions`, whose windows are told apart by
+A 429 pauses an account's readings for 15 minutes; a 401 counts the sign-in
+as expired until its token changes (or the worker starts again); any other
+failure is tried again after a minute. The latest readings, without tokens,
+are kept in `~/.cache/iii/tmux/usage.json` (`~/Library/Caches/iii/tmux/usage.json`
+on macOS).
+
+Codex's usage is read from what Codex records: the newest `token_count` event
+of its sessions under `~/.codex/sessions` (the last 4 MB of each file, newest
+first, until one is found; at most 8 MB a look), whose windows are told apart by
 their length (300 minutes, 10080 minutes) and whose `resets_at` is in seconds.
 It comes with the plan and credits; Codex has one account.
 
@@ -458,8 +482,9 @@ from that account for that reason until its window resets or it runs lower
 (week 80 % → 90 % → 5-hour window full → week limit). With `mode: switch` the
 worker switches by itself, the app open or not, moving the idle panes that
 follow along when `move_idle` is on, and leaves `last_switch` (`auto: true`)
-for the app; `back_after_reset` switches back once the old account's window
-resets. Until changed, the rules suggest at `week_90`, with `move_idle` on;
+for the app; `back_after_reset` (in mode `switch` only) switches back once
+the old account's window resets, unless someone made another account global
+since. Until changed, the rules suggest at `week_90`, with `move_idle` on;
 `mode: off` stops them.
 
 ```bash
@@ -481,7 +506,9 @@ server, a fake `claude` and `codex`, three fake accounts and a mock usage
 endpoint) against an engine on the host: `demo/run.sh <engine-port>`, then
 `demo/seed.sh`, `demo/usage.sh` to change what the mock answers and
 `demo/state.sh` to make a fake Claude Code work, wait, go idle or hit its
-limit. Nothing in it reads the host's own Claude Code or Codex.
+limit. Nothing in it reads the host's own Claude Code or Codex, and its
+scripts that write files or call tmux refuse to run outside the container
+(they need `/.dockerenv` and `DEMO_CONTAINER=1`, which the image sets).
 
 ## Configuration
 

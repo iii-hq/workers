@@ -56,15 +56,17 @@
   sign-in, read-only: no token is ever refreshed, logged or returned) and Codex's plan,
   windows and credits (from its newest session record). Readings stay at most 5 minutes old
   while someone watches; `refresh: true` reads again, at most once a minute per account.
+  With nobody watching, it reads only when another signed-in account could take over.
 - **Claude Code accounts.** `tmux::accounts::list`, `add`, `login`, `update` and `remove`
   keep several Claude Code accounts, each a config folder of its own under
   `~/.local/share/iii/claude-accounts` that shares settings, extensions, plugins and
   conversations with `~/.claude` through links, as chosen. `login` opens a `login` window
   running `claude auth login` for the account. `default` stays `~/.claude`.
-- **A global account.** `tmux::accounts::global` puts an account in tmux's global
+- **A global account.** `tmux::accounts::global` puts a signed-in account in tmux's global
   environment (`CLAUDE_CONFIG_DIR`), so plain `claude` in a new window runs on it, and moves
   the panes that follow it: idle ones at once, working ones once their turn ends, or none
-  (`new_only`).
+  (`new_only`). Once `accounts.json` exists the worker keeps that variable in step; without
+  it the worker never touches it.
 - **Claude Code on an account from create.** `tmux::windows::create` and
   `tmux::sessions::create` take `claude: { account, skip_permissions }` instead of
   `command`, build the command (`claude`, `env -u CLAUDE_CONFIG_DIR claude`, `env
@@ -76,7 +78,9 @@
 - **Moving a pane between accounts.** `tmux::panes::account` makes a pane follow the global
   account or pins it to one; Claude Code then stops (SIGTERM, up to 10 seconds) and starts
   again on that account with `--resume`, its conversation copied there when the accounts
-  don't share conversations. A working or waiting pane moves once its turn ends.
+  don't share conversations (never over a longer copy). It moves only when its status is
+  `idle`, looked at again right before it stops, and only to a signed-in account; a working
+  or waiting pane moves once its turn ends, and a move that fails says why (`move_error`).
   `tmux::accounts::move_idle` moves every idle pane of one account to another.
 - **Rules for when the global account runs low.** `tmux::accounts::rules` sets a threshold
   (week 80 %, 90 % or the limit, and optionally a full 5-hour window) and whether the worker
@@ -85,7 +89,7 @@
   after the reset if asked.
 - **A demo kit** (`demo/`): the worker in a container with its own tmux, a fake Claude
   Code and Codex, fake accounts and a mock usage endpoint, for the apps' screenshots and
-  tests.
+  tests. Its scripts refuse to run outside that container.
 - **Pasting a file into a Console terminal.** `tmux::terminal::upload` saves any file (at
   most 12 MiB) in a new folder of its own under the user's cache folder
   (`~/.cache/iii/tmux/uploads`, `~/Library/Caches/iii/tmux/uploads`), under its name made one
