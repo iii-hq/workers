@@ -38,12 +38,18 @@ start.
 
 - A scoped token takes any directory that no VM of the same project token has
   recorded now: the directory of a destroyed VM whose build directory stayed,
-  the new path after a move until its container builds or starts, every
-  directory of another Compose namespace (namespaces share
-  `.iii/build/<container>`, and records count only under their own token), and
-  a record a power failure lost.
-- A VM whose `state_key` changes leaves its record behind, and the new VM gets
-  S505 on the same directory until the old one is destroyed or its `build-dir`
-  deleted.
+  the new path after a move until its container builds or starts, every build
+  directory of another Compose namespace (a container's build directory sits
+  beside the compose file in every namespace, and records count only under
+  their own token), and, on a filesystem that cannot flush a directory, a
+  record a power failure lost.
+- A VM whose `state_key` changes while its project token survives (the same
+  `state.json` through another spelling of `III_COMPOSE_STATE_DIR`, or state
+  moved or copied with its token) leaves its record behind: the new VM gets
+  S505 on its own build directory until the old VM is destroyed or its
+  `build-dir` deleted, as the message says. A new state directory brings a new
+  token, and the old records stop counting.
+- Where the filesystem cannot lock a directory (NFS), claims are serialized
+  within one adapter process only, with a warning.
 - Publishing assumes one writer per `output_dir` at a time; two namespaces
   building one container at once are not serialized.

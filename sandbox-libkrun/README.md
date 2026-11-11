@@ -175,8 +175,10 @@ a build and keeps quiet about it.
   equal or, both existing, share device and inode (a bind mount, another case
   on a case-insensitive volume). A record another project token wrote counts
   for nothing. Claims hold an flock on `~/.iii/sandbox/workers` itself, so two
-  adapter processes never give one directory to two VMs. The check
-  reads no directory name; the project token is not checked.
+  adapter processes never give one directory to two VMs where the filesystem
+  can lock a directory; elsewhere (NFS) a warning says so, and claims are
+  serialized within one adapter process only. The check reads no directory
+  name; the project token is not checked.
 - **Data disk.** A VM that boots builds keeps its writes on
   `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
   `root/`: they outlive restarts and rebuilds, and only `worker::destroy`
@@ -254,18 +256,23 @@ has recorded now:
   destroy`), until a VM records it again;
 - the new path after Compose moved a container's directory, until that
   container's next build or start records it;
-- every directory of another Compose namespace: namespaces share
-  `.iii/build/<container>`, and each has its own project token, whose records
-  count for nothing to the other;
-- a directory whose record a power failure lost (the record is flushed, but a
-  filesystem that cannot flush directories may lose it).
+- every build directory of another Compose namespace: a container's build
+  directory sits beside the compose file in every namespace, and each namespace
+  has its own project token, whose records count for nothing to the other;
+- on a filesystem that cannot flush a directory, a directory whose record a
+  power failure lost (elsewhere the record is flushed).
 
 The container that owns such a directory then gets S505 there until the other
 VM is destroyed or its record deleted. Compose builds or starts each container
-as it comes up, which records its directory. A VM whose `state_key` changes
-(another state directory for the same project) leaves its record behind: the
-new VM gets S505 on the same directory until the old VM is destroyed or its
-`build-dir` deleted, so Compose destroys a VM before it changes its key.
+as it comes up, which records its directory.
+
+A new state directory brings a new `state.json` and a new project token: the
+old VMs' records stop counting, and nothing gets S505. A VM whose `state_key`
+changes while its project token survives leaves its record behind: the same
+`state.json` reached through another spelling of `III_COMPOSE_STATE_DIR`, or
+state moved or copied together with its token. The new VM then gets S505 on its
+own build directory, and the message names the way out: destroy the old VM, or
+delete its `build-dir`.
 
 Publishing an image assumes one writer per `output_dir` at a time. One VM
 builds once at a time (S509), but nothing serializes two VMs that share a
