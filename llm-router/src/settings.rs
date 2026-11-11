@@ -65,10 +65,17 @@ pub fn parse_settings(entry_value: &Value) -> RouterSettings {
                 h.get("pattern").and_then(Value::as_str),
                 h.get("provider").and_then(Value::as_str),
             ) {
-                out.routing_heuristics.push(Heuristic {
-                    pattern: pattern.into(),
-                    provider: provider.into(),
-                });
+                // Compiled here, once per entry load, never per routing call.
+                let heuristic = Heuristic::new(pattern, provider);
+                if let Some(error) = heuristic.pattern_error() {
+                    tracing::warn!(
+                        pattern,
+                        provider,
+                        %error,
+                        "routing heuristic pattern is not a valid regex; routing skips it"
+                    );
+                }
+                out.routing_heuristics.push(heuristic);
             }
         }
     }
@@ -131,6 +138,25 @@ mod tests {
             parsed.idle_timeout_ms,
             RouterSettings::default().idle_timeout_ms
         );
+    }
+
+    #[test]
+    fn heuristics_compile_at_load_and_keep_invalid_patterns_in_order() {
+        let parsed = parse_settings(&json!({
+            "routing_heuristics": [
+                { "pattern": "([", "provider": "anthropic" },
+                { "pattern": "^gpt-", "provider": "openai" }
+            ]
+        }));
+        assert_eq!(
+            parsed.routing_heuristics,
+            vec![
+                Heuristic::new("([", "anthropic"),
+                Heuristic::new("^gpt-", "openai")
+            ]
+        );
+        assert!(parsed.routing_heuristics[0].pattern_error().is_some());
+        assert!(parsed.routing_heuristics[1].pattern_error().is_none());
     }
 
     #[test]
