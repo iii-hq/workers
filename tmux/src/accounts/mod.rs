@@ -19,6 +19,7 @@ pub mod moves;
 pub mod panes;
 pub mod paths;
 pub mod registry;
+pub mod rules;
 pub mod shared;
 pub mod time;
 pub mod tmux_env;
@@ -77,6 +78,8 @@ struct State {
     readings_loaded: bool,
     codex: Option<(u64, Option<CodexUsage>)>,
     available: Option<(u64, bool)>,
+    /// When the global account's current reason to switch was first seen.
+    first_seen: HashMap<String, u64>,
 }
 
 /// One account as the snapshot needs it.
@@ -457,8 +460,8 @@ impl Accounts {
             }
         }
         let rules = registry.rules.clone();
-        let suggestion = None;
-        let _ = following;
+        let suggestion =
+            rules::suggestion(&registry, &accounts, following, now, &mut state.first_seen);
         UsageSnapshot {
             claude: ClaudeSnapshot {
                 available,

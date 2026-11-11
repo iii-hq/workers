@@ -189,6 +189,39 @@ impl Accounts {
         Ok(login_command(&target))
     }
 
+    /// "Not now" on suggestion `id`: no suggestion from that account for
+    /// that reason (or a lower one) until its window resets (D14).
+    pub fn dismiss(&self, id: &str) -> Result<(), String> {
+        let now = now_ms();
+        let accounts = self
+            .snapshot(&std::collections::HashMap::new(), 0)
+            .claude
+            .accounts;
+        let dismissal = super::rules::dismissal(id, &accounts, now)?;
+        self.update_registry(|registry| {
+            registry
+                .dismissed
+                .retain(|d| d.until_ms > now && d.from != dismissal.from);
+            registry.dismissed.push(dismissal);
+            Ok(())
+        })
+    }
+
+    /// Change the rules; what `change` leaves out stays.
+    pub fn set_rules(
+        &self,
+        change: impl FnOnce(&mut crate::model::SwitchRules),
+    ) -> Result<crate::model::SwitchRules, String> {
+        self.update_registry(|registry| {
+            change(&mut registry.rules);
+            if let Some(unknown) = registry.rules.order.iter().find(|id| !registry.has(id)) {
+                return Err(no_account(unknown));
+            }
+            Ok(())
+        })?;
+        Ok(self.registry().rules)
+    }
+
     /// Link what each account shares and `~/.claude` has gained since
     /// (worker start).
     pub fn relink_all(&self) {

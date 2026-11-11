@@ -729,3 +729,154 @@ async fn claude_started_by_hand_moves_through_its_shell() {
     let claude_pid = w.claude_pid(&shell).await;
     assert_ne!(pane_pid, claude_pid.to_string());
 }
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+/// A signed-in account folder whose Claude Code cached a usage reading
+/// (`cachedUsageUtilization` in its `.claude.json`): the week at `week` %,
+/// resetting at `resets_ms`.
+fn signed_in_with_usage(dir: &Path, json: &Path, week: f64, resets_ms: u64) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join(".credentials.json"),
+        serde_json::json!({"claudeAiOauth": {"accessToken": "demo-token",
+            "expiresAt": now_ms() + 3_600_000, "subscriptionType": "pro"}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        json,
+        serde_json::json!({
+            "oauthAccount": {"emailAddress": "you@demo.dev"},
+            "cachedUsageUtilization": {"fetchedAtMs": now_ms(), "utilization": {
+                "seven_day": {"utilization": week, "resets_at": resets_ms}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn rules_suggest_switch_and_switch_back() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("rules");
+    account_fns::add(
+        &w.ctx,
+        account_fns::AddAccountInput {
+            name: "Personal".into(),
+            color: "green".into(),
+            shared: Some(vec![]),
+        },
+    )
+    .await
+    .unwrap();
+    let reset_at = now_ms() + 4_000;
+    signed_in_with_usage(&w.paths.claude_home, &w.paths.default_json, 95.0, reset_at);
+    signed_in_with_usage(
+        &w.paths.account_dir("personal"),
+        &w.paths.account_json("personal"),
+        10.0,
+        now_ms() + 86_400_000,
+    );
+    let a = windows::create(&w.ctx, window("a", claude("global", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    w.claude(&a).await;
+
+    // Suggest: a card, until "Not now".
+    let rules = account_fns::rules(
+        &w.ctx,
+        account_fns::RulesInput {
+            mode: Some(tmux::model::RulesMode::Suggest),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .rules;
+    assert_eq!(rules.at, tmux::model::Threshold::Week90);
+    let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
+    let suggestion = listed.suggestion.expect("a suggestion");
+    assert_eq!(
+        (
+            suggestion.from.as_str(),
+            suggestion.to.as_str(),
+            suggestion.reason.as_str(),
+            suggestion.following
+        ),
+        ("default", "personal", "week_90", 1)
+    );
+    account_fns::dismiss(
+        &w.ctx,
+        account_fns::DismissInput {
+            suggestion: suggestion.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(account_fns::list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap()
+        .suggestion
+        .is_none());
+    // An order naming no account is refused.
+    assert!(account_fns::rules(
+        &w.ctx,
+        account_fns::RulesInput {
+            order: Some(vec!["nobody".into()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .is_err());
+
+    // Switch by itself, and back once the old week resets.
+    account_fns::rules(
+        &w.ctx,
+        account_fns::RulesInput {
+            mode: Some(tmux::model::RulesMode::Switch),
+            back_after_reset: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(tmux::accounts::daemon::run_rules(&w.collector).await);
+    let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
+    assert_eq!(listed.global, "personal");
+    let last = listed.last_switch.expect("last switch");
+    assert!(last.auto);
+    assert_eq!(
+        (last.from.as_str(), last.to.as_str(), last.reason.as_deref()),
+        ("default", "personal", Some("week_90"))
+    );
+    assert_eq!(last.moved, vec![a.clone()]);
+    assert_eq!(last.back_at_ms, Some(reset_at));
+    assert_eq!(w.settled_on(&a, "personal").await.follow, Follow::Global);
+    assert!(
+        !tmux::accounts::daemon::run_rules(&w.collector).await,
+        "nothing more to do before the reset"
+    );
+    tokio::time::sleep(Duration::from_millis(
+        reset_at.saturating_sub(now_ms()) + 200,
+    ))
+    .await;
+    assert!(tmux::accounts::daemon::run_rules(&w.collector).await);
+    let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
+    assert_eq!(listed.global, "default");
+    let last = listed.last_switch.unwrap();
+    assert_eq!(
+        (last.from.as_str(), last.to.as_str(), last.reason.as_deref()),
+        ("personal", "default", Some("back"))
+    );
+    assert_eq!(w.settled_on(&a, "default").await.follow, Follow::Global);
+}

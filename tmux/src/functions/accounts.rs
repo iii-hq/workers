@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::{register_fn, spec, Ctx, EmptyInput, EmptyOutput, FunctionSpec};
 use crate::accounts::launch::Launch;
 use crate::accounts::{tmux_env, GLOBAL};
-use crate::model::{ClaudeAccount, ClaudeSnapshot};
+use crate::model::{ClaudeAccount, ClaudeSnapshot, RulesMode, SwitchRules, Threshold};
 use crate::tmux_cli::{format_literal, resolve_cwd, Tmux, HOLD, SEP};
 
 pub const LIST: &str = "tmux::accounts::list";
@@ -19,6 +19,8 @@ pub const UPDATE: &str = "tmux::accounts::update";
 pub const REMOVE: &str = "tmux::accounts::remove";
 pub const GLOBAL_FN: &str = "tmux::accounts::global";
 pub const MOVE_IDLE: &str = "tmux::accounts::move_idle";
+pub const RULES: &str = "tmux::accounts::rules";
+pub const DISMISS: &str = "tmux::accounts::dismiss";
 
 const LIST_DESC: &str = "The Claude Code accounts on this computer: each one's name, colour, config folder, email, plan, whether it is signed in, the Claude Code panes running on it and its latest usage reading; which one is global (what plain `claude` gets in new tmux windows); the rules for when the global account runs low, any suggestion and the latest switch. Without `accounts.json` there is one account, `default` (~/.claude).";
 const ADD_DESC: &str = "Add a Claude Code account: a config folder of its own (CLAUDE_CONFIG_DIR) under the accounts folder, sharing with ~/.claude what `shared` names (settings, extensions, plugins, conversations; all of them by default) through links. It starts signed out: tmux::accounts::login signs it in.";
@@ -28,6 +30,9 @@ const REMOVE_DESC: &str = "Take a Claude Code account off the list. Not the defa
 
 const GLOBAL_DESC: &str = "Make a Claude Code account the global one: what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.";
 const MOVE_IDLE_DESC: &str = "Move the idle Claude Code panes running on account `from` to account `to` and pin them there, resuming their conversations: those that follow the global account, are pinned to `from` or were started by hand (never those pinned elsewhere, nor working or waiting ones).";
+
+const RULES_DESC: &str = "Change the rules for when the global Claude Code account runs low (what is left out stays): mode `off`, `suggest` (a suggestion in the feed) or `switch` (the worker makes another account global by itself, even with the app closed, and leaves `last_switch`); `at` `week_80`, `week_90` or `limit`; `five_hour` also acts when the 5-hour window is full; `move_idle` moves the idle windows that follow the global account on a switch (else they stay pinned where they run); `back_after_reset` switches back once the old account's window resets; `order` the accounts to try first, then the one with most room this week.";
+const DISMISS_DESC: &str = "\"Not now\" on a suggestion to switch the global account: no suggestion from that account for that reason until its window resets or it runs lower (week 80 % → 90 % → 5-hour window full → week limit).";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddAccountInput {
@@ -232,6 +237,76 @@ pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput
     Ok(MoveIdleOutput { moved: moved? })
 }
 
+/// The rules to change; what is left out stays.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct RulesInput {
+    /// `off`, `suggest` or `switch`.
+    #[serde(default)]
+    pub mode: Option<RulesMode>,
+    /// `week_80`, `week_90` or `limit`.
+    #[serde(default)]
+    pub at: Option<Threshold>,
+    /// Also act when the 5-hour window is full.
+    #[serde(default)]
+    pub five_hour: Option<bool>,
+    /// A switch moves the idle windows that follow the global account.
+    #[serde(default)]
+    pub move_idle: Option<bool>,
+    /// Switch back once the old account's window resets.
+    #[serde(default)]
+    pub back_after_reset: Option<bool>,
+    /// Account ids to try first, in order.
+    #[serde(default)]
+    pub order: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RulesOutput {
+    pub rules: SwitchRules,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DismissInput {
+    /// The suggestion's `id`.
+    pub suggestion: String,
+}
+
+pub async fn rules(ctx: &Ctx, input: RulesInput) -> Result<RulesOutput, String> {
+    let accounts = ctx.collector.accounts().clone();
+    let rules = blocking(move || {
+        accounts.set_rules(|rules| {
+            if let Some(mode) = input.mode {
+                rules.mode = mode;
+            }
+            if let Some(at) = input.at {
+                rules.at = at;
+            }
+            if let Some(five_hour) = input.five_hour {
+                rules.five_hour = five_hour;
+            }
+            if let Some(move_idle) = input.move_idle {
+                rules.move_idle = move_idle;
+            }
+            if let Some(back) = input.back_after_reset {
+                rules.back_after_reset = back;
+            }
+            if let Some(order) = input.order {
+                rules.order = order.iter().map(|id| id.trim().to_string()).collect();
+            }
+        })
+    })
+    .await?;
+    ctx.monitor.poke();
+    Ok(RulesOutput { rules })
+}
+
+pub async fn dismiss(ctx: &Ctx, input: DismissInput) -> Result<EmptyOutput, String> {
+    let accounts = ctx.collector.accounts().clone();
+    blocking(move || accounts.dismiss(input.suggestion.trim())).await?;
+    ctx.monitor.poke();
+    Ok(EmptyOutput {})
+}
+
 pub async fn list(ctx: &Ctx, _input: EmptyInput) -> Result<ClaudeSnapshot, String> {
     ctx.collector.accounts().mark_watched();
     let overview = ctx.collector.overview().await;
@@ -352,6 +427,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<RemoveAccountInput, EmptyOutput>(REMOVE, REMOVE_DESC),
         spec::<GlobalInput, GlobalOutput>(GLOBAL_FN, GLOBAL_DESC),
         spec::<MoveIdleInput, MoveIdleOutput>(MOVE_IDLE, MOVE_IDLE_DESC),
+        spec::<RulesInput, RulesOutput>(RULES, RULES_DESC),
+        spec::<DismissInput, EmptyOutput>(DISMISS, DISMISS_DESC),
     ]
 }
 
@@ -370,4 +447,6 @@ pub fn register(iii: &IIIClient, ctx: &Arc<Ctx>) {
         MoveIdleInput,
         move_idle
     );
+    register_fn!(iii, ctx, RULES, RULES_DESC, RulesInput, rules);
+    register_fn!(iii, ctx, DISMISS, DISMISS_DESC, DismissInput, dismiss);
 }

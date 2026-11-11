@@ -52,6 +52,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::accounts::remove",
             "tmux::accounts::global",
             "tmux::accounts::move_idle",
+            "tmux::accounts::rules",
+            "tmux::accounts::dismiss",
         ]
     );
 }

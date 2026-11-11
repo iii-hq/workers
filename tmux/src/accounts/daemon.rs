@@ -113,7 +113,76 @@ async fn tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>, observed: &Obs
     } else {
         false
     };
-    if changed {
+    let switched = run_rules(collector).await;
+    if changed || switched {
         monitor.poke();
+    }
+}
+
+/// Mode `switch` and `back_after_reset` (D14): make another account global
+/// when the rules call for it, and leave `last_switch` for the app. Returns
+/// whether anything changed (a reading or the global account).
+pub async fn run_rules(collector: &Arc<Collector>) -> bool {
+    let accounts: &Arc<Accounts> = collector.accounts();
+    if !accounts.managed() {
+        return false;
+    }
+    let registry = accounts.registry();
+    if registry.rules.mode == RulesMode::Off {
+        return false;
+    }
+    let mut snapshot = accounts.snapshot(&std::collections::HashMap::new(), 0);
+    // The global account runs low: the others are read (when due) to pick
+    // the target (D12).
+    let global_low = snapshot
+        .claude
+        .accounts
+        .iter()
+        .find(|account| account.id == registry.global)
+        .and_then(|global| super::rules::low_reason(global.usage.as_ref(), &registry.rules))
+        .is_some();
+    let read = global_low && accounts.refresh(None, false).await;
+    if read {
+        snapshot = accounts.snapshot(&std::collections::HashMap::new(), 0);
+    }
+    let now = now_ms();
+    let Some(decision) = super::rules::decide(&registry, &snapshot.claude.accounts, now) else {
+        return read;
+    };
+    let Ok(tmux) = collector.tmux().await else {
+        return read;
+    };
+    let panes = collector.claude_panes(true).await;
+    let mode = if registry.rules.move_idle {
+        super::moves::SwitchMode::IdleNowWorkingAfter
+    } else {
+        super::moves::SwitchMode::NewOnly
+    };
+    let from = registry.global.clone();
+    tracing::info!(%from, to = %decision.to, reason = %decision.reason, "switching the global account");
+    match super::moves::switch_global(&tmux, accounts, &panes, &decision.to, mode).await {
+        Ok(switched) => {
+            let record = crate::model::AccountSwitch {
+                from,
+                to: decision.to.clone(),
+                reason: Some(decision.reason.clone()),
+                auto: true,
+                moved: switched.moved,
+                after_turn: switched.after_turn,
+                at_ms: now,
+                back_at_ms: decision.back_at_ms,
+            };
+            if let Err(error) = accounts.update_registry(|registry| {
+                registry.last_switch = Some(record);
+                Ok(())
+            }) {
+                tracing::warn!(%error, "last switch not saved");
+            }
+            true
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the global account was not switched");
+            read
+        }
     }
 }
