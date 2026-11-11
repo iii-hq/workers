@@ -473,7 +473,8 @@ impl WorkerVms {
     /// Where `output_dir` is, or will be once created: its nearest existing
     /// ancestor, canonical and under the host roots, joined with the components
     /// below it, which do not exist yet. Creates nothing. S501 for a relative
-    /// path, `.` or `..`, an ancestor outside the roots, or a file.
+    /// path, `.` or `..`, an ancestor outside the roots, or an existing
+    /// ancestor that is not a directory.
     fn plan_output(&self, output_dir: &str) -> Result<PathBuf, SandboxError> {
         use std::path::Component;
         let path = Path::new(output_dir);
@@ -496,17 +497,25 @@ impl WorkerVms {
             .strip_prefix(existing)
             .expect("an ancestor is a prefix of its path");
         let existing = self.admit(existing)?;
-        let planned = if below.as_os_str().is_empty() {
+        // Refused now, so a claim never moves the VM's record for a create
+        // that must fail.
+        if !existing.is_dir() {
+            return Err(SandboxError::SourceRejected(
+                if below.as_os_str().is_empty() {
+                    format!("output_dir {output_dir} is not a directory")
+                } else {
+                    format!(
+                        "output_dir {output_dir} cannot be created: {} is not a directory",
+                        existing.display()
+                    )
+                },
+            ));
+        }
+        Ok(if below.as_os_str().is_empty() {
             existing
         } else {
             existing.join(below)
-        };
-        if below.as_os_str().is_empty() && !planned.is_dir() {
-            return Err(SandboxError::SourceRejected(format!(
-                "output_dir {output_dir} is not a directory"
-            )));
-        }
-        Ok(planned)
+        })
     }
 
     /// Create the directory `plan_output` planned for `output_dir`: S501 unless
@@ -543,7 +552,8 @@ impl WorkerVms {
     ///
     /// The check and the write hold the claims mutex and an flock on `<base>`,
     /// so two claims of one directory, from two threads or two adapter
-    /// processes, never both succeed. The project token passes
+    /// processes, never both succeed; on a filesystem that cannot lock a
+    /// directory, only the mutex, within this adapter process. The project token passes
     /// and records nothing. `field` names the request field in errors.
     fn claim_build_dir(
         &self,
@@ -1906,13 +1916,40 @@ fn dir_identity(path: &Path) -> Option<(u64, u64)> {
 
 /// Exclusive, blocking lock over the `build-dir` records of `base`, across
 /// threads and processes: an flock on the `base` directory itself, so no lock
-/// file outlives the last VM. Released when the handle drops or the process exits.
-fn lock_build_dirs(base: &Path) -> Result<File, String> {
+/// file outlives the last VM. Released when the handle drops or the process
+/// exits. `None` where the filesystem cannot lock a directory
+/// ([`lock_unsupported`], NFS among them): a warning, once, and the claims are
+/// then serialized within this adapter process only, by its mutex.
+fn lock_build_dirs(base: &Path) -> Result<Option<File>, String> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
     std::fs::create_dir_all(base).map_err(|e| format!("{}: {e}", base.display()))?;
     let dir = File::open(base).map_err(|e| format!("open {}: {e}", base.display()))?;
-    dir.lock()
-        .map_err(|e| format!("lock {}: {e}", base.display()))?;
-    Ok(dir)
+    match dir.lock() {
+        Ok(()) => Ok(Some(dir)),
+        Err(e) if lock_unsupported(&e) => {
+            if !WARNED.swap(true, Ordering::SeqCst) {
+                tracing::warn!(dir = %base.display(), error = %e, "this filesystem cannot lock a directory; build-dir claims are serialized within this adapter process only");
+            }
+            Ok(None)
+        }
+        Err(e) => Err(format!("lock {}: {e}", base.display())),
+    }
+}
+
+/// ENOLCK, EBADF, ENOTSUP (EOPNOTSUPP) and EINVAL from an flock on a
+/// directory: what filesystems that cannot lock one answer (NFS emulates
+/// flock with POSIX locks, which a directory cannot hold).
+fn lock_unsupported(e: &io::Error) -> bool {
+    e.raw_os_error().is_some_and(|code| {
+        [
+            libc::ENOLCK,
+            libc::EBADF,
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EINVAL,
+        ]
+        .contains(&code)
+    })
 }
 
 /// Record `state_key` and `instance`, truncate `console.log` and spawn `cmd`
@@ -3487,6 +3524,7 @@ mod tests {
             "relative/.build/w".to_string(),
             format!("{}/../escape", project.display()),
             project.join("file").display().to_string(),
+            project.join("file/w").display().to_string(),
         ] {
             assert_eq!(code(vms.plan_output(&refused)), "S501", "{refused}");
         }
@@ -3571,8 +3609,8 @@ mod tests {
     }
 
     /// Another directory moves the VM there and frees the one it leaves, even
-    /// when that one stays on disk (Compose moved `.build/<c>` to
-    /// `.iii/build/<c>` and kept the old one).
+    /// when that one stays on disk (Compose moved the container's build
+    /// directory and kept the old one).
     #[test]
     fn a_vm_moves_to_another_dir_and_releases_the_old_one() {
         let t = tempfile::tempdir().unwrap();
@@ -3796,6 +3834,14 @@ mod tests {
         assert!(!out_b.exists());
         assert_eq!(code(build(&a, "a", &out_a).await), "S501");
         assert!(out_a.is_dir());
+        // Under a file it cannot be created: refused at the plan, A keeps its record.
+        std::fs::write(t.join("project/file"), "").unwrap();
+        assert_eq!(
+            code(build(&a, "a", &t.join("project/file/w")).await),
+            "S501"
+        );
+        let own = read_build_dir(&t.join("workers"), &vm_id("a"), "t");
+        assert_eq!(own, Some(out_a.canonicalize().unwrap()));
         assert_eq!(code(build("t", "a", &out_b).await), "S501");
     }
 
@@ -3933,6 +3979,24 @@ mod tests {
         }
         for failed in [libc::EIO, libc::ENOSPC, libc::EACCES] {
             assert!(!flush_unsupported(&io::Error::from_raw_os_error(failed)));
+        }
+    }
+
+    /// A filesystem that cannot lock a directory (NFS) leaves the claims to the
+    /// in-process mutex instead of failing them; other errors still fail.
+    #[test]
+    fn a_directory_lock_the_filesystem_refuses_falls_back_to_the_mutex() {
+        for unsupported in [
+            libc::ENOLCK,
+            libc::EBADF,
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EINVAL,
+        ] {
+            assert!(lock_unsupported(&io::Error::from_raw_os_error(unsupported)));
+        }
+        for failed in [libc::EIO, libc::EACCES, libc::EINTR] {
+            assert!(!lock_unsupported(&io::Error::from_raw_os_error(failed)));
         }
     }
 
