@@ -3277,21 +3277,24 @@ mod tests {
         let (write, state) = image_write(t, "v1", BUILD_RUNNING);
         let slot = WriterSlot::default();
         let id_file = t.join("out").join(IMAGE_ID_FILE);
-        // Polled first on every wake: it sees the rename before the run sees
-        // its writer end.
-        let committed = std::future::poll_fn(|cx| {
-            if id_file.exists() {
-                std::task::Poll::Ready(())
-            } else {
-                cx.waker().wake_by_ref();
-                std::task::Poll::Pending
-            }
-        });
-        tokio::select! {
-            biased;
-            () = committed => {}
-            done = run_writer(&slot, write) => panic!("the run saw its writer end first: {done:?}"),
+        // One poll puts the writer in its slot and leaves the run waiting on it.
+        let mut run = Box::pin(run_writer(&slot, write));
+        let first = std::future::poll_fn(|cx| std::task::Poll::Ready(run.as_mut().poll(cx))).await;
+        assert!(
+            first.is_pending(),
+            "the writer ended within one poll: {first:?}"
+        );
+        // The writer commits while the run is never polled again, as when the
+        // build's caller left: then the run goes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !id_file.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer never committed"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        drop(run);
         let written = cancel_writer(&slot, &state).await;
         assert_eq!(state.load(Ordering::SeqCst), BUILD_COMMITTED);
         let id = written.expect("the writer was still in its slot").unwrap();
