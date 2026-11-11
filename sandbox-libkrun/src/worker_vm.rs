@@ -495,7 +495,12 @@ impl WorkerVms {
         let below = path
             .strip_prefix(existing)
             .expect("an ancestor is a prefix of its path");
-        let planned = self.admit(existing)?.join(below);
+        let existing = self.admit(existing)?;
+        let planned = if below.as_os_str().is_empty() {
+            existing
+        } else {
+            existing.join(below)
+        };
         if below.as_os_str().is_empty() && !planned.is_dir() {
             return Err(SandboxError::SourceRejected(format!(
                 "output_dir {output_dir} is not a directory"
@@ -536,9 +541,9 @@ impl WorkerVms {
     /// spelling (a bind mount, another case on a case-insensitive filesystem) is
     /// still the other VM's. Nothing reads a directory's name.
     ///
-    /// The check and the write hold the claims mutex and an flock on
-    /// `<base>/.build-dir.lock`, so two claims of one directory, from two threads
-    /// or two adapter processes, never both succeed. The project token passes
+    /// The check and the write hold the claims mutex and an flock on `<base>`,
+    /// so two claims of one directory, from two threads or two adapter
+    /// processes, never both succeed. The project token passes
     /// and records nothing. `field` names the request field in errors.
     fn claim_build_dir(
         &self,
@@ -1900,16 +1905,14 @@ fn dir_identity(path: &Path) -> Option<(u64, u64)> {
 }
 
 /// Exclusive, blocking lock over the `build-dir` records of `base`, across
-/// threads and processes: an flock on `<base>/.build-dir.lock`, released on
-/// drop or process exit (the pattern of the erofs build lock).
-fn lock_build_dirs(base: &Path) -> Result<fslock::LockFile, String> {
-    let path = base.join(".build-dir.lock");
+/// threads and processes: an flock on the `base` directory itself, so no lock
+/// file outlives the last VM. Released when the handle drops or the process exits.
+fn lock_build_dirs(base: &Path) -> Result<File, String> {
     std::fs::create_dir_all(base).map_err(|e| format!("{}: {e}", base.display()))?;
-    let mut lock = fslock::LockFile::open(&path)
-        .map_err(|e| format!("open the build-dir lock {}: {e}", path.display()))?;
-    lock.lock()
-        .map_err(|e| format!("take the build-dir lock {}: {e}", path.display()))?;
-    Ok(lock)
+    let dir = File::open(base).map_err(|e| format!("open {}: {e}", base.display()))?;
+    dir.lock()
+        .map_err(|e| format!("lock {}: {e}", base.display()))?;
+    Ok(dir)
 }
 
 /// Record `state_key` and `instance`, truncate `console.log` and spawn `cmd`
@@ -2631,7 +2634,7 @@ mod tests {
         std::os::unix::fs::symlink(t.join("real"), t.join("link")).unwrap();
         let vms = vms(t, Some("t"), vec![t.join("link")]);
         for path in [t.join("real/w"), t.join("link/w")] {
-            assert!(vms.admit(&path.display().to_string()).is_ok(), "{path:?}");
+            assert!(vms.admit(path.display().to_string()).is_ok(), "{path:?}");
         }
 
         // macOS: /tmp is a symlink to /private/tmp.
@@ -3661,6 +3664,11 @@ mod tests {
         assert!(!record_of(t, "a").exists());
         assert_eq!(code(claim(&vms, &a, "a", &dir_b)), "S505");
         claim(&vms, &a, "a", &dir_a).unwrap();
+        // Nothing of the claims, lock included, outlives the last VM.
+        for key in ["a", "b"] {
+            assert!(vms.destroy(destroy_req("t", key)).unwrap().destroyed);
+        }
+        assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
     }
 
     /// Two VMs claim one directory at once, through two adapters on one base

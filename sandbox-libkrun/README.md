@@ -174,8 +174,8 @@ a build and keeps quiet about it.
   VM's own `worker::destroy` does. Two paths are one directory when they are
   equal or, both existing, share device and inode (a bind mount, another case
   on a case-insensitive volume). A record another project token wrote counts
-  for nothing. Claims hold an flock on `~/.iii/sandbox/workers/.build-dir.lock`,
-  so two adapter processes never give one directory to two VMs. The check
+  for nothing. Claims hold an flock on `~/.iii/sandbox/workers` itself, so two
+  adapter processes never give one directory to two VMs. The check
   reads no directory name; the project token is not checked.
 - **Data disk.** A VM that boots builds keeps its writes on
   `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
