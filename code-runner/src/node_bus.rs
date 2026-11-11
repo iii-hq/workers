@@ -11,15 +11,14 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use iii_sdk::{
-    CallAction, CallRequest, Capture, Deliver, Error, IIIClient, ObserveRejection, Observer,
-    ObserverHandle, ObserverOptions, ObserverState, RegisterFunction, Source, Target,
+    CallAction, CallRequest, Capture, Error, IIIClient, ObserveRejection, Observer, ObserverHandle,
+    ObserverOptions, ObserverState, RegisterFunction, Source, Target,
 };
 use serde_json::Value;
 
 use iii_node_core::engine::{
     hook_outcome, observer_hook_payload, parse_guest_observe, CallResult, Engine, GuestCapture,
-    GuestDeliver, GuestFunctionOptions, GuestObserveInput, GuestObserver, HookMethod, ProxyHandler,
-    UnregisterFn,
+    GuestFunctionOptions, GuestObserveInput, GuestObserver, HookMethod, ProxyHandler, UnregisterFn,
 };
 
 /// Stands in when a caller registers without a description, on this worker's
@@ -130,7 +129,7 @@ impl IIIEngine {
         let guest = parse_guest_observe(input).map_err(|e| (e, None))?;
         crate::agent_dispatch::validate_observe(&guest.source.function_id, &guest.target)
             .map_err(|e| (e, None))?;
-        let (source, target, options) = sdk_observe(guest);
+        let (source, target, options) = sdk_observe(guest).map_err(|e| (e, None))?;
         let handle = self.iii.observe_with(source, target, options);
         // The SDK refuses a malformed observer (an invalid filter), and one
         // under an id another handle of this client holds
@@ -217,9 +216,20 @@ impl Adapter {
     }
 }
 
+/// The 0.26 SDKs' refusal of the removed `source.deliver`. Refused, not
+/// dropped: dropped, the default capture would fire the target on other
+/// outcomes than the ones asked for, with the envelope instead of the bare
+/// input or output it expects.
+const REMOVED_DELIVER: &str = "INVALID_ARGS: observe: `source.deliver` was removed: \
+     `source.capture` decides which outcomes fire the target and what it receives";
+
 /// Map the guest's observer onto the SDK's builders. Unset fields stay
-/// unset, so the engine applies its own defaults.
-fn sdk_observe(guest: GuestObserveInput) -> (Source, Target, ObserverOptions) {
+/// unset, so the engine applies its own defaults. A guest `deliver` is
+/// refused, as the 0.26 SDKs refuse `source.deliver`.
+fn sdk_observe(guest: GuestObserveInput) -> Result<(Source, Target, ObserverOptions), String> {
+    if guest.source.deliver.is_some() {
+        return Err(REMOVED_DELIVER.to_string());
+    }
     let mut source = Source::function(guest.source.function_id);
     if let Some(namespace) = guest.source.namespace {
         source = source.namespace(namespace);
@@ -239,28 +249,6 @@ fn sdk_observe(guest: GuestObserveInput) -> (Source, Target, ObserverOptions) {
             GuestCapture::Metadata => Capture::Metadata,
         }));
     }
-    if let Some(deliver) = guest.source.deliver {
-        // Deprecated, still honoured: forwarded as the legacy source field,
-        // which the 0.26 engine translates (with its own warning).
-        let (deliver, replacement) = match deliver {
-            GuestDeliver::Envelope => (Deliver::Envelope, "omit it (the envelope is the default)"),
-            GuestDeliver::Input => (Deliver::Input, "capture: ['input'] and read payload.input"),
-            GuestDeliver::Output => (
-                Deliver::Output,
-                "capture: ['output'] and read payload.output",
-            ),
-        };
-        tracing::warn!(
-            function_id = %source.function_id(),
-            target = %guest.target,
-            deliver = %deliver,
-            "guest observe `deliver` is deprecated and will be removed in a future release; \
-             use `capture` instead ({replacement}); forwarded to the engine as the legacy \
-             field until then"
-        );
-        source = source.deliver(deliver);
-    }
-
     let mut options = ObserverOptions::default();
     let guest_options = guest.options;
     if let Some(id) = guest_options.id {
@@ -278,7 +266,7 @@ fn sdk_observe(guest: GuestObserveInput) -> (Source, Target, ObserverOptions) {
     if let Some(max_in_flight) = guest_options.max_in_flight {
         options = options.max_in_flight(max_in_flight);
     }
-    (source, Target::function(guest.target), options)
+    Ok((source, Target::function(guest.target), options))
 }
 
 /// Decode the guest's action — the JSON text of its action object, such as
@@ -471,7 +459,7 @@ mod tests {
                 "source": {
                     "function_id": "state::on-changed",
                     "filters": { "input.key": { "$eq": "k" } },
-                    "deliver": "output",
+                    "capture": ["output"],
                 },
                 "target": "app::react",
                 "options": { "id": "app::watch", "max_in_flight": 1, "metadata": { "owner": "app" } },
@@ -513,46 +501,30 @@ mod tests {
         parse_guest_observe(json!({ "source": source, "target": "app::react" })).unwrap()
     }
 
-    /// A guest's legacy `deliver` keeps working: it is forwarded as the
-    /// source's legacy `deliver` field (the SDK copies `Source::deliver`
-    /// verbatim into the outbound `observe` frame's `source.deliver`, and the
-    /// 0.26 engine translates it), and a deprecation warning names `capture`
-    /// as the replacement.
-    #[test]
-    fn a_guest_deliver_is_forwarded_as_the_legacy_field_with_a_deprecation_warning() {
-        use iii_sdk::Deliver;
-        let filters = json!({ "input.key": { "$eq": "k" } });
-        for (raw, expected) in [
-            ("output", Deliver::Output),
-            ("input", Deliver::Input),
-            ("envelope", Deliver::Envelope),
-        ] {
-            let input = guest(json!({
-                "function_id": "state::on-changed",
-                "filters": filters,
-                "deliver": raw,
-            }));
-            let ((source, _, _), logs) = with_logs(|| sdk_observe(input));
-            assert_eq!(
-                source,
-                Source::function("state::on-changed")
-                    .filters(filters.clone())
-                    .deliver(expected),
-                "deliver {raw} must reach the frame as the legacy field"
-            );
+    /// A guest's `deliver`, removed in 0.26, is refused with the 0.26 SDKs'
+    /// message naming `capture`, before anything is sent: no handle is kept.
+    #[tokio::test]
+    async fn a_guest_deliver_is_refused_naming_capture() {
+        let engine = engine();
+        for raw in ["output", "input", "envelope"] {
+            let err = engine
+                .observe(json!({
+                    "source": { "function_id": "state::on-changed", "deliver": raw },
+                    "target": "app::react",
+                }))
+                .await
+                .unwrap_err();
             assert!(
-                logs.contains("WARN")
-                    && logs.contains(
-                        "guest observe `deliver` is deprecated and will be removed in a future \
-                         release; use `capture` instead"
-                    )
-                    && logs.contains("state::on-changed"),
-                "no deprecation warning naming capture for deliver {raw}: {logs:?}"
+                err.contains("INVALID_ARGS")
+                    && err.contains("`source.deliver` was removed")
+                    && err.contains("`source.capture`"),
+                "deliver {raw}: unexpected refusal {err:?}"
             );
         }
+        assert!(engine.handles.lock().unwrap().is_empty());
     }
 
-    /// The replacement the warning names: a guest `capture` reaches the
+    /// The replacement the refusal names: a guest `capture` reaches the
     /// frame as `source.capture`, with no warning.
     #[test]
     fn a_guest_capture_is_forwarded_without_a_warning() {
@@ -561,7 +533,7 @@ mod tests {
             "function_id": "state::on-changed",
             "capture": ["input", "output", "error", "caller", "metadata"],
         }));
-        let ((source, _, _), logs) = with_logs(|| sdk_observe(input));
+        let ((source, _, _), logs) = with_logs(|| sdk_observe(input).unwrap());
         assert_eq!(
             source,
             Source::function("state::on-changed").capture([
@@ -574,8 +546,9 @@ mod tests {
         );
         assert!(!logs.contains("deprecated"), "unexpected warning: {logs}");
 
-        let ((source, _, _), _) =
-            with_logs(|| sdk_observe(guest(json!({ "function_id": "a::b", "capture": [] }))));
+        let ((source, _, _), _) = with_logs(|| {
+            sdk_observe(guest(json!({ "function_id": "a::b", "capture": [] }))).unwrap()
+        });
         assert_eq!(source, Source::function("a::b").capture([]));
     }
 
