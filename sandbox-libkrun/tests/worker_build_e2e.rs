@@ -220,8 +220,10 @@ async fn wait_for(console: &Path, needle: &str, secs: u64) -> String {
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
             .map(|r| r["line"].as_str().unwrap_or_default().to_string())
             .collect();
-        // A console line is plain text, whatever colour the env asks for.
-        if let Some(line) = lines.iter().find(|l| l.contains('\u{1b}')) {
+        // What `__vm-boot` writes is plain text, whatever colour the env asks
+        // for: its prefix before `init_or_kernel: `, or the whole of a line of
+        // its own. The guest's text after the prefix is the guest's to colour.
+        if let Some(line) = lines.iter().find(|l| vm_boot_prefix(l).contains('\u{1b}')) {
             panic!("ANSI escapes in {}: {line:?}", console.display());
         }
         let log: String = lines
@@ -244,6 +246,13 @@ async fn wait_for(console: &Path, needle: &str, secs: u64) -> String {
 fn guest_line(line: &str) -> &str {
     line.split_once("init_or_kernel: ")
         .map_or(line, |(_, guest)| guest)
+}
+
+/// What `__vm-boot` wrote of a console line: the prefix of a guest line, or
+/// the whole of a line of its own.
+fn vm_boot_prefix(line: &str) -> &str {
+    line.split_once("init_or_kernel: ")
+        .map_or(line, |(prefix, _)| prefix)
 }
 
 fn console(t: &Path, state_key: &str) -> PathBuf {
