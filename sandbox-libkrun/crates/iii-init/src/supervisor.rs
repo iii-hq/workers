@@ -83,6 +83,9 @@ fn attach_to_worker_cgroup(pid: i32) {
 ///
 pub fn exec_worker() -> Result<(), InitError> {
     let cmd = std::env::var("III_WORKER_CMD").map_err(|_| InitError::MissingWorkerCmd)?;
+    // Taken before any helper thread or the worker spawns: removing it from
+    // the env is then single-threaded, and the build's scripts never see it.
+    let export = crate::export::take_export_dest();
 
     // Install handlers BEFORE spawning so a signal arriving mid-spawn
     // can still find a live CHILD_PID (racily) or exit cleanly via the
@@ -98,8 +101,6 @@ pub fn exec_worker() -> Result<(), InitError> {
     maybe_spawn_shell_dispatcher();
     maybe_spawn_source_sync();
 
-    // Taken before the spawn: the build's scripts never see it.
-    let export = crate::export::take_export_dest();
     let workdir = std::env::var(III_WORKER_WORKDIR_ENV).unwrap_or_else(|_| "/".to_string());
     run_worker(&cmd, &workdir, export.as_deref())
 }

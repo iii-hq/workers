@@ -1380,6 +1380,10 @@ mod tests {
     /// `path://.` they are in the worker's dir, and stay out of the copy at
     /// any depth, as the dependency dirs do.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn compose_dirs_stay_out_of_the_copy() {
         let temp = tempfile::tempdir().unwrap();
         let t = temp.path();
@@ -1459,6 +1463,10 @@ mod tests {
     /// root, and a root `build` is often a script: they are copied and synced
     /// there. Only a root directory of that name is build output, left out.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn root_only_names_match_a_root_directory_only() {
         use super::super::source_watcher::should_ignore_path;
         let temp = tempfile::tempdir().unwrap();
@@ -1541,6 +1549,10 @@ mod tests {
     /// A run never installs, so what the build put in a dependency or build
     /// dir must survive every boot, whatever the host has there.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn every_dependency_dir_the_build_filled_survives_the_boots() {
         let temp = tempfile::tempdir().unwrap();
         let t = temp.path();
@@ -1674,6 +1686,10 @@ mod tests {
     /// A copy an older adapter made into a persistent /workspace must not
     /// survive the next boot: the token in it stays valid.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn workspace_cleanup_removes_a_stale_compose_state_copy() {
         let temp = tempfile::tempdir().unwrap();
         let t = temp.path();
@@ -1773,6 +1789,10 @@ mod tests {
     /// still holds such things stays; one the host turned into a file is moved
     /// aside so the copy can put the file there.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn the_cleanup_removes_only_what_the_host_deleted() {
         let temp = tempfile::tempdir().unwrap();
         let t = temp.path();
@@ -1850,6 +1870,10 @@ mod tests {
     /// A build's manifest ships in its image: the first run's cleanup removes
     /// what the build copied and the host deleted since.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn the_first_run_cleans_up_after_the_build_copy() {
         let temp = tempfile::tempdir().unwrap();
         let t = temp.path();
@@ -1878,6 +1902,10 @@ mod tests {
     /// guest is a link (the worker's, the install's, or one the sync applied)
     /// is skipped, so nothing outside `$WS` is removed, emptied or moved.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn the_cleanup_never_removes_through_a_symlinked_parent() {
         let temp = tempfile::tempdir().unwrap();
         let t = temp.path();
@@ -1940,6 +1968,10 @@ mod tests {
     /// the build's `vendor/` stays whole until the next build. A run that
     /// installs copies `vendor/` as a build does, and cleans it.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn a_run_leaves_the_vendor_dir_of_the_build_alone() {
         let temp = tempfile::tempdir().unwrap();
         let t = temp.path();

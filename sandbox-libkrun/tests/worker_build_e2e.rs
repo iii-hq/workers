@@ -215,10 +215,18 @@ async fn wait_for(console: &Path, needle: &str, secs: u64) -> String {
     let deadline = Instant::now() + Duration::from_secs(secs);
     loop {
         let text = std::fs::read_to_string(console).unwrap_or_default();
-        let log: String = text
+        let lines: Vec<String> = text
             .lines()
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .map(|r| format!("{}\n", guest_line(r["line"].as_str().unwrap_or_default())))
+            .map(|r| r["line"].as_str().unwrap_or_default().to_string())
+            .collect();
+        // A console line is plain text, whatever colour the env asks for.
+        if let Some(line) = lines.iter().find(|l| l.contains('\u{1b}')) {
+            panic!("ANSI escapes in {}: {line:?}", console.display());
+        }
+        let log: String = lines
+            .iter()
+            .map(|line| format!("{}\n", guest_line(line)))
             .collect();
         if log.contains(needle) {
             return log;

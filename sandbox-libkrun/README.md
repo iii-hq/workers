@@ -192,9 +192,10 @@ a build and keeps quiet about it.
   - Nothing is removed through a symlink. An entry whose parent in the guest
     is not a chain of real directories inside `/workspace` (the worker, the
     install or the sync put a link there) is skipped.
-  - A directory goes only once empty. One the host turned into a file while
-    it still holds such files moves aside to the first free
-    `<name>.iii-kept.<n>` (`.iii-kept.1`, `.iii-kept.2`, ...).
+  - A directory goes only once empty. When the host turned a directory into a
+    file and the guest's directory still holds such files, that directory
+    moves aside to the first free `<name>.iii-kept.<n>` (`.iii-kept.1`,
+    `.iii-kept.2`, ...).
   - A name with a newline or a backslash is never cleaned: `tar -v` prints
     it escaped (GNU) or over several lines (busybox), and the cleanup trusts
     a line only when it is one plain name.
