@@ -23,7 +23,7 @@ use iii_sdk::channels::{ChannelDirection, StreamChannelRef};
 use sandbox_libkrun::sandbox_daemon::SandboxError;
 use sandbox_libkrun::wire::{
     LogRecord, WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse, WorkerDestroyRequest,
-    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStopRequest,
+    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStopRequest, scoped_auth_token,
 };
 use sandbox_libkrun::worker_vm::{WorkerVms, vm_id};
 use serial_test::serial;
@@ -555,6 +555,69 @@ async fn the_build_codes() {
     wait_for(&console(t, "codes"), "READY", 120).await;
     stop(&vms, &started).await;
     destroy(&vms, "codes");
+}
+
+/// A VM's scoped token builds into and boots from its own build directory, and
+/// gets S505 on another VM's, whose image and id stay as they were.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_scoped_token_builds_and_boots_its_own_build_dir_only() {
+    if !kvm() {
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let t = t.path();
+    let project = t.join("project");
+    python_worker(&project, "echo installed", "echo READY; exec sleep 600\n");
+    let out_b = project.join(".iii/build/b");
+    let mut vms = WorkerVms::new(t.join("workers"), Some("t".into()), vec![t.into()]);
+    // A scoped start is leased, and nothing follows its log here.
+    vms.lease_grace = Duration::from_secs(600);
+    let (iii, _frames, _) = channel_engine().await;
+    let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
+    let scoped_build = |auth: &str, state_key: &str, out: &Path| {
+        let mut req = build_req(state_key, local(&project), out);
+        req.auth = auth.to_string();
+        vms.build(&iii, req)
+    };
+    let scoped_start = |auth: &str, state_key: &str, build_id: &str, dir: &Path| {
+        vms.start(WorkerStartRequest {
+            auth: auth.into(),
+            state_key: state_key.into(),
+            worker_name: "w".into(),
+            source: local(&project),
+            env: Default::default(),
+            engine_url: "ws://127.0.0.1:49134".into(),
+            build: Some(WorkerBuildRef {
+                build_id: build_id.into(),
+                build_dir: dir.display().to_string(),
+            }),
+        })
+    };
+
+    let built = scoped_build(&b, "b", &out_b).await.unwrap();
+    assert_eq!(sha256(&out_b.join("image.erofs")), built.build_id);
+    // A's token on B's directory: S505 before any build VM or id check.
+    let refused = scoped_build(&a, "a", &out_b).await.unwrap_err();
+    eprintln!("[S505 build] {refused}");
+    assert_eq!(refused.code().as_str(), "S505");
+    let refused = scoped_start(&a, "a", &built.build_id, &out_b)
+        .await
+        .unwrap_err();
+    eprintln!("[S505 start] {refused}");
+    assert_eq!(refused.code().as_str(), "S505");
+    assert_eq!(names(&out_b), ["image.erofs", "image.id"]);
+    assert_eq!(sha256(&out_b.join("image.erofs")), built.build_id);
+    let id = std::fs::read_to_string(out_b.join("image.id")).unwrap();
+    assert_eq!(id.trim(), built.build_id);
+
+    // B boots its build with its own token.
+    let started = scoped_start(&b, "b", &built.build_id, &out_b)
+        .await
+        .unwrap();
+    wait_for(&console(t, "b"), "READY", 120).await;
+    stop(&vms, &started).await;
+    destroy(&vms, "b");
 }
 
 /// Acceptance 3: the reader of `logs` leaves mid-build. The build VM stops, the

@@ -123,7 +123,8 @@ and in any case, including to guest root mounting the share again after the copy
 
 `iii sandbox run` presents a token scoped to its VM instead of the project token
 (HMAC-SHA256 keyed by the project token over `iii-sandbox/worker-scope/v1\0`
-followed by the VM's `state_key`, in lowercase hex), which gets S505 on any other VM. A VM started with a scoped token also has a lease: when its last
+followed by the VM's `state_key`, in lowercase hex), which gets S505 on any other VM,
+and on any other VM's build directory (see Builds). A VM started with a scoped token also has a lease: when its last
 log follower is gone and no client reattaches within 45 s, the adapter stops it
 (SIGTERM, then SIGKILL after 10 s). VMs started with the project token have no
 lease, because Compose supervises them itself.
@@ -143,8 +144,12 @@ a build and keeps quiet about it.
   `scripts.install` there with the request's `env` only. When the script exits
   0, iii-init writes the merged root, without `/proc`, `/sys`, `/dev`, `/run`,
   `/tmp`, `/opt/iii` and `/mnt/host-src`, and the host turns it into
-  `<output_dir>/image.erofs`, then `image.id`, each through a temporary file
-  and a rename. The build streams its output into `logs` and writes a
+  `<output_dir>/image.erofs` and `image.id`. Both are written as temporary
+  files; then the previous `image.id` is removed, the image renamed into place
+  and the new `image.id` last. A crash between those renames leaves an image
+  without an id, which a start refuses with S508 until the next build (0.4.0
+  renamed the new image beside the previous id, which a start accepted). The
+  build streams its output into `logs` and writes a
   one-byte binary frame there at least every 5 s; when the channel closes or a
   write fails, it stops the build VM, deletes the temporary image, keeps the
   previous pair and frees the key. One build per `state_key` runs at a time
@@ -155,6 +160,16 @@ a build and keeps quiet about it.
   `build_id` (S508 otherwise, or when it is missing) and boots `image.erofs` as
   the overlay's lower, without setup or install. A `path://` worker's code
   still syncs in live; a bundle's is in the image.
+- **A scoped token's build directory.** From 0.4.1 the token scoped to a VM
+  builds into one directory and boots from that one only: the first
+  `output_dir` or `build_dir` it presents becomes its VM's build directory,
+  recorded in `~/.iii/sandbox/workers/<vm_id>/build-dir` with a MAC of the
+  project token. Another directory gets S505 while the recorded one still
+  exists, and so does a directory another VM recorded, so the token Compose
+  hands one container can neither replace nor boot another's image. A VM whose
+  directory is gone (Compose moved it) records the new one, `worker::destroy`
+  forgets it, and a record another project token wrote counts for nothing.
+  The check reads no directory name; the project token is not checked.
 - **Data disk.** A VM that boots builds keeps its writes on
   `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
   `root/`: they outlive restarts and rebuilds, and only `worker::destroy`
@@ -224,6 +239,13 @@ Two races of a build are accepted:
   find the new pair installed: the build still renames it and replies with
   its build id. A caller that gave up (its `build.json` still names the older
   build) then gets S508 on its next start, and builds again.
+
+A scoped token claims its VM's build directory when it first presents one. A
+directory no VM of the project has claimed yet (its container has neither
+built nor started on 0.4.1, or `iii compose --up` replaced the project token
+since) goes to the first scoped token that presents it; the container it
+belongs to then gets S505 there until the other VM is destroyed. Compose builds
+or starts each container as it comes up, which claims its directory.
 
 The boot cleanup of `/workspace` trusts a manifest line only when it is one
 plain name, but busybox tar (alpine images) prints names raw. A name that holds

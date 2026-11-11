@@ -177,6 +177,11 @@ pub enum SandboxError {
     )]
     Unauthorized,
 
+    /// A scoped token named a build directory other than its VM's: S505, as
+    /// for any VM but its own.
+    #[error("the token scoped to this VM cannot use this build directory: {0}")]
+    BuildDirRefused(String),
+
     #[error("worker prepare failed: {0}")]
     PrepareFailed(String),
 
@@ -292,7 +297,7 @@ impl SandboxError {
             Self::StateBusy { .. } => SandboxErrorCode::S502,
             Self::InstanceMismatch { .. } => SandboxErrorCode::S503,
             Self::VmNotFound(_) => SandboxErrorCode::S504,
-            Self::Unauthorized => SandboxErrorCode::S505,
+            Self::Unauthorized | Self::BuildDirRefused(_) => SandboxErrorCode::S505,
             Self::PrepareFailed(_) => SandboxErrorCode::S506,
             Self::BuildFailed(_) => SandboxErrorCode::S507,
             Self::BuildMismatch(_) => SandboxErrorCode::S508,
@@ -422,6 +427,13 @@ impl SandboxError {
             Self::Unauthorized => (
                 None,
                 Some("call worker::* through Compose, which passes the token"),
+            ),
+            Self::BuildDirRefused(_) => (
+                None,
+                Some(
+                    "a scoped token builds into and boots from its own VM's build directory only; \
+                     pass that one, or call with the project token",
+                ),
             ),
             Self::PrepareFailed(_) => (None, Some("transient: retry after a short delay")),
             Self::BuildFailed(_) => (
@@ -846,6 +858,14 @@ mod tests {
                 SandboxError::Unauthorized,
                 "worker::* needs the project token this adapter was started with, or the token scoped to that VM",
                 Some("call worker::* through Compose, which passes the token"),
+            ),
+            (
+                SandboxError::BuildDirRefused("x".into()),
+                "the token scoped to this VM cannot use this build directory: x",
+                Some(
+                    "a scoped token builds into and boots from its own VM's build directory only; \
+                     pass that one, or call with the project token",
+                ),
             ),
             (
                 SandboxError::PrepareFailed("x".into()),
