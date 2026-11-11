@@ -39,6 +39,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::panes::split",
             "tmux::panes::kill",
             "tmux::panes::respawn",
+            "tmux::panes::account",
             "tmux::subagents::transcript",
             "tmux::ports::list",
             "tmux::install",
@@ -49,6 +50,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::accounts::login",
             "tmux::accounts::update",
             "tmux::accounts::remove",
+            "tmux::accounts::global",
+            "tmux::accounts::move_idle",
         ]
     );
 }
@@ -60,7 +63,10 @@ fn catalog_ids_are_unique_and_kebab_case() {
         let id = spec.function_id;
         assert!(seen.insert(id), "duplicate function id {id}");
         assert!(id.starts_with("tmux::"), "{id} is not namespaced");
-        assert!(!id.contains('_'), "{id} uses snake_case");
+        // `move_idle` is the id the apps were given (agent-accounts §3.4).
+        if id != "tmux::accounts::move_idle" {
+            assert!(!id.contains('_'), "{id} uses snake_case");
+        }
     }
 }
 

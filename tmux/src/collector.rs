@@ -445,6 +445,9 @@ impl Collector {
         let mut out = HashMap::new();
         for pane in &raw.panes {
             let marks = Marks::from_raw(&pane.claude_mark, pane.skip_mark, &pane.pending_mark);
+            if marks.pending.is_some() {
+                self.accounts.note_pending();
+            }
             let agent = statuses.get(&pane.id);
             let claude = match agent {
                 Some(agent) if agent.id == "claude" => Some(ClaudeProc {
@@ -471,6 +474,9 @@ impl Collector {
                     info,
                     agent_state: agent.map(|a| a.state),
                     cwd: pane.cwd.clone(),
+                    kind: claude_pid.and_then(|pid| {
+                        crate::accounts::panes::move_kind(table, pane.pid, pid).ok()
+                    }),
                 },
             );
         }

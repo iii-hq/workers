@@ -17,12 +17,17 @@ pub const ADD: &str = "tmux::accounts::add";
 pub const LOGIN: &str = "tmux::accounts::login";
 pub const UPDATE: &str = "tmux::accounts::update";
 pub const REMOVE: &str = "tmux::accounts::remove";
+pub const GLOBAL_FN: &str = "tmux::accounts::global";
+pub const MOVE_IDLE: &str = "tmux::accounts::move_idle";
 
 const LIST_DESC: &str = "The Claude Code accounts on this computer: each one's name, colour, config folder, email, plan, whether it is signed in, the Claude Code panes running on it and its latest usage reading; which one is global (what plain `claude` gets in new tmux windows); the rules for when the global account runs low, any suggestion and the latest switch. Without `accounts.json` there is one account, `default` (~/.claude).";
 const ADD_DESC: &str = "Add a Claude Code account: a config folder of its own (CLAUDE_CONFIG_DIR) under the accounts folder, sharing with ~/.claude what `shared` names (settings, extensions, plugins, conversations; all of them by default) through links. It starts signed out: tmux::accounts::login signs it in.";
 const LOGIN_DESC: &str = "Sign a Claude Code account in: opens a window named `login` in `session` running `claude auth login` for that account's folder, which prints a sign-in link and waits for the code. The window closes when the command ends; the account then shows signed in.";
 const UPDATE_DESC: &str = "Rename or recolour a Claude Code account, or change what it shares with ~/.claude (links are made for groups added and the worker's links removed for groups dropped; files of the account's own are never touched).";
 const REMOVE_DESC: &str = "Take a Claude Code account off the list. Not the default account (~/.claude) nor the global one. Claude Code panes on it keep running. With delete_files, its folder (sign-in, history of its own) is deleted too, never what its links point at; refused while Claude Code runs on it.";
+
+const GLOBAL_DESC: &str = "Make a Claude Code account the global one: what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.";
+const MOVE_IDLE_DESC: &str = "Move the idle Claude Code panes running on account `from` to account `to` and pin them there, resuming their conversations: those that follow the global account, are pinned to `from` or were started by hand (never those pinned elsewhere, nor working or waiting ones).";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddAccountInput {
@@ -138,6 +143,93 @@ pub(super) async fn start_claude(
     }
     tmux.start_with_options(pane, &options, Some(&launch.command))
         .await
+}
+
+/// How panes that follow the global account go along (D8).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobalMove {
+    /// Idle ones move now, working or waiting ones after their turn.
+    #[default]
+    IdleNowWorkingAfter,
+    /// They stay on the account they run on, pinned there.
+    NewOnly,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GlobalInput {
+    /// Account id.
+    pub account: String,
+    /// What panes following the global account do (default `idle_now_working_after`).
+    #[serde(default, rename = "move")]
+    pub move_mode: GlobalMove,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GlobalOutput {
+    /// The global account now.
+    pub global: String,
+    /// Panes moved to it now.
+    pub moved: Vec<String>,
+    /// Panes that move once their turn ends.
+    pub after_turn: Vec<String>,
+    /// Panes that stay where they run (pinned there with `new_only`, or that can't move).
+    pub stayed: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveIdleInput {
+    /// Account id they run on.
+    pub from: String,
+    /// Account id to move them to.
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MoveIdleOutput {
+    /// Panes moved.
+    pub moved: Vec<String>,
+}
+
+pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, String> {
+    use crate::accounts::moves::{switch_global, SwitchMode};
+    let tmux = ctx.tmux().await?;
+    let panes = ctx.collector.claude_panes(true).await;
+    let mode = match input.move_mode {
+        GlobalMove::IdleNowWorkingAfter => SwitchMode::IdleNowWorkingAfter,
+        GlobalMove::NewOnly => SwitchMode::NewOnly,
+    };
+    let switched = switch_global(
+        &tmux,
+        ctx.collector.accounts(),
+        &panes,
+        &input.account,
+        mode,
+    )
+    .await;
+    ctx.monitor.poke();
+    let switched = switched?;
+    Ok(GlobalOutput {
+        global: input.account.trim().to_string(),
+        moved: switched.moved,
+        after_turn: switched.after_turn,
+        stayed: switched.stayed,
+    })
+}
+
+pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput, String> {
+    let tmux = ctx.tmux().await?;
+    let panes = ctx.collector.claude_panes(true).await;
+    let moved = crate::accounts::moves::move_idle(
+        &tmux,
+        ctx.collector.accounts(),
+        &panes,
+        input.from.trim(),
+        input.to.trim(),
+    )
+    .await;
+    ctx.monitor.poke();
+    Ok(MoveIdleOutput { moved: moved? })
 }
 
 pub async fn list(ctx: &Ctx, _input: EmptyInput) -> Result<ClaudeSnapshot, String> {
@@ -258,6 +350,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<LoginInput, LoginWindow>(LOGIN, LOGIN_DESC),
         spec::<UpdateAccountInput, AccountOutput>(UPDATE, UPDATE_DESC),
         spec::<RemoveAccountInput, EmptyOutput>(REMOVE, REMOVE_DESC),
+        spec::<GlobalInput, GlobalOutput>(GLOBAL_FN, GLOBAL_DESC),
+        spec::<MoveIdleInput, MoveIdleOutput>(MOVE_IDLE, MOVE_IDLE_DESC),
     ]
 }
 
@@ -267,4 +361,13 @@ pub fn register(iii: &IIIClient, ctx: &Arc<Ctx>) {
     register_fn!(iii, ctx, LOGIN, LOGIN_DESC, LoginInput, login);
     register_fn!(iii, ctx, UPDATE, UPDATE_DESC, UpdateAccountInput, update);
     register_fn!(iii, ctx, REMOVE, REMOVE_DESC, RemoveAccountInput, remove);
+    register_fn!(iii, ctx, GLOBAL_FN, GLOBAL_DESC, GlobalInput, global);
+    register_fn!(
+        iii,
+        ctx,
+        MOVE_IDLE,
+        MOVE_IDLE_DESC,
+        MoveIdleInput,
+        move_idle
+    );
 }

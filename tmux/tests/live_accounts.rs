@@ -16,7 +16,7 @@ use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
 use tmux::functions::accounts::{self as account_fns, ClaudeLaunchInput};
-use tmux::functions::{self, sessions, windows, Ctx, EmptyInput};
+use tmux::functions::{self, panes, sessions, windows, Ctx, EmptyInput};
 use tmux::model::{Follow, Pane, PaneClaude};
 
 struct Sandbox {
@@ -448,4 +448,284 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+impl World {
+    /// The fake Claude Code's process in `pane`.
+    async fn claude_pid(&self, pane: &str) -> u32 {
+        eventually(&format!("Claude Code's pid in {pane}"), || async {
+            self.collector
+                .claude_panes(true)
+                .await
+                .get(pane)?
+                .claude_pid
+        })
+        .await
+    }
+
+    /// Tell the fake Claude Code in `pane` to be `state` (working, waiting,
+    /// idle), and wait until it says so in its record.
+    async fn set_state(&self, pane: &str, state: &str) {
+        let pid = self.claude_pid(pane).await;
+        std::fs::write(
+            self.sandbox.dir.join(format!("state/{pid}.state")),
+            format!("{state}\n"),
+        )
+        .unwrap();
+        let raw = match state {
+            "working" => "busy",
+            other => other,
+        };
+        eventually(&format!("{pane} {state}"), || async {
+            let panes = self.collector.claude_panes(true).await;
+            let status = panes.get(pane)?.record.as_ref()?.status.clone()?;
+            (status == raw).then_some(())
+        })
+        .await;
+    }
+
+    /// The pane's Claude Code once it runs on `account` with no move waiting.
+    async fn settled_on(&self, pane: &str, account: &str) -> PaneClaude {
+        eventually(&format!("{pane} on {account}"), || async {
+            self.pane(pane).await?.claude.filter(|claude| {
+                claude.account.as_deref() == Some(account)
+                    && claude.session_id.is_some()
+                    && claude.pending.is_none()
+            })
+        })
+        .await
+    }
+
+    async fn pending_tick(&self) {
+        tmux::accounts::daemon::pending_tick(&self.collector, &self.ctx.monitor).await;
+    }
+
+    fn screen(&self, pane: &str) -> String {
+        self.tmux_out(&["capture-pane", "-p", "-J", "-t", pane])
+    }
+}
+
+async fn pane_account(w: &World, pane: &str, account: &str) -> panes::PaneAccountOutput {
+    panes::account(
+        &w.ctx,
+        panes::PaneAccountInput {
+            pane: pane.into(),
+            account: account.into(),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn panes_move_between_accounts_between_turns() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("move");
+    for name in ["Personal", "Side"] {
+        account_fns::add(
+            &w.ctx,
+            account_fns::AddAccountInput {
+                name: name.into(),
+                color: "green".into(),
+                // Nothing shared: a move has to copy the conversation.
+                shared: Some(vec![]),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let personal_dir = w.paths.account_dir("personal");
+
+    // An idle pane that follows the global account moves at once, and
+    // resumes its conversation there.
+    let a = windows::create(&w.ctx, window("a", claude("global", true)))
+        .await
+        .unwrap()
+        .pane_id;
+    let before = w.claude(&a).await;
+    assert_eq!(before.account.as_deref(), Some("default"));
+    let session = before.session_id.clone().unwrap();
+    let moved = pane_account(&w, &a, "personal").await;
+    assert_eq!(moved.state, panes::PaneAccountState::Moved);
+    assert_eq!(moved.account, "personal");
+    let after = w.settled_on(&a, "personal").await;
+    assert_eq!(after.follow, Follow::Pinned);
+    assert_eq!(
+        after.session_id.as_deref(),
+        Some(session.as_str()),
+        "resumed"
+    );
+    assert!(after.skip_permissions, "skip kept");
+    assert!(walk(&personal_dir.join("projects"))
+        .iter()
+        .any(|path| path.ends_with(format!("{session}.jsonl"))));
+    assert!(w.screen(&a).contains("Resumed on the personal account"));
+    let scope = if w.tmux_out(&["-V"]).starts_with("tmux 2.") {
+        "-w"
+    } else {
+        "-p"
+    };
+    assert_eq!(
+        w.tmux_out(&["show-options", scope, "-v", "-t", &a, "remain-on-exit"]),
+        "",
+        "remain-on-exit put back"
+    );
+
+    // Pinning it where it runs changes no process.
+    let pid = w.claude_pid(&a).await;
+    assert_eq!(
+        pane_account(&w, &a, "personal").await.state,
+        panes::PaneAccountState::Pinned
+    );
+    assert_eq!(w.claude_pid(&a).await, pid);
+
+    // Working: the move waits for the end of the turn.
+    w.set_state(&a, "working").await;
+    let waiting = pane_account(&w, &a, "global").await;
+    assert_eq!(waiting.state, panes::PaneAccountState::AfterTurn);
+    assert_eq!(waiting.account, "default");
+    w.pending_tick().await;
+    let info = w.pane(&a).await.unwrap().claude.unwrap();
+    assert_eq!(info.pending.as_deref(), Some("default"));
+    assert_eq!(info.account.as_deref(), Some("personal"));
+    assert_eq!(w.claude_pid(&a).await, pid, "not moved while working");
+    w.set_state(&a, "idle").await;
+    w.pending_tick().await;
+    let info = w.settled_on(&a, "default").await;
+    assert_eq!(info.follow, Follow::Global);
+
+    // Cancelling a waiting move: back to the account it runs on.
+    w.set_state(&a, "waiting").await;
+    assert_eq!(
+        pane_account(&w, &a, "side").await.state,
+        panes::PaneAccountState::AfterTurn
+    );
+    assert_eq!(
+        pane_account(&w, &a, "default").await.state,
+        panes::PaneAccountState::Cancelled
+    );
+    w.set_state(&a, "idle").await;
+    w.pending_tick().await;
+    let info = w.settled_on(&a, "default").await;
+    assert_eq!(info.follow, Follow::Pinned);
+    pane_account(&w, &a, "global").await;
+
+    // Switching the global account: idle panes go now, working ones after.
+    let b = windows::create(&w.ctx, window("b", claude("global", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    w.claude(&b).await;
+    w.set_state(&b, "working").await;
+    let switched = account_fns::global(
+        &w.ctx,
+        account_fns::GlobalInput {
+            account: "personal".into(),
+            move_mode: account_fns::GlobalMove::IdleNowWorkingAfter,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(switched.global, "personal");
+    assert_eq!(switched.moved, vec![a.clone()]);
+    assert_eq!(switched.after_turn, vec![b.clone()]);
+    assert_eq!(
+        w.tmux_out(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"]),
+        format!("CLAUDE_CONFIG_DIR={}", personal_dir.display())
+    );
+    assert_eq!(w.settled_on(&a, "personal").await.follow, Follow::Global);
+    w.set_state(&b, "idle").await;
+    w.pending_tick().await;
+    assert_eq!(w.settled_on(&b, "personal").await.follow, Follow::Global);
+
+    // New windows only: the others stay, pinned where they run.
+    let switched = account_fns::global(
+        &w.ctx,
+        account_fns::GlobalInput {
+            account: "default".into(),
+            move_mode: account_fns::GlobalMove::NewOnly,
+        },
+    )
+    .await
+    .unwrap();
+    let mut stayed = switched.stayed.clone();
+    stayed.sort();
+    let mut both = vec![a.clone(), b.clone()];
+    both.sort();
+    assert_eq!(stayed, both);
+    assert!(switched.moved.is_empty() && switched.after_turn.is_empty());
+    for pane in [&a, &b] {
+        let info = w.settled_on(pane, "personal").await;
+        assert_eq!(info.follow, Follow::Pinned);
+    }
+    assert!(!w
+        .tmux(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"])
+        .status
+        .success());
+
+    // The palette's "move the idle ones": b is working, so only a goes.
+    w.set_state(&b, "working").await;
+    let moved = account_fns::move_idle(
+        &w.ctx,
+        account_fns::MoveIdleInput {
+            from: "personal".into(),
+            to: "side".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(moved.moved, vec![a.clone()]);
+    let info = w.settled_on(&a, "side").await;
+    assert_eq!(info.follow, Follow::Pinned);
+    assert_eq!(
+        w.pane(&b).await.unwrap().claude.unwrap().account.as_deref(),
+        Some("personal")
+    );
+}
+
+#[tokio::test]
+async fn claude_started_by_hand_moves_through_its_shell() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("shell");
+    account_fns::add(
+        &w.ctx,
+        account_fns::AddAccountInput {
+            name: "Personal".into(),
+            color: "green".into(),
+            shared: None,
+        },
+    )
+    .await
+    .unwrap();
+    let shell = windows::create(&w.ctx, window("shell", None))
+        .await
+        .unwrap()
+        .pane_id;
+    w.tmux(&["send-keys", "-t", &shell, "-l", "claude"]);
+    w.tmux(&["send-keys", "-t", &shell, "Enter"]);
+    let info = w.claude(&shell).await;
+    assert_eq!(info.follow, Follow::Manual);
+    assert_eq!(info.account.as_deref(), Some("default"));
+    assert!(info.movable, "{info:?}");
+    let session = info.session_id.clone().unwrap();
+    let moved = pane_account(&w, &shell, "personal").await;
+    assert_eq!(moved.state, panes::PaneAccountState::Moved);
+    let info = w.settled_on(&shell, "personal").await;
+    assert_eq!(info.follow, Follow::Pinned);
+    assert_eq!(info.session_id.as_deref(), Some(session.as_str()));
+    // The shell got the explicit command; it is still the pane's program.
+    let screen = w.screen(&shell);
+    assert!(
+        screen.contains("Resumed on the personal account"),
+        "{screen}"
+    );
+    let pane_pid = w.tmux_out(&["display", "-p", "-t", &shell, "#{pane_pid}"]);
+    let claude_pid = w.claude_pid(&shell).await;
+    assert_ne!(pane_pid, claude_pid.to_string());
 }

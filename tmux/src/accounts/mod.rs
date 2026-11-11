@@ -15,6 +15,7 @@ pub mod credentials;
 pub mod daemon;
 pub mod launch;
 pub mod manage;
+pub mod moves;
 pub mod panes;
 pub mod paths;
 pub mod registry;
@@ -25,7 +26,7 @@ pub mod usage;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -97,6 +98,11 @@ pub struct Accounts {
     watched_until_ms: AtomicU64,
     /// One round of readings at a time.
     reading: tokio::sync::Mutex<()>,
+    /// The panes being moved now (one move at a time each).
+    pub moving: moves::Moving,
+    /// Some pane may carry `@iii_claude_pending` (§3.7); true at start so
+    /// the first look finds those a restart left.
+    pending: AtomicBool,
 }
 
 impl Accounts {
@@ -129,6 +135,8 @@ impl Accounts {
             }),
             watched_until_ms: AtomicU64::new(0),
             reading: tokio::sync::Mutex::new(()),
+            moving: moves::Moving::default(),
+            pending: AtomicBool::new(true),
         }
     }
 
@@ -190,6 +198,17 @@ impl Accounts {
             .filter(|entry| entry.id != DEFAULT)
             .find(|entry| paths::same_dir(dir, &paths.account_dir(&entry.id)))
             .map(|entry| entry.id.clone())
+    }
+
+    /// A pane got (or was seen with) a pending move.
+    pub fn note_pending(&self) {
+        self.pending.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether a pane may have a pending move, clearing the flag: whoever
+    /// looks re-notes the ones still waiting.
+    pub fn take_pending(&self) -> bool {
+        self.pending.swap(false, Ordering::Relaxed)
     }
 
     /// The app looked at usage just now (D12).

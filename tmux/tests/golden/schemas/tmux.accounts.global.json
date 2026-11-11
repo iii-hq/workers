@@ -1,0 +1,85 @@
+{
+  "description": "Make a Claude Code account the global one: what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.",
+  "function_id": "tmux::accounts::global",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GlobalMove": {
+        "description": "How panes that follow the global account go along (D8).",
+        "oneOf": [
+          {
+            "description": "Idle ones move now, working or waiting ones after their turn.",
+            "enum": [
+              "idle_now_working_after"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "They stay on the account they run on, pinned there.",
+            "enum": [
+              "new_only"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "account": {
+        "description": "Account id.",
+        "type": "string"
+      },
+      "move": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/GlobalMove"
+          }
+        ],
+        "description": "What panes following the global account do (default `idle_now_working_after`)."
+      }
+    },
+    "required": [
+      "account"
+    ],
+    "title": "GlobalInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "after_turn": {
+        "description": "Panes that move once their turn ends.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "global": {
+        "description": "The global account now.",
+        "type": "string"
+      },
+      "moved": {
+        "description": "Panes moved to it now.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "stayed": {
+        "description": "Panes that stay where they run (pinned there with `new_only`, or that can't move).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "after_turn",
+      "global",
+      "moved",
+      "stayed"
+    ],
+    "title": "GlobalOutput",
+    "type": "object"
+  }
+}

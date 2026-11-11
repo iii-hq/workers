@@ -60,9 +60,13 @@ const SHELLS: [&str; 12] = [
     "sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
 ];
 
+/// `name` (a process or `#{pane_current_command}`) is a shell's.
+pub fn is_shell_name(name: &str) -> bool {
+    SHELLS.contains(&name.trim_start_matches('-'))
+}
+
 fn is_shell(proc: &ProcInfo) -> bool {
-    proc.names()
-        .any(|name| SHELLS.contains(&name.trim_start_matches('-')))
+    proc.names().any(is_shell_name)
 }
 
 /// A shell started with `-c` runs one command and ends with it.
@@ -118,6 +122,20 @@ pub struct PaneState {
     pub agent_state: Option<crate::model::AgentState>,
     /// The pane's current directory.
     pub cwd: String,
+    /// How Claude Code would be moved, when it runs and can be.
+    pub kind: Option<MoveKind>,
+}
+
+impl PaneState {
+    /// Claude Code is between turns: its own status is exactly `idle`
+    /// (`shell` means a background command still runs), or, without a
+    /// status, its screen says so (D7).
+    pub fn idle(&self) -> bool {
+        match self.record.as_ref().and_then(|r| r.status.as_deref()) {
+            Some(status) => status == "idle",
+            None => self.agent_state == Some(crate::model::AgentState::Idle),
+        }
+    }
 }
 
 /// Claude Code running in a pane.

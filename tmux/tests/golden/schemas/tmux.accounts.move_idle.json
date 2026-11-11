@@ -1,0 +1,40 @@
+{
+  "description": "Move the idle Claude Code panes running on account `from` to account `to` and pin them there, resuming their conversations: those that follow the global account, are pinned to `from` or were started by hand (never those pinned elsewhere, nor working or waiting ones).",
+  "function_id": "tmux::accounts::move_idle",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "from": {
+        "description": "Account id they run on.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Account id to move them to.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "from",
+      "to"
+    ],
+    "title": "MoveIdleInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "moved": {
+        "description": "Panes moved.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "moved"
+    ],
+    "title": "MoveIdleOutput",
+    "type": "object"
+  }
+}
