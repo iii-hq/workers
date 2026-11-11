@@ -11,19 +11,31 @@
 [data-iii-ui="mesh"] .mesh-ui-details dt { margin-bottom: 2px; }
 [data-iii-ui="mesh"] .mesh-ui-workers p { margin: 0; }
 [data-iii-ui="mesh"] .mesh-ui-workers .mesh-ui-label { margin-bottom: 8px; color: var(--color-ink-faint); font-size: 12px; }
-[data-iii-ui="mesh"] .mesh-ui-workers ul { list-style: none; margin: 0; padding: 0; }
-[data-iii-ui="mesh"] .mesh-ui-workers > ul { display: flex; flex-direction: column; gap: 12px; }
-[data-iii-ui="mesh"] .mesh-ui-worker { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
-[data-iii-ui="mesh"] .mesh-ui-worker > code { font-size: 13px; font-weight: 500; }
-[data-iii-ui="mesh"] .mesh-ui-workers .mesh-ui-functions { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding-left: 16px; }
-[data-iii-ui="mesh"] .mesh-ui-functions > li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; overflow-wrap: anywhere; }
-[data-iii-ui="mesh"] .mesh-ui-workers li > p { margin: 6px 0 0 16px; }
+[data-iii-ui="mesh"] .mesh-ui-workers > ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* The hidden glyph lines a row that cannot open up with the disclosures' summary::before. */
+[data-iii-ui="mesh"] .mesh-ui-worker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 44px; }
+[data-iii-ui="mesh"] .mesh-ui-worker::before { content: '+'; font-family: var(--font-mono); visibility: hidden; }
+[data-iii-ui="mesh"] .mesh-ui-worker > code, [data-iii-ui="mesh"] .mesh-ui-fns > summary > code { font-size: 13px; font-weight: 500; }
+[data-iii-ui="mesh"] .mesh-ui-fns > summary .mesh-ui-muted { font-weight: 400; }
+[data-iii-ui="mesh"] .mesh-ui-fns > p { margin: 0 0 8px 16px; }
+[data-iii-ui="mesh"] .mesh-ui-functions { list-style: none; margin: 0; padding: 0 0 12px 16px; display: flex; flex-direction: column; gap: 4px; }
+[data-iii-ui="mesh"] .mesh-ui-functions > li { display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr); align-items: baseline; gap: 16px; min-width: 0; }
+/* One line per function; the full description stays in the DOM and in the tooltip. */
+[data-iii-ui="mesh"] .mesh-ui-functions > li > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-iii-ui="mesh"] .mesh-ui-names { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 4px 16px; }
+[data-iii-ui="mesh"] .mesh-ui-names > li { display: block; }
 [data-iii-ui="mesh"] dt { color: var(--color-ink-faint); font-size: 12px; margin-bottom: 4px; }
 [data-iii-ui="mesh"] dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 [data-iii-ui="mesh"] code { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 [data-iii-ui="mesh"] .mesh-ui-join { display: flex; flex-direction: column; gap: 12px; }
 [data-iii-ui="mesh"] .mesh-ui-copy { background: var(--color-surface); border-radius: var(--radius-md); padding: 12px; min-width: 0; }
-[data-iii-ui="mesh"] .mesh-ui-copy-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-copy-head { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; font-size: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-copy-head > span { margin-right: auto; }
+/* A 44px touch target around the 32px house button, without changing its look. */
+@media (pointer: coarse) {
+  [data-iii-ui="mesh"] .mesh-ui-copy-head > button { position: relative; }
+  [data-iii-ui="mesh"] .mesh-ui-copy-head > button::before { content: ''; position: absolute; inset: -6px 0; }
+}
 [data-iii-ui="mesh"] .mesh-ui-copy > code { display: block; white-space: pre-wrap; user-select: text; }
 [data-iii-ui="mesh"] .mesh-ui-configuration { display: flex; flex-direction: column; gap: 24px; }
 [data-iii-ui="mesh"] summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
@@ -37,6 +49,8 @@
   [data-iii-ui="mesh"] .mesh-ui-main { padding: 16px; }
   [data-iii-ui="mesh"] .mesh-ui-details { grid-template-columns: minmax(0, 1fr); }
   [data-iii-ui="mesh"] .mesh-ui-form-item { flex-wrap: wrap; padding: 8px; }
+  [data-iii-ui="mesh"] .mesh-ui-functions { gap: 8px; }
+  [data-iii-ui="mesh"] .mesh-ui-functions > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
 [data-iii-ui="mesh"] .mesh-ui-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 24px; }
 [data-iii-ui="mesh"] .mesh-ui-mode > p { flex-basis: 100%; margin: 0; }
@@ -44,7 +58,7 @@
 [data-iii-ui="mesh"] .mesh-ui-share > li { padding: 4px 16px; }
 [data-iii-ui="mesh"] .mesh-ui-share > li + li { border-top: 1px solid var(--color-edge); }
 [data-iii-ui="mesh"] .mesh-ui-share label { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 44px; cursor: pointer; }
-[data-iii-ui="mesh"] .mesh-ui-share .mesh-ui-functions { display: flex; flex-direction: column; gap: 4px; padding: 0 0 12px 48px; }
+[data-iii-ui="mesh"] .mesh-ui-share .mesh-ui-fns { padding-left: 48px; }
 [data-iii-ui="mesh"] .mesh-ui-share + p { margin: 8px 0 0; }
 [data-iii-ui="mesh"] .mesh-ui-save { position: sticky; bottom: 0; }
 [data-iii-ui="mesh"] .mesh-ui-save-bar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 12px 16px; background: var(--color-panel-raised); border: 1px solid var(--color-edge); border-radius: var(--radius-lg); }

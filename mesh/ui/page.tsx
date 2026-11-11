@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import {
   Badge, Button, EmptyState, Input, LiveRegion, PageHeader, PageMain, PageShell,
   RawValueInput, SegmentedControl, SettingsField, SettingsList, SettingsSection, StatusPanel, Switch,
@@ -29,10 +29,11 @@ type HubStatus = { public_url?: string; tunnel?: Tunnel }
 type SecretInput = ComponentType<SecretKeyFieldProps>
 const NO_SOURCES: readonly string[] = []
 
-function CopyValue({ label, value }: { label: string; value: string }) {
+function CopyValue({ label, value, action }: { label: string; value: string; action?: ReactNode }) {
   const { state, copy } = useCopyFlash(value)
   return <div className="mesh-ui-copy">
     <div className="mesh-ui-copy-head"><span>{label}</span>
+      {action}
       <Button variant="ghost" size="sm" onClick={copy} aria-label={`Copy ${label}`}>
         {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed — retry' : 'Copy'}
       </Button>
@@ -42,11 +43,26 @@ function CopyValue({ label, value }: { label: string; value: string }) {
   </div>
 }
 
-function FunctionList({ label, functions }: { label: string; functions: EngineFunction[] }) {
-  // role="list": Safari drops list semantics from a list without markers.
-  return <ul role="list" className="mesh-ui-functions" aria-label={label}>{functions.map((fn) => <li key={fn.function_id}>
-    <code>{fn.function_id}</code>{fn.description ? <> <span className="mesh-ui-muted">{fn.description}</span></> : null}
-  </li>)}</ul>
+// A hub id is <machine>::<local id>, and a local id usually starts with its worker's name: say that prefix once.
+function idPrefix(ids: string[], machine: string, worker: string) {
+  const base = machine && ids.every((id) => id.startsWith(`${machine}::`)) ? `${machine}::` : ''
+  return ids.every((id) => id.startsWith(`${base}${worker}::`)) ? `${base}${worker}::` : base
+}
+
+// Collapsed to a count: one worker can register dozens of functions.
+function FunctionList({ worker, machine, functions, lead, state }: { worker: string; machine: string; functions: EngineFunction[]; lead?: ReactNode; state?: string }) {
+  const prefix = idPrefix(functions.map((fn) => fn.function_id), machine, worker)
+  const count = `${functions.length} ${functions.length === 1 ? 'function' : 'functions'}`
+  return <details className="mesh-ui-fns">
+    <summary>{lead}<span className="mesh-ui-muted">{state ? `${state} · ${count}` : count}</span></summary>
+    {prefix ? <p className="mesh-ui-muted">Ids start with <code>{prefix}</code></p> : null}
+    {/* role="list": Safari drops list semantics from a list without markers. */}
+    <ul role="list" className={functions.some((fn) => fn.description) ? 'mesh-ui-functions' : 'mesh-ui-functions mesh-ui-names'} aria-label={`${worker} functions`}>
+      {functions.map((fn) => <li key={fn.function_id}>
+        <code>{fn.function_id.slice(prefix.length)}</code>{fn.description ? <> <span className="mesh-ui-muted" title={fn.description}>{fn.description}</span></> : null}
+      </li>)}
+    </ul>
+  </details>
 }
 
 function SharedWorkers({ node, functions }: { node: Node; functions: EngineFunction[] }) {
@@ -59,10 +75,12 @@ function SharedWorkers({ node, functions }: { node: Node; functions: EngineFunct
       {workers.map((worker) => {
         // An offline machine's functions left with its bridge; the hub still holds the last ids it reported.
         const ids = node.online ? worker.functions ?? [] : []
+        const lead = <code>{worker.name}</code>
         return <li key={worker.name}>
-          <div className="mesh-ui-worker"><code>{worker.name}</code>{node.online ? <span className="mesh-ui-muted">{worker.state}</span> : null}</div>
-          {ids.length ? <FunctionList label={`${worker.name} functions`} functions={ids.map((id) => ({ function_id: id, description: described.get(id) }))} />
-            : <p className="mesh-ui-muted">{node.online ? 'No functions registered yet' : 'Unavailable while the machine is offline'}</p>}
+          {ids.length ? <FunctionList worker={worker.name} machine={node.name} lead={lead} state={worker.state}
+            functions={ids.map((id) => ({ function_id: id, description: described.get(id) }))} />
+            : <div className="mesh-ui-worker">{lead}<span className="mesh-ui-muted">
+              {node.online ? `${worker.state} · No functions registered yet` : 'Unavailable while the machine is offline'}</span></div>}
         </li>
       })}
     </ul> : <p className="mesh-ui-muted">Not sharing any workers</p>}
@@ -183,7 +201,7 @@ function ClientSetup({ basics, edit, status, workers, secretInput }: {
             {RUNS_COMMANDS.has(name) ? <Badge variant="warn">runs commands</Badge> : null}
             {on ? <span className="mesh-ui-muted">{live?.state ?? 'not saved yet'}</span> : null}
           </label>
-          {on && live?.functions?.length ? <span className="mesh-ui-functions">{live.functions.map((fn) => <code key={fn}>{fn}</code>)}</span> : null}
+          {on && live?.functions?.length ? <FunctionList worker={name} machine={status?.node ?? ''} functions={live.functions.map((id) => ({ function_id: id }))} /> : null}
         </li>
       })}</ul>
       {risky.length === 0 && names.length ? <p className="mesh-ui-muted">Anyone in the hub project can call what you share.</p> : null}
@@ -221,9 +239,19 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   const { data, loading, error, refresh } = useWorkerLive({
     iii: host.iii, fetch, sources: NO_SOURCES, handlerId: 'iii::mesh-ui::events',
   })
+  // A join replaces the code. Observed beside the hook, not as a source, so tab focus still re-reads the rest.
+  const isHub = Boolean(data?.hub)
+  useEffect(() => {
+    if (!isHub) return
+    try {
+      return host.iii.observe({ function_id: 'mesh::on-node-changed', args: {} }, `iii::mesh-ui::events::${host.iii.browserId}`)
+    } catch { return undefined }
+  }, [host, isHub])
   // What the last Save wrote, shown until the next read replaces it, so the old values never flash back.
   const [written, setWritten] = useState<JsonValue | null>(null)
-  useEffect(() => setWritten(null), [data])
+  // Likewise the code mesh::join::cycle returned.
+  const [cycled, setCycled] = useState<string | null>(null)
+  useEffect(() => { setWritten(null); setCycled(null) }, [data])
   const config = written ?? data?.config ?? null
   const raw = data?.rawConfig === true
   const saved = basicsOf(config)
@@ -259,6 +287,17 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   })
   // shortcut: assumes the compose key is "mesh"; pass the key through mesh::status if projects rename it.
   const restart = () => run('restart', () => host.iii.call('compose::restart', { container: 'mesh' }))
+  const [cycling, setCycling] = useState(false)
+  const [cycleError, setCycleError] = useState<string | null>(null)
+  // Counts new codes, so each one is announced again.
+  const [cycles, setCycles] = useState(0)
+  const cycle = async () => {
+    setCycling(true); setCycleError(null)
+    try {
+      setCycled((await host.iii.call<Join>('mesh::join::cycle', {})).code)
+      setCycles((n) => n + 1)
+    } catch (err) { setCycleError(errorMessage(err)) } finally { setCycling(false); refresh() }
+  }
   const running: Mode = data?.client ? 'client' : 'hub'
   const hubView = basics.mode !== 'client' && running !== 'client'
   const needsRestart = !dirty && data !== undefined && config !== null && (saved.mode !== running || data?.client?.state === 'restart required')
@@ -346,13 +385,17 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       </section> : null}
       {hubView ? <section className="mesh-ui-section" aria-labelledby="mesh-join-title">
         <div className="mesh-ui-section-head"><h2 id="mesh-join-title">Connect another engine</h2></div>
-        <p className="mesh-ui-muted">On the other machine, open Mesh in that project's Console, choose Client, and paste these into Hub URL and Join code or token. If that field takes only a secret://NAME reference, store the code in the secrets worker and enter the reference. Share the join code only with people you trust.</p>
+        <p className="mesh-ui-muted">On the other machine, open Mesh in that project's Console, choose Client, and paste these into Hub URL and Join code or token. If that field takes only a secret://NAME reference, store the code in the secrets worker and enter the reference. The code works once: after a machine joins with it, the hub replaces it. Share the join code only with people you trust.</p>
         {data?.joinError ? <StatusPanel variant="warn" headline="Join instructions unavailable" detail={data.joinError}
           action={<Button onClick={refresh}>Retry</Button>} /> : null}
+        {cycleError ? <StatusPanel variant="alert" headline="Could not generate a new code" detail={cycleError} /> : null}
         {data?.join ? <div className="mesh-ui-join">
           {data.hub?.public_url ? <CopyValue label="Hub URL" value={data.hub.public_url} /> : null}
-          <CopyValue label="Join code" value={data.join.code} />
+          <CopyValue label="Join code" value={cycled ?? data.join.code} action={<Button variant="ghost" size="sm" disabled={cycling} onClick={cycle}>
+            {cycling ? 'Generating…' : 'Generate new code'}
+          </Button>} />
         </div> : null}
+        <LiveRegion announcement={cycles ? { seq: cycles, urgency: 'polite', text: 'New join code ready. The old code no longer works.' } : null} />
       </section> : null}
     </PageMain>
   </PageShell>

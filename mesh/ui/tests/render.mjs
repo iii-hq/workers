@@ -46,8 +46,12 @@ try {
   }
   assert(ready, 'isolated Vite server started')
   browser = await chromium.launch({ executablePath, headless: true })
-  const codeRaw = [...randomBytes(8)].map((n) => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n % 32]).join('')
-  const joinCode = `${codeRaw.slice(0, 4)}-${codeRaw.slice(4)}`
+  const newCode = () => {
+    const codeRaw = [...randomBytes(8)].map((n) => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n % 32]).join('')
+    return `${codeRaw.slice(0, 4)}-${codeRaw.slice(4)}`
+  }
+  // mesh::join::cycle replaces it, as the hub does.
+  let joinCode = newCode()
   const tunnelURL = 'https://r0ute234abcd5678.abc234.opentunnel.xyz'
   const schema = { type: 'object', properties: {
     public_url: { type: 'string' }, listen: { type: 'string' }, gateway_port: { type: 'integer', minimum: 1, maximum: 65535 },
@@ -72,7 +76,8 @@ try {
     { name: 'linux-workstation', address: 'fd7a:115c:a1e0::2', os: 'linux', arch: 'amd64', version: '0.1.0', online: true, path: 'direct',
       workers: [{ name: 'ide', state: 'shared', functions: ['linux-workstation::coder::read-file', 'linux-workstation::shell::exec'] }] },
     { name: 'gpu-box', address: 'fd7a:115c:a1e0::5', os: 'linux', arch: 'amd64', version: '0.1.0', online: true, path: 'direct',
-      workers: [{ name: 'image-resize', state: 'shared', functions: ['gpu-box::image_resize::resize', 'gpu-box::image_resize::thumbnail'] }, { name: 'tmux', state: 'pending', functions: [] }] },
+      workers: [{ name: 'browser', state: 'shared', functions: ['gpu-box::browser::act', 'gpu-box::browser::chromium::install'] },
+        { name: 'image-resize', state: 'shared', functions: ['gpu-box::image_resize::resize', 'gpu-box::image_resize::thumbnail'] }, { name: 'tmux', state: 'pending', functions: [] }] },
   ]
   // The hub engine's function list supplies the descriptions: shell::exec has none, image_resize::thumbnail has no row yet.
   const bridge = (machine) => `rbac-proxy:${machine}::mesh-bridge`
@@ -83,6 +88,7 @@ try {
     { function_id: 'linux-workstation::coder::read-file', worker_name: bridge('linux-workstation'), description: 'Reads a file from the workspace' },
     { function_id: 'linux-workstation::mesh-node::status', worker_name: 'rbac-proxy:linux-workstation::mesh-node' },
     { function_id: 'gpu-box::image_resize::resize', worker_name: bridge('gpu-box'), description: 'Resizes an image' },
+    { function_id: 'gpu-box::browser::act', worker_name: bridge('gpu-box'), description: `Interact with the page: click, hover, type, select, press, scroll or drag. ${'A ref is scrolled into view first. '.repeat(6)}` },
     longFunction,
   ]
   const longNodes = [{ ...nodes[2], name: 'engineering-workstation-archive', path: 'relay / ' + 'long-network-path/'.repeat(12), version: '0.1.0-build-' + '1234567890'.repeat(8),
@@ -129,9 +135,11 @@ try {
       // Calls named in `hold` wait in `held` until release() answers them.
       let hold = new Set()
       const held = []
+      // The page's latest mesh::on-node-changed observe, to deliver a join as the hub would.
+      let nodeObserver = null
       const release = () => held.splice(0).forEach((answer) => answer())
       const clientStatus = () => ({ mode: 'client', hub_url: config.client?.hub_url ?? '', node: config.client?.name ?? '', namespace: 'project',
-        state: clientState, error: '', shared: [{ worker: 'shell', state: 'running', functions: ['shell::exec'] }] })
+        state: clientState, error: '', shared: [{ worker: 'shell', state: 'running', functions: ['shell::exec', 'shell::spawn'].map((id) => `${config.client?.name ?? ''}::${id}`) }] })
       await page.routeWebSocket('**/ws', (socket) => {
         socket.onMessage(async (message) => {
           const frame = JSON.parse(String(message))
@@ -140,6 +148,7 @@ try {
           }
           if (frame.type === 'registerfunction') socket.send(JSON.stringify({ type: 'functionregistered', id: frame.id, namespace: frame.namespace ?? 'project', revision: 0, local_dispatch: false, observers: [] }))
           if (frame.type === 'observe') socket.send(JSON.stringify({ type: 'observeresult', id: frame.id, state: 'active' }))
+          if (frame.type === 'observe' && frame.source.function_id === 'mesh::on-node-changed') nodeObserver = { socket, frame }
           if (frame.type === 'observe' && frame.source.function_id === 'ade::ui::on-assets-changed') {
             socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: frame.target.function_id,
               activation: { observer_id: frame.id }, data: { op: 'sync', assets: [{ path: 'mesh/styles.css', kind: 'style', hash: 'fixture-css' }, { path: 'mesh/page.js', kind: 'script', hash: 'fixture-js' }] } }))
@@ -153,6 +162,7 @@ try {
               case 'mesh::nodes::list': return mode === 'error' ? send(null, 'Mesh hub is unavailable. Reconnect, then retry.') : send(mode === 'empty' || mode === 'loading' ? [] : mode === 'long' ? longNodes : nodes)
               // Like the hub, no join code while there is no public URL (configured or from a ready tunnel).
               case 'mesh::join::code': return mode === 'error' || !hubStatus().public_url ? send(null, 'public_url is not set') : send({ code: joinCode })
+              case 'mesh::join::cycle': return mode === 'cycle-error' ? send(null, 'The hub could not store a new code.') : !hubStatus().public_url ? send(null, 'public_url is not set') : send({ code: (joinCode = newCode()) })
               case 'mesh::status': return send(running === 'client' ? clientStatus() : hubStatus())
               case 'compose::restart': assert.deepEqual(frame.data, { container: 'mesh' }); running = config?.mode === 'client' ? 'client' : 'hub'; return send({})
               case 'configuration::list': return send({ configurations: [{ ...entry, schema: activeSchema }] })
@@ -224,18 +234,31 @@ try {
         await expect(workstation.getByText('Online', { exact: true })).toBeVisible()
         await expect(card('archive-laptop').getByText('Offline', { exact: true })).toBeVisible()
         await expect(page.locator('.mesh-ui-node h3')).toHaveText(['gpu-box', 'linux-workstation', 'archive-laptop', 'travel-laptop'])
-        // Each machine shows what it shares: the worker, then the functions it lists, with the engine's descriptions.
+        // Each machine shows what it shares: one row per worker with its function count, the functions behind it.
+        const open = (scope, worker) => scope.locator('summary').filter({ has: page.getByText(worker, { exact: true }) }).click()
+        await expect(workstation.getByText('shared · 2 functions', { exact: true })).toBeVisible()
+        await expect(workstation.getByRole('list', { name: 'ide functions', exact: true })).toBeHidden()
+        await open(workstation, 'ide')
+        // The machine prefix is said once; ide's ids do not share a worker prefix, so coder:: and shell:: stay.
+        await expect(workstation.getByText('Ids start with linux-workstation::', { exact: true })).toBeVisible()
         await expect(workstation.getByRole('list', { name: 'ide functions', exact: true }).getByRole('listitem')).toHaveText([
-          'linux-workstation::coder::read-file Reads a file from the workspace', 'linux-workstation::shell::exec',
+          'coder::read-file Reads a file from the workspace', 'shell::exec',
         ])
         await expect(workstation.getByText('Reads a file from the workspace', { exact: true })).toBeVisible()
-        await expect(workstation.getByText('shared', { exact: true })).toBeVisible()
         const gpu = card('gpu-box')
+        await open(gpu, 'browser')
+        await open(gpu, 'image-resize')
+        await expect(gpu.getByText('Ids start with gpu-box::browser::', { exact: true })).toBeVisible()
+        const act = gpu.getByRole('list', { name: 'browser functions', exact: true }).getByRole('listitem')
+        await expect(act).toHaveText([/^act Interact with the page/, 'chromium::install'])
+        // A long description stays on one line.
+        const [line, text] = await act.first().locator('span').evaluate((el) => [parseFloat(getComputedStyle(el).lineHeight) || 20, el.getBoundingClientRect().height])
+        assert(text <= line * 1.5, `a function description takes one line (${text}px)`)
         await expect(gpu.getByRole('list', { name: 'image-resize functions', exact: true }).getByRole('listitem')).toHaveText([
-          'gpu-box::image_resize::resize Resizes an image', 'gpu-box::image_resize::thumbnail',
+          'image_resize::resize Resizes an image', 'image_resize::thumbnail',
         ])
         await expect(gpu.getByRole('list', { name: 'tmux functions', exact: true })).toHaveCount(0)
-        await expect(gpu.getByRole('listitem').filter({ hasText: 'tmux' }).getByText('No functions registered yet', { exact: true })).toBeVisible()
+        await expect(gpu.getByRole('listitem').filter({ hasText: 'tmux' }).getByText('pending · No functions registered yet', { exact: true })).toBeVisible()
         await expect(card('archive-laptop').getByText('Not sharing any workers', { exact: true })).toBeVisible()
         const travel = card('travel-laptop')
         await expect(travel.getByRole('listitem').filter({ hasText: 'mesh-probe' }).getByText('Unavailable while the machine is offline', { exact: true })).toBeVisible()
@@ -249,14 +272,18 @@ try {
         await expect(page.getByText('Join instructions unavailable')).toBeVisible()
         await expect(button('Copy Join code')).toHaveCount(0)
         await expect(button('Copy Hub URL')).toHaveCount(0)
+        await expect(button('Generate new code')).toHaveCount(0)
         mode = 'long'; await button('Refresh').click()
         await expect(page.getByRole('heading', { name: longNodes[0].name })).toBeVisible()
-        await expect(page.getByRole('list', { name: 'worker-with-a-very-long-name functions', exact: true }).getByRole('listitem')).toHaveText([`${longFunction.function_id} ${longFunction.description}`])
+        await open(page, 'worker-with-a-very-long-name')
+        await expect(page.getByRole('list', { name: 'worker-with-a-very-long-name functions', exact: true }).getByRole('listitem')).toHaveText([`${longFunction.function_id.slice(longNodes[0].name.length + 2)} ${longFunction.description}`])
         await capture('long')
         // A failed function list loses only the descriptions: the hub's ids still show.
         mode = 'functions-error'; await button('Refresh').click()
-        await expect(workstation.getByRole('list', { name: 'ide functions', exact: true }).getByRole('listitem')).toHaveText(['linux-workstation::coder::read-file', 'linux-workstation::shell::exec'])
+        await open(workstation, 'ide')
+        await expect(workstation.getByRole('list', { name: 'ide functions', exact: true }).getByRole('listitem')).toHaveText(['coder::read-file', 'shell::exec'])
         await expect(page.getByText(/Could not load functions/)).toHaveCount(0)
+        // A refresh keeps an open worker open.
         mode = 'populated'; await button('Refresh').click()
         await expect(workstation.getByRole('list', { name: 'ide functions', exact: true })).toBeVisible()
         console.log(`PASS ${viewport.width}px ${theme}: loader, machine states, overflow, join refused without a public URL`)
@@ -358,6 +385,43 @@ try {
         await button('Copy Hub URL').click()
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('https://mesh.example.com')
         await capture('connect')
+        // A new code replaces the old one before the page reads again, and is announced.
+        const joinValue = page.locator('.mesh-ui-copy').filter({ has: button('Copy Join code') }).locator('code')
+        const oldCode = joinCode
+        await expect(joinValue).toHaveText(oldCode)
+        hold = new Set(['mesh::join::cycle'])
+        await button('Generate new code').click()
+        await expect(button('Generating…')).toBeDisabled()
+        hold = new Set(['mesh::join::code'])
+        release()
+        assert.notEqual(joinCode, oldCode, 'mesh::join::cycle returns a new code')
+        await expect(joinValue).toHaveText(joinCode)
+        await expect(page.getByText('New join code ready. The old code no longer works.', { exact: true })).toBeAttached()
+        hold = new Set()
+        release()
+        await expect(button('Generate new code')).toBeEnabled()
+        await expect(joinValue).toHaveText(joinCode)
+        // A failed cycle keeps the code and says why; the next one clears the error.
+        const kept = joinCode
+        mode = 'cycle-error'
+        await button('Generate new code').click()
+        await expect(page.getByText('Could not generate a new code', { exact: true })).toBeVisible()
+        await expect(page.getByText(/The hub could not store a new code\./)).toBeVisible()
+        await expect(joinValue).toHaveText(kept)
+        await capture('cycle-error')
+        mode = 'populated'
+        await button('Generate new code').click()
+        await expect(page.getByText('Could not generate a new code', { exact: true })).toHaveCount(0)
+        await expect(joinValue).toHaveText(joinCode)
+        assert.notEqual(joinCode, kept, 'the next cycle returns a new code')
+        // A machine that joins with the shown code spends it: the hub's node event makes the page read the replacement.
+        assert.deepEqual(nodeObserver?.frame.source.args, {}, 'the hub page observes every node change')
+        const spent = joinCode
+        joinCode = newCode()
+        nodeObserver.socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: nodeObserver.frame.target.function_id,
+          activation: { observer_id: nodeObserver.frame.id }, data: { name: 'new-box', event: 'joined', at: new Date().toISOString() } }))
+        await expect(joinValue).toHaveText(joinCode)
+        assert.notEqual(joinCode, spent)
         await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
         await capture('tunnel-overridden')
         // The hub drops the tunnel only when it applies the entry; the page keeps reading until it does.
@@ -408,7 +472,7 @@ try {
         await button('Refresh').click()
         await button('Discard').click()
         await expect(tunnelSwitch).not.toBeChecked()
-        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state, templated address, raw root refused${timed ? ', polling until settled' : ''}`)
+        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, templated address, raw root refused${timed ? ', polling until settled' : ''}`)
 
         // The configuration form holds only the advanced settings.
         await button('Settings').click()
@@ -477,7 +541,10 @@ try {
         assert(calls.some((call) => call.id === 'compose::restart'), 'Restart mesh calls compose::restart')
         await expect(page.getByRole('region', { name: 'Hub connection' }).getByText('connected', { exact: true })).toBeVisible()
         await expect(page.getByText('joined as')).toContainText('laptop')
-        await expect(page.getByText('shell::exec', { exact: true })).toBeVisible()
+        // The shared worker's functions sit behind a count, with the machine and worker prefix said once.
+        await page.locator('.mesh-ui-share summary').filter({ hasText: '2 functions' }).click()
+        await expect(page.getByText('Ids start with laptop::shell::', { exact: true })).toBeVisible()
+        await expect(page.getByRole('list', { name: 'shell functions', exact: true }).getByRole('listitem')).toHaveText(['exec', 'spawn'])
         await capture('client-connected')
         clientState = 'restart required'
         await button('Refresh').click()

@@ -24,7 +24,6 @@ package coordinator
 
 import (
 	"context"
-	crand "crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
@@ -191,8 +190,7 @@ func (c *Coordinator) Remove(name string) error {
 		return fmt.Errorf("no removable node %q", name)
 	}
 	before := c.st
-	c.st.CodeSeed = make([]byte, 32)
-	_, _ = crand.Read(c.st.CodeSeed)
+	c.st.CodeSeed = newSeed()
 	c.st.RefusedNodes = append(slices.Clone(c.st.RefusedNodes), n.Keys...)
 	c.st.RefusedMachines = append(slices.Clone(c.st.RefusedMachines), n.Machine)
 	c.revokeToken(n.TokenID)
@@ -487,6 +485,10 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 			}
 			c.st.Next++
 			c.st.Nodes = append(slices.Clone(c.st.Nodes), n)
+			// The code admits one machine; joined machines reconnect by key.
+			if needsJoin && !tokenAuth && reserved != "hub" {
+				c.st.CodeSeed = newSeed()
+			}
 		}
 		n.Key, n.Hostinfo = req.NodeKey, req.Hostinfo.Clone()
 		n.Keys = append(slices.Clone(n.Keys), req.NodeKey)

@@ -1,10 +1,6 @@
 package coordinator
 
-import (
-	"crypto/rand"
-
-	"tailscale.com/tailcfg"
-)
+import "tailscale.com/tailcfg"
 
 const GatewayCapability tailcfg.NodeCapability = "https://iii.dev/mesh/gateway"
 
@@ -35,8 +31,7 @@ func (c *Coordinator) CycleCode() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	old := c.st.CodeSeed
-	c.st.CodeSeed = make([]byte, 32)
-	_, _ = rand.Read(c.st.CodeSeed)
+	c.st.CodeSeed = newSeed()
 	if err := c.save(); err != nil {
 		c.st.CodeSeed = old
 		return err

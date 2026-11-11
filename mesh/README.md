@@ -228,9 +228,11 @@ iii call --engine ws://127.0.0.1:49834 mesh::join::code
 On the other machine, run the mesh worker in [client mode](#client-mode) with
 `client.hub_url` set to this hub's public URL (`mesh::status`, field
 `public_url`) and the code stored as the `client.join` secret. The hub's Mesh
-page shows both under **Connect another engine**. `mesh::join::cycle` replaces
-the code. `mesh::nodes::remove name=<node>` removes a node, revokes its token
-and cycles the code.
+page shows both under **Connect another engine**. The code works once: a
+successful join replaces it, and the joined machine reconnects with its own
+keys. `mesh::join::cycle` and the page's **Generate new code** button replace it
+by hand. `mesh::nodes::remove name=<node>` removes a node, revokes its token
+and replaces the code.
 
 ## Node boundary
 
@@ -319,9 +321,10 @@ expiry; negative values are refused. To revoke future enrollment:
 iii call --engine ws://127.0.0.1:49834 mesh::join::revoke token_id=<returned-id>
 ```
 
-Revocation and expiry leave the join code and already accepted nodes intact.
-Removing a node also revokes its creating token, including reusable tokens,
-and cycles the join code. Reusable tokens require ephemeral nodes:
+A token join, revocation and expiry leave the join code and already accepted
+nodes intact; only a join with the code replaces it. Removing a node also
+revokes its creating token, including reusable tokens, and replaces the join
+code. Reusable tokens require ephemeral nodes:
 
 ```bash
 iii call --engine ws://127.0.0.1:49834 mesh::join::token ephemeral=true reusable=true expires_in_secs=3600
@@ -357,7 +360,8 @@ enroll. State lives in `$III_COMPOSE_DIR/data/mesh-client` (0700, `join.json`
 0600) and later boots reuse its node key. The hub allows 10 join attempts per
 address per 10 minutes, so a join the hub refused waits until the join value
 changes; an unreachable hub or a missing `hub_url` is retried. `join.json` is
-written only after the hub accepts the node.
+saved as pending before the hub registers the node, so a join cut short after
+the hub accepted it reconnects without the spent code; a refused one is deleted.
 After the hub removes the node, delete `data/mesh-client` to rejoin. Seed the
 mode from compose so the first boot is already a client:
 
@@ -411,11 +415,11 @@ they stop the workers they run; on another version it counts them as outdated
 and pushes no update. The hub sends no drive calls and drive peers stop seeing
 each other, so existing mounts stop answering. To retire such a machine, first
 call `mesh::nodes::remove` while its old service still runs: the hub refuses its
-keys, revokes its token and cycles the join code, and the service parks. Then
+keys, revokes its token and replaces the join code, and the service parks. Then
 run the old binary's `sudo mesh leave` on the machine to remove its service,
 mounts and state. In the reverse order the leave logs the node out, the hub
 deletes its record, and `mesh::nodes::remove` fails with `no removable node`
-without revoking the token or cycling the code.
+without revoking the token or replacing the code.
 
 Upgrade the hub before its clients, or both together: a hub of the earlier
 build shares nothing with a client of this one.

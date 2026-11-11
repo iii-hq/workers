@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -433,6 +434,91 @@ func TestRegistrationValidatedBeforeRotationIsRejected(t *testing.T) {
 	close(release)
 	if r := <-result; r.MachineAuthorized {
 		t.Fatal("credentials validated before code rotation were accepted")
+	}
+}
+
+// newCodeCoordinator checks the join code the way the hub's callback does.
+func newCodeCoordinator(t *testing.T, dir string) *Coordinator {
+	t.Helper()
+	var c *Coordinator
+	c, err := New(dir, func(secret, addr string) (string, error) {
+		if !join.IsTokenSecret(secret) && secret != join.Secret(c.Identity(), c.Code()) {
+			return "", join.ErrCode
+		}
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+func codeRequest(nodeKey key.NodePublic, secret string) tailcfg.RegisterRequest {
+	return tailcfg.RegisterRequest{NodeKey: nodeKey, Auth: &tailcfg.RegisterResponseAuth{AuthKey: secret}}
+}
+func TestJoinCodeWorksOnce(t *testing.T) {
+	dir := t.TempDir()
+	c := newCodeCoordinator(t, dir)
+	old := c.Code()
+	secret := join.Secret(c.Identity(), old)
+	file := c.file
+	c.file = filepath.Join(file, "impossible")
+	if r := c.register(key.NewMachine().Public(), "127.0.0.1", codeRequest(key.NewNode().Public(), secret)); r.MachineAuthorized || c.Code() != old {
+		t.Fatalf("failed save authorized or spent the code: %+v", r)
+	}
+	c.file = file
+	var accepted atomic.Int32
+	var wg sync.WaitGroup
+	machines := make([]key.MachinePublic, 12)
+	nodeKeys := make([]key.NodePublic, 12)
+	for i := range machines {
+		machines[i], nodeKeys[i] = key.NewMachine().Public(), key.NewNode().Public()
+		wg.Go(func() {
+			if c.register(machines[i], "127.0.0.1", codeRequest(nodeKeys[i], secret)).MachineAuthorized {
+				accepted.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	if accepted.Load() != 1 || len(c.Nodes()) != 1 || c.Code() == old {
+		t.Fatalf("accepted %d nodes %d, code replaced %v", accepted.Load(), len(c.Nodes()), c.Code() != old)
+	}
+	if c.register(key.NewMachine().Public(), "127.0.0.1", codeRequest(key.NewNode().Public(), secret)).MachineAuthorized {
+		t.Fatal("spent code joined another machine")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c = newCodeCoordinator(t, dir)
+	code := c.Code()
+	if code == old {
+		t.Fatal("restart restored the spent code")
+	}
+	n := c.st.Nodes[0]
+	// The joined machine reconnects with its keys and its stale secret.
+	if !c.register(n.Machine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: n.Key}).MachineAuthorized ||
+		!c.register(n.Machine, "127.0.0.1", codeRequest(n.Key, secret)).MachineAuthorized ||
+		!c.register(n.Machine, "127.0.0.1", codeRequest(key.NewNode().Public(), secret)).MachineAuthorized ||
+		c.Code() != code || len(c.Nodes()) != 1 {
+		t.Fatal("joined machine needed the code or spent it")
+	}
+	if !c.register(key.NewMachine().Public(), "127.0.0.1", codeRequest(key.NewNode().Public(), join.Secret(c.Identity(), code))).MachineAuthorized || c.Code() == code {
+		t.Fatal("replacement code did not join once")
+	}
+}
+func TestTokenAndHubJoinsKeepCode(t *testing.T) {
+	c := newCodeCoordinator(t, t.TempDir())
+	code := c.Code()
+	registerNode(t, c, "hub")
+	_, _, secret := issueToken(t, c, join.TokenOptions{})
+	if !c.register(key.NewMachine().Public(), "127.0.0.1", tokenRequest(secret, "runner")).MachineAuthorized {
+		t.Fatal("token join refused")
+	}
+	if c.Code() != code {
+		t.Fatal("hub or token join replaced the code")
+	}
+	if !c.register(key.NewMachine().Public(), "127.0.0.1", codeRequest(key.NewNode().Public(), join.Secret(c.Identity(), code))).MachineAuthorized {
+		t.Fatal("unspent code refused")
 	}
 }
 

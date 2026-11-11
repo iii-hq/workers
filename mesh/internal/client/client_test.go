@@ -121,9 +121,11 @@ func TestJoinTriesEachSpentValueOnce(t *testing.T) {
 	if err != nil || st == nil || !fresh || attempts != 5 {
 		t.Fatalf("changed value: %v %v %v attempts %d", st, fresh, err, attempts)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "join.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("join.json written before the hub accepted it: %v", err)
+	// The enrollment is kept pending before registration, so a restart reuses it instead of the code.
+	if st, fresh, err = r.join(context.Background(), c); err != nil || st == nil || !fresh || !st.Pending || attempts != 5 {
+		t.Fatalf("pending enrollment not reused: %+v %v %v attempts %d", st, fresh, err, attempts)
 	}
+	st.Pending = false
 	if err = savePrivate(dir, "join.json", st); err != nil { // as start does once registered
 		t.Fatal(err)
 	}
@@ -131,6 +133,16 @@ func TestJoinTriesEachSpentValueOnce(t *testing.T) {
 		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != mode {
 			t.Fatalf("%s: %v %v", path, fi.Mode(), err)
 		}
+	}
+	// Without the mesh state its machine key is new, so the hub must accept it again.
+	if _, fresh, err = r.join(context.Background(), c); err != nil || !fresh || attempts != 5 {
+		t.Fatalf("lost mesh state not fresh: %v %v attempts %d", fresh, err, attempts)
+	}
+	if err = os.MkdirAll(filepath.Join(dir, "mesh"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "mesh", "state"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	if st, fresh, err = r.join(context.Background(), c); err != nil || st == nil || fresh || st.RequestedName != "laptop" || attempts != 5 {
 		t.Fatalf("saved enrollment not reused: %+v %v attempts %d", st, err, attempts)
@@ -189,6 +201,74 @@ func TestRefusedRegistrationIsNotSavedOrRetried(t *testing.T) {
 	r.start(t.Context(), c)
 	if attempts != 1 || joins.Load() != refusals || refusals > 2 {
 		t.Fatalf("enrolled %d times, %d refusals then %d", attempts, refusals, joins.Load())
+	}
+}
+
+// The hub replaces the code once it accepts a node, so a join stopped before
+// join.json was final reconnects with its saved secret, and a lost mesh state
+// is refused visibly instead of retried forever.
+func TestInterruptedJoinReconnectsWithoutTheCode(t *testing.T) {
+	var hub *coordinator.Coordinator
+	hub, err := coordinator.New(t.TempDir(), func(secret, addr string) (string, error) {
+		if secret != join.Secret(hub.Identity(), hub.Code()) {
+			return "", join.ErrCode
+		}
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	mux := http.NewServeMux()
+	hub.Handle(mux)
+	front := httptest.NewServer(mux)
+	defer front.Close()
+	code := hub.Code()
+	enrolled := joinState{PublicURL: front.URL, Secret: join.Secret(hub.Identity(), code), RequestedName: "laptop",
+		Identity: join.Identity{Identity: hub.Identity().Public().(ed25519.PublicKey), Control: hub.Public()}}
+	dir := t.TempDir()
+	attempts := 0
+	start := func(ctx context.Context) *runner {
+		r := &runner{o: Options{Version: "0.1.0"}, dir: dir, bridge: NewBridge(&fakeLocal{}, "local"), enroll: func(context.Context, Config, string) (joinState, bool, error) {
+			attempts++
+			return enrolled, true, nil
+		}}
+		r.start(ctx, Config{Join: "env://MESH_JOIN_TEST"})
+		return r
+	}
+	stop := func(r *runner) {
+		r.cancel()
+		r.stop(<-r.done)
+	}
+	t.Setenv("MESH_JOIN_TEST", code)
+	// The worker stops right after the hub accepted the node and replaced the code.
+	ctx, interrupt := context.WithCancel(t.Context())
+	hub.SetNodeObserver(func(c coordinator.NodeChange) {
+		if c.Event == "joined" {
+			interrupt()
+		}
+	})
+	r := start(ctx)
+	next := hub.Code()
+	if r.done != nil || next == code || len(hub.Nodes()) != 1 {
+		t.Fatalf("interrupted join: %+v, code replaced %v, nodes %d", r.status(), next != code, len(hub.Nodes()))
+	}
+	if r = start(t.Context()); r.done == nil || attempts != 1 || hub.Code() != next || len(hub.Nodes()) != 1 {
+		t.Fatalf("pending join: %+v, attempts %d, nodes %d", r.status(), attempts, len(hub.Nodes()))
+	}
+	stop(r)
+	if st, fresh, err := r.join(t.Context(), Config{}); err != nil || st == nil || fresh {
+		t.Fatalf("accepted join still pending: %+v %v %v", st, fresh, err)
+	}
+	if err = os.RemoveAll(filepath.Join(dir, "mesh")); err != nil {
+		t.Fatal(err)
+	}
+	r = start(t.Context())
+	if s := r.status(); r.done != nil || s.State != "join failed" || !strings.Contains(s.Error, join.ErrCode.Error()) {
+		t.Fatalf("lost mesh state: %+v", s)
+	}
+	if _, err = os.Stat(filepath.Join(dir, "join.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused enrollment kept: %v", err)
 	}
 }
 

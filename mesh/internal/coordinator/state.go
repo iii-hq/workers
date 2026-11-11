@@ -76,9 +76,7 @@ func newWithClock(dir string, join func(secret, addr string) (string, error), cl
 		var addr [16]byte
 		_, _ = rand.Read(addr[1:6])
 		addr[0] = 0xfd
-		seed := make([]byte, 32)
-		_, _ = rand.Read(seed)
-		c.st = state{Identity: id, Control: key.NewMachine(), Relay: key.NewNode(), Prefix: netip.PrefixFrom(netip.AddrFrom16(addr), 48), CodeSeed: seed, Next: 1, HubState: map[ipn.StateKey][]byte{}}
+		c.st = state{Identity: id, Control: key.NewMachine(), Relay: key.NewNode(), Prefix: netip.PrefixFrom(netip.AddrFrom16(addr), 48), CodeSeed: newSeed(), Next: 1, HubState: map[ipn.StateKey][]byte{}}
 		if err := c.save(); err != nil {
 			return nil, err
 		}
@@ -159,6 +157,11 @@ func (c *Coordinator) Code() string {
 	defer c.mu.Unlock()
 	code := base32.NewEncoding("0123456789ABCDEFGHJKMNPQRSTVWXYZ").WithPadding(base32.NoPadding).EncodeToString(c.st.CodeSeed[:5])
 	return code[:4] + "-" + code[4:]
+}
+func newSeed() []byte {
+	seed := make([]byte, 32)
+	_, _ = rand.Read(seed)
+	return seed
 }
 
 // StateStore keeps backend machine keys, node keys and profiles in the same

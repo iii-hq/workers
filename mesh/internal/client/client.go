@@ -44,6 +44,7 @@ type joinState struct {
 	Secret        string        `json:"secret"`
 	Identity      join.Identity `json:"hub_identity"`
 	RequestedName string        `json:"requested_name"`
+	Pending       bool          `json:"pending,omitempty"` // saved before the hub accepted it
 }
 
 type runner struct {
@@ -150,21 +151,26 @@ func (r *runner) start(ctx context.Context, c Config) {
 	r.hubURL = st.PublicURL
 	r.mu.Unlock()
 	m, err := meshnet.UpUserspace(filepath.Join(r.dir, "mesh"), st.PublicURL, st.Secret, st.RequestedName, st.Identity.Control)
+	refused := false
 	if err == nil && fresh {
-		// join.json waits for the hub's acceptance: the backend retries a refused
-		// secret forever, and each refusal spends a hub join attempt.
+		// join.json stays pending until the hub accepts: the backend retries a
+		// refused secret forever, and each refusal spends a hub join attempt.
 		if err = awaitRegistration(ctx, m); err == nil {
+			st.Pending = false
 			err = savePrivate(r.dir, "join.json", st)
+		} else if refused = errors.Is(err, errRefused); refused {
+			err = errors.Join(err, os.Remove(filepath.Join(r.dir, "join.json")))
 		}
 		if err != nil {
 			m.Close()
 		}
 	}
 	if err != nil {
-		if fresh {
+		if refused {
 			r.triedErr = err
 			r.set("join failed", fmt.Errorf("%w (change client.join to retry)", err))
 		} else {
+			// A kept pending join.json is retried next tick: the hub may have accepted it.
 			r.set("error", fmt.Errorf("start mesh: %w", err))
 		}
 		return
@@ -202,7 +208,9 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 			r.set("error", fmt.Errorf("read join.json (delete data/mesh-client to rejoin): %w", err))
 			return nil, false, err
 		}
-		return st, false, nil
+		// A lost mesh state is a new machine key, which the hub has not accepted.
+		_, err = os.Stat(filepath.Join(r.dir, "mesh", "state"))
+		return st, st.Pending || errors.Is(err, os.ErrNotExist), nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		r.set("error", err)
 		return nil, false, err
@@ -221,6 +229,12 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 		return nil, false, r.triedErr
 	}
 	enrolled, spent, err := r.enroll(ctx, c, value)
+	if err == nil {
+		// Saved before registering: the hub replaces the code when it accepts the
+		// node, so an interrupted join must come back with this secret.
+		enrolled.Pending = true
+		err = savePrivate(r.dir, "join.json", enrolled)
+	}
 	if spent || err == nil {
 		r.tried, r.triedErr = value, err
 	}
@@ -235,6 +249,8 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 	return &enrolled, true, nil
 }
 
+var errRefused = errors.New("hub refused the registration")
+
 // awaitRegistration waits for the hub to accept a new node's join secret.
 func awaitRegistration(ctx context.Context, m *meshnet.Mesh) error {
 	deadline := time.NewTimer(time.Minute)
@@ -247,7 +263,7 @@ func awaitRegistration(ctx context.Context, m *meshnet.Mesh) error {
 		}
 		select {
 		case msg := <-m.Errors():
-			return fmt.Errorf("hub refused the registration: %s", msg)
+			return fmt.Errorf("%w: %s", errRefused, msg)
 		case <-deadline.C:
 			return errors.New("hub did not accept the registration within 1m")
 		case <-ctx.Done():
