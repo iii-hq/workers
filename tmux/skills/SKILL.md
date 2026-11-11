@@ -6,7 +6,10 @@ description: >-
   for the person or idle; which pane runs `iii compose` and on which ports its
   engine and workers listen; every listening TCP port traced to its pane; and
   create, rename, select or kill sessions and windows, move a window to
-  another session, and split, restart or kill panes.
+  another session, and split, restart or kill panes. Also how much of their
+  weekly allowance Claude Code and Codex have used, and Claude Code on several
+  accounts: start Claude Code on one, move a pane to another, change the
+  global account.
 ---
 
 # tmux
@@ -19,6 +22,14 @@ the pane's process tree) with a working / waiting / idle state read from the
 pane's last lines, the `iii compose` daemon running in a pane with its
 engine's WebSocket port and its workers' ports, and every TCP port this
 user's processes listen on, each traced back to the pane that started it.
+
+It also reads how much of their weekly and 5-hour allowance Claude Code and
+Codex have used, and keeps several Claude Code accounts, each a config folder
+of its own (`CLAUDE_CONFIG_DIR`); `default` is `~/.claude`. The global
+account is the one plain `claude` gets in a new tmux window (tmux's global
+environment). A Claude Code pane follows the global account, is pinned to
+one, or was started by hand (`manual`); `sessions::list` says which, per pane,
+under `claude`.
 
 Changes are tmux's own semantics. Selecting a window switches every client
 attached to that session, the person's terminal included. Creating a window
@@ -37,11 +48,15 @@ client that only the Console drives.
 - A person wants a new tmux session or window, optionally running a command
   in a given directory, or wants one renamed, moved to another session or
   closed.
+- A person asks how much Claude Code or Codex usage is left this week, when
+  it resets, or which account has the most room.
+- A person wants Claude Code started on a given account, a running Claude
+  Code moved to another account, or another account made global.
 
 ## Boundaries
 
 - Read functions (`status`, `sessions::list`, `ports::list`,
-  `install::status`) are allowed by default. Creating, renaming, selecting,
+  `install::status`, `usage::read`, `accounts::list`) are allowed by default. Creating, renaming, selecting,
   moving, splitting, respawning and killing change the person's tmux and are
   approval-gated. Killing a session, window or pane, and `panes::respawn` with
   `kill: true`, end whatever runs there, so name what will stop before asking.
@@ -53,7 +68,24 @@ client that only the Console drives.
   text should not be repeated beyond what the question needs.
 - `subagents::transcript` returns a sub-agent's conversation, tool calls and
   their output; it needs approval for the same reason.
-- The worker never types into panes. `tmux::terminal::*` is the Console
+- `usage::read` and `accounts::list` carry each account's email and
+  organization but never a token. Everything
+  else under `accounts::` and `panes::account` is approval-gated: a move ends
+  Claude Code in that pane (SIGTERM) and starts it again on the other account,
+  resuming its conversation, so name the panes that will restart; `global`
+  moves every idle pane that follows the global account unless
+  `move: new_only`. `rules` with `mode: switch` lets the worker change the
+  global account by itself later. `remove` with `delete_files` deletes that
+  account's folder, its sign-in included. `login` opens a window where the
+  person signs in; never sign in for them.
+- Starting Claude Code with `claude.skip_permissions: true` lets it run
+  commands and change or delete files without asking. Only do it when the
+  person asks for it, and say so before asking for approval.
+- The worker reads Claude Code's sign-in only to ask its usage; it never
+  refreshes, prints or returns a token.
+- The worker never types into panes, except to move Claude Code started by
+  hand in a shell: it types the command that starts it on the other account
+  into that shell. `tmux::terminal::*` is the Console
   page's own terminal: it is denied to agents and cannot be observed
   (`NOT_OBSERVABLE`), since its calls carry the terminal's access key and
   what the person types. Its `upload` only writes a file the person pastes
@@ -92,6 +124,15 @@ client that only the Console drives.
 - `tmux::subagents::transcript` — what one sub-agent of a pane's Claude Code or Codex has done (`pane`, `subagent` from `agent.subagents[].id`): its task, messages, reasoning, tool calls and results, oldest first.
 - `tmux::ports::list` — listening TCP ports with process, iii role, worker, compose namespace and pane, plus each `iii compose` stack.
 - `tmux::install` — install the tmux program on this computer in the background (package manager, else tmux's official build); answers at once, and starting during a run joins it.
+- `tmux::usage::read` — Claude Code's accounts with each one's 5-hour window, week and per-model weeks (used %, reset time), Codex's plan, windows and credits, the global account, the rules and any suggestion; `refresh: true` reads again now (at most once a minute per account).
+- `tmux::accounts::list` — the Claude Code accounts (name, colour, folder, email, plan, signed in, panes running on it, usage), the global one, the rules, the suggestion and the latest switch.
+- `tmux::accounts::add` / `update` / `remove` — add an account (`name`, `color`, `shared` groups linked from `~/.claude`), rename, recolour or change what it shares, take it off the list (`delete_files` deletes its folder; never `default` or the global one).
+- `tmux::accounts::login` — a window named `login` in `session` running `claude auth login` for an account; the person opens the link and pastes the code there.
+- `tmux::accounts::global` — make an account global; `move`: `idle_now_working_after` (default) or `new_only`. Answers the panes `moved`, `after_turn` and `stayed`.
+- `tmux::panes::account` — `global` makes a pane follow the global account, an account id pins it; Claude Code moves there now when idle, after its turn otherwise (`after_turn`); the account it runs on cancels a waiting move.
+- `tmux::accounts::move_idle` — move the idle Claude Code panes of account `from` to `to`, pinned there.
+- `tmux::accounts::rules` / `tmux::accounts::dismiss` — what to do when the global account runs low (`off`, `suggest`, `switch`; threshold, order, switch back after the reset); "Not now" on a suggestion.
+- `tmux::windows::create` / `tmux::sessions::create` with `claude: { account, skip_permissions }` instead of `command` — start Claude Code on `global` or an account; the answer's `runs` is the exact command.
 - `tmux::install::status` — where that install is: `idle`, `running` with its step and words, `succeeded` with path and version, or `failed` with one sentence and the log.
 
 ## Reacting to tmux

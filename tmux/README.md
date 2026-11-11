@@ -5,10 +5,12 @@ host, creates, renames and kills sessions and windows, moves windows between
 sessions, and tells you what is running where: which pane holds Claude Code
 or Codex and whether that agent is working, waiting for you or idle, which
 pane runs `iii compose` and on which port its engine listens, and every TCP
-port your processes listen on, traced back to the pane that started them. Its
-Console page embeds a terminal that is a real tmux client: what you type goes
-straight into the session, and the screen updates as tmux draws it, the same
-way a second terminal attached with `tmux attach` would.
+port your processes listen on, traced back to the pane that started them. It
+reads how much of their weekly allowance Claude Code and Codex have used, and
+runs Claude Code on several accounts, moving a pane from one to another
+between turns. Its Console page embeds a terminal that is a real tmux client:
+what you type goes straight into the session, and the screen updates as tmux
+draws it, the same way a second terminal attached with `tmux attach` would.
 
 ## Install
 
@@ -261,6 +263,226 @@ iii call tmux::panes::kill pane=%7
 { "killed": true, "window_closed": false, "session_closed": false }
 ```
 
+## Claude Code accounts and usage
+
+The worker reads how much of their weekly allowance Claude Code and Codex
+have used, and keeps several Claude Code accounts side by side, each a config
+folder of its own (`CLAUDE_CONFIG_DIR`). One of them is the **global**
+account: the one plain `claude` gets in a new tmux window. Panes follow it or
+are pinned to one account, and move between accounts between turns, resuming
+their conversation.
+
+```bash
+# Accounts, their usage and reset times, Codex's usage, the rules and any suggestion
+iii call tmux::usage::read                    # refresh=true reads again now
+iii call tmux::accounts::list
+
+# A second account, then sign it in from a window of session `work`
+iii call tmux::accounts::add name=Personal color=green
+iii call tmux::accounts::login account=personal session=work
+
+# A window running Claude Code on that account, or following the global one
+iii call tmux::windows::create --json '{"session":"work","claude":{"account":"personal"}}'
+iii call tmux::windows::create --json '{"session":"work","claude":{"account":"global","skip_permissions":true}}'
+
+# Move a pane to another account, make another account global
+iii call tmux::panes::account pane=%5 account=global
+iii call tmux::accounts::global account=personal move=idle_now_working_after
+```
+
+### Accounts
+
+The account `default` is `~/.claude`, with `~/.claude.json` next to it, and
+Claude Code runs on it with `CLAUDE_CONFIG_DIR` unset (set to `~/.claude`,
+Claude Code would look for `.claude.json` inside the folder and, on macOS, for
+its sign-in under another Keychain name). Every other account is a folder
+under `~/.local/share/iii/claude-accounts` (`$XDG_DATA_HOME/iii/claude-accounts`
+when that is set), listed with its name, colour and what it shares in
+`accounts.json` there (0600, written whole, then renamed into place). Without
+`accounts.json` there is one account, `default`, and the worker leaves tmux's
+environment alone.
+
+`tmux::accounts::add` takes a `name` (no two alike, case aside), a `color`
+token (`blue`, `green`, `violet`, `orange` or `pink`; the apps draw anything
+else gray) and `shared`. The id is the name as a slug (`[a-z0-9-]`, at most 32
+characters, never `default` or `global`); a folder of that name left in the
+accounts folder is never reused, the id gets `-2`. The new folder is 0700 and
+signed out.
+
+`shared` names what the account takes from `~/.claude` through symbolic links
+(all four groups unless it says otherwise):
+
+| Group | Links |
+|---|---|
+| `settings` | `settings.json`, `CLAUDE.md`, `keybindings.json` |
+| `extensions` | `skills/`, `agents/`, `commands/`, `output-styles/` |
+| `plugins` | `plugins/`, and the user's MCP servers (`mcpServers` of `~/.claude.json`) copied once into the new account's `.claude.json` |
+| `conversations` | `projects/`, `history.jsonl`, `todos/`, `plans/` |
+
+A link is made only for what exists in `~/.claude`, and never in place of a
+file or folder of the account's own; links missing are made again when the
+worker starts and on each update or sign-in. `.credentials.json`,
+`.claude.json`, `sessions/`, `statsig/` and `shell-snapshots/` are never
+linked. `tmux::accounts::update` renames, recolours or changes the groups:
+dropping one removes only the worker's own links into `~/.claude`.
+
+`tmux::accounts::login` opens a window named `login` in `session` that runs
+`claude auth login` for the account (`env CLAUDE_CONFIG_DIR=<folder> claude
+auth login`, `env -u CLAUDE_CONFIG_DIR …` for `default`). Claude Code prints a
+sign-in link and waits for the code to be pasted, with or without a browser on
+the computer; the window closes when it is done. The worker never signs in,
+refreshes or signs out by itself.
+
+`tmux::accounts::remove` takes an account off the list; not `default`, not
+the global one. Claude Code panes on it keep running. `delete_files: true`
+deletes its folder too, only when it is a real folder directly inside the
+accounts folder (a link is never followed out of it), and is refused while
+Claude Code runs on it.
+
+### The global account
+
+The global account lives in tmux's global environment: the worker runs
+`set-environment -g CLAUDE_CONFIG_DIR <folder>` (`-gu` for `default`) when it
+starts, when the global account changes and every 15 seconds after that, so a
+tmux server started later gets it too. Every window tmux opens from then on
+inherits it; shells already open keep the environment they started with.
+
+`tmux::accounts::global` makes another account global. `move` says what
+happens to the panes that follow it: `idle_now_working_after` (the default)
+moves the idle ones now and the working or waiting ones once their turn ends;
+`new_only` leaves them running where they are, pinned there. The answer lists
+the panes `moved`, `after_turn` and `stayed`.
+
+### Windows on an account
+
+`tmux::windows::create` and `tmux::sessions::create` take
+`claude: { account, skip_permissions }` instead of `command`; `account` is
+`global` (the default) or an account id. The worker builds the command, marks
+the pane, and answers it as `runs`:
+
+| Account | Command |
+|---|---|
+| `global` | `claude` |
+| `default`, pinned | `env -u CLAUDE_CONFIG_DIR claude` |
+| any other, pinned | `env CLAUDE_CONFIG_DIR=<folder> claude` |
+
+`skip_permissions: true` adds `--dangerously-skip-permissions`: Claude Code
+then runs commands and changes files without asking. It is never on unless
+asked, and is refused when the worker runs as root, where Claude Code refuses
+it (`runs_as_root` in the accounts snapshot).
+
+Marks are tmux user options of the pane: `@iii_claude_account` (`global` or
+an account id), `@iii_skip_permissions` (`1`) and `@iii_claude_pending` (the
+account a move waits to reach). tmux before 3.0 has no pane options, so there
+they are options of the pane's window. Each pane running Claude Code has a
+`claude` object in `tmux::sessions::list`: the `account` its process uses (read
+from that process's `CLAUDE_CONFIG_DIR`, so a `claude` started by hand counts
+too), `config_dir`, `follow` (`global`, `pinned`, or `manual` when unmarked),
+`pending`, `skip_permissions` (the flag, `--permission-mode
+bypassPermissions` or the mark), `session_id`, and `movable` with
+`not_movable_reason` when it is false.
+
+### Moving a pane
+
+`tmux::panes::account` with `account: global` makes a pane follow the global
+account, with an account id pins it there. When Claude Code runs on another
+account, the pane moves:
+
+1. The target account is made to see the conversation: if its
+   `projects/<project>/<session>.jsonl` is not the same file (accounts sharing
+   conversations link the same folder), the transcript and its `<session>/`
+   folder are copied there.
+2. Claude Code gets SIGTERM and up to 10 seconds to end; it saves and runs
+   its `SessionEnd` hooks first. One that doesn't end is left running and the
+   move is refused.
+3. Claude Code starts again on the target account with `--resume <session>`
+   (and `--dangerously-skip-permissions` again when it had it). A pane the
+   worker started is respawned in place, kept on screen meanwhile with a
+   temporary `remain-on-exit`; Claude Code started by hand in a shell is
+   started again by typing the command into that shell.
+
+A pane moves only when Claude Code's own status is `idle`. Working, waiting
+for a permission answer or running a background command, it answers
+`after_turn`: the pending mark is set, and the worker moves it within 2
+seconds of its turn ending, also after a worker restart (the mark is tmux's).
+Choosing the account it runs on changes no process and cancels a waiting move
+(`cancelled`).
+
+`tmux::accounts::move_idle` moves every idle pane on account `from` to `to`
+and pins it there: those that follow the global account, are pinned to `from`
+or were started by hand, never one pinned elsewhere.
+
+### Usage readings
+
+Claude Code's usage comes from `GET https://api.anthropic.com/api/oauth/usage`,
+the endpoint Claude Code reads its own usage from, with the account's sign-in
+(`Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`). It answers each
+window (`five_hour`, `seven_day`, per-model weeks) as `utilization` from 0 to
+100 with its `resets_at`. The sign-in is `<folder>/.credentials.json` on
+Linux; on macOS it is in the login Keychain, a generic password whose account
+is `$USER` and whose service is `Claude Code-credentials` for `default` and
+`Claude Code-credentials-<first 8 hex digits of sha256(folder)>` for any other
+folder, with the file as fallback. The worker only reads it: it never
+refreshes a token, never sends one anywhere but that endpoint, and never logs
+or returns one. An expired sign-in is not used (`token_expired: true`, the
+last reading kept); a window whose reset time has passed reads 0 %
+(`reset_since_read`). The reading Claude Code itself left in `.claude.json`
+(`cachedUsageUtilization`) is used when it is newer.
+
+Readings are kept at most 5 minutes old while someone watches (a
+`tmux::usage::read` call or an observer of `tmux::on-changed` in the last 10
+minutes); `refresh: true` reads again at once, at most once a minute per
+account. With nobody watching, the worker reads only the global account,
+every 10 minutes, and only while the rules are not `off` (it reads the others
+when the global one runs low). A 429 pauses an account's readings for 15
+minutes; a 401 counts the sign-in as expired until it changes; any other
+failure is tried again after a minute. The latest readings,
+without tokens, are kept in `~/.cache/iii/tmux/usage.json`
+(`~/Library/Caches/iii/tmux/usage.json` on macOS).
+
+Codex's usage is read from what Codex records: the last `token_count` event of
+its newest session under `~/.codex/sessions`, whose windows are told apart by
+their length (300 minutes, 10080 minutes) and whose `resets_at` is in seconds.
+It comes with the plan and credits; Codex has one account.
+
+### When the global account runs low
+
+`tmux::accounts::rules` sets what the worker does when the global account
+reaches `at` (`week_80`, `week_90` or `limit`; `five_hour: true` also counts a
+full 5-hour window). With `mode: suggest` the snapshot carries a
+`suggestion` (`{ id, from, to, reason, following }`) naming the account to
+switch to: the first of `order` that is signed in and has room, otherwise the
+one with most room this week (an account whose sign-in expired only when no
+other has room). `tmux::accounts::dismiss` answers "Not now": no suggestion
+from that account for that reason until its window resets or it runs lower
+(week 80 % → 90 % → 5-hour window full → week limit). With `mode: switch` the
+worker switches by itself, the app open or not, moving the idle panes that
+follow along when `move_idle` is on, and leaves `last_switch` (`auto: true`)
+for the app; `back_after_reset` switches back once the old account's window
+resets. Until changed, the rules suggest at `week_90`, with `move_idle` on;
+`mode: off` stops them.
+
+```bash
+iii call tmux::accounts::rules --json '{"mode":"switch","at":"week_90","order":["personal"],"back_after_reset":true}'
+iii call tmux::accounts::dismiss suggestion=default:week_90:personal
+```
+
+### For tests and demos
+
+| Variable | Replaces |
+|---|---|
+| `III_CLAUDE_HOME` | `~/.claude`, the default account; its `.claude.json` is then the one next to it, in its parent folder, as `~/.claude.json` is next to `~/.claude` |
+| `III_CLAUDE_ACCOUNTS_DIR` | the accounts folder |
+| `III_CLAUDE_USAGE_URL` | `https://api.anthropic.com` for the usage endpoint; loopback addresses only, so a sign-in never goes to another host |
+| `CODEX_HOME` | `~/.codex` (Codex's own variable) |
+
+[`demo/`](demo/) runs this worker in a container of its own (its own tmux
+server, a fake `claude` and `codex`, three fake accounts and a mock usage
+endpoint) against an engine on the host: `demo/run.sh <engine-port>`, then
+`demo/seed.sh`, `demo/usage.sh` to change what the mock answers and
+`demo/state.sh` to make a fake Claude Code work, wait, go idle or hit its
+limit. Nothing in it reads the host's own Claude Code or Codex.
+
 ## Configuration
 
 ```yaml
@@ -289,10 +511,11 @@ settings action or with `configuration::set`.
 
 | Function | Args | Delivery | Event |
 |---|---|---|---|
-| `tmux::on-changed` | none; the overview has no field to filter on | iii's default delivery; once a new observer is accepted, the worker calls the function with the current overview for that observer alone (metadata `{ for_observer: <observer id> }`), delivered like every other call | `Overview { sessions, ports }`: the shapes `tmux::sessions::list` and `tmux::ports::list` return |
+| `tmux::on-changed` | none; the overview has no field to filter on | iii's default delivery; once a new observer is accepted, the worker calls the function with the current overview for that observer alone (metadata `{ for_observer: <observer id> }`), delivered like every other call | `Overview { sessions, ports, usage }`: the shapes `tmux::sessions::list`, `tmux::ports::list` and `tmux::usage::read` return (`usage` is absent from workers before 0.3) |
 
 `tmux::on-changed` is private: only this worker calls it, whenever sessions,
-windows, panes, agent states, compose stacks or listening ports change. The
+windows, panes, agent states, compose stacks, listening ports, Claude Code
+accounts or usage readings change. The
 worker polls tmux only while something observes it.
 
 Overviews can arrive out of order: each one is its own call, and iii doesn't

@@ -7,9 +7,10 @@
 //! another Keychain name. Every other account is a folder of its own under
 //! the accounts root, whose `.claude.json` is inside it.
 //!
-//! For tests and demos (README, "Environment"): `III_CLAUDE_HOME` replaces
-//! `~/.claude`, and the default account's `.claude.json` is then the one next
-//! to it, in its parent folder, as `~/.claude.json` is next to `~/.claude`;
+//! For tests and demos (the README's "For tests and demos"):
+//! `III_CLAUDE_HOME` replaces `~/.claude`, and the default account's
+//! `.claude.json` is then the one next to it, in its parent folder, as
+//! `~/.claude.json` is next to `~/.claude`;
 //! `III_CLAUDE_ACCOUNTS_DIR` replaces the accounts root;
 //! `III_CLAUDE_USAGE_URL` replaces `https://api.anthropic.com` for the usage
 //! endpoint (loopback addresses only, so a sign-in never leaves for another

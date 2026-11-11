@@ -18,6 +18,15 @@
 # that install is going. The Console terminal (its upload included, which
 # writes a pasted file to the cache folder), the config-reload callback and
 # the Console asset function are bus-internal.
+#
+# `tmux::usage::read` and `tmux::accounts::list` only read: Claude Code and
+# Codex usage and the Claude Code accounts (names, emails, plans), never a
+# token; `refresh: true` asks Anthropic's usage endpoint again, at most once
+# a minute per account. Every other `tmux::accounts::*` function and
+# `tmux::panes::account` stay unlisted: a move ends Claude Code in a pane and
+# starts it on another account, `global` moves every idle pane that follows
+# the global account, `rules` can let the worker switch accounts on its own,
+# and `remove` with `delete_files` deletes an account's sign-in.
 version: 1
 
 rules:
@@ -28,3 +37,5 @@ rules:
   - tmux::sessions::list
   - tmux::ports::list
   - tmux::install::status
+  - tmux::usage::read
+  - tmux::accounts::list
