@@ -1404,6 +1404,7 @@ dependencies = [
  "libc",
  "nix 0.31.3",
  "regex",
+ "tar",
  "tempfile",
  "thiserror",
  "uuid",
@@ -2788,7 +2789,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-libkrun"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -37,6 +37,9 @@ uuid = { version = "1", features = ["v4"] }
 # Shell-protocol message types and frame codec — fs_handler decodes
 # FsRequest variants and encodes FsResponse / FsChunk / FsEnd / FsError.
 iii-shell-proto = { path = "../iii-shell-proto" }
+# Build mode writes the merged root as a tar stream the host turns into the
+# image (`export`). Pure Rust; the version sandbox-libkrun already locks.
+tar = "0.4"
 
 [dev-dependencies]
 # Used by root_pivot's unit tests to build a fake rootfs under a

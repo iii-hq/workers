@@ -32,7 +32,7 @@ pub(crate) mod writer;
 
 mod builder;
 
-pub use builder::{ensure_base_erofs, remove_base_erofs};
+pub use builder::{ImageFile, build_erofs_from_tar, ensure_base_erofs, remove_base_erofs};
 #[cfg(test)]
 pub(crate) use reader::ErofsReader;
-pub(crate) use writer::write_erofs;
+pub(crate) use writer::{write_erofs, write_erofs_cancellable};

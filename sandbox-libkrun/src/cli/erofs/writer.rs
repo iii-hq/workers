@@ -149,7 +149,52 @@ impl<W: Write> Write for CursorTrackingWriter<'_, W> {
 //--------------------------------------------------------------------------------------------------
 
 pub fn write_erofs(tree: &FileTree, output: &Path) -> Result<ErofsDataMap, ErofsError> {
-    let mut file = BufWriter::new(std::fs::File::create(output)?);
+    write_erofs_cancellable(tree, output, &|| false)
+}
+
+/// The image file: its writes fail once `cancelled` returns true, so a build
+/// that was cancelled stops writing at its next buffer flush.
+struct CancellableFile<'a> {
+    file: std::fs::File,
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl Write for CancellableFile<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if (self.cancelled)() {
+            return Err(io::Error::other("cancelled"));
+        }
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Seek for CancellableFile<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.file.seek(pos)
+    }
+}
+
+/// Write `tree` as an erofs image at `output`, which must not exist: it is
+/// created mode 0600, as it holds a worker's whole tree, and never through a
+/// symlink. Stops with an error at the first write after `cancelled` returns
+/// true; the caller removes the partial file.
+pub fn write_erofs_cancellable(
+    tree: &FileTree,
+    output: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ErofsDataMap, ErofsError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(output)?;
+    let mut file = BufWriter::new(CancellableFile { file, cancelled });
     let mut state = LayoutState::new();
 
     // Phase 1+2: Plan layout and assign NIDs.

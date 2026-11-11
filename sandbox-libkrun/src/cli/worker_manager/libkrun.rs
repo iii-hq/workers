@@ -138,6 +138,7 @@ pub fn build_vm_command(
     rootfs_upper: Option<PathBuf>,
     mounts: &[(String, String)],
     source_sync: Option<&Path>,
+    source_readonly: Option<&Path>,
 ) -> Result<VmCommand, String> {
     let env = build_vm_env(env);
 
@@ -168,6 +169,7 @@ pub fn build_vm_command(
         vcpus,
         ram_mib,
         source_sync,
+        source_readonly,
         mounts,
         args,
     ) {
@@ -237,6 +239,7 @@ fn vm_boot_args_dev(
     vcpus: u32,
     ram_mib: u32,
     source_sync: Option<&Path>,
+    source_readonly: Option<&Path>,
     mounts: &[(String, String)],
     exec_args: &[String],
 ) -> Vec<OsString> {
@@ -255,6 +258,10 @@ fn vm_boot_args_dev(
     if let Some(source_sync) = source_sync {
         out.push(OsString::from("--source-sync"));
         out.push(source_sync.as_os_str().to_owned());
+    }
+    if let Some(source) = source_readonly {
+        out.push(OsString::from("--source-readonly"));
+        out.push(source.as_os_str().to_owned());
     }
     out.push(OsString::from(VM_BOOT_NETWORK_FLAG));
     out.push(OsString::from(VM_BOOT_ENV_STDIN_FLAG));
@@ -306,6 +313,7 @@ mod tests {
             2,
             2048,
             Some(Path::new("/host/src")),
+            None,
             &mounts,
             &exec_args,
         ));
@@ -319,10 +327,30 @@ mod tests {
         // No shell channel: nothing on the host execs into a worker VM.
         assert_eq!(parsed.shell_sock, None);
         assert_eq!(parsed.source_sync.as_deref(), Some("/host/src"));
+        assert_eq!(parsed.source_readonly, None);
         assert!(parsed.env.is_empty());
         assert!(parsed.env_stdin);
         assert_eq!(parsed.mount, vec!["/host/src:/guest/src".to_string()]);
         assert_eq!(parsed.arg, exec_args);
+    }
+
+    #[test]
+    fn a_read_only_source_reaches_vm_boot_without_a_sync() {
+        let parsed = parse_vm_boot_args(vm_boot_args_dev(
+            Path::new("/tmp/rootfs"),
+            None,
+            "",
+            None,
+            "/bin/sh",
+            2,
+            2048,
+            None,
+            Some(Path::new("/host/src")),
+            &[("/host/src".to_string(), "/mnt/host-src".to_string())],
+            &[],
+        ));
+        assert_eq!(parsed.source_sync, None);
+        assert_eq!(parsed.source_readonly.as_deref(), Some("/host/src"));
     }
 
     #[tokio::test]

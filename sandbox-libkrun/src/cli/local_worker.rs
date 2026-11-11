@@ -9,9 +9,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use super::project::{ProjectInfo, WORKER_MANIFEST, project_from_doc};
 use super::rootfs::clone_rootfs;
+use super::source_watcher::{IGNORED_DIR_NAMES, ROOT_IGNORED_DIR_NAMES};
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 
@@ -22,29 +24,179 @@ const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 const RUN_SCRIPT_CMD: &str =
     "command -v bash >/dev/null && exec bash /opt/iii/dev-run.sh; exec sh /opt/iii/dev-run.sh";
 
-/// Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
-/// only adds/overwrites (never deletes), so a source file removed on the host
-/// would keep running across a watcher restart. Remove every file outside the
-/// VM-local dep/build dirs, at any depth like the tar excludes (they are not
-/// re-copied and install is skipped once prepared, so a nested
-/// `service/node_modules` must persist), then the directories left empty, then
-/// the few left (ancestors of dep dirs) that are no longer a directory in
-/// $SRC, dep dirs included (a stale `old/node_modules`, or a `service/` that
-/// tar could not replace with the file the host now has), and re-extract the
-/// current source. On first boot /workspace is empty so this is a no-op.
-/// (All name lists MUST match the tar --exclude list, except `.iii`: it is
-/// never copied, and this cleanup removes a copy left by an older adapter.)
-const WORKSPACE_RESYNC_CLEANUP: &str = r#"find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
-  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
-  -o ! -type d -exec rm -f {} +
-find /workspace -mindepth 1 -depth -type d -empty \
-  ! -path '*/node_modules/*' ! -path '*/.venv/*' ! -path '*/target/*' ! -path '*/dist/*' \
-  ! -path '*/__pycache__/*' ! -path '*/.pytest_cache/*' ! -path '*/.next/*' ! -path '*/.git/*' \
-  -exec rmdir {} \;
-find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
-  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
-  -o -type d ! -exec sh -c '[ -d "$1/${2#/workspace/}" ] && [ ! -L "$1/${2#/workspace/}" ]' sh "$SRC" {} \; \
-  -prune -exec rm -rf {} +"#;
+// What stays out of a `path://` worker's `/workspace` copy is one list: the
+// names the source watcher ignores, plus `.iii`. `IGNORED_DIR_NAMES`
+// (dependency, cache, build-output, VCS and editor dirs, Compose's `.build` and
+// `.workers`) match at any depth; `ROOT_IGNORED_DIR_NAMES` (build output that
+// projects also use for nested source) match only as a directory at the
+// worker's root. The run copies and syncs by it; the build copies by it too,
+// but for `BUILD_COPIES`.
+
+/// What a build copies although a run leaves it out: Go vendors source in
+/// `vendor/`, and a PHP `composer install` in the build rewrites it anyway.
+const BUILD_COPIES: &[&str] = &["vendor"];
+
+/// Where a guest keeps the manifests of its `/workspace` copies: on the data
+/// disk, outside `/workspace`. A build's copy writes [`BUILD_MANIFEST`], which
+/// ships in its image; a run's copy writes [`RUN_MANIFEST`].
+const WORKSPACE_STATE: &str = "/var/lib/iii";
+const BUILD_MANIFEST: &str = "build.manifest";
+const RUN_MANIFEST: &str = "workspace.manifest";
+
+/// The names a copy leaves out at any depth: every any-depth name of the list
+/// but `keep`, and `.iii`, Compose's state, which holds the project's token.
+/// The root-only names are left to [`copy_in_script`], which knows whether
+/// they are dirs.
+fn left_out<'a>(keep: &'a [&str]) -> impl Iterator<Item = &'static str> + 'a {
+    IGNORED_DIR_NAMES
+        .iter()
+        .copied()
+        .filter(|name| !keep.contains(name))
+        .chain([".iii"])
+}
+
+/// `--exclude` flags for [`left_out`].
+fn source_excludes(keep: &[&str]) -> String {
+    left_out(keep)
+        .map(|name| format!("--exclude={name}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The `tar --exclude` flags of a run's copy.
+static SOURCE_EXCLUDES: LazyLock<String> = LazyLock::new(|| source_excludes(&[]));
+/// The `tar --exclude` flags of a build's copy.
+static BUILD_SOURCE_EXCLUDES: LazyLock<String> = LazyLock::new(|| source_excludes(BUILD_COPIES));
+
+/// The copy of a `path://` worker's code from `$SRC` into `$WS`, with
+/// `excludes`. A root-only name stays out only as a directory (`./build/`), so a
+/// root `build` script still comes along: `--exclude=./<name>` matches the
+/// root's entry only. What tar extracted, one path per line as `tar -v` prints
+/// it (a directory with a trailing `/`), replaces `$IIISTATE/<manifest>` once
+/// the copy succeeded: the next boot's [`workspace_cleanup`] reads it.
+fn copy_in_script(excludes: &str, manifest: &str) -> String {
+    let root_only = ROOT_IGNORED_DIR_NAMES.join(" ");
+    format!(
+        r#"ROOT_EXCLUDES=
+for name in {root_only}; do
+  if [ -d "$SRC/$name" ] && [ ! -L "$SRC/$name" ]; then ROOT_EXCLUDES="$ROOT_EXCLUDES --exclude=./$name"; fi
+done
+mkdir -p "$IIISTATE"
+( set -o pipefail; ( cd "$SRC" && tar -cf - {excludes} $ROOT_EXCLUDES . ) | ( cd "$WS" && tar -xpvf - ) > "$IIISTATE/{manifest}.tmp" ) || {{ echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }}
+mv -f "$IIISTATE/{manifest}.tmp" "$IIISTATE/{manifest}""#
+    )
+}
+
+/// A run's copy, after a build installed its dependencies.
+static RUN_COPY: LazyLock<String> =
+    LazyLock::new(|| copy_in_script(&SOURCE_EXCLUDES, RUN_MANIFEST));
+/// The copy of a run that installs in the guest (`worker::start` without
+/// `build`): a build's list, as it installs after it.
+static INSTALL_COPY: LazyLock<String> =
+    LazyLock::new(|| copy_in_script(&BUILD_SOURCE_EXCLUDES, RUN_MANIFEST));
+/// A build's copy: its manifest ships in the image.
+static BUILD_COPY: LazyLock<String> =
+    LazyLock::new(|| copy_in_script(&BUILD_SOURCE_EXCLUDES, BUILD_MANIFEST));
+
+/// Re-sync deletions: tar -x only adds and overwrites, and `/workspace` keeps
+/// what earlier copies left (on the data disk, or in the build's image). Before
+/// the copy, remove the entries of the last copies' manifests (the build's and
+/// the last run's) that the host no longer has, or has as another kind (a file
+/// where a directory was), deepest first. Nothing else goes: what the build
+/// installed and what the worker wrote are in no manifest, whatever their name
+/// or depth.
+///
+/// - An entry with a component this boot's copy leaves out (all but `keep` of
+///   [`left_out`]) is never touched: a run neither copies, syncs nor cleans
+///   those names, so the `vendor/` a build copied stays whole until the next
+///   build.
+/// - Nothing is removed, emptied or moved through a symlink: `$WS` and the
+///   entry's parent must be chains of real directories, the parent inside
+///   `$WS`. A link the worker, the install or the sync put there is skipped.
+/// - A directory goes only once empty; one that the host turned into a file
+///   but that still holds such things moves aside, to the first free
+///   `<name>.iii-kept.<n>`, to make way for it.
+/// - Only a line `tar -v` printed as one plain name counts: it starts with
+///   `./`, is not continued on the next line (busybox prints a newline raw)
+///   and has no backslash (GNU tar escapes newlines and backslashes). A name
+///   with a newline or a backslash is never cleaned.
+///
+/// Without a manifest (a disk an older adapter wrote) there is nothing to go
+/// by: what the host deleted before this boot stays until the worker is
+/// destroyed. A `.iii` an older adapter copied in goes in any case: it holds
+/// the project's token.
+fn workspace_cleanup(keep: &[&str]) -> String {
+    let skip = left_out(keep)
+        .map(|name| format!("*/\"{name}\"/*"))
+        .collect::<Vec<_>>()
+        .join("|");
+    WORKSPACE_CLEANUP_SCRIPT.replace("@SKIP@", &skip)
+}
+
+const WORKSPACE_CLEANUP_SCRIPT: &str = r#"find "$WS" -mindepth 1 -name .iii -prune -exec rm -rf {} + 2>/dev/null || true
+if [ -f "$IIISTATE/workspace.manifest" ] || [ -f "$IIISTATE/build.manifest" ]; then
+  if [ "$(cd -P "$WS" 2>/dev/null && pwd -P)" != "$WS" ]; then
+    echo "iii: $WS is not a real directory; skipping the workspace cleanup" >&2
+  else
+    # safe_parent caches the last parent proven a chain of real directories
+    # inside $WS. The cache stays true only because nothing else writes
+    # /workspace during this loop (the sync waits for /run/iii/source-ready,
+    # touched after the copy, and the worker is not up yet) and the loop
+    # never makes a link: it removes files and links, removes empty dirs,
+    # moves dirs to free names, and resets the cache after each rmdir and mv.
+    # `sort -ru` puts every child before its parent, so no removal changes an
+    # ancestor of an entry still to come. Starting the sync before the copy
+    # would open a window between the check and the removal.
+    safe_parent=
+    for manifest in "$IIISTATE/workspace.manifest" "$IIISTATE/build.manifest"; do
+      if [ -f "$manifest" ]; then
+        awk '/^\.\// { if (one) print name; name = $0; one = 1; next } { one = 0 } END { if (one) print name }' "$manifest"
+      fi
+    done | LC_ALL=C sort -ru |
+    while IFS= read -r entry; do
+      case "$entry" in ./*) ;; *) continue ;; esac
+      case "$entry" in *\\*) continue ;; esac
+      rel=${entry#./}
+      rel=${rel%/}
+      case "$rel" in ''|.|..|../*|*/..|*/../*) continue ;; esac
+      case "/$rel/" in @SKIP@) continue ;; esac
+      ws="$WS/$rel"
+      host="$SRC/$rel"
+      if [ "$entry" != "${entry%/}" ]; then
+        if [ -d "$host" ] && [ ! -L "$host" ]; then continue; fi
+        if [ ! -d "$ws" ] || [ -L "$ws" ]; then continue; fi
+      else
+        if [ -e "$host" ] || [ -L "$host" ]; then
+          if [ ! -d "$host" ] || [ -L "$host" ]; then continue; fi
+        fi
+        if [ ! -L "$ws" ] && { [ ! -e "$ws" ] || [ -d "$ws" ]; }; then continue; fi
+      fi
+      parent=${ws%/*}
+      if [ "$parent" != "$safe_parent" ]; then
+        [ "$(cd -P "$parent" 2>/dev/null && pwd -P)" = "$parent" ] || continue
+        safe_parent=$parent
+      fi
+      if [ "$entry" = "${entry%/}" ]; then
+        rm -f "$ws" || true
+      elif rmdir "$ws" 2>/dev/null; then
+        safe_parent=
+      elif [ -e "$host" ] || [ -L "$host" ]; then
+        n=1
+        while [ -e "$ws.iii-kept.$n" ] || [ -L "$ws.iii-kept.$n" ]; do n=$((n + 1)); done
+        mv "$ws" "$ws.iii-kept.$n" && echo "iii: $rel is no longer a directory on the host; what the build or the worker left in it is at $rel.iii-kept.$n" >&2
+        safe_parent=
+      fi
+    done || true
+  fi
+elif [ -n "$(ls -A "$WS" 2>/dev/null)" ]; then
+  echo "iii: no workspace manifest yet (a disk an older adapter wrote): what the host deleted before this boot stays in $WS until the worker is destroyed" >&2
+fi"#;
+
+/// The cleanup before a run's copy.
+static RUN_CLEANUP: LazyLock<String> = LazyLock::new(|| workspace_cleanup(&[]));
+/// The cleanup before the copy of a run that installs in the guest: it copies
+/// as a build does, so it cleans as one would.
+static INSTALL_CLEANUP: LazyLock<String> = LazyLock::new(|| workspace_cleanup(BUILD_COPIES));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -103,6 +255,47 @@ pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
     (r.cpus.unwrap_or(2), r.memory.unwrap_or(2048))
 }
 
+/// How a boot script provisions (`scripts.setup` + `scripts.install`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Provision {
+    /// Legacy clone: the host saw the marker, `prepared` skips the block.
+    Host { prepared: bool },
+    /// Overlay: the marker is on the ext4 upper, so the guest checks it.
+    InGuest,
+    /// The root is a build's image: nothing to install.
+    Image,
+}
+
+/// The shell header every boot script starts with. The script never re-exports
+/// the manifest env: the VM env already holds it merged with the caller's
+/// overrides and the gateway rewrite. The system dirs go after PATH so a PATH
+/// from that env keeps precedence.
+fn script_header() -> Vec<String> {
+    vec![
+        "set -e".to_string(),
+        "export HOME=${HOME:-/root}".to_string(),
+        "export PATH=${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin".to_string(),
+        "export LANG=${LANG:-C.UTF-8}".to_string(),
+    ]
+}
+
+/// The host source share at `$SRC`, checked before anything is copied from it.
+/// The mountpoint check guards against iii-init's mount_virtiofs_shares()
+/// swallowing a mount failure as a warning (leaving the path
+/// existing-but-unmounted), which would otherwise silently copy nothing.
+const SOURCE_SHARE_CHECK: &str = r#"SRC=/mnt/host-src
+mkdir -p /workspace
+if ! { mountpoint -q "$SRC" 2>/dev/null || awk -v s="$SRC" '$5 == s && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
+  echo "iii: ERROR $SRC (host source share) is not a virtiofs mountpoint (share missing or mount failed)" >&2
+  echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
+  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
+  exit 1
+fi
+if ! command -v tar >/dev/null 2>&1; then
+  echo "iii: ERROR workspace copy-in requires 'tar' in the base image" >&2
+  exit 1
+fi"#;
+
 /// Build the boot script that `iii-init` will exec as the worker command.
 ///
 /// No supervisor wrapping: the in-VM `iii-init` binary (PID 1) starts
@@ -117,20 +310,37 @@ pub fn build_libkrun_local_script(
     is_bundle: bool,
     overlay: bool,
 ) -> String {
-    // The script never re-exports the manifest env: the VM env already holds
-    // it merged with the caller's overrides and the gateway rewrite. The
-    // system dirs go after PATH so a PATH from that env keeps precedence.
-    let mut parts = vec![
-        "set -e".to_string(),
-        "export HOME=${HOME:-/root}".to_string(),
-        "export PATH=${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin".to_string(),
-        "export LANG=${LANG:-C.UTF-8}".to_string(),
-    ];
+    let provision = if overlay {
+        Provision::InGuest
+    } else {
+        Provision::Host { prepared }
+    };
+    boot_script(project, is_bundle, provision)
+}
+
+/// The boot script of a VM whose root is a build's image (`worker::start`
+/// with `build`): no `scripts.setup` or `scripts.install`, they ran in the
+/// build. A bundle's code is in the image; a local worker's still syncs in.
+pub fn build_image_run_script(project: &ProjectInfo, is_bundle: bool) -> String {
+    boot_script(project, is_bundle, Provision::Image)
+}
+
+fn boot_script(project: &ProjectInfo, is_bundle: bool, provision: Provision) -> String {
+    let mut parts = script_header();
+    // A guest that installs gets what a build's copy gets (`vendor/` too); a
+    // run of a build's image the run's list.
+    let (cleanup, copy) = match provision {
+        Provision::Image => (RUN_CLEANUP.as_str(), RUN_COPY.as_str()),
+        Provision::Host { .. } | Provision::InGuest => {
+            (INSTALL_CLEANUP.as_str(), INSTALL_COPY.as_str())
+        }
+    };
 
     // Workspace strategy:
     //
     //  - BUNDLE: the immutable install dir is mounted live at /workspace via
     //    virtiofs; vendored deps ship inside it, so no dep handling is needed.
+    //    A build's image holds the bundle's code at /workspace instead.
     //
     //  - LOCAL: the host project is mounted temporarily at /mnt/host-src and
     //    copied into /workspace. The share is detached before user code runs.
@@ -138,12 +348,13 @@ pub fn build_libkrun_local_script(
     //    iii-init, which makes the guest kernel emit native inotify events.
     //    Dependency and build directories remain VM-local and are excluded
     //    from both the initial copy and later synchronization.
-    //
-    // The mountpoint checks guard against iii-init's mount_virtiofs_shares()
-    // swallowing a mount failure as a warning (leaving the path
-    // existing-but-unmounted), which would otherwise silently work against the
-    // wrong backing store.
-    if is_bundle {
+    if is_bundle && provision == Provision::Image {
+        parts.push(
+            r#"cd /workspace
+echo "iii: workspace ready (bundle worker; code from the build image)" >&2"#
+                .to_string(),
+        );
+    } else if is_bundle {
         parts.push(
             r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
   echo "iii: ERROR /workspace is not a virtiofs mountpoint (share missing or mount failed)" >&2
@@ -156,30 +367,17 @@ echo "iii: workspace ready (bundle worker; dep-dir bind-mounts skipped — vendo
                 .to_string(),
         );
     } else {
+        parts.push(SOURCE_SHARE_CHECK.to_string());
+        parts.push(format!("WS=/workspace\nIIISTATE={WORKSPACE_STATE}"));
+        parts.push(cleanup.to_string());
+        // Copy host source into the VM-local /workspace, without the dirs of
+        // the list, so what the build or the guest installed persists across
+        // a re-copy and host clutter isn't pulled in. Only /mnt/host-src is
+        // read; the host project is never written. .iii is Compose's state,
+        // which holds the project's token: the guest must never get a copy.
+        parts.push(copy.to_string());
         parts.push(
-            r#"SRC=/mnt/host-src
-mkdir -p /workspace
-if ! { mountpoint -q "$SRC" 2>/dev/null || awk -v s="$SRC" '$5 == s && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
-  echo "iii: ERROR $SRC (host source share) is not a virtiofs mountpoint (share missing or mount failed)" >&2
-  echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
-  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
-  exit 1
-fi
-if ! command -v tar >/dev/null 2>&1; then
-  echo "iii: ERROR workspace copy-in requires 'tar' in the base image" >&2
-  exit 1
-fi"#
-            .to_string(),
-        );
-        parts.push(WORKSPACE_RESYNC_CLEANUP.to_string());
-        parts.push(
-            r#"# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
-# any depth) so VM-local installs persist across a re-copy and host clutter
-# isn't pulled in. Only /mnt/host-src is read; the host project is never
-# written, so no empty dep folders appear there. .iii is Compose's state, which
-# holds the project's token: the guest must never get a copy.
-( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git --exclude=.iii . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
-# Enforce "host project untouched": detach the initial source share before
+            r#"# Enforce "host project untouched": detach the initial source share before
 # user code runs. Later edits arrive as file operations over iii.source-sync.
 cd /
 umount "$SRC" || { echo "iii: ERROR could not detach $SRC; refusing to run with host source writable" >&2; exit 1; }
@@ -206,41 +404,46 @@ echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project 
     //     restarts, so install runs once and is skipped thereafter — matching
     //     legacy's skip semantics without needing host visibility. `set -e`
     //     still aborts (and leaves the marker unwritten) if install fails.
-    if overlay {
-        let mut prov = String::new();
-        if !project.setup_cmd.is_empty() {
-            prov.push_str(&project.setup_cmd);
-            prov.push('\n');
-        }
-        if !project.install_cmd.is_empty() {
-            prov.push_str(&project.install_cmd);
-            prov.push('\n');
-        }
-        // `sync` flushes the just-installed deps + the marker from the guest
-        // page cache to the ext4 upper (/dev/vdb) after install finishes.
-        // Without it, a worker that exits within ext4's ~5s commit window tears
-        // the VM down before the write lands, losing both and re-running install
-        // next boot. ponytail: belt-and-suspenders with iii-init's sync-on-exit
-        // (supervisor::sync_and_exit); this also covers a SIGKILL that lands
-        // after install but before the worker exits.
-        parts.push(format!(
-            r#"if [ "$(cat /var/.iii-prepared 2>/dev/null || true)" != "{PREPARED_MARKER_VERSION}" ]; then
+    //   - image: the build ran them; a run never installs.
+    match provision {
+        Provision::InGuest => {
+            let mut prov = String::new();
+            if !project.setup_cmd.is_empty() {
+                prov.push_str(&project.setup_cmd);
+                prov.push('\n');
+            }
+            if !project.install_cmd.is_empty() {
+                prov.push_str(&project.install_cmd);
+                prov.push('\n');
+            }
+            // `sync` flushes the just-installed deps + the marker from the guest
+            // page cache to the ext4 upper (/dev/vdb) after install finishes.
+            // Without it, a worker that exits within ext4's ~5s commit window tears
+            // the VM down before the write lands, losing both and re-running install
+            // next boot. ponytail: belt-and-suspenders with iii-init's sync-on-exit
+            // (supervisor::sync_and_exit); this also covers a SIGKILL that lands
+            // after install but before the worker exits.
+            parts.push(format!(
+                r#"if [ "$(cat /var/.iii-prepared 2>/dev/null || true)" != "{PREPARED_MARKER_VERSION}" ]; then
 rm -f /var/.iii-prepared
 {prov}mkdir -p /var
 printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared
 sync
 fi"#
-        ));
-    } else if !prepared {
-        if !project.setup_cmd.is_empty() {
-            parts.push(project.setup_cmd.clone());
+            ));
         }
-        if !project.install_cmd.is_empty() {
-            parts.push(project.install_cmd.clone());
+        Provision::Host { prepared: false } => {
+            if !project.setup_cmd.is_empty() {
+                parts.push(project.setup_cmd.clone());
+            }
+            if !project.install_cmd.is_empty() {
+                parts.push(project.install_cmd.clone());
+            }
+            parts.push(format!(
+                r#"mkdir -p /var && printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared"#
+            ));
         }
-        parts.push(format!(
-            r#"mkdir -p /var && printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared"#
-        ));
+        Provision::Host { prepared: true } | Provision::Image => {}
     }
 
     // Exec the user command directly; iii-init supervises the one
@@ -255,6 +458,45 @@ fi"#
     // semantics.
     let quoted_run_cmd = format!("'{}'", project.run_cmd.replace('\'', "'\\''"));
     parts.push(format!("exec /bin/sh -c {quoted_run_cmd}"));
+    parts.join("\n")
+}
+
+/// The script of a build VM (`worker::build`): copy the worker's code into
+/// `/workspace`, run `scripts.setup` and `scripts.install` there, and exit.
+/// When it exits 0, iii-init exports the merged root for the image. A local
+/// worker's copy leaves out what its run's copy leaves out, but `vendor/`
+/// ([`BUILD_COPIES`]); a bundle's is the whole package but Compose's state.
+pub fn build_image_script(project: &ProjectInfo, is_bundle: bool) -> String {
+    let mut parts = script_header();
+    parts.push(SOURCE_SHARE_CHECK.to_string());
+    parts.push("echo \"iii: build: copying the worker's code into /workspace\" >&2".to_string());
+    if is_bundle {
+        // The whole package is the bundle's code; a run never copies it again.
+        parts.push(
+            r#"( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=.iii . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }"#
+                .to_string(),
+        );
+    } else {
+        // Its manifest ships in the image, for the first run's cleanup.
+        parts.push(format!("WS=/workspace\nIIISTATE={WORKSPACE_STATE}"));
+        parts.push(BUILD_COPY.to_string());
+    }
+    parts.push(
+        r#"cd /
+umount "$SRC" || { echo "iii: ERROR could not detach $SRC" >&2; exit 1; }
+cd /workspace
+echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true"#
+            .to_string(),
+    );
+    if !project.setup_cmd.is_empty() {
+        parts.push("echo \"iii: build: running scripts.setup\" >&2".to_string());
+        parts.push(project.setup_cmd.clone());
+    }
+    if !project.install_cmd.is_empty() {
+        parts.push("echo \"iii: build: running scripts.install\" >&2".to_string());
+        parts.push(project.install_cmd.clone());
+    }
+    parts.push("echo \"iii: build: scripts done\" >&2".to_string());
     parts.join("\n")
 }
 
@@ -403,6 +645,256 @@ pub struct VmOverride<'a> {
     /// Merged over the manifest's own env, and under the reserved keys
     /// [`build_local_env`] owns.
     pub extra_env: HashMap<String, String>,
+    /// Boot this build instead of the base image, with no setup or install.
+    pub image: Option<BootImage>,
+}
+
+/// A build's image a VM boots (`worker::start` with `build`).
+pub struct BootImage {
+    /// `<build_dir>/image.erofs`, the overlay's read-only lower.
+    pub image: PathBuf,
+    /// The VM's persistent data disk, the overlay's upper.
+    pub upper: PathBuf,
+}
+
+/// iii-init's build-mode switch (`iii_init::export`). Only the host sets it, on
+/// a build VM: a caller's env never carries it into a VM.
+const BUILD_EXPORT_ENV: &str = "III_BUILD_EXPORT";
+/// Where a build VM's iii-init writes the root: the `/opt/iii` share, the
+/// trampoline's `runtime/` on the host.
+const BUILD_EXPORT_GUEST: &str = "/opt/iii/root.tar";
+const BUILD_EXPORT_HOST: &str = "runtime/root.tar";
+
+/// A build VM (`worker::build`), built but not spawned.
+pub struct BuildVm {
+    pub command: super::worker_manager::libkrun::VmCommand,
+    /// The build VM's trampoline root, where iii-init's tar lands once the
+    /// build script exits 0; see [`open_build_export`].
+    pub root: PathBuf,
+    /// The base image the build starts from, as the rootfs cache keys it.
+    pub reference: String,
+    /// Its cached rootfs; the image takes its `.oci-config.json` from there.
+    pub base_rootfs: PathBuf,
+}
+
+/// The tar a build VM exported under its trampoline `root` ([`BuildVm::root`]).
+/// That share was the guest's, so no component of the path is followed through
+/// a symlink, and it must be a regular file.
+pub fn open_build_export(root: &Path) -> std::io::Result<std::fs::File> {
+    super::worker_manager::oci::open_rootfs_file_no_follow(root, Path::new(BUILD_EXPORT_HOST))
+}
+
+/// Builds the build VM of a worker: the base image (pulled if the cache lacks
+/// it) as the lower, a fresh upper in `scratch`, the worker's code shared
+/// read-only at `/mnt/host-src`, and [`build_image_script`] to run. Nothing is
+/// spawned. `env` is the caller's `guest_env`, over the manifest's own env.
+pub(crate) async fn image_build_command(
+    worker_dir: &Path,
+    package: Option<&str>,
+    run_override: Option<&str>,
+    scratch: &Path,
+    env: HashMap<String, String>,
+) -> Result<BuildVm, String> {
+    use super::worker_manager::oci;
+
+    let (project, kind) = validate_source(worker_dir, package, run_override)?;
+    let is_bundle = package.is_some();
+    if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
+        tracing::warn!(error = %e, "failed to ensure libkrunfw");
+    }
+    if !super::worker_manager::libkrun::libkrun_available() {
+        return Err("No runtime available.\n  \
+             Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
+            .to_string());
+    }
+    let reference = oci::base_image_ref(&kind, project.base_image.as_deref());
+    let base_rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
+        .await
+        .map_err(|e| format!("cannot pull the base image {reference}: {e:#}"))?;
+    let lower = {
+        let base = base_rootfs.clone();
+        tokio::task::spawn_blocking(move || crate::cli::erofs::ensure_base_erofs(&base))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("failed to build base erofs: {e}"))?
+    };
+
+    let root = scratch.join("root");
+    std::fs::create_dir_all(&root)
+        .and_then(|()| oci::ensure_rootfs_dir_no_follow(&root, "workspace").map(drop))
+        .map_err(|e| format!("cannot create the build VM's dir {}: {e}", root.display()))?;
+    let upper = crate::cli::upper::ensure_upper_ext4(scratch)
+        .map_err(|e| format!("failed to materialize the build's upper: {e}"))?;
+    let script_dir = write_run_script(&root, true, &build_image_script(&project, is_bundle))
+        .map_err(|e| format!("Failed to write the build script: {e}"))?;
+
+    let mut env_all = project.env.clone();
+    env_all.extend(env);
+    for (key, value) in oci::read_oci_env(&base_rootfs) {
+        env_all.entry(key).or_insert(value);
+    }
+    env_all.insert(BUILD_EXPORT_ENV.to_string(), BUILD_EXPORT_GUEST.to_string());
+
+    let (vcpus, ram) = vm_resources(worker_dir, is_bundle, &project.name);
+    let mounts = [
+        (
+            worker_dir.to_string_lossy().into_owned(),
+            "/mnt/host-src".to_string(),
+        ),
+        (
+            script_dir.to_string_lossy().into_owned(),
+            "/opt/iii".to_string(),
+        ),
+    ];
+    let command = super::worker_manager::libkrun::build_vm_command(
+        "/bin/sh",
+        &["-c".to_string(), RUN_SCRIPT_CMD.to_string()],
+        env_all,
+        vcpus,
+        ram,
+        root.clone(),
+        Some(lower),
+        "overlay".to_string(),
+        Some(upper),
+        &mounts,
+        None,
+        Some(worker_dir),
+    )?;
+    debug_assert_eq!(script_dir.join("root.tar"), root.join(BUILD_EXPORT_HOST));
+    Ok(BuildVm {
+        command,
+        root,
+        reference,
+        base_rootfs,
+    })
+}
+
+/// The env the base image's config sets, from the `.oci-config.json` a build
+/// put into its image; empty when it has none.
+fn image_oci_env(image: &Path) -> Vec<(String, String)> {
+    match crate::cli::erofs::reader::read_file_from_erofs(image, "/.oci-config.json") {
+        Ok(bytes) => {
+            super::worker_manager::oci::oci_env_from_config(&String::from_utf8_lossy(&bytes))
+        }
+        Err(e) => {
+            tracing::warn!(image = %image.display(), error = %e, "the build image has no OCI config");
+            Vec::new()
+        }
+    }
+}
+
+/// The VM of a build (`worker::start` with `build`): the image as the lower,
+/// the VM's data disk as the upper, and [`build_image_run_script`]. A local
+/// worker's source still syncs in; a bundle's code is in the image.
+fn image_run_command(
+    worker_name: &str,
+    project_path: &Path,
+    project: &ProjectInfo,
+    is_bundle: bool,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let BootImage { image, upper } = over.image.expect("a build to boot");
+    if !crate::cli::overlay::overlay_active() {
+        return Err(
+            "booting a build needs the overlay rootfs mode; this adapter runs in \
+             legacy mode (III_ROOTFS_MODE=legacy, or no embedded iii-init)"
+                .to_string(),
+        );
+    }
+    let managed_dir = over.state_dir;
+    std::fs::create_dir_all(&managed_dir)
+        .and_then(|()| {
+            super::worker_manager::oci::ensure_rootfs_dir_no_follow(&managed_dir, "workspace")
+                .map(drop)
+        })
+        .map_err(|e| format!("Failed to create worker dir {}: {e}", managed_dir.display()))?;
+
+    let mut combined_project_env = project.env.clone();
+    combined_project_env.extend(over.extra_env);
+    let mut env = build_local_env(over.engine_url, worker_name, &combined_project_env);
+    for (key, value) in image_oci_env(&image) {
+        env.entry(key).or_insert(value);
+    }
+    env.remove(BUILD_EXPORT_ENV);
+
+    let script_dir = write_run_script(
+        &managed_dir,
+        true,
+        &build_image_run_script(project, is_bundle),
+    )
+    .map_err(|e| format!("Failed to write run script: {e}"))?;
+    let (vcpus, ram) = vm_resources(project_path, is_bundle, worker_name);
+    let mut mounts = if is_bundle {
+        Vec::new()
+    } else {
+        build_local_mounts(project_path, "/mnt/host-src")
+    };
+    mounts.push((
+        script_dir.to_string_lossy().into_owned(),
+        "/opt/iii".to_string(),
+    ));
+    super::worker_manager::libkrun::build_vm_command(
+        "/bin/sh",
+        &["-c".to_string(), RUN_SCRIPT_CMD.to_string()],
+        env,
+        vcpus,
+        ram,
+        managed_dir,
+        Some(image),
+        "overlay".to_string(),
+        Some(upper),
+        &mounts,
+        (!is_bundle).then_some(project_path),
+        None,
+    )
+}
+
+/// vCPUs and MiB of RAM: a bundle's clamped, as its manifest is
+/// publisher-controlled, a local worker's as its manifest asks.
+fn vm_resources(project_path: &Path, is_bundle: bool, worker_name: &str) -> (u32, u32) {
+    if !is_bundle {
+        return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
+    }
+    // Strict clamp at start-time so a publisher-controlled manifest
+    // can't boot a libkrun guest with attacker-chosen resources:
+    // the VM boot re-reads the manifest from the install dir, which
+    // may have changed since install.
+    match super::bundle_download::parse_bundle_resources(
+        project_path,
+        super::bundle_download::ResourceCaps::default(),
+    ) {
+        Ok(r) => {
+            if let Some(req) = r.clamped_cpus {
+                tracing::warn!(
+                    worker = %worker_name,
+                    bundle.requested_cpus = req,
+                    bundle.cpus = r.cpus,
+                    "bundle resources.cpus clamped at start"
+                );
+            }
+            if let Some(req) = r.clamped_memory_mb {
+                tracing::warn!(
+                    worker = %worker_name,
+                    bundle.requested_memory_mb = req,
+                    bundle.memory_mb = r.memory_mb,
+                    "bundle resources.memory clamped at start"
+                );
+            }
+            (r.cpus, r.memory_mb)
+        }
+        Err(e) => {
+            // Manifest was validated at install time. If reading
+            // it fails now, something tampered with the install
+            // dir or the disk is failing. Fall back to safe
+            // defaults rather than booting with raw values.
+            tracing::error!(
+                worker = %worker_name,
+                error = %e,
+                "bundle resource re-clamp failed; using safe defaults"
+            );
+            (2, 2048)
+        }
+    }
 }
 
 /// The checks a worker source must pass before anything is pulled or booted:
@@ -533,6 +1025,9 @@ pub(crate) async fn start_worker_impl(
              Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
             .to_string());
     }
+    if over.image.is_some() {
+        return image_run_command(worker_name, project_path, &project, is_bundle, over);
+    }
 
     // 4. Prepare managed dir — clone rootfs on first start
     let managed_dir = over.state_dir;
@@ -636,6 +1131,8 @@ pub(crate) async fn start_worker_impl(
     for (key, value) in oci_env {
         env.entry(key).or_insert(value);
     }
+    // A build VM's switch: a caller's env must not turn a run into an export.
+    env.remove(BUILD_EXPORT_ENV);
 
     // 7. Build boot script. No supervisor wrap is emitted — the in-VM
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
@@ -682,51 +1179,7 @@ pub(crate) async fn start_worker_impl(
     }
 
     // 9. Run via libkrun
-    let manifest_path = project_path.join(WORKER_MANIFEST);
-    let (vcpus, ram) = if is_bundle {
-        // Strict clamp at start-time so a publisher-controlled manifest
-        // can't boot a libkrun guest with attacker-chosen resources:
-        // the VM boot re-reads the manifest from the install dir, which
-        // may have changed since install.
-        match super::bundle_download::parse_bundle_resources(
-            project_path,
-            super::bundle_download::ResourceCaps::default(),
-        ) {
-            Ok(r) => {
-                if let Some(req) = r.clamped_cpus {
-                    tracing::warn!(
-                        worker = %worker_name,
-                        bundle.requested_cpus = req,
-                        bundle.cpus = r.cpus,
-                        "bundle resources.cpus clamped at start"
-                    );
-                }
-                if let Some(req) = r.clamped_memory_mb {
-                    tracing::warn!(
-                        worker = %worker_name,
-                        bundle.requested_memory_mb = req,
-                        bundle.memory_mb = r.memory_mb,
-                        "bundle resources.memory clamped at start"
-                    );
-                }
-                (r.cpus, r.memory_mb)
-            }
-            Err(e) => {
-                // Manifest was validated at install time. If reading
-                // it fails now, something tampered with the install
-                // dir or the disk is failing. Fall back to safe
-                // defaults rather than booting with raw values.
-                tracing::error!(
-                    worker = %worker_name,
-                    error = %e,
-                    "bundle resource re-clamp failed; using safe defaults"
-                );
-                (2, 2048)
-            }
-        }
-    } else {
-        parse_manifest_resources(&manifest_path)
-    };
+    let (vcpus, ram) = vm_resources(project_path, is_bundle, worker_name);
 
     // Local workers always copy into /workspace. This is required for native
     // guest file events: later host changes are applied by iii-init rather than
@@ -790,6 +1243,7 @@ pub(crate) async fn start_worker_impl(
         rootfs_upper,
         &mounts,
         (!is_bundle).then_some(project_path),
+        None,
     )
 }
 
@@ -836,6 +1290,306 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "host");
         let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode();
         assert_eq!(victim_mode & 0o111, 0, "the host file was chmodded");
+    }
+
+    /// The build VM's share was the guest's: neither a symlink planted at the
+    /// tar nor one at `runtime` is read through.
+    #[test]
+    fn a_build_export_is_never_read_through_a_guest_symlink() {
+        use std::os::unix::fs::symlink;
+        let t = tempfile::tempdir().unwrap();
+        let host = t.path().join("host");
+        std::fs::create_dir_all(&host).unwrap();
+        std::fs::write(host.join("root.tar"), "host file").unwrap();
+        let root = t.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        symlink(&host, root.join("runtime")).unwrap();
+        assert!(
+            open_build_export(&root).is_err(),
+            "followed runtime -> host"
+        );
+        std::fs::remove_file(root.join("runtime")).unwrap();
+        std::fs::create_dir(root.join("runtime")).unwrap();
+        symlink(host.join("root.tar"), root.join("runtime/root.tar")).unwrap();
+        assert!(
+            open_build_export(&root).is_err(),
+            "followed root.tar -> host"
+        );
+        std::fs::remove_file(root.join("runtime/root.tar")).unwrap();
+        std::fs::write(root.join("runtime/root.tar"), "tar").unwrap();
+        assert!(open_build_export(&root).is_ok());
+    }
+
+    fn project_with(setup: &str, install: &str) -> ProjectInfo {
+        ProjectInfo {
+            name: "test".to_string(),
+            kind: Some("typescript".to_string()),
+            setup_cmd: setup.to_string(),
+            install_cmd: install.to_string(),
+            run_cmd: "node server.js".to_string(),
+            env: HashMap::new(),
+            base_image: None,
+        }
+    }
+
+    /// A build VM copies the code in, installs, and exits for iii-init to
+    /// export: no worker runs, no marker, no source sync.
+    #[test]
+    fn the_build_script_installs_and_exits() {
+        let project = project_with("apt-get install -y git", "npm ci");
+        let script = build_image_script(&project, /*is_bundle=*/ false);
+        assert!(script.contains("apt-get install -y git\necho"));
+        assert!(script.contains("npm ci"));
+        assert!(script.contains(BUILD_SOURCE_EXCLUDES.as_str()));
+        assert!(script.contains("umount \"$SRC\""));
+        assert!(!script.contains("exec /bin/sh -c"), "{script}");
+        assert!(!script.contains(".iii-prepared"));
+        assert!(!script.contains("source-ready"));
+        assert!(script.find("apt-get") < script.find("npm ci"));
+        // A bundle's whole package is its code, vendored deps included.
+        let bundle = build_image_script(&project, /*is_bundle=*/ true);
+        assert!(bundle.contains("tar -cf - --exclude=.iii ."), "{bundle}");
+        assert!(!bundle.contains("--exclude=node_modules"));
+    }
+
+    /// The run of a build never installs; a local worker's code still syncs
+    /// in, a bundle's is in the image.
+    #[test]
+    fn the_run_of_a_build_never_installs() {
+        let project = project_with("apt-get install -y git", "npm ci");
+        let local = build_image_run_script(&project, /*is_bundle=*/ false);
+        assert!(
+            !local.contains("apt-get") && !local.contains("npm ci"),
+            "{local}"
+        );
+        assert!(!local.contains(".iii-prepared"));
+        assert!(local.contains(RUN_CLEANUP.as_str()));
+        assert!(local.contains(SOURCE_EXCLUDES.as_str()));
+        assert!(local.contains("touch /run/iii/source-ready"));
+        assert!(local.ends_with("exec /bin/sh -c 'node server.js'"));
+        let bundle = build_image_run_script(&project, /*is_bundle=*/ true);
+        assert!(
+            !bundle.contains("npm ci") && !bundle.contains("mountpoint"),
+            "{bundle}"
+        );
+        assert!(bundle.contains("cd /workspace"));
+        assert!(bundle.ends_with("exec /bin/sh -c 'node server.js'"));
+    }
+
+    /// `.build` and `.workers` hold Compose's images and package copies: for
+    /// `path://.` they are in the worker's dir, and stay out of the copy at
+    /// any depth, as the dependency dirs do.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
+    fn compose_dirs_stay_out_of_the_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &[
+                "src/app.js",
+                "src/.build/w/image.erofs",
+                "src/.workers/pkg/index.js",
+                "src/node_modules/dep/index.js",
+                "src/.iii/token",
+                "src/sub/.build/x",
+                "src/sub/code.js",
+            ],
+        );
+        boot(t);
+        assert!(t.join("ws/app.js").is_file() && t.join("ws/sub/code.js").is_file());
+        for gone in [".build", ".workers", "node_modules", ".iii", "sub/.build"] {
+            assert!(!t.join("ws").join(gone).exists(), "{gone} was copied");
+        }
+    }
+
+    /// One list: what the run's copy leaves out is what the source sync
+    /// ignores; the build's copy leaves out the same but `vendor`. Build-output
+    /// names that also name source count as a directory at the root only.
+    #[test]
+    fn one_list_drives_the_copy_and_the_sync() {
+        use super::super::source_watcher::should_ignore_path;
+        let excludes: Vec<&str> = SOURCE_EXCLUDES.split(' ').collect();
+        let build: Vec<&str> = BUILD_SOURCE_EXCLUDES.split(' ').collect();
+        let synced = |rel: &str| !should_ignore_path(&Path::new("/p").join(rel), Path::new("/p"));
+        for name in IGNORED_DIR_NAMES {
+            let flag = format!("--exclude={name}");
+            assert!(excludes.contains(&flag.as_str()), "{name} is copied");
+            assert_eq!(
+                build.contains(&flag.as_str()),
+                !BUILD_COPIES.contains(name),
+                "{name} in the build's copy"
+            );
+            assert!(!synced(&format!("sub/{name}/x")), "{name} syncs");
+        }
+        let loop_names = format!("for name in {}; do", ROOT_IGNORED_DIR_NAMES.join(" "));
+        for copy in [&*RUN_COPY, &*INSTALL_COPY, &*BUILD_COPY] {
+            assert!(copy.contains(&loop_names), "{copy}");
+        }
+        for name in ROOT_IGNORED_DIR_NAMES {
+            assert!(!excludes.iter().any(|f| f.ends_with(&format!("={name}"))));
+            assert!(!synced(&format!("{name}/x")) && synced(&format!("sub/{name}/x")));
+        }
+        for name in ["target", "dist"] {
+            assert!(IGNORED_DIR_NAMES.contains(&name), "{name} at any depth");
+        }
+        assert_eq!(excludes.len(), IGNORED_DIR_NAMES.len() + 1);
+        assert_eq!(
+            build.len(),
+            IGNORED_DIR_NAMES.len() + 1 - BUILD_COPIES.len()
+        );
+        for flags in [&excludes, &build] {
+            assert!(flags.contains(&"--exclude=.iii"));
+        }
+        // The cleanup reads the manifests the copies write.
+        assert!(RUN_COPY.contains(RUN_MANIFEST) && BUILD_COPY.contains(BUILD_MANIFEST));
+        for cleanup in [&*RUN_CLEANUP, &*INSTALL_CLEANUP] {
+            for manifest in [RUN_MANIFEST, BUILD_MANIFEST] {
+                assert!(cleanup.contains(&format!("$IIISTATE/{manifest}")));
+            }
+            // It skips what the copy it runs before leaves out.
+            for name in [".iii", "node_modules", "target"] {
+                assert!(cleanup.contains(&format!("*/\"{name}\"/*")), "{name}");
+            }
+        }
+        assert!(RUN_CLEANUP.contains(r#"*/"vendor"/*"#));
+        assert!(!INSTALL_CLEANUP.contains(r#"*/"vendor"/*"#));
+    }
+
+    /// `build`, `out`, `obj`, `coverage` and `deps` often hold source below the
+    /// root, and a root `build` is often a script: they are copied and synced
+    /// there. Only a root directory of that name is build output, left out.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
+    fn root_only_names_match_a_root_directory_only() {
+        use super::super::source_watcher::should_ignore_path;
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &[
+                "src/src/pkg/build/x.py",
+                "src/src/out/y.ts",
+                "src/lib/deps/z.go",
+                "src/out/artifact.bin",
+                "src/obj/Debug/a.dll",
+                "src/node_modules/m.js",
+                "src/pkg/target/x",
+            ],
+        );
+        std::fs::write(t.join("src/build"), "#!/bin/sh\necho building\n").unwrap();
+        for copy in [&*RUN_COPY, &*BUILD_COPY] {
+            let _ = std::fs::remove_dir_all(t.join("ws"));
+            std::fs::create_dir_all(t.join("ws")).unwrap();
+            let (ok, log) = fragment(t, copy);
+            assert!(ok, "{log}");
+            for reached in [
+                "build",
+                "src/pkg/build/x.py",
+                "src/out/y.ts",
+                "lib/deps/z.go",
+            ] {
+                assert!(
+                    t.join("ws").join(reached).is_file(),
+                    "{reached} did not reach the guest"
+                );
+            }
+            for left in ["out", "obj", "node_modules", "pkg/target"] {
+                assert!(
+                    !t.join("ws").join(left).exists(),
+                    "{left} reached the guest"
+                );
+            }
+        }
+        let src = t.join("src");
+        assert!(!should_ignore_path(&src.join("src/pkg/build/x.py"), &src));
+        assert!(
+            !should_ignore_path(&src.join("build"), &src),
+            "the root script"
+        );
+        assert!(should_ignore_path(&src.join("out/artifact.bin"), &src));
+        assert!(should_ignore_path(&src.join("out"), &src));
+        // A root `build/` the build left stays; a nested one is code.
+        std::fs::remove_file(t.join("src/build")).unwrap();
+        put(t, &["src/build/gen.txt"]);
+        put(&t.join("ws"), &["src/pkg/build/stale.py"]);
+        std::fs::remove_file(t.join("ws/build")).unwrap();
+        put(&t.join("ws"), &["build/from-the-image"]);
+        boot(t);
+        assert!(t.join("ws/build/from-the-image").is_file());
+        assert!(
+            !t.join("ws/build/gen.txt").exists(),
+            "the host's root build/ was copied"
+        );
+        // Written by the worker, so it stays, as any file the worker writes.
+        assert!(t.join("ws/src/pkg/build/stale.py").is_file());
+    }
+
+    /// A start without a build installs in the guest, after its copy: that
+    /// copy is a build's (`vendor/` included). A run of an image is not.
+    #[test]
+    fn a_start_that_installs_copies_as_a_build_does() {
+        let project = project_with("", "go build ./...");
+        for overlay in [true, false] {
+            let script = build_libkrun_local_script(&project, false, false, overlay);
+            assert!(script.contains(BUILD_SOURCE_EXCLUDES.as_str()), "{script}");
+            assert!(!script.contains("--exclude=vendor "), "{script}");
+        }
+        let image = build_image_run_script(&project, false);
+        assert!(image.contains(SOURCE_EXCLUDES.as_str()));
+        assert!(image.contains("--exclude=vendor "));
+    }
+
+    /// A run never installs, so what the build put in a dependency or build
+    /// dir must survive every boot, whatever the host has there.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
+    fn every_dependency_dir_the_build_filled_survives_the_boots() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(t, &["src/main.py", "src/svc/app.py"]);
+        std::fs::create_dir_all(t.join("ws")).unwrap();
+        let (ok, log) = fragment(t, &BUILD_COPY);
+        assert!(ok, "{log}");
+        let built = [
+            "venv/bin/python",
+            "vendor/pkg/a.php",
+            ".bundle/config",
+            "deps/phoenix/mix.exs",
+            "_build/dev/app.beam",
+            "svc/.tox/py/x",
+            "svc/dist/app.js",
+            "svc/target/app.jar",
+        ];
+        put(&t.join("ws"), &built);
+        // The host's own copies of them never reach the guest.
+        put(
+            t,
+            &[
+                "src/venv/bin/python",
+                "src/svc/dist/app.js",
+                "src/svc/target/app.jar",
+            ],
+        );
+        for _ in 0..2 {
+            boot(t);
+            for file in built {
+                assert!(t.join("ws").join(file).is_file(), "{file} was removed");
+                assert_eq!(
+                    std::fs::read_to_string(t.join("ws").join(file)).unwrap(),
+                    "x"
+                );
+            }
+        }
     }
 
     #[test]
@@ -894,27 +1648,67 @@ mod tests {
         assert!(!script.contains("TSC_WATCHFILE"));
     }
 
+    /// Run a script fragment of the copy or the cleanup with `$SRC`, `$WS`
+    /// and `$IIISTATE` pointing at `t`'s `src`, `ws` and `state`, under bash
+    /// (the host's `sh` may lack `pipefail`, which the guest's has).
+    fn fragment(t: &Path, script: &str) -> (bool, String) {
+        // The guest's `$WS` is canonical, and the cleanup checks it is.
+        let t = &std::fs::canonicalize(t).unwrap();
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("set -e\n{script}"))
+            .env("SRC", t.join("src"))
+            .env("WS", t.join("ws"))
+            .env("IIISTATE", t.join("state"))
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    fn put(root: &Path, files: &[&str]) {
+        for file in files {
+            std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+    }
+
+    /// A boot of a `path://` run: the cleanup, then the run's copy.
+    fn boot(t: &Path) -> String {
+        std::fs::create_dir_all(t.join("ws")).unwrap();
+        let (ok, log) = fragment(t, &format!("{}\n{}", *RUN_CLEANUP, *RUN_COPY));
+        assert!(ok, "{log}");
+        log
+    }
+
     /// A copy an older adapter made into a persistent /workspace must not
     /// survive the next boot: the token in it stays valid.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
     fn workspace_cleanup_removes_a_stale_compose_state_copy() {
         let temp = tempfile::tempdir().unwrap();
-        let (ws, src) = (temp.path().join("ws"), temp.path().join("src"));
-        let stale = ws.join(".iii/compose/default/state.json");
-        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
-        std::fs::write(&stale, "{}").unwrap();
-        std::fs::create_dir_all(src.join(".iii/compose/default")).unwrap();
-
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
-            .env("SRC", &src)
-            .current_dir(&ws)
-            .status()
-            .unwrap();
-
-        assert!(status.success());
-        assert!(!ws.join(".iii").exists());
+        let t = temp.path();
+        put(
+            t,
+            &["ws/.iii/compose/default/state.json", "ws/sub/.iii/token"],
+        );
+        put(t, &["src/.iii/compose/default/state.json", "src/app.js"]);
+        // A disk an older adapter wrote has no manifest: nothing tells what
+        // the host deleted before, and the boot says it stays.
+        let log = boot(t);
+        assert!(
+            log.contains("no workspace manifest yet")
+                && log.contains("stays in")
+                && log.contains("until the worker is destroyed"),
+            "{log}"
+        );
+        assert!(!t.join("ws/.iii").exists() && !t.join("ws/sub/.iii").exists());
+        assert!(t.join("ws/app.js").is_file());
     }
 
     #[test]
@@ -989,55 +1783,254 @@ mod tests {
         assert!(prepared_marker_matches_current_workspace(&marker));
     }
 
-    /// Install is skipped once the marker exists, so the restart cleanup must
-    /// keep dep dirs at any depth (a monorepo's `service/node_modules`), the
-    /// same names tar excludes, while still dropping files the host deleted,
-    /// and the dep dirs of a directory the host no longer has as one (tar
-    /// cannot replace a non-empty directory with a file, so the copy-in
-    /// would fail on every boot).
+    /// The cleanup removes what an earlier copy put there and the host no
+    /// longer has, and nothing else: not what the build installed, at any
+    /// depth and under any name, nor what the worker wrote. A directory that
+    /// still holds such things stays; one the host turned into a file is moved
+    /// aside so the copy can put the file there.
     #[test]
-    fn workspace_cleanup_keeps_nested_dep_dirs() {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
+    fn the_cleanup_removes_only_what_the_host_deleted() {
         let temp = tempfile::tempdir().unwrap();
-        let (ws, src) = (temp.path().join("ws"), temp.path().join("src"));
-        for file in [
+        let t = temp.path();
+        put(
+            t,
+            &[
+                "src/app.js",
+                "src/gone.js",
+                "src/old/a.js",
+                "src/service/main.js",
+                "src/swapped/x.js",
+                "src/flip",
+            ],
+        );
+        // A first boot has an empty /workspace: nothing stale to tell about.
+        assert!(!boot(t).contains("no workspace manifest yet"));
+        // What the build or the guest installed, and what the worker wrote.
+        put(
+            t,
+            &[
+                "ws/packages/a/dist/index.js",
+                "ws/tools/cli/target/release/cli",
+                "ws/service/node_modules/dep/index.js",
+                "ws/old/node_modules/x.js",
+                "ws/swapped/node_modules/y.js",
+                "ws/data.db",
+            ],
+        );
+        // The host deletes, and turns a dir into a file and a file into a dir.
+        for gone in ["src/gone.js", "src/old/a.js"] {
+            std::fs::remove_file(t.join(gone)).unwrap();
+        }
+        std::fs::remove_dir(t.join("src/old")).unwrap();
+        std::fs::remove_dir_all(t.join("src/swapped")).unwrap();
+        std::fs::write(t.join("src/swapped"), "now a file").unwrap();
+        std::fs::remove_file(t.join("src/flip")).unwrap();
+        put(t, &["src/flip/inner.js"]);
+        // An earlier boot already moved a `swapped` aside.
+        std::fs::write(t.join("ws/swapped.iii-kept.1"), "earlier").unwrap();
+
+        let log = boot(t);
+        for kept in [
+            "packages/a/dist/index.js",
+            "tools/cli/target/release/cli",
             "service/node_modules/dep/index.js",
-            "service/old.js",
-            "gone/sub/old.js",
-            "node_modules/top.js",
-            "pkg/.venv/lib/site.py",
             "old/node_modules/x.js",
-            "swapped/node_modules/y.js",
-            "linked/node_modules/z.js",
+            "data.db",
+            "app.js",
+            "service/main.js",
+            "flip/inner.js",
         ] {
-            std::fs::create_dir_all(ws.join(file).parent().unwrap()).unwrap();
-            std::fs::write(ws.join(file), "x").unwrap();
+            assert!(t.join("ws").join(kept).is_file(), "{kept} is gone");
         }
-        std::fs::create_dir_all(ws.join("pkg/.venv/include")).unwrap();
-        std::fs::create_dir_all(src.join("service")).unwrap();
-        std::fs::create_dir_all(src.join("pkg")).unwrap();
-        std::fs::write(src.join("swapped"), "now a file").unwrap();
-        std::os::unix::fs::symlink("service", src.join("linked")).unwrap();
+        assert!(!t.join("ws/gone.js").exists() && !t.join("ws/old/a.js").exists());
+        assert_eq!(
+            std::fs::read_to_string(t.join("ws/swapped")).unwrap(),
+            "now a file"
+        );
+        // The next free name: the earlier one stays as it was.
+        assert!(
+            t.join("ws/swapped.iii-kept.2/node_modules/y.js").is_file(),
+            "{log}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(t.join("ws/swapped.iii-kept.1")).unwrap(),
+            "earlier"
+        );
+        assert!(
+            log.contains("swapped is no longer a directory on the host; what the build or the worker left in it is at swapped.iii-kept.2"),
+            "{log}"
+        );
+        assert!(!log.contains("no workspace manifest yet"), "{log}");
+    }
 
-        // Run from inside the workspace so the temp dir's own path cannot
-        // match a dep-dir pattern.
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
-            .env("SRC", &src)
-            .current_dir(&ws)
-            .status()
-            .unwrap();
+    /// A build's manifest ships in its image: the first run's cleanup removes
+    /// what the build copied and the host deleted since.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
+    fn the_first_run_cleans_up_after_the_build_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(t, &["src/app.js", "src/gone.js", "src/vendor/mod.go"]);
+        std::fs::create_dir_all(t.join("ws")).unwrap();
+        let (ok, log) = fragment(t, &BUILD_COPY);
+        assert!(ok, "{log}");
+        assert!(t.join("state").join(BUILD_MANIFEST).is_file());
+        assert!(
+            t.join("ws/vendor/mod.go").is_file(),
+            "the build copies vendor/"
+        );
+        std::fs::remove_file(t.join("src/gone.js")).unwrap();
+        let log = boot(t);
+        assert!(!log.contains("no workspace manifest yet"), "{log}");
+        assert!(!t.join("ws/gone.js").exists() && t.join("ws/app.js").is_file());
+        // A run neither copies nor removes vendor/: the build's stays.
+        assert!(t.join("ws/vendor/mod.go").is_file());
+        assert!(t.join("state").join(RUN_MANIFEST).is_file());
+        let manifest = std::fs::read_to_string(t.join("state").join(RUN_MANIFEST)).unwrap();
+        assert!(manifest.lines().any(|l| l == "./app.js"), "{manifest}");
+        assert!(!manifest.contains("vendor"), "{manifest}");
+    }
 
-        assert!(status.success());
-        assert!(ws.join("service/node_modules/dep/index.js").is_file());
-        assert!(ws.join("node_modules/top.js").is_file());
-        assert!(ws.join("pkg/.venv/lib/site.py").is_file());
-        assert!(ws.join("pkg/.venv/include").is_dir());
-        for gone in ["old", "swapped", "linked"] {
-            assert!(!ws.join(gone).exists(), "{gone} survived the cleanup");
+    /// The cleanup never acts through a symlink: an entry whose parent in the
+    /// guest is a link (the worker's, the install's, or one the sync applied)
+    /// is skipped, so nothing outside `$WS` is removed, emptied or moved.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
+    fn the_cleanup_never_removes_through_a_symlinked_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &[
+                "src/data/seed.json",
+                "src/data/sub/a.js",
+                "src/lib/deep/x.js",
+            ],
+        );
+        boot(t);
+        // The guest turns data/ and lib/ into links to a dir outside $WS.
+        put(
+            t,
+            &[
+                "victim/seed.json",
+                "victim/sub/a.js",
+                "victim/sub/extra.js",
+                "victim/deep/x.js",
+            ],
+        );
+        std::fs::remove_dir_all(t.join("ws/data")).unwrap();
+        std::os::unix::fs::symlink(t.join("victim"), t.join("ws/data")).unwrap();
+        std::fs::remove_dir_all(t.join("ws/lib")).unwrap();
+        std::os::unix::fs::symlink("../victim", t.join("ws/lib")).unwrap();
+        // The host deletes the files, and turns data/sub into a file.
+        std::fs::remove_file(t.join("src/data/seed.json")).unwrap();
+        std::fs::remove_dir_all(t.join("src/data/sub")).unwrap();
+        std::fs::write(t.join("src/data/sub"), "now a file").unwrap();
+        std::fs::remove_dir_all(t.join("src/lib/deep")).unwrap();
+
+        let (ok, log) = fragment(t, &RUN_CLEANUP);
+        assert!(ok, "{log}");
+        for kept in ["seed.json", "sub/a.js", "sub/extra.js", "deep/x.js"] {
+            assert!(t.join("victim").join(kept).is_file(), "{kept} went: {log}");
         }
-        assert!(!ws.join("service/old.js").exists());
-        assert!(!ws.join("gone").exists());
+        let mut victim: Vec<_> = std::fs::read_dir(t.join("victim"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        victim.sort();
+        assert_eq!(victim, ["deep", "seed.json", "sub"], "{log}");
+
+        // Nor through a `$WS` that is itself a link.
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(t, &["real/gone.js", "src/app.js"]);
+        std::os::unix::fs::symlink("real", t.join("ws")).unwrap();
+        std::fs::create_dir_all(t.join("state")).unwrap();
+        std::fs::write(t.join("state").join(RUN_MANIFEST), "./\n./gone.js\n").unwrap();
+        let (ok, log) = fragment(t, &RUN_CLEANUP);
+        assert!(ok, "{log}");
+        assert!(t.join("real/gone.js").is_file(), "{log}");
+        assert!(log.contains("is not a real directory"), "{log}");
+    }
+
+    /// A run neither copies nor syncs `vendor/`, so it does not clean it
+    /// either, though the build's manifest lists what the build copied there:
+    /// the build's `vendor/` stays whole until the next build. A run that
+    /// installs copies `vendor/` as a build does, and cleans it.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "runs the guest copy, which needs GNU or busybox tar, not bsdtar"
+    )]
+    fn a_run_leaves_the_vendor_dir_of_the_build_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &["src/app.js", "src/vendor/a/mod.go", "src/vendor/b/old.go"],
+        );
+        std::fs::create_dir_all(t.join("ws")).unwrap();
+        let (ok, log) = fragment(t, &BUILD_COPY);
+        assert!(ok, "{log}");
+        let manifest = std::fs::read_to_string(t.join("state").join(BUILD_MANIFEST)).unwrap();
+        assert!(
+            manifest.lines().any(|l| l == "./vendor/b/old.go"),
+            "{manifest}"
+        );
+        std::fs::remove_dir_all(t.join("src/vendor/b")).unwrap();
+
+        let log = boot(t);
+        assert!(t.join("ws/vendor/b/old.go").is_file(), "{log}");
+        assert!(t.join("ws/vendor/a/mod.go").is_file());
+
+        let (ok, log) = fragment(t, &format!("{}\n{}", *INSTALL_CLEANUP, *INSTALL_COPY));
+        assert!(ok, "{log}");
+        assert!(!t.join("ws/vendor/b").exists(), "{log}");
+        assert!(t.join("ws/vendor/a/mod.go").is_file());
+    }
+
+    /// Only a line `tar -v` printed as one plain name counts. A name with a
+    /// newline (busybox prints it raw, GNU tar escapes it) or a backslash is
+    /// never cleaned, so no fragment or escape of it removes a worker's file.
+    #[test]
+    fn the_cleanup_trusts_plain_manifest_lines_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let t = temp.path();
+        put(
+            t,
+            &[
+                "src/app.js",
+                "ws/app.js",
+                "ws/gone.js",
+                "ws/notes",
+                "ws/frag",
+                "ws/a\\nb",
+                "ws/back\\slash",
+                "ws/tail",
+            ],
+        );
+        std::fs::create_dir_all(t.join("state")).unwrap();
+        std::fs::write(
+            t.join("state").join(RUN_MANIFEST),
+            "./\n./app.js\n./gone.js\n./notes\nfrag\n./a\\nb\n./back\\slash\n./tail\nmore\n",
+        )
+        .unwrap();
+        let (ok, log) = fragment(t, &RUN_CLEANUP);
+        assert!(ok, "{log}");
+        assert!(!t.join("ws/gone.js").exists(), "the cleanup ran: {log}");
+        for kept in ["app.js", "notes", "frag", "a\\nb", "back\\slash", "tail"] {
+            assert!(t.join("ws").join(kept).is_file(), "{kept} went: {log}");
+        }
     }
 
     /// In legacy mode the marker sits on the guest root: a planted symlink
@@ -1087,9 +2080,9 @@ mod tests {
         // and do not bind-mount dependency directories.
         assert!(script.contains("SRC=/mnt/host-src"));
         assert!(script.contains("tar -cf -"));
-        // Re-sync deletions: clear /workspace (minus dep dirs) before extract so
-        // host-deleted files don't keep running on the persistent upper.
-        assert!(script.contains(WORKSPACE_RESYNC_CLEANUP));
+        // Re-sync deletions: remove what the last copy put there and the host
+        // deleted, so it doesn't keep running on the persistent upper.
+        assert!(script.contains(INSTALL_CLEANUP.as_str()));
         // Host-untouched: the unmount is FATAL, not best-effort.
         assert!(script.contains("refusing to run with host source writable"));
         assert!(
@@ -1197,6 +2190,7 @@ resources:
             state_dir: state.to_path_buf(),
             engine_url: "ws://localhost:49134",
             extra_env: HashMap::new(),
+            image: None,
         }
     }
 

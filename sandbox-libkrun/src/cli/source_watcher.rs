@@ -31,6 +31,11 @@ pub const DEBOUNCE_MS: u64 = 500;
 /// the high-churn artifact directories that tooling writes to during
 /// normal operation — including during the restart itself, which would
 /// otherwise produce an infinite restart loop.
+///
+/// These match at any depth; [`ROOT_IGNORED_DIR_NAMES`] only as a directory at
+/// the worker's root. Both lists, with `.iii`, are what a `path://` worker's
+/// copy into the VM leaves out (`local_worker`): a run never installs, so what
+/// the build put there must not be overwritten.
 pub const IGNORED_DIR_NAMES: &[&str] = &[
     // Node / TypeScript
     "node_modules",
@@ -40,7 +45,8 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".next",
     ".nuxt",
     ".svelte-kit",
-    // Rust
+    "dist",
+    // Rust, Maven
     "target",
     // Python
     ".venv",
@@ -58,16 +64,10 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".gradle",
     ".m2",
     // .NET
-    "obj",
     ".nuget",
     // Elixir / Erlang
     "_build",
-    "deps",
-    // Generic build output
-    "dist",
-    "build",
-    "out",
-    "coverage",
+    // Generic caches
     ".cache",
     // VCS
     ".git",
@@ -77,7 +77,17 @@ pub const IGNORED_DIR_NAMES: &[&str] = &[
     ".idea",
     ".vscode",
     ".DS_Store",
+    // Compose: build images and package copies, inside a `path://.` worker
+    ".build",
+    ".workers",
 ];
+
+/// Build-output names that projects also use for source in nested dirs
+/// (`src/pkg/build/`, a Go `internal/deps/`), and for a script at the root (a
+/// `build` file): ignored only as a directory at the worker's root, where they
+/// are the tool's output (.NET's `obj`, Elixir's `deps`, generic
+/// `build`/`out`/`coverage`).
+pub const ROOT_IGNORED_DIR_NAMES: &[&str] = &["build", "out", "obj", "coverage", "deps"];
 
 /// O(1) lookup set for ignore-path classification. Built once; hit on
 /// every notify event, which can fire thousands of times per second
@@ -93,15 +103,25 @@ pub(crate) fn is_compose_state(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(b".iii")
 }
 
-fn is_ignored_name(name: &OsStr) -> bool {
-    name.to_str()
-        .is_some_and(|s| IGNORED_DIR_SET.contains(s) || is_compose_state(s.as_bytes()))
+/// Whether the entry `name` is ignored; `root_dir` when it is a directory
+/// directly in the worker's root, where [`ROOT_IGNORED_DIR_NAMES`] apply too.
+fn is_ignored_name(name: &OsStr, root_dir: bool) -> bool {
+    name.to_str().is_some_and(|s| {
+        IGNORED_DIR_SET.contains(s)
+            || is_compose_state(s.as_bytes())
+            || (root_dir && ROOT_IGNORED_DIR_NAMES.contains(&s))
+    })
 }
 
 /// Returns true if a notify event on this path should be ignored.
 ///
 /// A path is ignored when any of its components (after stripping the
-/// project root prefix) matches [`IGNORED_DIR_NAMES`] or is Compose's state. This correctly
+/// project root prefix) matches [`IGNORED_DIR_NAMES`] or is Compose's state,
+/// or its first component matches [`ROOT_IGNORED_DIR_NAMES`] as a directory: a
+/// path below it, or the entry itself unless it is a file or a symlink (one
+/// that is gone counts as a directory, so its removal never reaches a guest
+/// dir the build filled; a removed root `build` script leaves the guest at the
+/// next boot's cleanup). This correctly
 /// ignores writes deep inside `node_modules/.cache/...` as well as the
 /// directory itself.
 ///
@@ -109,15 +129,24 @@ fn is_ignored_name(name: &OsStr) -> bool {
 /// ignored — users frequently edit those and expect a restart. Only
 /// named artifact dirs are filtered.
 pub fn should_ignore_path(path: &Path, project_root: &Path) -> bool {
-    let rel = path.strip_prefix(project_root).unwrap_or(path);
-    for component in rel.components() {
-        if let std::path::Component::Normal(os) = component
-            && is_ignored_name(os)
-        {
-            return true;
-        }
-    }
-    false
+    // Outside the root, no component is the root's own entry.
+    let (rel, rooted) = match path.strip_prefix(project_root) {
+        Ok(rel) => (rel, true),
+        Err(_) => (path, false),
+    };
+    let names: Vec<&OsStr> = rel
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(os) => Some(os),
+            _ => None,
+        })
+        .collect();
+    names.iter().enumerate().any(|(depth, os)| {
+        let root_dir = rooted
+            && depth == 0
+            && (names.len() > 1 || !std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir()));
+        is_ignored_name(os, root_dir)
+    })
 }
 
 /// Register non-recursive watches on every directory under `root`
@@ -134,10 +163,20 @@ pub(crate) fn watch_pruned(
     root: &Path,
     registered: &mut HashSet<PathBuf>,
 ) -> anyhow::Result<()> {
+    watch_pruned_under(watcher, root, root, registered)
+}
+
+/// [`watch_pruned`] from `start`, a directory under the worker's `root`.
+fn watch_pruned_under(
+    watcher: &mut notify::RecommendedWatcher,
+    root: &Path,
+    start: &Path,
+    registered: &mut HashSet<PathBuf>,
+) -> anyhow::Result<()> {
     use std::collections::VecDeque;
 
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
-    queue.push_back(root.to_path_buf());
+    queue.push_back(start.to_path_buf());
 
     while let Some(dir) = queue.pop_front() {
         match watcher.watch(&dir, RecursiveMode::NonRecursive) {
@@ -203,7 +242,7 @@ pub(crate) fn watch_pruned(
             if !ft.is_dir() || ft.is_symlink() {
                 continue;
             }
-            if is_ignored_name(&entry.file_name()) {
+            if is_ignored_name(&entry.file_name(), dir == root) {
                 continue;
             }
             queue.push_back(entry.path());
@@ -281,7 +320,7 @@ pub(crate) fn register_new_dirs(
         }
         // Walk it, not just watch it: on Linux a moved-in tree or
         // `mkdir -p a/b/c` reports only its top directory.
-        if let Err(e) = watch_pruned(watcher, p, registered) {
+        if let Err(e) = watch_pruned_under(watcher, root, p, registered) {
             tracing::debug!(
                 path = %p.display(),
                 error = %e,
@@ -335,6 +374,23 @@ mod tests {
         ));
     }
 
+    /// For `path://.` the worker's dir is the project root, which holds
+    /// Compose's build images and package copies.
+    #[test]
+    fn ignores_compose_build_and_package_dirs() {
+        for path in [
+            "/proj/.build/link/image.erofs",
+            "/proj/.workers/onboarding/index.js",
+            "/proj/.build",
+        ] {
+            assert!(should_ignore_path(&PathBuf::from(path), &root()), "{path}");
+        }
+        assert!(!should_ignore_path(
+            &PathBuf::from("/proj/.builder/x"),
+            &root()
+        ));
+    }
+
     #[test]
     fn ignores_compose_state_in_any_case() {
         for path in [
@@ -355,6 +411,86 @@ mod tests {
         ] {
             assert!(!should_ignore_path(&PathBuf::from(path), &root()), "{path}");
         }
+    }
+
+    /// Build-output names hold source in nested dirs: they are ignored at the
+    /// worker's root only. The rest are ignored at any depth.
+    #[test]
+    fn root_only_names_are_ignored_at_the_root_only() {
+        for name in ROOT_IGNORED_DIR_NAMES {
+            assert!(
+                should_ignore_path(&PathBuf::from(format!("/proj/{name}/x")), &root()),
+                "{name}"
+            );
+            assert!(
+                !should_ignore_path(
+                    &PathBuf::from(format!("/proj/src/pkg/{name}/x.py")),
+                    &root()
+                ),
+                "{name}"
+            );
+            assert!(!IGNORED_DIR_NAMES.contains(name), "{name} is in both lists");
+        }
+        assert!(should_ignore_path(
+            &PathBuf::from("/proj/src/pkg/node_modules/x"),
+            &root()
+        ));
+        // A path outside the root has no root entry.
+        assert!(!should_ignore_path(
+            &PathBuf::from("/other/build/x"),
+            &root()
+        ));
+    }
+
+    #[test]
+    fn a_root_only_name_matches_a_directory_and_not_a_file() {
+        let proj = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        std::fs::write(root.join("build"), "#!/bin/sh\n").unwrap();
+        std::fs::create_dir(root.join("out")).unwrap();
+        std::os::unix::fs::symlink("build", root.join("deps")).unwrap();
+        // A root `build` script and a symlink are code: they sync.
+        assert!(!should_ignore_path(&root.join("build"), &root));
+        assert!(!should_ignore_path(&root.join("deps"), &root));
+        assert!(should_ignore_path(&root.join("out"), &root));
+        assert!(should_ignore_path(&root.join("out/x"), &root));
+        // Deleted: taken for a directory; the next boot's cleanup removes a file.
+        assert!(should_ignore_path(&root.join("coverage"), &root));
+        // `target` and `dist` match at any depth.
+        for path in [
+            "target",
+            "dist/x",
+            "tools/cli/target/release/x",
+            "packages/a/dist/i.js",
+        ] {
+            assert!(should_ignore_path(&root.join(path), &root), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_nested_build_dir_is_watched_and_a_root_one_is_not() {
+        let proj = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        for dir in ["build/cache", "src/pkg/build", "src/node_modules/m"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let mut registered: HashSet<PathBuf> = HashSet::new();
+        watch_pruned(&mut watcher, &root, &mut registered).unwrap();
+        assert!(
+            registered.contains(&root.join("src/pkg/build")),
+            "{registered:?}"
+        );
+        assert!(!registered.contains(&root.join("build")));
+        assert!(!registered.contains(&root.join("src/node_modules")));
+
+        // A subtree registered later keeps the root's rule.
+        std::fs::create_dir_all(root.join("lib/out/gen")).unwrap();
+        register_new_dirs(&mut watcher, &[root.join("lib")], &root, &mut registered);
+        assert!(
+            registered.contains(&root.join("lib/out/gen")),
+            "{registered:?}"
+        );
     }
 
     #[test]
