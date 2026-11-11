@@ -139,8 +139,9 @@ a build and keeps quiet about it.
 
 - **`worker::build`** boots a build VM on the cached base image (pulling it when
   missing) with a fresh upper, copies the worker's code into `/workspace` (a
-  bundle's whole package; a `path://` worker's code without the dependency dirs,
-  `.build/`, `.workers/` and `.iii`), and runs `scripts.setup` and
+  bundle's whole package; a `path://` worker's code without the dependency dirs
+  and `.iii`, where Compose keeps its package copies and builds), and runs
+  `scripts.setup` and
   `scripts.install` there with the request's `env` only. When the script exits
   0, iii-init writes the merged root, without `/proc`, `/sys`, `/dev`, `/run`,
   `/tmp`, `/opt/iii` and `/mnt/host-src`, and the host turns it into
@@ -194,8 +195,9 @@ a build and keeps quiet about it.
   build put there is never overwritten by the host's.
   - Dependency, cache, build-output, VCS and editor dirs match at any depth:
     among them `node_modules`, `.venv`, `venv`, `vendor`, `target`, `dist`,
-    `__pycache__`, `.tox`, `.gradle`, `.git`, and Compose's `.build` and
-    `.workers`.
+    `__pycache__`, `.tox`, `.gradle`, `.git`, `.build` and `.workers`.
+    Compose keeps its package copies and builds under `.iii`
+    (`.iii/workers/<c>`, `.iii/build/<c>`), which the copy leaves out as well.
   - `build`, `out`, `obj`, `coverage` and `deps`, which projects also use for
     source below the root, match only as a directory at the worker's root:
     `src/pkg/build/` is code and syncs, and so does a root `build` script.
@@ -292,8 +294,9 @@ names, so it never happens with it.
 
 `.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
 inside a worker's directory puts the token in that guest. The name hides the whole
-directory, so a VM also misses anything else a project keeps there, such as
-`.iii/project.ini`.
+directory, so a VM also misses anything else a project keeps there: `.iii/project.ini`,
+and Compose's package copies and builds (`.iii/workers/<c>`, `.iii/build/<c>`), which
+no guest needs.
 
 `data/` is not hidden. A managed engine keeps its trace store there, so a VM whose
 directory contains it can read the traced payloads, and the token too when an older
