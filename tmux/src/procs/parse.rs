@@ -113,6 +113,37 @@ pub fn parse_lsof(output: &str) -> Vec<SocketListener> {
     out
 }
 
+/// The environment in a macOS `KERN_PROCARGS2` buffer: `argc` (a native
+/// `i32`), the executable path, NUL padding, `argc` arguments, then the
+/// environment's `KEY=value` strings up to an empty one or the end.
+pub fn procargs2_env(buffer: &[u8]) -> Vec<String> {
+    let Some(argc) = buffer
+        .get(..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(i32::from_ne_bytes)
+    else {
+        return Vec::new();
+    };
+    let mut rest = &buffer[4..];
+    // The executable path, then its padding.
+    let Some(end) = rest.iter().position(|b| *b == 0) else {
+        return Vec::new();
+    };
+    rest = &rest[end..];
+    let start = rest.iter().position(|b| *b != 0).unwrap_or(rest.len());
+    rest = &rest[start..];
+    let mut strings = rest.split(|b| *b == 0);
+    for _ in 0..argc.max(0) {
+        if strings.next().is_none() {
+            return Vec::new();
+        }
+    }
+    strings
+        .take_while(|entry| !entry.is_empty())
+        .map(|entry| String::from_utf8_lossy(entry).into_owned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +211,20 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn procargs2_yields_the_environment() {
+        let mut buffer = 2_i32.to_ne_bytes().to_vec();
+        buffer.extend_from_slice(b"/usr/local/bin/claude\0\0\0\0claude\0--resume\0");
+        buffer.extend_from_slice(b"HOME=/Users/me\0CLAUDE_CONFIG_DIR=/Users/me/x\0\0junk\0");
+        assert_eq!(
+            procargs2_env(&buffer),
+            vec!["HOME=/Users/me", "CLAUDE_CONFIG_DIR=/Users/me/x"]
+        );
+        assert!(procargs2_env(&[1, 0]).is_empty());
+        let mut short = 5_i32.to_ne_bytes().to_vec();
+        short.extend_from_slice(b"/x\0a\0");
+        assert!(procargs2_env(&short).is_empty());
     }
 }

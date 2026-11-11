@@ -63,6 +63,23 @@ pub struct Activity {
     pub state: Option<AgentState>,
     /// Sub-agents at work, oldest first.
     pub subagents: Vec<SubagentStatus>,
+    /// What a Claude Code process says about itself: its config folder and
+    /// session (agent-accounts D5, D6).
+    pub claude: Option<ClaudeRecord>,
+}
+
+/// A Claude Code process's config folder and, once it wrote
+/// `<config>/sessions/<pid>.json`, its session.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaudeRecord {
+    /// `CLAUDE_CONFIG_DIR`, else `~/.claude`.
+    pub config_dir: PathBuf,
+    /// The session id `--resume` takes.
+    pub session_id: Option<String>,
+    /// Claude Code's own status, raw: `busy`, `idle`, `shell`, `waiting`, ….
+    pub status: Option<String>,
+    /// Where the session started; its transcript's project folder.
+    pub cwd: Option<String>,
 }
 
 /// Reads [`Activity`] and caches what does not change between polls.
@@ -131,7 +148,16 @@ impl ActivityReader {
         });
         dir.poll = poll;
         let dir = dir.value.clone()?;
-        self.claude_at(&dir, pid, procs::start_ticks(pid))
+        Some(
+            self.claude_at(&dir, pid, procs::start_ticks(pid))
+                .unwrap_or_else(|| Activity {
+                    claude: Some(ClaudeRecord {
+                        config_dir: dir,
+                        ..ClaudeRecord::default()
+                    }),
+                    ..Activity::default()
+                }),
+        )
     }
 
     /// The activity Claude Code process `pid` records under its config
@@ -166,7 +192,16 @@ impl ActivityReader {
         } else {
             Vec::new()
         };
-        Some(Activity { state, subagents })
+        Some(Activity {
+            state,
+            subagents,
+            claude: Some(ClaudeRecord {
+                config_dir: dir.to_path_buf(),
+                session_id: Some(session.session_id.clone()).filter(|id| !id.is_empty()),
+                status: session.status.clone(),
+                cwd: session.cwd.clone(),
+            }),
+        })
     }
 
     /// [`find_transcript_dir`], remembering a missing folder for a while.
@@ -349,6 +384,7 @@ impl ActivityReader {
         Some(Activity {
             state: working.then_some(AgentState::Working),
             subagents,
+            claude: None,
         })
     }
 
@@ -506,7 +542,7 @@ fn codex_pids(table: &ProcTable, pid: u32) -> Vec<u32> {
 }
 
 /// `CLAUDE_CONFIG_DIR` of the process, else `~/.claude` of its home.
-fn claude_config_dir(pid: u32) -> Option<PathBuf> {
+pub fn claude_config_dir(pid: u32) -> Option<PathBuf> {
     if let Some(dir) = procs::environ_var(pid, "CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }

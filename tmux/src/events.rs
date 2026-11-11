@@ -58,6 +58,9 @@ fn fingerprint(overview: &Overview) -> Option<Value> {
     let mut value = serde_json::to_value(overview).ok()?;
     value["sessions"]["generated_at_ms"] = Value::Null;
     value["ports"]["generated_at_ms"] = Value::Null;
+    if let Some(usage) = value.get_mut("usage").filter(|usage| usage.is_object()) {
+        usage["generated_at_ms"] = Value::Null;
+    }
     Some(value)
 }
 
@@ -210,6 +213,7 @@ mod tests {
                 listeners: vec![],
                 generated_at_ms: at,
             },
+            usage: None,
         }
     }
 

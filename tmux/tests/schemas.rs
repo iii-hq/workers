@@ -43,6 +43,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::ports::list",
             "tmux::install",
             "tmux::install::status",
+            "tmux::usage::read",
+            "tmux::accounts::list",
         ]
     );
 }

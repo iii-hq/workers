@@ -17,7 +17,7 @@ mod linux;
 mod macos;
 mod parse;
 
-pub use parse::{parse_lsof, parse_proc_net_tcp, NetEntry};
+pub use parse::{parse_lsof, parse_proc_net_tcp, procargs2_env, NetEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcInfo {
@@ -272,14 +272,19 @@ pub fn open_files(
     Vec::new()
 }
 
-/// One environment variable of `pid`, when this user may read it. Linux
-/// only; elsewhere `None`. Blocking.
+/// One environment variable of `pid`, when this user may read it: Linux's
+/// `/proc/<pid>/environ`, macOS's `KERN_PROCARGS2`; elsewhere `None`.
+/// Blocking.
 pub fn environ_var(pid: u32, key: &str) -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         linux::environ_var(pid, key)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::environ_var(pid, key)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (pid, key);
         None

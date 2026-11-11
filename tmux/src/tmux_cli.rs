@@ -447,6 +447,12 @@ pub struct RawPane {
     pub width: u32,
     pub height: u32,
     pub dead: bool,
+    /// `@iii_claude_account`: `global` or an account id (agent-accounts D4).
+    pub claude_mark: String,
+    /// `@iii_skip_permissions` is `1`.
+    pub skip_mark: bool,
+    /// `@iii_claude_pending`: the account the pane moves to after its turn.
+    pub pending_mark: String,
     pub title: String,
 }
 
@@ -521,6 +527,11 @@ pub fn list_all_args() -> Vec<String> {
             "#{pane_dead}",
             "#{pane_current_command}",
             "#{pane_current_path}",
+            // User options read through the pane: its own from tmux 3.0, its
+            // window's before (agent-accounts D4).
+            "#{@iii_claude_account}",
+            "#{@iii_skip_permissions}",
+            "#{@iii_claude_pending}",
             "#{pane_title}",
         ],
     );
@@ -594,8 +605,8 @@ pub fn parse_list_all(output: &str) -> RawSnapshot {
                 }
             }
             Some('P') => {
-                let f: Vec<&str> = rest.splitn(12, SEP).collect();
-                if f.len() == 12 {
+                let f: Vec<&str> = rest.splitn(15, SEP).collect();
+                if f.len() == 15 {
                     snapshot.panes.push(RawPane {
                         session_id: f[0].to_string(),
                         window_id: f[1].to_string(),
@@ -608,7 +619,10 @@ pub fn parse_list_all(output: &str) -> RawSnapshot {
                         dead: flag(f[8]),
                         command: f[9].to_string(),
                         cwd: f[10].to_string(),
-                        title: f[11].to_string(),
+                        claude_mark: f[11].trim().to_string(),
+                        skip_mark: flag(f[12]),
+                        pending_mark: f[13].trim().to_string(),
+                        title: f[14].to_string(),
                     });
                 }
             }
@@ -819,6 +833,9 @@ mod tests {
                     "0",
                     "claude",
                     "/home/u/ação",
+                    "personal",
+                    "1",
+                    "",
                     "✳ Tarefa: a\u{1f}b",
                 ],
             ),
@@ -835,6 +852,14 @@ mod tests {
         let pane = &snapshot.panes[0];
         assert_eq!(pane.pid, 4242);
         assert_eq!(pane.cwd, "/home/u/ação");
+        assert_eq!(
+            (
+                pane.claude_mark.as_str(),
+                pane.skip_mark,
+                pane.pending_mark.as_str()
+            ),
+            ("personal", true, "")
+        );
         assert_eq!(
             pane.title, "✳ Tarefa: a\u{1f}b",
             "the title keeps a stray separator"
@@ -863,6 +888,9 @@ mod tests {
                     "0",
                     "claude",
                     "/home/u/ação",
+                    "",
+                    "",
+                    "",
                     "a\\b",
                 ],
             ),

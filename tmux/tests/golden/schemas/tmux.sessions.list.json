@@ -117,6 +117,32 @@
         ],
         "type": "object"
       },
+      "Follow": {
+        "description": "How a pane's Claude Code account is chosen.",
+        "oneOf": [
+          {
+            "description": "Started on the global account, and moves when it changes.",
+            "enum": [
+              "global"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Stays on its account whatever the global one is.",
+            "enum": [
+              "pinned"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claude Code was started by hand in a shell: no mark.",
+            "enum": [
+              "manual"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "Listener": {
         "description": "One TCP socket in LISTEN state.",
         "properties": {
@@ -241,6 +267,17 @@
             ],
             "description": "The agent CLI running in this pane, if any."
           },
+          "claude": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PaneClaude"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Claude Code account the pane runs on and how it follows the global one. Present when the pane runs Claude Code or carries an account mark; absent otherwise and from workers before 0.3."
+          },
           "command": {
             "description": "Foreground process name.",
             "type": "string"
@@ -316,6 +353,72 @@
           "ports",
           "title",
           "width"
+        ],
+        "type": "object"
+      },
+      "PaneClaude": {
+        "description": "The Claude Code account of one pane (agent-accounts D4, D5).",
+        "properties": {
+          "account": {
+            "default": null,
+            "description": "Id of the account the running Claude Code uses, read from its `CLAUDE_CONFIG_DIR`. Null when that folder is no registered account (see `config_dir`) or Claude Code is not running.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_dir": {
+            "default": null,
+            "description": "The config folder the running Claude Code uses, `~` for the home folder. Null when Claude Code is not running.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "follow": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Follow"
+              }
+            ],
+            "description": "`global`, `pinned` or `manual`."
+          },
+          "movable": {
+            "description": "The worker can move this pane to another account.",
+            "type": "boolean"
+          },
+          "not_movable_reason": {
+            "description": "Why it can't, in one sentence, when `movable` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": null,
+            "description": "The account the pane moves to when its turn ends.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "default": null,
+            "description": "Claude Code's session id, which a move resumes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skip_permissions": {
+            "description": "Claude Code runs without permission prompts (`--dangerously-skip-permissions` or `--permission-mode bypassPermissions`).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "follow",
+          "movable",
+          "skip_permissions"
         ],
         "type": "object"
       },

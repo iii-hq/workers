@@ -10,15 +10,17 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use crate::activity::{ActivityReader, Recorder};
+use crate::accounts::panes::{pane_claude, ClaudeProc, Marks, PaneState};
+use crate::accounts::Accounts;
+use crate::activity::{ActivityReader, ClaudeRecord, Recorder};
 use crate::agents::{host_names, session_title, AgentSet, AgentTracker};
 use crate::binary::{BinaryCache, Resolved};
 use crate::compose;
 use crate::config::{SharedConfig, WorkerConfig};
 use crate::install::installable;
 use crate::model::{
-    now_ms, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane, PaneRef,
-    PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
+    now_ms, AgentStatus, ComposeRef, ComposeStack, Follow, Listener, Overview, Pane, PaneClaude,
+    PaneRef, PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
 };
 use crate::procs::{self, IiiEnv, ProcTable, Scanner, SocketListener};
 use crate::tmux_cli::{list_all_args, parse_list_all, RawSnapshot, Socket, Tmux, TmuxError};
@@ -79,6 +81,9 @@ pub struct Collector {
     compiled: StdMutex<Option<CompiledAgents>>,
     /// The agents the last collection found, by pane id, and when.
     seen: StdMutex<Option<(Instant, HashMap<String, AgentStatus>)>>,
+    /// The Claude Code panes the last collection found, by pane id, and when.
+    claude_seen: StdMutex<Option<(Instant, HashMap<String, PaneState>)>>,
+    accounts: Arc<Accounts>,
     console: ConsoleClients,
     /// One collection at a time: concurrent callers would only race each
     /// other's scans.
@@ -87,6 +92,14 @@ pub struct Collector {
 
 impl Collector {
     pub fn new(config: SharedConfig, console: ConsoleClients) -> Self {
+        Self::with_accounts(config, console, Accounts::from_env())
+    }
+
+    pub fn with_accounts(
+        config: SharedConfig,
+        console: ConsoleClients,
+        accounts: Arc<Accounts>,
+    ) -> Self {
         Self {
             config,
             binary: BinaryCache::default(),
@@ -96,9 +109,38 @@ impl Collector {
             agents: Mutex::new(AgentTracker::default()),
             compiled: StdMutex::new(None),
             seen: StdMutex::new(None),
+            claude_seen: StdMutex::new(None),
+            accounts,
             console,
             gate: Mutex::new(()),
         }
+    }
+
+    /// Claude Code accounts and usage.
+    pub fn accounts(&self) -> &Arc<Accounts> {
+        &self.accounts
+    }
+
+    /// The panes running Claude Code or carrying an account mark, from a
+    /// collection at most [`SEEN_FRESH`] old (`fresh`: made now).
+    pub async fn claude_panes(&self, fresh: bool) -> HashMap<String, PaneState> {
+        let recent = |collector: &Self| {
+            let seen = collector
+                .claude_seen
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            match seen.as_ref() {
+                Some((at, panes)) if at.elapsed() < SEEN_FRESH => Some(panes.clone()),
+                _ => None,
+            }
+        };
+        if !fresh {
+            if let Some(panes) = recent(self) {
+                return panes;
+            }
+        }
+        self.overview().await;
+        recent(self).unwrap_or_default()
     }
 
     pub fn config(&self) -> Arc<WorkerConfig> {
@@ -334,14 +376,44 @@ impl Collector {
         }
 
         let agents = self.agent_set(&config);
-        let statuses = match &tmux {
+        let (statuses, records) = match &tmux {
             Some(tmux) => {
                 self.agent_statuses(tmux, &raw, procs.table.clone(), &agents, &config)
                     .await
             }
-            None => HashMap::new(),
+            None => (HashMap::new(), HashMap::new()),
         };
-        let sessions = build_sessions(&raw, &statuses, &composes, &listeners, &self.console);
+        let claude = self.claude_states(&raw, &statuses, &records, &procs.table);
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        let mut following = 0;
+        for state in claude.values() {
+            if let Some(account) = state
+                .info
+                .account
+                .as_ref()
+                .filter(|_| state.claude_pid.is_some())
+            {
+                *counts.entry(account.clone()).or_default() += 1;
+            }
+            if state.info.follow == Follow::Global {
+                following += 1;
+            }
+        }
+        let infos: HashMap<String, PaneClaude> = claude
+            .iter()
+            .map(|(id, state)| (id.clone(), state.info.clone()))
+            .collect();
+        *self.claude_seen.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((Instant::now(), claude));
+        let usage = self.accounts.snapshot(&counts, following);
+        let sessions = build_sessions(
+            &raw,
+            &statuses,
+            &infos,
+            &composes,
+            &listeners,
+            &self.console,
+        );
 
         Overview {
             sessions: SessionsSnapshot {
@@ -356,7 +428,53 @@ impl Collector {
                 listeners,
                 generated_at_ms,
             },
+            usage: Some(usage),
         }
+    }
+
+    /// Each pane that runs Claude Code or carries an account mark. A pane
+    /// running another agent (Codex) gets no account (BadgeStyles).
+    fn claude_states(
+        &self,
+        raw: &RawSnapshot,
+        statuses: &HashMap<String, AgentStatus>,
+        records: &HashMap<String, ClaudeRecord>,
+        table: &ProcTable,
+    ) -> HashMap<String, PaneState> {
+        let registry = self.accounts.registry();
+        let mut out = HashMap::new();
+        for pane in &raw.panes {
+            let marks = Marks::from_raw(&pane.claude_mark, pane.skip_mark, &pane.pending_mark);
+            let agent = statuses.get(&pane.id);
+            let claude = match agent {
+                Some(agent) if agent.id == "claude" => Some(ClaudeProc {
+                    pid: agent.pid,
+                    record: records.get(&pane.id),
+                }),
+                Some(_) => continue,
+                None => None,
+            };
+            let claude_pid = claude.as_ref().map(|c| c.pid);
+            let Some(info) =
+                pane_claude(&self.accounts, &registry, table, pane.pid, &marks, claude)
+            else {
+                continue;
+            };
+            out.insert(
+                pane.id.clone(),
+                PaneState {
+                    pane_id: pane.id.clone(),
+                    pane_pid: pane.pid,
+                    claude_pid,
+                    record: records.get(&pane.id).cloned(),
+                    marks,
+                    info,
+                    agent_state: agent.map(|a| a.state),
+                    cwd: pane.cwd.clone(),
+                },
+            );
+        }
+        out
     }
 
     async fn agent_statuses(
@@ -366,7 +484,7 @@ impl Collector {
         table: Arc<ProcTable>,
         agents: &AgentSet,
         config: &WorkerConfig,
-    ) -> HashMap<String, AgentStatus> {
+    ) -> (HashMap<String, AgentStatus>, HashMap<String, ClaudeRecord>) {
         let found: Vec<(String, usize, u32, String)> = raw
             .panes
             .iter()
@@ -410,6 +528,7 @@ impl Collector {
         let now = now_ms();
         let mut tracker = self.agents.lock().await;
         let mut out = HashMap::new();
+        let mut records = HashMap::new();
         while let Some(joined) = captures.join_next().await {
             let Ok((pane_id, index, pid, pane_title, Ok(text))) = joined else {
                 continue;
@@ -417,7 +536,10 @@ impl Collector {
             let Some(agent) = agents.get(index) else {
                 continue;
             };
-            let recorded = activity.remove(&pane_id).unwrap_or_default();
+            let mut recorded = activity.remove(&pane_id).unwrap_or_default();
+            if let Some(record) = recorded.claude.take() {
+                records.insert(pane_id.clone(), record);
+            }
             let (state, since_ms) = tracker.observe(
                 &pane_id,
                 agent,
@@ -442,7 +564,7 @@ impl Collector {
         }
         tracker.retain(&out.keys().cloned().collect());
         *self.seen.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), out.clone()));
-        out
+        (out, records)
     }
 }
 
@@ -500,6 +622,7 @@ fn pane_index(raw: &RawSnapshot) -> HashMap<u32, PaneRef> {
 fn build_sessions(
     raw: &RawSnapshot,
     agents: &HashMap<String, AgentStatus>,
+    claude: &HashMap<String, PaneClaude>,
     composes: &[ComposeStack],
     listeners: &[Listener],
     console: &ConsoleClients,
@@ -546,6 +669,7 @@ fn build_sessions(
                                 })
                                 .cloned()
                                 .collect(),
+                            claude: claude.get(&pane.id).cloned(),
                         })
                         .collect();
                     panes.sort_by_key(|pane| pane.index);
@@ -708,6 +832,9 @@ mod tests {
                     width: 80,
                     height: 24,
                     dead: false,
+                    claude_mark: String::new(),
+                    skip_mark: false,
+                    pending_mark: String::new(),
                     title: "✳ x".into(),
                 },
                 RawPane {
@@ -722,6 +849,9 @@ mod tests {
                     width: 80,
                     height: 24,
                     dead: false,
+                    claude_mark: String::new(),
+                    skip_mark: false,
+                    pending_mark: String::new(),
                     title: "".into(),
                 },
             ],
@@ -779,7 +909,14 @@ mod tests {
                 subagents: vec![],
             },
         )]);
-        let sessions = build_sessions(&raw, &agents, &composes, &listeners, &console);
+        let sessions = build_sessions(
+            &raw,
+            &agents,
+            &HashMap::new(),
+            &composes,
+            &listeners,
+            &console,
+        );
         assert_eq!(
             sessions.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             vec!["api", "work"]

@@ -1,0 +1,15 @@
+#!/bin/bash
+# claude-state <pane> working|waiting|idle|limit [HH:MM]
+# Tells the fake Claude Code in tmux pane <pane> (e.g. %3) what to show.
+set -euo pipefail
+pane=${1:?pane id like %3}; state=${2:?working, waiting, idle or limit}; at=${3:-}
+case "$state" in working|waiting|idle|limit) ;; *) echo "unknown state $state" >&2; exit 2;; esac
+root=$(tmux display -p -t "$pane" '#{pane_pid}')
+for pid in "$root" $(pgrep -P "$root" || true); do
+  if tr '\0' ' ' </proc/"$pid"/cmdline 2>/dev/null | grep -q '/usr/local/bin/claude'; then
+    printf '%s %s\n' "$state" "$at" >/tmp/fake-claude/"$pid".state
+    echo "pane $pane (pid $pid): $state $at"
+    exit 0
+  fi
+done
+echo "no fake claude in pane $pane" >&2; exit 1

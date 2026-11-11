@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""A fake Claude Code for the tmux worker's demo container. It behaves enough
+like Claude Code 2.1.322 for the worker: it records itself in
+<config>/sessions/<pid>.json (sessionId, cwd, status), keeps a transcript in
+<config>/projects/<cwd slug>/<session>.jsonl, sets its pane title, honours
+--resume <id> (and refuses one its config folder can't see, like the real
+one), shows --dangerously-skip-permissions, and `auth login` prints a sign-in
+link and waits for a pasted code. `claude-state <pane> working|waiting|idle|limit`
+changes what it shows. SIGTERM ends it cleanly, as it does Claude Code.
+
+Environment: CLAUDE_CONFIG_DIR (else ~/.claude), FAKE_CLAUDE_TITLE (a new
+session's title), FAKE_CLAUDE_STATE (the first state).
+"""
+import json
+import os
+import re
+import select
+import signal
+import sys
+import time
+import uuid
+
+HOME = os.path.expanduser("~")
+CONFIG_ENV = os.environ.get("CLAUDE_CONFIG_DIR") or None
+CONFIG = CONFIG_ENV or os.path.join(HOME, ".claude")
+ACCOUNT = "default" if CONFIG_ENV is None or os.path.realpath(CONFIG) == os.path.realpath(
+    os.path.join(HOME, ".claude")) else os.path.basename(CONFIG.rstrip("/"))
+STATE_DIR = "/tmp/fake-claude"
+PID = os.getpid()
+
+
+def write_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(value, f)
+    os.replace(tmp, path)
+
+
+def account_json():
+    return os.path.join(HOME, ".claude.json") if CONFIG_ENV is None else os.path.join(
+        CONFIG, ".claude.json")
+
+
+def auth_login():
+    sys.stdout.write("Opening browser to sign in…\n")
+    sys.stdout.write(
+        "If the browser didn't open, visit: https://claude.ai/oauth/authorize?code=true"
+        "&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code"
+        "&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"
+        "&scope=user%3Aprofile+user%3Ainference&code_challenge=demo&state=demo%s\n" % PID)
+    sys.stdout.write("Paste code here if prompted > ")
+    sys.stdout.flush()
+    code = sys.stdin.readline().strip()
+    if not code:
+        sys.stdout.write("\nLogin cancelled.\n")
+        return 1
+    sys.path.insert(0, "/opt/demo")
+    import setup_demo  # the same people as the seeded accounts
+
+    setup_demo.sign_in(CONFIG, account_json(), ACCOUNT)
+    sys.stdout.write("\nLogin successful.\n")
+    time.sleep(1)
+    return 0
+
+
+def auth_status():
+    try:
+        with open(os.path.join(CONFIG, ".credentials.json")) as f:
+            signed = bool(json.load(f).get("claudeAiOauth", {}).get("accessToken"))
+    except (OSError, ValueError):
+        signed = False
+    print(json.dumps({"loggedIn": signed, "account": ACCOUNT}))
+    return 0
+
+
+def slug(path):
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def find_transcript(session_id):
+    projects = os.path.join(CONFIG, "projects")
+    direct = os.path.join(projects, slug(os.getcwd()), session_id + ".jsonl")
+    if os.path.isfile(direct):
+        return direct
+    for folder in os.listdir(projects) if os.path.isdir(projects) else []:
+        path = os.path.join(projects, folder, session_id + ".jsonl")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+class Session:
+    def __init__(self, resume, skip):
+        self.skip = skip
+        self.started = int(time.time() * 1000)
+        self.lines = []
+        if resume:
+            path = find_transcript(resume)
+            if path is None:
+                sys.stdout.write("No conversation found with session ID: %s\n" % resume)
+                sys.exit(1)
+            self.id = resume
+            self.transcript = path
+            self.title = "Claude Code"
+            with open(path) as f:
+                for raw in f:
+                    entry = json.loads(raw)
+                    if entry.get("type") == "summary":
+                        self.title = entry.get("summary") or self.title
+                    elif entry.get("type") in ("user", "assistant"):
+                        self.lines.append((entry["type"], entry["message"]["content"]))
+            self.append("assistant", "Resumed on the %s account." % ACCOUNT)
+        else:
+            self.id = str(uuid.uuid4())
+            self.transcript = os.path.join(CONFIG, "projects", slug(os.getcwd()), self.id + ".jsonl")
+            self.title = os.environ.get("FAKE_CLAUDE_TITLE") or "Claude Code"
+            os.makedirs(os.path.dirname(self.transcript), exist_ok=True)
+            with open(self.transcript, "a") as f:
+                f.write(json.dumps({"type": "summary", "summary": self.title}) + "\n")
+            self.append("user", self.title)
+            self.append("assistant", "Read(src/settings/LoginForm.tsx) · Read 182 lines")
+            self.append("assistant", "Done. The change keeps the session across reloads.")
+        self.state = os.environ.get("FAKE_CLAUDE_STATE", "idle")
+        self.limit_at = "18:10"
+        self.state_file = os.path.join(STATE_DIR, "%d.state" % PID)
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(self.state_file, "w") as f:
+            f.write(self.state)
+
+    def append(self, kind, text):
+        self.lines.append((kind, text))
+        with open(self.transcript, "a") as f:
+            f.write(json.dumps({"type": kind, "sessionId": self.id, "cwd": os.getcwd(),
+                                "message": {"role": kind, "content": text}}) + "\n")
+
+    def record(self):
+        status, waiting = {"working": ("busy", None), "waiting": ("waiting", "permission prompt"),
+                           "limit": ("idle", None)}.get(self.state, ("idle", None))
+        write_json(os.path.join(CONFIG, "sessions", "%d.json" % PID), {
+            "pid": PID, "sessionId": self.id, "cwd": os.getcwd(), "startedAt": self.started,
+            "version": "2.1.322-demo", "kind": "interactive", "status": status,
+            "waitingFor": waiting, "statusUpdatedAt": int(time.time() * 1000)})
+
+    def draw(self):
+        glyph = "⠂" if self.state == "working" else "✳"
+        out = ["\033]2;%s %s\033\\" % (glyph, self.title), "\033[2J\033[H"]
+        out.append("\033[1m✻ Claude Code\033[0m \033[2m(demo) · %s · %s\033[0m\r\n" % (
+            ACCOUNT, self.id[:8]))
+        out.append("\033[2m  %s\033[0m\r\n\r\n" % os.getcwd())
+        for kind, text in self.lines[-8:]:
+            prefix = "\033[2m>\033[0m " if kind == "user" else "\033[32m●\033[0m "
+            out.append(prefix + text + "\r\n")
+        out.append("\r\n")
+        if self.state == "working":
+            out.append("\033[33m✻ Writing the change… (12s · esc to interrupt)\033[0m\r\n")
+        elif self.state == "waiting":
+            out.append("Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\n")
+        elif self.state == "limit":
+            out.append("\033[31m● 5-hour limit reached ∙ resets %s\033[0m\r\n" % self.limit_at)
+        out.append("╭──────────────────────────────────────────╮\r\n")
+        out.append("│ >                                        │\r\n")
+        out.append("╰──────────────────────────────────────────╯\r\n")
+        if self.skip:
+            out.append("\033[31m  ⏵⏵ bypass permissions on\033[0m\r\n")
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def poll_state(self):
+        try:
+            with open(self.state_file) as f:
+                raw = f.read().split()
+        except OSError:
+            return False
+        if not raw:
+            return False
+        state, rest = raw[0], raw[1:]
+        changed = state != self.state or (rest and rest[0] != self.limit_at)
+        if changed:
+            self.state = state
+            if rest:
+                self.limit_at = rest[0]
+        return changed
+
+    def end(self, *_):
+        for path in (os.path.join(CONFIG, "sessions", "%d.json" % PID), self.state_file):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        sys.stdout.write("\033]2;\033\\\r\nResume this session with:\r\nclaude --resume %s\r\n" % self.id)
+        sys.stdout.flush()
+        os._exit(143)
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--version"]:
+        print("2.1.322 (Claude Code)")
+        return 0
+    if args[:2] == ["auth", "login"]:
+        return auth_login()
+    if args[:2] == ["auth", "status"]:
+        return auth_status()
+    resume = None
+    if "--resume" in args:
+        resume = args[args.index("--resume") + 1]
+    skip = "--dangerously-skip-permissions" in args or (
+        "--permission-mode" in args and args[args.index("--permission-mode") + 1] == "bypassPermissions")
+    if skip and os.geteuid() == 0:
+        sys.stdout.write("--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons\n")
+        return 1
+    session = Session(resume, skip)
+    signal.signal(signal.SIGTERM, session.end)
+    signal.signal(signal.SIGHUP, session.end)
+    signal.signal(signal.SIGINT, session.end)
+    session.record()
+    session.draw()
+    while True:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.25)
+        if ready:
+            line = sys.stdin.readline()
+            if not line:
+                session.end()
+            if line.strip():
+                session.append("user", line.strip())
+                session.append("assistant", "(demo) Noted.")
+                session.draw()
+        if session.poll_state():
+            session.record()
+            session.draw()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

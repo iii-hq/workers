@@ -79,3 +79,53 @@ pub fn open_files(pids: &[u32], keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     out.dedup();
     out
 }
+
+/// The raw `KERN_PROCARGS2` of `pid` (this user's processes only).
+fn procargs2(pid: u32) -> Option<Vec<u8>> {
+    let mut argmax: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    // SAFETY: mib names an int-valued sysctl and `argmax` is that int.
+    let ok = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            (&mut argmax as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    if !ok || argmax <= 0 {
+        return None;
+    }
+    let mut buffer = vec![0_u8; argmax as usize];
+    let mut size = buffer.len();
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    // SAFETY: the buffer holds `size` bytes, and the kernel writes at most that.
+    let ok = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    if !ok {
+        return None;
+    }
+    buffer.truncate(size);
+    Some(buffer)
+}
+
+pub fn environ_var(pid: u32, key: &str) -> Option<String> {
+    let buffer = procargs2(pid)?;
+    super::procargs2_env(&buffer).into_iter().find_map(|entry| {
+        entry
+            .strip_prefix(key)?
+            .strip_prefix('=')
+            .map(str::to_string)
+    })
+}
