@@ -8,7 +8,8 @@ one), shows --dangerously-skip-permissions, and `auth login` prints a sign-in
 link and waits for a pasted code. `claude-state <pane> working|waiting|idle|limit`
 changes what it shows. SIGTERM ends it cleanly, as it does Claude Code.
 
-Environment: CLAUDE_CONFIG_DIR (else ~/.claude), FAKE_CLAUDE_TITLE (a new
+Environment: CLAUDE_CONFIG_DIR (else ~/.claude), FAKE_CLAUDE_STATE_DIR (where
+claude-state leaves states, /tmp/fake-claude), FAKE_CLAUDE_TITLE (a new
 session's title), FAKE_CLAUDE_STATE (the first state).
 """
 import json
@@ -25,7 +26,7 @@ CONFIG_ENV = os.environ.get("CLAUDE_CONFIG_DIR") or None
 CONFIG = CONFIG_ENV or os.path.join(HOME, ".claude")
 ACCOUNT = "default" if CONFIG_ENV is None or os.path.realpath(CONFIG) == os.path.realpath(
     os.path.join(HOME, ".claude")) else os.path.basename(CONFIG.rstrip("/"))
-STATE_DIR = "/tmp/fake-claude"
+STATE_DIR = os.environ.get("FAKE_CLAUDE_STATE_DIR") or "/tmp/fake-claude"
 PID = os.getpid()
 
 

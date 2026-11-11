@@ -132,6 +132,7 @@ async fn sessions_and_windows_lifecycle() {
             command: None,
             window_name: Some("main".into()),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -147,6 +148,7 @@ async fn sessions_and_windows_lifecycle() {
             command: None,
             select: Some(false),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -517,6 +519,7 @@ async fn start_directories_are_taken_literally() {
             command: None,
             select: Some(false),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -856,6 +859,7 @@ async fn agents_and_ports_are_found_in_their_panes() {
             ),
             window_name: None,
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -871,6 +875,7 @@ async fn agents_and_ports_are_found_in_their_panes() {
             ),
             window_name: None,
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -1157,6 +1162,7 @@ async fn panes_zoom_and_capture() {
             command: Some("bash -c \"printf '\\033[1mhello\\033[0m\\n'; exec sleep 60\"".into()),
             window_name: None,
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -1494,6 +1500,7 @@ async fn panes_split_kill_and_respawn() {
             command: None,
             select: Some(false),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await

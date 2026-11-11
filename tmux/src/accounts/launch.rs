@@ -9,7 +9,16 @@
 //! then ` --dangerously-skip-permissions` when skipping and
 //! ` --resume <id>` on a move.
 
-use super::{DEFAULT, GLOBAL};
+use super::{Accounts, DEFAULT, GLOBAL};
+
+/// The pane option naming a pane's account: `global` or an id (D4).
+pub const MARK_ACCOUNT: &str = "@iii_claude_account";
+/// The pane option saying Claude Code skips permission prompts (D16).
+pub const MARK_SKIP: &str = "@iii_skip_permissions";
+/// The pane option naming the account a pane moves to after its turn (D7).
+pub const MARK_PENDING: &str = "@iii_claude_pending";
+
+pub const ROOT_SKIP: &str = "Claude Code refuses to skip permission prompts when it runs as root, as it would on this computer.";
 
 /// `text` as one POSIX shell word: as it is when it holds only characters
 /// no shell treats specially, else in single quotes.
@@ -87,6 +96,62 @@ pub fn login_command(target: &Target) -> String {
     words.join(" ")
 }
 
+/// A planned start of Claude Code: the command and the pane's marks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    /// What the pane runs (§3.5); the `runs` the create functions return.
+    pub command: String,
+    /// `global` or the account id, for [`MARK_ACCOUNT`].
+    pub account: String,
+    pub skip_permissions: bool,
+}
+
+impl Launch {
+    /// The pane options to set: the account mark, and the skip mark when
+    /// skipping.
+    pub fn marks(&self) -> Vec<(&'static str, &str)> {
+        let mut marks = vec![(MARK_ACCOUNT, self.account.as_str())];
+        if self.skip_permissions {
+            marks.push((MARK_SKIP, "1"));
+        }
+        marks
+    }
+}
+
+impl Accounts {
+    /// How to start Claude Code on `account` (`global` or an id).
+    pub fn plan_launch(
+        &self,
+        account: &str,
+        skip_permissions: bool,
+        resume: Option<&str>,
+    ) -> Result<Launch, String> {
+        self.plan_launch_as(account, skip_permissions, resume, super::runs_as_root())
+    }
+
+    fn plan_launch_as(
+        &self,
+        account: &str,
+        skip_permissions: bool,
+        resume: Option<&str>,
+        root: bool,
+    ) -> Result<Launch, String> {
+        let account = account.trim();
+        if account != GLOBAL && !self.registry().has(account) {
+            return Err(super::manage::no_account(account));
+        }
+        if skip_permissions && root {
+            return Err(ROOT_SKIP.to_string());
+        }
+        let target = Target::of(account, self.env_dir(account).as_deref())?;
+        Ok(Launch {
+            command: claude_command(&target, skip_permissions, resume),
+            account: account.to_string(),
+            skip_permissions,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +209,45 @@ mod tests {
         );
         assert!(Target::of("personal", None).is_err());
         assert!(Target::of("personal", Some("relative")).is_err());
+    }
+
+    #[test]
+    fn launches_check_the_account_and_root() {
+        let home = super::super::test_support::Home::new("launch");
+        let accounts = home.accounts();
+        let id = accounts.add("Personal", "green", Some(vec![])).unwrap();
+        let dir = home.paths.account_dir(&id);
+        let launch = accounts.plan_launch_as(&id, true, None, false).unwrap();
+        assert_eq!(
+            launch.command,
+            format!(
+                "env CLAUDE_CONFIG_DIR={} claude --dangerously-skip-permissions",
+                dir.display()
+            )
+        );
+        assert_eq!(
+            launch.marks(),
+            vec![(MARK_ACCOUNT, "personal"), (MARK_SKIP, "1")]
+        );
+        let global = accounts
+            .plan_launch_as("global", false, None, true)
+            .unwrap();
+        assert_eq!(global.command, "claude");
+        assert_eq!(global.marks(), vec![(MARK_ACCOUNT, "global")]);
+        assert_eq!(
+            accounts
+                .plan_launch_as("default", false, None, false)
+                .unwrap()
+                .command,
+            "env -u CLAUDE_CONFIG_DIR claude"
+        );
+        assert_eq!(
+            accounts.plan_launch_as("global", true, None, true),
+            Err(ROOT_SKIP.to_string())
+        );
+        assert!(accounts
+            .plan_launch_as("nobody", false, None, false)
+            .is_err());
     }
 
     #[test]

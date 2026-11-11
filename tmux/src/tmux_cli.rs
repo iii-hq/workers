@@ -281,18 +281,53 @@ impl Tmux {
         remain_on_exit: bool,
         command: Option<&str>,
     ) -> Result<(), String> {
-        let scope = if self.at_least(3, 0) { "-p" } else { "-w" };
         let value = if remain_on_exit { "on" } else { "off" };
-        let mut args = vec!["set-option", scope, "-t", pane, "remain-on-exit", value];
-        if let Some(command) = command {
-            args.extend([";", "respawn-pane", "-k", "-t", pane, "--", command]);
+        self.start_with_options(pane, &[("remain-on-exit", value)], command)
+            .await
+    }
+
+    /// `-p` (pane options) from tmux 3.0; tmux 2.x has no pane options, so
+    /// there a pane's options are its window's.
+    pub fn pane_scope(&self) -> &'static str {
+        if self.at_least(3, 0) {
+            "-p"
+        } else {
+            "-w"
         }
-        let kept = self.run(&args).await.map(drop);
-        if kept.is_err() {
+    }
+
+    /// Sets `options` on new pane `pane` (made running [`HOLD`]), then
+    /// starts `command` in it, in one tmux command; on failure the pane is
+    /// killed so no placeholder stays behind.
+    pub async fn start_with_options(
+        &self,
+        pane: &str,
+        options: &[(&str, &str)],
+        command: Option<&str>,
+    ) -> Result<(), String> {
+        let scope = self.pane_scope();
+        let mut args: Vec<&str> = Vec::new();
+        for (name, value) in options {
+            if !args.is_empty() {
+                args.push(";");
+            }
+            args.extend(["set-option", scope, "-t", pane, name, value]);
+        }
+        if let Some(command) = command {
+            if !args.is_empty() {
+                args.push(";");
+            }
+            args.extend(["respawn-pane", "-k", "-t", pane, "--", command]);
+        }
+        if args.is_empty() {
+            return Ok(());
+        }
+        let started = self.run(&args).await.map(drop);
+        if started.is_err() {
             // Never leave a pane behind that runs the placeholder.
             let _ = self.run(["kill-pane", "-t", pane]).await;
         }
-        kept.map_err(|error| error.sentence())
+        started.map_err(|error| error.sentence())
     }
 
     /// `(id, name)` of every session; empty when no server runs.

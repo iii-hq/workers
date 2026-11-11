@@ -20,6 +20,7 @@ pub mod paths;
 pub mod registry;
 pub mod shared;
 pub mod time;
+pub mod tmux_env;
 pub mod usage;
 
 use std::collections::HashMap;

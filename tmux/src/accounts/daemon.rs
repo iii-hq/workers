@@ -33,6 +33,13 @@ async fn tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>, observed: &Obs
     if observed() {
         accounts.mark_watched();
     }
+    // A tmux server started since (or a hand edit) gets the global account
+    // back in its environment (D3).
+    if let Ok(tmux) = collector.tmux().await {
+        if let Err(error) = super::tmux_env::reconcile(&tmux, accounts).await {
+            tracing::debug!(%error, "tmux global environment not checked");
+        }
+    }
     let now = now_ms();
     let registry = accounts.registry();
     let changed = if accounts.watched(now) {

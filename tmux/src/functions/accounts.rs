@@ -7,8 +7,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{register_fn, spec, Ctx, EmptyInput, EmptyOutput, FunctionSpec};
+use crate::accounts::launch::Launch;
+use crate::accounts::{tmux_env, GLOBAL};
 use crate::model::{ClaudeAccount, ClaudeSnapshot};
-use crate::tmux_cli::{format_literal, resolve_cwd, HOLD, SEP};
+use crate::tmux_cli::{format_literal, resolve_cwd, Tmux, HOLD, SEP};
 
 pub const LIST: &str = "tmux::accounts::list";
 pub const ADD: &str = "tmux::accounts::add";
@@ -78,6 +80,64 @@ pub struct RemoveAccountInput {
     /// Delete its folder too (default false: the folder stays where it was).
     #[serde(default)]
     pub delete_files: bool,
+}
+
+/// `claude` on tmux::windows::create and tmux::sessions::create.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ClaudeLaunchInput {
+    /// `global` (the default: it runs on the global account and moves when that changes) or an account id (pinned to it).
+    #[serde(default = "global_account")]
+    pub account: String,
+    /// Start it with --dangerously-skip-permissions (default false). Refused when the host runs as root.
+    #[serde(default)]
+    pub skip_permissions: bool,
+}
+
+fn global_account() -> String {
+    GLOBAL.to_string()
+}
+
+/// The launch `claude` asks for; never together with `command`.
+pub(super) fn plan(
+    ctx: &Ctx,
+    claude: Option<&ClaudeLaunchInput>,
+    command: Option<&str>,
+) -> Result<Option<Launch>, String> {
+    let Some(claude) = claude else {
+        return Ok(None);
+    };
+    if command.is_some() {
+        return Err("Give either command or claude, not both.".to_string());
+    }
+    ctx.collector
+        .accounts()
+        .plan_launch(&claude.account, claude.skip_permissions, None)
+        .map(Some)
+}
+
+/// Start `launch` in new pane `pane` (running [`HOLD`]): tmux's global
+/// environment first for a pane that follows the global account (D3), then
+/// its marks and remain-on-exit, then Claude Code.
+pub(super) async fn start_claude(
+    ctx: &Ctx,
+    tmux: &Tmux,
+    pane: &str,
+    launch: &Launch,
+    remain_on_exit: bool,
+) -> Result<(), String> {
+    if launch.account == GLOBAL {
+        if let Err(error) = tmux_env::reconcile(tmux, ctx.collector.accounts()).await {
+            // The pane's account is read from its process (D5), so it never
+            // shows the wrong one.
+            tracing::warn!(%error, "tmux global CLAUDE_CONFIG_DIR not set");
+        }
+    }
+    let mut options = launch.marks();
+    if remain_on_exit {
+        options.push(("remain-on-exit", "on"));
+    }
+    tmux.start_with_options(pane, &options, Some(&launch.command))
+        .await
 }
 
 pub async fn list(ctx: &Ctx, _input: EmptyInput) -> Result<ClaudeSnapshot, String> {
