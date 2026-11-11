@@ -56,8 +56,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 53
-    assert len(frontends) == 59
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 41
+    assert len(frontends) == 45
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -74,25 +74,53 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
 
 def test_rust_release_declares_every_frontend_its_build_compiles():
     # Release builds reuse only declared frontend outputs with SKIP_UI_BUILD.
-    def build_crates(crate: Path, seen: set[Path]) -> set[Path]:
-        if crate not in seen:
-            seen.add(crate)
-            manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    # A build.rs that returns early without CARGO_FEATURE_CONSOLE_UI compiles
+    # its bundle only when the release graph turns `console-ui` on, so a path
+    # dependency taken with `default-features = false` needs no frontend.
+    def build_crates(crate: Path, requested: set[str], enabled: dict[Path, set[str]]) -> dict[Path, set[str]]:
+        manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+        features = manifest.get("features", {})
+        first_visit = crate not in enabled
+        active = enabled.setdefault(crate, set())
+        pending, added = list(requested), False
+        while pending:
+            feature = pending.pop()
+            if feature not in active:
+                active.add(feature)
+                added = True
+                pending += [item for item in features.get(feature, []) if "/" not in item and ":" not in item]
+        if first_visit or added:
+            forwarded: dict[str, set[str]] = {}
+            for feature in active:
+                for item in features.get(feature, []):
+                    if "/" in item:
+                        dependency, dependency_feature = item.split("/", 1)
+                        forwarded.setdefault(dependency.removesuffix("?"), set()).add(dependency_feature)
             for table in [manifest, *manifest.get("target", {}).values()]:
                 for section in ("dependencies", "build-dependencies"):
-                    for dependency in table.get(section, {}).values():
+                    for name, dependency in table.get(section, {}).items():
                         if isinstance(dependency, dict) and "path" in dependency:
-                            build_crates((crate / dependency["path"]).resolve(), seen)
-        return seen
+                            wanted = set(dependency.get("features", [])) | forwarded.get(name, set())
+                            if dependency.get("default-features", True):
+                                wanted.add("default")
+                            build_crates((crate / dependency["path"]).resolve(), wanted, enabled)
+        return enabled
+
+    def compiles_bundles(crate: Path, active: set[str]) -> bool:
+        build_script = crate / "build.rs"
+        gated = build_script.is_file() and "CARGO_FEATURE_CONSOLE_UI" in build_script.read_text(encoding="utf-8")
+        return not gated or "console-ui" in active
 
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
     for slug, worker in document["workers"].items():
         artifact = worker["artifact"]
         if artifact["kind"] != "rust-binary":
             continue
+        root_features = {"default", *artifact.get("features", [])}
         compiled = {
             (crate / bundle).relative_to(ROOT).as_posix()
-            for crate in build_crates((ROOT / worker["source"]["path"]).resolve(), set())
+            for crate, active in build_crates((ROOT / worker["source"]["path"]).resolve(), root_features, {}).items()
+            if compiles_bundles(crate, active)
             for bundle in ("ui", "web", "native-ui")
             if (crate / bundle / "package.json").is_file()
         }
