@@ -940,6 +940,12 @@ async fn a_person_switching_calls_off_the_switch_back() {
     )
     .await
     .unwrap();
+    // Nobody watches: nothing is read until the worker's own look at start
+    // (accounts.json exists) finds another signed-in account (O1).
+    assert!(!w.accounts().may_load(now_ms()));
+    assert!(!tmux::accounts::daemon::run_rules(&w.collector).await);
+    w.accounts().load_now().await;
+    assert!(w.accounts().may_load(now_ms()));
     assert!(tmux::accounts::daemon::run_rules(&w.collector).await);
     let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
     assert_eq!(listed.global, "personal");
@@ -957,6 +963,48 @@ async fn a_person_switching_calls_off_the_switch_back() {
     .unwrap();
     let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
     assert_eq!(listed.last_switch.unwrap().back_at_ms, None);
+
+    // The rules decided on a registry written since, even back to the same
+    // values (side → personal → side): they switch nothing.
+    let (decided_on, generation) = w.accounts().registry_at();
+    for account in ["personal", "side"] {
+        account_fns::global(
+            &w.ctx,
+            account_fns::GlobalInput {
+                account: account.into(),
+                move_mode: account_fns::GlobalMove::NewOnly,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(w.accounts().registry().global, decided_on.global);
+    let tmux_now = w.collector.tmux().await.unwrap();
+    let panes_now = w.collector.claude_panes(true).await;
+    let stale = tmux::accounts::moves::switch_global(
+        &tmux_now,
+        w.accounts(),
+        &panes_now,
+        "personal",
+        tmux::accounts::moves::SwitchMode::NewOnly,
+        tmux::accounts::moves::SwitchBy::Rules {
+            generation,
+            record: tmux::model::AccountSwitch {
+                from: "side".into(),
+                to: "personal".into(),
+                reason: Some("week_90".into()),
+                auto: true,
+                moved: Vec::new(),
+                after_turn: Vec::new(),
+                at_ms: now_ms(),
+                back_at_ms: None,
+            },
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(stale, tmux::accounts::moves::RULES_STALE);
+    assert_eq!(w.accounts().registry().global, "side");
     tokio::time::sleep(Duration::from_millis(
         reset_at.saturating_sub(now_ms()) + 200,
     ))
@@ -1045,4 +1093,105 @@ async fn before_tmux_3_two_claude_panes_in_a_window_stay_put() {
         .unwrap_err();
         assert_eq!(refused, tmux::accounts::panes::SHARED_MARKS);
     }
+
+    // A switch that leaves panes where they run pins them there, except a
+    // window mark two Claude Code panes share: that one is left alone.
+    account_fns::add(
+        &w.ctx,
+        account_fns::AddAccountInput {
+            name: "Personal".into(),
+            color: "green".into(),
+            shared: None,
+        },
+    )
+    .await
+    .unwrap();
+    signed_in(&w.paths.account_dir("personal"));
+    let switched = account_fns::global(
+        &w.ctx,
+        account_fns::GlobalInput {
+            account: "personal".into(),
+            move_mode: account_fns::GlobalMove::NewOnly,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(switched.stayed.contains(&a), "{switched:?}");
+    let scope = if old { "-w" } else { "-p" };
+    let mark = w.tmux_out(&["show-options", scope, "-v", "-t", &a, "@iii_claude_account"]);
+    assert_eq!(mark, if old { "global" } else { "default" });
+}
+
+#[tokio::test]
+async fn claude_slow_to_stop_comes_back_on_its_account() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("late");
+    account_fns::add(
+        &w.ctx,
+        account_fns::AddAccountInput {
+            name: "Personal".into(),
+            color: "green".into(),
+            shared: None,
+        },
+    )
+    .await
+    .unwrap();
+    signed_in(&w.paths.account_dir("personal"));
+    let a = windows::create(&w.ctx, window("late", claude("global", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    let session = w.claude(&a).await.session_id.unwrap();
+    let pid = w.claude_pid(&a).await;
+    // Its SessionEnd hooks take fourteen seconds: more than the move waits.
+    std::fs::write(w.sandbox.dir.join(format!("state/{pid}.linger")), "14").unwrap();
+    let refused = panes::account(
+        &w.ctx,
+        panes::PaneAccountInput {
+            pane: a.clone(),
+            account: "personal".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused, tmux::accounts::moves::DID_NOT_STOP);
+    let scope = if w.tmux_out(&["-V"]).starts_with("tmux 2.") {
+        "-w"
+    } else {
+        "-p"
+    };
+    let remain = || w.tmux_out(&["show-options", scope, "-v", "-t", &a, "remain-on-exit"]);
+    assert_eq!(remain(), "on", "kept while Claude Code still ends");
+    let again = panes::account(
+        &w.ctx,
+        panes::PaneAccountInput {
+            pane: a.clone(),
+            account: "personal".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        again,
+        tmux::accounts::moves::BUSY,
+        "no other move meanwhile"
+    );
+    // Once it ends, the pane stays and Claude Code starts again where it
+    // was, resuming its conversation; remain-on-exit goes back as it was.
+    let back = eventually("Claude Code back on its account", || async {
+        let info = w.pane(&a).await?.claude?;
+        let now = w.collector.claude_panes(true).await.get(&a)?.claude_pid?;
+        (now != pid && info.session_id.is_some()).then_some(info)
+    })
+    .await;
+    assert_eq!(back.account.as_deref(), Some("default"));
+    assert_eq!(back.session_id.as_deref(), Some(session.as_str()));
+    assert!(w.screen(&a).contains("Resumed on the default account"));
+    eventually("remain-on-exit put back", || async {
+        remain().is_empty().then_some(())
+    })
+    .await;
 }

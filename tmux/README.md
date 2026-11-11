@@ -397,14 +397,18 @@ account, with an account id pins it there. When Claude Code runs on another
 account, which must be signed in, the pane moves:
 
 1. Right before, the worker looks again: the pane must still run the same
-   Claude Code process, in the same conversation, with the status `idle`.
-   Otherwise nothing is stopped and the move waits for the turn
-   (`after_turn`).
+   program, with the same Claude Code process under it (its session
+   record's start time must be known and be the process's own), in the same
+   conversation, with the status `idle`. Otherwise nothing is stopped and
+   the move waits for the turn (`after_turn`) or fails.
 2. Claude Code gets SIGTERM and up to 10 seconds to end; it saves and runs
-   its `SessionEnd` hooks first. One that doesn't end is left running and the
-   move is refused. A pane the worker started is kept on screen meanwhile
-   with a temporary `remain-on-exit`, put back as it was afterwards (unset
-   stays unset).
+   its `SessionEnd` hooks first. A pane the worker started is kept on screen
+   meanwhile with a temporary `remain-on-exit`, put back as it was
+   afterwards (unset stays unset). When Claude Code takes longer, the move
+   fails, but the pane keeps `remain-on-exit` until Claude Code does end;
+   then Claude Code starts again on the account it ran on, resuming its
+   conversation, and `remain-on-exit` is put back. Started by hand in a
+   shell, it just gives the shell the terminal back.
 3. The target account is made to see the conversation: if its
    `projects/<project>/<session>.jsonl` is not the same file (accounts sharing
    conversations link the same folder), the transcript and its `<session>/`
@@ -452,10 +456,13 @@ last reading kept); a window whose reset time has passed reads 0 %
 Readings are kept at most 5 minutes old while someone watches (a
 `tmux::usage::read` call or an observer of `tmux::on-changed` in the last 10
 minutes); `refresh: true` reads again at once, at most once a minute per
-account. With nobody watching, the worker reads nothing unless `accounts.json`
-exists and an account other than the global one is signed in (one that could
-take over); then it reads only the global account, every 10 minutes, while
-the rules are not `off`, and the others when the global one runs low.
+account. With nobody watching, the worker reads nothing, not even locally
+(sign-in files, the Keychain, profiles, Codex's records), unless
+`accounts.json` exists and an account other than the global one is signed in
+(one that could take over); it looks at who is signed in once when it starts
+with `accounts.json`. Then it reads only the global account, every 10
+minutes, while the rules are not `off`, and the others when the global one
+runs low.
 
 A 429 pauses an account's readings for 15 minutes; a 401 counts the sign-in
 as expired until its token changes (or the worker starts again); any other
@@ -484,7 +491,10 @@ worker switches by itself, the app open or not, moving the idle panes that
 follow along when `move_idle` is on, and leaves `last_switch` (`auto: true`)
 for the app; `back_after_reset` (in mode `switch` only) switches back once
 the old account's window resets, unless someone made another account global
-since. Until changed, the rules suggest at `week_90`, with `move_idle` on;
+since. A switch of the rules happens only on the `accounts.json` they
+decided on (any change written meanwhile, even back to the same global
+account, drops it until the next look), and any switch stops moving panes
+once another account is made global. Until changed, the rules suggest at `week_90`, with `move_idle` on;
 `mode: off` stops them.
 
 ```bash

@@ -22,6 +22,7 @@ import os
 import re
 import select
 import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -55,6 +56,25 @@ def allowed():
 if not allowed():
     sys.stderr.write("this fake claude runs only inside the demo container or a test sandbox\n")
     sys.exit(2)
+
+
+def proc_start():
+    """What Claude Code records as procStart: field 22 of /proc/<pid>/stat
+    on Linux, `ps -o lstart=` in UTC elsewhere (macOS)."""
+    try:
+        with open("/proc/%d/stat" % PID) as f:
+            return f.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        pass
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(PID)], capture_output=True,
+                             text=True, timeout=2, env=dict(os.environ, LC_ALL="C", TZ="UTC"))
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+PROC_START = proc_start()
 
 
 def write_json(path, value):
@@ -167,6 +187,7 @@ class Session:
                            "limit": ("idle", None)}.get(self.state, ("idle", None))
         write_json(os.path.join(CONFIG, "sessions", "%d.json" % PID), {
             "pid": PID, "sessionId": self.id, "cwd": os.getcwd(), "startedAt": self.started,
+            "procStart": PROC_START,
             "version": "2.1.322-demo", "kind": "interactive", "status": status,
             "waitingFor": waiting, "statusUpdatedAt": int(time.time() * 1000)})
 
@@ -211,6 +232,17 @@ class Session:
         return changed
 
     def end(self, *_):
+        # <state>/<pid>.linger holds seconds to wait before ending, like a
+        # Claude Code whose SessionEnd hooks take long (tests only).
+        linger_file = os.path.join(STATE_DIR, "%d.linger" % PID)
+        try:
+            with open(linger_file) as f:
+                linger = float(f.read().strip() or 0)
+            os.remove(linger_file)
+        except (OSError, ValueError):
+            linger = 0
+        if linger > 0:
+            time.sleep(min(linger, 60))
         for path in (os.path.join(CONFIG, "sessions", "%d.json" % PID), self.state_file):
             try:
                 os.remove(path)

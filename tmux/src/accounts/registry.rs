@@ -233,11 +233,17 @@ pub fn validate_color(color: &str) -> Result<String, String> {
 #[derive(Debug)]
 pub struct Store {
     path: PathBuf,
-    /// `(modified, len)` of the file read, `None` when it was missing.
-    stamp: Option<(SystemTime, u64)>,
+    /// `(modified, len, inode)` of the file read, `None` when it was
+    /// missing. Each write renames a new file into place: a new inode.
+    stamp: Option<(SystemTime, u64, u64)>,
     loaded: bool,
     /// The registry, or why the file could not be read.
     state: Result<Option<Registry>, String>,
+    /// One more each time the file read is another version of it (written
+    /// by this process or another): a registry read at the same generation
+    /// is still the one on disk, even when the same values came back
+    /// (A → B → A).
+    generation: u64,
 }
 
 impl Store {
@@ -247,15 +253,26 @@ impl Store {
             stamp: None,
             loaded: false,
             state: Ok(None),
+            generation: 0,
         }
     }
 
+    /// Where changes take their advisory lock.
+    pub fn lock_path(registry_file: &Path) -> PathBuf {
+        registry_file.with_file_name("accounts.lock")
+    }
+
     fn refresh(&mut self) {
+        use std::os::unix::fs::MetadataExt;
         let stamp = std::fs::metadata(&self.path)
             .ok()
-            .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+            .and_then(|meta| Some((meta.modified().ok()?, meta.len(), meta.ino())));
         if self.loaded && stamp == self.stamp {
             return;
+        }
+        // A forced read of the same file (under the lock) is no new version.
+        if self.generation == 0 || stamp != self.stamp {
+            self.generation += 1;
         }
         self.loaded = true;
         self.stamp = stamp;
@@ -282,23 +299,39 @@ impl Store {
 
     /// The registry, the implicit one when the file is missing or unreadable.
     pub fn current(&mut self) -> Registry {
-        self.refresh();
-        match &self.state {
-            Ok(Some(registry)) => registry.clone(),
-            _ => Registry::default(),
-        }
+        self.current_at().0
     }
 
-    /// Change the registry and write it; refused while the file is
-    /// unreadable, so a hand edit gone wrong is never overwritten. Another
-    /// process changing it at the same time waits for this one
-    /// (`accounts.lock`, an advisory lock), and the file is read again
-    /// under the lock.
+    /// The registry with the generation it was read at.
+    pub fn current_at(&mut self) -> (Registry, u64) {
+        self.refresh();
+        let registry = match &self.state {
+            Ok(Some(registry)) => registry.clone(),
+            _ => Registry::default(),
+        };
+        (registry, self.generation)
+    }
+
+    /// Change the registry and write it, taking the lock itself (see
+    /// [`Store::update_locked`]).
     pub fn update<T>(
         &mut self,
         change: impl FnOnce(&mut Registry) -> Result<T, String>,
     ) -> Result<T, String> {
-        let _lock = FileLock::take(&self.path.with_file_name("accounts.lock"))?;
+        let lock = FileLock::take(&Self::lock_path(&self.path))?;
+        self.update_locked(&lock, |registry, _| change(registry))
+    }
+
+    /// Change the registry and write it; refused while the file is
+    /// unreadable, so a hand edit gone wrong is never overwritten. `lock`
+    /// is `accounts.lock` (an advisory lock), so another process changing
+    /// it at the same time waits for this one; the file is read again
+    /// under it, and `change` gets the generation of what it read.
+    pub fn update_locked<T>(
+        &mut self,
+        _lock: &FileLock,
+        change: impl FnOnce(&mut Registry, u64) -> Result<T, String>,
+    ) -> Result<T, String> {
         self.loaded = false;
         self.refresh();
         let mut registry = match &self.state {
@@ -306,7 +339,7 @@ impl Store {
             Ok(None) => Registry::default(),
             Err(error) => return Err(error.clone()),
         };
-        let out = change(&mut registry)?;
+        let out = change(&mut registry, self.generation)?;
         registry.normalize();
         write_atomic(&self.path, &registry)?;
         self.loaded = false;
@@ -317,13 +350,14 @@ impl Store {
 
 /// An exclusive `flock` on a file, released when dropped (or when the
 /// process ends).
-struct FileLock(std::fs::File);
+pub struct FileLock(std::fs::File);
 
 /// How long a change of `accounts.json` waits for another process's.
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl FileLock {
-    fn take(path: &Path) -> Result<Self, String> {
+    /// Blocking: waits up to two seconds for another process's change.
+    pub fn take(path: &Path) -> Result<Self, String> {
         use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::io::AsRawFd;
         if let Some(folder) = path.parent() {
@@ -541,6 +575,42 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn every_version_of_the_file_is_a_new_generation() {
+        let dir = temp_dir("generation");
+        let path = dir.join("accounts.json");
+        let mut store = Store::new(path.clone());
+        let (_, missing) = store.current_at();
+        assert_eq!(store.current_at().1, missing, "nothing changed");
+        let set = |store: &mut Store, global: &str| {
+            let global = global.to_string();
+            store
+                .update(move |registry| {
+                    registry.global = global;
+                    Ok(())
+                })
+                .unwrap();
+        };
+        set(&mut store, "default");
+        let (first, at_first) = store.current_at();
+        assert!(at_first > missing);
+        // Another process: A → B → A comes back with the same values, not
+        // the same generation.
+        let mut other = Store::new(path.clone());
+        set(&mut other, "personal");
+        set(&mut other, "default");
+        let (again, at_again) = store.current_at();
+        assert_eq!(again.global, first.global);
+        assert_ne!(at_again, at_first);
+        // A read under the lock of the same file is the same generation.
+        let lock = FileLock::take(&Store::lock_path(&path)).unwrap();
+        let seen = store
+            .update_locked(&lock, |_, generation| Ok(generation))
+            .unwrap();
+        assert_eq!(seen, at_again);
         let _ = std::fs::remove_dir_all(dir);
     }
 

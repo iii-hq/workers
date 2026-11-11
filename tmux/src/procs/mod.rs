@@ -291,6 +291,69 @@ pub fn environ_var(pid: u32, key: &str) -> Option<String> {
     }
 }
 
+/// The parent of `pid`, read now (`/proc/<pid>/stat` on Linux,
+/// `proc_pidinfo` on macOS); elsewhere `None`. Blocking.
+pub fn parent(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::parent(pid)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::parent(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Whether `pid` is `ancestor` or runs under it, read now. Blocking.
+pub fn descends_from(pid: u32, ancestor: u32) -> bool {
+    let mut current = pid;
+    // A process tree is never this deep; a loop in a racing read ends here.
+    for _ in 0..64 {
+        if current == ancestor {
+            return true;
+        }
+        match parent(current) {
+            Some(next) if next != current && next > 0 => current = next,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// When `pid` started, as Claude Code records it in its session's
+/// `procStart`, read now: Linux's clock ticks since boot (field 22 of
+/// `/proc/<pid>/stat`), macOS's start second (Claude Code writes `ps -o
+/// lstart=` in UTC there). Elsewhere `None`. Blocking.
+pub fn proc_start(pid: u32) -> Option<ProcStart> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::start_ticks(pid).map(ProcStart::Ticks)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::start_second(pid).map(ProcStart::Second)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// When a process started, in the form its platform gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcStart {
+    /// Clock ticks since boot (Linux).
+    Ticks(u64),
+    /// Seconds since the epoch (macOS).
+    Second(u64),
+}
+
 /// When `pid` started, in clock ticks since boot (field 22 of
 /// `/proc/<pid>/stat`). Linux only; elsewhere `None`. Blocking.
 pub fn start_ticks(pid: u32) -> Option<u64> {
@@ -317,6 +380,18 @@ mod tests {
             argv: argv.iter().map(|a| a.to_string()).collect(),
             cwd: None,
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn parents_and_start_are_read_now() {
+        let me = std::process::id();
+        let parent = parent(me).expect("a parent");
+        assert!(descends_from(me, me));
+        assert!(descends_from(me, parent));
+        assert!(!descends_from(parent, me));
+        assert!(proc_start(me).is_some());
+        assert_eq!(proc_start(me), proc_start(me));
     }
 
     #[test]

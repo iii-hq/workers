@@ -180,7 +180,10 @@ pub struct UsageClient {
 }
 
 impl UsageClient {
-    pub fn new(origin: &str) -> Self {
+    /// `None` when the client can't be built as it must be (no proxy, no
+    /// redirect, a timeout): then nothing is ever asked, rather than asked
+    /// through a client that could carry the token elsewhere.
+    pub fn new(origin: &str) -> Option<Self> {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
@@ -188,11 +191,14 @@ impl UsageClient {
             .no_proxy()
             .user_agent(concat!("iii-tmux/", env!("CARGO_PKG_VERSION")))
             .build()
-            .unwrap_or_default();
-        Self {
+            .inspect_err(
+                |error| tracing::warn!(%error, "usage client not built; usage is not read"),
+            )
+            .ok()?;
+        Some(Self {
             http,
             origin: origin.to_string(),
-        }
+        })
     }
 
     /// The origin it asks.
@@ -425,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_client_refuses_other_hosts() {
-        let client = UsageClient::new("http://10.1.2.3:9");
+        let client = UsageClient::new("http://10.1.2.3:9").unwrap();
         assert_eq!(
             client.fetch(&Secret::new("t".into())).await,
             Err(FetchError::NotAllowed)

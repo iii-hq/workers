@@ -193,7 +193,7 @@ impl Accounts {
     pub fn new(paths: Option<ClaudePaths>, secrets: Box<dyn SecretStore>, keychain: bool) -> Self {
         let client = paths
             .as_ref()
-            .map(|paths| UsageClient::new(&paths.usage_origin));
+            .and_then(|paths| UsageClient::new(&paths.usage_origin));
         let store = paths
             .as_ref()
             .map(|paths| Store::new(paths.registry_file()));
@@ -249,13 +249,36 @@ impl Accounts {
         self.store().as_mut().is_some_and(Store::managed)
     }
 
+    /// The registry with its generation (see [`Accounts::update_registry_at`]).
+    pub fn registry_at(&self) -> (Registry, u64) {
+        match self.store().as_mut() {
+            Some(store) => store.current_at(),
+            None => (Registry::default(), 0),
+        }
+    }
+
     /// Change the registry and save it.
     pub fn update_registry<T>(
         &self,
         change: impl FnOnce(&mut Registry) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.update_registry_at(|registry, _| change(registry))
+    }
+
+    /// Change the registry and save it; `change` gets the generation of
+    /// the registry it changes, to refuse when it is not the one a decision
+    /// was made on. The lock against other processes is taken before the
+    /// store's mutex, so waiting for it never holds up a reader here.
+    pub fn update_registry_at<T>(
+        &self,
+        change: impl FnOnce(&mut Registry, u64) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let Some(file) = self.paths.as_ref().map(ClaudePaths::registry_file) else {
+            return Err("This computer's user has no home folder for Claude Code accounts.".into());
+        };
+        let lock = registry::FileLock::take(&Store::lock_path(&file))?;
         match self.store().as_mut() {
-            Some(store) => store.update(change),
+            Some(store) => store.update_locked(&lock, change),
             None => Err("This computer's user has no home folder for Claude Code accounts.".into()),
         }
     }
@@ -551,9 +574,22 @@ impl Accounts {
         let _ = tokio::task::spawn_blocking(move || this.load_blocking()).await;
     }
 
+    /// Whether the worker may read anything local about the accounts now
+    /// (sign-in files, the Keychain, profiles, Codex's records): someone
+    /// watches, or another signed-in account could take over (O1). With
+    /// neither, and without `accounts.json`, nothing is read at all.
+    pub fn may_load(&self, now_ms: u64) -> bool {
+        self.watched(now_ms) || self.may_read_unwatched()
+    }
+
     /// Load in the background when the last load is a second old (the
-    /// first time, wait for it): the feed never waits for a Keychain.
+    /// first time, wait for it): the feed never waits for a Keychain. Only
+    /// while [`Accounts::may_load`]; otherwise the caches are left as they
+    /// are.
     pub async fn load_soon(self: &Arc<Self>) {
+        if !self.may_load(now_ms()) {
+            return;
+        }
         let loaded_at = self.lock().loaded_at_ms;
         if loaded_at == 0 {
             self.load_now().await;
@@ -1007,6 +1043,40 @@ mod tests {
             .unwrap();
         accounts.load_blocking();
         assert!(!accounts.may_read_unwatched());
+    }
+
+    /// A sign-in store that counts how often it is asked (a Keychain).
+    struct CountingStore(Arc<AtomicU64>);
+
+    impl SecretStore for CountingStore {
+        fn read(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Credentials>, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            credentials::FileStore.read(dir, env_dir)
+        }
+    }
+
+    #[tokio::test]
+    async fn nobody_watching_without_accounts_json_reads_no_sign_in() {
+        let home = Home::new("gate");
+        home.sign_in(&home.paths.claude_home, "demo-work", now_ms() + 3_600_000);
+        let asked = Arc::new(AtomicU64::new(0));
+        let accounts = Arc::new(Accounts::new(
+            Some(home.paths.clone()),
+            Box::new(CountingStore(asked.clone())),
+            true,
+        ));
+        assert!(!accounts.may_load(now_ms()));
+        accounts.load_soon().await;
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "no Keychain while nobody watches"
+        );
+        assert!(!accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+        accounts.mark_watched();
+        accounts.load_soon().await;
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
     }
 
     #[test]

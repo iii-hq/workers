@@ -23,7 +23,14 @@ pub type Observed = Arc<dyn Fn() -> bool + Send + Sync>;
 pub fn spawn(collector: Arc<Collector>, monitor: Arc<Monitor>, observed: Observed) {
     tokio::spawn(async move {
         let accounts = collector.accounts().clone();
-        let _ = tokio::task::spawn_blocking(move || accounts.relink_all()).await;
+        let relink = accounts.clone();
+        let _ = tokio::task::spawn_blocking(move || relink.relink_all()).await;
+        // With accounts.json, one look at who is signed in, so the rules
+        // know whether another account could take over (O1). Without it,
+        // nothing is read until someone watches.
+        if accounts.managed() {
+            accounts.load_now().await;
+        }
         loop {
             tick(&collector, &monitor, &observed).await;
             tokio::time::sleep(TICK).await;
@@ -47,7 +54,8 @@ fn may_be_ready(claude_pid: Option<u32>) -> bool {
     let Some(pid) = claude_pid else {
         return true;
     };
-    match crate::activity::claude_record_now(pid) {
+    // A hint only: the move itself matches the record exactly.
+    match crate::activity::claude_record_now(pid, false) {
         None => true,
         Some(record) => record
             .status
@@ -90,6 +98,10 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
             accounts.forget_waiting(&pane);
         }
     }
+    // Sign-ins are read only for a move someone asked for.
+    if panes.values().all(|pane| pane.marks.pending.is_none()) {
+        return;
+    }
     accounts.load_now().await;
     let registry = accounts.registry();
     let mut changed = false;
@@ -114,16 +126,24 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
             Err(error) if error == super::moves::BUSY => accounts.note_pending(),
             Err(error) => {
                 tracing::warn!(pane = %id, %error, "pending account move dropped");
+                accounts.note_move_error(id, &error);
+                changed = true;
                 let mark = pane
                     .marks
                     .account
                     .clone()
                     .unwrap_or_else(|| super::GLOBAL.into());
-                let _ = super::moves::set_marks(&tmux, id, &mark, pane.info.skip_permissions, None)
-                    .await;
-                accounts.forget_waiting(id);
-                accounts.note_move_error(id, &error);
-                changed = true;
+                match super::moves::set_marks(&tmux, id, &mark, pane.info.skip_permissions, None)
+                    .await
+                {
+                    Ok(()) => accounts.forget_waiting(id),
+                    // The mark is still there: the pane keeps waiting, and
+                    // the next look drops it again.
+                    Err(mark_error) => {
+                        tracing::warn!(pane = %id, error = %mark_error, "pending mark not cleared");
+                        accounts.note_waiting(id, pane.claude_pid);
+                    }
+                }
             }
         }
     }
@@ -144,14 +164,18 @@ async fn tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>, observed: &Obs
             tracing::debug!(%error, "tmux global environment not checked");
         }
     }
-    accounts.load_now().await;
     let now = now_ms();
+    // Nothing local is read (sign-in files, the Keychain, Codex) unless
+    // someone watches or another signed-in account could take over (O1).
+    if !accounts.may_load(now) {
+        return;
+    }
+    accounts.load_now().await;
     let registry = accounts.registry();
     let changed = if accounts.watched(now) {
         accounts.refresh(None, false).await
     } else if registry.rules.mode != RulesMode::Off && accounts.may_read_unwatched() {
-        // Nobody watches: only the global account, now and then, and only
-        // when another signed-in account could take over (O1).
+        // Nobody watches: only the global account, now and then.
         let global = registry.global.clone();
         let stale = accounts
             .reading_age_ms(&global, now)
@@ -174,18 +198,22 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
     if !accounts.managed() {
         return false;
     }
-    let registry = accounts.registry();
-    if registry.rules.mode == RulesMode::Off {
-        return false;
-    }
+    // What the rules decide on: a switch is dropped when the registry is
+    // written meanwhile (M7), even back to the same values.
+    let (registry, generation) = accounts.registry_at();
     // Only mode `switch` acts by itself (a suggestion is the snapshot's).
     if registry.rules.mode != RulesMode::Switch {
+        return false;
+    }
+    // Nobody watching and no other signed-in account: nothing to switch to,
+    // and nothing is read (O1).
+    if !accounts.may_load(now_ms()) {
         return false;
     }
     accounts.load_now().await;
     let mut snapshot = accounts.snapshot(&std::collections::HashMap::new(), 0);
     // The global account runs low: the others are read (when due) to pick
-    // the target (D12), while someone watches or one could take over (O1).
+    // the target (D12).
     let global_low = snapshot
         .claude
         .accounts
@@ -193,8 +221,7 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
         .find(|account| account.id == registry.global)
         .and_then(|global| super::rules::low_reason(global.usage.as_ref(), &registry.rules))
         .is_some();
-    let may_read = accounts.watched(now_ms()) || accounts.may_read_unwatched();
-    let read = global_low && may_read && accounts.refresh(None, false).await;
+    let read = global_low && accounts.refresh(None, false).await;
     if read {
         snapshot = accounts.snapshot(&std::collections::HashMap::new(), 0);
     }
@@ -214,28 +241,25 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
     let from = registry.global.clone();
     tracing::info!(%from, to = %decision.to, reason = %decision.reason, "switching the global account");
     let by = super::moves::SwitchBy::Rules {
-        from: from.clone(),
-        last_at_ms: registry.last_switch.as_ref().map(|last| last.at_ms),
+        generation,
+        record: crate::model::AccountSwitch {
+            from,
+            to: decision.to.clone(),
+            reason: Some(decision.reason.clone()),
+            auto: true,
+            moved: Vec::new(),
+            after_turn: Vec::new(),
+            at_ms: now,
+            back_at_ms: decision.back_at_ms,
+        },
     };
     match super::moves::switch_global(&tmux, accounts, &panes, &decision.to, mode, by).await {
-        Ok(switched) => {
-            let record = crate::model::AccountSwitch {
-                from,
-                to: decision.to.clone(),
-                reason: Some(decision.reason.clone()),
-                auto: true,
-                moved: switched.moved,
-                after_turn: switched.after_turn,
-                at_ms: now,
-                back_at_ms: decision.back_at_ms,
-            };
-            if let Err(error) = accounts.update_registry(|registry| {
-                registry.last_switch = Some(record);
-                Ok(())
-            }) {
-                tracing::warn!(%error, "last switch not saved");
-            }
-            true
+        Ok(_) => true,
+        Err(error) if error == super::moves::RULES_STALE => {
+            tracing::info!(
+                "the registry changed while the rules decided; looked at again next time"
+            );
+            read
         }
         Err(error) => {
             tracing::warn!(%error, "the global account was not switched");

@@ -23,7 +23,11 @@
 //!
 //! Claude Code's own shutdown can take more than D6's five seconds (its
 //! failsafe waits at least five, plus SessionEnd hooks), so the worker
-//! waits up to ten; if it still runs, nothing else is changed.
+//! waits up to ten; if it still runs, the move fails and nothing else is
+//! changed. SIGTERM was sent, though: a respawned pane keeps remain-on-exit
+//! until Claude Code does end, then Claude Code starts again on its own
+//! account, resuming its conversation, and remain-on-exit is put back. A
+//! shell simply gets the terminal back.
 //!
 //! A move happens only between turns (D7); otherwise the pane gets
 //! `@iii_claude_pending` and the worker moves it when it is idle.
@@ -42,14 +46,22 @@ use crate::tmux_cli::Tmux;
 pub const STOP_WAIT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(100);
 
-pub const DID_NOT_STOP: &str =
-    "Claude Code did not stop within ten seconds; the pane was left as it was.";
+pub const DID_NOT_STOP: &str = "Claude Code did not stop within ten seconds; once it does, it starts again on its account, resuming its conversation.";
+pub const DID_NOT_STOP_SHELL: &str =
+    "Claude Code did not stop within ten seconds; its shell gets the terminal back once it does.";
+/// How long a pane whose Claude Code did not stop in time is watched for
+/// its end, keeping remain-on-exit on.
+const LATE_STOP_WAIT: Duration = Duration::from_secs(15 * 60);
 pub const NO_TRANSCRIPT: &str = "Claude Code's conversation file was not found.";
 pub const BUSY: &str = "This pane is being moved already.";
 /// Claude Code is no longer idle when the worker looks again: the move
 /// waits for its turn instead.
 pub const NOT_IDLE: &str = "Claude Code is in a turn now; it moves once the turn ends.";
 pub const PANE_CHANGED: &str = "The pane runs another program now; it was left as it was.";
+/// Claude Code's session record can't be matched to its process (its start
+/// time is missing or another one's): nothing is stopped.
+pub const NOT_SAME_PROCESS: &str =
+    "Claude Code's session record can't be matched to its process; it was left as it was.";
 pub const SHELL_NOT_BACK: &str =
     "Claude Code stopped, but its shell did not take the terminal back, so nothing was typed.";
 pub const NEWER_COPY: &str =
@@ -251,27 +263,29 @@ pub fn share_transcript(
 
 /// One move at a time per pane.
 #[derive(Debug, Default)]
-pub struct Moving(std::sync::Mutex<HashSet<String>>);
+pub struct Moving(std::sync::Arc<std::sync::Mutex<HashSet<String>>>);
 
-pub struct MoveGuard<'a> {
-    moving: &'a Moving,
+/// A pane being moved; another move of it is refused ([`BUSY`]) until this
+/// is dropped, which a pane whose Claude Code stops late does only once it
+/// has ended ([`after_late_stop`]).
+pub struct MoveGuard {
+    moving: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     pane: String,
 }
 
 impl Moving {
-    pub fn begin(&self, pane: &str) -> Option<MoveGuard<'_>> {
+    pub fn begin(&self, pane: &str) -> Option<MoveGuard> {
         let mut set = self.0.lock().unwrap_or_else(|p| p.into_inner());
         set.insert(pane.to_string()).then(|| MoveGuard {
-            moving: self,
+            moving: self.0.clone(),
             pane: pane.to_string(),
         })
     }
 }
 
-impl Drop for MoveGuard<'_> {
+impl Drop for MoveGuard {
     fn drop(&mut self) {
         self.moving
-            .0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&self.pane);
@@ -403,9 +417,11 @@ pub fn shell_keys<'a>(pane: &'a str, command: &'a str) -> Vec<Vec<&'a str>> {
     ]
 }
 
-/// Right before Claude Code is stopped: the pane still runs the program the
-/// collection saw, and Claude Code (the same process, same session) says it
-/// is exactly `idle` (D7). Nothing has changed when this fails.
+/// D7, looked at again right before the signal: the pane runs the same
+/// program, Claude Code is still the same process under it (the pid's
+/// parent chain reaches the pane's program, and its session record's start
+/// time is the process's own, both known), in the same conversation, and
+/// says exactly `idle`. Blocking reads go off the async threads.
 async fn check_still_idle(
     tmux: &Tmux,
     pane: &PaneState,
@@ -421,12 +437,19 @@ async fn check_still_idle(
     {
         return Err(PANE_CHANGED);
     }
-    let record =
-        tokio::task::spawn_blocking(move || crate::activity::claude_record_now(claude_pid))
-            .await
-            .ok()
-            .flatten()
-            .ok_or(NOT_RUNNING)?;
+    let pane_pid = pane.pane_pid;
+    let (under_pane, record) = tokio::task::spawn_blocking(move || {
+        (
+            crate::procs::descends_from(claude_pid, pane_pid),
+            crate::activity::claude_record_now(claude_pid, true),
+        )
+    })
+    .await
+    .map_err(|_| NOT_SAME_PROCESS)?;
+    if !under_pane {
+        return Err(PANE_CHANGED);
+    }
+    let record = record.ok_or(NOT_SAME_PROCESS)?;
     if record.session_id.as_deref() != Some(session) {
         return Err(NOT_IDLE);
     }
@@ -463,7 +486,7 @@ pub async fn move_now(
     to: &str,
     mark: &str,
 ) -> Result<(), String> {
-    let _guard = accounts.moving.begin(&pane.pane_id).ok_or(BUSY)?;
+    let guard = accounts.moving.begin(&pane.pane_id).ok_or(BUSY)?;
     let paths = accounts
         .paths()
         .cloned()
@@ -527,11 +550,21 @@ pub async fn move_now(
                 pane_field(tmux, id, "#{pane_dead}").await.as_deref() == Ok("1")
             })
             .await;
+            let cwd = crate::tmux_cli::format_literal(&cwd);
             if !dead {
-                let _ = tmux.run(&restore).await;
+                // SIGTERM was sent: the pane must not close when Claude
+                // Code ends at last. remain-on-exit stays on until then.
+                after_late_stop(
+                    guard,
+                    tmux.clone(),
+                    id.to_string(),
+                    pane.pane_pid,
+                    cwd,
+                    stay.command.clone(),
+                    restore.iter().map(|arg| arg.to_string()).collect(),
+                );
                 return Err(DID_NOT_STOP.to_string());
             }
-            let cwd = crate::tmux_cli::format_literal(&cwd);
             let shared = share(&record, paths.account_dir(to), &session).await;
             let mut commands = Vec::new();
             match &shared {
@@ -558,8 +591,12 @@ pub async fn move_now(
                     stay.command.as_str(),
                 ]),
             }
-            commands.push(restore.clone());
             let started = tmux.run(chain(commands)).await;
+            // On its own: an error in a command list stops the commands
+            // after it, which would leave remain-on-exit on.
+            if let Err(error) = tmux.run(&restore).await {
+                tracing::warn!(pane = %id, error = %error.sentence(), "remain-on-exit not put back");
+            }
             if let Err(error) = shared {
                 return Err(format!("{error} Claude Code started again on its account."));
             }
@@ -576,7 +613,7 @@ pub async fn move_now(
             signal(claude_pid, libc::SIGTERM);
             let gone = wait_for(STOP_WAIT, || async { !alive(claude_pid) }).await;
             if !gone {
-                return Err(DID_NOT_STOP.to_string());
+                return Err(DID_NOT_STOP_SHELL.to_string());
             }
             // The shell takes the terminal back as soon as its job ends;
             // typing before it has would go to something else.
@@ -614,6 +651,66 @@ pub async fn move_now(
     accounts.forget_credentials(to);
     accounts.clear_move_error(id);
     Ok(())
+}
+
+/// Claude Code in respawned pane `pane` got SIGTERM but did not end in
+/// time. Once it does (the pane dead, still the same pane program), it
+/// starts again with `stay` (its own account, resuming its conversation);
+/// then `restore` puts remain-on-exit back. A pane respawned meanwhile only
+/// gets remain-on-exit back; a pane closed needs nothing. Watched for
+/// [`LATE_STOP_WAIT`] at most.
+fn after_late_stop(
+    guard: MoveGuard,
+    tmux: Tmux,
+    pane: String,
+    pane_pid: u32,
+    cwd: String,
+    stay: String,
+    restore: Vec<String>,
+) {
+    tokio::spawn(async move {
+        // No other move of this pane until this one is over.
+        let _guard = guard;
+        let deadline = Instant::now() + LATE_STOP_WAIT;
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let Ok(fields) = tmux
+                .pane_fields(&pane, &["#{pane_pid}", "#{pane_dead}"])
+                .await
+            else {
+                return;
+            };
+            let pid = fields.first().map(String::as_str).unwrap_or_default();
+            let dead = fields.get(1).map(String::as_str) == Some("1");
+            // tmux 3.8 clears a dead pane's pid; before, it keeps the last.
+            let same = pid == pane_pid.to_string() || (dead && pid.is_empty());
+            if same && dead {
+                let respawn = [
+                    "respawn-pane",
+                    "-t",
+                    pane.as_str(),
+                    "-c",
+                    cwd.as_str(),
+                    "--",
+                    stay.as_str(),
+                ];
+                match tmux.run(respawn).await {
+                    Ok(_) => {
+                        tracing::info!(%pane, "Claude Code ended late; started again on its account")
+                    }
+                    Err(error) => {
+                        tracing::warn!(%pane, error = %error.sentence(), "Claude Code ended late and was not started again")
+                    }
+                }
+            } else if same && Instant::now() < deadline {
+                continue;
+            }
+            if let Err(error) = tmux.run(&restore).await {
+                tracing::warn!(%pane, error = %error.sentence(), "remain-on-exit not put back");
+            }
+            return;
+        }
+    });
 }
 
 /// "<name> is not signed in", for account `id`.
@@ -750,13 +847,13 @@ pub enum SwitchBy {
     /// Someone, through `tmux::accounts::global`: any switch back the rules
     /// had planned is off.
     Person,
-    /// The rules (D14), which leave `last_switch` themselves. They decided
-    /// on a registry whose global account was `from` and whose last switch
-    /// was made at `last_at_ms`; a registry changed since (someone switched
-    /// meanwhile) is left alone.
+    /// The rules (D14). They decided on the registry of `generation`; a
+    /// registry written since (someone switched, even back and forth) is
+    /// left alone. `record` becomes `last_switch` in the same write as the
+    /// switch, and gets the panes moved once they are.
     Rules {
-        from: String,
-        last_at_ms: Option<u64>,
+        generation: u64,
+        record: crate::model::AccountSwitch,
     },
 }
 
@@ -770,6 +867,9 @@ pub struct Switched {
     pub moved: Vec<String>,
     pub after_turn: Vec<String>,
     pub stayed: Vec<String>,
+    /// Another account was made global before every pane was looked at:
+    /// the panes left follow that one now, and were not touched.
+    pub superseded: bool,
 }
 
 /// Make `to` the global account (D3, D8): the registry, tmux's global
@@ -791,7 +891,7 @@ pub async fn switch_global(
     if !accounts.is_signed_in(to) {
         return Err(not_signed_in(accounts, to));
     }
-    accounts.update_registry(|registry| {
+    accounts.update_registry_at(|registry, generation| {
         if !registry.has(to) {
             return Err(super::manage::no_account(to));
         }
@@ -802,11 +902,16 @@ pub async fn switch_global(
                     last.back_at_ms = None;
                 }
             }
-            SwitchBy::Rules { from, last_at_ms } => {
-                let last = registry.last_switch.as_ref().map(|last| last.at_ms);
-                if registry.global != *from || last != *last_at_ms {
+            SwitchBy::Rules {
+                generation: decided_on,
+                record,
+            } => {
+                if generation != *decided_on {
                     return Err(RULES_STALE.to_string());
                 }
+                // With the switch itself: a person's switch after it always
+                // finds it, and calls off its switch back.
+                registry.last_switch = Some(record.clone());
             }
         }
         registry.global = to.to_string();
@@ -824,10 +929,20 @@ pub async fn switch_global(
         .collect();
     following.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
     for pane in following {
+        // Each move can take seconds: someone may have made another account
+        // global meanwhile, and the panes left follow that one now.
+        if accounts.registry().global != to {
+            tracing::info!(to, "the global account changed during the switch");
+            out.superseded = true;
+            break;
+        }
         let id = pane.pane_id.clone();
         let skip = pane.info.skip_permissions;
         accounts.clear_move_error(&id);
         match mode {
+            // Before tmux 3.0 the mark is the window's, shared with another
+            // Claude Code pane: it is left as it is.
+            SwitchMode::NewOnly if pane.marks_shared => out.stayed.push(id),
             SwitchMode::NewOnly => {
                 // Pinned where it runs, so its chip never says the new one.
                 if let Some(current) = pane.info.account.as_deref() {
@@ -858,7 +973,32 @@ pub async fn switch_global(
             }
         }
     }
+    if let SwitchBy::Rules { record, .. } = &by {
+        note_switched_panes(accounts, record, &out);
+    }
     Ok(out)
+}
+
+/// The panes a switch of the rules moved, in its `last_switch`, while that
+/// is still its record (a later switch leaves its own). Nothing else of it
+/// changes: a person's switch may have called off its switch back.
+fn note_switched_panes(accounts: &Accounts, record: &crate::model::AccountSwitch, out: &Switched) {
+    let ours = |last: &crate::model::AccountSwitch| {
+        last.auto && last.at_ms == record.at_ms && last.from == record.from && last.to == record.to
+    };
+    if !accounts.registry().last_switch.as_ref().is_some_and(ours) {
+        return;
+    }
+    let noted = accounts.update_registry(|registry| {
+        if let Some(last) = registry.last_switch.as_mut().filter(|last| ours(last)) {
+            last.moved = out.moved.clone();
+            last.after_turn = out.after_turn.clone();
+        }
+        Ok(())
+    });
+    if let Err(error) = noted {
+        tracing::warn!(%error, "the panes of the last switch not saved");
+    }
 }
 
 /// Move the idle Claude Code panes running on `from` to `to`, pinning them

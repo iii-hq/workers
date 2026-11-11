@@ -149,7 +149,7 @@ impl ActivityReader {
         dir.poll = poll;
         let dir = dir.value.clone()?;
         Some(
-            self.claude_at(&dir, pid, procs::start_ticks(pid))
+            self.claude_at(&dir, pid, procs::proc_start(pid))
                 .unwrap_or_else(|| Activity {
                     claude: Some(ClaudeRecord {
                         config_dir: dir,
@@ -161,10 +161,15 @@ impl ActivityReader {
     }
 
     /// The activity Claude Code process `pid` records under its config
-    /// directory `dir`; `start_ticks` is the process's start time when known,
-    /// to tell its file from one a reused pid left behind.
-    fn claude_at(&mut self, dir: &Path, pid: u32, start_ticks: Option<u64>) -> Option<Activity> {
-        let session = read_claude_session(dir, pid, start_ticks)?;
+    /// directory `dir`; `start` is the process's start time when known, to
+    /// tell its file from one a reused pid left behind.
+    fn claude_at(
+        &mut self,
+        dir: &Path,
+        pid: u32,
+        start: Option<procs::ProcStart>,
+    ) -> Option<Activity> {
+        let session = read_claude_session(dir, pid, start, false)?;
         let state = claude_state(session.status.as_deref(), session.waiting_for.as_deref());
         let subagents = if state == Some(AgentState::Working) {
             match self.transcript_dir(dir, &session) {
@@ -525,35 +530,80 @@ fn codex_pids(table: &ProcTable, pid: u32) -> Vec<u32> {
         .collect()
 }
 
-/// `<dir>/sessions/<pid>.json` when process `pid` (started at `start_ticks`,
-/// when known) wrote it, not a reused pid.
-fn read_claude_session(dir: &Path, pid: u32, start_ticks: Option<u64>) -> Option<ClaudeSession> {
+/// `<dir>/sessions/<pid>.json` when process `pid` (started at `start`, when
+/// known) wrote it, not a reused pid. `exact`: only when both start times
+/// are known and the same (what a move needs); otherwise a file whose
+/// start can't be compared counts.
+fn read_claude_session(
+    dir: &Path,
+    pid: u32,
+    start: Option<procs::ProcStart>,
+    exact: bool,
+) -> Option<ClaudeSession> {
     let text = std::fs::read_to_string(dir.join("sessions").join(format!("{pid}.json"))).ok()?;
     let session: ClaudeSession = serde_json::from_str(&text).ok()?;
     if session.pid != pid {
         return None;
     }
-    if let (Some(recorded), Some(actual)) = (
-        session
-            .proc_start
-            .as_deref()
-            .and_then(|s| s.parse::<u64>().ok()),
-        start_ticks,
-    ) {
-        if recorded != actual {
-            return None;
-        }
+    let same = session
+        .proc_start
+        .as_deref()
+        .zip(start)
+        .and_then(|(recorded, actual)| same_start(recorded, actual));
+    match same {
+        Some(false) => None,
+        None if exact => None,
+        _ => Some(session),
     }
-    Some(session)
+}
+
+/// Whether `recorded` (a session's `procStart`) is the start `actual`:
+/// Linux's clock ticks as digits, macOS's `ps -o lstart=` in UTC
+/// ("Sun Nov  8 02:28:58 2026"). `None` when it can't be read.
+fn same_start(recorded: &str, actual: procs::ProcStart) -> Option<bool> {
+    match actual {
+        procs::ProcStart::Ticks(ticks) => recorded.trim().parse::<u64>().ok().map(|r| r == ticks),
+        procs::ProcStart::Second(second) => lstart_second(recorded).map(|r| r == second),
+    }
+}
+
+/// Seconds since the epoch of `ps -o lstart=` printed with `LC_ALL=C` and
+/// `TZ=UTC`: weekday, month, day, `HH:MM:SS`, year.
+fn lstart_second(text: &str) -> Option<u64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let fields: Vec<&str> = text.split_whitespace().collect();
+    let [_, month, day, time, year] = fields.as_slice() else {
+        return None;
+    };
+    let month = MONTHS.iter().position(|m| m == month)? as i64 + 1;
+    let day: i64 = day.parse().ok()?;
+    let year: i64 = year.parse().ok()?;
+    let mut hms = time.split(':').map(|part| part.parse::<i64>().ok());
+    let (hour, minute, second) = (hms.next()??, hms.next()??, hms.next()??);
+    if hms.next().is_some() || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
 }
 
 /// What Claude Code process `pid` records about itself right now (its
 /// config folder from its environment, its `sessions/<pid>.json`), read
-/// afresh: `None` when it is gone or has not recorded its session.
-/// Blocking.
-pub fn claude_record_now(pid: u32) -> Option<ClaudeRecord> {
+/// afresh: `None` when it is gone or has not recorded its session. `exact`:
+/// only a record whose start time matches the process's (a move stops
+/// nothing it can't match). Blocking.
+pub fn claude_record_now(pid: u32, exact: bool) -> Option<ClaudeRecord> {
     let dir = claude_config_dir(pid)?;
-    let session = read_claude_session(&dir, pid, procs::start_ticks(pid))?;
+    let session = read_claude_session(&dir, pid, procs::proc_start(pid), exact)?;
     Some(ClaudeRecord {
         config_dir: dir,
         session_id: Some(session.session_id).filter(|id| !id.is_empty()),
@@ -961,7 +1011,7 @@ mod tests {
         );
         let mut reader = ActivityReader::default();
         let activity = reader
-            .claude_at(&scratch.0, 4242, Some(199_241_211))
+            .claude_at(&scratch.0, 4242, Some(procs::ProcStart::Ticks(199_241_211)))
             .unwrap();
         assert_eq!(activity.state, Some(AgentState::Working));
         assert_eq!(activity.subagents.len(), 1);
@@ -1097,6 +1147,54 @@ mod tests {
     }
 
     #[test]
+    fn a_move_needs_the_exact_start_of_the_process() {
+        let scratch = Scratch::new("exact");
+        scratch.write("sessions/4242.json", &claude_session(4242, "idle", None));
+        let ticks = |n| Some(procs::ProcStart::Ticks(n));
+        assert!(read_claude_session(&scratch.0, 4242, ticks(199_241_211), true).is_some());
+        assert!(read_claude_session(&scratch.0, 4242, ticks(7), true).is_none());
+        assert!(read_claude_session(&scratch.0, 4242, ticks(7), false).is_none());
+        // Unknown on one side: shown, never moved.
+        assert!(read_claude_session(&scratch.0, 4242, None, false).is_some());
+        assert!(read_claude_session(&scratch.0, 4242, None, true).is_none());
+        let mut no_start: serde_json::Value =
+            serde_json::from_str(&claude_session(4242, "idle", None)).unwrap();
+        no_start.as_object_mut().unwrap().remove("procStart");
+        scratch.write("sessions/4242.json", &no_start.to_string());
+        assert!(read_claude_session(&scratch.0, 4242, ticks(199_241_211), false).is_some());
+        assert!(read_claude_session(&scratch.0, 4242, ticks(199_241_211), true).is_none());
+    }
+
+    #[test]
+    fn macos_start_times_read_back() {
+        // What Claude Code writes on macOS: `ps -o lstart=` with LC_ALL=C, TZ=UTC.
+        assert_eq!(
+            lstart_second("Sun Nov  8 02:28:58 2026"),
+            Some(1_794_104_938)
+        );
+        assert_eq!(
+            lstart_second("Thu Feb 29 23:59:59 2024"),
+            Some(1_709_251_199)
+        );
+        let second = |n| procs::ProcStart::Second(n);
+        assert_eq!(
+            same_start("Sun Nov  8 02:28:58 2026", second(1_794_104_938)),
+            Some(true)
+        );
+        assert_eq!(
+            same_start("Sun Nov  8 02:28:59 2026", second(1_794_104_938)),
+            Some(false)
+        );
+        assert_eq!(same_start("199241211", second(1_794_104_938)), None);
+        assert_eq!(same_start("Sun Nov  8 2026", second(0)), None);
+        assert_eq!(same_start("Sun Foo  8 02:28:58 2026", second(0)), None);
+        assert_eq!(
+            same_start("199241211", procs::ProcStart::Ticks(199_241_211)),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn claude_finds_shortened_transcript_folders() {
         let scratch = Scratch::new("claude-long");
         scratch.write("sessions/4242.json", &claude_session(4242, "busy", None));
@@ -1126,7 +1224,10 @@ mod tests {
 
         // The file a previous process with this pid left behind.
         scratch.write("sessions/4242.json", &claude_session(4242, "busy", None));
-        assert_eq!(reader.claude_at(&scratch.0, 4242, Some(7)), None);
+        assert_eq!(
+            reader.claude_at(&scratch.0, 4242, Some(procs::ProcStart::Ticks(7))),
+            None
+        );
         // A file that is not this pid's.
         assert_eq!(reader.claude_at(&scratch.0, 4343, None), None);
     }

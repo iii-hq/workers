@@ -120,6 +120,33 @@ fn procargs2(pid: u32) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
+/// `proc_pidinfo(PROC_PIDTBSDINFO)` of `pid`: its parent and start time.
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    // SAFETY: proc_bsdinfo is plain data; all zeroes is a valid value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: the buffer is this function's own proc_bsdinfo, `size` bytes.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (got == size).then_some(info)
+}
+
+pub fn parent(pid: u32) -> Option<u32> {
+    bsd_info(pid).map(|info| info.pbi_ppid)
+}
+
+pub fn start_second(pid: u32) -> Option<u64> {
+    bsd_info(pid).map(|info| info.pbi_start_tvsec)
+}
+
 pub fn environ_var(pid: u32, key: &str) -> Option<String> {
     let buffer = procargs2(pid)?;
     super::procargs2_env(&buffer).into_iter().find_map(|entry| {
