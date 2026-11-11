@@ -383,7 +383,16 @@ pub async fn pre_generate(
     // persisted and replayed on later steps, so re-recalling would stack copies.
     let query = recall_query(&input);
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
-    let injected = injection(deps, &cfg, &bank_name, &layers, query.as_deref(), &seen).await;
+    let injected = injection(
+        deps,
+        &cfg,
+        &bank_name,
+        &layers,
+        input.step == 0,
+        query.as_deref(),
+        &seen,
+    )
+    .await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -491,14 +500,16 @@ pub(crate) fn rules_section(
 /// (`scope::Resolved::layers`): their rules first ([`turn_rules`]), each labelled with its
 /// bank's name so two `learned` rules never read as one, and the memories
 /// of theirs it reads (`scope::layer_keeps`) in the same recall.
-/// `query` is the user message to recall for (`None`: no recall, as on a
-/// turn's later steps), `seen` the memory texts the window already carries
-/// ([`injected_in_window`]).
+/// `opening` is the turn's first step, the one that carries the rules
+/// reminder; `query` is the user message to recall for (`None`: no recall,
+/// as on a turn's later steps or a notification), `seen` the memory texts
+/// the window already carries ([`injected_in_window`]).
 pub(crate) async fn injection(
     deps: &Deps,
     cfg: &WorkerConfig,
     bank_name: &str,
     layers: &[String],
+    opening: bool,
     query: Option<&str>,
     seen: &HashSet<String>,
 ) -> Injection {
@@ -537,8 +548,8 @@ pub(crate) async fn injection(
     let query = query
         .filter(|q| !q.trim().is_empty())
         .map(crate::store::cap_query);
-    // On the turn's opening step, like recall: the message is persisted.
-    let reminder = query.as_ref().and_then(|_| rules_reminder(&rules));
+    // On the turn's opening step, recall or not: the message is persisted.
+    let reminder = opening.then(|| rules_reminder(&rules)).flatten();
     // The turn's bank whole, then the memories of each layer it reads.
     let sources: Vec<(&str, &Bank, bool)> = bank
         .as_deref()
@@ -2107,6 +2118,7 @@ Formal."
             &offline_cfg(3),
             "w-abc123",
             &["agent-x".to_string()],
+            true,
             Some("kiwi"),
             &HashSet::new(),
         )
@@ -2182,6 +2194,7 @@ Formal."
             &cfg,
             "w-abc123",
             &["agent-x".to_string()],
+            true,
             Some(query),
             &HashSet::new(),
         )
@@ -2202,6 +2215,7 @@ Formal."
             &cfg,
             "w-abc123",
             &layers,
+            true,
             Some(query),
             &HashSet::new(),
         )
@@ -2818,6 +2832,7 @@ Formal."
             &cfg,
             "w-abc123",
             &[],
+            true,
             recall_query(&input).as_deref(),
             &HashSet::new(),
         )
@@ -2826,6 +2841,10 @@ Formal."
         assert_eq!(out.rules, 1);
         assert!(out.memories.is_empty());
         assert_eq!(out.retrieval, "none");
+        // The reply still gets the per-turn reminder, with no memory lines.
+        let message = out.message.expect("the rules reminder");
+        assert!(message.contains(REMINDER_OPEN), "{message}");
+        assert!(!message.contains("transcript"), "{message}");
     }
 
     #[tokio::test]

@@ -78,7 +78,16 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
         // A hypothetical message has no window: nothing was injected yet.
         let seen = std::collections::HashSet::new();
         let layers = scope.layers(&cfg.default_bank);
-        hooks::injection(deps, &cfg, bank_name, &layers, Some(&req.query), &seen).await
+        hooks::injection(
+            deps,
+            &cfg,
+            bank_name,
+            &layers,
+            true,
+            Some(&req.query),
+            &seen,
+        )
+        .await
     };
     Ok(PreviewResponse {
         bank: bank_name.to_string(),
