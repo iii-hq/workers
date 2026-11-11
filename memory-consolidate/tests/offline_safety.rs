@@ -369,17 +369,35 @@ async fn configured_dry_run_and_rejected_bank_preserve_state() {
     )
     .await
     .unwrap();
+    // Planning mode still records its plan and checkpoints, so the schedule
+    // waits out the interval instead of rescanning every tick.
     assert!(response.dry_run);
-    assert!(!response.checkpointed);
+    assert!(response.checkpointed);
     assert_eq!(response.superseded, 0);
-    assert_eq!(before, boundary.snapshot());
+    let after = boundary.snapshot();
+    assert_eq!(before["rows"], after["rows"]);
+    assert_eq!(before["rules"], after["rules"]);
+    assert_eq!(
+        before["state"]["semantic_cursor:offline"],
+        after["state"]["semantic_cursor:offline"]
+    );
+    assert_eq!(after["state"]["last_report"]["dry_run"], true);
+    assert_eq!(
+        after["state"]["last_report"]["banks"][0]["groups"][0]["loser_ids"],
+        json!(["b"])
+    );
+    assert_ne!(before["state"]["last_run"], after["state"]["last_run"]);
     assert_eq!(
         boundary
             .calls()
             .iter()
-            .map(|(f, _)| f.as_str())
+            .map(|(f, p)| format!("{f} {}", p["key"].as_str().unwrap_or("")))
             .collect::<Vec<_>>(),
-        ["memory::list"]
+        [
+            "memory::list ",
+            "state::set last_report",
+            "state::set last_run"
+        ]
     );
 }
 

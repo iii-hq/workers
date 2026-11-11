@@ -239,10 +239,11 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
     // The report is best-effort telemetry; the CHECKPOINT is not. Only a
     // clean pass (no bank errors) advances last_run — an errored or
     // checkpoint-failed pass stays due, so the schedule retries it
-    // instead of silently waiting out a full interval.
-    // Planning is observational: not even telemetry or scheduling state is
-    // persisted, and checkpointed remains false. The response IS the report.
-    if dry_run {
+    // instead of silently waiting out a full interval. A configured dry run
+    // counts: the operator chose planning mode, and its plan must show up in
+    // `status`. Only an explicit `dry_run: true` call is purely
+    // observational: its response IS the report.
+    if req.dry_run == Some(true) {
         return Ok(RunResponse {
             dry_run,
             banks: reports,

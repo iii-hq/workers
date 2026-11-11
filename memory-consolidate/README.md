@@ -18,7 +18,7 @@ Plan without writing; the `run` response is the plan:
 iii call memory-consolidate::run dry_run=true
 ```
 
-A dry run is read-only: it reports the deterministic groups, skips the LLM and semantic tiers (no recall, embedding, model or rule calls), and writes no memory, cursor, `last_report` or `last_run`, so `memory-consolidate::status` keeps showing the last real pass.
+A dry run is read-only: it reports the deterministic groups, skips the LLM and semantic tiers (no recall, embedding, model or rule calls), and writes no memory, cursor, `last_report` or `last_run`, so `memory-consolidate::status` keeps showing the last real pass. The configured `dry_run: true` (scheduled planning mode) makes the same read-only plan but records it as `last_report` and checkpoints `last_run`, so the schedule still waits `interval_hours` between passes.
 
 Apply for one bank only:
 
