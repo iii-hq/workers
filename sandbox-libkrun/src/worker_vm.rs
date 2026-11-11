@@ -1306,6 +1306,10 @@ impl ImageWrite {
             &extra,
             &cancelled,
         )?;
+        // The image's bytes reach the disk before a rename can publish them.
+        File::open(&tmp_image)
+            .and_then(|image| image.sync_all())
+            .map_err(|e| format!("flush the image: {e}"))?;
         let build_id =
             sha256_file(&tmp_image, &cancelled).map_err(|e| format!("hash the image: {e}"))?;
         write_new_file(&tmp_id, format!("{build_id}\n").as_bytes())
@@ -1330,11 +1334,13 @@ impl ImageWrite {
 }
 
 /// The first of the two steps that put a written image in place: remove
-/// `out/image.id`, flush that removal to disk, then rename `image` to
-/// `out/image.erofs`. Until [`commit_image_id`] renames the new id in, `out`
-/// holds an image and no id, which a start refuses with S508: a crash between
-/// the two steps leaves a rebuild to do, never the new image under the
-/// previous build's id.
+/// `out/image.id`, flush that removal to disk, rename `image` to
+/// `out/image.erofs`, and flush that too. Until [`commit_image_id`] renames the
+/// new id in, `out` holds an image and no id, which a start refuses with S508: a
+/// crash, a failed flush or a failed rename between the two steps leaves a
+/// rebuild to do, never the new image under the previous build's id. One
+/// writer per `output_dir` at a time is assumed: two builds of one VM are S509,
+/// and nothing serializes two VMs sharing a directory (README, Known limits).
 fn swap_image(out: &Path, image: &Path) -> Result<(), String> {
     match std::fs::remove_file(out.join(IMAGE_ID_FILE)) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
@@ -1344,10 +1350,13 @@ fn swap_image(out: &Path, image: &Path) -> Result<(), String> {
     }
     sync_dir(out).map_err(|e| format!("flush {}: {e}", out.display()))?;
     std::fs::rename(image, out.join(IMAGE_FILE))
-        .map_err(|e| format!("rename the image into place: {e}"))
+        .map_err(|e| format!("rename the image into place: {e}"))?;
+    // So the id's rename can never reach the disk without the image's.
+    sync_dir(out).map_err(|e| format!("flush {}: {e}", out.display()))
 }
 
-/// The second step after [`swap_image`]: rename the image's id into place.
+/// The second step after [`swap_image`]: rename the image's id into place. The
+/// build is done then, so a failed last flush is not an error.
 fn commit_image_id(out: &Path, id: &Path) -> Result<(), String> {
     std::fs::rename(id, out.join(IMAGE_ID_FILE))
         .map_err(|e| format!("rename image.id into place: {e}"))?;
@@ -1355,15 +1364,32 @@ fn commit_image_id(out: &Path, id: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Flush the entries of `dir` (a create, rename or removal in it) to disk.
+/// Flush the entries of `dir` (a create, rename or removal in it) to disk. A
+/// filesystem that cannot flush a directory ([`flush_unsupported`]) gets a
+/// warning, not an error, as 0.4.0 did: the order of the operations still
+/// holds against a crash of this process, only not against a power failure.
 fn sync_dir(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
+    match File::open(dir)?.sync_all() {
+        Err(e) if flush_unsupported(&e) => {
+            tracing::warn!(dir = %dir.display(), error = %e, "this filesystem cannot flush a directory; going on without");
+            Ok(())
+        }
+        flushed => flushed,
+    }
+}
+
+/// EINVAL, ENOTSUP (EOPNOTSUPP) and EBADF from a directory's fsync: what
+/// filesystems that do not flush directories answer (some network and
+/// FAT-family volumes; `F_FULLFSYNC` on macOS).
+fn flush_unsupported(e: &io::Error) -> bool {
+    e.raw_os_error().is_some_and(|code| {
+        [libc::EINVAL, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EBADF].contains(&code)
+    })
 }
 
 /// `sha256:<hex>` of a file's bytes; an error once `cancelled` returns true.
 fn sha256_file(path: &Path, cancelled: &dyn Fn() -> bool) -> io::Result<String> {
     let mut file = File::open(path)?;
-    file.sync_all()?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
@@ -3654,6 +3680,20 @@ mod tests {
             code(vms.admit_build("t", "k", &build_ref(&out, &previous))),
             "S508"
         );
+    }
+
+    /// A filesystem that cannot flush a directory gets a warning, not a failed
+    /// build; an I/O error is still an error.
+    #[test]
+    fn a_directory_flush_the_filesystem_refuses_is_a_warning() {
+        for unsupported in [libc::EINVAL, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EBADF] {
+            assert!(flush_unsupported(&io::Error::from_raw_os_error(
+                unsupported
+            )));
+        }
+        for failed in [libc::EIO, libc::ENOSPC, libc::EACCES] {
+            assert!(!flush_unsupported(&io::Error::from_raw_os_error(failed)));
+        }
     }
 
     /// The build's run is dropped once its image is renamed into place, before
