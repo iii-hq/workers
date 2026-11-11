@@ -65,6 +65,7 @@ async fn cycle() {
         source: source.clone(),
         env: Default::default(),
         engine_url: "ws://127.0.0.1:49134".into(),
+        build: None,
     };
     let status = |vm_id: &str, instance| {
         vms.status(WorkerStatusRequest {
@@ -143,6 +144,7 @@ async fn scoped_boot(vms: &WorkerVms, source: &WorkerSource, lease_grace: Durati
             source: source.clone(),
             env: Default::default(),
             engine_url: "ws://127.0.0.1:49134".into(),
+            build: None,
         })
         .await
         .unwrap();

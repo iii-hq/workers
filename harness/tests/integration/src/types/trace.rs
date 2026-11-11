@@ -63,7 +63,7 @@ impl TraceEvidenceV1 {
         let lifecycle_turns = self
             .spans_named(&lifecycle_name)
             .into_iter()
-            .filter_map(TraceSpanV1::invocation_input)
+            .filter_map(TraceSpanV1::observed_event)
             .filter_map(|mut payload| {
                 strip_engine_fields(&mut payload);
                 let terminal = payload.get("terminal").and_then(Value::as_bool) == Some(true);
@@ -233,6 +233,21 @@ impl TraceSpanV1 {
 
     pub fn invocation_output(&self) -> Option<Value> {
         self.event("iii.invocation.output")?.payload()
+    }
+
+    /// The event an observer target was called with: a target observing with
+    /// `capture: [output]` receives the `Observed` envelope, the event under
+    /// `output`; any other input is the event itself.
+    pub fn observed_event(&self) -> Option<Value> {
+        let input = self.invocation_input()?;
+        match input {
+            Value::Object(mut map)
+                if map.contains_key("observer_id") && map.contains_key("output") =>
+            {
+                map.remove("output")
+            }
+            other => Some(other),
+        }
     }
 
     fn self_and_descendants(&self) -> Box<dyn Iterator<Item = &TraceSpanV1> + '_> {
@@ -441,5 +456,43 @@ mod tests {
         pending.traces[0].roots[0].pending = true;
         pending.summary = TraceSummaryV1::from_traces(&pending.traces);
         assert!(!pending.is_stable_for(1, 1, "integration-probe::turn-completed"));
+    }
+
+    /// The lifecycle sink observes `harness::on-turn-completed` with
+    /// `capture: [output]`, so its invocation input is the `Observed`
+    /// envelope and the event sits under `output`.
+    #[test]
+    fn stability_reads_the_lifecycle_event_from_the_observed_envelope() {
+        let mut lifecycle = span("execute integration-probe::turn-completed", false);
+        lifecycle.events.push(TraceEventV1 {
+            name: "iii.invocation.input".into(),
+            timestamp_unix_nano: 1,
+            attributes: BTreeMap::from([
+                (
+                    "iii.payload.json".into(),
+                    json!({
+                        "observer_id": "observer-1",
+                        "activation_id": "activation-1",
+                        "function_id": "harness::on-turn-completed",
+                        "invocation_id": "invocation-1",
+                        "status": "success",
+                        "output": {
+                            "session_id": "session-1",
+                            "turn_id": "turn-1",
+                            "status": "completed",
+                            "terminal": true,
+                            "timestamp": 1
+                        }
+                    })
+                    .to_string(),
+                ),
+                ("iii.payload.truncated".into(), "false".into()),
+            ]),
+        });
+        let evidence = TraceEvidenceV1::new(vec![TraceTreeV1 {
+            trace_id: "trace-1".into(),
+            roots: vec![lifecycle],
+        }]);
+        assert!(evidence.is_stable_for(1, 1, "integration-probe::turn-completed"));
     }
 }

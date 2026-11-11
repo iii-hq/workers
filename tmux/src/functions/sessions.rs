@@ -5,13 +5,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
-use crate::tmux_cli::{resolve_cwd, unescape_separators, validate_command, validate_name, SEP};
+use crate::tmux_cli::{
+    format_literal, resolve_cwd, unescape_separators, validate_command, validate_name, HOLD, SEP,
+};
 
 pub const CREATE: &str = "tmux::sessions::create";
 pub const RENAME: &str = "tmux::sessions::rename";
 pub const KILL: &str = "tmux::sessions::kill";
 
-const CREATE_DESC: &str = "Create a detached tmux session (starting the tmux server if needed). Optional name, working directory (default $HOME), first window name and a shell command to run instead of the default shell.";
+const CREATE_DESC: &str = "Create a detached tmux session (starting the tmux server if needed). Optional name, working directory (default $HOME), first window name and a shell command to run instead of the default shell. With remain_on_exit, the pane stays once its program ends, dead, for tmux::panes::respawn to restart it.";
 const RENAME_DESC: &str = "Rename a tmux session.";
 const KILL_DESC: &str = "Kill a tmux session and every program running in its windows.";
 
@@ -29,6 +31,9 @@ pub struct CreateSessionInput {
     /// Name of the first window.
     #[serde(default)]
     pub window_name: Option<String>,
+    /// Keep the pane once its program ends, shown dead, so tmux::panes::respawn can restart it (default false: tmux closes it). On tmux before 3.0, which has no pane options, every pane of its window is kept.
+    #[serde(default)]
+    pub remain_on_exit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -105,24 +110,29 @@ pub async fn create(ctx: &Ctx, input: CreateSessionInput) -> Result<CreatedSessi
     ];
     if let Some(name) = input.name.as_deref() {
         validate_name("session", name)?;
-        args.extend(["-s".into(), name.to_string()]);
+        args.extend(["-s".into(), tmux.name_arg(name)]);
     }
     if let Some(window_name) = input.window_name.as_deref() {
         validate_name("window", window_name)?;
-        args.extend(["-n".into(), window_name.to_string()]);
+        args.extend(["-n".into(), tmux.new_window_name_arg(window_name)]);
     }
     let cwd = match input.cwd.as_deref() {
         Some(cwd) => resolve_cwd(cwd)?,
         None => resolve_cwd("~").unwrap_or_else(|_| "/".to_string()),
     };
-    args.extend(["-c".into(), cwd]);
+    args.extend(["-c".into(), format_literal(&cwd)]);
     if let Some(command) = input.command.as_deref() {
         validate_command(command)?;
-        args.extend(["--".into(), command.to_string()]);
+        let first = if input.remain_on_exit { HOLD } else { command };
+        args.extend(["--".into(), first.to_string()]);
     }
-    let output = tmux.run(&args).await.map_err(|error| error.to_string())?;
-    let created = parse_created(&output)?;
+    let output = tmux.run(&args).await.map_err(|error| error.sentence())?;
     ctx.monitor.poke();
+    let created = parse_created(&output)?;
+    if input.remain_on_exit {
+        tmux.keep_when_done(&created.pane_id, input.command.as_deref())
+            .await?;
+    }
     Ok(created)
 }
 
@@ -130,9 +140,15 @@ pub async fn rename(ctx: &Ctx, input: RenameSessionInput) -> Result<RenamedSessi
     validate_name("session", &input.name)?;
     let tmux = ctx.tmux().await?;
     let session_id = tmux.resolve_session(&input.session).await?;
-    tmux.run(["rename-session", "-t", &session_id, "--", &input.name])
-        .await
-        .map_err(|error| error.to_string())?;
+    tmux.run([
+        "rename-session",
+        "-t",
+        &session_id,
+        "--",
+        &tmux.name_arg(&input.name),
+    ])
+    .await
+    .map_err(|error| error.sentence())?;
     ctx.monitor.poke();
     Ok(RenamedSession {
         session_id,
@@ -145,7 +161,7 @@ pub async fn kill(ctx: &Ctx, input: SessionInput) -> Result<KilledOutput, String
     let session_id = tmux.resolve_session(&input.session).await?;
     tmux.run(["kill-session", "-t", &session_id])
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.sentence())?;
     ctx.monitor.poke();
     Ok(KilledOutput { killed: true })
 }

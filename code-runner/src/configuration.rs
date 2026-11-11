@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::config::{CodeRunnerConfig, SharedConfig};
@@ -137,7 +137,7 @@ pub fn observe_config_changes(iii: &IIIClient, config: SharedConfig) {
                 "input.id": { "$eq": config_id() },
                 "input.event_type": { "$eq": "configuration:updated" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_FN_ID,
     );
 }

@@ -233,7 +233,7 @@ export class CursorProvider {
     // Pending while llm-router is down; the router sends the ready event to
     // an observer added after it is ready.
     this.iii.observe(
-      { function_id: 'router::on-ready', deliver: 'output' },
+      { function_id: 'router::on-ready', capture: ['output'] },
       'provider::cursor::on_router_ready',
     );
     void this.rebindAndRefresh();

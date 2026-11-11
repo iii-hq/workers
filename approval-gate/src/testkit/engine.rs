@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
     RegisterFunction, Source,
 };
 use serde_json::{json, Value};
@@ -540,7 +540,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             RegisterFunction::new_async(move |req: Value| {
                 let log = log.clone();
                 async move {
-                    log_push(&log, req);
+                    log_push(&log, req["output"].clone());
                     Ok::<_, iii_sdk::errors::Error>(Value::Null)
                 }
             }),
@@ -554,7 +554,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             RegisterFunction::new_async(move |req: Value| {
                 let log = log.clone();
                 async move {
-                    log_push(&log, req);
+                    log_push(&log, req["output"].clone());
                     Ok::<_, iii_sdk::errors::Error>(Value::Null)
                 }
             }),
@@ -568,7 +568,7 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         (ON_PENDING_RESOLVED_FN, "recorder::on_resolved"),
     ] {
         let handle = iii.observe(
-            Source::function(function_id).deliver(Deliver::Output),
+            Source::function(function_id).capture([Capture::Output]),
             recorder,
         );
         await_active(&handle, function_id).await;

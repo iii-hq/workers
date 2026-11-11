@@ -6,7 +6,7 @@
 
 //! `sandbox-libkrun::worker::*`: worker VMs that Compose or `iii sandbox run` supervises.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -14,7 +14,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,12 +28,16 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
-use crate::cli::local_worker::{VmOverride, bundle_vm_command, local_vm_command, validate_source};
+use crate::cli::local_worker::{
+    BootImage, VmOverride, bundle_vm_command, image_build_command, local_vm_command,
+    open_build_export, validate_source,
+};
 use crate::cli::worker_manager::oci;
 use crate::daemon_exit::Lifeline;
 use crate::sandbox_daemon::SandboxError;
 use crate::wire::{
-    LogRecord, LogStream, State, WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest,
+    BaseImageRef, LogRecord, LogStream, State, WorkerBuildRef, WorkerBuildRequest,
+    WorkerBuildResponse, WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest,
     WorkerLogsResponse, WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource,
     WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest,
     scoped_auth_matches,
@@ -61,6 +65,30 @@ const LEASE_STOP_GRACE: Duration = Duration::from_secs(10);
 const LEASE_PROBES: u32 = 9;
 /// Records the VM's `state_key`: `status`, `stop` and `logs` name it by `vm_id`.
 const STATE_KEY_FILE: &str = "state_key";
+/// What `worker::build` leaves in its `output_dir`: the image, then its build id.
+const IMAGE_FILE: &str = "image.erofs";
+const IMAGE_ID_FILE: &str = "image.id";
+/// `<vm_id>/build-mode`, beside `root/` and out of the guest's reach: the VM's
+/// data disk belongs to builds. Written by the first `worker::start` with `build`.
+const BUILD_MODE_SEAL: &str = "build-mode";
+/// Where the first start of a build keeps what an earlier adapter left in the VM
+/// dir: a 0.26 overlay disk (`root/upper.ext4`) and a legacy rootfs clone (`root/`).
+const PRE_BUILD_DISK: &str = "upper.ext4.pre-build";
+const PRE_BUILD_ROOT: &str = "root.pre-build";
+/// A build's scratch dir in `<vm_id>/`: `build-<pid>-<seq>`.
+const BUILD_SCRATCH_PREFIX: &str = "build-";
+/// A build writes to its `logs` channel at least this often, a one-byte binary
+/// frame when it has nothing to say, so a reader that left is noticed.
+const BUILD_KEEPALIVE: Duration = Duration::from_secs(5);
+/// The lines of build output an S507 carries.
+const BUILD_TAIL_LINES: usize = 20;
+/// `worker::build` and a `worker::start` of a build need the overlay rootfs.
+const LEGACY_NO_BUILD: &str = "this adapter runs in the legacy rootfs mode \
+     (III_ROOTFS_MODE=legacy, or a build without an embedded iii-init), which cannot boot a build";
+/// A build's commit state, shared with its blocking image writer.
+const BUILD_RUNNING: u8 = 0;
+const BUILD_CANCELLED: u8 = 1;
+const BUILD_COMMITTED: u8 = 2;
 
 /// The worker VMs of one project, behind its token and host roots.
 pub struct WorkerVms {
@@ -81,6 +109,11 @@ pub struct WorkerVms {
     /// shortcut: in memory, so a daemon restart forgets it; persist it outside
     /// `<base>` if a stale stop can ever outlive the daemon.
     destroyed: Mutex<HashMap<String, u64>>,
+    /// The `vm_id`s with a `worker::build` running: one at a time each (S509).
+    /// Taken only while `slots` is held, as `destroyed` is.
+    builds: Mutex<HashSet<String>>,
+    /// Names each build's scratch dir and temporary files.
+    build_seq: AtomicU64,
     /// How long a VM a scoped `start` booted may go without a log follower before
     /// it is stopped. A field so tests can shorten it.
     pub lease_grace: Duration,
@@ -137,6 +170,8 @@ impl WorkerVms {
             starts: AtomicU64::new(0),
             unreserved: tokio::sync::Notify::new(),
             destroyed: Mutex::default(),
+            builds: Mutex::default(),
+            build_seq: AtomicU64::new(0),
             lease_grace: LEASE_GRACE,
         }
     }
@@ -199,6 +234,13 @@ impl WorkerVms {
         let leased = !self.is_project_token(&req.auth);
         let (package, host_path, run_override) = source_parts(&req.source);
         let dir = self.admit(host_path)?;
+        let image = match &req.build {
+            Some(_) if !crate::cli::overlay::overlay_active() => {
+                return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
+            }
+            Some(build) => Some(self.admit_build(build)?),
+            None => None,
+        };
         let id = vm_id(&req.state_key);
         let start = self.starts.fetch_add(1, Ordering::SeqCst);
         {
@@ -209,21 +251,232 @@ impl WorkerVms {
         }
         let _unreserve = Unreserve(self, &id, start);
         validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
+        let mut notes = Vec::new();
+        let image = match image {
+            Some(image) => {
+                let vm_dir = self.base.join(&id);
+                let (upper, kept) = adopt_build_mode(&vm_dir, &req.worker_name).map_err(|e| {
+                    SandboxError::BootFailed(format!(
+                        "cannot set up the data disk in {}: {e}",
+                        vm_dir.display()
+                    ))
+                })?;
+                // Now: the seal is written, so no later start logs them again.
+                for note in &kept {
+                    tracing::warn!(vm_id = %id, "{note}");
+                }
+                notes = kept;
+                Some(BootImage { image, upper })
+            }
+            None => None,
+        };
         let over = VmOverride {
             state_dir: self.base.join(&id).join("root"),
             engine_url: &req.engine_url,
             extra_env: req.env.into_iter().collect(),
+            image,
         };
         let built = match package {
             Some(package) => bundle_vm_command(package, &req.worker_name, &dir, over).await,
             None => local_vm_command(&req.worker_name, &dir, run_override, over).await,
         }
-        .map_err(SandboxError::BootFailed)?;
-        let started = self.launch(&req.state_key, built.command, built.env_stdin, Some(start))?;
+        .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
+        let started = self
+            .launch(&req.state_key, built.command, built.env_stdin, Some(start))
+            .map_err(|e| match e {
+                SandboxError::BootFailed(e) => SandboxError::BootFailed(with_notes(e, &notes)),
+                e => e,
+            })?;
         if leased {
             self.arm_lease(&started.vm_id);
         }
+        self.note(&started.vm_id, &notes);
         Ok(started)
+    }
+
+    /// Append `notes` to `vm_id`'s console, where its client reads them.
+    fn note(&self, vm_id: &str, notes: &[String]) {
+        if notes.is_empty() {
+            return;
+        }
+        let Some(Slot::Booted(vm)) = self.slots().get(vm_id).cloned() else {
+            return;
+        };
+        let mut console = vm.console.lock().unwrap_or_else(PoisonError::into_inner);
+        for note in notes {
+            let _ = console.append(&LogStream::Stderr, note.as_bytes());
+        }
+    }
+
+    /// The image a start of `build` boots: S508 unless `build_dir/image.id` names
+    /// `build_id` and the image is there. The image is not hashed.
+    fn admit_build(&self, build: &WorkerBuildRef) -> Result<PathBuf, SandboxError> {
+        let dir = self.admit(&build.build_dir)?;
+        let wanted = build.build_id.trim();
+        match read_image_id(&dir) {
+            Some(found) if found == wanted => {}
+            Some(found) => {
+                return Err(SandboxError::BuildMismatch(format!(
+                    "{} names {found}, not {wanted}; build again",
+                    dir.join(IMAGE_ID_FILE).display()
+                )));
+            }
+            None => {
+                return Err(SandboxError::BuildMismatch(format!(
+                    "{} is missing; build again",
+                    dir.join(IMAGE_ID_FILE).display()
+                )));
+            }
+        }
+        let image = dir.join(IMAGE_FILE);
+        if !std::fs::symlink_metadata(&image).is_ok_and(|m| m.is_file()) {
+            return Err(SandboxError::BuildMismatch(format!(
+                "{} is missing; build again",
+                image.display()
+            )));
+        }
+        Ok(image)
+    }
+
+    /// Build the image of `state_key`'s VM into `output_dir`: a build VM on the
+    /// base image runs `scripts.setup` and `scripts.install`, and its root becomes
+    /// `image.erofs`, then `image.id`. The output streams into `logs`, and the
+    /// build ends with the reader of `logs`: a closed channel, or a write that
+    /// fails, stops the build VM, drops the temporary image and frees the key.
+    /// S509 while another build of the key runs, S507 when a step fails.
+    pub async fn build(
+        &self,
+        iii: &IIIClient,
+        req: WorkerBuildRequest,
+    ) -> Result<WorkerBuildResponse, SandboxError> {
+        self.authorize(&req.auth, Some(&req.state_key))?;
+        if !crate::cli::overlay::overlay_active() {
+            return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
+        }
+        let (package, host_path, run_override) = source_parts(&req.source);
+        let dir = self.admit(host_path)?;
+        let out = self.admit_output(&req.output_dir)?;
+        validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
+        let id = vm_id(&req.state_key);
+        // Dropped last of the locals below: the key is free only once the
+        // writer stopped and the scratch dir is gone.
+        let _held = self.hold_build(&id)?;
+        let vm_dir = self.base.join(&id);
+        sweep_build_scratch(&vm_dir);
+        sweep_image_partials(&out);
+        let tag = format!(
+            "{}-{}",
+            std::process::id(),
+            self.build_seq.fetch_add(1, Ordering::SeqCst)
+        );
+        let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
+        let _scratch = RemoveOnDrop(scratch.clone());
+        let writer = ChannelWriter::new(iii.address(), &req.logs);
+        let mut log = BuildLog::new(&writer);
+        let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
+        let image_writer = WriterSlot::default();
+        let done = Mutex::new(BuildDone::default());
+        let job = BuildJob {
+            worker_name: &req.worker_name,
+            dir: &dir,
+            package,
+            run_override,
+            out: &out,
+            scratch: &scratch,
+            tag: &tag,
+            env: req.env.clone().into_iter().collect(),
+            state: state.clone(),
+            image_writer: &image_writer,
+            done: &done,
+        };
+        let mut built = tokio::select! {
+            built = job.run(&mut log) => built,
+            gone = reader_gone(&writer, BUILD_KEEPALIVE) => Err(SandboxError::BuildFailed(
+                format!("build cancelled: the reader of `logs` is gone ({gone})")
+            )),
+        };
+        if built.is_err() {
+            // The build VM died with the dropped run; a writer still in its
+            // blocking part stops, renames nothing and removes its files.
+            let written = cancel_writer(&image_writer, &state).await;
+            // Unless the image was already in place: then the build is done.
+            let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(response) = done.response.take() {
+                built = Ok(response);
+            } else if let (Some(Ok(build_id)), Some(base_image)) = (written, done.base_image.take())
+            {
+                built = Ok(WorkerBuildResponse {
+                    build_id,
+                    base_image,
+                    built_at_ms: now_ms(),
+                });
+            }
+        }
+        match &built {
+            Ok(b) => {
+                tracing::info!(vm_id = %id, worker = %req.worker_name, build_id = %b.build_id, "worker build done")
+            }
+            Err(e) => {
+                tracing::info!(vm_id = %id, worker = %req.worker_name, error = %e, "worker build failed")
+            }
+        }
+        // Connects even if nothing was sent, so the reader still sees the close.
+        let _ = writer.write(&[]).await;
+        let _ = writer.close().await;
+        built
+    }
+
+    /// Reserve `vm_id` for one build: S509 while another build holds it, S502
+    /// while it is being destroyed.
+    fn hold_build(&self, vm_id: &str) -> Result<BuildHold<'_>, SandboxError> {
+        let slots = self.slots();
+        if let Some(Slot::Destroying(instance)) = slots.get(vm_id) {
+            return Err(SandboxError::StateBusy {
+                vm_id: vm_id.to_string(),
+                instance: *instance,
+            });
+        }
+        if !self.builds().insert(vm_id.to_string()) {
+            return Err(SandboxError::BuildInProgress(vm_id.to_string()));
+        }
+        Ok(BuildHold(self, vm_id.to_string()))
+    }
+
+    fn builds(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.builds.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `output_dir`, created if missing, once its nearest existing ancestor is
+    /// under the host roots; S501 otherwise.
+    fn admit_output(&self, output_dir: &str) -> Result<PathBuf, SandboxError> {
+        use std::path::Component;
+        let path = Path::new(output_dir);
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+        {
+            return Err(SandboxError::SourceRejected(format!(
+                "output_dir {output_dir} must be an absolute path without `.` or `..`"
+            )));
+        }
+        let mut existing = path;
+        while std::fs::symlink_metadata(existing).is_err() {
+            existing = existing.parent().ok_or_else(|| {
+                SandboxError::SourceRejected(format!("output_dir {output_dir} has no parent"))
+            })?;
+        }
+        self.admit(&existing.to_string_lossy())?;
+        std::fs::create_dir_all(path).map_err(|e| {
+            SandboxError::SourceRejected(format!("cannot create output_dir {output_dir}: {e}"))
+        })?;
+        let dir = self.admit(output_dir)?;
+        if !dir.is_dir() {
+            return Err(SandboxError::SourceRejected(format!(
+                "output_dir {output_dir} is not a directory"
+            )));
+        }
+        Ok(dir)
     }
 
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
@@ -463,6 +716,10 @@ impl WorkerVms {
         let (prev, last) = {
             let mut slots = self.slots();
             refuse_busy(&id, slots.get(&id))?;
+            // The build writes in `<vm_id>/`, so it must end first.
+            if self.builds().contains(&id) {
+                return Err(SandboxError::BuildInProgress(id));
+            }
             let instance = slots.get(&id).map_or(0, Slot::instance);
             // A daemon restarted since the last boot knows it only from disk.
             let last = instance.max(stored_instance(&dir).unwrap_or(0));
@@ -600,6 +857,547 @@ impl WorkerVms {
             "host_path {host_path} is outside the host roots [{roots}] (III_SANDBOX_HOST_ROOTS)"
         )))
     }
+}
+
+/// Holds a `vm_id` for one build; frees it when dropped, the build cancelled or not.
+struct BuildHold<'a>(&'a WorkerVms, String);
+
+impl Drop for BuildHold<'_> {
+    fn drop(&mut self) {
+        self.0.builds().remove(&self.1);
+    }
+}
+
+/// One `worker::build`, from its build VM to the renamed image.
+struct BuildJob<'a> {
+    worker_name: &'a str,
+    dir: &'a Path,
+    package: Option<&'a str>,
+    run_override: Option<&'a str>,
+    out: &'a Path,
+    scratch: &'a Path,
+    /// Names the temporary image files: `<pid>-<seq>`.
+    tag: &'a str,
+    env: HashMap<String, String>,
+    state: Arc<AtomicU8>,
+    /// Where the blocking image writer runs, so a cancelled build can wait for it.
+    image_writer: &'a WriterSlot,
+    /// What the build did, for a caller that dropped it after the commit.
+    done: &'a Mutex<BuildDone>,
+}
+
+/// What a build did before it may have been dropped: its base image once its
+/// VM is set up, and its reply once the image is in place.
+#[derive(Default)]
+struct BuildDone {
+    base_image: Option<BaseImageRef>,
+    response: Option<WorkerBuildResponse>,
+}
+
+impl BuildJob<'_> {
+    async fn run(self, log: &mut BuildLog<'_>) -> Result<WorkerBuildResponse, SandboxError> {
+        std::fs::create_dir_all(self.scratch).map_err(|e| {
+            SandboxError::BuildFailed(format!("cannot create {}: {e}", self.scratch.display()))
+        })?;
+        log.note(format!(
+            "iii: building {} from {}",
+            self.worker_name,
+            self.dir.display()
+        ))
+        .await?;
+        let vm = image_build_command(
+            self.dir,
+            self.package,
+            self.run_override,
+            self.scratch,
+            self.env,
+        )
+        .await
+        .map_err(SandboxError::BuildFailed)?;
+        self.done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .base_image = Some(BaseImageRef {
+            digest: crate::cli::rootfs_cache::cached_digest(&vm.reference),
+            reference: vm.reference.clone(),
+        });
+        log.note(format!("iii: build VM on {}", vm.reference))
+            .await?;
+        let status = run_build_vm(vm.command, log).await?;
+        if !status.success() {
+            let how = match (status.code(), status.signal()) {
+                (Some(code), _) => format!("exited {code}"),
+                (None, Some(signal)) => format!("was killed by signal {signal}"),
+                _ => "ended".to_string(),
+            };
+            return Err(SandboxError::BuildFailed(format!(
+                "the build of {} {how}; last output:\n{}",
+                self.worker_name,
+                log.tail()
+            )));
+        }
+        log.note("iii: writing the image".to_string()).await?;
+        let export = open_build_export(&vm.root).map_err(|e| {
+            SandboxError::BuildFailed(format!("the build VM left no image root: {e}"))
+        })?;
+        let image = ImageWrite {
+            export,
+            out: self.out.to_path_buf(),
+            spool: self.scratch.join("image.spool"),
+            base_rootfs: vm.base_rootfs,
+            tag: self.tag.to_string(),
+            state: self.state.clone(),
+        };
+        let build_id = run_writer(self.image_writer, image).await.map_err(|e| {
+            SandboxError::BuildFailed(format!(
+                "cannot write the image of {} into {}: {e}",
+                self.worker_name,
+                self.out.display()
+            ))
+        })?;
+        // The image is in place: the build is done whatever happens to `logs` now.
+        let response = WorkerBuildResponse {
+            build_id,
+            base_image: self
+                .done
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .base_image
+                .clone()
+                .expect("set once the build VM is"),
+            built_at_ms: now_ms(),
+        };
+        self.done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .response = Some(response.clone());
+        let _ = log
+            .note(format!(
+                "iii: built {} into {}",
+                response.build_id,
+                self.out.join(IMAGE_FILE).display()
+            ))
+            .await;
+        Ok(response)
+    }
+}
+
+/// The blocking image writer of a build. Awaited where the build runs, and,
+/// once the build is cancelled, before its key is freed.
+type WriterSlot = tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<String, String>>>>;
+
+/// Run `image.write()` off the runtime, its handle in `slot` until it ends.
+async fn run_writer(slot: &WriterSlot, image: ImageWrite) -> Result<String, String> {
+    let mut slot = slot.lock().await;
+    let handle = slot.insert(tokio::task::spawn_blocking(move || image.write()));
+    let written = handle.await;
+    // No await between the end and here: a dropped caller leaves the handle.
+    *slot = None;
+    written.map_err(|e| format!("the image writer died: {e}"))?
+}
+
+/// Mark the build cancelled and wait for its writer, if one runs, to stop and
+/// remove its temporary files. Returns what that writer returned: the build id
+/// when it renamed the image into place before the cancel.
+async fn cancel_writer(slot: &WriterSlot, state: &AtomicU8) -> Option<Result<String, String>> {
+    let _ = state.compare_exchange(
+        BUILD_RUNNING,
+        BUILD_CANCELLED,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
+    let mut slot = slot.lock().await;
+    let handle = slot.as_mut()?;
+    let written = handle.await;
+    *slot = None;
+    Some(
+        written
+            .map_err(|e| format!("the image writer died: {e}"))
+            .and_then(|w| w),
+    )
+}
+
+/// The temporary image files a build of an earlier adapter process left in
+/// `out` (it died while writing): `.image.erofs.<pid>-<n>.partial` and
+/// `.image.id.<pid>-<n>.partial` of another pid. This process's own may be a
+/// running build's.
+fn sweep_image_partials(out: &Path) {
+    let Ok(entries) = std::fs::read_dir(out) else {
+        return;
+    };
+    let mine = std::process::id().to_string();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(tag) = name.to_str().and_then(|name| {
+            [IMAGE_FILE, IMAGE_ID_FILE].iter().find_map(|file| {
+                name.strip_prefix(&format!(".{file}."))?
+                    .strip_suffix(".partial")
+            })
+        }) else {
+            continue;
+        };
+        if pid_seq(tag).is_some_and(|pid| pid != mine) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The pid of a `<pid>-<seq>` build tag.
+fn pid_seq(tag: &str) -> Option<&str> {
+    let (pid, seq) = tag.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (digits(pid) && digits(seq)).then_some(pid)
+}
+
+/// Spawn a build VM and stream its output into `log` until it exits. Dropped
+/// early, it kills the VM.
+async fn run_build_vm(
+    vm: crate::cli::worker_manager::libkrun::VmCommand,
+    log: &mut BuildLog<'_>,
+) -> Result<std::process::ExitStatus, SandboxError> {
+    let mut cmd = vm.command;
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let spawned = crate::daemon_exit::attach_lifeline(&mut cmd)
+        .and_then(|lifeline| Ok((lifeline, cmd.spawn()?)));
+    let (_lifeline, mut child) = spawned
+        .map_err(|e| SandboxError::BuildFailed(format!("cannot launch the build VM: {e}")))?;
+    let stdin = child.stdin.take();
+    let env_stdin = vm.env_stdin;
+    tokio::spawn(async move {
+        if let Err(e) = crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
+        {
+            tracing::warn!(error = %e, "cannot send the build environment to the VM");
+        }
+    });
+    let (lines, mut received) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(forward_lines(
+        child.stdout.take().expect("stdout is piped"),
+        LogStream::Stdout,
+        lines.clone(),
+    ));
+    tokio::spawn(forward_lines(
+        child.stderr.take().expect("stderr is piped"),
+        LogStream::Stderr,
+        lines,
+    ));
+    let status = loop {
+        tokio::select! {
+            Some((stream, line)) = received.recv() => log.record(stream, line).await?,
+            status = child.wait() => break status.map_err(|e| {
+                SandboxError::BuildFailed(format!("cannot wait for the build VM: {e}"))
+            })?,
+        }
+    };
+    // What the VM printed last, unless a grandchild holds the pipes open.
+    tokio::time::timeout(DRAIN_GRACE, async {
+        while let Some((stream, line)) = received.recv().await {
+            log.record(stream, line).await?;
+        }
+        Ok::<_, SandboxError>(())
+    })
+    .await
+    .unwrap_or(Ok(()))?;
+    Ok(status)
+}
+
+/// Send one record per line of `out` to `lines`, as `pump` does for a VM's console.
+async fn forward_lines(
+    out: impl AsyncRead + Unpin,
+    stream: LogStream,
+    lines: tokio::sync::mpsc::UnboundedSender<(LogStream, String)>,
+) {
+    let mut out = BufReader::new(out);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let text = line.strip_suffix(b"\n").unwrap_or(&line);
+        let text = text.strip_suffix(b"\r").unwrap_or(text);
+        let text = String::from_utf8_lossy(text).into_owned();
+        if lines.send((stream.clone(), text)).is_err() {
+            return;
+        }
+    }
+}
+
+/// A build's `logs` channel: one `LogRecord` per text frame, and the last lines
+/// for an S507.
+struct BuildLog<'a> {
+    channel: &'a ChannelWriter,
+    cursor: u64,
+    tail: VecDeque<String>,
+}
+
+impl<'a> BuildLog<'a> {
+    fn new(channel: &'a ChannelWriter) -> Self {
+        Self {
+            channel,
+            cursor: 0,
+            tail: VecDeque::new(),
+        }
+    }
+
+    /// One record; a write that fails ends the build.
+    async fn record(&mut self, stream: LogStream, line: String) -> Result<(), SandboxError> {
+        self.cursor += 1;
+        if self.tail.len() == BUILD_TAIL_LINES {
+            self.tail.pop_front();
+        }
+        self.tail.push_back(line.clone());
+        let frame = serde_json::to_string(&LogRecord {
+            stream,
+            line,
+            ts_ms: now_ms(),
+            cursor: self.cursor,
+        })
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        self.channel.send_message(&frame).await.map_err(|e| {
+            SandboxError::BuildFailed(format!(
+                "build cancelled: its output cannot reach `logs` ({e})"
+            ))
+        })
+    }
+
+    /// A line of the adapter's own, on stderr.
+    async fn note(&mut self, line: String) -> Result<(), SandboxError> {
+        self.record(LogStream::Stderr, line).await
+    }
+
+    fn tail(&self) -> String {
+        self.tail.iter().cloned().collect::<Vec<_>>().join("\n")
+    }
+}
+
+/// The blocking part of a build: the exported root into an image in `out`.
+struct ImageWrite {
+    /// The tar the build VM exported.
+    export: File,
+    out: PathBuf,
+    spool: PathBuf,
+    base_rootfs: PathBuf,
+    tag: String,
+    state: Arc<AtomicU8>,
+}
+
+impl ImageWrite {
+    /// Write `image.erofs` and `image.id` as temporary files, then rename them
+    /// into place, the image first. A build cancelled before the renames leaves
+    /// the previous pair; returns the build id.
+    fn write(self) -> Result<String, String> {
+        let tmp_image = self.out.join(format!(".{IMAGE_FILE}.{}.partial", self.tag));
+        let tmp_id = self
+            .out
+            .join(format!(".{IMAGE_ID_FILE}.{}.partial", self.tag));
+        let _tmp = [
+            RemoveOnDrop(tmp_image.clone()),
+            RemoveOnDrop(tmp_id.clone()),
+        ];
+        // The run reads the base image's env from here: the host's copy, not
+        // whatever the build left at that path.
+        let config =
+            oci::read_rootfs_file_no_follow(&self.base_rootfs, Path::new(".oci-config.json"));
+        let extra: Vec<crate::cli::erofs::ImageFile<'_>> = config
+            .ok()
+            .map(|data| crate::cli::erofs::ImageFile {
+                path: ".oci-config.json",
+                data,
+                mode: 0o644,
+            })
+            .into_iter()
+            .collect();
+        let state = &self.state;
+        let cancelled = || state.load(Ordering::SeqCst) == BUILD_CANCELLED;
+        crate::cli::erofs::build_erofs_from_tar(
+            self.export,
+            &tmp_image,
+            &self.spool,
+            &extra,
+            &cancelled,
+        )?;
+        let build_id =
+            sha256_file(&tmp_image, &cancelled).map_err(|e| format!("hash the image: {e}"))?;
+        write_new_file(&tmp_id, format!("{build_id}\n").as_bytes())
+            .map_err(|e| format!("{}: {e}", tmp_id.display()))?;
+        // Past this point the build is no longer cancelled.
+        if state
+            .compare_exchange(
+                BUILD_RUNNING,
+                BUILD_COMMITTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err("cancelled".to_string());
+        }
+        std::fs::rename(&tmp_image, self.out.join(IMAGE_FILE))
+            .map_err(|e| format!("rename the image into place: {e}"))?;
+        std::fs::rename(&tmp_id, self.out.join(IMAGE_ID_FILE))
+            .map_err(|e| format!("rename image.id into place: {e}"))?;
+        if let Ok(dir) = File::open(&self.out) {
+            let _ = dir.sync_all();
+        }
+        Ok(build_id)
+    }
+}
+
+/// `sha256:<hex>` of a file's bytes; an error once `cancelled` returns true.
+fn sha256_file(path: &Path, cancelled: &dyn Fn() -> bool) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    file.sync_all()?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        if cancelled() {
+            return Err(io::Error::other("cancelled"));
+        }
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
+/// Create `path` (it must not exist), write `data` and flush it to disk.
+fn write_new_file(path: &Path, data: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    file.write_all(data)?;
+    file.sync_all()
+}
+
+/// The build id `dir/image.id` records, trimmed; `None` when it is missing,
+/// not a regular file, or not a short line of text.
+fn read_image_id(dir: &Path) -> Option<String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join(IMAGE_ID_FILE))
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut id = String::new();
+    file.take(256).read_to_string(&mut id).ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Removes a file or a directory tree when dropped, if it is still there.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        match std::fs::symlink_metadata(&self.0) {
+            Ok(m) if m.is_dir() => {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_file(&self.0);
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// Remove the scratch dirs (`build-<pid>-<seq>`) that a build of an earlier
+/// adapter process left in `vm_dir`; this process's own builds remove theirs.
+/// Nothing else matches: not the `build-mode` seal.
+fn sweep_build_scratch(vm_dir: &Path) {
+    let mine = std::process::id().to_string();
+    let Ok(entries) = std::fs::read_dir(vm_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let stale = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(BUILD_SCRATCH_PREFIX))
+            .and_then(pid_seq)
+            .is_some_and(|pid| pid != mine);
+        if stale && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Make `vm_dir` a VM that boots builds; returns its data disk and the lines to
+/// log. The first time, marked by the seal `<vm_id>/build-mode`, it keeps what
+/// an earlier adapter left: a 0.26 overlay disk `root/upper.ext4` moves to
+/// `upper.ext4.pre-build`, and a legacy rootfs clone `root/` to
+/// `root.pre-build/`, with a fresh `root/` in its place. The data disk is
+/// `<vm_id>/upper.ext4`, outside `root/` (the guest's share), and outlives
+/// every build; only `worker::destroy` removes it.
+fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<String>)> {
+    std::fs::create_dir_all(vm_dir)?;
+    let mut notes = Vec::new();
+    let seal = vm_dir.join(BUILD_MODE_SEAL);
+    if std::fs::symlink_metadata(&seal).is_err() {
+        let root = vm_dir.join("root");
+        let old_upper = root.join(crate::cli::upper::UPPER_NAME);
+        if std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file()) {
+            let kept = unused_name(vm_dir, PRE_BUILD_DISK);
+            std::fs::rename(&old_upper, &kept)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        if is_rootfs_clone(&root) {
+            let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
+            std::fs::rename(&root, &kept)?;
+            std::fs::create_dir(&root)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        write_new_file(&seal, b"1\n")?;
+    }
+    let upper = crate::cli::upper::ensure_upper_ext4(vm_dir)?;
+    Ok((upper, notes))
+}
+
+/// `error`, followed by the paths a migration kept: a boot that fails after
+/// `adopt_build_mode` must still tell where the old disk went, as no later
+/// start will.
+fn with_notes(error: String, notes: &[String]) -> String {
+    if notes.is_empty() {
+        return error;
+    }
+    format!("{error} ({})", notes.join("; "))
+}
+
+/// A legacy-mode `root/` is a whole rootfs; an overlay trampoline has no `/bin`
+/// or `/usr` of its own.
+fn is_rootfs_clone(root: &Path) -> bool {
+    ["bin", "usr"]
+        .iter()
+        .any(|d| std::fs::symlink_metadata(root.join(d)).is_ok())
+}
+
+/// `dir/name`, or `dir/name.<n>` for the first `n` not taken.
+fn unused_name(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if std::fs::symlink_metadata(&first).is_err() {
+        return first;
+    }
+    (1..)
+        .map(|n| dir.join(format!("{name}.{n}")))
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .expect("an unused name")
 }
 
 /// Stable per `state_key`: the first 32 hex chars of its SHA-256.
@@ -1052,6 +1850,7 @@ mod tests {
             source,
             env: Default::default(),
             engine_url: "ws://127.0.0.1:49134".to_string(),
+            build: None,
         }
     }
 
@@ -2215,6 +3014,397 @@ mod tests {
         let status = vms.status(status_req("t", &id, 1)).unwrap();
         assert!(matches!(status.state, State::Exited), "{status:?}");
         assert_eq!(status.exit_code, Some(3), "{status:?}");
+    }
+
+    /// A 0.26 overlay VM dir: its disk in the trampoline `root/`.
+    #[test]
+    fn a_pre_build_overlay_disk_is_kept_beside_root() {
+        let t = tempfile::tempdir().unwrap();
+        let vm_dir = t.path().join("vm");
+        std::fs::create_dir_all(vm_dir.join("root/runtime")).unwrap();
+        std::fs::write(vm_dir.join("root/upper.ext4"), "0.26 data").unwrap();
+
+        let (upper, notes) = adopt_build_mode(&vm_dir, "w").unwrap();
+
+        let kept = vm_dir.join(PRE_BUILD_DISK);
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "0.26 data");
+        assert_eq!(
+            notes,
+            [format!(
+                "w: kept the pre-build data disk at {}",
+                kept.display()
+            )]
+        );
+        assert_eq!(upper, vm_dir.join("upper.ext4"));
+        assert!(upper.is_file() && !vm_dir.join("root/upper.ext4").exists());
+        // The trampoline stays: it is no rootfs.
+        assert!(vm_dir.join("root/runtime").is_dir());
+        assert!(!vm_dir.join(PRE_BUILD_ROOT).exists());
+        assert!(vm_dir.join(BUILD_MODE_SEAL).is_file());
+        assert!(!vm_dir.join("root").join(BUILD_MODE_SEAL).exists());
+
+        // Sealed: the next start keeps the data disk and moves nothing.
+        std::fs::write(vm_dir.join("root/upper.ext4"), "planted").unwrap();
+        let len = std::fs::metadata(&upper).unwrap().len();
+        let (again, notes) = adopt_build_mode(&vm_dir, "w").unwrap();
+        assert_eq!((again, notes.len()), (upper.clone(), 0));
+        assert_eq!(std::fs::metadata(&upper).unwrap().len(), len);
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "0.26 data");
+    }
+
+    /// A legacy VM dir: `root/` is the rootfs clone holding the guest's data.
+    #[test]
+    fn a_legacy_rootfs_clone_is_kept_as_root_pre_build() {
+        let t = tempfile::tempdir().unwrap();
+        let vm_dir = t.path().join("vm");
+        for dir in ["root/bin", "root/usr/lib", "root/var/lib/app"] {
+            std::fs::create_dir_all(vm_dir.join(dir)).unwrap();
+        }
+        std::fs::write(vm_dir.join("root/var/lib/app/db"), "rows").unwrap();
+
+        let (upper, notes) = adopt_build_mode(&vm_dir, "w").unwrap();
+
+        let kept = vm_dir.join(PRE_BUILD_ROOT);
+        assert_eq!(
+            std::fs::read_to_string(kept.join("var/lib/app/db")).unwrap(),
+            "rows"
+        );
+        assert_eq!(
+            notes,
+            [format!(
+                "w: kept the pre-build data disk at {}",
+                kept.display()
+            )]
+        );
+        let root: Vec<_> = std::fs::read_dir(vm_dir.join("root")).unwrap().collect();
+        assert!(root.is_empty(), "root/ is not fresh");
+        assert!(upper.is_file() && vm_dir.join(BUILD_MODE_SEAL).is_file());
+    }
+
+    /// A name already taken is never overwritten.
+    #[test]
+    fn a_kept_disk_never_replaces_another() {
+        let t = tempfile::tempdir().unwrap();
+        let vm_dir = t.path().join("vm");
+        std::fs::create_dir_all(vm_dir.join("root")).unwrap();
+        std::fs::write(vm_dir.join(PRE_BUILD_DISK), "older").unwrap();
+        std::fs::write(vm_dir.join("root/upper.ext4"), "newer").unwrap();
+        let (_, notes) = adopt_build_mode(&vm_dir, "w").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(vm_dir.join(PRE_BUILD_DISK)).unwrap(),
+            "older"
+        );
+        let second = vm_dir.join(format!("{PRE_BUILD_DISK}.1"));
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "newer");
+        assert!(notes[0].ends_with(&second.display().to_string()));
+    }
+
+    fn build_ref(dir: &Path, build_id: &str) -> WorkerBuildRef {
+        WorkerBuildRef {
+            build_id: build_id.to_string(),
+            build_dir: dir.display().to_string(),
+        }
+    }
+
+    #[test]
+    fn a_start_of_a_build_checks_image_id_and_refuses_with_s508() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let dir = t.join(".build/w");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = format!("sha256:{}", "a".repeat(64));
+
+        // No image.id at all.
+        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
+        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        // Another build's id.
+        std::fs::write(
+            dir.join(IMAGE_ID_FILE),
+            format!("sha256:{}\n", "b".repeat(64)),
+        )
+        .unwrap();
+        let err = vms.admit_build(&build_ref(&dir, &id)).unwrap_err();
+        assert_eq!(err.code().as_str(), "S508");
+        assert!(err.to_string().contains(&"b".repeat(64)), "{err}");
+        // A planted symlink is no id.
+        std::fs::remove_file(dir.join(IMAGE_ID_FILE)).unwrap();
+        let elsewhere = t.join("id");
+        std::fs::write(&elsewhere, &id).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join(IMAGE_ID_FILE)).unwrap();
+        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        std::fs::remove_file(dir.join(IMAGE_ID_FILE)).unwrap();
+        // The matching id, but no image.
+        std::fs::write(dir.join(IMAGE_ID_FILE), format!("{id}\n")).unwrap();
+        std::fs::remove_file(dir.join(IMAGE_FILE)).unwrap();
+        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
+        let image = vms.admit_build(&build_ref(&dir, &id)).unwrap();
+        assert_eq!(image, dir.canonicalize().unwrap().join(IMAGE_FILE));
+        // Outside the host roots it is S501, before any id is read.
+        let outside = vms_without_roots(t);
+        assert_eq!(code(outside.admit_build(&build_ref(&dir, &id))), "S501");
+    }
+
+    fn vms_without_roots(t: &Path) -> WorkerVms {
+        vms(t, Some("t"), vec![t.join("elsewhere")])
+    }
+
+    #[test]
+    fn one_build_per_state_key_and_no_destroy_under_it() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vm_id("k");
+        let held = vms.hold_build(&id).unwrap();
+        assert_eq!(code(vms.hold_build(&id).map(drop)), "S509");
+        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S509");
+        // Another key builds alongside.
+        let other = vms.hold_build(&vm_id("other")).unwrap();
+        drop(held);
+        let again = vms.hold_build(&id).unwrap();
+        drop((again, other));
+        assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+    }
+
+    #[test]
+    fn an_output_dir_is_created_under_the_host_roots_only() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let project = t.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let vms = vms(t, Some("t"), vec![project.clone()]);
+        let out = project.join(".build/w");
+        let got = vms.admit_output(&out.display().to_string()).unwrap();
+        assert_eq!(got, out.canonicalize().unwrap());
+        for refused in [
+            t.join("elsewhere/.build/w").display().to_string(),
+            "relative/.build/w".to_string(),
+            format!("{}/../escape", project.display()),
+        ] {
+            assert_eq!(code(vms.admit_output(&refused)), "S501", "{refused}");
+        }
+        assert!(!t.join("elsewhere").exists() && !t.join("escape").exists());
+    }
+
+    /// What iii-init's export writes: "./" and a file.
+    fn export_tar(path: &Path, content: &str) {
+        let header = |kind, mode, size| {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(kind);
+            h.set_mode(mode);
+            h.set_uid(0);
+            h.set_gid(0);
+            h.set_mtime(0);
+            h.set_size(size);
+            h
+        };
+        let mut tar = tar::Builder::new(File::create(path).unwrap());
+        let mut h = header(tar::EntryType::Directory, 0o755, 0);
+        tar.append_data(&mut h, "./", io::empty()).unwrap();
+        let mut h = header(tar::EntryType::Regular, 0o644, content.len() as u64);
+        tar.append_data(&mut h, "version", content.as_bytes())
+            .unwrap();
+        tar.finish().unwrap();
+    }
+
+    fn image_write(t: &Path, content: &str, state: u8) -> (ImageWrite, Arc<AtomicU8>) {
+        let tar = t.join(format!("root-{content}.tar"));
+        export_tar(&tar, content);
+        let export = File::open(&tar).unwrap();
+        let base = t.join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            base.join(".oci-config.json"),
+            r#"{"config":{"Env":["A=1"]}}"#,
+        )
+        .unwrap();
+        let out = t.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let state = Arc::new(AtomicU8::new(state));
+        let write = ImageWrite {
+            export,
+            out,
+            spool: t.join("spool"),
+            base_rootfs: base,
+            tag: content.to_string(),
+            state: state.clone(),
+        };
+        (write, state)
+    }
+
+    #[test]
+    fn an_image_lands_with_its_id_and_a_cancelled_one_leaves_the_previous_pair() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let (write, state) = image_write(t, "v1", BUILD_RUNNING);
+        let id = write.write().unwrap();
+        let out = t.join("out");
+        let image = std::fs::read(out.join(IMAGE_FILE)).unwrap();
+        assert_eq!(
+            id,
+            format!("sha256:{}", hex::encode(Sha256::digest(&image)))
+        );
+        assert_eq!(read_image_id(&out), Some(id.clone()));
+        assert_eq!(state.load(Ordering::SeqCst), BUILD_COMMITTED);
+        let reader = crate::cli::erofs::reader::read_file_from_erofs;
+        assert_eq!(reader(&out.join(IMAGE_FILE), "/version").unwrap(), b"v1");
+        assert_eq!(
+            reader(&out.join(IMAGE_FILE), "/.oci-config.json").unwrap(),
+            br#"{"config":{"Env":["A=1"]}}"#
+        );
+
+        // Cancelled before the renames: the previous pair stays, no temp file.
+        let (write, _) = image_write(t, "v2", BUILD_CANCELLED);
+        assert!(write.write().is_err());
+        assert_eq!(std::fs::read(out.join(IMAGE_FILE)).unwrap(), image);
+        assert_eq!(read_image_id(&out), Some(id));
+        let names: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(!t.join("spool").exists());
+    }
+
+    /// The build's run is dropped once its image is renamed into place, before
+    /// it saw its writer end: the cancel gets the writer's build id, so the
+    /// build reports the image it installed.
+    #[tokio::test]
+    async fn a_build_dropped_after_its_commit_still_has_its_build_id() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let (write, state) = image_write(t, "v1", BUILD_RUNNING);
+        let slot = WriterSlot::default();
+        let id_file = t.join("out").join(IMAGE_ID_FILE);
+        // One poll puts the writer in its slot and leaves the run waiting on it.
+        let mut run = Box::pin(run_writer(&slot, write));
+        let first = std::future::poll_fn(|cx| std::task::Poll::Ready(run.as_mut().poll(cx))).await;
+        assert!(
+            first.is_pending(),
+            "the writer ended within one poll: {first:?}"
+        );
+        // The writer commits while the run is never polled again, as when the
+        // build's caller left: then the run goes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !id_file.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer never committed"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(run);
+        let written = cancel_writer(&slot, &state).await;
+        assert_eq!(state.load(Ordering::SeqCst), BUILD_COMMITTED);
+        let id = written.expect("the writer was still in its slot").unwrap();
+        assert_eq!(read_image_id(&t.join("out")), Some(id));
+    }
+
+    #[test]
+    fn only_an_earlier_processs_build_scratch_is_swept() {
+        let t = tempfile::tempdir().unwrap();
+        let mine = t.path().join(format!("build-{}-0", std::process::id()));
+        let stale = t.path().join("build-1-0");
+        let root = t.path().join("root");
+        let other = t.path().join("build-cache");
+        for dir in [&mine, &stale, &root, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // The seal shares the prefix and is no scratch dir.
+        std::fs::write(t.path().join(BUILD_MODE_SEAL), "1\n").unwrap();
+        std::fs::write(t.path().join("build-2-0"), "a file").unwrap();
+        sweep_build_scratch(t.path());
+        assert!(mine.is_dir() && root.is_dir() && other.is_dir() && !stale.exists());
+        assert!(t.path().join(BUILD_MODE_SEAL).is_file());
+        assert!(t.path().join("build-2-0").is_file());
+    }
+
+    /// A build whose adapter died while writing left its temporary image in the
+    /// project; the next build removes it, and only it.
+    #[test]
+    fn the_next_build_sweeps_an_earlier_processs_partial_image() {
+        let t = tempfile::tempdir().unwrap();
+        let mine = format!("{}-3", std::process::id());
+        let names = [
+            ".image.erofs.1-0.partial".to_string(),
+            ".image.id.1-0.partial".to_string(),
+            format!(".image.erofs.{mine}.partial"),
+            format!(".image.id.{mine}.partial"),
+            ".image.erofs.x-0.partial".to_string(),
+            "image.erofs".to_string(),
+            "image.id".to_string(),
+            "build.json".to_string(),
+        ];
+        for name in &names {
+            std::fs::write(t.path().join(name), "x").unwrap();
+        }
+        sweep_image_partials(t.path());
+        for name in &names {
+            let gone = name.contains(".1-0.");
+            assert_eq!(!t.path().join(name).exists(), gone, "{name}");
+        }
+    }
+
+    /// What `export_tar` writes, with `files` files of `size` bytes each.
+    fn big_export_tar(path: &Path, files: usize, size: usize) {
+        let mut tar = tar::Builder::new(File::create(path).unwrap());
+        let data = vec![7u8; size];
+        for i in 0..files {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_mode(0o644);
+            h.set_uid(0);
+            h.set_gid(0);
+            h.set_mtime(0);
+            h.set_size(size as u64);
+            tar.append_data(&mut h, format!("blob-{i}"), &data[..])
+                .unwrap();
+        }
+        tar.finish().unwrap();
+    }
+
+    /// The build's run is dropped (its reader left) while its image is being
+    /// written: the cancel waits for the writer, which stops and removes its
+    /// temporary files, so nothing is left once the key is free, and the
+    /// previous pair stays.
+    #[tokio::test]
+    async fn a_build_cancelled_while_writing_its_image_waits_for_the_writer() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let (write, _) = image_write(t, "v1", BUILD_RUNNING);
+        let id = write.write().unwrap();
+        let out = t.join("out");
+        let image = std::fs::read(out.join(IMAGE_FILE)).unwrap();
+
+        let (mut write, state) = image_write(t, "v2", BUILD_RUNNING);
+        let tar = t.join("big.tar");
+        big_export_tar(&tar, 8, 4 << 20);
+        write.export = File::open(&tar).unwrap();
+        let slot = WriterSlot::default();
+        let partial = out.join(format!(".{IMAGE_FILE}.v2.partial"));
+        let writing = async {
+            while !partial.exists() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        tokio::select! {
+            done = run_writer(&slot, write) => panic!("the image was written before the cancel: {done:?}"),
+            () = writing => {}
+        }
+        let written = cancel_writer(&slot, &state).await;
+        assert!(matches!(written, Some(Err(_))), "{written:?}");
+
+        assert_eq!(state.load(Ordering::SeqCst), BUILD_CANCELLED);
+        let mut left: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, [IMAGE_FILE, IMAGE_ID_FILE]);
+        assert_eq!(std::fs::read(out.join(IMAGE_FILE)).unwrap(), image);
+        assert_eq!(read_image_id(&out), Some(id));
+        assert!(!t.join("spool").exists());
     }
 
     #[test]

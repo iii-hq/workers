@@ -67,6 +67,18 @@ fn pulled_from(rootfs: &Path, digest: &str) -> bool {
         .is_ok_and(|digests| digests.lines().any(|d| d.eq_ignore_ascii_case(digest)))
 }
 
+/// The manifest digest the cached rootfs of `oci_ref` was pulled from: the one
+/// the reference resolved to, the first its sidecar lists. `None` when the
+/// cache has no sidecar for it.
+pub fn cached_digest(oci_ref: &str) -> Option<String> {
+    let digests = std::fs::read_to_string(digest_path(&canonical_path(oci_ref))).ok()?;
+    digests
+        .lines()
+        .map(str::trim)
+        .find(|d| d.starts_with("sha256:"))
+        .map(str::to_string)
+}
+
 /// True if `path` looks like a populated OCI rootfs. The `bin/` check
 /// catches stub directories left behind by a failed pull — every sane
 /// Linux image ships `/bin/sh`, so a rootfs with no `bin/` is either
@@ -260,6 +272,31 @@ mod tests {
             "the tag was served a digest-only pin's rootfs"
         );
         assert_eq!(bare_hit, None);
+    }
+
+    #[test]
+    fn the_cached_digest_is_the_one_the_reference_resolved_to() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: the caller holds TEST_HOME_LOCK, which serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let tag = "docker.io/iiidev/node:latest";
+        let missing = cached_digest(tag);
+        let rootfs = canonical_path(tag);
+        populate(&rootfs);
+        let (index, platform) = (
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        );
+        std::fs::write(digest_path(&rootfs), format!("{index}\n{platform}")).unwrap();
+        let got = cached_digest(tag);
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(missing, None);
+        assert_eq!(got, Some(index));
     }
 
     #[test]

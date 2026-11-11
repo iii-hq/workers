@@ -42,10 +42,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    CallAction, CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction,
+    CallAction, CallRequest, Capture, IIIClient, ObserverHandle, ObserverState, RegisterFunction,
     Source,
 };
 use schemars::JsonSchema;
+
+use crate::observed::{delivered_event, Delivered};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -664,12 +666,14 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
     let emitter = local_emitter.clone();
     remote.register_function(
         relay_id.clone(),
-        RegisterFunction::new_async(move |envelope: EventEnvelope| {
+        RegisterFunction::new_async(move |delivered: Delivered<EventEnvelope>| {
             let emitter = emitter.clone();
             async move {
-                emitter
-                    .emit_envelopes(std::slice::from_ref(&envelope))
-                    .await;
+                if let Some(envelope) = delivered_event(delivered) {
+                    emitter
+                        .emit_envelopes(std::slice::from_ref(&envelope))
+                        .await;
+                }
                 Ok::<_, Error>(json!({ "ok": true }))
             }
         })
@@ -680,7 +684,7 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
     );
 
     let observer = remote.observe(
-        Source::function(STORE_ON_EVENTS_FN).deliver(Deliver::Output),
+        Source::function(STORE_ON_EVENTS_FN).capture([Capture::Output]),
         relay_id.as_str(),
     );
     let relay = relay_id.clone();
@@ -713,6 +717,27 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::types::Role;
+
+    /// The relay is called with the `Observed` envelope of the main's
+    /// `session::store::on-events` call: the session event is its output.
+    #[test]
+    fn the_relay_reads_the_session_event_from_the_envelope() {
+        let event = json!({
+            "function_id": ON_CREATED_FN,
+            "payload": { "session_id": "s-1" },
+            "session_metadata": { "tenant": "t-1" },
+        });
+        let envelope = crate::observed::envelope(STORE_ON_EVENTS_FN, event);
+        let delivered: Delivered<EventEnvelope> =
+            serde_json::from_value(envelope).expect("the envelope parses");
+        let relayed = delivered_event(delivered).expect("the envelope carries the event");
+        assert_eq!(relayed.function_id, ON_CREATED_FN);
+        assert_eq!(relayed.payload, json!({ "session_id": "s-1" }));
+        assert_eq!(
+            relayed.session_metadata,
+            Some(map(json!({ "tenant": "t-1" })))
+        );
+    }
 
     fn map(v: Value) -> JsonMap {
         v.as_object().unwrap().clone()

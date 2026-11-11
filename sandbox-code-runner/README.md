@@ -150,7 +150,7 @@ rows = iii.call({'function_id': 'database::query',
 - **Delivery.** Node runtimes get the SDK planted at
   `/node_modules/iii-sdk` from a bundle embedded in sandbox-code-runner —
   no registry, no `npm install`, works offline. Python runtimes
-  `pip install 'iii-sdk>=0.26.0rc5'` once at runtime creation (its pydantic-core
+  `pip install 'iii-sdk>=0.26.0'` once at runtime creation (its pydantic-core
   dependency is compiled per-platform, so planting is not an option); if
   that install fails — no PyPI route, say — the runtime still works and
   `iii` raises a clear "not installed" error on first use.
@@ -264,9 +264,9 @@ only on change) only while it has observers.
 Event: `{ kind, runtime_id?, lang?, sandbox_id?, function_id?, daemon_absent?, sandboxes? }`.
 
 ```ts
-// fleet snapshots only, the event itself as the target's input
+// fleet snapshots only; the target reads the event at payload.output
 iii.observe(
-  { function_id: 'sandbox-code-runner::on-event', filters: { 'input.kind': { $eq: 'fleet' } }, deliver: 'output' },
+  { function_id: 'sandbox-code-runner::on-event', filters: { 'input.kind': { $eq: 'fleet' } }, capture: ['output'] },
   'ops::fleet-changed',
 )
 ```

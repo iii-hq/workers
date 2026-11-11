@@ -119,7 +119,7 @@ function useDeviceEvents(host: Host) {
         if (typeof e.tenant === 'string' && typeof e.udid === 'string') onEvent(`${e.tenant}/${e.udid}`, e)
       })
       const dispose = host.iii.observe(
-        { function_id: functionId, filters: { 'input.tenant': { $eq: DEFAULT_TENANT } }, deliver: 'output' },
+        { function_id: functionId, filters: { 'input.tenant': { $eq: DEFAULT_TENANT } } },
         `${handler}::${host.iii.browserId}`,
       )
       return () => {

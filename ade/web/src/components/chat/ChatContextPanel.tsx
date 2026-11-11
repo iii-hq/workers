@@ -70,7 +70,10 @@ import {
   ghViewer,
   readPrActivity,
 } from '@/lib/auto-fix'
-import type { SessionObserverInfo } from '@/lib/backend/observers'
+import {
+  firedGhostRow,
+  type SessionObserverInfo,
+} from '@/lib/backend/observers'
 import {
   type ChatFile,
   capRows,
@@ -113,7 +116,7 @@ import {
   useExtContextSections,
 } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
-import type { Attachment, Conversation } from '@/types/chat'
+import type { Attachment, Conversation, SystemMessage } from '@/types/chat'
 import type { ContextSectionSummary } from '@/types/injectable-ui'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import {
@@ -128,8 +131,12 @@ import {
   type SubagentVisualStatus,
 } from './active-subagents'
 import { ContextTrackingBody, useContextTracking } from './ContextTracking'
+import {
+  ObserverDetailDialog,
+  ObserverStatus,
+  observerTrigger,
+} from './ObserverDetailDialog'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
-import { ObserverDetailDialog } from './SessionObservers'
 
 /**
  * Coloured trailing text is a plain span: the tree recipe's `__meta` class
@@ -149,6 +156,13 @@ interface ChatContextPanelProps {
   connectionState: IIIConnectionState
   /** The session's observer rows (ChatView's merged list); inactive ones are skipped. */
   observers: readonly SessionObserverInfo[]
+  /**
+   * What the observers did in this chat, oldest first: the events a roll-up
+   * in the transcript counts. Listed even after their observer has ended.
+   */
+  observerEvents?: readonly SystemMessage[]
+  /** The observer list has loaded: an observer missing from it has ended. */
+  observersListed?: boolean
   onDisposeObserver: (observerId: string) => Promise<void> | void
   onOpenConversation: (sessionId: string) => void
   /** git is read through `shell::exec`, so the folder's state needs that worker. */
@@ -199,6 +213,8 @@ export function ChatContextPanel({
   conversations,
   connectionState,
   observers,
+  observerEvents = [],
+  observersListed = false,
   onDisposeObserver,
   onOpenConversation,
   shellAvailable,
@@ -447,6 +463,34 @@ export function ChatContextPanel({
     () => observers.filter((observer) => !observer.fired),
     [observers],
   )
+  // One row per observer, not per event: a standing observer checks many
+  // times, and each check is a transcript event. Ended observers stay while
+  // this chat holds their events, so the transcript's roll-up has a row here.
+  const observerListing = useMemo(() => {
+    const eventsOf = new Map<string, SystemMessage[]>()
+    const latest = new Map<string, NonNullable<SystemMessage['observer']>>()
+    for (const event of observerEvents) {
+      const fired = event.observer
+      if (!fired) continue
+      const list = eventsOf.get(fired.observer_id) ?? []
+      list.push(event)
+      eventsOf.set(fired.observer_id, list)
+      latest.set(fired.observer_id, fired)
+    }
+    const live = new Set(liveObservers.map((observer) => observer.id))
+    // Ended when something says so: the loaded list leaves it out, or a
+    // retirement record. Absent from a list still loading (or that failed)
+    // says nothing, and such a row must not claim it ended.
+    const ended = new Set<string>()
+    const others = [...latest]
+      .filter(([id]) => !live.has(id))
+      .map(([id, fired]) => {
+        const listed = observers.find((observer) => observer.id === id)
+        if (observersListed || listed?.fired || fired.retired) ended.add(id)
+        return listed ?? firedGhostRow(fired)
+      })
+    return { rows: [...liveObservers, ...others], eventsOf, ended, live }
+  }, [observerEvents, liveObservers, observers, observersListed])
   const [openObserverId, setOpenObserverId] = useState<string | null>(null)
   const [busyObserverId, setBusyObserverId] = useState<string | null>(null)
   const [confirmObserver, setConfirmObserver] =
@@ -461,12 +505,17 @@ export function ChatContextPanel({
     }
   }
   const openObserver =
-    liveObservers.find((observer) => observer.id === openObserverId) ?? null
+    observerListing.rows.find((observer) => observer.id === openObserverId) ??
+    null
 
   const ticketRowsShown = capRows(tickets, SECTION_CAP, !!expanded.tickets)
   const prRows = capRows(listedPrs, SECTION_CAP, !!expanded.prs)
   const subagentRows = capRows(subagents, SUBAGENT_CAP, !!expanded.subagents)
-  const observerRows = capRows(liveObservers, SECTION_CAP, !!expanded.observers)
+  const observerRows = capRows(
+    observerListing.rows,
+    SECTION_CAP,
+    !!expanded.observers,
+  )
   const linkRows = capRows(links, SECTION_CAP, !!expanded.links)
   const imageRows = capRows(images, IMAGE_CAP, !!expanded.images)
   const fileRows = capRows(files, SECTION_CAP, !!expanded.files)
@@ -896,57 +945,75 @@ export function ChatContextPanel({
         </Section>
       ) : null,
     observers:
-      liveObservers.length > 0 ? (
+      observerListing.rows.length > 0 ? (
         <Section
           id="observers"
           label="Observers"
-          count={liveObservers.length}
+          count={observerListing.rows.length}
           brief={
             <span className="truncate font-mono text-ink-ghost">
-              {[...new Set(liveObservers.map((t) => t.functionId))].join(' · ')}
+              {[...new Set(observerListing.rows.map((t) => t.functionId))].join(
+                ' · ',
+              )}
             </span>
           }
         >
           {observerRows.shown.map((observer) => {
             const label =
               observer.label ?? observer.action ?? observer.functionId
+            const ended = observerListing.ended.has(observer.id)
+            const removable = observerListing.live.has(observer.id)
+            const events =
+              observerListing.eventsOf.get(observer.id)?.length ?? 0
+            // The count first: it is what the transcript's roll-up counted,
+            // and a long trigger truncates after it, not over it.
+            const summary = [
+              events > 0
+                ? `${events} ${events === 1 ? 'event' : 'events'}`
+                : null,
+              observerTrigger(observer),
+            ]
+              .filter(Boolean)
+              .join(' · ')
             return (
               <Row
                 key={observer.id}
+                data-observer-row={ended ? 'ended' : 'live'}
                 icon={
                   <ObserverIcon
                     size={16}
-                    className="fill-current"
+                    className={ended ? 'fill-ink-ghost' : 'fill-warn'}
                     aria-hidden
                   />
                 }
                 label={label}
                 mono={label === observer.functionId}
+                description={
+                  <span className="truncate text-xs text-ink-faint">
+                    {summary}
+                  </span>
+                }
                 onActivate={() => setOpenObserverId(observer.id)}
                 ariaLabel={`Show ${label}`}
-                meta={
-                  label === observer.functionId ? null : (
-                    <span className={cn(uiClasses.treeItemMeta, 'font-mono')}>
-                      {observer.functionId}
-                    </span>
-                  )
-                }
+                meta={<ObserverStatus ended={ended} />}
                 actions={
-                  <Hint label="Remove">
-                    <button
-                      type="button"
-                      className={uiClasses.treeItemAction}
-                      data-tone="alert"
-                      aria-label={`Remove ${label}`}
-                      disabled={busyObserverId === observer.id}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        setConfirmObserver(observer)
-                      }}
-                    >
-                      <X aria-hidden />
-                    </button>
-                  </Hint>
+                  !removable ? undefined : (
+                    <Hint label="Remove">
+                      <button
+                        type="button"
+                        className={uiClasses.treeItemAction}
+                        data-tone="alert"
+                        aria-label={`Remove ${label}`}
+                        disabled={busyObserverId === observer.id}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setConfirmObserver(observer)
+                        }}
+                      >
+                        <X aria-hidden />
+                      </button>
+                    </Hint>
+                  )
                 }
               />
             )
@@ -954,7 +1021,7 @@ export function ChatContextPanel({
           <ShowMore
             hidden={observerRows.hidden}
             expanded={!!expanded.observers}
-            total={liveObservers.length}
+            total={observerListing.rows.length}
             cap={SECTION_CAP}
             onToggle={() => toggle('observers')}
           />
@@ -1045,6 +1112,14 @@ export function ChatContextPanel({
 
         <ObserverDetailDialog
           observer={openObserver}
+          ended={
+            openObserver !== null && observerListing.ended.has(openObserver.id)
+          }
+          events={
+            openObserver
+              ? (observerListing.eventsOf.get(openObserver.id) ?? [])
+              : []
+          }
           busy={openObserver !== null && busyObserverId === openObserver.id}
           onOpenChange={(open) => {
             if (!open) setOpenObserverId(null)
@@ -1422,6 +1497,9 @@ function Section({
           className={cn(
             uiClasses.listGroupLabel,
             'flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus pointer-coarse:min-h-11',
+            // Folded, the header is the whole card: room to read and to hit.
+            // Important: the recipe's padding is unlayered and would win.
+            !open && 'py-2.5!',
           )}
         >
           <span className="shrink-0">{label}</span>

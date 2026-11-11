@@ -234,6 +234,9 @@
     overflow: hidden;
     padding: 6px 8px;
     background: var(--tmux-term-bg);
+    /* Pinch-zoom stays with the browser; single-finger panning is ours
+       (touchmove handler in use-terminal.ts), so it must not be native. */
+    touch-action: pinch-zoom;
   }
   .tmux-xterm-host,
   .tmux-xterm .xterm {

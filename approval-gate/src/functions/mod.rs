@@ -206,14 +206,14 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         deps,
         ON_SESSION_DELETED_ID,
         ON_SESSION_DELETED_DESC,
-        |d, r| async move { on_session_deleted::handle(&d, r).await },
+        |d, r| async move { on_session_deleted::handle_delivered(&d, r).await },
     );
     register(
         iii,
         deps,
         ON_TURN_COMPLETED_ID,
         ON_TURN_COMPLETED_DESC,
-        |d, r| async move { on_turn_completed::handle(&d, r).await },
+        |d, r| async move { on_turn_completed::handle_delivered(&d, r).await },
     );
 
     tracing::info!("all approval::* functions registered");
@@ -288,8 +288,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ApproveAlwaysRequest, SettingsResponse>(APPROVE_ALWAYS_ID, APPROVE_ALWAYS_DESC),
         spec::<GetSettingsRequest, GetSettingsResponse>(GET_SETTINGS_ID, GET_SETTINGS_DESC),
         spec::<ClearSettingsRequest, ClearSettingsResponse>(CLEAR_SETTINGS_ID, CLEAR_SETTINGS_DESC),
-        spec::<SessionDeletedEvent, EventAck>(ON_SESSION_DELETED_ID, ON_SESSION_DELETED_DESC),
-        spec::<TurnCompletedEvent, EventAck>(ON_TURN_COMPLETED_ID, ON_TURN_COMPLETED_DESC),
+        spec::<crate::observed::Delivered<SessionDeletedEvent>, EventAck>(
+            ON_SESSION_DELETED_ID,
+            ON_SESSION_DELETED_DESC,
+        ),
+        spec::<crate::observed::Delivered<TurnCompletedEvent>, EventAck>(
+            ON_TURN_COMPLETED_ID,
+            ON_TURN_COMPLETED_DESC,
+        ),
     ]
 }
 

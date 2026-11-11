@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/Button'
 import { CommandCard } from '@/components/ui/CommandCard'
 import { Wordmark } from '@/components/ui/Wordmark'
+import type { HarnessAction } from '@/hooks/use-harness-status'
 import { cn } from '@/lib/utils'
 import type { WorktreePickerOptions } from './DirectoryPicker'
 
@@ -11,11 +12,14 @@ import type { WorktreePickerOptions } from './DirectoryPicker'
 /**
  * The chat empty state, as a small set of presentational variants:
  *
- *   - `ready`          — harness present + a model available (the hero copy)
- *   - `no-provider`    — harness present, no model configured -> configure CTA
- *   - `no-harness`     — harness worker missing -> install CTA + cli hint
- *   - `installing`     — `compose::add` in flight -> live console
- *   - `install-failed` — add failed -> console + retry
+ *   - `ready`           — harness present + a model available (the hero copy)
+ *   - `no-provider`     — harness present, no model configured -> configure CTA
+ *   - `no-harness`      — harness worker missing -> install CTA + cli hint
+ *   - `harness-stopped` — harness declared in compose but not running ->
+ *                         start / update-and-start CTAs + cli hint (an add
+ *                         would change nothing here)
+ *   - `installing`      — the compose action (`action`) in flight -> live console
+ *   - `install-failed`  — that action failed -> console + retry
  *
  * `MessageList` derives the variant from `ConversationsContext` (harness
  * presence + model catalog) and passes the callbacks. The ready state loads
@@ -27,17 +31,27 @@ export type EmptyStateVariant =
   | 'ready'
   | 'no-provider'
   | 'no-harness'
+  | 'harness-stopped'
   | 'installing'
   | 'install-failed'
 
 export interface EmptyStateProps {
   variant: EmptyStateVariant
   density?: 'route' | 'dock'
-  /** Surfaced under the console when an add fails. */
+  /** Surfaced under the console when an action fails. */
   errorMessage?: string | null
+  /**
+   * Which compose action `installing` / `install-failed` shows: an add
+   * (default), a start, or an update-and-start.
+   */
+  action?: HarnessAction
   /** `no-harness` primary CTA. */
   onInstallHarness?: () => void
-  /** `install-failed` retry CTA. */
+  /** `harness-stopped` primary CTA. */
+  onStartHarness?: () => void
+  /** `harness-stopped` secondary CTA. */
+  onUpdateHarness?: () => void
+  /** `install-failed` retry CTA (repeats `action`). */
   onRetryInstall?: () => void
   /** `no-provider` CTA (opens the model/provider picker). */
   onConfigureProvider?: () => void
@@ -50,6 +64,61 @@ export interface EmptyStateProps {
 }
 
 const HARNESS_INSTALL_COMMAND = 'iii call compose::add worker=harness'
+const HARNESS_START_COMMAND = 'iii call compose::up container=harness'
+const HARNESS_UPDATE_COMMAND = 'iii call compose::update worker=harness'
+
+/** Copy for each compose action's console, running and failed. */
+const ACTION_COPY: Record<
+  HarnessAction,
+  {
+    command: string
+    running: { heading: string; body: string; line: string }
+    failed: { heading: string; body: string; line: string; retry: string }
+  }
+> = {
+  add: {
+    command: HARNESS_INSTALL_COMMAND,
+    running: {
+      heading: 'Installing harness…',
+      body: 'Adding the harness worker. This runs the same command as the CLI, shown below.',
+      line: '· adding harness to the compose project…',
+    },
+    failed: {
+      heading: 'Harness install failed',
+      body: "Compose couldn't finish adding the harness. Retry here, or run the command below in your terminal.",
+      line: '× compose::add did not finish',
+      retry: 'Retry install',
+    },
+  },
+  start: {
+    command: HARNESS_START_COMMAND,
+    running: {
+      heading: 'Starting harness…',
+      body: 'Starting the harness container. This runs the same command as the CLI, shown below.',
+      line: '· starting the harness container…',
+    },
+    failed: {
+      heading: "Harness didn't start",
+      body: "Compose couldn't start the harness container. Retry here, or run the command below in your terminal.",
+      line: '× compose::up did not finish',
+      retry: 'Retry start',
+    },
+  },
+  update: {
+    command: HARNESS_UPDATE_COMMAND,
+    running: {
+      heading: 'Updating harness…',
+      body: 'Updating the harness worker to the latest release, then starting it. This runs the same command as the CLI, shown below.',
+      line: '· updating harness, then starting it…',
+    },
+    failed: {
+      heading: 'Harness update failed',
+      body: "Compose couldn't finish updating the harness. Retry here, or run the command below in your terminal.",
+      line: '× compose::update did not finish',
+      retry: 'Retry update',
+    },
+  },
+}
 
 // One heading and one body style for every variant, the welcome hero's.
 const HEADING_CLASS =
@@ -61,7 +130,10 @@ export function EmptyState({
   variant,
   density = 'route',
   errorMessage,
+  action = 'add',
   onInstallHarness,
+  onStartHarness,
+  onUpdateHarness,
   onRetryInstall,
   onConfigureProvider,
 }: EmptyStateProps) {
@@ -98,8 +170,15 @@ export function EmptyState({
         {variant === 'no-harness' ? (
           <NoHarnessBody onInstallHarness={onInstallHarness} />
         ) : null}
+        {variant === 'harness-stopped' ? (
+          <StoppedHarnessBody
+            onStartHarness={onStartHarness}
+            onUpdateHarness={onUpdateHarness}
+          />
+        ) : null}
         {variant === 'installing' || variant === 'install-failed' ? (
           <InstallingBody
+            action={action}
             failed={variant === 'install-failed'}
             errorMessage={errorMessage}
             onRetryInstall={onRetryInstall}
@@ -181,28 +260,71 @@ function NoHarnessBody({
   )
 }
 
+/* ---------------- harness declared but stopped ---------------- */
+
+/**
+ * The harness is in the compose file but its container is down. Adding it
+ * again would change nothing, so the choices are a start as declared, or an
+ * update to the latest release followed by a start.
+ */
+function StoppedHarnessBody({
+  onStartHarness,
+  onUpdateHarness,
+}: {
+  onStartHarness?: () => void
+  onUpdateHarness?: () => void
+}) {
+  return (
+    <>
+      <h1 className={HEADING_CLASS}>Start the harness worker</h1>
+      <p className={BODY_CLASS}>
+        Chat runs on the <span className="text-ink">harness</span> worker. It is
+        in this project's compose file but isn't running. Start it to chat, or
+        update it to the latest release first.
+      </p>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" onClick={onStartHarness}>
+            Start harness
+          </Button>
+          <Button variant="secondary" onClick={onUpdateHarness}>
+            Update and start harness
+          </Button>
+        </div>
+        <div className="flex flex-col gap-2">
+          <span className="font-inter text-sm text-ink-faint">
+            Prefer the terminal? Run:
+          </span>
+          <CommandCard command={HARNESS_START_COMMAND} />
+        </div>
+      </div>
+    </>
+  )
+}
+
 /* ---------------- installing / install failed ---------------- */
 
 function InstallingBody({
+  action,
   failed,
   errorMessage,
   onRetryInstall,
 }: {
+  action: HarnessAction
   failed: boolean
   errorMessage?: string | null
   onRetryInstall?: () => void
 }) {
+  const copy = ACTION_COPY[action]
   return (
     <>
       <h1 className={HEADING_CLASS}>
-        {failed ? 'Harness install failed' : 'Installing harness…'}
+        {failed ? copy.failed.heading : copy.running.heading}
       </h1>
       <p className={BODY_CLASS}>
-        {failed
-          ? "Compose couldn't finish adding the harness. Retry here, or run the command below in your terminal."
-          : 'Adding the harness worker. This runs the same command as the CLI, shown below.'}
+        {failed ? copy.failed.body : copy.running.body}
       </p>
-      <InstallConsole running={!failed} />
+      <InstallConsole action={action} running={!failed} />
       {failed ? (
         <div className="flex flex-col gap-3">
           {errorMessage ? (
@@ -212,7 +334,7 @@ function InstallingBody({
           ) : null}
           <div>
             <Button variant="primary" onClick={onRetryInstall}>
-              Retry install
+              {copy.failed.retry}
             </Button>
           </div>
         </div>
@@ -222,19 +344,26 @@ function InstallingBody({
 }
 
 /**
- * Install console — a `CommandCard` framed as the equivalent
- * `iii call compose::add worker=harness` run.
+ * Install console — a `CommandCard` framed as the equivalent CLI run of the
+ * action (`iii call compose::add worker=harness` for an add).
  */
-function InstallConsole({ running }: { running: boolean }) {
+function InstallConsole({
+  action,
+  running,
+}: {
+  action: HarnessAction
+  running: boolean
+}) {
+  const copy = ACTION_COPY[action]
   return (
-    <CommandCard command={HARNESS_INSTALL_COMMAND}>
+    <CommandCard command={copy.command}>
       <div className="flex flex-col gap-0.5 text-[12.5px]">
         {running ? (
           <div className="text-ink-faint italic animate-pulse">
-            · adding harness to the compose project…
+            {copy.running.line}
           </div>
         ) : (
-          <div className="text-alert">× compose::add did not finish</div>
+          <div className="text-alert">{copy.failed.line}</div>
         )}
       </div>
     </CommandCard>

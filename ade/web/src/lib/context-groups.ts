@@ -95,6 +95,12 @@ export function toggleGroup(id: string) {
   folded.write(next.length < folded.read().length ? next : [...next, id])
 }
 
+/** Bring a section into view: unhidden and unfolded. */
+export function revealGroup(id: string) {
+  folded.write(folded.read().filter((x) => x !== id))
+  setSectionHidden(id, false)
+}
+
 /** Fold every section in `ids`, or unfold them all. */
 export function foldAllGroups(fold: boolean, ids: readonly string[]) {
   folded.write(fold ? [...ids] : [])

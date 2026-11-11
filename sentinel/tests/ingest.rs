@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use db::TestDb;
-use sentinel::ingest::{ring::PhantomRing, CheckoutVersions, Ingest, IngestJob, Telemetry};
+use sentinel::ingest::{
+    ring::PhantomRing, CheckoutVersions, Ingest, IngestJob, Telemetry, TICK_BACKLOG_MAX,
+};
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::store::Db;
 use sentinel::{
@@ -35,6 +37,10 @@ struct FakeEngineTelemetry {
     logs: BTreeMap<String, Vec<Value>>,
     /// Every read of the summaries fails with this.
     read_error: Option<String>,
+    /// The next this-many reads time out, then reads answer again.
+    failures_left: Arc<AtomicU64>,
+    /// A trace a read before this time does not see yet.
+    visible_at: BTreeMap<String, tokio::time::Instant>,
     /// A read before this sees nothing: the engine has broadcast the spans and
     /// not stored them yet.
     stored_at: Option<tokio::time::Instant>,
@@ -49,13 +55,26 @@ impl Telemetry for FakeEngineTelemetry {
             return Err(SentinelError::dependency(message));
         }
         if self
+            .failures_left
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(SentinelError::dependency(
+                "engine::traces::list: invocation timed out",
+            ));
+        }
+        if self
             .stored_at
             .is_some_and(|at| tokio::time::Instant::now() < at)
         {
             return Ok(Vec::new());
         }
+        let now = tokio::time::Instant::now();
         Ok(trace_ids
             .iter()
+            .filter(|id| self.visible_at.get(*id).is_none_or(|at| now >= *at))
             .filter_map(|id| self.summaries.get(id).cloned())
             .collect())
     }
@@ -354,22 +373,170 @@ async fn a_span_the_engine_stores_just_after_its_tick_is_still_seen() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_read_failure_queues_every_trace_of_the_tick() {
+async fn a_read_failure_queues_nothing_and_reads_the_ids_again_after_a_backoff() {
+    let (summary, _) = cas_trace();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    telemetry.summaries.insert("c1".into(), clean("c1"));
+    telemetry.summaries.insert("c2".into(), clean("c2"));
+    telemetry.failures_left.store(1, Ordering::Relaxed);
+    let reads = telemetry.reads.clone();
+    let harness = harness(telemetry).await;
+
+    assert!(
+        harness
+            .ingest
+            .filter_tick(&ids(&["t1", "c1"]))
+            .await
+            .0
+            .is_empty(),
+        "a failed read must not turn into a job, and a read, per trace"
+    );
+    assert!(
+        harness.ingest.filter_tick(&ids(&["c2"])).await.0.is_empty(),
+        "inside the backoff a tick only adds its ids"
+    );
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(
+        harness.ingest.filter_tick(&[]).await.0,
+        ids(&["t1"]),
+        "one read takes every id that waited, so the error is not lost"
+    );
+    assert_eq!(reads.load(Ordering::Relaxed), 2);
+    assert_eq!(harness.counters.ingest_snapshot(0).lost_before_capture, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn ticks_that_arrive_during_a_read_join_it_instead_of_starting_their_own() {
+    let (summary, _) = cas_trace();
+    let mut other = summary.clone();
+    other.trace_id = "t2".into();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    telemetry.summaries.insert("t2".into(), other);
+    let reads = telemetry.reads.clone();
+    let harness = harness(telemetry).await;
+
+    let (t1, t2) = (ids(&["t1"]), ids(&["t2"]));
+    let (first, second) = tokio::join!(
+        harness.ingest.filter_tick(&t1),
+        harness.ingest.filter_tick(&t2),
+    );
+
+    assert_eq!(first.0, ids(&["t1", "t2"]));
+    assert!(second.0.is_empty(), "its id rode on the read in flight");
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_backlog_past_its_cap_drops_the_oldest_ids_and_counts_them() {
     let telemetry = FakeEngineTelemetry {
-        read_error: Some("connection refused".into()),
+        read_error: Some("engine::traces::list: invocation timed out".into()),
         ..FakeEngineTelemetry::default()
     };
     let harness = harness(telemetry).await;
+    let many: Vec<String> = (0..TICK_BACKLOG_MAX + 10)
+        .map(|n| format!("t{n}"))
+        .collect();
+
+    assert!(harness.ingest.filter_tick(&many).await.0.is_empty());
+    let counts = harness.counters.ingest_snapshot(0);
+    assert_eq!(counts.tick_backlog_dropped, 10);
+    assert_eq!(
+        counts.lost_before_capture, 0,
+        "the engine's ring lost nothing"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trace_that_ticks_again_while_waiting_is_read_one_window_after_its_latest_tick() {
+    let (summary, _) = cas_trace();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    // A second tick 250 ms in carries t1's error span, stored 100 ms after it.
+    telemetry.visible_at.insert(
+        "t1".into(),
+        tokio::time::Instant::now() + Duration::from_millis(350),
+    );
+    let harness = harness(telemetry).await;
+
+    let t1 = ids(&["t1"]);
+    let (first, second) = tokio::join!(harness.ingest.filter_tick(&t1), async {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        harness.ingest.filter_tick(&t1).await
+    });
+
+    assert_eq!(first.0, ids(&["t1"]), "read after the second tick's window");
+    assert!(second.0.is_empty());
+    assert_eq!(harness.counters.ingest_snapshot(0).lost_before_capture, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_a_failed_read_the_backlog_says_when_to_read_it_again() {
+    let (summary, _) = cas_trace();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    telemetry.failures_left.store(1, Ordering::Relaxed);
+    let harness = harness(telemetry).await;
+    assert!(harness.ingest.tick_backlog_due().is_none());
+
+    let started = tokio::time::Instant::now();
+    assert!(harness.ingest.filter_tick(&ids(&["t1"])).await.0.is_empty());
+    let due = harness
+        .ingest
+        .tick_backlog_due()
+        .expect("the failed id waits for a later read");
+    assert!(
+        due >= started + Duration::from_millis(1300),
+        "not before the backoff that follows the read at 300 ms"
+    );
+
+    tokio::time::sleep_until(due).await;
+    assert_eq!(
+        harness.ingest.filter_tick(&[]).await.0,
+        ids(&["t1"]),
+        "a read with no new tick drains what waited"
+    );
+    assert!(harness.ingest.tick_backlog_due().is_none());
+
+    assert!(harness.ingest.claim_tick_drain());
+    assert!(
+        !harness.ingest.claim_tick_drain(),
+        "one scheduled read at a time"
+    );
+    harness.ingest.release_tick_drain();
+    assert!(harness.ingest.claim_tick_drain());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_id_that_joins_a_read_in_flight_still_waits_for_the_engine_to_store_its_span() {
+    let (summary, _) = cas_trace();
+    let mut other = summary.clone();
+    other.trace_id = "t2".into();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    telemetry.summaries.insert("t2".into(), other);
+    // t2 ticks 250 ms into t1's read delay; the engine stores its span 100 ms later.
+    telemetry.visible_at.insert(
+        "t2".into(),
+        tokio::time::Instant::now() + Duration::from_millis(350),
+    );
+    let harness = harness(telemetry).await;
+
+    let (t1, t2) = (ids(&["t1"]), ids(&["t2"]));
+    let (first, second) = tokio::join!(harness.ingest.filter_tick(&t1), async {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        harness.ingest.filter_tick(&t2).await
+    });
 
     assert_eq!(
-        harness
-            .ingest
-            .filter_tick(&ids(&["t1", "t2", "t3"]))
-            .await
-            .0,
-        ids(&["t1", "t2", "t3"]),
-        "the job re-reads and the queue retries; dropping them could lose an error"
+        first.0,
+        ids(&["t1", "t2"]),
+        "t2 is read one window after its own tick, not at t1's"
     );
+    assert!(second.0.is_empty());
     assert_eq!(harness.counters.ingest_snapshot(0).lost_before_capture, 0);
 }
 

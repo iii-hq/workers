@@ -213,7 +213,7 @@ fn verify(run: &crate::evidence_data::RunEvidence) -> anyhow::Result<()> {
     let mut child_count = 0;
     for span in lifecycle {
         let payload = span
-            .invocation_input()
+            .observed_event()
             .ok_or_else(|| anyhow::anyhow!("lifecycle span has no input"))?;
         anyhow::ensure!(
             payload.get("terminal") == Some(&serde_json::Value::Bool(true))

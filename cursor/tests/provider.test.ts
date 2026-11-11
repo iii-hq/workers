@@ -25,7 +25,7 @@ describe('Cursor LLM Router provider', () => {
 
     provider.register();
     expect(iii.observed).toContainEqual({
-      source: { function_id: 'router::on-ready', deliver: 'output' },
+      source: { function_id: 'router::on-ready', capture: ['output'] },
       target: 'provider::cursor::on_router_ready',
     });
     await vi.waitFor(() => {

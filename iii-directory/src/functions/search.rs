@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
@@ -2345,10 +2345,12 @@ const FUNCTIONS_ON_CHANGED_FN: &str = "engine::on-functions-changed";
 /// (crate::hook::apply). The observer lives as long as the worker's
 /// connection.
 pub fn observe_catalog_changes(iii: &IIIClient) {
-    iii.observe(
-        Source::function(FUNCTIONS_ON_CHANGED_FN).deliver(Deliver::Output),
-        "directory::on-functions-change",
-    );
+    iii.observe(catalog_changes_source(), "directory::on-functions-change");
+}
+
+/// Every `engine::on-functions-changed` call.
+fn catalog_changes_source() -> Source {
+    Source::function(FUNCTIONS_ON_CHANGED_FN).capture([Capture::Output])
 }
 
 /// Register the public search function, the internal catalog listener, and
@@ -2416,6 +2418,28 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Deps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `directory::on-functions-change` ignores the event: an Observed
+    /// envelope (captured output) is accepted, and the observer captures the
+    /// output rather than setting `deliver`.
+    #[test]
+    fn catalog_changes_arrive_as_an_observed_envelope() {
+        let envelope = json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": FUNCTIONS_ON_CHANGED_FN,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": { "event": "functions_changed", "functions": [] },
+        });
+        serde_json::from_value::<OnFunctionsChangeEvent>(envelope).expect("envelope accepted");
+        assert_eq!(
+            catalog_changes_source(),
+            Source::function(FUNCTIONS_ON_CHANGED_FN).capture([Capture::Output])
+        );
+    }
 
     #[tokio::test]
     async fn choice_becomes_a_tournament_for_small_window_judges() {

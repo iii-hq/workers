@@ -19,6 +19,11 @@ pub struct TmuxInfo {
     pub server_running: bool,
     /// Why tmux is unavailable, or the last listing error.
     pub error: Option<String>,
+    /// tmux is missing and `tmux::install` can try: a supported OS, the
+    /// configured binary is plain `tmux`, not a path or another name, and this
+    /// processor has an official build or this computer a package manager.
+    #[serde(default)]
+    pub installable: bool,
 }
 
 /// Every session with its windows and panes.

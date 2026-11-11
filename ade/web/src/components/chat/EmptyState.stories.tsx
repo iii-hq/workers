@@ -11,6 +11,8 @@ const meta = {
   args: {
     density: 'route',
     onInstallHarness: fn(),
+    onStartHarness: fn(),
+    onUpdateHarness: fn(),
     onRetryInstall: fn(),
     onConfigureProvider: fn(),
   },
@@ -41,14 +43,38 @@ export const NoHarness: Story = {
   args: { variant: 'no-harness' },
 }
 
+export const HarnessStopped: Story = {
+  name: 'harness declared but stopped',
+  args: { variant: 'harness-stopped' },
+}
+
 export const Installing: Story = {
   name: 'installing (console)',
   args: { variant: 'installing' },
 }
 
+export const Starting: Story = {
+  name: 'starting (console)',
+  args: { variant: 'installing', action: 'start' },
+}
+
+export const Updating: Story = {
+  name: 'updating and starting (console)',
+  args: { variant: 'installing', action: 'update' },
+}
+
 export const InstallFailed: Story = {
   name: 'install failed',
   args: { variant: 'install-failed', errorMessage: 'registry unreachable' },
+}
+
+export const StartFailed: Story = {
+  name: 'start failed',
+  args: {
+    variant: 'install-failed',
+    action: 'start',
+    errorMessage: 'harness exited with status 1',
+  },
 }
 
 export const Dock: Story = {

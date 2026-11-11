@@ -313,6 +313,18 @@ const III_BLOCK_ROOT_UPPER_FSTYPE: &str = "III_BLOCK_ROOT_UPPER_FSTYPE";
 const OVERLAY_LOWER: &str = "/overlay-lower";
 const OVERLAY_UPPERFS: &str = "/overlay-upperfs";
 
+/// overlayfs accepts a changed lower under an existing upper only without these
+/// features: a rebuild swaps the lower (the build's image) under the kept data
+/// disk. Spelled out, so a kernel built with any of them on by default cannot
+/// turn it on.
+const OVERLAY_FEATURES_OFF: &str = "index=off,metacopy=off,redirect_dir=off,xino=off";
+
+/// The overlay's mount data: the three dirs, and the features a changed lower
+/// needs off.
+fn overlay_mount_data(lower: &str, upper: &str, work: &str) -> String {
+    format!("lowerdir={lower},upperdir={upper},workdir={work},{OVERLAY_FEATURES_OFF}")
+}
+
 /// True when the host asked us to build `/` from a shared read-only base
 /// image plus a writable overlay, rather than the virtiofs trampoline root.
 pub fn overlay_root_requested() -> bool {
@@ -409,7 +421,7 @@ pub fn overlay_root() -> Result<(), InitError> {
 
     // Phase 3 — assemble the overlay as the new root, then make it private.
     mkdir_ignore_exists(NEW_ROOT, 0o755)?;
-    let data = format!("lowerdir={OVERLAY_LOWER},upperdir={upper_dir},workdir={work_dir}");
+    let data = overlay_mount_data(OVERLAY_LOWER, &upper_dir, &work_dir);
     mount(
         Some("overlay"),
         NEW_ROOT,
@@ -595,6 +607,26 @@ mod tests {
     /// the allowlist so images with `WorkingDir: /app` have that dir
     /// after pivot. Guards against anyone trimming the list back to
     /// strict FHS in the future.
+    /// A rebuild swaps the lower under a kept upper, which overlayfs supports
+    /// only with these off.
+    #[test]
+    fn the_overlay_is_mounted_without_index_metacopy_redirect_dir_or_xino() {
+        let data = overlay_mount_data("/l", "/u/upper", "/u/work");
+        assert!(data.starts_with("lowerdir=/l,upperdir=/u/upper,workdir=/u/work,"));
+        for off in ["index=off", "metacopy=off", "redirect_dir=off", "xino=off"] {
+            assert!(data.split(',').any(|o| o == off), "{off} missing: {data}");
+        }
+        for on in [
+            "index=on",
+            "metacopy=on",
+            "redirect_dir=on",
+            "xino=on",
+            "xino=auto",
+        ] {
+            assert!(!data.contains(on), "{on} in {data}");
+        }
+    }
+
     #[test]
     fn allowlist_includes_app_for_oci_images() {
         let names: Vec<&str> = ROOTFS_ENTRIES.iter().map(|(n, _)| *n).collect();

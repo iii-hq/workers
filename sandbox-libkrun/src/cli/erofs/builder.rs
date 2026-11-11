@@ -35,7 +35,7 @@ use super::tree::{
     DataSpool, DirectoryNode, FileData, FileTree, InodeMetadata, RegularFileId, RegularFileNode,
     SymlinkNode, TreeNode,
 };
-use super::write_erofs;
+use super::{write_erofs, write_erofs_cancellable};
 
 /// Per-call sequence so concurrent builds (even within ONE process — the engine
 /// starts workers as concurrent async tasks) never share a temp path.
@@ -80,6 +80,184 @@ pub fn build_erofs(src: &Path, out: &Path) -> Result<(), String> {
     drop(spool);
     let _ = fs::remove_file(&spool_path);
     result
+}
+
+/// A file the host lays over whatever the tar holds at `path`, e.g. the base
+/// image's `.oci-config.json`, so a build cannot change what the run reads there.
+pub struct ImageFile<'a> {
+    pub path: &'a str,
+    pub data: Vec<u8>,
+    pub mode: u16,
+}
+
+/// Build a read-only erofs image at `out` from the tar stream `tar`: the merged
+/// root a build VM exported (iii-init `export`), which the guest wrote and so
+/// may hold anything; every path goes through the tree's traversal checks. The
+/// caller opens it without following a symlink. File data is spooled to
+/// `spool_path`, removed on return. `extra` is laid over the tree. `cancelled`
+/// is polled between entries and before every write of the image; once it
+/// returns true the build stops with an error and removes what it wrote of
+/// `out`, created mode 0600.
+///
+/// Carried as by [`build_erofs`]: regular files, directories, symlinks and hard
+/// links with mode, owner and mtime; device nodes, FIFOs and sockets are not.
+pub fn build_erofs_from_tar(
+    tar: File,
+    out: &Path,
+    spool_path: &Path,
+    extra: &[ImageFile<'_>],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let _ = fs::remove_file(spool_path);
+    let mut spool = DataSpool::new(spool_path)
+        .map_err(|e| format!("create erofs spool {}: {e}", spool_path.display()))?;
+    let result = tar_tree(tar, &mut spool, extra, cancelled).and_then(|tree| {
+        if let Err(e) = write_erofs_cancellable(&tree, out, cancelled) {
+            let _ = fs::remove_file(out);
+            return Err(if cancelled() {
+                "cancelled".to_string()
+            } else {
+                format!("write erofs {}: {e}", out.display())
+            });
+        }
+        Ok(())
+    });
+    drop(spool);
+    let _ = fs::remove_file(spool_path);
+    result
+}
+
+/// The tree a tar stream describes, with `extra` laid over it.
+fn tar_tree(
+    file: File,
+    spool: &mut DataSpool,
+    extra: &[ImageFile<'_>],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<FileTree, String> {
+    let mut tree = FileTree::new();
+    let mut archive = tar::Archive::new(io::BufReader::with_capacity(1 << 20, file));
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("read the image tar: {e}"))?;
+    for entry in entries {
+        if cancelled() {
+            return Err("cancelled".to_string());
+        }
+        let mut entry = entry.map_err(|e| format!("read the image tar: {e}"))?;
+        let path = entry.path_bytes().into_owned();
+        let rel = tar_rel(&path);
+        let shown = String::from_utf8_lossy(&path).into_owned();
+        let header = entry.header();
+        let field = |r: io::Result<u64>| r.map_err(|e| format!("tar entry {shown}: {e}"));
+        let metadata = InodeMetadata {
+            uid: u32::try_from(field(header.uid())?).unwrap_or(u32::MAX),
+            gid: u32::try_from(field(header.gid())?).unwrap_or(u32::MAX),
+            mode: (field(header.mode().map(u64::from))? & 0o7777) as u16,
+            mtime: field(header.mtime())?,
+            mtime_nsec: 0,
+        };
+        let kind = header.entry_type();
+        if rel.is_empty() {
+            if kind.is_dir() {
+                tree.root.metadata = metadata;
+            }
+            continue;
+        }
+        let node = match kind {
+            tar::EntryType::Directory => TreeNode::Directory(DirectoryNode::new(metadata)),
+            tar::EntryType::Regular | tar::EntryType::Continuous => {
+                let start = spool.current_offset();
+                let mut buf = vec![0u8; SPOOL_CHUNK];
+                loop {
+                    let n = entry
+                        .read(&mut buf)
+                        .map_err(|e| format!("tar entry {shown}: {e}"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    spool
+                        .write_chunk(&buf[..n])
+                        .map_err(|e| format!("spool write {shown}: {e}"))?;
+                }
+                let len = spool.current_offset() - start;
+                TreeNode::RegularFile(RegularFileNode {
+                    id: RegularFileId::new(),
+                    metadata,
+                    xattrs: Vec::new(),
+                    data: spool.data_ref(start, len),
+                    nlink: 1,
+                })
+            }
+            tar::EntryType::Symlink => {
+                let target = entry
+                    .link_name_bytes()
+                    .ok_or_else(|| format!("tar symlink {shown} has no target"))?;
+                TreeNode::Symlink(SymlinkNode {
+                    metadata,
+                    target: target.into_owned(),
+                })
+            }
+            tar::EntryType::Link => {
+                let target = entry
+                    .link_name_bytes()
+                    .ok_or_else(|| format!("tar hard link {shown} has no target"))?;
+                match tree.get(tar_rel(&target)) {
+                    Some(TreeNode::RegularFile(file)) => TreeNode::RegularFile(RegularFileNode {
+                        id: file.id,
+                        metadata: file.metadata.clone(),
+                        xattrs: Vec::new(),
+                        data: file.data.clone(),
+                        nlink: 1,
+                    }),
+                    _ => {
+                        return Err(format!(
+                            "tar hard link {shown} names no earlier regular file"
+                        ));
+                    }
+                }
+            }
+            // Device nodes, FIFOs, sockets: not carried, as in `build_erofs`.
+            _ => continue,
+        };
+        tree.insert(rel, node)
+            .map_err(|e| format!("tar entry {shown}: {e}"))?;
+    }
+    for file in extra {
+        let path = file.path.as_bytes();
+        tree.remove(path);
+        let node = TreeNode::RegularFile(RegularFileNode {
+            id: RegularFileId::new(),
+            metadata: InodeMetadata {
+                uid: 0,
+                gid: 0,
+                mode: file.mode & 0o7777,
+                mtime: 0,
+                mtime_nsec: 0,
+            },
+            xattrs: Vec::new(),
+            data: FileData::Memory(file.data.clone()),
+            nlink: 1,
+        });
+        tree.insert(path, node)
+            .map_err(|e| format!("add {}: {e}", file.path))?;
+    }
+    Ok(tree)
+}
+
+/// A tar member's path relative to the image root: no leading `/` or `./`.
+fn tar_rel(path: &[u8]) -> &[u8] {
+    let mut rel = path;
+    loop {
+        if let Some(rest) = rel.strip_prefix(b"./") {
+            rel = rest;
+        } else if let Some(rest) = rel.strip_prefix(b"/") {
+            rel = rest;
+        } else if rel == b"." {
+            return b"";
+        } else {
+            return rel;
+        }
+    }
 }
 
 /// Recursively push the contents of `dir` into the tree (deterministic order so
@@ -384,6 +562,179 @@ mod tests {
         let mut f = File::create(dir.join("bin/sh")).unwrap();
         f.write_all(b"#!/bin/sh\necho hi\n").unwrap();
         std::os::unix::fs::symlink("sh", dir.join("bin/ash")).unwrap();
+    }
+
+    /// A header with every numeric field set, as iii-init's export writes them.
+    fn gnu(kind: tar::EntryType, mode: u32, size: u64) -> tar::Header {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(kind);
+        h.set_mode(mode);
+        h.set_uid(0);
+        h.set_gid(0);
+        h.set_mtime(0);
+        h.set_size(size);
+        h
+    }
+
+    /// A tar like iii-init's export: "./" first, parents before children.
+    fn image_tar(path: &Path) {
+        let mut tar = tar::Builder::new(File::create(path).unwrap());
+        let mut dir = |name: &str, mode: u32| {
+            let mut h = gnu(tar::EntryType::Directory, mode, 0);
+            tar.append_data(&mut h, name, io::empty()).unwrap();
+        };
+        dir("./", 0o755);
+        dir("usr", 0o755);
+        dir("usr/bin", 0o755);
+        dir("workspace", 0o700);
+        let mut h = gnu(tar::EntryType::Regular, 0o4755, 5);
+        h.set_uid(1000);
+        h.set_gid(1000);
+        tar.append_data(&mut h, "usr/bin/tool", &b"tool\n"[..])
+            .unwrap();
+        let mut h = gnu(tar::EntryType::Link, 0o755, 0);
+        tar.append_link(&mut h, "usr/bin/tool2", "usr/bin/tool")
+            .unwrap();
+        let mut h = gnu(tar::EntryType::Symlink, 0o777, 0);
+        tar.append_link(&mut h, "usr/bin/alias", "tool").unwrap();
+        let long = "n".repeat(150);
+        let mut h = gnu(tar::EntryType::Regular, 0o644, 4);
+        tar.append_data(&mut h, format!("workspace/{long}"), &b"deep"[..])
+            .unwrap();
+        let mut h = gnu(tar::EntryType::Regular, 0o644, 7);
+        tar.append_data(&mut h, ".oci-config.json", &b"planted"[..])
+            .unwrap();
+        let mut h = gnu(tar::EntryType::Char, 0o666, 0);
+        tar.append_data(&mut h, "usr/null", io::empty()).unwrap();
+        tar.finish().unwrap();
+    }
+
+    #[test]
+    fn a_build_tar_becomes_an_image_with_the_hosts_files_on_top() {
+        let t = tempfile::tempdir().unwrap();
+        let tar_path = t.path().join("root.tar");
+        image_tar(&tar_path);
+        let out = t.path().join("image.erofs");
+        let spool = t.path().join("spool");
+        let extra = [ImageFile {
+            path: ".oci-config.json",
+            data: b"{\"config\":{}}".to_vec(),
+            mode: 0o644,
+        }];
+        let tar = File::open(&tar_path).unwrap();
+        build_erofs_from_tar(tar, &out, &spool, &extra, &|| false).unwrap();
+        assert!(!spool.exists(), "the spool outlived the build");
+
+        let mut reader = ErofsReader::new(File::open(&out).unwrap()).unwrap();
+        assert_eq!(reader.read_file("/usr/bin/tool").unwrap(), b"tool\n");
+        assert_eq!(reader.read_file("/usr/bin/tool2").unwrap(), b"tool\n");
+        assert_eq!(reader.read_link("/usr/bin/alias").unwrap(), b"tool");
+        let long = "n".repeat(150);
+        assert_eq!(
+            reader.read_file(&format!("/workspace/{long}")).unwrap(),
+            b"deep"
+        );
+        assert_eq!(
+            reader.read_file("/.oci-config.json").unwrap(),
+            b"{\"config\":{}}"
+        );
+        assert!(reader.entry_info("/usr/null").is_err());
+        let (uid, gid, mode) = reader.owner_and_mode("/usr/bin/tool").unwrap();
+        assert_eq!((uid, gid, mode & 0o7777), (1000, 1000, 0o4755));
+        assert_eq!(
+            reader.owner_and_mode("/workspace").unwrap().2 & 0o7777,
+            0o700
+        );
+        let one = reader.inode_debug_info("/usr/bin/tool").unwrap();
+        let two = reader.inode_debug_info("/usr/bin/tool2").unwrap();
+        assert_eq!(
+            (one.nid, one.nlink),
+            (two.nid, 2),
+            "the hard link is not one inode"
+        );
+    }
+
+    /// A cancel that arrives once the tree is read stops the image write and
+    /// leaves no partial image.
+    #[test]
+    fn a_cancel_during_the_image_write_removes_the_partial_image() {
+        use std::sync::atomic::AtomicUsize;
+        let t = tempfile::tempdir().unwrap();
+        let tar_path = t.path().join("root.tar");
+        image_tar(&tar_path);
+        let entries = tar::Archive::new(File::open(&tar_path).unwrap())
+            .entries()
+            .unwrap()
+            .count();
+        let out = t.path().join("image.erofs");
+        let spool = t.path().join("spool");
+        let polls = AtomicUsize::new(0);
+        let polled_in_write = AtomicUsize::new(0);
+        let cancelled = || {
+            let n = polls.fetch_add(1, Ordering::SeqCst);
+            if n >= entries {
+                polled_in_write.fetch_add(1, Ordering::SeqCst);
+            }
+            n >= entries
+        };
+        let tar = File::open(&tar_path).unwrap();
+        let err = build_erofs_from_tar(tar, &out, &spool, &[], &cancelled).unwrap_err();
+        assert_eq!(err, "cancelled");
+        assert!(polled_in_write.load(Ordering::SeqCst) > 0);
+        assert!(!out.exists(), "the partial image stayed");
+        assert!(!spool.exists());
+    }
+
+    /// The image holds the worker's whole tree: private to its owner, and never
+    /// written through a symlink planted at its name.
+    #[test]
+    fn the_image_is_private_and_never_written_through_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let tar_path = t.path().join("root.tar");
+        image_tar(&tar_path);
+        let out = t.path().join("image.erofs");
+        let spool = t.path().join("spool");
+        let tar = File::open(&tar_path).unwrap();
+        build_erofs_from_tar(tar, &out, &spool, &[], &|| false).unwrap();
+        assert_eq!(
+            fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let victim = t.path().join("victim");
+        fs::write(&victim, "keep").unwrap();
+        let planted = t.path().join("planted.erofs");
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+        let tar = File::open(&tar_path).unwrap();
+        assert!(build_erofs_from_tar(tar, &planted, &spool, &[], &|| false).is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+    }
+
+    #[test]
+    fn a_cancelled_or_planted_tar_builds_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let tar_path = t.path().join("root.tar");
+        image_tar(&tar_path);
+        let out = t.path().join("image.erofs");
+        let spool = t.path().join("spool");
+        let tar = File::open(&tar_path).unwrap();
+        let err = build_erofs_from_tar(tar, &out, &spool, &[], &|| true).unwrap_err();
+        assert_eq!(err, "cancelled");
+        assert!(!out.exists() && !spool.exists());
+
+        // A path that climbs out of the image is refused.
+        let climbing = t.path().join("climbing.tar");
+        let mut tar = tar::Builder::new(File::create(&climbing).unwrap());
+        let mut h = gnu(tar::EntryType::Regular, 0o644, 1);
+        // `set_path` refuses `..`, so write the name field by hand.
+        h.as_old_mut().name[..10].copy_from_slice(b"a/../../x\0");
+        h.set_cksum();
+        tar.append(&h, &b"x"[..]).unwrap();
+        tar.finish().unwrap();
+        drop(tar);
+        let tar = File::open(&climbing).unwrap();
+        assert!(build_erofs_from_tar(tar, &out, &spool, &[], &|| false).is_err());
     }
 
     #[test]

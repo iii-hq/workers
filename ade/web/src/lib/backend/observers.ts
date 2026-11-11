@@ -142,7 +142,7 @@ export async function disposeSessionObserver(
 }
 
 /** Reconstruct an inactive observer's panel row from its activity record. */
-function firedGhostRow(t: ObserverFiredData): SessionObserverInfo {
+export function firedGhostRow(t: ObserverFiredData): SessionObserverInfo {
   const isState = typeof t.key === 'string'
   const stateFilters = isState
     ? {

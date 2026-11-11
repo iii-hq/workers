@@ -236,14 +236,14 @@ calls a function only while it has observers.
 | `worktree::on-land-blocked` | A land ended blocked | `LandBlockedEvent { worktree_id, repo_path, target_branch, reason, code, conflict_files?, exit_code?, session_id?, timestamp }` |
 
 ```rust
-use iii_sdk::{Deliver, Source};
+use iii_sdk::{Capture, Source};
 use serde_json::json;
 
-// every land in one repository, the event itself as the target's input
+// every land in one repository; the target reads the event at payload["output"]
 iii.observe(
     Source::function("worktree::on-landed")
         .filters(json!({ "input.repo_path": { "$eq": "/home/me/project" } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "notify::on-land",
 );
 ```

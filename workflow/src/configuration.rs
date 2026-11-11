@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_config_client as config_client;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, Source};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, Source};
 use serde_json::{json, Value};
 
 use crate::config::WorkerConfig;
@@ -142,7 +142,7 @@ pub fn observe_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> ObserverHandle {
     iii.observe(
         Source::function(CRON_ON_TICK_FN)
             .args(sweep_args(cfg))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         SWEEP_ID,
     )
 }
@@ -163,7 +163,7 @@ pub fn report_sweep(handle: ObserverHandle) {
 /// sweep is the durable fallback while the harness is down.
 fn observe_turn_completed(iii: &IIIClient) -> ObserverHandle {
     iii.observe(
-        Source::function(TURN_COMPLETED_FN).deliver(Deliver::Output),
+        Source::function(TURN_COMPLETED_FN).capture([Capture::Output]),
         crate::functions::wake::WAKE_ID,
     )
 }

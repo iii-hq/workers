@@ -47,7 +47,7 @@ when the call returns. The first call pulls the image, so it is slower. `sandbox
 | `create`, `exec`, `stop`, `list`, `catalog::list`, `run` | Sandbox lifecycle and one-call runs |
 | `fs::ls`, `fs::stat`, `fs::mkdir`, `fs::rm`, `fs::chmod`, `fs::mv`, `fs::grep`, `fs::sed`, `fs::write`, `fs::read` | Files inside a live sandbox |
 | `adapter::info` | Adapter name, version and the sandbox contract version it implements |
-| `worker::prepare`, `worker::start`, `worker::status`, `worker::logs`, `worker::stop`, `worker::destroy` | Compose's worker VMs (see below) |
+| `worker::build`, `worker::prepare`, `worker::start`, `worker::status`, `worker::logs`, `worker::stop`, `worker::destroy` | Compose's worker VMs (see below) |
 
 Every id is prefixed with `sandbox-libkrun::`.
 
@@ -128,12 +128,109 @@ log follower is gone and no client reattaches within 45 s, the adapter stops it
 (SIGTERM, then SIGKILL after 10 s). VMs started with the project token have no
 lease, because Compose supervises them itself.
 
+### Builds
+
+From 0.4.0 (sandbox contract 1.3) the adapter builds a VM's image and boots it,
+so a run never installs anything. It advertises `worker.build` in
+`adapter::info` only in the overlay rootfs mode; the legacy mode
+(`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) cannot boot
+a build and keeps quiet about it.
+
+- **`worker::build`** boots a build VM on the cached base image (pulling it when
+  missing) with a fresh upper, copies the worker's code into `/workspace` (a
+  bundle's whole package; a `path://` worker's code without the dependency dirs,
+  `.build/`, `.workers/` and `.iii`), and runs `scripts.setup` and
+  `scripts.install` there with the request's `env` only. When the script exits
+  0, iii-init writes the merged root, without `/proc`, `/sys`, `/dev`, `/run`,
+  `/tmp`, `/opt/iii` and `/mnt/host-src`, and the host turns it into
+  `<output_dir>/image.erofs`, then `image.id`, each through a temporary file
+  and a rename. The build streams its output into `logs` and writes a
+  one-byte binary frame there at least every 5 s; when the channel closes or a
+  write fails, it stops the build VM, deletes the temporary image, keeps the
+  previous pair and frees the key. One build per `state_key` runs at a time
+  (S509), and a failed step answers S507 with the output's last lines.
+  `worker::destroy` of a VM whose build runs answers S509 too: cancel the build
+  (close its `logs`) first.
+- **`worker::start` with `build`** checks that `build_dir/image.id` names
+  `build_id` (S508 otherwise, or when it is missing) and boots `image.erofs` as
+  the overlay's lower, without setup or install. A `path://` worker's code
+  still syncs in live; a bundle's is in the image.
+- **Data disk.** A VM that boots builds keeps its writes on
+  `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
+  `root/`: they outlive restarts and rebuilds, and only `worker::destroy`
+  removes them. The overlay is mounted without `index`, `metacopy`,
+  `redirect_dir` and `xino`, which lets a rebuild swap the lower under it.
+- **Earlier disks.** The first start of a build writes the seal
+  `<vm_id>/build-mode`. Without it, a 0.3 overlay disk (`root/upper.ext4`)
+  moves to `upper.ext4.pre-build`, and a legacy rootfs clone (`root/`) to
+  `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
+  `worker::destroy` removes them with the rest.
+- **What a `path://` copy leaves out.** One list, the source watcher's ignore
+  list plus `.iii`: a run neither copies nor syncs those names, so what the
+  build put there is never overwritten by the host's.
+  - Dependency, cache, build-output, VCS and editor dirs match at any depth:
+    among them `node_modules`, `.venv`, `venv`, `vendor`, `target`, `dist`,
+    `__pycache__`, `.tox`, `.gradle`, `.git`, and Compose's `.build` and
+    `.workers`.
+  - `build`, `out`, `obj`, `coverage` and `deps`, which projects also use for
+    source below the root, match only as a directory at the worker's root:
+    `src/pkg/build/` is code and syncs, and so does a root `build` script.
+  - A build leaves the same names out of its copy, except `vendor/`, where Go
+    keeps vendored source. A `worker::start` without `build`, which still
+    installs in the guest, copies as a build does.
+- **What a boot removes from `/workspace`.** Each copy records what it
+  extracted in a manifest outside `/workspace`, on the data disk
+  (`/var/lib/iii/workspace.manifest`; a build's copy writes
+  `/var/lib/iii/build.manifest` into its image). Before its copy, a boot
+  removes only the entries of those manifests that the host no longer has, or
+  has as another kind, deepest first. What the build installed and what the
+  worker wrote in `/workspace` are in no manifest, so they stay across
+  restarts and rebuilds, whatever their name or depth.
+  - A boot never cleans a name its copy leaves out: a run leaves the
+    `vendor/` the build copied whole until the next build, even where the
+    host deleted files from it.
+  - Nothing is removed through a symlink. An entry whose parent in the guest
+    is not a chain of real directories inside `/workspace` (the worker, the
+    install or the sync put a link there) is skipped.
+  - A directory goes only once empty. When the host turned a directory into a
+    file and the guest's directory still holds such files, that directory
+    moves aside to the first free `<name>.iii-kept.<n>` (`.iii-kept.1`,
+    `.iii-kept.2`, ...).
+  - A name with a newline or a backslash is never cleaned: `tar -v` prints
+    it escaped (GNU) or over several lines (busybox), and the cleanup trusts
+    a line only when it is one plain name.
+  - Without a manifest (a disk an older adapter wrote) nothing tells what
+    the host deleted before: it stays in `/workspace` until the worker is
+    destroyed, and the boot logs it. From that boot on, the copies record
+    their manifest.
+  - A file the host deletes while the VM runs stays in the guest until the
+    next boot when it is a root `build`, `out`, `obj`, `coverage` or `deps`
+    file.
+
 ## Known limits
 
 The guards assume bus clients are trusted. A client that registers the
 adapter's function ids or its worker name first, while the adapter is down,
 receives the `auth` token and the guest `env` that Compose sends. The router
 has the same limit for `sandbox::*` forwards.
+
+Two races of a build are accepted:
+
+- `worker::start` checks `image.id`, not the image: a rebuild that renames a new
+  `image.erofs` between that check and the VM opening the file boots the newer
+  image under the older id.
+- The adapter notices a reader of `logs` that left only at its next write, up
+  to 5 s later. A reader that leaves less than 5 s before a build ends can
+  find the new pair installed: the build still renames it and replies with
+  its build id. A caller that gave up (its `build.json` still names the older
+  build) then gets S508 on its next start, and builds again.
+
+The boot cleanup of `/workspace` trusts a manifest line only when it is one
+plain name, but busybox tar (alpine images) prints names raw. A name that holds
+a newline followed by `./` (`a<newline>./b`) prints as two lines that each look
+like a valid entry, and the first (`./a`) can remove a file of that name that
+the worker wrote in `/workspace` and the host does not have. GNU tar escapes such
+names, so it never happens with it.
 
 `.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
 inside a worker's directory puts the token in that guest. The name hides the whole

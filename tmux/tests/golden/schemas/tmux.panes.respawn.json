@@ -1,0 +1,56 @@
+{
+  "description": "Start a pane's program again in the same pane: the command it was started with (or command), in its starting directory (or cwd). A pane whose program is still running is refused unless kill is true, which ends that program first.",
+  "function_id": "tmux::panes::respawn",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "command": {
+        "default": null,
+        "description": "Shell command to run instead of the one the pane was started with.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cwd": {
+        "default": null,
+        "description": "Working directory, absolute or `~/…`. Defaults to the pane's starting directory.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "kill": {
+        "default": null,
+        "description": "End the pane's program first when it is still running (default false).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "pane": {
+        "description": "Pane id, e.g. `%5`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane"
+    ],
+    "title": "RespawnPaneInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane_id": {
+        "description": "Pane id, the same as before.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane_id"
+    ],
+    "title": "RespawnedPane",
+    "type": "object"
+  }
+}

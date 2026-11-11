@@ -22,7 +22,7 @@ use std::time::Duration;
 use browser::events::{Emitter, EventKind, FrameEventPayload, ON_FRAME_EVENT_FN};
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
     RegisterFunction, Source,
 };
 use serde_json::{json, Value};
@@ -151,7 +151,8 @@ fn frame_recorder(client: &IIIClient, function_id: &str) -> Arc<Mutex<Vec<String
     let sink = seen.clone();
     client.register_function(
         function_id,
-        RegisterFunction::new(move |frame: Value| {
+        RegisterFunction::new(move |envelope: Value| {
+            let frame = &envelope["output"];
             sink.lock().unwrap().push(format!(
                 "{}:{}",
                 frame["session_id"].as_str().unwrap_or("?"),
@@ -201,7 +202,7 @@ async fn frame_observers_receive_their_tab_or_every_tab() {
     let a_observer = consumer.observe(
         Source::function(ON_FRAME_EVENT_FN)
             .args(json!({ "session_id": "A" }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "frametest::tab-a",
     );
     await_active(&a_observer).await;
@@ -223,7 +224,7 @@ async fn frame_observers_receive_their_tab_or_every_tab() {
 
     // 2. An observer without args: every tab.
     let all_observer = consumer.observe(
-        Source::function(ON_FRAME_EVENT_FN).deliver(Deliver::Output),
+        Source::function(ON_FRAME_EVENT_FN).capture([Capture::Output]),
         "frametest::every-tab",
     );
     await_active(&all_observer).await;

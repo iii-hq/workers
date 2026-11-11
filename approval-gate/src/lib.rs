@@ -29,6 +29,7 @@ pub mod filesystem_access_state;
 pub mod functions;
 pub mod harness;
 pub mod manifest;
+pub mod observed;
 pub mod pending;
 pub mod permissions;
 pub mod redact;

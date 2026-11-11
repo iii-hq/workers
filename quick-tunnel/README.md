@@ -67,13 +67,13 @@ Evento `{tunnel_id,generation,status,public_url,error}`. Estados: `starting`, `r
 
 ```ts
 iii.observe(
-  { function_id: 'quick-tunnel::on-changed', filters: { 'input.tunnel_id': { $eq: 'webhooks' } }, deliver: 'output' },
+  { function_id: 'quick-tunnel::on-changed', filters: { 'input.tunnel_id': { $eq: 'webhooks' } }, capture: ['output'] },
   'github::on-tunnel-change',
   { metadata: { repo: 'owner/repo' } },
 )
 ```
 
-Com `deliver: 'output'` o target recebe o snapshot. A metadata do observer e o namespace do target ficam com o engine, que os aplica a cada entrega.
+Com `capture: ['output']` o target recebe o envelope `Observed`, com o snapshot em `output`. A metadata do observer e o namespace do target ficam com o engine, que os aplica a cada entrega.
 
 **Integração GitHub: observe `quick-tunnel::on-changed` ANTES de acquire e leia status DEPOIS.** Mudanças podem ocorrer antes da resposta do acquire. Geração é UUID opaco, não ordenável; em dúvida reconcilie status. Nova tentativa de processo/restart sempre ganha nova geração e obtém uma URL nova do serviço (não há garantia de que o serviço nunca reutilize um hostname). Reconexão interna do mesmo filho conserva geração. Eventos são best-effort, não uma fila durável: entregas podem falhar, consumidores devem reconciliar status após reconectar; overflow de 256 eventos provoca reenvio dos snapshots atuais. O worker chama a função sem esperar os targets: um target lento não bloqueia leases, expiração nem outros observers. Sem observers, nenhum evento é enviado.
 

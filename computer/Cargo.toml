@@ -5,7 +5,7 @@ exclude = ["vendor/xa11y-linux", "vendor/xa11y-macos"]
 
 [package]
 name = "computer"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 publish = false
 
@@ -20,7 +20,7 @@ path = "src/lib.rs"
 [dependencies]
 # Screenshot downscale + JPEG re-encode (native capture, remote guest frames).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-iii-sdk = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
 iii-console-ui = { path = "../crates/console-ui" }
 # Typed judge::evaluate messages for computer::run; the judge worker itself is
 # optional at runtime.

@@ -5,7 +5,7 @@
 //! with an actionable reason: it never falls back to the worker's environment key.
 //! Any other `scheme://` value is rejected the same way, never sent as a literal key.
 use iii_sdk::{
-    errors::Error, CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source,
+    errors::Error, CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -263,7 +263,7 @@ impl SecretCache {
     }
 }
 
-/// The `secrets::on-changed` event, delivered as output; it never carries a value.
+/// The `secrets::on-changed` event (the observed call's output); it never carries a value.
 /// Other fields (`action`, `fingerprint`, `updated_at`) are ignored.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct SecretChangedEvent {
@@ -272,13 +272,21 @@ pub struct SecretChangedEvent {
     #[serde(default, rename = "ref")]
     pub reference: Option<String>,
 }
+/// What `<worker>::on-secret-change` receives: the `Observed` envelope of a
+/// `secrets::on-changed` call, captured as output only. Other envelope fields are
+/// ignored.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct SecretChangedObserved {
+    #[serde(default)]
+    pub output: Option<SecretChangedEvent>,
+}
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SecretChangedResponse {
     pub ok: bool,
 }
 
 /// Register `fn_id` (`<worker>::on-secret-change`) to evict the named secret, then
-/// observe `secrets::on-changed` with it, the event delivered as output. The function
+/// observe `secrets::on-changed` with it, capturing the event (its output). The function
 /// belongs to the optional `secrets` worker: while it is absent the observer stays
 /// `pending` and the engine activates it once the function registers, so nothing
 /// retries here; the TTLs bound staleness.
@@ -289,13 +297,10 @@ pub fn observe_secret_changes(
 ) -> ObserverHandle {
     iii.register_function(
         fn_id,
-        RegisterFunction::new_async(move |event: SecretChangedEvent| {
+        RegisterFunction::new_async(move |event: SecretChangedObserved| {
             let cache = cache.clone();
             async move {
-                let name = event.name.or_else(|| {
-                    let reference = event.reference?;
-                    parse_ref(&reference)?.ok().map(str::to_owned)
-                });
+                let name = changed_secret(event);
                 if let Some(name) = &name {
                     cache.evict(name);
                 }
@@ -307,15 +312,62 @@ pub fn observe_secret_changes(
         )
         .metadata(json!({ "internal": true })),
     );
-    iii.observe(
-        Source::function(ON_CHANGED_FN).deliver(Deliver::Output),
-        fn_id,
-    )
+    iii.observe(secret_changes_source(), fn_id)
+}
+
+/// The secret a change event names: `name`, or else the name in `ref`.
+fn changed_secret(observed: SecretChangedObserved) -> Option<String> {
+    let event = observed.output?;
+    event.name.or_else(|| {
+        let reference = event.reference?;
+        parse_ref(&reference)?.ok().map(str::to_owned)
+    })
+}
+
+/// The observed `secrets::on-changed` source of [`observe_secret_changes`].
+fn secret_changes_source() -> Source {
+    Source::function(ON_CHANGED_FN).capture([Capture::Output])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `Observed` envelope as the engine delivers it with `capture: [output]`.
+    fn envelope(output: Value) -> Value {
+        json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": ON_CHANGED_FN,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": output,
+        })
+    }
+
+    #[test]
+    fn secret_change_envelope_names_the_secret_from_output() {
+        let by_name = serde_json::from_value(envelope(json!({
+            "name": "TYPESAFE_API_KEY", "action": "rotated", "fingerprint": "f"
+        })))
+        .unwrap();
+        assert_eq!(changed_secret(by_name), Some("TYPESAFE_API_KEY".into()));
+        let by_ref =
+            serde_json::from_value(envelope(json!({ "ref": "secret://OTHER_KEY" }))).unwrap();
+        assert_eq!(changed_secret(by_ref), Some("OTHER_KEY".into()));
+        let empty = serde_json::from_value(envelope(json!({}))).unwrap();
+        assert_eq!(changed_secret(empty), None);
+    }
+
+    #[test]
+    fn secret_changes_are_observed_capturing_output_not_deliver() {
+        assert_eq!(
+            secret_changes_source(),
+            Source::function(ON_CHANGED_FN).capture([Capture::Output])
+        );
+    }
 
     fn fake(
         answers: Arc<Mutex<HashMap<String, Result<String, SecretError>>>>,

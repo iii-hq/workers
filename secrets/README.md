@@ -213,13 +213,13 @@ Select secrets with filters: `input.name` for a name in both stores,
 `input.ref` for one store. Without filters, an observer receives every change.
 
 ```rust
-use iii_sdk::{Deliver, Source};
+use iii_sdk::{Capture, Source};
 use serde_json::json;
 
 iii.observe(
     Source::function("secrets::on-changed")
         .filters(json!({ "input.ref": { "$eq": "secret://ANTHROPIC_API_KEY" } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "my-worker::on-secret-change",
 );
 ```
@@ -229,7 +229,7 @@ iii.observe(
   {
     function_id: 'secrets::on-changed',
     filters: { 'input.name': { $in: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'] } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-secret-change',
 )

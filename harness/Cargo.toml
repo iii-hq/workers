@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "harness"
-version = "1.9.3"
+version = "1.9.5"
 edition = "2021"
 publish = false
 
@@ -19,12 +19,12 @@ path = "src/lib.rs"
 [dependencies]
 # 0.21.8 adds the reconnect reattach handshake. Older SDKs can lose this
 # worker's registrations when the engine reloads another worker.
-iii-sdk = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
 # Re-exports the same `opentelemetry` the SDK uses, so we can carry the active
 # OTel context across `tokio::spawn` boundaries (shared `Context` global).
 # 0.21.5 adds the live span-start push (`LiveSpanStartProcessor`), so the
 # console renders `harness::turn step` while it runs instead of on close.
-iii-helpers = "=0.26.0-rc.5"
+iii-helpers = "=0.26.0"
 # Judge routing keys (`iii.judge.provider` baggage, provider-name check).
 judge-contract = { path = "../crates/judge-contract" }
 # Worker-side injectable console UI (content function + `ade::ui::asset`
@@ -65,7 +65,7 @@ serde_json = "1"
 tempfile = "3"
 # `test-util`: paused-clock tests pin that deadlines fire on their own timer,
 # with no periodic sweep behind them.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "test-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "test-util", "net", "io-util"] }
 
 # The integration runner digests every spawned binary before boot. Optimizing sha2 in
 # development avoids a long stall when hashing large debug worker binaries.

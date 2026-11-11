@@ -8,7 +8,9 @@ id) are captured so tests drive them at the same boundary the SDK does:
 `observe_feed` adds an observer the way the engine announces one (the added
 hook runs, then the match hook's observer keys file it), and a call of a
 registered function runs its handler and plays iii's delivery, recording what
-each matched observer's target receives. `observe` records the observers the
+each matched observer's target receives: the `Observed` envelope of the call,
+carrying the fields the observer's `capture` names (the handler's return value
+at `output`), as the 0.26 engine delivers it. `observe` records the observers the
 worker itself creates (its http route). Mirrors the pi worker's `fake-iii`
 helper.
 
@@ -37,6 +39,8 @@ class FakeObserver:
     target: str
     metadata: dict[str, Any] | None = None
     keys: tuple[str, ...] = field(default=())
+    # The call fields the target receives; a feed consumer asks for the output.
+    capture: tuple[str, ...] = ("output",)
 
 
 @dataclass
@@ -78,6 +82,7 @@ class FakeIii:
         self.deliveries: list[dict[str, Any]] = []
         # function ids whose call raises (simulates a refused or failed call)
         self.failing_functions: set[str] = set()
+        self._activation_seq = 0
         self._observer_seq = 0
 
     # -- calls ---------------------------------------------------------------
@@ -120,11 +125,32 @@ class FakeIii:
                     "observer": obs.id,
                     "function_id": fid,
                     "target": obs.target,
-                    "payload": copy.deepcopy(output),
+                    "payload": self._envelope(obs, fid, payload, output),
                     "metadata": obs.metadata,
                 }
             )
         return None if isinstance(request.get("action"), CallActionVoid) else output
+
+    def _envelope(self, obs: FakeObserver, fid: str, input_: Any, output: Any) -> dict[str, Any]:
+        """The envelope iii delivers: the call's fields the observer's capture
+        names; a field the call does not have is omitted, never `None`."""
+        self._activation_seq += 1
+        n = self._activation_seq
+        envelope: dict[str, Any] = {
+            "observer_id": obs.id,
+            "activation_id": f"activation-{n}",
+            "function_id": fid,
+            "namespace": "default",
+            "invocation_id": f"invocation-{n}",
+            "status": "success",
+            "started_at_ms": 0,
+            "duration_ms": 0,
+        }
+        if "input" in obs.capture:
+            envelope["input"] = copy.deepcopy(input_)
+        if "output" in obs.capture and output is not None:
+            envelope["output"] = copy.deepcopy(output)
+        return envelope
 
     def void_calls(self, function_id: str | None = None) -> list[dict[str, Any]]:
         return [
@@ -169,6 +195,7 @@ class FakeIii:
         target: str | None = None,
         observer_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        capture: tuple[str, ...] = ("output",),
     ) -> str:
         """Add an observer of `fid`: run its added hook (a raise rejects it),
         then file it under its keys. Returns the observer id."""
@@ -179,6 +206,7 @@ class FakeIii:
             args=args if args is not None else {"session_id": session_id},
             target=target or consumer_fn(fid),
             metadata=metadata,
+            capture=tuple(capture),
         )
         hook = self.added_hooks.get(fid)
         if hook is not None:
@@ -227,7 +255,7 @@ class FakeIii:
     def feed_frames(self, fid: str, target: str | None = None) -> list[dict[str, Any]]:
         """Events delivered to `target` (default: the consumer `observe_feed` uses)."""
         target = target or consumer_fn(fid)
-        return [d["payload"] for d in self.deliveries if d["function_id"] == fid and d["target"] == target]
+        return [d["payload"]["output"] for d in self.deliveries if d["function_id"] == fid and d["target"] == target]
 
     def feed_events(self, fid: str) -> list[dict[str, Any]]:
         return [p["event"] for p in self.feed_frames(fid)]

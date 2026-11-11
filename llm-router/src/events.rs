@@ -20,7 +20,7 @@
 //! The ready event is a call for one observer: a call of [`ON_READY_ID`] with
 //! metadata `{ "for_observer": <observer id> }`, which the function's match
 //! hook gives to that observer alone. iii delivers it like every call, with
-//! the observer's `deliver`, `capture` and filters.
+//! the observer's `capture` and filters.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 

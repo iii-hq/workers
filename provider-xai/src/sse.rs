@@ -10,6 +10,11 @@ use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Us
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
 use serde_json::Value;
 
+/// Upper bound on parallel tool calls in one assistant turn. `api_url` is
+/// operator-overridable, so the stream's `index` is untrusted input and must
+/// not size the Vec.
+const MAX_TOOL_CALLS: usize = 256;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenBlock {
     Thinking,
@@ -312,6 +317,9 @@ pub fn handle_chunk(
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tc in tool_calls {
                 let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                if index >= MAX_TOOL_CALLS {
+                    continue;
+                }
                 while state.function_calls.len() <= index {
                     state.function_calls.push(PartialFunctionCall::default());
                 }

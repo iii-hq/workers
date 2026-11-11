@@ -2,7 +2,7 @@
 
 [package]
 name = "workflow"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
 publish = false
 
@@ -15,15 +15,14 @@ name = "workflow"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0-rc.5"
-iii-helpers = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
+iii-helpers = "=0.26.0"
 # Shared plumbing for the builtin `configuration` worker (seeding, retries,
 # NOT_FOUND semantics, serialized hot-reload, guidance observer slot).
 iii-config-client = { path = "../crates/config-client" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
@@ -156,7 +156,7 @@ impl CronSlot {
         let new = iii.observe(
             Source::function(ON_TICK_FN)
                 .args(json!({ "expression": schedule }))
-                .deliver(Deliver::Output),
+                .capture([Capture::Output]),
             PRUNE_FN_ID,
         );
         let expression = schedule.to_string();
@@ -255,7 +255,7 @@ pub fn observe_config_changes(iii: &Arc<IIIClient>, cell: ConfigCell, cron: Cron
                 "input.id": { "$eq": config_id() },
                 "input.event_type": { "$eq": "configuration:updated" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_FN_ID,
     );
 }

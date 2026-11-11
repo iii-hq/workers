@@ -193,13 +193,13 @@ is a doorbell, not a record: re-read the group or investigation it names.
 `status` go out at once. An alert that wants state changes only:
 
 ```rust
-use iii_sdk::{Deliver, Source};
+use iii_sdk::{Capture, Source};
 use serde_json::json;
 
 iii.observe(
     Source::function("sentinel::on-group-changed")
         .filters(json!({ "input.op": { "$in": ["created", "status"] } }))
-        .deliver(Deliver::Output),
+        .capture([Capture::Output]),
     "alerts::on-error-group",
 );
 ```
@@ -208,7 +208,7 @@ iii.observe(
 
 | Function | Args, filters | Target |
 |---|---|---|
-| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target queues the traces the tick names in `error_trace_ids`, with no read. From an engine that does not name them, it reads the tick's traces in one call and queues those that hold an error; if that read fails it queues them all | `sentinel::on-trace-activity` |
+| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target queues the traces the tick names in `error_trace_ids`, with no read. From an engine that does not name them, it reads the tick's traces and queues those that hold an error. One tick reads at a time; ids that arrive meanwhile, or that a failed read gives back, wait (deduplicated, at most 4,096; past that the oldest are dropped and counted in `tick_backlog_dropped`) for one later read no sooner than 300 ms after their own tick, after a backoff of 1 s doubling to 30 s. Waiting ids live in memory only: a restart loses them uncounted | `sentinel::on-trace-activity` |
 | `observability::on-log` (`default` namespace) | filter `{ "input.severity_number": { "$gte": 17 } }` (ERROR and above) | `sentinel::on-log` |
 | `harness::on-turn-completed` | none | `sentinel::on-turn-completed` |
 | `cron::on-tick` | args `{ expression: retention.cron }` | `sentinel::on-schedule` |

@@ -2,7 +2,7 @@
 
 [package]
 name = "context-manager"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2021"
 publish = false
 
@@ -15,7 +15,7 @@ name = "context_manager"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
@@ -45,7 +45,6 @@ tempfile = "3"
 which = "8"
 # BDD test runner. Drives Gherkin .feature files under tests/features/.
 cucumber = "0.22"
-futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 

@@ -667,7 +667,7 @@ two exceptions:
   the event as its payload, and waits for the answer (5 s each). The caller
   gets `null` once every target answered or timed out. The crawl awaits each
   call, so a consumer's events arrive in `seq` order and a slow consumer
-  slows the crawl. `deliver` does not apply. The worker accepts at most 64
+  slows the crawl. `capture` does not apply. The worker accepts at most 64
   observers (`OBSERVER_LIMIT`), and a disposed observer frees its place; an
   empty or longer than 256 bytes `crawl_id` is `INVALID_ARGS`.
 
@@ -675,23 +675,25 @@ Every other function takes no args: an observer that passes args gets
 `INVALID_ARGS` from the engine.
 
 ```ts
+// each target receives the Observed envelope; the event is its `output`
+
 // one tab's console entries, as they are captured
 iii.observe(
   {
     function_id: 'browser::on-console-event',
     filters: { 'input.session_id': { $eq: sessionId } },
-    deliver: 'output',
+    capture: ['output'],
   },
   'my-worker::on-console-entry',
 )
 
 // every tab opening and closing
-iii.observe({ function_id: 'browser::on-session-started', deliver: 'output' }, 'my-worker::on-tab')
-iii.observe({ function_id: 'browser::on-session-stopped', deliver: 'output' }, 'my-worker::on-tab')
+iii.observe({ function_id: 'browser::on-session-started', capture: ['output'] }, 'my-worker::on-tab')
+iii.observe({ function_id: 'browser::on-session-stopped', capture: ['output'] }, 'my-worker::on-tab')
 
 // one tab's live frames
 iii.observe(
-  { function_id: 'browser::on-frame-event', args: { session_id: sessionId }, deliver: 'output' },
+  { function_id: 'browser::on-frame-event', args: { session_id: sessionId }, capture: ['output'] },
   'my-viewer::paint',
   { max_in_flight: 1 },
 )

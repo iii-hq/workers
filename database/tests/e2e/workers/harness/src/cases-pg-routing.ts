@@ -21,7 +21,7 @@
  */
 
 import type { TestCase } from './cases.ts'
-import { expect, expectEqual, observeRowChanged } from './cases.ts'
+import { expect, expectEqual, observeRowChanged, type Observed } from './cases.ts'
 
 const EVENT_TIMEOUT_MS = 5_000
 
@@ -138,7 +138,7 @@ export const PG_ROUTING_CASES: TestCase[] = [
       })
       const fnRef = iii.registerFunction(
         functionId,
-        async (payload: RowChangedEvent) => {
+        async ({ output: payload }: Observed<RowChangedEvent>) => {
           events.push(payload)
           return null
         },

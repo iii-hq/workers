@@ -123,6 +123,9 @@ func TestCallbackWireSchemasAndResponses(t *testing.T) {
 		{"whatsapp::configuration-id", `{}`, `{"id":"whatsapp"}`},
 		{"whatsapp::on-config-change", `{"future_event":{"secret":"private-sentinel"}}`, `{"ok":true}`},
 		{"whatsapp::cloud::tunnel::changed", `{"tunnel_id":"webhooks","future_field":true}`, `{"accepted":true}`},
+		// capture [output] observers deliver the Observed envelope.
+		{"whatsapp::on-config-change", `{"observer_id":"obs_1","activation_id":"act_1","function_id":"configuration::on-updated","invocation_id":"inv_1","status":"success","started_at_ms":1,"duration_ms":0.5,"output":{"id":"whatsapp","event_type":"configuration:updated"}}`, `{"ok":true}`},
+		{"whatsapp::cloud::tunnel::changed", `{"observer_id":"obs_1","activation_id":"act_1","function_id":"quick-tunnel::on-changed","invocation_id":"inv_1","status":"success","started_at_ms":1,"duration_ms":0.5,"output":{"tunnel_id":"webhooks","status":"ready"}}`, `{"accepted":true}`},
 		{"whatsapp::cloud::webhook::verify", `{"query_params":42}`, `{"status_code":400,"headers":{"content-type":"text/plain; charset=utf-8"},"body":"Invalid verification request"}`},
 		{"whatsapp::cloud::webhook::receive", `{"headers":42}`, `{"status_code":400,"headers":{"content-type":"text/plain; charset=utf-8"},"body":"Invalid webhook request"}`},
 		{"whatsapp::cloud::flows::endpoint", `{"headers":42}`, `{"status_code":400,"headers":{"content-type":"text/plain; charset=utf-8"},"body":"Invalid request"}`},

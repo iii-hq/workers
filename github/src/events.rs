@@ -6,7 +6,7 @@
 //! `github::on-called` fire-and-forget (`CallAction::Void`) with the call and
 //! a bounded result summary, when anything observes it. Its handler returns
 //! the event, and iii delivers each call to every observer (the console page
-//! observes it with `deliver: 'output'`). Emission is best-effort: a slow or
+//! observes it with `capture: ['output']`). Emission is best-effort: a slow or
 //! absent observer never blocks or fails the real call.
 
 use std::future::Future;

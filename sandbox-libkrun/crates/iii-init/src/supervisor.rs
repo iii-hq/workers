@@ -83,6 +83,9 @@ fn attach_to_worker_cgroup(pid: i32) {
 ///
 pub fn exec_worker() -> Result<(), InitError> {
     let cmd = std::env::var("III_WORKER_CMD").map_err(|_| InitError::MissingWorkerCmd)?;
+    // Taken before any helper thread or the worker spawns: removing it from
+    // the env is then single-threaded, and the build's scripts never see it.
+    let export = crate::export::take_export_dest();
 
     // Install handlers BEFORE spawning so a signal arriving mid-spawn
     // can still find a live CHILD_PID (racily) or exit cleanly via the
@@ -99,7 +102,7 @@ pub fn exec_worker() -> Result<(), InitError> {
     maybe_spawn_source_sync();
 
     let workdir = std::env::var(III_WORKER_WORKDIR_ENV).unwrap_or_else(|_| "/".to_string());
-    run_worker(&cmd, &workdir)
+    run_worker(&cmd, &workdir, export.as_deref())
 }
 
 fn maybe_spawn_source_sync() {
@@ -195,8 +198,10 @@ fn hold_port(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Spawn the worker, reap zombies, exit with the worker's code.
-fn run_worker(cmd: &str, workdir: &str) -> Result<(), InitError> {
+/// Spawn the worker, reap zombies, exit with the worker's code. A build VM
+/// (`export`) whose script succeeded writes its root there first, and exits 1
+/// if that fails.
+fn run_worker(cmd: &str, workdir: &str, export: Option<&Path>) -> Result<(), InitError> {
     let child = Command::new("/bin/sh")
         .arg("-c")
         .arg(cmd)
@@ -241,7 +246,33 @@ fn run_worker(cmd: &str, workdir: &str) -> Result<(), InitError> {
         }
     };
 
+    let status = match export {
+        Some(dest) if status == 0 => export_root(dest),
+        Some(_) => {
+            crate::export::log(&format!(
+                "the build script exited {status}; nothing exported"
+            ));
+            status
+        }
+        None => status,
+    };
     sync_and_exit(status);
+}
+
+/// Write the merged root to `dest`; the exit status to report.
+fn export_root(dest: &Path) -> i32 {
+    crate::export::log(&format!("exporting the image root to {}", dest.display()));
+    nix::unistd::sync();
+    match crate::export::export_root(Path::new("/"), dest) {
+        Ok(entries) => {
+            crate::export::log(&format!("exported {entries} entries"));
+            0
+        }
+        Err(e) => {
+            crate::export::log(&format!("cannot export the image root: {e}"));
+            1
+        }
+    }
 }
 
 /// Flush filesystems, then exit PID 1 (which tears the VM down).

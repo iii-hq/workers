@@ -73,7 +73,7 @@ fn worker_registers_interface_before_dependency_boot() {
     for registration in [
         "functions::register_all(&iii, &deps)",
         "security_scan::ui::register(&iii)",
-        "Source::function(functions::HARNESS_ON_TURN_COMPLETED_FN)",
+        "functions::turn_completed_source()",
         "security_scan::schedule::register(&iii",
     ] {
         let position = source.find(registration).expect("interface registration");

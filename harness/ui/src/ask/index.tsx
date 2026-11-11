@@ -4,7 +4,8 @@
  * visible in the chat feed while the raw call details stay collapsed.
  *
  * The card draws the questions from the result `details` (`parseAsk`): per
- * question a fieldset with the header chip and the question, a checkbox per
+ * question a fieldset with the header chip (a long header ends in an
+ * ellipsis and shows whole on hover) and the question, a checkbox per
  * option (one control for both kinds: a single-select question ticks one box
  * and clears the rest) with the description under each label, and a
  * single-line "Other" field. One Send button hands the
@@ -140,7 +141,9 @@ function QuestionFields({
   return (
     <fieldset className="harness-ui-ask-q">
       <legend className="harness-ui-ask-legend">
-        <Chip>{question.header}</Chip>
+        <Chip className="harness-ui-ask-header" title={question.header}>
+          <span className="harness-ui-ask-header-text">{question.header}</span>
+        </Chip>
         <span className="harness-ui-ask-question">{question.question}</span>
       </legend>
       <p className="harness-ui-ask-note">
@@ -202,7 +205,9 @@ function QuestionSummary({
   return (
     <div className="harness-ui-ask-q" role="group" aria-labelledby={headingId}>
       <div id={headingId} className="harness-ui-ask-legend">
-        <Chip>{question.header}</Chip>
+        <Chip className="harness-ui-ask-header" title={question.header}>
+          <span className="harness-ui-ask-header-text">{question.header}</span>
+        </Chip>
         <span className="harness-ui-ask-question">{question.question}</span>
       </div>
       <ul className="harness-ui-ask-summary">

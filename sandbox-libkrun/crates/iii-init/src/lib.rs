@@ -7,6 +7,8 @@
 #[cfg(target_os = "linux")]
 pub mod error;
 #[cfg(target_os = "linux")]
+pub mod export;
+#[cfg(target_os = "linux")]
 pub mod mount;
 #[cfg(target_os = "linux")]
 pub mod root_pivot;

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -463,7 +463,7 @@ pub fn register_config_observer(
         Source::function(ON_UPDATED_FN)
             .namespace("default")
             .filters(update_filters())
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         CONFIG_CHANGE_FN_ID,
     );
 }

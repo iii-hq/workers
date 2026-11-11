@@ -33,3 +33,12 @@ headroom, so a change that doubles the work fails here first.
 To look at a size by hand: `pnpm dev`, then open
 `http://localhost:5173/stress.html?spans=5000&stream=1&theme=dark` and call
 `window.__stress.advance(0.8)` in the console to move the stream.
+
+## Transcript window
+
+`transcript-window.spec.ts` runs in the same `pnpm test:stress`, against
+`/transcript-stress.html`: the real `MessageList` over a generated transcript.
+It proves in a real layout what jsdom cannot: the mounted rows stay bounded while
+a session grows, and scrolling, history landing and jumps keep the reader's
+place. The same page with `?sidebar=300` does the same for `ConversationSidebar`.
+It asserts behaviour, not timings, so it has no budgets.

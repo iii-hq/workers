@@ -28,7 +28,7 @@ def test_the_train_is_exactly_build_plus_the_descriptor_checkpoint():
 
 
 def test_no_workflow_talks_to_release_control_or_the_registry():
-    for name in DEPLOY_TRAIN | REUSABLE:
+    for name in sorted(path.name for path in WORKFLOWS.glob("*.yml")):
         text = body(name)
         assert "deployment_control_contract.py" not in text, name
         assert "RELEASE_CONTROL_API_URL" not in text, name

@@ -16,6 +16,7 @@ fn over(tmp: &Path) -> VmOverride<'static> {
         state_dir: tmp.join("vm"),
         engine_url: "ws://localhost:49134",
         extra_env: std::collections::HashMap::new(),
+        image: None,
     }
 }
 

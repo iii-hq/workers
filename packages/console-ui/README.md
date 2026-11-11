@@ -17,8 +17,9 @@ helpers that bundle into the worker asset (see below).
 
 ## Using it in a worker UI
 
-The package is linked through the repo's pnpm workspace — no publishing, no
-copying types around:
+Inside this repo the package is linked through the pnpm workspace — no
+publishing, no copying types around (see [Publishing](#publishing) for the
+projects outside it):
 
 ```jsonc
 // <worker>/ui/package.json
@@ -213,7 +214,8 @@ handler)` registers a browser-local handler as `<id>::<browserId>`; and
 `observe(source, target, options?)` observes a function with such a handler
 as its target and returns the disposer. `observe` delivers the observed
 function's output (the event, for an event source) unless the source sets
-`deliver`. `trigger` is the same function as `call`.
+`capture`, in which case the handler receives the `Observed` envelope
+(`deliver` is deprecated and never reaches the engine). `trigger` is the same function as `call`.
 
 ```tsx
 const handler = 'iii::state-ui::events'
@@ -347,3 +349,17 @@ guards in `ade/web` fail the build/tests when they drift:
 Declared props are the *supported authoring surface*: the real components
 may accept more (Radix pass-through), and those extras carry no
 compatibility promise.
+
+## Publishing
+
+The scaffolds in [iii-hq/templates](https://github.com/iii-hq/templates)
+(`worker-node-ade`, `worker-crud`, `worker-python-ade`) install this package
+from npm at an exact version, and the agent that builds a new user's worker
+reads its types. A stale release teaches an API the console no longer has:
+0.3.0 still declared `registerTrigger` and had no `observe`. After a change
+here that a worker UI can see, publish it by hand:
+
+1. Bump `version` in `package.json`.
+2. From this folder, run `npm publish --access public`.
+3. In iii-hq/templates, bump `@iii-dev/console-ui` in those three
+   `package.json` files and run each one's `typecheck`/`build`.

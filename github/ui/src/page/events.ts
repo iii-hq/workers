@@ -29,6 +29,17 @@ export interface CalledEvent {
   timestamp: string
 }
 
+/** What the observers observe: every `github::on-called` call, captured as its
+ *  output (the {@link CalledEvent}). */
+export const ON_CALLED_SOURCE = { function_id: ON_CALLED_FN, capture: ['output' as const] }
+
+/** The event an observer handler receives: the output carried in the call's
+ *  Observed envelope; `undefined` when the envelope carries none. */
+export function calledEventOf(observed: { output?: unknown } | null | undefined): CalledEvent | undefined {
+  const output = observed?.output
+  return output && typeof output === 'object' ? (output as CalledEvent) : undefined
+}
+
 /**
  * Observe `github::on-called` with ONE tab-scoped handler under `handlerId`
  * for the caller's lifetime and deliver each event to `onEvent`. The latest
@@ -40,9 +51,12 @@ export function useGithubCalled(host: Host, handlerId: string, onEvent: (event: 
   const onEventRef = useRef(onEvent)
   onEventRef.current = onEvent
   useEffect(() => {
-    const offHandler = host.iii.on<CalledEvent>(handlerId, (event) => onEventRef.current(event))
+    const offHandler = host.iii.on<{ output?: unknown }>(handlerId, (observed) => {
+      const event = calledEventOf(observed)
+      if (event) onEventRef.current(event)
+    })
     const offObserver = host.iii.observe(
-      { function_id: ON_CALLED_FN, deliver: 'output' },
+      ON_CALLED_SOURCE,
       `${handlerId}::${host.iii.browserId}`,
     )
     return () => {

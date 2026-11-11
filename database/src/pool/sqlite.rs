@@ -107,13 +107,13 @@ impl SqlitePool {
         // including the internal one VACUUM uses, so VACUUM is not available
         // through the worker.
         let manager = manager.with_init(|c| {
-            c.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+            c.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0)?;
             // No double-quoted-string fallback: an unknown "column" is an
             // error ("no such column"), not a string literal that silently
             // matches or sorts nothing.
             c.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DML, false)?;
             c.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DDL, false)?;
-            c.authorizer(Some(authorize));
+            c.authorizer(Some(authorize))?;
             Ok(())
         });
         let inner = R2Pool::builder()

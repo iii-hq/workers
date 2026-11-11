@@ -5,7 +5,7 @@
 //! its own function with metadata `{ "for_observer": <observer id> }` once
 //! the observer is accepted. The function's match hook gives that call to
 //! that observer alone, and iii delivers it like every call of the function,
-//! with the observer's `deliver`, filters and policy, so a target receives
+//! with the observer's `capture`, filters and policy, so a target receives
 //! every event of the function in one shape.
 
 use iii_sdk::{Call, CallAction, CallRequest, CallRequestWithMetadata, Match};

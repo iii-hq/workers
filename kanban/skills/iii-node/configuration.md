@@ -58,7 +58,7 @@ iii.observe(
       'input.id': { $eq: 'iii-stream' },                     // optional. Omit to receive every id.
       'input.event_type': { $eq: 'configuration:updated' },  // optional. configuration:registered|updated|deleted.
     },
-    deliver: 'output', // the handler receives the event itself
+    capture: ['output'], // the handler reads the event at payload.output
   },
   'stream::on-config-change',
 )

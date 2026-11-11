@@ -8,8 +8,8 @@
 
 pub mod ring;
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -28,7 +28,127 @@ use crate::{
 
 /// One span-coalesce window of the engine, which broadcasts a span before it
 /// stores it: a read right on the tick can miss the very span that raised it.
-const TICK_READ_DELAY: Duration = Duration::from_millis(300);
+pub const TICK_READ_DELAY: Duration = Duration::from_millis(300);
+
+/// Most tick trace ids waiting for a read. Past it the oldest are dropped and
+/// counted in `tick_backlog_dropped`: a stalled engine must not grow this worker.
+pub const TICK_BACKLOG_MAX: usize = 4096;
+/// Trace ids per `engine::traces::list` call.
+const TICK_READ_BATCH: usize = 128;
+/// Batches one tick handler reads before it leaves the rest to the next tick,
+/// so a long backlog cannot hold the observer's in-flight slot for long.
+const TICK_READ_BATCHES: usize = 4;
+/// Wait after a failed read, doubling per consecutive failure up to the max.
+const TICK_RETRY_MIN: Duration = Duration::from_secs(1);
+const TICK_RETRY_MAX: Duration = Duration::from_secs(30);
+
+/// Tick trace ids not read yet, oldest first with the time each arrived, and
+/// when a failed read may run again. Ids that arrive while a read is in
+/// flight, or that a failed read gives back, wait here for one later read
+/// instead of a job each: a job per id was what turned a slow engine into a
+/// flood of reads against it.
+#[derive(Default)]
+struct TickBacklog {
+    ids: VecDeque<(String, tokio::time::Instant)>,
+    waiting: HashSet<String>,
+    failures: u32,
+    retry_at: Option<tokio::time::Instant>,
+}
+
+impl TickBacklog {
+    /// Adds the ids, each as just arrived; returns how many of the oldest it
+    /// dropped to stay under [`TICK_BACKLOG_MAX`]. An id already waiting moves
+    /// to the back with the new arrival: its newest span is broadcast before it
+    /// is stored, so the read must wait one window from the latest tick.
+    fn push(&mut self, trace_ids: impl IntoIterator<Item = String>) -> u64 {
+        let now = tokio::time::Instant::now();
+        for trace_id in trace_ids {
+            if !self.waiting.insert(trace_id.clone()) {
+                if let Some(at) = self.ids.iter().position(|(id, _)| id == &trace_id) {
+                    self.ids.remove(at);
+                }
+            }
+            self.ids.push_back((trace_id, now));
+        }
+        self.trim()
+    }
+
+    /// Gives a failed batch back, ahead of what arrived during the read: it
+    /// is older, so the queue stays ordered by arrival.
+    fn push_front(&mut self, batch: Vec<(String, tokio::time::Instant)>) -> u64 {
+        for (trace_id, arrived) in batch.into_iter().rev() {
+            if self.waiting.insert(trace_id.clone()) {
+                self.ids.push_front((trace_id, arrived));
+            }
+        }
+        self.trim()
+    }
+
+    fn trim(&mut self) -> u64 {
+        let mut dropped = 0;
+        while self.ids.len() > TICK_BACKLOG_MAX {
+            if let Some((oldest, _)) = self.ids.pop_front() {
+                self.waiting.remove(&oldest);
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
+    /// When the oldest waiting id has been stored by the engine: one span
+    /// coalesce window after its tick arrived.
+    fn oldest_readable_at(&self) -> Option<tokio::time::Instant> {
+        self.ids
+            .front()
+            .map(|(_, arrived)| *arrived + TICK_READ_DELAY)
+    }
+
+    /// Up to `count` of the oldest ids whose window has passed. An id that
+    /// joined a read in flight is too young for it and waits for the next.
+    fn take(&mut self, count: usize) -> Vec<(String, tokio::time::Instant)> {
+        let now = tokio::time::Instant::now();
+        let mut batch = Vec::new();
+        while batch.len() < count
+            && self
+                .ids
+                .front()
+                .is_some_and(|(_, arrived)| *arrived + TICK_READ_DELAY <= now)
+        {
+            if let Some((trace_id, arrived)) = self.ids.pop_front() {
+                self.waiting.remove(&trace_id);
+                batch.push((trace_id, arrived));
+            }
+        }
+        batch
+    }
+
+    fn ready(&self) -> bool {
+        !self.ids.is_empty()
+            && self
+                .retry_at
+                .is_none_or(|at| tokio::time::Instant::now() >= at)
+    }
+
+    fn succeeded(&mut self) {
+        self.failures = 0;
+        self.retry_at = None;
+    }
+
+    /// Records a failed read; returns the wait before the next one.
+    fn failed(&mut self) -> Duration {
+        self.failures = self.failures.saturating_add(1);
+        let wait = TICK_RETRY_MIN
+            .saturating_mul(1u32 << self.failures.saturating_sub(1).min(5))
+            .min(TICK_RETRY_MAX);
+        self.retry_at = Some(tokio::time::Instant::now() + wait);
+        wait
+    }
+
+    fn clear(&mut self) {
+        self.ids.clear();
+        self.waiting.clear();
+    }
+}
 
 /// One unit of ingest work. `trace_id` is a field of every variant because
 /// the queue groups by it: the span job and the log job of one trace are
@@ -89,6 +209,14 @@ pub trait Telemetry: Send + Sync {
     /// Summaries for the given trace ids. An empty answer means the trace has
     /// already left the engine's ring.
     async fn traces(&self, trace_ids: &[String]) -> Result<Vec<TraceSummary>, SentinelError>;
+    /// [`Self::traces`] for an ingest job, which waits out an engine that
+    /// answers busy instead of spending the queue's retries on it.
+    async fn traces_patiently(
+        &self,
+        trace_ids: &[String],
+    ) -> Result<Vec<TraceSummary>, SentinelError> {
+        self.traces(trace_ids).await
+    }
     /// The full span tree, as `roots`.
     async fn tree(&self, trace_id: &str) -> Result<Vec<Value>, SentinelError>;
     async fn logs(&self, trace_id: &str) -> Result<Vec<Value>, SentinelError>;
@@ -135,6 +263,11 @@ pub struct Ingest<D: Db, E: EngineRegistry> {
     checkouts: Arc<dyn CheckoutVersions>,
     counters: Arc<Counters>,
     ring: Arc<ring::PhantomRing>,
+    tick_backlog: Mutex<TickBacklog>,
+    /// Held by the one tick handler that is reading the backlog.
+    tick_reader: tokio::sync::Mutex<()>,
+    /// A later read of the backlog is scheduled; see [`Ingest::claim_tick_drain`].
+    tick_drain_scheduled: std::sync::atomic::AtomicBool,
 }
 
 impl<D: Db, E: EngineRegistry> Ingest<D, E> {
@@ -153,6 +286,9 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             checkouts,
             counters,
             ring,
+            tick_backlog: Mutex::default(),
+            tick_reader: tokio::sync::Mutex::new(()),
+            tick_drain_scheduled: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -698,7 +834,11 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
     }
 
     async fn summary(&self, trace_id: &str) -> Result<Option<TraceSummary>, SentinelError> {
-        match self.telemetry.traces(&[trace_id.to_string()]).await {
+        match self
+            .telemetry
+            .traces_patiently(&[trace_id.to_string()])
+            .await
+        {
             Ok(summaries) => {
                 self.counters.set_trace_store(TraceStoreStateV1::Memory);
                 Ok(summaries.into_iter().next())
@@ -735,33 +875,103 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         (kept, dropped)
     }
 
-    /// The traces of a tick that hold an error, read in one call so a clean
-    /// trace costs no job. A failed read keeps them all, for the job to re-read
-    /// and the queue to retry: losing an error silently is worse than extra jobs.
+    /// The traces that hold an error, read in batches so a clean trace costs
+    /// no job. One handler reads at a time and takes the ids every other tick
+    /// added meanwhile. A failed read gives its ids back to the backlog and
+    /// waits before the next try, so a slow engine sees one read, not one per
+    /// tick plus one per trace.
     async fn errored_traces(&self, trace_ids: Vec<String>) -> Vec<String> {
-        if trace_ids.is_empty() {
-            return trace_ids;
-        }
-        tokio::time::sleep(TICK_READ_DELAY).await;
-        let summaries = match self.telemetry.traces(&trace_ids).await {
-            Ok(summaries) => summaries,
-            Err(error) if is_store_disabled(&error) => {
-                self.counters.set_trace_store(TraceStoreStateV1::Disabled);
-                return Vec::new();
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not read a tick's traces; queueing them all");
-                return trace_ids;
-            }
+        let dropped = self.tick_backlog().push(trace_ids);
+        self.counters.add_tick_backlog_dropped(dropped);
+        let Ok(_reader) = self.tick_reader.try_lock() else {
+            return Vec::new();
         };
-        self.counters.set_trace_store(TraceStoreStateV1::Memory);
-        self.counters
-            .add_lost_before_capture(trace_ids.len().saturating_sub(summaries.len()) as u64);
-        summaries
-            .into_iter()
-            .filter(TraceSummary::holds_error)
-            .map(|summary| summary.trace_id)
-            .collect()
+        if !self.tick_backlog().ready() {
+            return Vec::new();
+        }
+
+        let mut errored = Vec::new();
+        for _ in 0..TICK_READ_BATCHES {
+            let Some(readable_at) = self.tick_backlog().oldest_readable_at() else {
+                break;
+            };
+            tokio::time::sleep_until(readable_at).await;
+            let (batch, arrivals): (Vec<String>, Vec<_>) = self
+                .tick_backlog()
+                .take(TICK_READ_BATCH)
+                .into_iter()
+                .unzip();
+            if batch.is_empty() {
+                // A re-tick moved the oldest id back while this slept: wait
+                // for its new window rather than leave it to a later tick.
+                continue;
+            }
+            match self.telemetry.traces(&batch).await {
+                Ok(summaries) => {
+                    self.tick_backlog().succeeded();
+                    self.counters.set_trace_store(TraceStoreStateV1::Memory);
+                    self.counters
+                        .add_lost_before_capture(batch.len().saturating_sub(summaries.len()) as u64);
+                    errored.extend(
+                        summaries
+                            .into_iter()
+                            .filter(TraceSummary::holds_error)
+                            .map(|summary| summary.trace_id),
+                    );
+                }
+                Err(error) if is_store_disabled(&error) => {
+                    self.counters.set_trace_store(TraceStoreStateV1::Disabled);
+                    self.tick_backlog().clear();
+                    break;
+                }
+                Err(error) => {
+                    let mut backlog = self.tick_backlog();
+                    let dropped = backlog.push_front(batch.into_iter().zip(arrivals).collect());
+                    let retry_in = backlog.failed();
+                    drop(backlog);
+                    self.counters.add_tick_backlog_dropped(dropped);
+                    tracing::warn!(
+                        %error,
+                        retry_in_ms = retry_in.as_millis() as u64,
+                        "could not read a tick's traces; keeping them for one later read"
+                    );
+                    break;
+                }
+            }
+        }
+        errored
+    }
+
+    /// When the tick backlog is next worth a read, if it holds any id: the
+    /// later of the backoff after a failure and its oldest id's read window.
+    /// Ids a read leaves behind otherwise wait for the next tick, which may
+    /// not come once the traces that failed have gone quiet.
+    pub fn tick_backlog_due(&self) -> Option<tokio::time::Instant> {
+        let backlog = self.tick_backlog();
+        let readable = backlog.oldest_readable_at()?;
+        Some(
+            backlog
+                .retry_at
+                .map_or(readable, |retry| retry.max(readable)),
+        )
+    }
+
+    /// Claims the one scheduled read of the backlog; false if one is pending.
+    pub fn claim_tick_drain(&self) -> bool {
+        !self
+            .tick_drain_scheduled
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    pub fn release_tick_drain(&self) {
+        self.tick_drain_scheduled
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    fn tick_backlog(&self) -> MutexGuard<'_, TickBacklog> {
+        self.tick_backlog
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 

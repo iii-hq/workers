@@ -3,42 +3,216 @@
   "function_id": "security-scan::on-turn-completed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "properties": {
-      "reason": {
-        "default": null,
-        "type": [
-          "string",
-          "null"
-        ]
+    "definitions": {
+      "Caller": {
+        "description": "Who made an invocation. `worker_id` / `worker_name` are stamped by the engine from the calling connection; `function_id`, `invocation_id` and `parent` are asserted by the calling SDK.",
+        "properties": {
+          "function_id": {
+            "description": "The handler the call was made from; absent for a top-level call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invocation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ParentCaller"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller of that handler, one level only."
+          },
+          "worker_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
-      "result": {
-        "default": null
-      },
-      "result_error": {
-        "default": null,
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "session_id": {
-        "default": "",
+      "InvocationStatus": {
+        "enum": [
+          "success",
+          "error"
+        ],
         "type": "string"
       },
-      "status": {
-        "default": "",
-        "type": "string"
+      "ObservedError": {
+        "description": "What a call failed with: [`Observed::error`], [`Call::error`](crate::Call::error).",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
       },
-      "terminal": {
-        "default": false,
-        "type": "boolean"
+      "ParentCaller": {
+        "description": "[`Caller::parent`]: a caller without a parent of its own.",
+        "properties": {
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invocation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
-      "turn_id": {
-        "default": "",
-        "type": "string"
+      "TurnCompletedEventV1": {
+        "properties": {
+          "reason": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result": {
+            "default": null
+          },
+          "result_error": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "default": "",
+            "type": "string"
+          },
+          "status": {
+            "default": "",
+            "type": "string"
+          },
+          "terminal": {
+            "default": false,
+            "type": "boolean"
+          },
+          "turn_id": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
-    "title": "TurnCompletedEventV1",
+    "description": "What an observer's target receives when iii delivers: the observed call, per the observer's `capture`.\n\n```rust,no_run # use iii_sdk::{Error, IIIClient, Observed, RegisterFunction}; # use serde_json::Value; # fn demo(iii: &IIIClient) { iii.register_function( \"alerts::payment-failed\", RegisterFunction::new(|event: Observed<Value>| { println!(\"{} failed: {:?}\", event.function_id, event.error); Ok::<_, Error>(()) }), ); # } ```",
+    "properties": {
+      "activation_id": {
+        "type": "string"
+      },
+      "caller": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Caller"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "duration_ms": {
+        "format": "double",
+        "type": "number"
+      },
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ObservedError"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "function_id": {
+        "type": "string"
+      },
+      "input": true,
+      "invocation_id": {
+        "type": "string"
+      },
+      "metadata": true,
+      "namespace": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "observer_id": {
+        "type": "string"
+      },
+      "output": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/TurnCompletedEventV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "started_at_ms": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "status": {
+        "$ref": "#/definitions/InvocationStatus"
+      }
+    },
+    "required": [
+      "activation_id",
+      "duration_ms",
+      "function_id",
+      "invocation_id",
+      "observer_id",
+      "started_at_ms",
+      "status"
+    ],
+    "title": "Observed_for_AnyValue_and_TurnCompletedEventV1",
     "type": "object"
   },
   "response_schema": {

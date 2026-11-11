@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use iii_sdk::engine::EngineSources;
 use iii_sdk::errors::Error;
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::catalog::handlers::{
@@ -324,7 +324,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
                 "input.id": { "$eq": crate::config::entry::config_id() },
                 "input.event_type": { "$eq": "configuration:updated" },
             }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         surface::ON_CONFIG_CHANGED_ID,
     );
 
@@ -384,10 +384,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_FUNCTIONS_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
-        iii.observe(
-            Source::function(EngineSources::FUNCTIONS_CHANGED).deliver(Deliver::Output),
-            surface::ON_FUNCTIONS_CHANGED_ID,
-        );
+        iii.observe(functions_changed_source(), surface::ON_FUNCTIONS_CHANGED_ID);
     }
 
     // 8. Secret changes. `secrets::on-changed` belongs to the optional
@@ -401,10 +398,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_SECRET_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    iii.observe(
-        Source::function(crate::secrets::ON_CHANGED_FN).deliver(Deliver::Output),
-        surface::ON_SECRET_CHANGED_ID,
-    );
+    iii.observe(secret_changes_source(), surface::ON_SECRET_CHANGED_ID);
     // Warm the cache off the boot path; a secrets worker that is not up yet
     // is retried when it registers (see the registration stream above).
     {
@@ -419,4 +413,57 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         inflight,
         config,
     })
+}
+
+/// Every `engine::on-functions-changed` call; the target ignores the event.
+fn functions_changed_source() -> Source {
+    Source::function(EngineSources::FUNCTIONS_CHANGED).capture([Capture::Output])
+}
+
+/// Every `secrets::on-changed` call; the target reads the event (the output).
+fn secret_changes_source() -> Source {
+    Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::router::FunctionsChangedEvent;
+
+    /// An `Observed` envelope as the engine delivers it with `capture: [output]`.
+    fn envelope(function_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": "obs-1",
+            "activation_id": "act-1",
+            "function_id": function_id,
+            "invocation_id": "inv-1",
+            "status": "success",
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+            "output": output,
+        })
+    }
+
+    /// `router::on_functions_changed` ignores the event: the envelope is
+    /// accepted, and the observer captures the output instead of `deliver`.
+    #[test]
+    fn functions_changed_arrives_as_an_observed_envelope() {
+        serde_json::from_value::<FunctionsChangedEvent>(envelope(
+            EngineSources::FUNCTIONS_CHANGED,
+            json!({ "event": "functions_changed", "functions": [] }),
+        ))
+        .expect("envelope accepted");
+        assert_eq!(
+            functions_changed_source(),
+            Source::function(EngineSources::FUNCTIONS_CHANGED).capture([Capture::Output])
+        );
+    }
+
+    #[test]
+    fn secret_changes_are_observed_capturing_output() {
+        assert_eq!(
+            secret_changes_source(),
+            Source::function(crate::secrets::ON_CHANGED_FN).capture([Capture::Output])
+        );
+    }
 }

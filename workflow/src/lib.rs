@@ -7,6 +7,7 @@ pub mod functions;
 pub mod ids;
 pub mod locks;
 pub mod manifest;
+pub mod observed;
 pub mod reconcile;
 pub mod state;
 pub mod telemetry;

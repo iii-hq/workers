@@ -187,8 +187,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0
       iii-browser-sdk:
-        specifier: 0.26.0-rc.5
-        version: 0.26.0-rc.5
+        specifier: 0.26.0
+        version: 0.26.0
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -1397,8 +1397,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       iii-sdk:
-        specifier: 0.26.0-rc.5
-        version: 0.26.0-rc.5
+        specifier: 0.26.0
+        version: 0.26.0
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1610,6 +1610,9 @@ importers:
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
+      '@xterm/addon-webgl':
+        specifier: ^0.19.0
+        version: 0.19.0
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
@@ -2512,8 +2515,8 @@ packages:
   '@iconify/utils@3.1.4':
     resolution: {integrity: sha512-b1S7B1k9ohZ+iNTi2ATxbRYG9fTrJmUT0rc46bvVnNxqNRGW7dyo/vRREwyniI5IRN2RSJHDcm+s3BjWrSAjHw==}
 
-  '@iii-dev/helpers@0.26.0-rc.5':
-    resolution: {integrity: sha512-6Wa1PdSSM4RRbVYG26AxaU59aDQpHHcIaZY4+kj96t5TJn8E9quYxY4Qs6Oh8WI38E6J6rmnjLnIoU5Uv/edrQ==}
+  '@iii-dev/helpers@0.26.0':
+    resolution: {integrity: sha512-G3WE9g4fbHaiojohlQDwtAup1d6ff+b5OQCwH+G0dXQmtYui7pYee6kMvewSI1VPZMDrwq3dk/2ad1wIHsdxyw==}
 
   '@jitl/quickjs-ffi-types@0.31.0':
     resolution: {integrity: sha512-1yrgvXlmXH2oNj3eFTrkwacGJbmM0crwipA3ohCrjv52gBeDaD7PsTvFYinlAnqU8iPME3LGP437yk05a2oejw==}
@@ -4486,6 +4489,9 @@ packages:
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
 
+  '@xterm/addon-webgl@0.19.0':
+    resolution: {integrity: sha512-b3fMOsyLVuCeNJWxolACEUED0vm7qC0cy4wRvf3oURSzDTYVQiGPhTnhWZwIHdvC48Y+oLhvYXnY4XDXPoJo6A==}
+
   '@xterm/xterm@6.0.0':
     resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
@@ -5344,11 +5350,11 @@ packages:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
     engines: {node: '>= 4'}
 
-  iii-browser-sdk@0.26.0-rc.5:
-    resolution: {integrity: sha512-td2iPTN1hyNOXsgCDVZVQs68BwA+9sGhljzDEcsD4fWWFUVHBRDFlHKr1JlxESmPWiwd1eh2vTYq4at0iKvD5w==}
+  iii-browser-sdk@0.26.0:
+    resolution: {integrity: sha512-/Cju7xAcIGOLWftxo+ZeHyOoiDjwsxDOXLMNzayByh77R8wGnizN+mJv9l2q0ONqKzK1NNHmTxmfgKQbOr81hg==}
 
-  iii-sdk@0.26.0-rc.5:
-    resolution: {integrity: sha512-XlnYT9JKeZZVIRO0FIUBeNbcsCgvA+zyE6NZbgASYkEeI4m2q/L88Z/0LD6IDwtdskkKTp2nkBuwBPAouZ3Vew==}
+  iii-sdk@0.26.0:
+    resolution: {integrity: sha512-9WVPjIXXg2sxZ9YDxMNMOgdbViRgokWOcxqEZLy5aX0PPxZ887ITwKWXi7qee2E+DhaofkhPOJxwZbkrWLlGww==}
 
   image-blob-reduce@3.0.1:
     resolution: {integrity: sha512-/VmmWgIryG/wcn4TVrV7cC4mlfUC/oyiKIfSg5eVM3Ten/c1c34RJhMYKCWTnoSMHSqXLt3tsrBR4Q2HInvN+Q==}
@@ -7746,7 +7752,7 @@ snapshots:
       '@iconify/types': 2.0.0
       import-meta-resolve: 4.2.0
 
-  '@iii-dev/helpers@0.26.0-rc.5':
+  '@iii-dev/helpers@0.26.0':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -9704,6 +9710,8 @@ snapshots:
 
   '@xterm/addon-fit@0.11.0': {}
 
+  '@xterm/addon-webgl@0.19.0': {}
+
   '@xterm/xterm@6.0.0': {}
 
   acorn@8.17.0: {}
@@ -10559,11 +10567,11 @@ snapshots:
 
   ignore@5.3.2: {}
 
-  iii-browser-sdk@0.26.0-rc.5: {}
+  iii-browser-sdk@0.26.0: {}
 
-  iii-sdk@0.26.0-rc.5:
+  iii-sdk@0.26.0:
     dependencies:
-      '@iii-dev/helpers': 0.26.0-rc.5
+      '@iii-dev/helpers': 0.26.0
       '@opentelemetry/api': 1.9.1
       ws: 8.21.1
     transitivePeerDependencies:

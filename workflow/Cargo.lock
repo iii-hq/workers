@@ -283,12 +283,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "equivalent"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -424,12 +418,6 @@ dependencies = [
  "rand_core 0.10.1",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "hashbrown"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "heck"
@@ -663,9 +651,9 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.26.0-rc.5"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de9bfc852a3cf1d1c8626857eb778dc6d8314929ea1f51e9135f2d129d92ef4d"
+checksum = "100136ca50d80e9fc36d68e64524e7380f4a6d99e696d274879e6c8cc7efefb0"
 dependencies = [
  "serde",
  "serde_json",
@@ -673,9 +661,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.26.0-rc.5"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b37daa0a583e362a52cb14ffb1c8fea7ead7f9390bad3d70d17ec54975a9470"
+checksum = "46fc050a119fa7cc342e10b6b83737d0a85828ecca2e3517dbfd3ebfe3e0ae17"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -694,9 +682,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.26.0-rc.5"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e338fdac585db56961750a3ed848eb82687735ce082bf62f1d89111c84efff6"
+checksum = "c29ef3d5d399ad8d71a478ac75d617ce42604956e9aa5e1a79989b5291798d84"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -713,16 +701,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "indexmap"
-version = "2.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
-dependencies = [
- "equivalent",
- "hashbrown",
 ]
 
 [[package]]
@@ -1343,19 +1321,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1747,12 +1712,6 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
@@ -2218,7 +2177,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workflow"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2229,7 +2188,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror",
  "tokio",
  "tracing",

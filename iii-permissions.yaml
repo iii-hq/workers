@@ -16,7 +16,6 @@ rules:
   # an observer calls an ordinary function; an agent probing its own
   # approval posture is reconnaissance, not a tool.
   - '!approval::evaluate'
-  - '!hook-fanout::publish_collect'
   - '!state::set'
   - '!state::update'
   - '!state::delete'
@@ -115,8 +114,6 @@ rules:
   # reason router::complete itself is denied above), and both functions are
   # console plumbing the page calls on the person's behalf.
   - '!shell::scm::*'
-  - '!oauth::anthropic::login'
-  - '!oauth::openai-codex::login'
   - '!run::start'
   - '!ade::conversations::*'
   # session-manager: deny-by-default for in-run agents (integration.md §2).
@@ -430,10 +427,7 @@ rules:
   - harness::status
   - eval::status
   - eval::result
-  - eval::assert::exact
   - harness::observers::list
-  - oauth::anthropic::status
-  - oauth::openai-codex::status
   - engine::functions::list
   - engine::functions::info
   - engine::workers::list

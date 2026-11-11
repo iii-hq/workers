@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallRequest, Deliver, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, RegisterFunction, Source};
 use serde_json::json;
 use serial_test::serial;
 
@@ -46,7 +46,7 @@ async fn publish_reaches_the_observers_of_its_topic() {
         let observer = iii.observe(
             Source::function(iii_pubsub::PUBLISH_FUNCTION_ID)
                 .filters(json!({"input.topic": {"$eq": "e2e.orders"}}))
-                .deliver(Deliver::Input),
+                .capture([Capture::Input]),
             fn_id,
         );
         tokio::time::timeout(Duration::from_secs(5), observer.ready())
@@ -86,9 +86,9 @@ async fn publish_reaches_the_observers_of_its_topic() {
     assert_eq!(deliveries.load(Ordering::SeqCst), 2, "one delivery each");
     let seen = seen.lock().await;
     for payload in seen.iter() {
-        // `deliver: input` hands each observer the call's input.
-        assert_eq!(payload["topic"], json!("e2e.orders"));
-        assert_eq!(payload["data"], json!({"id": 42}));
+        // `capture: [input]` ships each observer the call's input.
+        assert_eq!(payload["input"]["topic"], json!("e2e.orders"));
+        assert_eq!(payload["input"]["data"], json!({"id": 42}));
     }
 
     for observer in observers {

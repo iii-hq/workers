@@ -12,7 +12,7 @@
 //! new observer receives first is a call of the function with metadata
 //! `{ for_observer: <observer id> }`, which the match hook gives to that
 //! observer alone; iii delivers it like every other call, so a target
-//! receives every overview in the shape its observer's `deliver` names.
+//! receives every overview in the shape its observer's `capture` names.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,6 +81,10 @@ impl Monitor {
     }
 
     /// One call of [`ON_CHANGED_FN`]; iii delivers it to every observer.
+    /// Calls go out one after another, but iii doesn't order deliveries
+    /// across calls: two overviews sent milliseconds apart can arrive the
+    /// other way round. Observers keep the highest `generated_at_ms` (the
+    /// Console page's `newerSnapshot`), as the README says.
     async fn emit(&self, payload: Value) {
         let request = CallRequest {
             function_id: ON_CHANGED_FN.to_string(),

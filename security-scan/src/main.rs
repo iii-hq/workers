@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Deliver, InitOptions, Source};
+use iii_sdk::{register_worker, InitOptions};
 use security_scan::{
     configuration, events, functions, manifest, IiiRuntime, RunStatusV1, SecurityScanExecutor,
     SecurityScanService,
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     // Harness completion doorbell. The observer stays pending while the
     // harness is not running; polling covers that gap.
     let _turn_completed = iii.observe(
-        Source::function(functions::HARNESS_ON_TURN_COMPLETED_FN).deliver(Deliver::Output),
+        functions::turn_completed_source(),
         functions::TURN_COMPLETED_ID,
     );
 

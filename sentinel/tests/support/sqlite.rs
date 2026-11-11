@@ -36,11 +36,7 @@ impl Db for SqliteDb {
     async fn query(&self, sql: &str, params: Vec<Value>) -> Result<Vec<NamedRow>, SentinelError> {
         let connection = self.connection.lock().await;
         let mut statement = connection.prepare(sql).map_err(failed)?;
-        let columns: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let columns: Vec<String> = statement.column_names().map(str::to_string).collect();
         let mut rows = statement
             .query(rusqlite::params_from_iter(bind(&params)))
             .map_err(failed)?;

@@ -2,7 +2,7 @@
 
 [package]
 name = "memory"
-version = "0.3.0"
+version = "0.3.2"
 edition = "2021"
 publish = false
 
@@ -18,8 +18,8 @@ path = "src/lib.rs"
 # The same exact pin as the `iii-console-ui` crate: both are `=` requirements
 # so they must resolve to a single version, and the injectable UI helper must
 # never drag a worker onto a different SDK build.
-iii-sdk = "=0.26.0-rc.5"
-iii-helpers = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
+iii-helpers = "=0.26.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 # Worker-side injectable console UI (content function + one ade::ui::asset
 # observer per asset + hot-reload watcher) — direct path link, never published.
@@ -33,7 +33,6 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
-async-trait = "0.1"
 # Local-time dates for extraction excerpts and injected memories.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 regex = "1"

@@ -39,6 +39,9 @@ pub enum SandboxErrorCode {
     S504,
     S505,
     S506,
+    S507,
+    S508,
+    S509,
 }
 
 impl SandboxErrorCode {
@@ -70,6 +73,9 @@ impl SandboxErrorCode {
             Self::S504 => "S504",
             Self::S505 => "S505",
             Self::S506 => "S506",
+            Self::S507 => "S507",
+            Self::S508 => "S508",
+            Self::S509 => "S509",
         }
     }
 
@@ -83,11 +89,13 @@ impl SandboxErrorCode {
             | Self::S502
             | Self::S503
             | Self::S504
-            | Self::S505 => "validation",
+            | Self::S505
+            | Self::S508
+            | Self::S509 => "validation",
             Self::S100 | Self::S400 => "config",
             Self::S101 => "internal",
             Self::S102 | Self::S218 | Self::S506 => "transient",
-            Self::S200 => "execution",
+            Self::S200 | Self::S507 => "execution",
             Self::S210
             | Self::S211
             | Self::S212
@@ -171,6 +179,19 @@ pub enum SandboxError {
 
     #[error("worker prepare failed: {0}")]
     PrepareFailed(String),
+
+    /// `scripts.setup`/`scripts.install` exited non-zero, or the image could not be
+    /// written; the message carries the tail of the output.
+    #[error("worker build failed: {0}")]
+    BuildFailed(String),
+
+    /// `worker::start.build.build_id` does not match the image in `build_dir`.
+    #[error("build mismatch: {0}")]
+    BuildMismatch(String),
+
+    /// A build of this VM (its `state_key`) is already running.
+    #[error("a build of VM {0} is already running")]
+    BuildInProgress(String),
 
     // FS variants. Display impls now carry a kind prefix so a consumer
     // that surfaces only the raw string (logs, debug output, an agent
@@ -273,6 +294,9 @@ impl SandboxError {
             Self::VmNotFound(_) => SandboxErrorCode::S504,
             Self::Unauthorized => SandboxErrorCode::S505,
             Self::PrepareFailed(_) => SandboxErrorCode::S506,
+            Self::BuildFailed(_) => SandboxErrorCode::S507,
+            Self::BuildMismatch(_) => SandboxErrorCode::S508,
+            Self::BuildInProgress(_) => SandboxErrorCode::S509,
             // RunStepFailed transparently carries the inner code so the
             // wire-level type/code identify the actual failure category;
             // step + sandbox_id attribution lives in fix.context.
@@ -400,6 +424,18 @@ impl SandboxError {
                 Some("call worker::* through Compose, which passes the token"),
             ),
             Self::PrepareFailed(_) => (None, Some("transient: retry after a short delay")),
+            Self::BuildFailed(_) => (
+                None,
+                Some("fix the step the output tail names, then build again"),
+            ),
+            Self::BuildMismatch(_) => (
+                None,
+                Some("rebuild the container (iii sandbox build <container>), then start it"),
+            ),
+            Self::BuildInProgress(_) => (
+                None,
+                Some("wait for the running build to end, or stop its caller to cancel it"),
+            ),
             // Parent directory missing on a write/mkdir: the fix is a
             // single boolean. Emit a structured `fix` payload the agent
             // can merge into the original request and resubmit verbatim,
@@ -815,6 +851,21 @@ mod tests {
                 SandboxError::PrepareFailed("x".into()),
                 "worker prepare failed: x",
                 Some("transient: retry after a short delay"),
+            ),
+            (
+                SandboxError::BuildFailed("x".into()),
+                "worker build failed: x",
+                Some("fix the step the output tail names, then build again"),
+            ),
+            (
+                SandboxError::BuildMismatch("x".into()),
+                "build mismatch: x",
+                Some("rebuild the container (iii sandbox build <container>), then start it"),
+            ),
+            (
+                SandboxError::BuildInProgress("v".into()),
+                "a build of VM v is already running",
+                Some("wait for the running build to end, or stop its caller to cancel it"),
             ),
         ];
         for (err, message, note) in cases {

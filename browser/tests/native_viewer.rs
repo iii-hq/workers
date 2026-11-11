@@ -1255,7 +1255,10 @@ async fn measure_scroll_to_frame() {
         iii_sdk::RegisterFunction::new_async(move |frame: Value| {
             let tx = tx.clone();
             async move {
-                let _ = tx.send((frame["frame_seq"].as_u64().unwrap_or(0), Instant::now()));
+                let _ = tx.send((
+                    frame["output"]["frame_seq"].as_u64().unwrap_or(0),
+                    Instant::now(),
+                ));
                 Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
             }
         }),
@@ -1265,7 +1268,7 @@ async fn measure_scroll_to_frame() {
     let frames = client.observe_with(
         iii_sdk::Source::function("browser::on-frame-event")
             .args(json!({ "session_id": id }))
-            .deliver(iii_sdk::Deliver::Output),
+            .capture([iii_sdk::Capture::Output]),
         "iii::browser-test::measure-frames",
         iii_sdk::ObserverOptions::default().max_in_flight(1),
     );

@@ -177,7 +177,6 @@ import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
-import { SessionObservers } from './SessionObservers'
 import {
   agentIdForSend,
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -404,6 +403,16 @@ export function ChatView({
         seq: (current?.seq ?? 0) + 1,
         tab,
         ...(quote ? { quote } : {}),
+      })),
+    [],
+  )
+  // An observer roll-up in the transcript opens the Observers section.
+  const showObservers = useCallback(
+    () =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab: 'context',
+        section: 'observers',
       })),
     [],
   )
@@ -699,7 +708,7 @@ export function ChatView({
   ])
 
   // The observers this session's agent created (the harness's durable rows,
-  // owned by this session): shown above the composer, removable, detail on
+  // owned by this session): listed in the side panel, removable, detail on
   // click. Pushed — `harness::on-observers-changed` rings on every observer
   // mutation (any tab, fires, expiry, GC) and the handler refetches the list.
   const [sessionObservers, setSessionObservers] = useState<
@@ -772,37 +781,6 @@ export function ChatView({
     [backend, conversation.id, onAppendMessage, refreshObservers],
   )
 
-  const handleClearAllObservers = useCallback(async () => {
-    const dispose = backend.disposeObserver
-    if (!dispose) return
-    const ids = sessionObservers.map((t) => t.id)
-    // Remove them all, tolerate partial failure, surface a single notice.
-    const results = await Promise.allSettled(
-      ids.map((id) => dispose(id, conversation.id)),
-    )
-    const cleared = new Set(
-      ids.filter((_, i) => results[i].status === 'fulfilled'),
-    )
-    setSessionObservers((rows) => rows.filter((t) => !cleared.has(t.id)))
-    const failed = results.filter((r) => r.status === 'rejected').length
-    if (failed > 0) {
-      onAppendMessage(
-        conversation.id,
-        makeSystemNotice(
-          `could not remove ${failed} of ${ids.length} observers — they may have already fired or been removed`,
-          'error',
-        ),
-      )
-    }
-    refreshObservers()
-  }, [
-    backend,
-    sessionObservers,
-    conversation.id,
-    onAppendMessage,
-    refreshObservers,
-  ])
-
   // Fired-observer history: durable `observer_fired` transcript entries (mapped
   // to system messages). Drives the panel's fired/removed ghost rows so a once
   // observer stays visible after the harness drops it from the list.
@@ -823,6 +801,15 @@ export function ChatView({
         seenObserversRef.current,
       ),
     [sessionObservers, firedObservers],
+  )
+  // What the observers did here, for the side panel's Observers section.
+  const observerEvents = useMemo(
+    () =>
+      conversation.messages.filter(
+        (m): m is SystemMessage =>
+          m.role === 'system' && m.kind === 'observer-fired',
+      ),
+    [conversation.messages],
   )
   // Registration lookup for observer-fired cards: a fire record carries only
   // the observer id — the observer's conditions and lifecycle live in these rows.
@@ -3282,6 +3269,7 @@ export function ChatView({
                   history={side ? undefined : conversation.history}
                   onLoadOlder={side ? undefined : handleLoadOlder}
                   onLoadActivityEntries={handleLoadActivityEntries}
+                  onShowObservers={asideEnabled ? showObservers : undefined}
                 />
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
@@ -3329,14 +3317,6 @@ export function ChatView({
                   onOpen={conversationsCtx.openConversationInPanel}
                 />
               ) : null}
-              <SessionObservers
-                observers={mergedObservers}
-                onDispose={handleDisposeObserver}
-                onClearAll={
-                  backend.disposeObserver ? handleClearAllObservers : undefined
-                }
-                checkStateKey={backend.stateKeyExists}
-              />
               {queuedStrip.length > 0 ? (
                 <section
                   className="mb-1 rounded-xl bg-surface"
@@ -3548,6 +3528,8 @@ export function ChatView({
             onSheetOpenChange={setAsideSheetOpen}
             request={asideRequest}
             observers={mergedObservers}
+            observerEvents={observerEvents}
+            observersListed={observersSnapshotSessionId === conversation.id}
             onDisposeObserver={handleDisposeObserver}
             landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
             pendingQuote={pendingQuote}

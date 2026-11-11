@@ -2,7 +2,7 @@
 
 [package]
 name = "devin"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 publish = false
 
@@ -15,8 +15,8 @@ name = "devin"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0-rc.5"
-iii-helpers = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
+iii-helpers = "=0.26.0"
 schemars = { version = "0.8", features = ["uuid1"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -24,7 +24,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 anyhow = "1"
-thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }

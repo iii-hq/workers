@@ -382,7 +382,7 @@ runs again.
 
 Delivery is custom and at-least-once. For each event, the worker calls the
 target of every observer of its bucket whose filters match, concurrently, and
-the target receives the event itself (the observer's `deliver` choice does not
+the target receives the event itself (the observer's `capture` does not
 apply). A target acks by returning `null` or `{ ack: true }`. The upstream
 message (SQS, Pub/Sub, Cloudflare Queues) is acked only when every target
 acked; `{ ack: false }`, an error or a timeout leaves it for redelivery. A

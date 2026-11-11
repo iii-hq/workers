@@ -1,0 +1,42 @@
+{
+  "description": "Kill a pane and the program running in it. Killing a window's last pane closes the window, and its session's last window closes the session; the answer says which closed.",
+  "function_id": "tmux::panes::kill",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane": {
+        "description": "Pane id, e.g. `%5`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane"
+    ],
+    "title": "PaneInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "killed": {
+        "description": "Always true.",
+        "type": "boolean"
+      },
+      "session_closed": {
+        "description": "That window was its session's last, so the session closed.",
+        "type": "boolean"
+      },
+      "window_closed": {
+        "description": "It was its window's last pane, so the window closed.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "killed",
+      "session_closed",
+      "window_closed"
+    ],
+    "title": "KilledPane",
+    "type": "object"
+  }
+}

@@ -257,7 +257,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "devin"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -270,7 +270,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
- "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -679,9 +678,9 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.26.0-rc.5"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de9bfc852a3cf1d1c8626857eb778dc6d8314929ea1f51e9135f2d129d92ef4d"
+checksum = "100136ca50d80e9fc36d68e64524e7380f4a6d99e696d274879e6c8cc7efefb0"
 dependencies = [
  "serde",
  "serde_json",
@@ -689,9 +688,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.26.0-rc.5"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b37daa0a583e362a52cb14ffb1c8fea7ead7f9390bad3d70d17ec54975a9470"
+checksum = "46fc050a119fa7cc342e10b6b83737d0a85828ecca2e3517dbfd3ebfe3e0ae17"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -710,9 +709,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.26.0-rc.5"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e338fdac585db56961750a3ed848eb82687735ce082bf62f1d89111c84efff6"
+checksum = "c29ef3d5d399ad8d71a478ac75d617ce42604956e9aa5e1a79989b5291798d84"
 dependencies = [
  "arc-swap",
  "async-trait",

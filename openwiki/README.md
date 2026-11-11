@@ -83,7 +83,7 @@ openwiki hosts no event functions; it observes other workers' functions:
 | --- | --- | --- |
 | `http::on-request` | args `{ method, path }`, one observer per route under `/openwiki` | `openwiki::http::*` |
 | `cron::on-tick` | args `{ expression }`, one observer per wiki with an auto-refresh cadence, metadata `{ wiki_id }` | `openwiki::cron::refresh-due` |
-| `harness::on-turn-completed`, `harness::on-turn-started` | none (`deliver: 'output'`) | `openwiki::on-turn-completed`, `openwiki::on-turn-started` |
+| `harness::on-turn-completed`, `harness::on-turn-started` | none (`capture: ['output']`, read via `turnEventOf`) | `openwiki::on-turn-completed`, `openwiki::on-turn-started` |
 | `configuration::on-updated` | filters on `input.id` (`openwiki`) and `input.event_type` (`configuration:updated`) | `openwiki::on-config-change` |
 
 ```js

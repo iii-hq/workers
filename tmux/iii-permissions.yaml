@@ -8,10 +8,16 @@
 # screen, which can hold anything the person typed or a program printed.
 # `tmux::subagents::transcript` stays unlisted for the same reason: it
 # returns a sub-agent's conversation, tool calls and their output.
-# Creating, renaming, selecting and killing change the person's tmux (a
-# selected window switches their own terminal; a kill ends programs) and stay
-# at the needs_approval default. The Console terminal, the config-reload
-# callback and the Console asset function are bus-internal.
+# Splitting, killing and respawning panes stay unlisted for the same reason:
+# a kill (or a respawn with kill) ends the program running in a pane.
+# Creating, renaming, selecting, moving and killing change the person's tmux
+# (a selected window switches their own terminal; a kill ends programs; moving
+# a session's last window closes that session) and stay at the needs_approval
+# default. `tmux::install` stays unlisted too: it can run
+# the system's package manager as root. `tmux::install::status` only reads how
+# that install is going. The Console terminal (its upload included, which
+# writes a pasted file to the cache folder), the config-reload callback and
+# the Console asset function are bus-internal.
 version: 1
 
 rules:
@@ -21,3 +27,4 @@ rules:
   - tmux::status
   - tmux::sessions::list
   - tmux::ports::list
+  - tmux::install::status

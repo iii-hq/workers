@@ -2,7 +2,7 @@
 
 [package]
 name = "github"
-version = "0.5.0"
+version = "0.5.2"
 edition = "2021"
 publish = false
 
@@ -17,7 +17,7 @@ name = "github"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
 iii-console-ui = { path = "../crates/console-ui" }
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.
 schemars = { version = "0.8", features = ["chrono"] }
@@ -34,13 +34,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 anyhow = "1"
-async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

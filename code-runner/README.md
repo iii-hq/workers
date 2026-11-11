@@ -107,10 +107,13 @@ Code you run gets a global `iii`:
   call the function while any worker may observe it.
 - `await iii.observe(source, target, opts?)` — run the registered function
   `target` on every call of `source` that matches. `source` is a function id,
-  or `{ function_id, namespace?, args?, filters?, deliver? }`: `args` are read
+  or `{ function_id, namespace?, args?, filters?, capture? }`: `args` are read
   by the worker that hosts `source`, `filters` select calls by `input`,
-  `output`, `error`, `caller` and `metadata`, and `deliver` is what `target`
-  receives (`'envelope'`, the default, `'input'` or `'output'`). `opts` takes
+  `output`, `error`, `caller` and `metadata`, and `capture` lists which of
+  those travel to `target` in its envelope (default `['input', 'output',
+  'caller']`; read `payload.output` / `payload.input`). The pre-0.26
+  `deliver` was removed: an observe that sets it is refused with
+  `INVALID_ARGS`, naming `capture`, as the 0.26 SDKs refuse it. `opts` takes
   `id` (inside this runtime's namespace), `metadata`, `max_fires`,
   `expires_in_ms` and `max_in_flight`. Resolves to `{ id, dispose() }`; the
   observer stays pending until `source` is registered and accepts it.
@@ -146,9 +149,11 @@ iii.onObserverAdded('app::on-order', (obs) => {
   }
 })
 
-// elsewhere, observe it: every order whose total is at least 500
+// elsewhere, observe it: every order whose total is at least 500. app::alert
+// receives the Observed envelope with the order at `output`. (A guest `deliver`
+// was removed: it is refused, naming `capture`.)
 await iii.observe(
-  { function_id: 'app::on-order', filters: { 'input.total': { $gte: 500 } }, deliver: 'output' },
+  { function_id: 'app::on-order', filters: { 'input.total': { $gte: 500 } }, capture: ['output'] },
   'app::alert',
 )
 

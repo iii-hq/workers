@@ -140,7 +140,7 @@ iii.observe(
     function_id: 'worktree::on-landed',
     // optional filters on input.repo_path, input.worktree_id, input.session_id
     filters: { 'input.repo_path': { $eq: '/home/me/project' } },
-    deliver: 'output', // the handler receives the event itself
+    capture: ['output'], // the handler reads the event at payload.output
   },
   'notify::on-land',
 )

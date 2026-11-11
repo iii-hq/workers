@@ -176,7 +176,6 @@ describe('startSpanFeed', () => {
         source: {
           function_id: 'observability::on-span',
           namespace: 'default',
-          deliver: 'output',
         },
         target: 'iii::console-catalog::spans-1::console-tab1',
       },

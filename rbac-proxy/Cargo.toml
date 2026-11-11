@@ -2,7 +2,7 @@
 
 [package]
 name = "rbac-proxy"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 publish = false
 
@@ -15,17 +15,15 @@ name = "rbac_proxy"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0-rc.5"
+iii-sdk = "=0.26.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "net", "io-util", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 anyhow = "1"
-thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
-async-trait = "0.1"
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 # Must stay on the same schemars major as iii-sdk so the derived

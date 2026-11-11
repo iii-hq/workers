@@ -57,7 +57,7 @@ export function ConversationGroupHeader({
       title={title}
       onClick={onToggle}
       className={cn(
-        'iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-inter font-medium text-ink-ghost transition-colors first:mt-0 hover:bg-surface-hover hover:text-ink-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55',
+        'conversation-group-header iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-inter font-medium text-ink-ghost transition-colors hover:bg-surface-hover hover:text-ink-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55',
         narrow ? 'min-h-11 text-sm' : 'min-h-8 text-sm',
       )}
     >
@@ -98,7 +98,7 @@ function ProjectHeader({
   return (
     <div
       className={cn(
-        'conversation-project-header group/project mt-3 flex w-full min-w-0 items-center gap-1 rounded-xl pr-1 first:mt-0',
+        'conversation-project-header group/project mt-3 flex w-full min-w-0 items-center gap-1 rounded-xl pr-1',
         narrow ? 'min-h-12' : 'min-h-9',
       )}
     >

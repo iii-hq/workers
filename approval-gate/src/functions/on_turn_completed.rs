@@ -18,6 +18,18 @@ pub struct TurnCompletedEvent {
     pub turn_id: String,
 }
 
+/// The observer target: the event the observer delivered. A delivery
+/// without one is acknowledged and changes nothing.
+pub async fn handle_delivered(
+    deps: &Deps,
+    delivered: crate::observed::Delivered<TurnCompletedEvent>,
+) -> Result<EventAck, crate::error::ApprovalError> {
+    match crate::observed::delivered_event(delivered) {
+        Some(event) => handle(deps, event).await,
+        None => Ok(EventAck { ok: true }),
+    }
+}
+
 pub async fn handle(
     deps: &Deps,
     event: TurnCompletedEvent,
@@ -139,5 +151,24 @@ mod tests {
             .is_null());
         })
         .await;
+    }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+    use crate::observed::{delivered_event, envelope, Delivered};
+
+    /// The target is called with the `Observed` envelope: the event is its
+    /// output.
+    #[test]
+    fn the_event_is_read_from_the_envelope() {
+        let delivered: Delivered<TurnCompletedEvent> = serde_json::from_value(envelope(
+            "harness::on-turn-completed",
+            serde_json::json!({ "session_id": "s-1", "turn_id": "t-1" }),
+        ))
+        .expect("the envelope parses");
+        let event = delivered_event(delivered).expect("the envelope carries the event");
+        assert_eq!(event.turn_id, "t-1");
     }
 }

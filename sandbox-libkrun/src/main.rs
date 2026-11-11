@@ -48,8 +48,15 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn async_main() -> anyhow::Result<()> {
+    // Colour only a terminal. `__vm-boot`'s stderr is the pipe the daemon
+    // turns into the VM's console log, and the daemon's own is usually a pipe
+    // too: escapes there reach Compose and the console as text.
+    // tracing-subscriber colours by default unless `NO_COLOR` is set.
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stderr())
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     tracing_subscriber::fmt()
         .with_writer(ResilientStderr)
+        .with_ansi(ansi)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),

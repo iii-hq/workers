@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{Deliver, RegisterFunction, Source};
+use iii_sdk::{Capture, RegisterFunction, Source};
 use serde_json::json;
 use serial_test::serial;
 
@@ -41,7 +41,7 @@ async fn an_observing_target_runs_on_its_schedule_with_the_tick() {
     let observer = iii.observe(
         Source::function("cron::on-tick")
             .args(json!({"expression": "*/1 * * * * *"}))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "e2e::cron-backend",
     );
     tokio::time::timeout(Duration::from_secs(10), observer.ready())
@@ -50,7 +50,8 @@ async fn an_observing_target_runs_on_its_schedule_with_the_tick() {
         .expect("observer accepted");
 
     common::wait_for_fires(&fires, 1).await;
-    let payload = seen.lock().await.clone().unwrap();
+    // `capture: [output]`: the tick is the envelope's output.
+    let payload = seen.lock().await.clone().unwrap()["output"].clone();
     assert_eq!(payload["expression"], "*/1 * * * * *");
     assert!(payload["scheduled_time"].as_str().is_some());
     assert!(payload["actual_time"].as_str().is_some());

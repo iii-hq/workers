@@ -20,13 +20,13 @@ Register a function and observe `cron::on-tick` with it, passing the schedule
 as args:
 
 ```typescript
-iii.registerFunction('reports::daily', async (tick: CronTick) => {
+iii.registerFunction('reports::daily', async ({ output: tick }: { output: CronTick }) => {
   // tick: { expression, scheduled_time, actual_time }
   await sendDigest(tick.scheduled_time)
 })
 
 const digest = iii.observe(
-  { function_id: 'cron::on-tick', args: { expression: '0 0 9 * * Mon-Fri' }, deliver: 'output' },
+  { function_id: 'cron::on-tick', args: { expression: '0 0 9 * * Mon-Fri' }, capture: ['output'] },
   'reports::daily',
 )
 await digest.ready()   // rejected with INVALID_CRON_EXPRESSION for a bad expression
@@ -36,7 +36,7 @@ await digest.ready()   // rejected with INVALID_CRON_EXPRESSION for a bad expres
 The same in Rust:
 
 ```rust
-use iii_sdk::{errors::Error, register_worker, Deliver, InitOptions, RegisterFunction, Source};
+use iii_sdk::{errors::Error, register_worker, Capture, InitOptions, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 #[tokio::main]
@@ -45,8 +45,8 @@ async fn main() -> anyhow::Result<()> {
 
     iii.register_function(
         "jobs::tick",
-        RegisterFunction::new_async(|tick: Value| async move {
-            println!("cron fired: {tick}");
+        RegisterFunction::new_async(|observed: Value| async move {
+            println!("cron fired: {}", observed["output"]);
             Ok::<Value, Error>(json!({ "ok": true }))
         }),
     );
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     iii.observe(
         Source::function("cron::on-tick")
             .args(json!({ "expression": "*/5 * * * * *" }))
-            .deliver(Deliver::Output),
+            .capture([Capture::Output]),
         "jobs::tick",
     );
 
@@ -63,7 +63,8 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-With `deliver: 'output'` the function receives the tick:
+With `capture: ['output']` the function receives the `Observed` envelope,
+whose `output` is the tick:
 
 ```json
 {

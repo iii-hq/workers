@@ -11,7 +11,8 @@
 //! The record is durable (state worker, `harness_binding` scope) because the
 //! engine's observers are not: they belong to the harness connection, so a
 //! harness or engine restart loses them, and the boot pass re-creates every
-//! surviving binding's observer from this store.
+//! surviving binding's observer from this store. So does a harness away past
+//! the engine's grace period, once it is back ([`crate::observers`]).
 
 pub mod compose;
 pub mod expiry;
@@ -63,6 +64,14 @@ impl ObserverHandles {
             .remove(binding_id)
     }
 
+    pub fn get(&self, binding_id: &str) -> Option<ObserverHandle> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(binding_id)
+            .cloned()
+    }
+
     pub fn contains(&self, binding_id: &str) -> bool {
         self.0
             .lock()
@@ -71,9 +80,45 @@ impl ObserverHandles {
     }
 }
 
+/// Bindings with a [`gc::observe_again`] task running, and whether another
+/// pass was asked for meanwhile: one task per binding, however many sweeps
+/// and disposals ask, so none pile up behind the topology lock.
+#[derive(Clone, Default)]
+pub struct ObservingAgain(Arc<Mutex<HashMap<String, bool>>>);
+
+impl ObservingAgain {
+    /// Whether to start a task for `binding_id`; a running one passes once more.
+    pub fn start(&self, binding_id: &str) -> bool {
+        let mut running = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        match running.get_mut(binding_id) {
+            Some(again) => {
+                *again = true;
+                false
+            }
+            None => {
+                running.insert(binding_id.to_string(), false);
+                true
+            }
+        }
+    }
+
+    /// After a pass: whether one more was asked for; otherwise the task ends.
+    pub fn pass_again(&self, binding_id: &str) -> bool {
+        let mut running = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if running.get(binding_id) == Some(&true) {
+            running.insert(binding_id.to_string(), false);
+            return true;
+        }
+        running.remove(binding_id);
+        false
+    }
+}
+
 /// Create the binding's observer: its source, the delivery hop as target, the
 /// binding id as observer id and `__binding` sidecar, and the lifecycle
 /// deadline as a backstop. The handle is kept in [`Deps::observer_handles`].
+/// When the engine disposes the observer while the harness is away, the
+/// binding is observed again from its record ([`gc::observe_again`]).
 /// `None` for a binding without a source.
 pub fn observe_binding(deps: &Deps, binding: &Binding) -> Option<ObserverHandle> {
     let source = binding.source.as_ref()?;
@@ -92,6 +137,10 @@ pub fn observe_binding(deps: &Deps, binding: &Binding) -> Option<ObserverHandle>
         crate::functions::observer_deliver::DELIVER_ID,
         options,
     );
+    let (again, binding_id) = (deps.clone(), binding.id.clone());
+    crate::observers::when_disposed_while_away(&handle, move || {
+        gc::spawn_observe_again(&again, &binding_id);
+    });
     deps.observer_handles
         .insert(binding.id.clone(), handle.clone());
     Some(handle)
@@ -426,6 +475,20 @@ pub const STATE_ON_CHANGED_FN: &str = "state::on-changed";
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn re_observe_requests_during_a_pass_coalesce_into_one_more_pass() {
+        let again = ObservingAgain::default();
+        assert!(again.start("b"));
+        assert!(!again.start("b"));
+        assert!(!again.start("b"));
+        assert!(again.pass_again("b"));
+        assert!(!again.pass_again("b"));
+        assert!(
+            again.start("b"),
+            "a request after the task ended starts a new one"
+        );
+    }
 
     fn binding() -> Binding {
         Binding {

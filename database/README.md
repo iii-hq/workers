@@ -401,8 +401,7 @@ iii.observe({
   function_id: 'database::on-row-changed',
   args: { db: 'primary', table: 'invoices', ops: ['update'] },
   filters: { 'input.returning': { $any: { '@.status': { $eq: 'paid' } } } },
-  capture: ['input'],
-  deliver: 'input',
+  capture: ['input'], // the target reads the event at payload.input
 }, 'billing::on-invoice-paid', { max_fires: 1 })
 ```
 
@@ -449,9 +448,9 @@ their capture once the connection builds.
 table, op, affected_rows, returning?, truncated?, at }`. `schema` is
 lowercase, `null` when neither the SQL nor the driver named one; `table` is
 canonical. Filter paths are checked against this shape (`input.tabel` is
-`INVALID_FILTER_PATH`). An observer with `deliver: 'input'` or
-`deliver: 'output'` receives the event itself; the default delivers the
-`Observed` envelope.
+`INVALID_FILTER_PATH`). Every observer receives the `Observed`
+envelope; with `capture: ['input']` or `capture: ['output']` the event is its
+`input` or `output`.
 
 **Delivery.** iii delivers each call to the observers whose args match it:
 the worker files each observer under its `db`, its `table` (or every table)
