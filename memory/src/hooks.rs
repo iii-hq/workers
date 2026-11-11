@@ -50,7 +50,7 @@ pub const EXTRACT_JOB_DESC: &str =
      of losing the pass.";
 pub const SESSION_DELETED_DESC: &str =
     "Internal: target of the session::on-deleted observer — drops the session's extraction \
-     cursor.";
+     cursor and state.";
 /// Durable queue (iii-queue builtin or the queue worker) carrying one
 /// extraction job per completed turn: retries + DLQ instead of a lost
 /// pass when this worker restarts mid-extraction.
@@ -135,6 +135,10 @@ pub struct PreGenerateInput {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub generate: Option<GenerateInput>,
+    /// Delivery context the harness attaches to this hook call. Absent on a
+    /// harness that predates it: recall then reads the last user message.
+    #[serde(default)]
+    pub recall_context: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -196,6 +200,9 @@ pub struct TurnCompletedInput {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ExtractJobInput {
     pub session_id: String,
+    /// The turn that queued the job. Absent on jobs queued before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     /// The bank the turn was injected with. Absent: resolved when the job
     /// runs (the worker never saw the turn, or the job predates this).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,6 +262,26 @@ pub async fn pre_generate(
             resolved
         }
     };
+    // Persisted on the step's assistant entry: a turn this process never
+    // saw (a restart) reads them back (`scope::stamped_bank`), and extraction
+    // reads the policy from it. Stamped even with injection off, before every
+    // early return.
+    annotations.insert(
+        "memory_extraction".into(),
+        json!(cfg.extraction_enabled && matches!(&resolved, Ok(Some(_)))),
+    );
+    if let Ok(Some(scope)) = &resolved {
+        annotations.insert("memory_bank".into(), json!(scope.bank));
+        if let Some(layer) = scope.layer(&cfg.default_bank) {
+            annotations.insert("memory_layer".into(), json!(layer));
+        }
+        if let Some(agent) = &scope.agent {
+            annotations.insert(
+                "memory_agent".into(),
+                json!(crate::scope::agent_bank(agent)),
+            );
+        }
+    }
     if !injecting {
         // Memory off is an empty section, told like any rules change: a
         // section this session already froze stays in its system prompt.
@@ -284,18 +311,6 @@ pub async fn pre_generate(
         });
     };
     let layers = scope.layers(&cfg.default_bank);
-    // Persisted on the step's assistant entry: a turn this process never
-    // saw (a restart) reads them back (`scope::stamped_bank`).
-    annotations.insert("memory_bank".into(), json!(scope.bank));
-    if let Some(layer) = scope.layer(&cfg.default_bank) {
-        annotations.insert("memory_layer".into(), json!(layer));
-    }
-    if let Some(agent) = &scope.agent {
-        annotations.insert(
-            "memory_agent".into(),
-            json!(crate::scope::agent_bank(agent)),
-        );
-    }
     let bank_name = scope.bank;
 
     // Recall only on the step that opens the turn: the appended message is
@@ -1058,8 +1073,9 @@ fn keep_told_section(input: &PreGenerateInput) -> HookResponse {
 
 /// Ack fast; hand the extraction pass to the durable queue (retries +
 /// DLQ, receipt-id deduped by turn), falling back to an inline spawn when
-/// no queue surface is installed. At-least-once redelivery is safe either
-/// way: fingerprints make the whole pass idempotent.
+/// no queue surface is installed. Redelivery is safe either way: memory
+/// effects carry durable source-bound receipts. The model call and event
+/// delivery are not exactly-once.
 pub async fn turn_completed(
     deps: &Arc<Deps>,
     input: TurnCompletedInput,
@@ -1140,6 +1156,7 @@ pub(crate) fn plan_extraction(
     let bank = bank.flatten();
     Some(ExtractJobInput {
         session_id: input.session_id.clone(),
+        turn_id: input.turn_id.clone(),
         derived: bank.as_ref().is_some_and(|b| b.derived),
         agent: bank.as_ref().and_then(|b| b.agent.clone()),
         bank: bank.map(|b| b.bank),
@@ -1165,14 +1182,22 @@ pub struct SessionDeletedInput {
     pub session_id: String,
 }
 
-/// GC the per-session extraction cursor. Memories keep their provenance ids
-/// (history), but the operational cursor has nothing left to point at.
+/// GC the per-session extraction cursor and state (pending slot, ranges,
+/// history ledger, plans). Memories keep their provenance ids (history), but
+/// the operational state has nothing left to point at.
 pub async fn session_deleted(
     deps: &Arc<Deps>,
     input: SessionDeletedInput,
 ) -> Result<AckResponse, Error> {
     if !input.session_id.is_empty() {
         extract::cursor_delete(&deps.iii, &input.session_id).await;
+        // Its captured transcript and plans must not outlive the session.
+        let store = deps.store().await;
+        if let Err(e) =
+            crate::store::run_blocking(|| store.purge_session_extraction(&input.session_id)).await
+        {
+            tracing::warn!(session_id = %input.session_id, error = %e, "extraction state purge failed");
+        }
         TOLD_RULES
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1968,6 +1993,7 @@ Formal."
         let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
         let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
         Deps {
+            hook_binding: Arc::default(),
             emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
             iii,
             store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
@@ -3199,6 +3225,80 @@ Formal."
         assert_eq!(pair(legacy), ["fp-new"]);
     }
 
+    #[tokio::test]
+    async fn a_deleted_session_leaves_no_extraction_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(6)));
+        let store = deps.store().await;
+        for session in ["gone", "kept"] {
+            let plan = json!([session, "private", false, null, "turn", ["e1"]]).to_string();
+            store
+                .save_extraction_plan(&plan, &json!({"known":["CANARY"]}))
+                .unwrap();
+            store.set_pending_extraction(session, Value::Null).unwrap();
+        }
+        let deleted = SessionDeletedInput {
+            session_id: "gone".into(),
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            session_deleted(&deps, deleted),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let files = |session: &str| {
+            std::fs::read_dir(dir.path().join(".extraction"))
+                .unwrap()
+                .filter(|entry| {
+                    std::fs::read_to_string(entry.as_ref().unwrap().path())
+                        .unwrap()
+                        .contains(session)
+                })
+                .count()
+        };
+        assert_eq!(files("gone"), 0);
+        assert_eq!(files("kept"), 2);
+    }
+
+    /// The same text saved twice at once: both calls succeed and the second
+    /// corroborates the first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_saves_of_one_text_both_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        for i in 0..20 {
+            let text = format!("Concurrent synthetic fact {i}.");
+            let save = || {
+                crate::functions::items::save(
+                    &deps,
+                    crate::functions::items::SaveRequest {
+                        bank: Some("b".into()),
+                        text: text.clone(),
+                        entities: vec![],
+                        tags: vec![],
+                        pinned: false,
+                        session_id: None,
+                    },
+                )
+            };
+            let (a, b) = tokio::join!(save(), save());
+            let (a, b) = (a.unwrap(), b.unwrap());
+            assert!(a.created != b.created, "exactly one creates");
+            let bank = deps.store().await.bank("b").await.unwrap();
+            let memory = bank.get(&a.memory.id).await.unwrap();
+            assert_eq!(memory.revision, 1);
+            assert_eq!(
+                memory.corroboration,
+                a.memory.corroboration.max(b.memory.corroboration)
+            );
+            assert_eq!(
+                memory.corroboration,
+                a.memory.corroboration.min(b.memory.corroboration) + 1
+            );
+        }
+    }
+
     /// Two awaited saves of a change, however fast: the second is the newer.
     #[tokio::test]
     async fn a_change_saved_right_after_replaces_the_old_line() {
@@ -3805,6 +3905,25 @@ mod envelope_tests {
         assert_eq!(input.session_id, "s-1");
         assert_eq!(input.turn_id.as_deref(), Some("t-1"));
         assert_eq!(input.parent_session_id.as_deref(), Some("p-1"));
+    }
+
+    #[test]
+    fn failed_or_uncaptured_calls_do_not_fall_back_to_the_input() {
+        for status in ["success", "error"] {
+            let mut value = envelope(
+                "harness::on-turn-completed",
+                json!({ "session_id": "must-not-be-used" }),
+            );
+            value["status"] = json!(status);
+            value["input"] = json!({ "session_id": "must-not-be-used" });
+            value.as_object_mut().unwrap().remove("output");
+            if status == "error" {
+                value["error"] = json!({ "code": "FIXTURE", "message": "synthetic failure" });
+            }
+            let delivered: Delivered<TurnCompletedInput> =
+                serde_json::from_value(value).expect("the envelope parses");
+            assert!(delivered_event(delivered).is_none(), "{status}");
+        }
     }
 
     /// The session-deleted target is called with the `Observed` envelope:

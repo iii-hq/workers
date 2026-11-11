@@ -70,11 +70,21 @@ A session running as an agent profile (`agent_profile` in its session metadata, 
 
 Switching a running session's bank does not rewrite what it already saw: the new bank's section arrives as an appended update that overrides the frozen one, while the earlier bank's section and recalled memories stay visible in the transcript. Start a new session when the two contexts must not mix. Turning `inject_rules` and `inject_memories` both off works the same way: a running session keeps its section and is told once that no memory section applies.
 
-The worker also observes `session::on-deleted` (drops the session's extraction cursor) and `queue::on-message` with args `{ topic: "memory-extraction", max_retries: 3, backoff_ms: 2000 }` (runs the queued extraction jobs; an error retries the job, then dead-letters it), and `configuration::on-updated` for its own entry.
+The worker also observes `session::on-deleted` (drops the session's extraction cursor and its `.extraction` state) and `queue::on-message` with args `{ topic: "memory-extraction", max_retries: 3, backoff_ms: 2000 }` (runs the queued extraction jobs; an error retries the job, then dead-letters it), and `configuration::on-updated` for its own entry.
 
 The worker creates every observer at startup, and creates the extraction consumer again each time its id is refused (below). Observed before its owning sibling (harness, session-manager, queue) is up, an observer stays `pending` and becomes active when the sibling registers the function.
 
 The extraction consumer observes under a stable id: the worker name (`memory`, or the `III_WORKER_NAME` its supervisor sets), then `:queue:` and the topic, preceded by `<namespace>/` when the worker has a namespace (`memory:queue:memory-extraction` by default; an id over 128 bytes becomes the worker name, cut to its first 97 bytes, then `:queue:fnv1a64:` and a 64-bit FNV-1a digest of the whole id). The queue worker files a subscriber's durable queue under its observer id. When the worker stops, killed or not, the engine keeps its observers suspended for its grace period (`observers.observer_grace_ms`, 30 s by default) and withdraws them from their functions' workers. A restarted worker, under the same name and namespace, observes the topic under the same id: the engine replaces the suspended observer with the new one, and the queue worker hands the new process every job the previous one left unacked, once. While another observer holds the id (`OBSERVER_ID_CONFLICT`: the engine has not seen the previous process's connection close yet, another worker holds it until its grace period ends, or the queue worker has not let the previous subscriber go yet), the worker logs the refusal, disposes the refused observer, and observes again 5 s after the refusal, then twice as long each time up to 30 s (5 s, 10 s, 20 s, 30 s, 30 s, ...).
+
+### Extraction contract
+
+- **Cursor.** The confirmed watermark is `state` scope `memory_cursor`, key the session id, value `{ last_entry_id }`. A pass reads `session::messages` strictly after it; the job's `until` is an inclusive client-side cut, never a request field. The cursor moves only after a run's writes landed; an empty or trivial run (no model call) still moves it.
+- **Runs.** A pass splits the delta into runs of at most 24,000 bytes of excerpt and executes at most 4. The rest returns an error, so the queue retries from the last confirmed run; no prefix or tail is dropped.
+- **Turns.** A job carries its `turn_id`. The pre-generate hook stamps `memory_extraction`, `memory_bank` and the layer and agent on each assistant entry, so every run is extracted under its own turn's policy and bank, not the newest job's. A job queued without a `turn_id` is still accepted.
+- **Receipts.** Before the model call a run's redacted source is saved as the session's pending slot, and the model's decision is saved as a plan keyed by session, bank, turn and ordered entry ids. Each memory effect is appended to `memories.jsonl` together with a receipt line (`{"extraction_receipt": ...}`, never a memory) in one write. A retry reuses the plan and skips every effect whose receipt the bank already holds, so a redelivered job adds no second revision or corroboration. An effect whose memory changed since the extraction read it records a skipped receipt instead. A learned-rule merge is skipped the same way when `rules/learned.md` changed since it was read (compared redacted); its receipt lives in the run's plan, never in the rule file.
+- **Events** are best-effort and at most once: a crash between a write and its event loses the event.
+- **Quarantine.** A message over 96 KiB is never sent to the model. Its run keeps only text digests, in a bounded record evicted oldest-first, and the cursor moves past it. A run whose bank was deleted is closed unextracted.
+- **Pruning.** A run's plan and rule receipts are deleted once the cursor passes the run, or its retained range completes. Acknowledging a range drops the history rows of its entries; a pre-generate import drops every row at or before the cursor. Deleting a session purges its pending slot, ranges, history and plans; trashing a bank purges the plans that read it.
 
 ## Functions
 
@@ -126,6 +136,7 @@ process current directory for the same relative default.
     rules/style.md     # always-injected markdown
     memories.jsonl     # append-only memory log (full records, last-wins by id)
     vectors.jsonl      # derived embedding sidecar (rebuildable)
+  .extraction/         # in-flight extraction state: pending slots, ranges, plans, history
   .trash/              # trashed banks, timestamped
 ```
 

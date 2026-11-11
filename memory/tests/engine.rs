@@ -144,6 +144,7 @@ async fn change_functions_register_private_and_deliver_writes_to_bank_filtered_o
         ..WorkerConfig::default()
     };
     let deps = Arc::new(Deps {
+        hook_binding: Arc::default(),
         iii: worker.clone(),
         store: Arc::new(RwLock::new(Arc::new(
             Store::open(dir.path().to_path_buf()).unwrap(),

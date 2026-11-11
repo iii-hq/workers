@@ -27,6 +27,45 @@ use serde_json::Value;
 
 use crate::types::Memory;
 
+pub const ON_EXTRACTION_DECISION_FN: &str = "memory::on-extraction-decision";
+pub const ON_EXTRACTION_DECISION_DESC: &str =
+    "Private operational terminal extraction decision, version 1. Only Memory emits after an active owned Harness completion activation and authoritative own SessionMeta lookup. No bank/content/model data. Observe output; filter input.session_id/turn_id. Delivery is best-effort (50ms), duplicates possible; loss is unmeasured, not success. Private producer ACL does not restrict observer readers: bounded session/turn identifiers are operational metadata, not secrets. This event alone proves neither bank unchanged nor CI success.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkippedSessionKind {
+    Automation,
+    E2e,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractionDecisionStatus {
+    Skipped,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractionDecisionReason {
+    SessionKindNotUser,
+}
+
+/// Operational evidence, not an extraction receipt or a bank-unchanged assertion.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractionDecisionEvent {
+    /// Schema version, always 1.
+    #[schemars(range(min = 1, max = 1))]
+    pub version: u8,
+    #[schemars(length(min = 1, max = 256))]
+    pub session_id: String,
+    #[schemars(length(min = 1, max = 256))]
+    pub turn_id: String,
+    pub status: ExtractionDecisionStatus,
+    pub reason: ExtractionDecisionReason,
+    pub session_kind: SkippedSessionKind,
+    /// Genuine Cargo package version, not a source/git identity.
+    pub producer_version: String,
+}
+
 pub const ON_ITEM_CHANGED_FN: &str = "memory::on-item-changed";
 pub const ON_ITEM_CHANGED_DESC: &str =
     "Called when a memory is created, updated, superseded, or deleted in a memory bank. \
@@ -88,6 +127,22 @@ pub struct BankChangedEvent {
 /// it), takes no args, and returns the event it is called with.
 pub fn register_all(iii: &IIIClient) {
     iii.register_function(
+        ON_EXTRACTION_DECISION_FN,
+        RegisterFunction::new(|event: ExtractionDecisionEvent| {
+            if event.version != 1
+                || !crate::extraction_proof::bounded(&event.session_id)
+                || !crate::extraction_proof::bounded(&event.turn_id)
+            {
+                return Err(Error::Handler(
+                    "invalid extraction decision correlation".into(),
+                ));
+            }
+            Ok(event)
+        })
+        .description(ON_EXTRACTION_DECISION_DESC)
+        .private(),
+    );
+    iii.register_function(
         ON_ITEM_CHANGED_FN,
         RegisterFunction::new(|event: ItemChangedEvent| Ok::<_, Error>(event))
             .description(ON_ITEM_CHANGED_DESC)
@@ -129,6 +184,25 @@ pub struct Emitter {
 impl Emitter {
     pub fn new(iii: Arc<IIIClient>) -> Self {
         Self { iii }
+    }
+
+    /// Await only the bounded send, never an observer/model outcome. A lost
+    /// event is unmeasured; repeated authenticated deliveries can duplicate it.
+    pub async fn extraction_skipped(&self, session: &str, turn: &str, kind: SkippedSessionKind) {
+        let event = ExtractionDecisionEvent {
+            version: 1,
+            session_id: session.into(),
+            turn_id: turn.into(),
+            status: ExtractionDecisionStatus::Skipped,
+            reason: ExtractionDecisionReason::SessionKindNotUser,
+            session_kind: kind,
+            producer_version: env!("CARGO_PKG_VERSION").into(),
+        };
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            self.emit(ON_EXTRACTION_DECISION_FN, serde_json::to_value(event)),
+        )
+        .await;
     }
 
     pub async fn item(&self, event: ItemEvent, bank: &str, memory: &Memory) {
