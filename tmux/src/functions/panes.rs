@@ -471,10 +471,11 @@ pub async fn account(ctx: &Ctx, input: PaneAccountInput) -> Result<PaneAccountOu
         format!("Claude Code is not running in pane {pane}, and it has no account.")
     })?;
     let accounts = ctx.collector.accounts();
-    accounts.load_now().await;
     let plan = moves::plan(state, &accounts.registry(), &input.account)?;
-    // Claude Code only moves to an account it can start on.
+    // Claude Code only moves to an account it can start on: that account's
+    // sign-in alone is read, now.
     if let moves::Plan::Now { to, .. } | moves::Plan::AfterTurn { to, .. } = &plan {
+        accounts.load_accounts_now(vec![to.clone()]).await;
         if !accounts.is_signed_in(to) {
             return Err(moves::not_signed_in(accounts, to));
         }

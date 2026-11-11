@@ -274,6 +274,14 @@ pub struct MoveGuard {
 }
 
 impl Moving {
+    /// Whether `pane` is being moved now (a late stop included).
+    pub fn is_busy(&self, pane: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(pane)
+    }
+
     pub fn begin(&self, pane: &str) -> Option<MoveGuard> {
         let mut set = self.0.lock().unwrap_or_else(|p| p.into_inner());
         set.insert(pane.to_string()).then(|| MoveGuard {
@@ -613,6 +621,12 @@ pub async fn move_now(
             signal(claude_pid, libc::SIGTERM);
             let gone = wait_for(STOP_WAIT, || async { !alive(claude_pid) }).await;
             if !gone {
+                // No other move of this pane (and no second SIGTERM) until
+                // this Claude Code has ended.
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    let _ = wait_for(LATE_STOP_WAIT, || async { !alive(claude_pid) }).await;
+                });
                 return Err(DID_NOT_STOP_SHELL.to_string());
             }
             // The shell takes the terminal back as soon as its job ends;
@@ -674,17 +688,28 @@ fn after_late_stop(
         let deadline = Instant::now() + LATE_STOP_WAIT;
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let Ok(fields) = tmux
+            let fields = match tmux
                 .pane_fields(&pane, &["#{pane_pid}", "#{pane_dead}"])
                 .await
-            else {
-                return;
+            {
+                Ok(fields) => fields,
+                // Gone (or tmux would not answer): put it back anyway, which
+                // does nothing to a pane that no longer exists.
+                Err(_) => {
+                    let _ = tmux.run(&restore).await;
+                    return;
+                }
             };
             let pid = fields.first().map(String::as_str).unwrap_or_default();
             let dead = fields.get(1).map(String::as_str) == Some("1");
             // tmux 3.8 clears a dead pane's pid; before, it keeps the last.
             let same = pid == pane_pid.to_string() || (dead && pid.is_empty());
-            if same && dead {
+            if !same {
+                // Respawned by someone else, or another pane with this id
+                // (a new tmux server): not this move's to touch.
+                return;
+            }
+            if dead {
                 let respawn = [
                     "respawn-pane",
                     "-t",
@@ -702,7 +727,7 @@ fn after_late_stop(
                         tracing::warn!(%pane, error = %error.sentence(), "Claude Code ended late and was not started again")
                     }
                 }
-            } else if same && Instant::now() < deadline {
+            } else if Instant::now() < deadline {
                 continue;
             }
             if let Err(error) = tmux.run(&restore).await {
@@ -721,6 +746,16 @@ pub fn not_signed_in(accounts: &Accounts, id: &str) -> String {
         .map(|entry| entry.name.clone())
         .unwrap_or_else(|| id.to_string());
     format!("{name} is not signed in; sign it in first (tmux::accounts::login).")
+}
+
+/// `pane`'s account mark now (`None` unmarked), read afresh: a switch
+/// takes seconds per pane, and a pane may be pinned meanwhile.
+async fn mark_now(tmux: &Tmux, pane: &str) -> Result<Option<String>, String> {
+    let fields = tmux.pane_fields(pane, &["#{@iii_claude_account}"]).await?;
+    Ok(fields
+        .first()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty()))
 }
 
 /// Mark `pane` to move to `to` once its turn ends.
@@ -776,6 +811,18 @@ pub async fn apply(
             Err(error) => Err(error),
         },
     }
+}
+
+/// The account the waiting move of `pane` goes to: its mark's account (the
+/// global one for `global`), else the pending mark's.
+pub fn pending_target(pane: &PaneState, registry: &Registry) -> Option<String> {
+    let pending = pane.marks.pending.as_ref()?;
+    let mark = pane.marks.account.as_ref().unwrap_or(pending);
+    Some(if mark == GLOBAL {
+        registry.global.clone()
+    } else {
+        mark.clone()
+    })
 }
 
 /// What to do about a pane carrying `@iii_claude_pending` (§3.7): `None`
@@ -891,32 +938,34 @@ pub async fn switch_global(
     if !accounts.is_signed_in(to) {
         return Err(not_signed_in(accounts, to));
     }
-    accounts.update_registry_at(|registry, generation| {
-        if !registry.has(to) {
-            return Err(super::manage::no_account(to));
-        }
-        match &by {
-            SwitchBy::Person => {
-                // A choice someone made is never undone by the rules.
-                if let Some(last) = registry.last_switch.as_mut() {
-                    last.back_at_ms = None;
+    accounts
+        .update_registry_at_async(|registry, generation| {
+            if !registry.has(to) {
+                return Err(super::manage::no_account(to));
+            }
+            match &by {
+                SwitchBy::Person => {
+                    // A choice someone made is never undone by the rules.
+                    if let Some(last) = registry.last_switch.as_mut() {
+                        last.back_at_ms = None;
+                    }
+                }
+                SwitchBy::Rules {
+                    generation: decided_on,
+                    record,
+                } => {
+                    if generation != *decided_on {
+                        return Err(RULES_STALE.to_string());
+                    }
+                    // With the switch itself: a person's switch after it always
+                    // finds it, and calls off its switch back.
+                    registry.last_switch = Some(record.clone());
                 }
             }
-            SwitchBy::Rules {
-                generation: decided_on,
-                record,
-            } => {
-                if generation != *decided_on {
-                    return Err(RULES_STALE.to_string());
-                }
-                // With the switch itself: a person's switch after it always
-                // finds it, and calls off its switch back.
-                registry.last_switch = Some(record.clone());
-            }
-        }
-        registry.global = to.to_string();
-        Ok(())
-    })?;
+            registry.global = to.to_string();
+            Ok(())
+        })
+        .await?;
     if let Err(error) = tmux_env::reconcile(tmux, accounts).await {
         tracing::warn!(%error, "tmux global CLAUDE_CONFIG_DIR not set");
     }
@@ -937,65 +986,105 @@ pub async fn switch_global(
             break;
         }
         let id = pane.pane_id.clone();
-        let skip = pane.info.skip_permissions;
-        accounts.clear_move_error(&id);
-        match mode {
-            // Before tmux 3.0 the mark is the window's, shared with another
-            // Claude Code pane: it is left as it is.
-            SwitchMode::NewOnly if pane.marks_shared => out.stayed.push(id),
-            SwitchMode::NewOnly => {
-                // Pinned where it runs, so its chip never says the new one.
-                if let Some(current) = pane.info.account.as_deref() {
-                    set_marks(tmux, &id, current, skip, None).await?;
-                }
+        // Pinned meanwhile: no longer this switch's pane.
+        match mark_now(tmux, &id).await {
+            Ok(Some(mark)) if mark == GLOBAL => {}
+            Ok(_) => continue,
+            Err(error) => {
+                accounts.note_move_error(&id, &error);
                 out.stayed.push(id);
+                continue;
             }
-            SwitchMode::IdleNowWorkingAfter => {
-                if pane.kind.is_none() || !pane.info.movable || pane.marks_shared {
-                    out.stayed.push(id);
-                } else if pane.idle() {
-                    match move_now(tmux, accounts, pane, to, GLOBAL).await {
-                        Ok(()) => out.moved.push(id),
-                        Err(error) if error == NOT_IDLE => {
-                            wait_for_turn(tmux, accounts, pane, GLOBAL, to).await?;
-                            out.after_turn.push(id);
-                        }
-                        Err(error) => {
-                            tracing::warn!(pane = %id, %error, "pane not moved");
-                            accounts.note_move_error(&id, &error);
-                            out.stayed.push(id);
-                        }
-                    }
-                } else {
-                    wait_for_turn(tmux, accounts, pane, GLOBAL, to).await?;
-                    out.after_turn.push(id);
-                }
+        }
+        accounts.clear_move_error(&id);
+        // One pane's failure is its own: the others still go, and the
+        // switch's bookkeeping below always runs.
+        match switch_pane(tmux, accounts, pane, to, mode).await {
+            Ok(Went::Moved) => out.moved.push(id),
+            Ok(Went::AfterTurn) => out.after_turn.push(id),
+            Ok(Went::Stayed) => out.stayed.push(id),
+            Err(error) => {
+                tracing::warn!(pane = %id, %error, "pane not moved");
+                accounts.note_move_error(&id, &error);
+                out.stayed.push(id);
             }
         }
     }
     if let SwitchBy::Rules { record, .. } = &by {
-        note_switched_panes(accounts, record, &out);
+        note_switched_panes(accounts, record, &out).await;
     }
     Ok(out)
+}
+
+/// Where a pane that follows the global account went in a switch.
+enum Went {
+    Moved,
+    AfterTurn,
+    Stayed,
+}
+
+async fn switch_pane(
+    tmux: &Tmux,
+    accounts: &Accounts,
+    pane: &PaneState,
+    to: &str,
+    mode: SwitchMode,
+) -> Result<Went, String> {
+    let id = pane.pane_id.as_str();
+    match mode {
+        // Before tmux 3.0 the mark is the window's, shared with another
+        // Claude Code pane: it is left as it is.
+        SwitchMode::NewOnly if pane.marks_shared => Ok(Went::Stayed),
+        SwitchMode::NewOnly => {
+            // Pinned where it runs, so its chip never says the new one.
+            if let Some(current) = pane.info.account.as_deref() {
+                set_marks(tmux, id, current, pane.info.skip_permissions, None).await?;
+            }
+            Ok(Went::Stayed)
+        }
+        SwitchMode::IdleNowWorkingAfter => {
+            if pane.kind.is_none() || !pane.info.movable || pane.marks_shared {
+                Ok(Went::Stayed)
+            } else if pane.idle() {
+                match move_now(tmux, accounts, pane, to, GLOBAL).await {
+                    Ok(()) => Ok(Went::Moved),
+                    Err(error) if error == NOT_IDLE => {
+                        wait_for_turn(tmux, accounts, pane, GLOBAL, to).await?;
+                        Ok(Went::AfterTurn)
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                wait_for_turn(tmux, accounts, pane, GLOBAL, to).await?;
+                Ok(Went::AfterTurn)
+            }
+        }
+    }
 }
 
 /// The panes a switch of the rules moved, in its `last_switch`, while that
 /// is still its record (a later switch leaves its own). Nothing else of it
 /// changes: a person's switch may have called off its switch back.
-fn note_switched_panes(accounts: &Accounts, record: &crate::model::AccountSwitch, out: &Switched) {
+async fn note_switched_panes(
+    accounts: &Accounts,
+    record: &crate::model::AccountSwitch,
+    out: &Switched,
+) {
     let ours = |last: &crate::model::AccountSwitch| {
         last.auto && last.at_ms == record.at_ms && last.from == record.from && last.to == record.to
     };
     if !accounts.registry().last_switch.as_ref().is_some_and(ours) {
         return;
     }
-    let noted = accounts.update_registry(|registry| {
-        if let Some(last) = registry.last_switch.as_mut().filter(|last| ours(last)) {
-            last.moved = out.moved.clone();
-            last.after_turn = out.after_turn.clone();
-        }
-        Ok(())
-    });
+    let noted = accounts
+        .update_registry_at_async(|registry, _| {
+            if let Some(last) = registry.last_switch.as_mut().filter(|last| ours(last)) {
+                last.moved = out.moved.clone();
+                last.after_turn = out.after_turn.clone();
+            }
+            Ok(())
+        })
+        .await;
     if let Err(error) = noted {
         tracing::warn!(%error, "the panes of the last switch not saved");
     }
@@ -1038,6 +1127,16 @@ pub async fn move_idle(
     candidates.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
     let mut moved = Vec::new();
     for pane in candidates {
+        // Pinned elsewhere meanwhile: no longer one of these.
+        match mark_now(tmux, &pane.pane_id).await {
+            Ok(None) => {}
+            Ok(Some(mark)) if mark == GLOBAL || mark == from => {}
+            Ok(Some(_)) => continue,
+            Err(error) => {
+                accounts.note_move_error(&pane.pane_id, &error);
+                continue;
+            }
+        }
         match move_now(tmux, accounts, pane, to, to).await {
             Ok(()) => moved.push(pane.pane_id.clone()),
             Err(error) if error == NOT_IDLE => {}

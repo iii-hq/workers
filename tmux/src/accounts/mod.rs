@@ -265,6 +265,22 @@ impl Accounts {
         self.update_registry_at(|registry, _| change(registry))
     }
 
+    /// [`Accounts::update_registry_at`] for async code: waiting for another
+    /// process's change sleeps the task, never the thread.
+    pub async fn update_registry_at_async<T>(
+        &self,
+        change: impl FnOnce(&mut Registry, u64) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let Some(file) = self.paths.as_ref().map(ClaudePaths::registry_file) else {
+            return Err("This computer's user has no home folder for Claude Code accounts.".into());
+        };
+        let lock = registry::FileLock::take_async(&Store::lock_path(&file)).await?;
+        match self.store().as_mut() {
+            Some(store) => store.update_locked(&lock, change),
+            None => Err("This computer's user has no home folder for Claude Code accounts.".into()),
+        }
+    }
+
     /// Change the registry and save it; `change` gets the generation of
     /// the registry it changes, to refuse when it is not the one a decision
     /// was made on. The lock against other processes is taken before the
@@ -471,6 +487,13 @@ impl Accounts {
     /// locked Keychain; Codex's records can be large), so the state lock is
     /// only taken to see what is due and to store what was read.
     pub fn load_blocking(&self) {
+        self.load_blocking_for(None);
+    }
+
+    /// [`Accounts::load_blocking`] for the accounts in `only` alone (their
+    /// sign-ins and profiles: what a move to one of them needs, nothing
+    /// else, no Codex), or for everything with `None`.
+    fn load_blocking_for(&self, only: Option<&[String]>) {
         let Some(paths) = self.paths.clone() else {
             self.lock().loaded_at_ms = now_ms();
             return;
@@ -490,18 +513,21 @@ impl Accounts {
                 .iter()
                 .map(|(id, cached)| (id.clone(), cached.stamp))
                 .collect();
-            let codex_due = state
-                .codex
-                .as_ref()
-                .is_none_or(|(at, _)| now.saturating_sub(*at) >= CODEX_EVERY_MS);
-            let available_due = state
-                .available
-                .is_none_or(|(at, _)| now.saturating_sub(at) >= AVAILABLE_TTL_MS);
+            let codex_due = only.is_none()
+                && state
+                    .codex
+                    .as_ref()
+                    .is_none_or(|(at, _)| now.saturating_sub(*at) >= CODEX_EVERY_MS);
+            let available_due = only.is_none()
+                && state
+                    .available
+                    .is_none_or(|(at, _)| now.saturating_sub(at) >= AVAILABLE_TTL_MS);
             (credentials, profiles, codex_due, available_due)
         };
         let mut credentials = Vec::new();
         let mut profiles = Vec::new();
-        for entry in &registry.accounts {
+        let wanted = |id: &str| only.is_none_or(|ids| ids.iter().any(|wanted| wanted == id));
+        for entry in registry.accounts.iter().filter(|entry| wanted(&entry.id)) {
             let dir = paths.account_dir(&entry.id);
             let json = paths.account_json(&entry.id);
             let stamps = (stamp(&dir.join(".credentials.json")), stamp(&json));
@@ -564,7 +590,21 @@ impl Accounts {
             registry.accounts.iter().map(|e| e.id.as_str()).collect();
         state.credentials.retain(|id, _| ids.contains(id.as_str()));
         state.profiles.retain(|id, _| ids.contains(id.as_str()));
-        state.loaded_at_ms = now_ms();
+        if only.is_none() {
+            state.loaded_at_ms = now_ms();
+        }
+    }
+
+    /// The sign-ins of `ids` alone, read now off the async threads: what an
+    /// explicit move or switch to one of them needs (D9), even with nobody
+    /// watching, without reading every account (or Codex).
+    pub async fn load_accounts_now(self: &Arc<Self>, ids: Vec<String>) {
+        if ids.is_empty() {
+            return;
+        }
+        let _gate = self.load_gate.lock().await;
+        let this = self.clone();
+        let _ = tokio::task::spawn_blocking(move || this.load_blocking_for(Some(&ids))).await;
     }
 
     /// Load now, off the async threads, and wait for it.
@@ -1077,6 +1117,34 @@ mod tests {
         accounts.load_soon().await;
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         assert!(accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+    }
+
+    #[tokio::test]
+    async fn an_explicit_move_reads_its_target_alone() {
+        let home = Home::new("target");
+        home.sign_in(&home.paths.claude_home, "demo-work", now_ms() + 3_600_000);
+        let asked = Arc::new(AtomicU64::new(0));
+        let accounts = Arc::new(Accounts::new(
+            Some(home.paths.clone()),
+            Box::new(CountingStore(asked.clone())),
+            true,
+        ));
+        let id = accounts.add("Personal", "green", Some(vec![])).unwrap();
+        home.sign_in(
+            &home.paths.account_dir(&id),
+            "demo-personal",
+            now_ms() + 3_600_000,
+        );
+        accounts.load_accounts_now(vec![id.clone()]).await;
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            1,
+            "one Keychain read, the target's"
+        );
+        assert!(accounts.is_signed_in(&id));
+        assert!(!accounts.is_signed_in(DEFAULT), "the others are not read");
+        assert_eq!(accounts.lock().loaded_at_ms, 0, "no full load");
+        assert!(accounts.lock().codex.is_none(), "no Codex");
     }
 
     #[test]

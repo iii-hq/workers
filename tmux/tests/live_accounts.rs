@@ -1144,20 +1144,40 @@ async fn claude_slow_to_stop_comes_back_on_its_account() {
         .await
         .unwrap()
         .pane_id;
+    let shell = windows::create(&w.ctx, window("shell", None))
+        .await
+        .unwrap()
+        .pane_id;
+    w.tmux(&["send-keys", "-t", &shell, "-l", "claude"]);
+    w.tmux(&["send-keys", "-t", &shell, "Enter"]);
     let session = w.claude(&a).await.session_id.unwrap();
+    w.claude(&shell).await;
     let pid = w.claude_pid(&a).await;
-    // Its SessionEnd hooks take fourteen seconds: more than the move waits.
-    std::fs::write(w.sandbox.dir.join(format!("state/{pid}.linger")), "14").unwrap();
-    let refused = panes::account(
-        &w.ctx,
-        panes::PaneAccountInput {
-            pane: a.clone(),
-            account: "personal".into(),
-        },
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(refused, tmux::accounts::moves::DID_NOT_STOP);
+    let shell_pid = w.claude_pid(&shell).await;
+    // Their SessionEnd hooks take fourteen seconds: more than a move waits.
+    for claude_pid in [pid, shell_pid] {
+        std::fs::write(
+            w.sandbox.dir.join(format!("state/{claude_pid}.linger")),
+            "14",
+        )
+        .unwrap();
+    }
+    let move_to_personal = |pane: String| {
+        panes::account(
+            &w.ctx,
+            panes::PaneAccountInput {
+                pane,
+                account: "personal".into(),
+            },
+        )
+    };
+    let (respawned, typed) =
+        tokio::join!(move_to_personal(a.clone()), move_to_personal(shell.clone()));
+    assert_eq!(respawned.unwrap_err(), tmux::accounts::moves::DID_NOT_STOP);
+    assert_eq!(
+        typed.unwrap_err(),
+        tmux::accounts::moves::DID_NOT_STOP_SHELL
+    );
     let scope = if w.tmux_out(&["-V"]).starts_with("tmux 2.") {
         "-w"
     } else {
@@ -1165,20 +1185,15 @@ async fn claude_slow_to_stop_comes_back_on_its_account() {
     };
     let remain = || w.tmux_out(&["show-options", scope, "-v", "-t", &a, "remain-on-exit"]);
     assert_eq!(remain(), "on", "kept while Claude Code still ends");
-    let again = panes::account(
-        &w.ctx,
-        panes::PaneAccountInput {
-            pane: a.clone(),
-            account: "personal".into(),
-        },
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        again,
-        tmux::accounts::moves::BUSY,
-        "no other move meanwhile"
-    );
+    // No other move (no second SIGTERM) while they still end.
+    for pane in [&a, &shell] {
+        let again = move_to_personal(pane.clone()).await.unwrap_err();
+        assert_eq!(
+            again,
+            tmux::accounts::moves::BUSY,
+            "{pane}: no other move meanwhile"
+        );
+    }
     // Once it ends, the pane stays and Claude Code starts again where it
     // was, resuming its conversation; remain-on-exit goes back as it was.
     let back = eventually("Claude Code back on its account", || async {
@@ -1194,4 +1209,92 @@ async fn claude_slow_to_stop_comes_back_on_its_account() {
         remain().is_empty().then_some(())
     })
     .await;
+    // The shell has its terminal back; nothing was typed into it.
+    eventually("the shell's Claude Code ended", || async {
+        let gone = w
+            .collector
+            .claude_panes(true)
+            .await
+            .get(&shell)
+            .is_none_or(|state| state.claude_pid != Some(shell_pid));
+        gone.then_some(())
+    })
+    .await;
+    assert!(!w.screen(&shell).contains("Resumed on"));
+}
+
+#[tokio::test]
+async fn a_pane_pinned_during_a_switch_stays_where_it_was_pinned() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("pinned");
+    for name in ["Personal", "Side"] {
+        account_fns::add(
+            &w.ctx,
+            account_fns::AddAccountInput {
+                name: name.into(),
+                color: "green".into(),
+                shared: Some(vec![]),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    for id in ["personal", "side"] {
+        signed_in(&w.paths.account_dir(id));
+    }
+    let a = windows::create(&w.ctx, window("a", claude("global", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    w.claude(&a).await;
+    let pid = w.claude_pid(&a).await;
+    let scope = if w.tmux_out(&["-V"]).starts_with("tmux 2.") {
+        "-w"
+    } else {
+        "-p"
+    };
+    let tmux_now = w.collector.tmux().await.unwrap();
+    w.accounts()
+        .load_accounts_now(vec!["personal".into()])
+        .await;
+
+    // The switch works from a list made before someone pinned the pane
+    // where it runs: the pane is looked at again and left alone.
+    let before = w.collector.claude_panes(true).await;
+    w.tmux(&[
+        "set-option",
+        scope,
+        "-t",
+        &a,
+        "@iii_claude_account",
+        "default",
+    ]);
+    let switched = tmux::accounts::moves::switch_global(
+        &tmux_now,
+        w.accounts(),
+        &before,
+        "personal",
+        tmux::accounts::moves::SwitchMode::IdleNowWorkingAfter,
+        tmux::accounts::moves::SwitchBy::Person,
+    )
+    .await
+    .unwrap();
+    assert!(
+        switched.moved.is_empty() && switched.after_turn.is_empty() && switched.stayed.is_empty(),
+        "{switched:?}"
+    );
+    assert_eq!(w.claude_pid(&a).await, pid, "not moved");
+
+    // move_idle too: pinned elsewhere since its list was made, it stays.
+    let before = w.collector.claude_panes(true).await;
+    w.tmux(&["set-option", scope, "-t", &a, "@iii_claude_account", "side"]);
+    let moved =
+        tmux::accounts::moves::move_idle(&tmux_now, w.accounts(), &before, "default", "personal")
+            .await
+            .unwrap();
+    assert!(moved.is_empty(), "{moved:?}");
+    assert_eq!(w.claude_pid(&a).await, pid, "not moved");
 }

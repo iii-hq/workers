@@ -57,6 +57,11 @@ pub struct Registry {
     pub dismissed: Vec<Dismissal>,
     #[serde(default)]
     pub last_switch: Option<AccountSwitch>,
+    /// One more on every change the worker writes: two versions holding
+    /// the same values (A → B → A), written within one tick of the file's
+    /// clock, still differ.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 fn version_one() -> u32 {
@@ -86,6 +91,7 @@ impl Default for Registry {
             rules: SwitchRules::default(),
             dismissed: Vec::new(),
             last_switch: None,
+            revision: 0,
         }
     }
 }
@@ -242,8 +248,10 @@ pub struct Store {
     /// One more each time the file read is another version of it (written
     /// by this process or another): a registry read at the same generation
     /// is still the one on disk, even when the same values came back
-    /// (A → B → A).
+    /// (A → B → A). Another stamp or another `revision` is another version.
     generation: u64,
+    /// The `revision` of the file read.
+    revision: u64,
 }
 
 impl Store {
@@ -254,6 +262,7 @@ impl Store {
             loaded: false,
             state: Ok(None),
             generation: 0,
+            revision: 0,
         }
     }
 
@@ -270,13 +279,7 @@ impl Store {
         if self.loaded && stamp == self.stamp {
             return;
         }
-        // A forced read of the same file (under the lock) is no new version.
-        if self.generation == 0 || stamp != self.stamp {
-            self.generation += 1;
-        }
-        self.loaded = true;
-        self.stamp = stamp;
-        self.state = match std::fs::read_to_string(&self.path) {
+        let state = match std::fs::read_to_string(&self.path) {
             Ok(text) => serde_json::from_str::<Registry>(&text)
                 .map(|mut registry| {
                     registry.normalize();
@@ -289,6 +292,20 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(format!("accounts.json can't be read ({error}).")),
         };
+        let revision = match &state {
+            Ok(Some(registry)) => registry.revision,
+            _ => 0,
+        };
+        // A forced read of the same file (under the lock) is no new version;
+        // another stamp, or the same stamp with another revision (a write
+        // within one tick of the file's clock), is.
+        if self.generation == 0 || stamp != self.stamp || revision != self.revision {
+            self.generation += 1;
+        }
+        self.loaded = true;
+        self.stamp = stamp;
+        self.revision = revision;
+        self.state = state;
     }
 
     /// The file exists and reads.
@@ -341,6 +358,7 @@ impl Store {
         };
         let out = change(&mut registry, self.generation)?;
         registry.normalize();
+        registry.revision = self.revision.wrapping_add(1);
         write_atomic(&self.path, &registry)?;
         self.loaded = false;
         self.refresh();
@@ -356,31 +374,59 @@ pub struct FileLock(std::fs::File);
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl FileLock {
-    /// Blocking: waits up to two seconds for another process's change.
-    pub fn take(path: &Path) -> Result<Self, String> {
+    fn open(path: &Path) -> Result<std::fs::File, String> {
         use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::io::AsRawFd;
         if let Some(folder) = path.parent() {
             make_private_dir(folder)?;
         }
-        let file = std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
             .open(path)
-            .map_err(|error| format!("Could not open {} ({error}).", path.display()))?;
+            .map_err(|error| format!("Could not open {} ({error}).", path.display()))
+    }
+
+    fn try_lock(file: &std::fs::File) -> bool {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: flock on a descriptor the caller owns.
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+
+    fn busy() -> String {
+        "accounts.json is being changed by another process; try again.".into()
+    }
+
+    /// Blocking: waits up to two seconds for another process's change.
+    pub fn take(path: &Path) -> Result<Self, String> {
+        let file = Self::open(path)?;
         let started = std::time::Instant::now();
         loop {
-            // SAFETY: flock on a descriptor this function owns.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            if Self::try_lock(&file) {
                 return Ok(Self(file));
             }
             if started.elapsed() > LOCK_WAIT {
-                return Err("accounts.json is being changed by another process; try again.".into());
+                return Err(Self::busy());
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// [`FileLock::take`] for async code: the wait sleeps the task, never
+    /// the thread.
+    pub async fn take_async(path: &Path) -> Result<Self, String> {
+        let file = Self::open(path)?;
+        let started = std::time::Instant::now();
+        loop {
+            if Self::try_lock(&file) {
+                return Ok(Self(file));
+            }
+            if started.elapsed() > LOCK_WAIT {
+                return Err(Self::busy());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 }
@@ -611,6 +657,38 @@ mod tests {
             .update_locked(&lock, |_, generation| Ok(generation))
             .unwrap();
         assert_eq!(seen, at_again);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_revision_is_a_new_generation_on_the_same_stamp() {
+        use std::io::Write;
+        let dir = temp_dir("revision");
+        let path = dir.join("accounts.json");
+        let mut store = Store::new(path.clone());
+        store.update(|_| Ok(())).unwrap();
+        let (registry, at) = store.current_at();
+        assert_eq!(registry.revision, 1);
+        // Another process writes in place within one tick of the file's
+        // clock: same mtime, length and inode, another revision.
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let other = text.replace("\"revision\": 1", "\"revision\": 2");
+        assert_ne!(other, text);
+        assert_eq!(other.len(), text.len());
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.write_all(other.as_bytes()).unwrap();
+            file.set_modified(modified).unwrap();
+        }
+        assert_eq!(store.current_at().1, at, "the same stamp is not read again");
+        let lock = FileLock::take(&Store::lock_path(&path)).unwrap();
+        let seen = store
+            .update_locked(&lock, |_, generation| Ok(generation))
+            .unwrap();
+        assert_ne!(seen, at, "read again under the lock: another revision");
+        drop(lock);
+        assert_eq!(store.current().revision, 3);
         let _ = std::fs::remove_dir_all(dir);
     }
 

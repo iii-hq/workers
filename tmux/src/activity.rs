@@ -149,14 +149,22 @@ impl ActivityReader {
         dir.poll = poll;
         let dir = dir.value.clone()?;
         Some(
-            self.claude_at(&dir, pid, procs::proc_start(pid))
-                .unwrap_or_else(|| Activity {
-                    claude: Some(ClaudeRecord {
-                        config_dir: dir,
-                        ..ClaudeRecord::default()
-                    }),
-                    ..Activity::default()
+            // What is shown never waits on a macOS start time: only Linux's
+            // ticks tell a reused pid's file apart here, as they always
+            // did. A move matches start times exactly everywhere
+            // (`claude_record_now`).
+            self.claude_at(
+                &dir,
+                pid,
+                procs::start_ticks(pid).map(procs::ProcStart::Ticks),
+            )
+            .unwrap_or_else(|| Activity {
+                claude: Some(ClaudeRecord {
+                    config_dir: dir,
+                    ..ClaudeRecord::default()
                 }),
+                ..Activity::default()
+            }),
         )
     }
 
@@ -559,7 +567,10 @@ fn read_claude_session(
 
 /// Whether `recorded` (a session's `procStart`) is the start `actual`:
 /// Linux's clock ticks as digits, macOS's `ps -o lstart=` in UTC
-/// ("Sun Nov  8 02:28:58 2026"). `None` when it can't be read.
+/// ("Sun Nov  8 02:28:58 2026"). `None` when it can't be read (a move then
+/// stops nothing). Claude Code 2.1.322 for macOS runs `ps -o lstart= -p
+/// <pid>` with `LC_ALL=C` and `TZ=UTC` set by itself, whatever the Mac's
+/// time zone: its records on a Mac in America/Fortaleza read in UTC.
 fn same_start(recorded: &str, actual: procs::ProcStart) -> Option<bool> {
     match actual {
         procs::ProcStart::Ticks(ticks) => recorded.trim().parse::<u64>().ok().map(|r| r == ticks),

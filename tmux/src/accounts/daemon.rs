@@ -77,6 +77,12 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
     if !discover && waiting.is_empty() {
         return;
     }
+    // A pane being moved (its Claude Code still ending late, say) is not
+    // ready: nothing is collected for it until that move is over.
+    let waiting: Vec<(String, Option<u32>)> = waiting
+        .into_iter()
+        .filter(|(pane, _)| !accounts.moving.is_busy(pane))
+        .collect();
     let ready = discover
         || tokio::task::spawn_blocking(move || waiting.iter().any(|(_, pid)| may_be_ready(*pid)))
             .await
@@ -98,12 +104,21 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
             accounts.forget_waiting(&pane);
         }
     }
-    // Sign-ins are read only for a move someone asked for.
     if panes.values().all(|pane| pane.marks.pending.is_none()) {
         return;
     }
-    accounts.load_now().await;
+    // Sign-ins are read only for the moves someone asked for that can
+    // happen now (idle panes), and only those moves' accounts.
     let registry = accounts.registry();
+    let mut targets: Vec<String> = panes
+        .values()
+        .filter(|pane| pane.marks.pending.is_some() && pane.idle())
+        .filter(|pane| !accounts.moving.is_busy(&pane.pane_id))
+        .filter_map(|pane| super::moves::pending_target(pane, &registry))
+        .collect();
+    targets.sort();
+    targets.dedup();
+    accounts.load_accounts_now(targets).await;
     let mut changed = false;
     let mut ids: Vec<&String> = panes.keys().collect();
     ids.sort();
@@ -123,7 +138,8 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
                 tracing::info!(pane = %id, state, "pending account move");
                 changed = true;
             }
-            Err(error) if error == super::moves::BUSY => accounts.note_pending(),
+            // Being moved: it keeps waiting, looked at once that is over.
+            Err(error) if error == super::moves::BUSY => accounts.note_waiting(id, pane.claude_pid),
             Err(error) => {
                 tracing::warn!(pane = %id, %error, "pending account move dropped");
                 accounts.note_move_error(id, &error);

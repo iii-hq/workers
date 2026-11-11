@@ -200,8 +200,12 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
     use crate::accounts::moves::{switch_global, SwitchBy, SwitchMode};
     let tmux = ctx.tmux().await?;
     let panes = ctx.collector.claude_panes(true).await;
-    // Signed in as of now: a sign-in may have just finished.
-    ctx.collector.accounts().load_now().await;
+    // Signed in as of now (a sign-in may have just finished): that account
+    // alone is read.
+    ctx.collector
+        .accounts()
+        .load_accounts_now(vec![input.account.trim().to_string()])
+        .await;
     let mode = match input.move_mode {
         GlobalMove::IdleNowWorkingAfter => SwitchMode::IdleNowWorkingAfter,
         GlobalMove::NewOnly => SwitchMode::NewOnly,
@@ -228,7 +232,10 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
 pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput, String> {
     let tmux = ctx.tmux().await?;
     let panes = ctx.collector.claude_panes(true).await;
-    ctx.collector.accounts().load_now().await;
+    ctx.collector
+        .accounts()
+        .load_accounts_now(vec![input.to.trim().to_string()])
+        .await;
     let moved = crate::accounts::moves::move_idle(
         &tmux,
         ctx.collector.accounts(),

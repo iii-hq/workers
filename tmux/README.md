@@ -298,7 +298,8 @@ Claude Code would look for `.claude.json` inside the folder and, on macOS, for
 its sign-in under another Keychain name). Every other account is a folder
 under `~/.local/share/iii/claude-accounts` (`$XDG_DATA_HOME/iii/claude-accounts`
 when that is set), listed with its name, colour and what it shares in
-`accounts.json` there (0600, written whole, then renamed into place). Without
+`accounts.json` there (0600, written whole, then renamed into place; its
+`revision` goes up by one on each change the worker makes). Without
 `accounts.json` there is one account, `default`, and the worker leaves tmux's
 environment alone.
 
@@ -462,7 +463,9 @@ account. With nobody watching, the worker reads nothing, not even locally
 (one that could take over); it looks at who is signed in once when it starts
 with `accounts.json`. Then it reads only the global account, every 10
 minutes, while the rules are not `off`, and the others when the global one
-runs low.
+runs low. A call that moves a pane or switches the global account
+(`tmux::panes::account`, `tmux::accounts::global`, `move_idle`) reads the
+sign-in of the account it goes to, and that one alone.
 
 A 429 pauses an account's readings for 15 minutes; a 401 counts the sign-in
 as expired until its token changes (or the worker starts again); any other
