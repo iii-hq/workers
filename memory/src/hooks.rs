@@ -960,11 +960,10 @@ pub fn select(
     // a list lost.
     let past = kept.split_off(limit.min(kept.len()));
     let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
-    let Some(first) = kept
-        .first()
-        .map(|(m, _)| ev(m))
-        .filter(|first| on_words(first) && kept.iter().all(|(m, _)| same(ev(m), first)))
-    else {
+    // On all the question's words: the slot widens admission, never the list.
+    let Some(first) = kept.first().map(|(m, _)| ev(m)).filter(|first| {
+        on(&first.matched, first.terms) && kept.iter().all(|(m, _)| same(ev(m), first))
+    }) else {
         return kept;
     };
     if first.matched == ["user"] && first.of_me {
@@ -2686,6 +2685,33 @@ Formal."
             ..e
         };
         assert!(selected(vec![("fp-harbor", unread)], 6).is_empty());
+    }
+
+    /// A list carries on past `recall_limit` only on two or more of the
+    /// question's words: lines that each share the one word outside the slot
+    /// stand, but they keep the count.
+    #[tokio::test]
+    async fn one_word_outside_the_slot_keeps_the_count() {
+        let query = "In which region do we deploy?";
+        let words = crate::index::tokenize(query);
+        assert!(crate::query_projection::requested_slot(query, &words).is_some());
+        let rows: Vec<(String, String)> = [
+            "payments", "search", "ledger", "billing", "invoices", "gateway", "reports", "mailer",
+        ]
+        .iter()
+        .map(|s| {
+            (
+                format!("fp-{s}"),
+                format!("{s}-api deploy needs a green build."),
+            )
+        })
+        .collect();
+        let rows: Vec<(&str, &str, &[&str])> = rows
+            .iter()
+            .map(|(id, text)| (id.as_str(), text.as_str(), &[] as &[&str]))
+            .collect();
+        let told = told_ids(bank_of(&rows), query).await;
+        assert!(!told.is_empty() && told.len() <= 6, "{told:?}");
     }
 
     fn hook_input(context: Option<Value>) -> PreGenerateInput {
