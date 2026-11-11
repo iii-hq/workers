@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **Names are taken as written.** tmux 2.7 and later expand formats in session and window
+  names, so a `#` in a name given to `tmux::sessions::create`, `tmux::windows::create` or a
+  rename came out changed, and `#(…)` ran that command on the tmux server; `#` is now doubled
+  where (and only on the tmux versions where) it would be expanded.
+- **A session named like an id is never taken for another.** Names shaped like an id (`$2`,
+  `@3`, `%4`) are refused, and a call naming `$2` is refused in one sentence when `$2` is one
+  session's id and another's name (made outside this worker) instead of picking either.
+- **Refusals are one sentence.** tmux's `can't find pane: %9` (`can't find pane %9` before
+  3.0) and the like read `There is no pane %9.`, and a socket path stays out of the answer. A
+  missing pane is caught on tmux 3.4 and later too, where `display-message` answers for a
+  target it can't find instead of failing.
+- **Zooming works on tmux before 3.1**, which has no `select-pane -Z`, and a zoom another
+  client changed between the worker's read and its toggle is set again.
+- **Start directories are taken as written.** tmux expands formats in a start directory, so a
+  `cwd` with `#` in it opened `tmux::sessions::create` or `tmux::windows::create` somewhere
+  else, and one with `#(…)` ran that command on the tmux server.
 - **Kill session names its windows again.** The Console's confirm dialog lost its
   `details` list in the ADE redesign (#1528), which also broke the page's type-check and
   with it the worker's build. The Kill session confirmation now names the windows that
@@ -34,6 +50,28 @@
 
 ### Added
 
+- **Pasting a file into a Console terminal.** `tmux::terminal::upload` saves any file (at
+  most 12 MiB) in a new folder of its own under the user's cache folder
+  (`~/.cache/iii/tmux/uploads`, `~/Library/Caches/iii/tmux/uploads`), under its name made one
+  safe token, and answers its path, which the page pastes; it types nothing. A PNG, JPEG, GIF
+  or WebP gets the extension its content has. Only this user can read it; folders on the way
+  are never followed through a symbolic link, and a file is linked under its name only once
+  written whole. Uploads are kept 7 days and 256 MiB at most. Like the other terminal
+  functions it needs the terminal's key and cannot be observed.
+- **Keeping a pane whose program ended.** `remain_on_exit: true` on `tmux::sessions::create`,
+  `tmux::windows::create` and `tmux::panes::split` keeps the new pane, dead, once its program
+  ends (even at once), for `tmux::panes::respawn` to start again.
+- **Splitting, killing and restarting panes.** `tmux::panes::split` puts a new pane to the
+  right of a pane or below it, in that pane's current directory unless `cwd`, running
+  `command` or the default shell. `tmux::panes::kill` kills a pane and says whether its window
+  and session closed with it. `tmux::panes::respawn` starts a pane's program again; one still
+  running needs `kill: true`.
+- **Moving a window to another session.** `tmux::windows::move` moves a window, with its id,
+  panes and programs, after another session's last window, or just before or after one of its
+  windows (`before` / `after`, which also reorder a window inside its own session; tmux 3.2 or
+  later, an older tmux gets one sentence). The destination's current window stays as it
+  was. When the window was its session's last, tmux closes that session and the answer's
+  `source_session_closed` says so.
 - **Installing tmux from the worker.** `tmux::install` puts the tmux program on the
   computer in the background and `tmux::install::status` says how it is going: the
   system's package manager when this user may run it without a password, otherwise tmux's

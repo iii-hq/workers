@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -34,12 +35,13 @@ use crate::tmux_cli::{window_target, Tmux, WindowRef};
 
 mod output_buffer;
 pub mod protocol;
+pub mod upload;
 
 use output_buffer::OutputBuffer;
 use protocol::{
     CloseResponse, OkResponse, OpenRequest, OpenResponse, OutputEvent, Replay, ReplayRequest,
-    ResizeRequest, ResizeResponse, SwitchRequest, SwitchResponse, TerminalRef, WriteRequest,
-    WriteResponse,
+    ResizeRequest, ResizeResponse, SwitchRequest, SwitchResponse, TerminalRef, UploadRequest,
+    UploadResponse, WriteRequest, WriteResponse,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -108,6 +110,8 @@ pub struct TerminalManager {
     /// The engine's observe support (`IIIClient::engine_supports_observe`),
     /// which decides whether the payload's caller stamp may be read.
     engine_observes: Arc<dyn Fn() -> Option<bool> + Send + Sync>,
+    /// The cache folder uploads go under instead of this user's (tests).
+    upload_cache: Option<PathBuf>,
 }
 
 pub fn validate_output_function_id(function_id: &str) -> Result<(), String> {
@@ -241,7 +245,15 @@ impl TerminalManager {
             terminals: Arc::new(RwLock::new(HashMap::new())),
             on_change,
             engine_observes,
+            upload_cache: None,
         }
+    }
+
+    /// Uploads go under `cache` (`cache/iii/tmux/uploads`) instead of this
+    /// user's cache folder.
+    pub fn with_upload_cache(mut self, cache: PathBuf) -> Self {
+        self.upload_cache = Some(cache);
+        self
     }
 
     fn caller(&self, stamped: Option<&str>) -> Result<String, String> {
@@ -283,7 +295,7 @@ impl TerminalManager {
                 &window_target(&session_id, &WindowRef::Id(window_id)),
             ])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         }
 
         let (cols, rows) = (request.cols, request.rows);
@@ -485,6 +497,34 @@ impl TerminalManager {
         Ok(WriteResponse { written })
     }
 
+    /// Writes a file the page is pasting to a new folder of its own and
+    /// answers its path; the page pastes the path itself, nothing is typed
+    /// here.
+    pub async fn upload(&self, request: UploadRequest) -> Result<UploadResponse, String> {
+        self.authenticated(&request.terminal).await?;
+        let cache = match &self.upload_cache {
+            Some(cache) => cache.clone(),
+            None => upload::this_cache_folder()?,
+        };
+        let UploadRequest {
+            name, data, mime, ..
+        } = request;
+        // Decoding up to 16 MiB of base64 blocks as much as the disk does.
+        let saved = tokio::task::spawn_blocking(move || {
+            upload::save(&cache, &name, mime.as_deref(), &data)
+        })
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "upload task ended");
+            "The file could not be saved.".to_string()
+        })??;
+        Ok(UploadResponse {
+            path: saved.path.to_string_lossy().into_owned(),
+            bytes: saved.bytes,
+            mime: saved.mime,
+        })
+    }
+
     pub async fn resize(&self, request: ResizeRequest) -> Result<ResizeResponse, String> {
         validate_size(request.cols, request.rows)?;
         let terminal = self.authenticated(&request.terminal).await?;
@@ -528,7 +568,7 @@ impl TerminalManager {
         };
         tmux.run(["switch-client", "-c", tty, "-t", &session_id])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         if let Some(window_id) = window_id {
             tmux.run([
                 "select-window",
@@ -536,7 +576,7 @@ impl TerminalManager {
                 &window_target(&session_id, &WindowRef::Id(window_id)),
             ])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         }
         (self.on_change)();
         Ok(SwitchResponse { session_id })
@@ -558,7 +598,7 @@ impl TerminalManager {
         let tmux = self.collector.tmux().await?;
         tmux.run(["refresh-client", "-t", tty])
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.sentence())?;
         Ok(OkResponse { ok: true })
     }
 
@@ -627,8 +667,8 @@ impl TerminalManager {
 
 /// Registers one `tmux::terminal::*` function. None of them can be observed
 /// (`NOT_OBSERVABLE`): `open` returns the terminal's `access_key`, every other
-/// call carries it, and `write` carries the keystrokes typed into the
-/// terminal.
+/// call carries it, `write` carries the keystrokes typed into the terminal and
+/// `upload` the file being pasted.
 macro_rules! register_terminal_fn {
     ($iii:expr, $manager:expr, $id:expr, $desc:expr, $req:ty, $method:ident) => {{
         let manager = $manager.clone();
@@ -645,7 +685,7 @@ macro_rules! register_terminal_fn {
     }};
 }
 
-pub const FUNCTIONS: [(&str, &str); 7] = [
+pub const FUNCTIONS: [(&str, &str); 8] = [
     ("tmux::terminal::open", "Attach a console terminal to a tmux session as a real tmux client running in a PTY. Output is pushed to the page's handler."),
     ("tmux::terminal::write", "Write base64 keyboard input to a console terminal's tmux client."),
     ("tmux::terminal::resize", "Resize a console terminal; also its heartbeat."),
@@ -653,6 +693,7 @@ pub const FUNCTIONS: [(&str, &str); 7] = [
     ("tmux::terminal::replay", "Re-send buffered output frames after a sequence, for gap repair."),
     ("tmux::terminal::redraw", "Ask tmux to repaint the console terminal's whole screen (refresh-client)."),
     ("tmux::terminal::close", "Detach a console terminal's tmux client. The session keeps running."),
+    ("tmux::terminal::upload", "Save a file being pasted into a console terminal (any type, base64, at most 12 MiB) in a new folder of its own in the cache folder of the user this worker runs as, under its name made safe, and answer its path for the page to paste. It types nothing; uploads older than 7 days, and the oldest past 256 MiB, are removed."),
 ];
 
 pub fn register(iii: &IIIClient, manager: TerminalManager) {
@@ -711,6 +752,14 @@ pub fn register(iii: &IIIClient, manager: TerminalManager) {
         FUNCTIONS[6].1,
         TerminalRef,
         close
+    );
+    register_terminal_fn!(
+        iii,
+        manager,
+        FUNCTIONS[7].0,
+        FUNCTIONS[7].1,
+        UploadRequest,
+        upload
     );
 }
 
@@ -856,6 +905,7 @@ mod tests {
             path: "/usr/bin/tmux".into(),
             socket: Socket::Name("work".into()),
             timeout: Duration::from_secs(1),
+            version: "3.6".into(),
         };
         assert_eq!(
             attach_args(&tmux, "$3"),

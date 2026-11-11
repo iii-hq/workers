@@ -332,8 +332,9 @@ export function compactRequest(fields: Record<string, string | boolean | undefin
 }
 
 /**
- * A fetch and a push race; the snapshot generated later wins, so a slow
- * `list` response can never paint over a newer `tmux::on-changed` event.
+ * A fetch and a push race, and pushes can arrive out of order too (iii doesn't
+ * order deliveries across calls); the snapshot generated later wins, so a slow
+ * `list` response or a late push can never paint over a newer overview.
  */
 export function newerSnapshot<T extends { generated_at_ms: number }>(current: T | null, next: T): T {
   if (current && next.generated_at_ms < current.generated_at_ms) return current

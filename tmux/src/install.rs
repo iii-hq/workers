@@ -1329,11 +1329,24 @@ fn write_new_file(
     path: &Path,
     write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
 ) -> std::io::Result<bool> {
-    let temp =
-        TempFile(path.with_file_name(format!("{TEMP_PREFIX}{}", uuid::Uuid::new_v4().simple())));
+    let temp = format!("{TEMP_PREFIX}{}", uuid::Uuid::new_v4().simple());
+    write_new_file_with(path, &temp, 0o666, write)
+}
+
+/// [`write_new_file`] through a temporary file next to `path` named
+/// `temp_name` and made with `mode` (before the umask), for a caller that
+/// sweeps its own leftovers (uploads: `.upload-…`, 0600).
+pub(crate) fn write_new_file_with(
+    path: &Path,
+    temp_name: &str,
+    mode: u32,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<bool> {
+    let temp = TempFile(path.with_file_name(temp_name));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(mode)
         .open(&temp.0)?;
     write(&mut file)?;
     file.sync_all()?;
@@ -1477,6 +1490,7 @@ fn check_server(path: &Path) -> Tmux {
         path: path.to_path_buf(),
         socket: Socket::Name(format!("iii-check-{}", &name[..8])),
         timeout: START_CHECK_LIMIT,
+        version: String::new(),
     }
 }
 

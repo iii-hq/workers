@@ -135,7 +135,18 @@ impl Collector {
             path: resolved.path,
             socket: Socket::from_config(&config),
             timeout: Duration::from_millis(config.command_timeout_ms),
+            version: resolved.version,
         })
+    }
+
+    /// The resolved tmux's version as `-V` printed it (`3.6`, `next-3.7`).
+    pub async fn tmux_version(&self) -> Option<String> {
+        let config = self.config();
+        self.binary
+            .get(&config.tmux_binary)
+            .await
+            .ok()
+            .map(|resolved| resolved.version)
     }
 
     /// Forget what is known and look for tmux again: an install just changed
@@ -161,6 +172,7 @@ impl Collector {
             path: resolved.path.clone(),
             socket: Socket::from_config(&config),
             timeout: Duration::from_millis(config.command_timeout_ms),
+            version: resolved.version.clone(),
         };
         let mut info = TmuxInfo {
             available: true,

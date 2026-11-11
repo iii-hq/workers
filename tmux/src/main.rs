@@ -131,6 +131,17 @@ async fn main() -> Result<()> {
         poke,
         engine_observes,
     );
+    // Files pasted into a terminal more than a week ago, and the oldest past
+    // the budget; each upload sweeps too.
+    tokio::task::spawn_blocking(|| {
+        let swept = terminal::upload::this_cache_folder()
+            .and_then(|cache| terminal::upload::sweep_at_start(&cache));
+        match swept {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "old uploads removed"),
+            Err(reason) => tracing::warn!(%reason, "uploads not swept"),
+        }
+    });
 
     functions::register_all(
         &iii,

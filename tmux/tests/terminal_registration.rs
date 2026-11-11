@@ -1,7 +1,7 @@
 //! `tmux::terminal::*` against a scripted engine: every Console terminal
 //! function registers with `observable: false`, since `open` returns the
-//! terminal's access key, every other call carries it, and `write` carries
-//! the keystrokes.
+//! terminal's access key, every other call carries it, `write` carries the
+//! keystrokes and `upload` the file being pasted.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -73,6 +73,9 @@ async fn console_terminal_functions_cannot_be_observed() {
     terminal::register(&iii, manager);
 
     let expected: Vec<&str> = terminal::FUNCTIONS.iter().map(|(id, _)| *id).collect();
+    // It carries the image the person pastes, like write carries keystrokes.
+    assert!(expected.contains(&"tmux::terminal::upload"));
+    assert!(!expected.contains(&"tmux::terminal::upload-image"));
     let mut registrations = BTreeMap::new();
     tokio::time::timeout(Duration::from_secs(10), async {
         while registrations.len() < expected.len() {

@@ -1,5 +1,5 @@
 {
-  "description": "Create a window in a tmux session. Optional name, working directory (default: the directory the session was created in), a shell command to run instead of the default shell, and whether to make it the current window (default true).",
+  "description": "Create a window in a tmux session. Optional name, working directory (default: the directory the session was created in), a shell command to run instead of the default shell, and whether to make it the current window (default true). With remain_on_exit, its pane stays once its program ends, dead, for tmux::panes::respawn to restart it.",
   "function_id": "tmux::windows::create",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -14,7 +14,7 @@
       },
       "cwd": {
         "default": null,
-        "description": "Working directory, absolute or `~/…`. Defaults to the directory the session was created in.",
+        "description": "Working directory, absolute or `~/…`. Defaults to the directory the session was created in (the home folder on tmux older than 3.2, which can't tell).",
         "type": [
           "string",
           "null"
@@ -27,6 +27,11 @@
           "string",
           "null"
         ]
+      },
+      "remain_on_exit": {
+        "default": false,
+        "description": "Keep its pane once its program ends, shown dead, so tmux::panes::respawn can restart it (default false: tmux closes it). On tmux before 3.0, which has no pane options, every pane of the window is kept.",
+        "type": "boolean"
       },
       "select": {
         "default": null,

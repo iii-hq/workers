@@ -81,6 +81,10 @@ impl Monitor {
     }
 
     /// One call of [`ON_CHANGED_FN`]; iii delivers it to every observer.
+    /// Calls go out one after another, but iii doesn't order deliveries
+    /// across calls: two overviews sent milliseconds apart can arrive the
+    /// other way round. Observers keep the highest `generated_at_ms` (the
+    /// Console page's `newerSnapshot`), as the README says.
     async fn emit(&self, payload: Value) {
         let request = CallRequest {
             function_id: ON_CHANGED_FN.to_string(),
