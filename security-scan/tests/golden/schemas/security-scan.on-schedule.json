@@ -120,7 +120,7 @@
         "type": "object"
       }
     },
-    "description": "What an observer's target receives with the default `deliver: envelope`: the observed call, per the observer's `capture`.\n\n```rust,no_run # use iii_sdk::{Error, IIIClient, Observed, RegisterFunction}; # use serde_json::Value; # fn demo(iii: &IIIClient) { iii.register_function( \"alerts::payment-failed\", RegisterFunction::new(|event: Observed<Value>| { println!(\"{} failed: {:?}\", event.function_id, event.error); Ok::<_, Error>(()) }), ); # } ```",
+    "description": "What an observer's target receives when iii delivers: the observed call, per the observer's `capture`.\n\n```rust,no_run # use iii_sdk::{Error, IIIClient, Observed, RegisterFunction}; # use serde_json::Value; # fn demo(iii: &IIIClient) { iii.register_function( \"alerts::payment-failed\", RegisterFunction::new(|event: Observed<Value>| { println!(\"{} failed: {:?}\", event.function_id, event.error); Ok::<_, Error>(()) }), ); # } ```",
     "properties": {
       "activation_id": {
         "type": "string"

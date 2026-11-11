@@ -289,9 +289,10 @@ pub struct GuestObserveSource {
     /// `output`, `error`, `caller`, `metadata`). Unset: the engine default.
     #[serde(default)]
     pub capture: Option<Vec<GuestCapture>>,
-    /// Deprecated: the pre-0.26 delivery mode. Still forwarded to the engine
-    /// as the legacy source field, which the engine translates; use
-    /// `capture` and read `payload.output` / `payload.input` instead.
+    /// Removed in 0.26: the pre-0.26 delivery mode. Parsed only so the
+    /// runtime refuses it with an error naming `capture`, as the 0.26 SDKs
+    /// refuse `source.deliver`; use `capture` and read `payload.output` /
+    /// `payload.input` instead.
     #[serde(default)]
     pub deliver: Option<GuestDeliver>,
 }
@@ -307,7 +308,8 @@ pub enum GuestCapture {
     Metadata,
 }
 
-/// Deprecated legacy delivery mode (see [`GuestObserveSource::deliver`]).
+/// Removed legacy delivery mode, parsed to be refused (see
+/// [`GuestObserveSource::deliver`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuestDeliver {

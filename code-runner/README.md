@@ -112,8 +112,8 @@ Code you run gets a global `iii`:
   `output`, `error`, `caller` and `metadata`, and `capture` lists which of
   those travel to `target` in its envelope (default `['input', 'output',
   'caller']`; read `payload.output` / `payload.input`). The pre-0.26
-  `deliver` is deprecated: it is still forwarded to the engine, which
-  translates it, and logs a warning naming `capture`. `opts` takes
+  `deliver` was removed: an observe that sets it is refused with
+  `INVALID_ARGS`, naming `capture`, as the 0.26 SDKs refuse it. `opts` takes
   `id` (inside this runtime's namespace), `metadata`, `max_fires`,
   `expires_in_ms` and `max_in_flight`. Resolves to `{ id, dispose() }`; the
   observer stays pending until `source` is registered and accepts it.
@@ -151,7 +151,7 @@ iii.onObserverAdded('app::on-order', (obs) => {
 
 // elsewhere, observe it: every order whose total is at least 500. app::alert
 // receives the Observed envelope with the order at `output`. (A guest `deliver`
-// is deprecated: it is still forwarded, with a warning naming `capture`.)
+// was removed: it is refused, naming `capture`.)
 await iii.observe(
   { function_id: 'app::on-order', filters: { 'input.total': { $gte: 500 } }, capture: ['output'] },
   'app::alert',

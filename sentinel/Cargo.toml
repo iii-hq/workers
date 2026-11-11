@@ -21,8 +21,8 @@ clap = { version = "4", features = ["derive", "env"] }
 cron = "0.12"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
-iii-helpers = "=0.26.0-rc.5"
-iii-sdk = "=0.26.0-rc.5"
+iii-helpers = "=0.26.0"
+iii-sdk = "=0.26.0"
 libc = "=0.2.189"
 regex = "1"
 schemars = "0.8"
@@ -45,7 +45,7 @@ uuid = { version = "1", features = ["v7"] }
 [dev-dependencies]
 # The same driver the `database` worker runs SQLite on, so the store's
 # statements are tested against the engine they will actually meet.
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # The same statements against Postgres, when `SENTINEL_TEST_POSTGRES_URL`
 # names one (see tests/support/postgres.rs).
 tokio-postgres = "0.7"

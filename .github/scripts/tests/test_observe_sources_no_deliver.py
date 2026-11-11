@@ -34,13 +34,13 @@ PATTERNS[".tsx"] = PATTERNS[".mjs"] = PATTERNS[".js"] = PATTERNS[".ts"]
 # field, and validators of what a client sends. Each entry says why.
 ALLOWED: dict[str, str] = {
     "code-runner/src/node_bus.rs": (
-        "forwards a guest JS observe `deliver` (deprecated) to the engine as the "
-        "legacy source field, which the 0.26 engine translates, with a warning "
-        "naming `capture`; it creates no `deliver` observer of its own"
+        "refuses a guest JS observe `deliver` (removed in 0.26) with INVALID_ARGS "
+        "naming `capture`, as the 0.26 SDKs do; it creates no `deliver` observer "
+        "of its own"
     ),
     "crates/node-core/src/engine.rs": (
-        "defines and parses GuestDeliver, the deprecated guest JS `deliver` that "
-        "code-runner forwards as the legacy source field"
+        "defines and parses GuestDeliver, the removed guest JS `deliver` that "
+        "code-runner refuses with an error naming `capture`"
     ),
     "rbac-proxy/src/interceptor.rs": (
         "reads `source.deliver` from client observe frames it proxies; it is a "
