@@ -270,9 +270,12 @@ A new state directory brings a new `state.json` and a new project token: the
 old VMs' records stop counting, and nothing gets S505. A VM whose `state_key`
 changes while its project token survives leaves its record behind: the same
 `state.json` reached through another spelling of `III_COMPOSE_STATE_DIR`, or
-state moved or copied together with its token. The new VM then gets S505 on its
-own build directory, and the message names the way out: destroy the old VM, or
-delete its `build-dir`.
+state moved or copied together with its token to another
+`III_COMPOSE_STATE_DIR`, while the compose file, and so the container's build
+directory, stays where it is. The new VM then gets S505 on its own build
+directory, and the message names the way out: destroy the old VM, or delete its
+`build-dir`. Moving or copying the whole project changes the build directory
+too, and nothing gets S505.
 
 Publishing an image assumes one writer per `output_dir` at a time. One VM
 builds once at a time (S509), but nothing serializes two VMs that share a

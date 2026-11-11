@@ -43,11 +43,14 @@ start.
   beside the compose file in every namespace, and records count only under
   their own token), and, on a filesystem that cannot flush a directory, a
   record a power failure lost.
-- A VM whose `state_key` changes while its project token survives (the same
-  `state.json` through another spelling of `III_COMPOSE_STATE_DIR`, or state
-  moved or copied with its token) leaves its record behind: the new VM gets
-  S505 on its own build directory until the old VM is destroyed or its
-  `build-dir` deleted, as the message says. A new state directory brings a new
+- A VM whose `state_key` changes while its project token survives leaves its
+  record behind: the same `state.json` through another spelling of
+  `III_COMPOSE_STATE_DIR`, or state moved or copied with its token to another
+  `III_COMPOSE_STATE_DIR`, while the compose file, and so the container's build
+  directory, stays where it is. The new VM then gets S505 on its own build
+  directory until the old VM is destroyed or its `build-dir` deleted, as the
+  message says. Moving or copying the whole project changes the build
+  directory too, and nothing gets S505; a new state directory brings a new
   token, and the old records stop counting.
 - Where the filesystem cannot lock a directory (NFS), claims are serialized
   within one adapter process only, with a warning.
