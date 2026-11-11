@@ -1,63 +1,75 @@
 /**
- * The chrome both catalogue pages share, arranged like the directory page:
- * a fixed navigation sidebar (search, filters, grouped rows) and a main
- * workspace that is ALWAYS rendered — a hero empty state when nothing is
- * selected, the document view (breadcrumb → identity head → tabs) when
- * something is.
+ * The chrome both catalogue pages share. The bar is Linear's list density
+ * and Vercel's document surfaces:
  *
- * Page chrome comes from `@iii-dev/console-ui` (PageShell/PageBody/
- * PageSidebar/PageMain — the console's own layout system, zero bytes in
- * this bundle); everything else is a scoped class in ../../styles.css.
+ * - the list is single-line 32px rows; an id reads as `ns::` (faint) +
+ *   the rest (ink), with a live dot and a quiet trailing meta — the
+ *   description lives in the row's tooltip and the document, not in a
+ *   truncated second line repeated 400 times;
+ * - nested rows (an observer under its function) hang off an indent guide;
+ * - the document is a centred column: ringed tile, title, description, a
+ *   stat strip (label over value), line tabs, then outlined cards.
  *
- * Every list row leads with a glyph tile so the list reads as WHAT it is
- * at a glance: `ƒ` for functions, a family icon (globe, clock, layers…)
- * for observers. The same tiles reappear scaled up in the identity head and
- * the hero, so the sidebar and the workspace visibly describe one thing.
+ * Page chrome comes from `@iii-dev/console-ui`; everything else is a scoped
+ * class in ../../styles.css.
  */
 
 import {
-  Badge,
   Button,
-  Chip as UiChip,
-  Eyebrow,
   IconButton,
   PageBody,
   PageMain,
   PageShell,
   PageSidebar,
+  ShadcnButton,
+  ShadcnDropdownMenu,
+  ShadcnDropdownMenuCheckboxItem,
+  ShadcnDropdownMenuContent,
+  ShadcnDropdownMenuGroup,
+  ShadcnDropdownMenuItem,
+  ShadcnDropdownMenuLabel,
+  ShadcnDropdownMenuSeparator,
+  ShadcnDropdownMenuTrigger,
   Skeleton,
   StatusDot,
   StatusPanel,
-  uiClasses,
+  Switch,
 } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import {
   ArrowLeft,
-  ArrowRight,
   Check,
+  ChevronDown,
   ChevronRight,
   Clock,
   Copy,
   Database,
+  Ellipsis,
   FileText,
   Globe,
   Layers,
   Rows3,
+  SquareTerminal,
   Waves,
   Webhook,
   Zap,
 } from 'lucide-react'
-import { Fragment, type ReactNode, useCallback, useState } from 'react'
+import {
+  type FocusEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react'
 import type { Family, Tone } from './observer-kinds'
 
 /**
  * Open/closed state for collapsible groups, stored as the set of ids whose
- * state is FLIPPED from the default. Storing flips rather than open ids
- * keeps a list that grows (a worker connects, a new group appears) honest:
- * the newcomer follows the default instead of arriving collapsed.
- *
- * The default is a predicate because the pages disagree: function groups
- * always open, observed functions open only when something observes them.
+ * state is FLIPPED from the default, so a group that appears later follows
+ * the default instead of arriving collapsed.
  */
 export function useGroupToggle(defaultOpen: (id: string) => boolean) {
   const [flipped, setFlipped] = useState<ReadonlySet<string>>(new Set())
@@ -69,65 +81,131 @@ export function useGroupToggle(defaultOpen: (id: string) => boolean) {
       return next
     })
   }, [])
-  const isOpen = (id: string) =>
-    flipped.has(id) ? !defaultOpen(id) : defaultOpen(id)
+  const isOpen = (id: string) => (flipped.has(id) ? !defaultOpen(id) : defaultOpen(id))
   return { isOpen, toggle }
 }
 
+const LIST_STOPS = '.console-catalog-row, .console-catalog-group'
+
 /**
- * The catalogue page frame: header, the live now-strip, then sidebar |
- * main. `hasSelection` rides on PageBody as a data attribute so the
- * narrow-container styles can drill in (list OR document, never a squeeze)
- * — the pane, not the viewport, decides.
+ * The list as one tab stop (roving tabindex): Tab enters on the selected
+ * row and leaves again, instead of walking 400 rows. ↑ ↓ Home End move
+ * between rows; → opens a folded group or function, ← folds it.
+ */
+function useListKeys() {
+  const ref = useRef<HTMLDivElement>(null)
+  // Runs after every render: rows come and go with the live catalogue.
+  useEffect(() => {
+    const root = ref.current
+    if (!root) return
+    const stops = [...root.querySelectorAll<HTMLElement>(LIST_STOPS)]
+    const current =
+      stops.find((stop) => stop === document.activeElement) ??
+      stops.find((stop) => stop.getAttribute('aria-current') === 'true') ??
+      stops.find((stop) => stop.tabIndex === 0) ??
+      stops[0]
+    for (const stop of stops) {
+      const next = stop === current ? 0 : -1
+      if (stop.tabIndex !== next) stop.tabIndex = next
+    }
+  })
+  const onFocus = (event: FocusEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement
+    if (!target.matches(LIST_STOPS)) return
+    for (const stop of event.currentTarget.querySelectorAll<HTMLElement>(LIST_STOPS)) {
+      stop.tabIndex = stop === target ? 0 : -1
+    }
+  }
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement
+    if (!target.matches(LIST_STOPS)) return
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      // A nested row has nothing to fold: ← goes up to its function row
+      // (the tree pattern), so focus is never lost to a folded group.
+      if (target.matches('[data-nested]')) {
+        if (event.key === 'ArrowLeft') {
+          target.parentElement?.querySelector<HTMLElement>('.console-catalog-row[data-tree]')?.focus()
+          event.preventDefault()
+        }
+        return
+      }
+      // A group head folds itself; a function row folds through its twist.
+      const toggle = target.matches('.console-catalog-group')
+        ? target
+        : target.parentElement?.querySelector<HTMLElement>('.console-catalog-twist')
+      if (!toggle) return
+      const open = toggle.getAttribute('aria-expanded') === 'true'
+      if (open !== (event.key === 'ArrowRight')) toggle.click()
+      event.preventDefault()
+      return
+    }
+    const stops = [...event.currentTarget.querySelectorAll<HTMLElement>(LIST_STOPS)]
+    const at = stops.indexOf(target)
+    const next =
+      event.key === 'ArrowDown'
+        ? stops[at + 1]
+        : event.key === 'ArrowUp'
+          ? stops[at - 1]
+          : event.key === 'Home'
+            ? stops[0]
+            : event.key === 'End'
+              ? stops.at(-1)
+              : undefined
+    if (!next) return
+    event.preventDefault()
+    next.focus()
+  }
+  return { ref, onFocus, onKeyDown }
+}
+
+/**
+ * The catalogue page frame: header, then sidebar | main. `hasSelection`
+ * rides on PageBody so narrow panes drill in (list OR document).
  */
 export function CatalogShell({
   header,
-  strip,
-  sideTop,
+  search,
+  filters,
   list,
   sideFooter,
   main,
   side,
+  label,
   hasSelection,
 }: {
   header: ReactNode
-  /** The full-width live strip between header and columns. */
-  strip?: ReactNode
-  /** Sidebar top block: search, filters, the count line. */
-  sideTop: ReactNode
-  /** The scrolling group/row list (plumbing footer included). */
+  /** The sidebar's top row, beside the collapse toggle. */
+  search: ReactNode
+  /** A quiet row under the search: a switch, a filter menu. */
+  filters?: ReactNode
   list: ReactNode
-  /** A persistent catalogue summary below the scrolling list. */
   sideFooter?: ReactNode
-  /** The workspace: a hero when nothing is selected, else the document. */
   main: ReactNode
-  /** The hosting pane's side (`PageRenderProps.panelSide`). */
   side?: 'left' | 'right'
+  /** Accessible name of the navigation column. */
+  label: string
   hasSelection: boolean
 }) {
+  const listKeys = useListKeys()
   return (
     <PageShell className="console-catalog">
       {header}
-      {strip ? <div className="console-catalog-strip">{strip}</div> : null}
-      <PageBody
-        side={side}
-        className="console-catalog-body"
-        data-selected={hasSelection}
-      >
+      <PageBody side={side} className="console-catalog-body" data-selected={hasSelection}>
         <PageSidebar
-          label="catalog"
+          label={label}
+          header={<div className="console-catalog-side-head">{search}</div>}
           side={side}
-          defaultWidth={320}
+          defaultWidth={300}
           collapsible
           storageKey="console:catalog"
           narrowBelow={700}
           className="console-catalog-side"
         >
-          <div className="console-catalog-side-top">{sideTop}</div>
-          <div className="console-catalog-side-scroll">{list}</div>
-          {sideFooter ? (
-            <div className="console-catalog-side-footer">{sideFooter}</div>
-          ) : null}
+          {filters ? <div className="console-catalog-side-filters">{filters}</div> : null}
+          <div className="console-catalog-side-scroll" {...listKeys}>
+            {list}
+          </div>
+          {sideFooter ? <div className="console-catalog-side-footer">{sideFooter}</div> : null}
         </PageSidebar>
         <PageMain className="console-catalog-main">{main}</PageMain>
       </PageBody>
@@ -135,7 +213,7 @@ export function CatalogShell({
   )
 }
 
-/** The quiet count line under the search box. */
+/** The quiet count line at the foot of the list. */
 export function SideCount({ children }: { children: ReactNode }) {
   return (
     <div className="console-catalog-count" aria-live="polite">
@@ -144,288 +222,400 @@ export function SideCount({ children }: { children: ReactNode }) {
   )
 }
 
+/** A compact labelled switch: `Internal`. */
+export function SwitchRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (next: boolean) => void
+}) {
+  const id = useId()
+  return (
+    <div className="console-catalog-switch">
+      <label htmlFor={id}>{label}</label>
+      <Switch id={id} checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    </div>
+  )
+}
+
 /**
- * One chip per family that actually has entries, plus `all`. Families with
- * nothing registered are not rendered: an empty filter is a dead control.
+ * One trigger, one menu: `Family · All ▾`. Single choice, drawn as
+ * checkboxes (the console never draws radio circles); families with no
+ * entries are not offered.
  */
-export function FilterChips<T extends string>({
+export function FamilyFilter<T extends string>({
   counts,
   selected,
   onSelect,
+  nameOf,
 }: {
   counts: ReadonlyMap<T, number>
   selected: T | null
   onSelect: (next: T | null) => void
+  nameOf: (key: T) => string
 }) {
-  const entries = [...counts.entries()].filter(([, n]) => n > 0).sort()
+  const entries = [...counts.entries()]
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1] || nameOf(a[0]).localeCompare(nameOf(b[0])))
   if (entries.length < 2) return null
   const total = entries.reduce((n, [, count]) => n + count, 0)
   return (
-    <div className="console-catalog-filters">
-      <button
-        type="button"
-        className={`${uiClasses.chip} console-catalog-filter`}
-        data-selected={selected === null}
-        aria-pressed={selected === null}
-        onClick={() => onSelect(null)}
-      >
-        all <span className="count">{total}</span>
-      </button>
-      {entries.map(([key, count]) => (
-        <button
-          key={key}
-          type="button"
-          className={`${uiClasses.chip} console-catalog-filter`}
-          data-selected={selected === key}
-          aria-pressed={selected === key}
-          onClick={() => onSelect(selected === key ? null : key)}
-        >
-          {key} <span className="count">{count}</span>
-        </button>
-      ))}
-    </div>
+    <ShadcnDropdownMenu>
+      <ShadcnDropdownMenuTrigger
+        render={
+          <button type="button" className="console-catalog-filter" data-active={selected !== null || undefined}>
+            <span className="k">Family</span>
+            <span className="v">{selected ? nameOf(selected) : 'All'}</span>
+            <ChevronDown aria-hidden />
+          </button>
+        }
+      />
+      <ShadcnDropdownMenuContent align="start" sideOffset={6} className="console-catalog-menu">
+        <ShadcnDropdownMenuGroup>
+          <ShadcnDropdownMenuLabel>Choose one</ShadcnDropdownMenuLabel>
+          <ShadcnDropdownMenuCheckboxItem checked={selected === null} onCheckedChange={() => onSelect(null)}>
+            All
+            <span className="menu-count">{total}</span>
+          </ShadcnDropdownMenuCheckboxItem>
+          {entries.map(([key, count]) => (
+            <ShadcnDropdownMenuCheckboxItem
+              key={key}
+              checked={selected === key}
+              onCheckedChange={() => onSelect(selected === key ? null : key)}
+            >
+              {nameOf(key)}
+              <span className="menu-count">{count}</span>
+            </ShadcnDropdownMenuCheckboxItem>
+          ))}
+        </ShadcnDropdownMenuGroup>
+      </ShadcnDropdownMenuContent>
+    </ShadcnDropdownMenu>
   )
 }
 
-/** A labelled fact in the detail pane: next run, method, topic, status. */
-export function StatTile({
-  label,
-  value,
-  hint,
-  tone,
-}: {
-  label: string
-  value: string
-  hint?: string
-  tone?: 'ok' | 'warn' | 'alert'
-}) {
-  return (
-    <div className="console-catalog-tile">
-      <Eyebrow>{label}</Eyebrow>
-      <span className="value" data-tone={tone}>
-        {value}
-      </span>
-      {hint ? <span className="hint">{hint}</span> : null}
-    </div>
-  )
-}
-
-/**
- * The "this page is live" marker. Every catalogue page here is driven by an
- * engine signal rather than a timer, and the operator deserves to know that
- * without reading the source.
- */
+/** "This page is live": every catalogue page follows engine signals. */
 export function LiveDot() {
   return (
-    <span
-      className="console-catalog-live"
-      title="catalog updates live from the engine"
-      role="status"
-      aria-label="catalog updates live"
-    >
-      <StatusDot tone="accent" />
+    <span className="console-catalog-live" title="Updates live from the engine" role="status" aria-label="Updates live">
+      <span className="pip" aria-hidden />
       Live
     </span>
   )
 }
 
-/** The icon-only copy action: a check for two seconds once it lands. */
-export function CopyIconButton({
-  value,
-  label,
-}: {
-  value: string
-  label: string
-}) {
+/**
+ * Icon-only copy. Both glyphs stay mounted and cross-fade (scale, blur,
+ * opacity), so the swap reads as one control changing state.
+ */
+export function CopyIconButton({ value, label }: { value: string; label: string }) {
   const { state, copy } = useCopyFlash(value, 2000)
+  const copied = state === 'copied'
   return (
     <IconButton
       type="button"
-      label={state === 'copied' ? 'Copied' : label}
+      label={copied ? 'Copied' : label}
       onClick={copy}
+      className="console-catalog-copy"
+      data-copied={copied}
     >
-      {state === 'copied' ? <Check /> : <Copy />}
+      <span className="console-catalog-swap" aria-hidden>
+        <Copy className="from" />
+        <Check className="to" />
+      </span>
     </IconButton>
   )
 }
 
-/** Copy-to-clipboard with the two-second confirmation the old console had. */
-export function CopyButton({
-  value,
-  label = 'copy',
-  title,
-}: {
-  value: string
-  label?: string
-  title?: string
-}) {
+/** Copy with a label; says `Copied` for two seconds once it lands. */
+export function CopyButton({ value, label = 'Copy', title }: { value: string; label?: string; title?: string }) {
   const { state, copy } = useCopyFlash(value, 2000)
   return (
-    <Button variant="pill" size="sm" type="button" title={title} onClick={copy}>
-      {state === 'copied' ? 'copied' : label}
+    <Button variant="secondary" size="sm" type="button" title={title} onClick={copy} className="console-catalog-btn">
+      {state === 'copied' ? <Check aria-hidden /> : <Copy aria-hidden />}
+      {state === 'copied' ? 'Copied' : label}
     </Button>
   )
 }
 
+/** `⌘↵` / `Ctrl ↵` as quiet text inside a button: no keycaps. */
+export function ShortcutHint({ keys }: { keys: 'enter' }) {
+  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+  const text = keys === 'enter' ? (mac ? '⌘↵' : 'Ctrl ↵') : ''
+  return (
+    <span className="console-catalog-shortcut" aria-hidden>
+      {text}
+    </span>
+  )
+}
+
 /**
- * A collapsible group heading. The chevron is its own button so the label
- * can be a second, independent target: the observers page selects the
- * observed FUNCTION by its heading (no phantom "source detail" row), the
- * functions page just toggles.
+ * A code window: a slim title bar (language glyph + name, copy trailing),
+ * then the code in a well. The code never wraps mid-token; a long line
+ * scrolls sideways instead.
+ */
+export function CodeBlock({
+  label,
+  icon,
+  children,
+  copy,
+  copyLabel,
+}: {
+  /** The language, as a terminal or editor tab names it: `bash`, `json`. */
+  label: string
+  icon?: ReactNode
+  children: ReactNode
+  copy: string
+  copyLabel: string
+}) {
+  return (
+    <figure className="console-catalog-snippet">
+      <figcaption>
+        <span className="snippet-lang">
+          {icon}
+          {label}
+        </span>
+        <CopyIconButton value={copy} label={copyLabel} />
+      </figcaption>
+      <div className="snippet-body">{children}</div>
+    </figure>
+  )
+}
+
+/**
+ * Edge fades for a sideways scroller, so a line cut off by the card shows
+ * that it goes on: `data-more` is `end`, `start`, `both` or absent.
+ */
+function useScrollEdges<T extends HTMLElement>() {
+  const ref = useRef<T>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () => {
+      // RTL scrolls negative; compare magnitudes.
+      const left = Math.abs(el.scrollLeft)
+      const room = el.scrollWidth - el.clientWidth
+      const start = left > 1
+      const end = left < room - 1
+      const next = start && end ? 'both' : start ? 'start' : end ? 'end' : ''
+      if (next) el.dataset.more = next
+      else delete el.dataset.more
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => {
+      el.removeEventListener('scroll', update)
+      observer.disconnect()
+    }
+  })
+  return ref
+}
+
+/**
+ * An `iii call` as one bash line, in the Vesper (dark) and Min Light
+ * (light) palettes. It never wraps: the card keeps its width and the line
+ * scrolls sideways, with a fade on whichever edge hides more. The `$` is
+ * decoration — never selected, never copied — and the copy is the command.
+ */
+export function TerminalSnippet({
+  functionId,
+  args,
+  copy,
+}: {
+  functionId: string
+  args: readonly { key: string; value: string; kind: string }[]
+  copy: string
+}) {
+  const scroller = useScrollEdges<HTMLElement>()
+  return (
+    <CodeBlock label="bash" icon={<SquareTerminal aria-hidden />} copy={copy} copyLabel="Copy command">
+      {/* The section is the scroller: a scrollable region needs a tab stop
+          (WCAG 2.1.1) and a name. */}
+      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-scrollable */}
+      <section ref={scroller} className="snippet-code" data-lang="bash" tabIndex={0} aria-label={`Command: ${copy}`}>
+        <pre>
+          <code>
+            <span className="sh-prompt" aria-hidden>
+              $
+            </span>
+            <span className="sh-cmd">iii</span> <span className="sh-word">call</span>{' '}
+            <span className="sh-word">{functionId}</span>
+            {args.map((a) => (
+              <span key={a.key || a.value}>
+                {' '}
+                {a.key ? (
+                  <>
+                    <span className="sh-key">{a.key}</span>
+                    <span className="sh-op">=</span>
+                  </>
+                ) : null}
+                <span className="sh-value" data-kind={a.kind}>
+                  {a.value}
+                </span>
+              </span>
+            ))}
+          </code>
+        </pre>
+      </section>
+    </CodeBlock>
+  )
+}
+
+/** `ade::compose::container` → faint `ade::` + ink `compose::container`. */
+export function IdText({ id }: { id: string }) {
+  const cut = id.indexOf('::')
+  if (cut <= 0) return <span className="id-rest">{id}</span>
+  return (
+    <>
+      <span className="id-ns">{id.slice(0, cut + 2)}</span>
+      <span className="id-rest">{id.slice(cut + 2)}</span>
+    </>
+  )
+}
+
+/**
+ * A quiet group heading: chevron, name, a fine meta word, the count
+ * trailing. Sticky, so the worker stays named while you scroll.
  */
 export function GroupHeader({
   label,
   meta,
   count,
-  countLabel,
   open,
   onToggle,
-  onSelect,
-  selected,
-  tone,
-  toneLabel,
-  collapsible = true,
 }: {
   label: string
   meta?: string
   count?: number
-  countLabel?: string
   open: boolean
   onToggle: () => void
-  /** Clicking the label selects the group's own detail (observed functions). */
-  onSelect?: () => void
-  selected?: boolean
-  /** Family color for the leading tag, when the page groups by family. */
-  tone?: string
-  toneLabel?: string
-  /** A function nobody observes has nothing to disclose. */
-  collapsible?: boolean
 }) {
-  const countText = count === undefined ? null : String(count)
-  const countTitle =
-    count === undefined
-      ? undefined
-      : `${count} ${countLabel ?? 'item'}${count === 1 ? '' : 's'}`
-  const content = (
-    <>
-      <span className="group-label-line">
-        {toneLabel ? (
-          <span
-            className={`${uiClasses.eyebrow} console-catalog-tag`}
-            data-tone={tone}
-          >
-            {toneLabel}
-          </span>
-        ) : null}
-        <span className="group-name" title={label}>
-          {label}
-        </span>
-        {countText ? (
-          <span className="group-count" title={countTitle}>
-            {countText}
-          </span>
-        ) : null}
-      </span>
-      {meta ? (
-        <span className="detail">
-          <span className="meta">{meta}</span>
-        </span>
-      ) : null}
-    </>
-  )
-
   return (
-    <div className="console-catalog-group" data-selected={selected === true}>
+    <button type="button" className="console-catalog-group" aria-expanded={open} onClick={onToggle}>
+      <ChevronRight className="chevron" aria-hidden />
+      <span className="name" title={label}>
+        {label}
+      </span>
+      {meta ? <span className="meta">{meta}</span> : null}
+      {count !== undefined ? <span className="count">{count}</span> : null}
+    </button>
+  )
+}
+
+/** The dot on a row: an observer's state, or a function that just ran. */
+export type RowDot = 'live' | 'idle' | 'ok' | 'warn' | 'alert' | 'off'
+
+export function CatalogRow({
+  icon,
+  primary,
+  tooltip,
+  meta,
+  dot,
+  dotLabel,
+  selected,
+  onClick,
+  arrived,
+  nested,
+}: {
+  /** A bare 16px glyph (families); functions carry none. */
+  icon?: ReactNode
+  primary: ReactNode
+  /** Native tooltip: the full id and its description. */
+  tooltip?: string
+  /** Trailing annotation (last call, a count). */
+  meta?: ReactNode
+  dot?: RowDot
+  /** What the dot means, for screen readers (`Suspended`). */
+  dotLabel?: string
+  selected: boolean
+  onClick: () => void
+  /** Registered on the last tick: a wash that fades once it settles. */
+  arrived?: boolean
+  /** Hangs under a TreeRow (an observer under its function). */
+  nested?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      className="console-catalog-row"
+      data-selected={selected}
+      data-arrived={arrived || undefined}
+      data-nested={nested || undefined}
+      aria-current={selected || undefined}
+      onClick={onClick}
+      title={tooltip}
+    >
+      {icon ? <span className="row-icon">{icon}</span> : null}
+      {dot && nested ? <span className="row-dot" data-dot={dot} aria-hidden /> : null}
+      <span className="row-label">{primary}</span>
+      {dot && !nested ? <span className="row-dot" data-dot={dot} aria-hidden /> : null}
+      {dotLabel ? <span className="console-catalog-sr">, {dotLabel}</span> : null}
+      {meta ? <span className="row-meta">{meta}</span> : null}
+    </button>
+  )
+}
+
+/**
+ * A row that is also a group: the observed function on the Observers page.
+ * The row selects the function; its own disclosure folds its observers.
+ */
+export function TreeRow({
+  icon,
+  id,
+  tooltip,
+  count,
+  open,
+  onToggle,
+  selected,
+  onSelect,
+}: {
+  icon: ReactNode
+  id: string
+  tooltip?: string
+  count: number
+  open: boolean
+  onToggle: () => void
+  selected: boolean
+  onSelect: () => void
+}) {
+  return (
+    <div className="console-catalog-tree">
       <button
         type="button"
-        className="pick"
-        onClick={onSelect ?? onToggle}
-        aria-pressed={onSelect ? selected === true : undefined}
-        aria-expanded={onSelect ? undefined : open}
+        className="console-catalog-row"
+        data-selected={selected}
+        data-tree
+        aria-current={selected || undefined}
+        onClick={onSelect}
+        title={tooltip ?? id}
       >
-        {content}
-        {!onSelect && collapsible ? (
-          <span className="chevron" data-open={open} aria-hidden>
-            <ChevronRight className="iii-ui-icon" />
-          </span>
-        ) : null}
+        <span className="row-icon">{icon}</span>
+        <span className="row-label">
+          <IdText id={id} />
+        </span>
+        {count > 0 ? <span className="row-meta">{count}</span> : null}
       </button>
-      {onSelect && collapsible ? (
+      {count > 0 ? (
         <button
           type="button"
-          className="twist"
-          onClick={onToggle}
+          className="console-catalog-twist"
+          tabIndex={-1}
           aria-expanded={open}
-          aria-label={`${open ? 'collapse' : 'expand'} ${label}`}
+          aria-label={`${open ? 'Hide' : 'Show'} observers of ${id}`}
+          onClick={onToggle}
         >
-          <span className="chevron" data-open={open} aria-hidden>
-            <ChevronRight className="iii-ui-icon" />
-          </span>
+          <ChevronRight className="chevron" aria-hidden />
         </button>
       ) : null}
     </div>
   )
 }
 
-export function CatalogRow({
-  icon,
-  primary,
-  secondary,
-  meta,
-  selected,
-  onClick,
-  flash,
-}: {
-  /** The leading glyph tile — what KIND of thing this row is. */
-  icon?: ReactNode
-  primary: ReactNode
-  secondary?: ReactNode
-  /** Right-aligned live annotation on the primary line (last call, ago). */
-  meta?: ReactNode
-  selected: boolean
-  onClick: () => void
-  /** Highlight once: this row's function just ran (or the row just arrived). */
-  flash?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      className={`${uiClasses.listItem} console-catalog-row${flash ? ' flash' : ''}`}
-      data-selected={selected}
-      aria-pressed={selected}
-      onClick={onClick}
-      title={typeof primary === 'string' ? primary : undefined}
-    >
-      {icon ? (
-        <span className={`${uiClasses.listItemIcon} row-glyph`}>{icon}</span>
-      ) : null}
-      <span className={`${uiClasses.listItemContent} row-copy`}>
-        <span className="primary-line">
-          <span className={`${uiClasses.listItemTitle} primary`}>
-            {primary}
-          </span>
-          {meta}
-        </span>
-        {secondary ? (
-          <span className={`${uiClasses.listItemDescription} secondary`}>
-            {secondary}
-          </span>
-        ) : null}
-      </span>
-    </button>
-  )
-}
-
-/* ── glyph tiles ────────────────────────────────────────────────────── */
-
-/** The `ƒ` tile that marks a function everywhere: rows, head, hero. */
-export function FnGlyph({ size }: { size?: 'lg' | 'hero' }) {
-  return (
-    <span className="console-catalog-glyph" data-size={size} aria-hidden>
-      ƒ
-    </span>
-  )
-}
+/* ── glyphs ─────────────────────────────────────────────────────────── */
 
 const FAMILY_ICONS: Record<Family, ReactNode> = {
   http: <Globe />,
@@ -439,24 +629,27 @@ const FAMILY_ICONS: Record<Family, ReactNode> = {
   other: <Zap />,
 }
 
-/** The family tile that marks an observer: globe, clock, layers, waves… */
-export function FamilyGlyph({
+/** A bare family icon in its tone, for list rows. */
+export function FamilyIcon({ family, tone }: { family: Family; tone?: Tone }) {
+  return (
+    <span className="console-catalog-icon" data-tone={tone} aria-hidden>
+      {FAMILY_ICONS[family]}
+    </span>
+  )
+}
+
+/** The masthead tile: a ringed square holding `ƒ` or the family icon. */
+export function DocTile({
   family,
   tone,
-  size,
 }: {
-  family: Family
+  /** Omitted for a function: the tile shows `ƒ`. */
+  family?: Family
   tone?: Tone
-  size?: 'lg' | 'hero'
 }) {
   return (
-    <span
-      className="console-catalog-glyph"
-      data-tone={tone}
-      data-size={size}
-      aria-hidden
-    >
-      {FAMILY_ICONS[family]}
+    <span className="console-catalog-tile" data-tone={tone} aria-hidden>
+      {family ? FAMILY_ICONS[family] : <span className="fn">ƒ</span>}
     </span>
   )
 }
@@ -464,241 +657,216 @@ export function FamilyGlyph({
 /* ── the main workspace pieces ──────────────────────────────────────── */
 
 /**
- * The workspace empty state, on the directory page's pattern: the page's
- * glyph, one title, a short paragraph. It renders where the document will,
- * so selecting something changes content, never layout.
+ * The workspace before a selection: a ringed icon, a title, a short
+ * paragraph and, optionally, the three nouns the page is about.
  */
-export function Hero({
-  glyph,
-  eyebrow,
+export function EmptyDoc({
+  icon,
   title,
   body,
   items,
+  children,
 }: {
-  glyph: ReactNode
-  eyebrow?: string
+  icon: ReactNode
   title: string
-  body: string
-  items?: readonly { label: string; value: string }[]
+  body: ReactNode
+  items?: readonly { label: string; value: string; icon?: ReactNode }[]
+  children?: ReactNode
 }) {
   return (
-    <div className="console-catalog-hero">
-      <div className="inner">
-        {glyph}
-        <div className="copy">
-          {eyebrow ? <Eyebrow>{eyebrow}</Eyebrow> : null}
-          <h2 className="title">{title}</h2>
-          <p className="body">{body}</p>
-        </div>
+    <div className="console-catalog-empty">
+      <div className="card">
+        <span className="console-catalog-tile" aria-hidden>
+          {icon}
+        </span>
+        <h2 className="title">{title}</h2>
+        <p className="body">{body}</p>
         {items?.length ? (
-          <dl className="guide">
+          <ol className="steps">
             {items.map((item) => (
-              <div className="guide-row" key={item.label}>
-                <dt className="guide-term">{item.label}</dt>
-                <dd className="guide-description">{item.value}</dd>
-              </div>
+              <li key={item.label}>
+                <span className="step-icon" aria-hidden>
+                  {item.icon}
+                </span>
+                <span className="step-copy">
+                  <span className="step-label">{item.label}</span>
+                  <span className="step-value">{item.value}</span>
+                </span>
+              </li>
             ))}
-          </dl>
+          </ol>
         ) : null}
+        {children ? <div className="actions">{children}</div> : null}
       </div>
     </div>
   )
 }
 
-/**
- * A selected catalogue item has two jobs: the primary work surface and a
- * compact reference rail. Keeping them in one component lets the rail stack
- * below the document when the host pane is too narrow for three columns.
- */
-export function CatalogWorkspace({
-  children,
-  context,
-}: {
-  children: ReactNode
-  context?: ReactNode
-}) {
-  return (
-    <div className="console-catalog-workspace">
-      <div className="console-catalog-workspace-main">{children}</div>
-      {context ? (
-        <aside
-          className="console-catalog-context"
-          aria-label="selection context"
-        >
-          {context}
-        </aside>
-      ) : null}
-    </div>
-  )
-}
-
-/** A titled group in the contextual rail. */
-export function ContextPanel({
-  title,
-  description,
-  action,
-  children,
-  wide = false,
-}: {
-  title: string
-  description?: string
-  action?: { label: string; onClick: () => void }
-  children: ReactNode
-  wide?: boolean
-}) {
-  return (
-    <section className="console-catalog-context-panel" data-wide={wide}>
-      <div className="context-head">
-        <div className="context-heading">
-          <h3>{title}</h3>
-          {description ? <p>{description}</p> : null}
-        </div>
-        {action ? (
-          <Button
-            variant="pill"
-            size="sm"
-            type="button"
-            onClick={action.onClick}
-          >
-            {action.label}
-          </Button>
-        ) : null}
-      </div>
-      <div className="context-body">{children}</div>
-    </section>
-  )
-}
-
-/** A dense object summary used for observers and target functions. */
-export function ContextItem({
-  glyph,
-  title,
-  description,
-  meta,
-  onClick,
-}: {
-  glyph?: ReactNode
-  title: string
-  description?: ReactNode
-  meta?: ReactNode
-  onClick?: () => void
-}) {
-  const content = (
-    <>
-      {glyph ? <span className="context-item-glyph">{glyph}</span> : null}
-      <span className="context-item-copy">
-        <span className="context-item-title">{title}</span>
-        {description ? (
-          <span className="context-item-description">{description}</span>
-        ) : null}
-        {meta ? <span className="context-item-meta">{meta}</span> : null}
-      </span>
-      {onClick ? (
-        <ArrowRight className="iii-ui-icon context-item-arrow" aria-hidden />
-      ) : null}
-    </>
-  )
-
-  return onClick ? (
-    <button
-      type="button"
-      className="console-catalog-context-item"
-      onClick={onClick}
-    >
-      {content}
-    </button>
-  ) : (
-    <div className="console-catalog-context-item">{content}</div>
-  )
+export interface MenuAction {
+  label: string
+  icon?: ReactNode
+  onSelect: () => void
+  destructive?: boolean
+  /** Keep the menu open (a copy that confirms in place). */
+  keepOpen?: boolean
 }
 
 /**
- * The document's place line: `functions › harness › harness::state::list`.
- * The back button only paints in narrow containers, where the document
- * replaces the list and needs a way out.
+ * The document masthead: tile, title + status, description, the primary
+ * action and a ⋯ menu, then the stat strip. The back arrow only paints
+ * when the narrow flow hides the list.
  */
-export function Crumb({
-  trail,
-  onBack,
-}: {
-  trail: readonly (string | undefined)[]
-  onBack: () => void
-}) {
-  const segments = trail.filter((s): s is string => Boolean(s))
-  return (
-    <div className="console-catalog-crumb">
-      <button
-        type="button"
-        className="console-catalog-back"
-        onClick={onBack}
-        aria-label="back to the list"
-      >
-        <ArrowLeft className="iii-ui-icon" />
-      </button>
-      {segments.map((segment, i) => (
-        <Fragment key={`${i}-${segment}`}>
-          {i > 0 ? (
-            <span className="sep" aria-hidden>
-              ›
-            </span>
-          ) : null}
-          <span className="seg" data-last={i === segments.length - 1}>
-            {segment}
-          </span>
-        </Fragment>
-      ))}
-    </div>
-  )
-}
-
-/** The document masthead: big glyph, name, description, chips, actions. */
-export function IdentityHead({
-  glyph,
+export function DocHead({
+  tile,
+  eyebrow,
   title,
   status,
   description,
-  chips,
-  actions,
+  stats,
+  primary,
+  menu,
+  menuLabel,
+  onBack,
+  backLabel,
 }: {
-  glyph: ReactNode
-  title: string
-  status?: string
-  description?: string | null
-  chips?: ReactNode
-  actions?: ReactNode
+  tile: ReactNode
+  /** One quiet word above the title: `Function`, `Observer`. */
+  eyebrow?: ReactNode
+  title: ReactNode
+  status?: ReactNode
+  description?: ReactNode
+  stats?: readonly Stat[]
+  primary?: ReactNode
+  menu?: readonly (MenuAction | 'separator')[]
+  menuLabel: string
+  onBack: () => void
+  backLabel: string
 }) {
   return (
-    <div className="console-catalog-ident">
-      {glyph}
-      <div className="ident-copy">
-        <div className="ident-title-line">
-          <h2 className="ident-title">{title}</h2>
-          {status ? <Badge variant="ok">{status}</Badge> : null}
+    <header className="console-catalog-head">
+      <IconButton type="button" className="console-catalog-back" label={backLabel} onClick={onBack}>
+        <ArrowLeft />
+      </IconButton>
+      <div className="head-row">
+        {tile}
+        <div className="head-copy">
+          {eyebrow ? <span className="head-eyebrow">{eyebrow}</span> : null}
+          <div className="head-title-line">
+            <h2 className="head-title">{title}</h2>
+            {status}
+          </div>
         </div>
-        {description ? <p className="ident-desc">{description}</p> : null}
-        {chips ? <div className="ident-chips">{chips}</div> : null}
+        <div className="head-actions">
+          {primary}
+          {menu?.length ? <DocMenu items={menu} label={menuLabel} /> : null}
+        </div>
       </div>
-      {actions ? <div className="ident-actions">{actions}</div> : null}
-    </div>
+      {description ? <p className="head-desc">{description}</p> : null}
+      {stats?.length ? <StatStrip items={stats} /> : null}
+    </header>
   )
 }
 
-/** The label/value fact sheet (the prototype's "function details" card). */
-export function Facts({
-  items,
-}: {
-  items: readonly { label: string; value: ReactNode }[]
-}) {
-  if (items.length === 0) return null
+function DocMenu({ items, label }: { items: readonly (MenuAction | 'separator')[]; label: string }) {
   return (
-    <dl className="console-catalog-facts">
+    <ShadcnDropdownMenu>
+      <ShadcnDropdownMenuTrigger
+        render={
+          <ShadcnButton variant="outline" size="icon-sm" aria-label={label} className="console-catalog-btn">
+            <Ellipsis aria-hidden />
+          </ShadcnButton>
+        }
+      />
+      <ShadcnDropdownMenuContent align="end" sideOffset={6} className="console-catalog-menu">
+        <ShadcnDropdownMenuGroup>
+          {items.map((item, i) =>
+            item === 'separator' ? (
+              <ShadcnDropdownMenuSeparator key={`sep-${String(i)}`} />
+            ) : (
+              <ShadcnDropdownMenuItem
+                key={item.label}
+                variant={item.destructive ? 'destructive' : 'default'}
+                closeOnClick={!item.keepOpen}
+                onClick={item.onSelect}
+              >
+                {item.icon}
+                {item.label}
+              </ShadcnDropdownMenuItem>
+            ),
+          )}
+        </ShadcnDropdownMenuGroup>
+      </ShadcnDropdownMenuContent>
+    </ShadcnDropdownMenu>
+  )
+}
+
+export interface Stat {
+  label: string
+  value: ReactNode
+  mono?: boolean
+}
+
+/** Vercel's summary strip: cells of label over value, hairline-divided. */
+export function StatStrip({ items }: { items: readonly Stat[] }) {
+  return (
+    <dl className="console-catalog-stats">
       {items.map((item) => (
-        <div className="fact" key={item.label}>
+        <div key={item.label}>
           <dt>{item.label}</dt>
-          <dd>{item.value}</dd>
+          <dd data-mono={item.mono || undefined} title={typeof item.value === 'string' ? item.value : undefined}>
+            {item.value}
+          </dd>
         </div>
       ))}
     </dl>
+  )
+}
+
+/** A status word with its dot: `Active`, `Suspended`, `Event source`. */
+export function StateBadge({ tone, children }: { tone: 'ok' | 'warn' | 'alert' | 'ink'; children: ReactNode }) {
+  return (
+    <span className="console-catalog-state" data-tone={tone}>
+      <StatusDot tone={tone} />
+      {children}
+    </span>
+  )
+}
+
+/**
+ * An outlined card of facts: label leading (faint), value trailing,
+ * hairline between rows. The title sits above the card, as in Vercel's
+ * settings sections.
+ */
+export function Facts({
+  title,
+  description,
+  items,
+  wide,
+}: {
+  title?: string
+  description?: string
+  items: readonly { label: string; value: ReactNode; mono?: boolean }[]
+  /** Spans both columns of the overview grid. */
+  wide?: boolean
+}) {
+  if (items.length === 0) return null
+  return (
+    <section className="console-catalog-facts" data-wide={wide || undefined}>
+      {title ? (
+        <header className="facts-head">
+          <h3>{title}</h3>
+          {description ? <p>{description}</p> : null}
+        </header>
+      ) : null}
+      <dl>
+        {items.map((item) => (
+          <div className="fact" key={item.label}>
+            <dt>{item.label}</dt>
+            <dd data-mono={item.mono || undefined}>{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   )
 }
 
@@ -707,7 +875,7 @@ export function Note({ children }: { children: ReactNode }) {
 }
 
 export function ErrorNote({
-  title = 'request failed',
+  title = 'Request failed',
   call,
   message,
   onRetry,
@@ -726,8 +894,8 @@ export function ErrorNote({
       detail={`${call} · ${message}`}
       action={
         onRetry ? (
-          <Button variant="pill" size="sm" type="button" onClick={onRetry}>
-            retry
+          <Button variant="secondary" size="sm" type="button" onClick={onRetry} className="console-catalog-btn">
+            Retry
           </Button>
         ) : undefined
       }
@@ -743,27 +911,10 @@ export function CatalogListSkeleton({ label }: { label: string }) {
         <div className="skeleton-group" key={group}>
           <Skeleton className="skeleton-heading" />
           <Skeleton className="skeleton-row" />
+          <Skeleton className="skeleton-row" />
           <Skeleton className="skeleton-row short" />
         </div>
       ))}
     </div>
-  )
-}
-
-/** Key/value chips for an observer's args and filters, ids, counts. */
-const CHIP_TONES = {
-  accent: 'accent',
-  ok: 'success',
-  warn: 'warning',
-  alert: 'danger',
-  ink: undefined,
-} as const
-
-export function Chip({ k, v, tone }: { k: string; v: ReactNode; tone?: Tone }) {
-  return (
-    <UiChip className="console-catalog-chip" tone={tone && CHIP_TONES[tone]}>
-      <span className="k">{k}</span>
-      {v}
-    </UiChip>
   )
 }

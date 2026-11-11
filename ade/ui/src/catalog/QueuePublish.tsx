@@ -7,17 +7,10 @@
  * applies exactly as it would in production. That is also why it asks before sending.
  */
 
-import {
-  Button,
-  CodeEditor,
-  type Host,
-  JsonHighlight,
-  StatusPanel,
-} from '@iii-dev/console-ui'
+import { Button, CodeEditor, type Host, JsonHighlight, StatusPanel } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import { type InvokeOutcome, invoke } from './engine'
 import { pretty } from './schema'
-import { Chip } from './widgets'
 
 export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
   const [body, setBody] = useState('{}')
@@ -44,7 +37,7 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
     try {
       data = JSON.parse(body)
     } catch (err) {
-      setInvalid(err instanceof Error ? err.message : 'invalid JSON')
+      setInvalid(err instanceof Error ? err.message : 'Invalid JSON')
       return
     }
     setInvalid(null)
@@ -60,11 +53,11 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
   return (
     <div className="console-catalog-invoke">
       <div className="console-catalog-note">
-        publishes to <code>{topic}</code> through the queue, so every consumer
-        of this topic receives it and the subscriber's retry and dead-letter
-        behavior applies.
+        Publishes to <code>{topic}</code> through the queue, so every consumer of this topic receives it and the
+        subscriber's retry and dead-letter behavior applies.
       </div>
       <CodeEditor
+        fontSize={13}
         value={body}
         onChange={setBody}
         language="json"
@@ -74,52 +67,44 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
       <div className="console-catalog-invoke-foot">
         {confirming ? (
           <>
-            <Button size="sm" onClick={publish} disabled={sending}>
-              {sending ? 'publishing…' : 'yes, publish'}
+            <Button className="console-catalog-btn" variant="primary" size="sm" onClick={publish} disabled={sending}>
+              {sending ? 'Publishing…' : 'Publish to the queue'}
             </Button>
             <Button
-              variant="pill"
+              className="console-catalog-btn"
+              variant="ghost"
               size="sm"
               onClick={() => setConfirming(false)}
               disabled={sending}
             >
-              cancel
+              Cancel
             </Button>
           </>
         ) : (
           <Button
+            className="console-catalog-btn"
+            variant="primary"
             size="sm"
             onClick={() => setConfirming(true)}
             disabled={sending}
           >
-            publish message
+            Publish message
           </Button>
         )}
-        {invalid ? (
-          <span className="console-catalog-invalid">{invalid}</span>
-        ) : null}
+        {invalid ? <span className="console-catalog-invalid">{invalid}</span> : null}
         {outcome ? (
-          <span
-            className={
-              outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
-            }
-          >
-            {outcome.ok ? 'published' : 'failed'} ·{' '}
-            {Math.round(outcome.durationMs)}ms
+          <span className={outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'}>
+            {outcome.ok ? 'Published' : 'Failed'} · {Math.round(outcome.durationMs)} ms
           </span>
         ) : null}
       </div>
-      {outcome?.error ? (
-        <StatusPanel variant="alert" headline={outcome.error} />
-      ) : null}
+      {outcome?.error ? <StatusPanel variant="alert" headline={outcome.error} /> : null}
       {outcome?.ok && outcome.data !== null && outcome.data !== undefined ? (
-        <JsonHighlight
-          code={pretty(outcome.data)}
-          className="console-catalog-result"
-          wrap
-        />
+        <JsonHighlight code={pretty(outcome.data)} className="console-catalog-result" wrap />
       ) : null}
-      <Chip k="fires" v="the real queue, through iii::durable::publish" />
+      <p className="console-catalog-fine">
+        Publishes for real, through <code>iii::durable::publish</code>.
+      </p>
     </div>
   )
 }

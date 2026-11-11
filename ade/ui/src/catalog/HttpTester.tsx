@@ -8,23 +8,14 @@
  * never a guess, and the panel says plainly when it cannot be read.
  */
 
-import {
-  Button,
-  CodeEditor,
-  Eyebrow,
-  type Host,
-  Input,
-  JsonHighlight,
-  Select,
-  StatusPanel,
-} from '@iii-dev/console-ui'
+import { Button, CodeEditor, type Host, Input, JsonHighlight, Select, StatusPanel } from '@iii-dev/console-ui'
 import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useState } from 'react'
 import { useResource } from './engine'
-import { pretty } from './schema'
 import type { HttpBinding } from './observer-kinds'
-import { Chip, CopyButton, ErrorNote, Note } from './widgets'
+import { pretty } from './schema'
+import { CopyButton, ErrorNote, Note } from './widgets'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH'])
@@ -52,9 +43,7 @@ async function readEndpoint(host: Host): Promise<HttpEndpoint> {
   if (typeof port !== 'number') throw new Error('http config carries no port')
   const bound = typeof value.host === 'string' ? value.host : '127.0.0.1'
   const reachable =
-    bound === '0.0.0.0' || bound === '127.0.0.1' || bound === 'localhost'
-      ? window.location.hostname
-      : bound
+    bound === '0.0.0.0' || bound === '127.0.0.1' || bound === 'localhost' ? window.location.hostname : bound
   return { baseUrl: `${window.location.protocol}//${reachable}:${port}` }
 }
 
@@ -78,13 +67,7 @@ interface Outcome {
   location?: string
 }
 
-export function HttpTester({
-  host,
-  binding,
-}: {
-  host: Host
-  binding: HttpBinding
-}) {
+export function HttpTester({ host, binding }: { host: Host; binding: HttpBinding }) {
   const load = useCallback(() => readEndpoint(host), [host])
   const endpoint = useResource(load)
 
@@ -115,25 +98,20 @@ export function HttpTester({
   }, [binding.method, binding.path, paramKey])
 
   const filledPath = binding.params.reduce(
-    (path, name) =>
-      path.replace(`:${name}`, encodeURIComponent(params[name] ?? `:${name}`)),
+    (path, name) => path.replace(`:${name}`, encodeURIComponent(params[name] ?? `:${name}`)),
     binding.path,
   )
   const queryString = query
     .filter((q) => q.key)
     .map((q) => `${encodeURIComponent(q.key)}=${encodeURIComponent(q.value)}`)
     .join('&')
-  const url = endpoint.data
-    ? `${endpoint.data.baseUrl}${filledPath}${queryString ? `?${queryString}` : ''}`
-    : null
+  const url = endpoint.data ? `${endpoint.data.baseUrl}${filledPath}${queryString ? `?${queryString}` : ''}` : null
 
   const send = async () => {
     if (!url) return
     const missing = binding.params.filter((name) => !params[name])
     if (missing.length > 0) {
-      setInvalid(
-        `fill the path parameter${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`,
-      )
+      setInvalid(`fill the path parameter${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`)
       setOutcome(null)
       return
     }
@@ -177,8 +155,7 @@ export function HttpTester({
         })
         return
       }
-      const contentType =
-        typeof data.contentType === 'string' ? data.contentType : ''
+      const contentType = typeof data.contentType === 'string' ? data.contentType : ''
       const text = typeof data.body === 'string' ? data.body : ''
       setOutcome({
         ok: data.status >= 200 && data.status < 400,
@@ -218,7 +195,7 @@ export function HttpTester({
           value={method}
           options={METHODS.map((m) => ({ value: m, label: m }))}
           onChange={setMethod}
-          aria-label="http method"
+          aria-label="HTTP method"
           className="console-catalog-method"
         />
         <code className="console-catalog-path">{binding.path}</code>
@@ -226,7 +203,9 @@ export function HttpTester({
 
       {binding.params.length > 0 ? (
         <div className="console-catalog-fields">
-          <Eyebrow className="console-catalog-field-label">Path parameters</Eyebrow>
+          <div className="console-catalog-field-label">
+            <h4>Path parameters</h4>
+          </div>
           {binding.params.map((name) => (
             <div key={name} className="console-catalog-field-row">
               <label htmlFor={`param-${name}`} className="console-catalog-key">
@@ -235,9 +214,7 @@ export function HttpTester({
               <Input
                 id={`param-${name}`}
                 value={params[name] ?? ''}
-                onChange={(next) =>
-                  setParams((prev) => ({ ...prev, [name]: next }))
-                }
+                onChange={(next) => setParams((prev) => ({ ...prev, [name]: next }))}
                 preserveCase
                 placeholder={name}
               />
@@ -247,22 +224,20 @@ export function HttpTester({
       ) : null}
 
       <div className="console-catalog-fields">
-        <Eyebrow className="console-catalog-field-label">
-          query parameters
+        <div className="console-catalog-field-label">
+          <h4>Query parameters</h4>
           <Button
-            variant="pill"
+            className="console-catalog-btn"
+            variant="ghost"
             size="sm"
             onClick={() => {
               queryRowSeq += 1
-              setQuery((prev) => [
-                ...prev,
-                { id: queryRowSeq, key: '', value: '' },
-              ])
+              setQuery((prev) => [...prev, { id: queryRowSeq, key: '', value: '' }])
             }}
           >
-            add
+            Add
           </Button>
-        </Eyebrow>
+        </div>
         {query.length === 0 ? (
           <span className="console-catalog-hint">None</span>
         ) : (
@@ -270,38 +245,27 @@ export function HttpTester({
             <div key={entry.id} className="console-catalog-field-row">
               <Input
                 value={entry.key}
-                onChange={(next) =>
-                  setQuery((prev) =>
-                    prev.map((q) =>
-                      q.id === entry.id ? { ...q, key: next } : q,
-                    ),
-                  )
-                }
+                onChange={(next) => setQuery((prev) => prev.map((q) => (q.id === entry.id ? { ...q, key: next } : q)))}
                 preserveCase
                 placeholder="key"
-                aria-label="query parameter name"
+                aria-label="Query parameter name"
               />
               <Input
                 value={entry.value}
                 onChange={(next) =>
-                  setQuery((prev) =>
-                    prev.map((q) =>
-                      q.id === entry.id ? { ...q, value: next } : q,
-                    ),
-                  )
+                  setQuery((prev) => prev.map((q) => (q.id === entry.id ? { ...q, value: next } : q)))
                 }
                 preserveCase
                 placeholder="value"
-                aria-label="query parameter value"
+                aria-label="Query parameter value"
               />
               <Button
-                variant="pill"
+                className="console-catalog-btn"
+                variant="ghost"
                 size="sm"
-                onClick={() =>
-                  setQuery((prev) => prev.filter((q) => q.id !== entry.id))
-                }
+                onClick={() => setQuery((prev) => prev.filter((q) => q.id !== entry.id))}
               >
-                remove
+                Remove
               </Button>
             </div>
           ))
@@ -310,35 +274,28 @@ export function HttpTester({
 
       {BODY_METHODS.has(method) ? (
         <CodeEditor
+          fontSize={13}
           value={body}
           onChange={setBody}
           language="json"
           className="console-catalog-editor"
-          aria-label="request body"
+          aria-label="Request body"
         />
       ) : null}
 
       <div className="console-catalog-invoke-foot">
-        <Button size="sm" onClick={send} disabled={sending}>
-          {sending ? 'sending…' : 'send request'}
+        <Button className="console-catalog-btn" variant="primary" size="sm" onClick={send} disabled={sending}>
+          {sending ? 'Sending…' : 'Send request'}
         </Button>
-        {invalid ? (
-          <span className="console-catalog-invalid">{invalid}</span>
-        ) : null}
+        {invalid ? <span className="console-catalog-invalid">{invalid}</span> : null}
         {outcome ? (
-          <span
-            className={
-              outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
-            }
-          >
-            {outcome.status ?? 'failed'} · {Math.round(outcome.durationMs)}ms
+          <span className={outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'}>
+            {outcome.status ?? 'Failed'} · {Math.round(outcome.durationMs)} ms
           </span>
         ) : null}
       </div>
 
-      {outcome?.error ? (
-        <StatusPanel variant="alert" headline={outcome.error} />
-      ) : null}
+      {outcome?.error ? <StatusPanel variant="alert" headline={outcome.error} /> : null}
       {outcome?.location ? (
         <div className="console-catalog-field-row">
           <span className="console-catalog-key">Location</span>
@@ -346,13 +303,9 @@ export function HttpTester({
         </div>
       ) : null}
       {outcome && !outcome.error ? (
-        <JsonHighlight
-          code={outcome.body || '(empty response)'}
-          className="console-catalog-result"
-          wrap
-        />
+        <JsonHighlight code={outcome.body || '(empty response)'} className="console-catalog-result" wrap />
       ) : null}
-      <Chip k="fires" v="the real endpoint, through the http worker" />
+      <p className="console-catalog-fine">Sends a real request to the endpoint, through the HTTP worker.</p>
     </div>
   )
 }
