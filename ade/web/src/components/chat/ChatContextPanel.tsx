@@ -1497,6 +1497,9 @@ function Section({
           className={cn(
             uiClasses.listGroupLabel,
             'flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus pointer-coarse:min-h-11',
+            // Folded, the header is the whole card: room to read and to hit.
+            // Important: the recipe's padding is unlayered and would win.
+            !open && 'py-2.5!',
           )}
         >
           <span className="shrink-0">{label}</span>
