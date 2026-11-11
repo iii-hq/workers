@@ -9,6 +9,11 @@ use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Us
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
 use serde_json::Value;
 
+/// Upper bound on parallel tool calls in one assistant turn. `api_url` is
+/// operator-overridable, so the stream's `index` is untrusted input and must
+/// not size the Vec.
+const MAX_TOOL_CALLS: usize = 256;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenBlock {
     Text,
@@ -312,6 +317,9 @@ pub fn handle_chunk(
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tc in tool_calls {
                 let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                if index >= MAX_TOOL_CALLS {
+                    continue;
+                }
                 while state.function_calls.len() <= index {
                     state.function_calls.push(PartialFunctionCall::default());
                 }
@@ -425,6 +433,9 @@ fn handle_responses_event(
                 .get("output_index")
                 .and_then(Value::as_u64)
                 .unwrap_or(state.function_calls.len() as u64) as usize;
+            if index >= MAX_TOOL_CALLS {
+                return events;
+            }
             let call = ensure_function_call(state, index);
             call.id = item
                 .get("call_id")
@@ -489,6 +500,9 @@ fn handle_responses_event(
                 .and_then(Value::as_u64)
                 .unwrap_or_else(|| state.function_calls.len().saturating_sub(1) as u64)
                 as usize;
+            if index >= MAX_TOOL_CALLS {
+                return events;
+            }
             if state.open_block != Some(OpenBlock::Call(index)) {
                 close_open_block(state, model, &mut events);
                 state.open_block = Some(OpenBlock::Call(index));
@@ -516,6 +530,9 @@ fn handle_responses_event(
                     .and_then(Value::as_u64)
                     .unwrap_or_else(|| state.function_calls.len().saturating_sub(1) as u64)
                     as usize;
+                if index >= MAX_TOOL_CALLS {
+                    return events;
+                }
                 let call = ensure_function_call(state, index);
                 if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
                     call.args_json = arguments.to_string();
@@ -736,6 +753,17 @@ mod tests {
         assert_eq!(starts, 2);
         let final_msg = build_final(&state, "gpt-test");
         assert_eq!(final_msg.content.len(), 2);
+    }
+
+    #[test]
+    fn oversized_tool_call_index_does_not_size_the_vec() {
+        let (state, _) = run(&[
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":u64::MAX,"id":"call_a","function":{"name":"f__a","arguments":"{}"}}]}}]}),
+            json!({"type":"response.output_item.added","output_index":u64::MAX,"item":{
+                "type":"function_call","call_id":"call_b","name":"f__b"}}),
+        ]);
+        assert!(state.function_calls.is_empty());
     }
 
     #[test]

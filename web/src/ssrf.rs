@@ -51,7 +51,7 @@ pub fn parse_target(raw: &str) -> Result<ParsedTarget, String> {
 }
 
 static V4_BLOCKLIST: OnceLock<Vec<(Ipv4Net, &'static str)>> = OnceLock::new();
-static V6_BLOCKLIST: OnceLock<[(Ipv6Net, &'static str); 3]> = OnceLock::new();
+static V6_BLOCKLIST: OnceLock<[(Ipv6Net, &'static str); 4]> = OnceLock::new();
 
 fn v4_blocklist() -> &'static [(Ipv4Net, &'static str)] {
     V4_BLOCKLIST.get_or_init(|| {
@@ -83,6 +83,12 @@ fn v6_blocklist() -> &'static [(Ipv6Net, &'static str)] {
             ("fe80::/10".parse().unwrap(), "link-local fe80::/10"),
             ("fc00::/7".parse().unwrap(), "unique-local fc00::/7"),
             ("ff00::/8".parse().unwrap(), "multicast ff00::/8"),
+            // Local-use NAT64 (RFC 8215): the v4 embed position is
+            // operator-chosen, so it can't be validated — fail closed.
+            (
+                "64:ff9b:1::/48".parse().unwrap(),
+                "local-use nat64 64:ff9b:1::/48",
+            ),
         ]
     })
 }
@@ -95,6 +101,30 @@ fn check_ipv4(addr: Ipv4Addr, policy: &SsrfPolicy) -> Option<&'static str> {
         if net.contains(&addr) {
             return Some(label);
         }
+    }
+    None
+}
+
+/// IPv6 addresses that embed and route to an IPv4 address: NAT64
+/// (64:ff9b::/96), 6to4 (2002::/16) and the deprecated IPv4-compatible
+/// ::/96 form. The embedded IPv4 must pass the v4 blocklist, otherwise a
+/// NAT64/6to4 gateway delivers straight to a private host the v4 rules
+/// forbid.
+fn embedded_ipv4(addr: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let s = addr.segments();
+    let last32 = |a: u16, b: u16| Ipv4Addr::new((a >> 8) as u8, a as u8, (b >> 8) as u8, b as u8);
+    // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052 embeds v4 in the low 32
+    // bits at that prefix length).
+    if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return Some(last32(s[6], s[7]));
+    }
+    // 6to4 2002:AABB:CCDD::/48 embeds v4 in bits 16..48.
+    if s[0] == 0x2002 {
+        return Some(last32(s[1], s[2]));
+    }
+    // IPv4-compatible ::a.b.c.d (::/96). :: and ::1 are caught earlier.
+    if s[..6] == [0, 0, 0, 0, 0, 0] {
+        return Some(last32(s[6], s[7]));
     }
     None
 }
@@ -113,6 +143,11 @@ fn check_ipv6(addr: Ipv6Addr, policy: &SsrfPolicy) -> Option<&'static str> {
     }
     if addr == Ipv6Addr::UNSPECIFIED {
         return Some("unspecified");
+    }
+    if let Some(v4) = embedded_ipv4(&addr) {
+        if let Some(label) = check_ipv4(v4, policy) {
+            return Some(label);
+        }
     }
     for (net, label) in v6_blocklist() {
         if net.contains(&addr) {
@@ -274,6 +309,21 @@ mod tests {
             assert!(blocked(ip, true).is_some(), "{ip} should be blocked");
         }
         assert!(blocked("2606:4700:4700::1111", true).is_none());
+    }
+
+    #[test]
+    fn blocks_v4_embedding_v6_forms() {
+        // NAT64 well-known prefix: embedded private v4 blocked, public allowed.
+        assert!(blocked("64:ff9b::a00:1", true).is_some()); // 10.0.0.1
+        assert!(blocked("64:ff9b::a9fe:a9fe", true).is_some()); // 169.254.169.254
+        assert!(blocked("64:ff9b::101:101", true).is_none()); // 1.1.1.1
+                                                              // Local-use NAT64: fail closed regardless of embed.
+        assert!(blocked("64:ff9b:1::1", true).is_some());
+        // 6to4: embedded v4 validated.
+        assert!(blocked("2002:a00:1::", true).is_some()); // 10.0.0.1
+        assert!(blocked("2002:101:101::", true).is_none()); // 1.1.1.1
+                                                            // Deprecated IPv4-compatible ::/96.
+        assert!(blocked("::a9fe:a9fe", true).is_some());
     }
 
     #[test]

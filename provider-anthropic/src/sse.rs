@@ -11,6 +11,11 @@ use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Us
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
 use serde_json::Value;
 
+/// Upper bound on content blocks in one message. `api_url` is
+/// operator-overridable, so the stream's `index` is untrusted input and must
+/// not size the Vec (`resize(index + 1)` also overflows at u64::MAX).
+const MAX_CONTENT_BLOCKS: usize = 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockKind {
     Text,
@@ -291,6 +296,7 @@ fn wire_index(parsed: &Value) -> Option<usize> {
         .get("index")
         .and_then(Value::as_u64)
         .map(|n| n as usize)
+        .filter(|&n| n < MAX_CONTENT_BLOCKS)
 }
 
 fn ensure_slot(state: &mut PartialState, index: usize) {
@@ -544,6 +550,14 @@ mod tests {
     /// the authoritative snapshot (cumulative text here; signatures and
     /// final call args on their End frames). Readers reconstruct via
     /// llm_router::chat::accumulate.
+    #[test]
+    fn oversized_block_index_does_not_size_the_vec() {
+        let (state, _) = run(&[
+            "data: {\"type\":\"content_block_start\",\"index\":18446744073709551615,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+        ]);
+        assert!(state.block_slots.is_empty());
+    }
+
     #[test]
     fn deltas_are_slim_and_boundary_snapshots_are_cumulative() {
         let (_, events) = run(&[
