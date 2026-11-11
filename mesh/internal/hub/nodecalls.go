@@ -56,7 +56,11 @@ func (h *Hub) fetchNodeStatus(ctx context.Context, name string) (node.Status, er
 		}
 	}
 	for _, w := range status.Workers {
-		details.Workers = append(details.Workers, ComponentState{Name: w.Name, State: w.State})
+		c := ComponentState{Name: w.Name, State: w.State, Functions: []string{}}
+		for _, id := range w.Functions {
+			c.Functions = append(c.Functions, name+"::"+id)
+		}
+		details.Workers = append(details.Workers, c)
 	}
 	h.mu.Lock()
 	if h.nodeDetails == nil {

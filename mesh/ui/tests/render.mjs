@@ -60,11 +60,34 @@ try {
   const defaults = { public_url: '', listen: '0.0.0.0:49180', gateway_port: 49135, proxy_url: 'ws://127.0.0.1:49200', stun_port: 0, trusted_proxies: [] }
   // An entry written before 2026-11-10: the page and the form must carry links, nodes and drives through untouched.
   const initialConfig = { public_url: '', listen: '${MESH_LISTEN:0.0.0.0:49180}', gateway_port: 49135, proxy_url: 'ws://127.0.0.1:49200', stun_port: 0, trusted_proxies: [], links: [], nodes: {}, drives: {} }
+  // Offline first, and archive-laptop sorts before every online name: the page must list online machines first, then by name.
+  const lastSeen = new Date(Date.now() - 3_600_000).toISOString()
+  // Each shared worker carries its hub function ids, <machine>::<local id>, sorted. A local id need not start with its worker's
+  // name: ide registers coder::* and shell::*.
   const nodes = [
-    { name: 'linux-workstation', address: 'fd7a:115c:a1e0::2', os: 'linux', arch: 'amd64', version: '0.1.0', online: true, path: 'direct', workers: [{ name: 'ide', state: 'running' }] },
-    { name: 'travel-laptop', address: 'fd7a:115c:a1e0::3', os: 'darwin', arch: 'arm64', version: '0.0.9', online: false, last_seen: new Date(Date.now() - 3_600_000).toISOString(), path: 'relay', workers: [] },
+    { name: 'archive-laptop', address: 'fd7a:115c:a1e0::3', os: 'darwin', arch: 'arm64', version: '0.0.9', online: false, last_seen: lastSeen, path: 'relay', workers: [] },
+    // The hub keeps an offline machine's last reported workers; their functions left with its bridge.
+    { name: 'travel-laptop', address: 'fd7a:115c:a1e0::4', os: 'darwin', arch: 'arm64', version: '0.1.0', online: false, last_seen: lastSeen, path: 'relay',
+      workers: [{ name: 'mesh-probe', state: 'shared', functions: ['travel-laptop::mesh-probe::echo'] }] },
+    { name: 'linux-workstation', address: 'fd7a:115c:a1e0::2', os: 'linux', arch: 'amd64', version: '0.1.0', online: true, path: 'direct',
+      workers: [{ name: 'ide', state: 'shared', functions: ['linux-workstation::coder::read-file', 'linux-workstation::shell::exec'] }] },
+    { name: 'gpu-box', address: 'fd7a:115c:a1e0::5', os: 'linux', arch: 'amd64', version: '0.1.0', online: true, path: 'direct',
+      workers: [{ name: 'image-resize', state: 'shared', functions: ['gpu-box::image_resize::resize', 'gpu-box::image_resize::thumbnail'] }, { name: 'tmux', state: 'pending', functions: [] }] },
   ]
-  const longNodes = [{ ...nodes[0], name: 'engineering-workstation-archive', path: 'relay / ' + 'long-network-path/'.repeat(12), version: '0.1.0-build-' + '1234567890'.repeat(8), workers: [{ name: 'worker-with-a-very-long-name', state: 'waiting for the saved operator to sign in' }] }]
+  // The hub engine's function list supplies the descriptions: shell::exec has none, image_resize::thumbnail has no row yet.
+  const bridge = (machine) => `rbac-proxy:${machine}::mesh-bridge`
+  const longFunction = { function_id: `engineering-workstation-archive::archive_${'x'.repeat(60)}::fetch`, worker_name: bridge('engineering-workstation-archive'),
+    description: `Fetches https://api.example.com/v1/${'abcdef0123456789'.repeat(5)}` }
+  const hubFunctions = [
+    { function_id: 'linux-workstation::shell::exec', worker_name: bridge('linux-workstation') },
+    { function_id: 'linux-workstation::coder::read-file', worker_name: bridge('linux-workstation'), description: 'Reads a file from the workspace' },
+    { function_id: 'linux-workstation::mesh-node::status', worker_name: 'rbac-proxy:linux-workstation::mesh-node' },
+    { function_id: 'gpu-box::image_resize::resize', worker_name: bridge('gpu-box'), description: 'Resizes an image' },
+    longFunction,
+  ]
+  const longNodes = [{ ...nodes[2], name: 'engineering-workstation-archive', path: 'relay / ' + 'long-network-path/'.repeat(12), version: '0.1.0-build-' + '1234567890'.repeat(8),
+    workers: [{ name: 'worker-with-a-very-long-name', state: 'waiting for the saved operator to sign in', functions: [longFunction.function_id] },
+      { name: 'another-worker-with-a-long-name', state: 'shared', functions: [] }] }]
   // Local workers the client share list offers; mesh and secrets are never shareable.
   const localWorkers = ['shell', 'state', 'mesh', 'secrets']
   const results = []
@@ -136,7 +159,7 @@ try {
               case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
               case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
               case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
-              case 'engine::functions::list': return send({ functions: localWorkers.map((worker) => ({ function_id: `${worker}::fixture`, worker_name: worker })) })
+              case 'engine::functions::list': return mode === 'functions-error' ? send(null, 'Engine function list is unavailable.') : send({ functions: [...localWorkers.map((worker) => ({ function_id: `${worker}::fixture`, worker_name: worker })), ...hubFunctions] })
               case 'ade::ui-manifest': return send({ warnings: [], disabled: false })
               case 'harness::sessions::list': return send({ sessions: [] })
               default: return send({})
@@ -196,8 +219,31 @@ try {
         await capture('error')
         mode = 'populated'; await button('Retry').first().click()
         await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
-        await expect(page.getByText('Online', { exact: true })).toBeVisible()
-        await expect(page.getByText('Offline', { exact: true })).toBeVisible()
+        const card = (name) => page.getByRole('article', { name, exact: true })
+        const workstation = card('linux-workstation')
+        await expect(workstation.getByText('Online', { exact: true })).toBeVisible()
+        await expect(card('archive-laptop').getByText('Offline', { exact: true })).toBeVisible()
+        await expect(page.locator('.mesh-ui-node h3')).toHaveText(['gpu-box', 'linux-workstation', 'archive-laptop', 'travel-laptop'])
+        // Each machine shows what it shares: the worker, then the functions it lists, with the engine's descriptions.
+        await expect(workstation.getByRole('list', { name: 'ide functions', exact: true }).getByRole('listitem')).toHaveText([
+          'linux-workstation::coder::read-file Reads a file from the workspace', 'linux-workstation::shell::exec',
+        ])
+        await expect(workstation.getByText('Reads a file from the workspace', { exact: true })).toBeVisible()
+        await expect(workstation.getByText('shared', { exact: true })).toBeVisible()
+        const gpu = card('gpu-box')
+        await expect(gpu.getByRole('list', { name: 'image-resize functions', exact: true }).getByRole('listitem')).toHaveText([
+          'gpu-box::image_resize::resize Resizes an image', 'gpu-box::image_resize::thumbnail',
+        ])
+        await expect(gpu.getByRole('list', { name: 'tmux functions', exact: true })).toHaveCount(0)
+        await expect(gpu.getByRole('listitem').filter({ hasText: 'tmux' }).getByText('No functions registered yet', { exact: true })).toBeVisible()
+        await expect(card('archive-laptop').getByText('Not sharing any workers', { exact: true })).toBeVisible()
+        const travel = card('travel-laptop')
+        await expect(travel.getByRole('listitem').filter({ hasText: 'mesh-probe' }).getByText('Unavailable while the machine is offline', { exact: true })).toBeVisible()
+        await expect(travel.getByText('travel-laptop::mesh-probe::echo')).toHaveCount(0)
+        // The hub keeps an offline machine's last state; showing "shared" would contradict the line above.
+        await expect(travel.getByText('shared', { exact: true })).toHaveCount(0)
+        const headings = await page.getByRole('heading', { level: 2 }).allTextContents()
+        assert(headings.includes('Machines') && headings.indexOf('Machines') < headings.indexOf('Hub address'), 'Machines comes before Hub address in hub mode')
         await capture('populated')
         // The hub has no public URL yet: no join code, and the machines stay listed.
         await expect(page.getByText('Join instructions unavailable')).toBeVisible()
@@ -205,7 +251,14 @@ try {
         await expect(button('Copy Hub URL')).toHaveCount(0)
         mode = 'long'; await button('Refresh').click()
         await expect(page.getByRole('heading', { name: longNodes[0].name })).toBeVisible()
+        await expect(page.getByRole('list', { name: 'worker-with-a-very-long-name functions', exact: true }).getByRole('listitem')).toHaveText([`${longFunction.function_id} ${longFunction.description}`])
         await capture('long')
+        // A failed function list loses only the descriptions: the hub's ids still show.
+        mode = 'functions-error'; await button('Refresh').click()
+        await expect(workstation.getByRole('list', { name: 'ide functions', exact: true }).getByRole('listitem')).toHaveText(['linux-workstation::coder::read-file', 'linux-workstation::shell::exec'])
+        await expect(page.getByText(/Could not load functions/)).toHaveCount(0)
+        mode = 'populated'; await button('Refresh').click()
+        await expect(workstation.getByRole('list', { name: 'ide functions', exact: true })).toBeVisible()
         console.log(`PASS ${viewport.width}px ${theme}: loader, machine states, overflow, join refused without a public URL`)
 
         // Hub mode: the basics are on the page, client fields are not.

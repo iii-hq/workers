@@ -9,7 +9,9 @@ import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useCopyFlash, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Network, RefreshCw } from 'lucide-react'
 
+// functions: the worker's hub function ids (<machine>::<local id>), sorted.
 type ComponentState = { name: string; state: string; functions?: string[] }
+type EngineFunction = { function_id: string; worker_name?: string; description?: string }
 type Node = {
   name: string; address: string; os: string; arch: string; version: string
   online: boolean; last_seen: string; ephemeral: boolean; path: string
@@ -40,13 +42,31 @@ function CopyValue({ label, value }: { label: string; value: string }) {
   </div>
 }
 
-function Components({ label, values }: { label: string; values: ComponentState[] }) {
-  return <div className="mesh-ui-components"><dt>{label}</dt><dd>
-    {values.length ? values.map((item) => <span className="mesh-ui-component" key={item.name}>
-      <code>{item.name}</code><span>{item.state}</span>
-      {item.functions?.length ? <span className="mesh-ui-functions">{item.functions.map((fn) => <code key={fn}>{fn}</code>)}</span> : null}
-    </span>) : <span className="mesh-ui-muted">None reported</span>}
-  </dd></div>
+function FunctionList({ label, functions }: { label: string; functions: EngineFunction[] }) {
+  // role="list": Safari drops list semantics from a list without markers.
+  return <ul role="list" className="mesh-ui-functions" aria-label={label}>{functions.map((fn) => <li key={fn.function_id}>
+    <code>{fn.function_id}</code>{fn.description ? <> <span className="mesh-ui-muted">{fn.description}</span></> : null}
+  </li>)}</ul>
+}
+
+function SharedWorkers({ node, functions }: { node: Node; functions: EngineFunction[] }) {
+  const label = `mesh-node-${node.name}-workers`
+  const workers = node.workers ?? []
+  const described = new Map(functions.map((fn) => [fn.function_id, fn.description]))
+  return <div className="mesh-ui-workers">
+    <p className="mesh-ui-label" id={label}>Shared workers</p>
+    {workers.length ? <ul role="list" aria-labelledby={label}>
+      {workers.map((worker) => {
+        // An offline machine's functions left with its bridge; the hub still holds the last ids it reported.
+        const ids = node.online ? worker.functions ?? [] : []
+        return <li key={worker.name}>
+          <div className="mesh-ui-worker"><code>{worker.name}</code>{node.online ? <span className="mesh-ui-muted">{worker.state}</span> : null}</div>
+          {ids.length ? <FunctionList label={`${worker.name} functions`} functions={ids.map((id) => ({ function_id: id, description: described.get(id) }))} />
+            : <p className="mesh-ui-muted">{node.online ? 'No functions registered yet' : 'Unavailable while the machine is offline'}</p>}
+        </li>
+      })}
+    </ul> : <p className="mesh-ui-muted">Not sharing any workers</p>}
+  </div>
 }
 
 type Mode = 'hub' | 'client'
@@ -179,12 +199,14 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       host.iii.call<Partial<ClientStatus> & HubStatus>('mesh::status', {}),
       // Raw keeps ${VAR} templates intact when the entry is written back.
       host.iii.call<{ value: JsonValue }>('configuration::get', { id: configurationId, raw: true }),
-      host.iii.call<{ functions: { worker_name?: string }[] }>('engine::functions::list', {}),
+      host.iii.call<{ functions: EngineFunction[] }>('engine::functions::list', {}),
     ])
+    const engineFunctions = functions.status === 'fulfilled' ? functions.value.functions ?? [] : []
     return {
       client: status.status === 'fulfilled' && status.value?.mode === 'client' ? status.value as ClientStatus : null,
       hub: status.status === 'fulfilled' && status.value?.mode !== 'client' ? status.value as HubStatus : null,
-      nodes: nodes.status === 'fulfilled' ? nodes.value : null,
+      // Online machines first, then by name.
+      nodes: nodes.status === 'fulfilled' ? nodes.value.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name)) : null,
       nodesError: nodes.status === 'rejected' ? errorMessage(nodes.reason) : null,
       join: join.status === 'fulfilled' ? join.value : null,
       joinError: join.status === 'rejected' ? errorMessage(join.reason) : null,
@@ -192,7 +214,8 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       // A raw root (for example one ${VAR} template) is edited only in the configuration form.
       rawConfig: config.status === 'fulfilled' && !isRecord(config.value?.value),
       configError: config.status === 'rejected' ? errorMessage(config.reason) : null,
-      workers: functions.status === 'fulfilled' ? [...new Set((functions.value.functions ?? []).map((f) => f.worker_name ?? '').filter((n) => /^[a-z0-9-]+$/.test(n)))] : [],
+      functions: engineFunctions,
+      workers: [...new Set(engineFunctions.map((f) => f.worker_name ?? '').filter((n) => /^[a-z0-9-]+$/.test(n)))],
     }
   }, [host, configurationId])
   const { data, loading, error, refresh } = useWorkerLive({
@@ -237,6 +260,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   // shortcut: assumes the compose key is "mesh"; pass the key through mesh::status if projects rename it.
   const restart = () => run('restart', () => host.iii.call('compose::restart', { container: 'mesh' }))
   const running: Mode = data?.client ? 'client' : 'hub'
+  const hubView = basics.mode !== 'client' && running !== 'client'
   const needsRestart = !dirty && data !== undefined && config !== null && (saved.mode !== running || data?.client?.state === 'restart required')
   // mesh::status is not pushed, and a tunnel settles seconds to minutes after a save: re-read until the hub
   // shows the saved switch and a resting state. Only the hub knows what a templated Public URL expands to.
@@ -274,6 +298,30 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
         headline={saved.mode !== running ? `Restart the mesh worker to switch to ${saved.mode} mode` : 'Restart the mesh worker to apply the new connection'}
         detail="Saved settings take effect when the worker starts again."
         action={<Button disabled={busy !== null} onClick={restart}>{busy === 'restart' ? 'Restarting…' : 'Restart mesh'}</Button>} /></section> : null}
+      {hubView ? <section className="mesh-ui-section" aria-labelledby="mesh-nodes-title" aria-busy={loading}>
+        <div className="mesh-ui-section-head"><h2 id="mesh-nodes-title">Machines</h2>
+          {data?.nodes ? <span className="mesh-ui-muted">{data.nodes.filter((n) => n.online).length} online · {data.nodes.length} total</span> : null}
+        </div>
+        {loading && !data ? <p role="status">Loading machines and join instructions…</p> : null}
+        {error || data?.nodesError ? <StatusPanel variant="alert" headline="Could not load machines"
+          detail={error || data?.nodesError} action={<Button onClick={refresh}>Retry</Button>} /> : null}
+        {data?.nodes?.length === 0 ? <EmptyState icon={Network} title="No machines joined"
+          description="Use the hub URL and join code below in another engine's Mesh page to connect it." /> : null}
+        <div className="mesh-ui-nodes">{data?.nodes?.map((node) => <article key={node.name} className="mesh-ui-node" aria-label={node.name}>
+          <header className="mesh-ui-node-head"><h3><code>{node.name}</code></h3>
+            <Badge variant={node.online ? 'ok' : 'default'}>{node.online ? 'Online' : 'Offline'}</Badge>
+            {node.ephemeral ? <Badge>Ephemeral</Badge> : null}
+          </header>
+          <SharedWorkers node={node} functions={data.functions} />
+          <dl className="mesh-ui-details">
+            <div><dt>Address</dt><dd><code>{node.address}</code></dd></div>
+            <div><dt>Platform</dt><dd>{node.os || 'Unknown'}{node.arch ? ` / ${node.arch}` : ''}</dd></div>
+            <div><dt>Version</dt><dd><code>{node.version || 'Not reported'}</code></dd></div>
+            <div><dt>Path</dt><dd><code>{node.path || 'Not reported'}</code></dd></div>
+            {!node.online ? <div><dt>Last seen</dt><dd>{node.last_seen && !node.last_seen.startsWith('0001-') ? formatRelative(node.last_seen) : 'Not reported'}</dd></div> : null}
+          </dl>
+        </article>)}</div>
+      </section> : null}
       {raw ? null : basics.mode === 'client'
         ? <ClientSetup basics={basics} edit={edit} status={data?.client ?? null} workers={data?.workers ?? []} secretInput={secretInput} />
         : <section className="mesh-ui-section" aria-labelledby="mesh-address-title">
@@ -296,42 +344,16 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
           <Button size="sm" disabled={busy !== null || (basics.mode === 'client' && basics.name !== '' && !NAME.test(basics.name))} onClick={save}>{busy === 'save' ? 'Saving…' : 'Save'}</Button>
         </div> : null}
       </section> : null}
-      {basics.mode === 'client' || running === 'client' ? null : <>
-        <section className="mesh-ui-section" aria-labelledby="mesh-nodes-title" aria-busy={loading}>
-          <div className="mesh-ui-section-head"><h2 id="mesh-nodes-title">Machines</h2>
-            {data?.nodes ? <span className="mesh-ui-muted">{data.nodes.filter((n) => n.online).length} online · {data.nodes.length} total</span> : null}
-          </div>
-          {loading && !data ? <p role="status">Loading machines and join instructions…</p> : null}
-          {error || data?.nodesError ? <StatusPanel variant="alert" headline="Could not load machines"
-            detail={error || data?.nodesError} action={<Button onClick={refresh}>Retry</Button>} /> : null}
-          {data?.nodes?.length === 0 ? <EmptyState icon={Network} title="No machines joined"
-            description="Use the hub URL and join code below in another engine's Mesh page to connect it." /> : null}
-          <div className="mesh-ui-nodes">{data?.nodes?.map((node) => <article key={node.name} className="mesh-ui-node" aria-label={node.name}>
-            <header className="mesh-ui-node-head"><h3><code>{node.name}</code></h3>
-              <Badge variant={node.online ? 'ok' : 'default'}>{node.online ? 'Online' : 'Offline'}</Badge>
-              {node.ephemeral ? <Badge>Ephemeral</Badge> : null}
-            </header>
-            <dl className="mesh-ui-details">
-              <div><dt>Address</dt><dd><code>{node.address}</code></dd></div>
-              <div><dt>Platform</dt><dd>{node.os || 'Unknown'}{node.arch ? ` / ${node.arch}` : ''}</dd></div>
-              <div><dt>Version</dt><dd><code>{node.version || 'Not reported'}</code></dd></div>
-              <div><dt>Path</dt><dd><code>{node.path || 'Not reported'}</code></dd></div>
-              {!node.online ? <div><dt>Last seen</dt><dd>{node.last_seen && !node.last_seen.startsWith('0001-') ? formatRelative(node.last_seen) : 'Not reported'}</dd></div> : null}
-              <Components label="Workers" values={node.workers ?? []} />
-            </dl>
-          </article>)}</div>
-        </section>
-        <section className="mesh-ui-section" aria-labelledby="mesh-join-title">
-          <div className="mesh-ui-section-head"><h2 id="mesh-join-title">Connect another engine</h2></div>
-          <p className="mesh-ui-muted">On the other machine, open Mesh in that project's Console, choose Client, and paste these into Hub URL and Join code or token. If that field takes only a secret://NAME reference, store the code in the secrets worker and enter the reference. Share the join code only with people you trust.</p>
-          {data?.joinError ? <StatusPanel variant="warn" headline="Join instructions unavailable" detail={data.joinError}
-            action={<Button onClick={refresh}>Retry</Button>} /> : null}
-          {data?.join ? <div className="mesh-ui-join">
-            {data.hub?.public_url ? <CopyValue label="Hub URL" value={data.hub.public_url} /> : null}
-            <CopyValue label="Join code" value={data.join.code} />
-          </div> : null}
-        </section>
-      </>}
+      {hubView ? <section className="mesh-ui-section" aria-labelledby="mesh-join-title">
+        <div className="mesh-ui-section-head"><h2 id="mesh-join-title">Connect another engine</h2></div>
+        <p className="mesh-ui-muted">On the other machine, open Mesh in that project's Console, choose Client, and paste these into Hub URL and Join code or token. If that field takes only a secret://NAME reference, store the code in the secrets worker and enter the reference. Share the join code only with people you trust.</p>
+        {data?.joinError ? <StatusPanel variant="warn" headline="Join instructions unavailable" detail={data.joinError}
+          action={<Button onClick={refresh}>Retry</Button>} /> : null}
+        {data?.join ? <div className="mesh-ui-join">
+          {data.hub?.public_url ? <CopyValue label="Hub URL" value={data.hub.public_url} /> : null}
+          <CopyValue label="Join code" value={data.join.code} />
+        </div> : null}
+      </section> : null}
     </PageMain>
   </PageShell>
 }

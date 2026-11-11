@@ -32,8 +32,11 @@ iii call --engine ws://127.0.0.1:49834 mesh::nodes::get name=laptop
 
 Status reports front-door, gateway and proxy health plus total, online and
 outdated node counts. The list holds each node's name, address, platform,
-version, online state and shared workers. An empty list means no client has
-joined. An offline node exposes no functions.
+version, online state and shared workers; each shared worker lists its hub
+function ids (`<node>::<function>`). The hub re-reads each online node every
+30 seconds, so a worker shared or stopped after the join shows within that
+time. An empty list means no client has joined. An offline node exposes no
+functions, though its workers may still list the ids it last reported.
 
 ## Node events
 
@@ -81,8 +84,10 @@ transitions.
 
 ## Console
 
-Open **Mesh** in the Console of a hub to see the hub address and the joined
-nodes with their connectivity, connection path, version and shared workers.
+Open **Mesh** in the Console of a hub to see the joined machines, online first.
+Each card lists the workers that machine shares, each with its hub function ids
+and their descriptions, then its address, platform, version and connection path.
+The **Hub address** section follows.
 Use **Refresh** for a new snapshot; the page also refreshes when you return to
 the tab. The **Connect another engine** section shows this hub's URL and join
 code, to paste into the Mesh page of the other project in **Client** mode. If

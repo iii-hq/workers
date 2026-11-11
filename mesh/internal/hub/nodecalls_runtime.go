@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// nodeRefreshTicks is how many 1 s watch ticks pass between status re-reads of an online node.
+var nodeRefreshTicks = 30
+
 type nodeReconcileTask struct {
 	cancel context.CancelFunc
 	dirty  bool
@@ -142,14 +145,15 @@ func (r *nodeReconciler) watch() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	previous := map[string]bool{}
-	for {
+	for tick := 0; ; tick++ {
 		current := map[string]bool{}
 		for _, n := range r.hub.Coordinator.Nodes() {
 			if n.Name == "hub" || !n.Online {
 				continue
 			}
 			current[n.Name] = true
-			if !previous[n.Name] {
+			// A bridge shares or drops workers over its open connection, with no new gateway auth; re-read every online node so nodes::list follows.
+			if !previous[n.Name] || tick%nodeRefreshTicks == 0 {
 				r.enqueue(n.Name)
 			}
 		}

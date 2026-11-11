@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -210,7 +211,7 @@ func TestSetRuntimeIsIdempotentAndEmptyURLSuspends(t *testing.T) {
 	if b.remote != nil || len(registered(b)) != 0 {
 		t.Fatal("an empty URL does not suspend")
 	}
-	if s := b.Status(); len(s) != 1 || s[0].Name != "probe" || s[0].State != "pending" {
+	if s := b.Status(); len(s) != 1 || s[0].Name != "probe" || s[0].State != "pending" || !slices.Equal(s[0].Functions, []string{"probe::echo"}) {
 		t.Fatalf("suspended status %+v", s)
 	}
 }
@@ -276,8 +277,8 @@ func TestStateForMissingWorker(t *testing.T) {
 	if err := b.Sync(context.Background(), []string{"probe"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []node.WorkerStatus{{Name: "probe", State: "not running"}}
-	if got := b.Status(); !slices.Equal(got, want) {
+	want := []node.WorkerStatus{{Name: "probe", State: "not running", Functions: []string{}}}
+	if got := b.Status(); !reflect.DeepEqual(got, want) || got[0].Functions == nil {
 		t.Fatalf("status %+v", got)
 	}
 }

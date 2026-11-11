@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -38,7 +39,7 @@ func (w *signedWorkers) SetRuntime(_ context.Context, r node.Runtime) error {
 	return nil
 }
 func (w *signedWorkers) Status() []node.WorkerStatus {
-	return []node.WorkerStatus{{Name: "shell", State: "shared"}}
+	return []node.WorkerStatus{{Name: "shell", State: "shared", Functions: []string{"shell::exec"}}}
 }
 
 type registeredNodeRPC struct {
@@ -185,7 +186,7 @@ func TestDelayedRegisteredNodeReceivesHubSignedNamespace(t *testing.T) {
 		t.Fatalf("config hook calls %d", hooksCalled)
 	}
 	details, err := h.GetNode(ctx, NodeRequest{Name: "laptop"})
-	if err != nil || details.StatusError != "" || details.Version != h.Version || details.Path != "relay hub" || len(details.Workers) != 1 {
+	if err != nil || details.StatusError != "" || details.Version != h.Version || details.Path != "relay hub" || !reflect.DeepEqual(details.Workers, []ComponentState{{Name: "shell", State: "shared", Functions: []string{"laptop::shell::exec"}}}) {
 		t.Fatalf("details %+v error %v", details, err)
 	}
 	cancel()

@@ -85,7 +85,7 @@ func (b *Bridge) Status() []node.WorkerStatus {
 	defer b.mu.Unlock()
 	out := []node.WorkerStatus{}
 	for _, s := range b.shared("") {
-		out = append(out, node.WorkerStatus{Name: s.Worker, State: s.State})
+		out = append(out, node.WorkerStatus{Name: s.Worker, State: s.State, Functions: s.Functions})
 	}
 	return out
 }

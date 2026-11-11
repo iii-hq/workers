@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -62,7 +63,7 @@ func (w *testWorkers) SetRuntime(_ context.Context, r Runtime) error {
 	return nil
 }
 func (w *testWorkers) Status() []WorkerStatus {
-	return []WorkerStatus{{Name: "shell", State: "shared"}}
+	return []WorkerStatus{{Name: "shell", State: "shared", Functions: []string{"shell::exec"}}}
 }
 func testNode(t *testing.T) (*Node, ed25519.PrivateKey, *testNetwork, *testWorkers) {
 	t.Helper()
@@ -100,7 +101,7 @@ func TestVerifyReportsSkew(t *testing.T) {
 	}
 	var status Status
 	json.Unmarshal(raw, &status)
-	if status.ClockSkewSecs != 90 || status.Name != "laptop-2" || status.OS != runtime.GOOS {
+	if status.ClockSkewSecs != 90 || status.Name != "laptop-2" || status.OS != runtime.GOOS || !reflect.DeepEqual(status.Workers, []WorkerStatus{{Name: "shell", State: "shared", Functions: []string{"shell::exec"}}}) {
 		t.Fatalf("status %+v", status)
 	}
 }

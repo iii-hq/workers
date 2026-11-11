@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 )
 
 type nodeCallRPC struct {
+	mu         sync.Mutex // the reconciler calls from its own goroutine
 	status     node.Status
 	verifier   *node.Verifier
 	calls      []string
@@ -30,6 +32,8 @@ type nodeCallRPC struct {
 }
 
 func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if req.Namespace != "default" || !strings.HasPrefix(req.FunctionID, "laptop::mesh-node::") {
 		return nil, errors.New("incorrect control namespace or prefix")
 	}
@@ -97,6 +101,8 @@ func TestVersionMismatchSharesNothing(t *testing.T) {
 		t.Fatal("outdated node missing")
 	}
 	r.status.Version = "0.2.0"
+	// A worker sent without functions (null) still lists [] on the hub.
+	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "shared", Functions: []string{"coder::read-file", "shell::exec"}}, {Name: "probe", State: "not running"}}
 	if err := h.OnNodeOnline(t.Context(), "laptop"); err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +116,36 @@ func TestVersionMismatchSharesNothing(t *testing.T) {
 	if len(list) != 1 || list[0].Version != "0.2.0" || list[0].OS != "linux" || list[0].Arch != "amd64" {
 		t.Fatalf("list %+v", list)
 	}
+	if workers, _ := json.Marshal(list[0].Workers); string(workers) != `[{"name":"ide","state":"shared","functions":["laptop::coder::read-file","laptop::shell::exec"]},{"name":"probe","state":"not running","functions":[]}]` {
+		t.Fatalf("workers %s", workers)
+	}
+}
+func TestOnlineNodeWorkersRefresh(t *testing.T) {
+	defer func(n int) { nodeRefreshTicks = n }(nodeRefreshTicks)
+	nodeRefreshTicks = 1
+	h, r := nodeCallHub(t)
+	r.status.Version = h.Version
+	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "not running", Functions: []string{}}}
+	h.SetHooks(Hooks{})
+	h.startNodeCalls(t.Context())
+	defer h.Close()
+	waitWorkers := func(want string) {
+		t.Helper()
+		var got []byte
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			list, _ := h.ListNodes(t.Context(), struct{}{})
+			if got, _ = json.Marshal(list[0].Workers); string(got) == want {
+				return
+			}
+		}
+		t.Fatalf("workers %s, want %s", got, want)
+	}
+	waitWorkers(`[{"name":"ide","state":"not running","functions":[]}]`)
+	// The bridge starts sharing ide over its open connection: no gateway auth, no reconnect.
+	r.mu.Lock()
+	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "shared", Functions: []string{"coder::read-file"}}}
+	r.mu.Unlock()
+	waitWorkers(`[{"name":"ide","state":"shared","functions":["laptop::coder::read-file"]}]`)
 }
 func TestApplyOnReconnect(t *testing.T) {
 	h, r := nodeCallHub(t)

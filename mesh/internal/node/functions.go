@@ -13,8 +13,9 @@ import (
 )
 
 type WorkerStatus struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Name      string   `json:"name"`
+	State     string   `json:"state"`
+	Functions []string `json:"functions"` // local function ids, sorted
 }
 type WorkersRequest struct {
 	Namespace string `json:"namespace"`

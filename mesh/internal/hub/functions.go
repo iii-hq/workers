@@ -81,8 +81,9 @@ type NodeRequest struct {
 	Name string `json:"name"`
 }
 type ComponentState struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Name      string   `json:"name"`
+	State     string   `json:"state"`
+	Functions []string `json:"functions"` // hub function ids (<node>::<local id>)
 }
 type NodeEntry struct {
 	Name      string           `json:"name"`
