@@ -475,6 +475,13 @@
   margin-top: calc(var(--chat-stack-gap) * -1 + 18px);
 }
 
+/* Back-to-back observer fires read as one list, not a column of separate
+   turns: drop the stack gap between them (inside the row's box, as above). */
+.chat-message-stack > .chat-live-row[data-after-observer-fire]
+  > [data-message-role="observer-activity"] {
+  margin-top: calc(var(--chat-stack-gap) * -1);
+}
+
 .chat-tool-group[data-mounted-settled]
   :is(.chat-tool-group__icon, .chat-tool-group__failed, .chat-tool-row__meta) {
   animation: none;

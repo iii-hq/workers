@@ -65,6 +65,7 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import {
   allGroupsFolded,
   foldAllGroups,
+  revealGroup,
   useContextSections,
   useFoldedGroups,
 } from '@/lib/context-groups'
@@ -74,7 +75,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { deleteSession, setSessionMeta } from '@/lib/sessions/api'
 import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import { PortalScope } from '@/lib/ui-scope'
-import type { Conversation } from '@/types/chat'
+import type { Conversation, SystemMessage } from '@/types/chat'
 import { ChatContextPanel } from './ChatContextPanel'
 import { ChatView } from './ChatView'
 import { ContextSectionsMenu } from './ContextSectionsMenu'
@@ -87,6 +88,8 @@ export interface AsideRequest {
   tab: AsideTab
   /** A quote just handed over: the composer takes the caret to ask about it. */
   quote?: SideChatQuote
+  /** A Context section to unfold and scroll to (`observers`). */
+  section?: string
 }
 
 const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
@@ -138,6 +141,10 @@ interface ChatAsideProps {
   onSheetOpenChange: (open: boolean) => void
   request: AsideRequest | null
   observers: readonly SessionObserverInfo[]
+  /** This chat's observer events, for the Observers section. */
+  observerEvents?: readonly SystemMessage[]
+  /** The observer list has loaded: an observer missing from it has ended. */
+  observersListed?: boolean
   onDisposeObserver: (observerId: string) => Promise<void> | void
   landBlocked?: boolean
   /** The quote waiting in the side chat's composer (owned by the main chat). */
@@ -163,6 +170,8 @@ export function ChatAside({
   onSheetOpenChange,
   request,
   observers,
+  observerEvents,
+  observersListed,
   onDisposeObserver,
   landBlocked,
   pendingQuote,
@@ -401,6 +410,35 @@ export function ChatAside({
     if (!request || request.seq === handledRequest.current) return
     handledRequest.current = request.seq
     show(request.tab)
+    const section = request.section
+    if (section) {
+      revealGroup(section)
+      // After the tab and the unfold have painted.
+      requestAnimationFrame(() => {
+        const target = contentRef.current?.querySelector<HTMLElement>(
+          `[data-reorder-item="${section}"]`,
+        )
+        if (!target) return
+        const still = window.matchMedia(
+          '(prefers-reduced-motion: reduce)',
+        ).matches
+        target.scrollIntoView({
+          block: 'nearest',
+          behavior: still ? 'auto' : 'smooth',
+        })
+        // Already in view, the section would not move: a brief ring says
+        // this is where the click landed.
+        if (!still) {
+          target.animate(
+            [
+              { boxShadow: '0 0 0 2px var(--color-warn)' },
+              { boxShadow: '0 0 0 2px transparent' },
+            ],
+            { duration: 1200, easing: 'ease-out' },
+          )
+        }
+      })
+    }
     if (request.tab !== 'side-chat' || !request.quote) return
     void ensureFork().then((id) => {
       // The composer takes the caret on mount: a remount aims it at the
@@ -546,6 +584,8 @@ export function ChatAside({
         conversations={ctx.conversations}
         connectionState={ctx.connectionState}
         observers={observers}
+        observerEvents={observerEvents}
+        observersListed={observersListed}
         onDisposeObserver={onDisposeObserver}
         onOpenConversation={ctx.openConversationInPanel}
         shellAvailable={ctx.shellAvailable}

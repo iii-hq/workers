@@ -406,6 +406,16 @@ export function ChatView({
       })),
     [],
   )
+  // An observer roll-up in the transcript opens the Observers section.
+  const showObservers = useCallback(
+    () =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab: 'context',
+        section: 'observers',
+      })),
+    [],
+  )
   // The quote waiting in the side chat's composer, and the ones it sent:
   // their source messages stay marked here while the side chat holds them.
   const [pendingQuote, setPendingQuote] = useState<SideChatQuote | null>(null)
@@ -791,6 +801,15 @@ export function ChatView({
         seenObserversRef.current,
       ),
     [sessionObservers, firedObservers],
+  )
+  // What the observers did here, for the side panel's Observers section.
+  const observerEvents = useMemo(
+    () =>
+      conversation.messages.filter(
+        (m): m is SystemMessage =>
+          m.role === 'system' && m.kind === 'observer-fired',
+      ),
+    [conversation.messages],
   )
   // Registration lookup for observer-fired cards: a fire record carries only
   // the observer id — the observer's conditions and lifecycle live in these rows.
@@ -3250,6 +3269,7 @@ export function ChatView({
                   history={side ? undefined : conversation.history}
                   onLoadOlder={side ? undefined : handleLoadOlder}
                   onLoadActivityEntries={handleLoadActivityEntries}
+                  onShowObservers={asideEnabled ? showObservers : undefined}
                 />
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
@@ -3508,6 +3528,8 @@ export function ChatView({
             onSheetOpenChange={setAsideSheetOpen}
             request={asideRequest}
             observers={mergedObservers}
+            observerEvents={observerEvents}
+            observersListed={observersSnapshotSessionId === conversation.id}
             onDisposeObserver={handleDisposeObserver}
             landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
             pendingQuote={pendingQuote}

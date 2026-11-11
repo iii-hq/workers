@@ -41,6 +41,7 @@ import {
 } from '@/components/observer-activity/model'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Button } from '@/components/ui/Button'
+import { Hint } from '@/components/ui/Hint'
 import { ImageViewer } from '@/components/ui/ImageViewer'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -92,6 +93,7 @@ import {
   flattenTimelineRows,
   isHistoryPrepend,
   isLiveRow,
+  isObserverFireRow,
   isProseRow,
   measureRowSlot,
   observeNonEmptyRect,
@@ -202,6 +204,11 @@ interface MessageListProps {
    * show a failure instead of a skeleton.
    */
   onLoadActivityEntries?: (entryIds: string[]) => Promise<boolean> | undefined
+  /**
+   * Open the side panel's Observers section. Given, a run of observer events
+   * shows as an eye and a count that opens it, not an inline group.
+   */
+  onShowObservers?: () => void
 }
 
 const ACTIVITY_RESULT_DWELL_MS = 250
@@ -381,6 +388,7 @@ interface LiveTimelineRowProps {
   /** Sibling spacing, from the row model: the neighbor may not be mounted. */
   beforeGroup?: boolean
   afterProse?: boolean
+  afterObserverFire?: boolean
 }
 
 function LiveTimelineRow({
@@ -393,6 +401,7 @@ function LiveTimelineRow({
   rowIndex,
   beforeGroup,
   afterProse,
+  afterObserverFire,
 }: LiveTimelineRowProps) {
   const [present, setPresent] = useState(!animate)
 
@@ -411,6 +420,7 @@ function LiveTimelineRow({
       data-index={rowIndex}
       data-before-group={beforeGroup ? '' : undefined}
       data-after-prose={afterProse ? '' : undefined}
+      data-after-observer-fire={afterObserverFire ? '' : undefined}
       data-message-row={messageRow}
       data-presence={present ? 'present' : 'entering'}
       className={cn('chat-live-row', className)}
@@ -600,6 +610,7 @@ export function MessageList({
   history,
   onLoadOlder,
   onLoadActivityEntries,
+  onShowObservers,
 }: MessageListProps) {
   const containerRef = useRef<HTMLElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -1504,6 +1515,7 @@ export function MessageList({
             defaultOpenCalls={defaultOpenCalls}
             focusMessageId={focusMessageId}
             onLoadActivityEntries={onLoadActivityEntries}
+            onShowObservers={onShowObservers}
             onResolveApproval={onResolveApproval}
             onAlwaysAllow={onAlwaysAllow}
             onResolveFilesystemAccess={onResolveFilesystemAccess}
@@ -1564,6 +1576,9 @@ export function MessageList({
         rowRef={measureRow}
         rowIndex={index}
         beforeGroup={beforeGroup}
+        afterObserverFire={
+          isObserverFireRow(flat) && isObserverFireRow(flatRows[index - 1])
+        }
         messageRow={flat.key}
         animate={
           !reducedMotion &&
@@ -1849,6 +1864,7 @@ interface FunctionCallGroupProps {
   /** External landing target — a hidden matching item expands the group. */
   focusMessageId?: string | null
   onLoadActivityEntries?: MessageListProps['onLoadActivityEntries']
+  onShowObservers?: () => void
 }
 
 function useDwelledActivityKeys(
@@ -1950,6 +1966,7 @@ function FunctionCallGroup({
   agentName,
   focusMessageId,
   onLoadActivityEntries,
+  onShowObservers,
 }: FunctionCallGroupProps) {
   // A batch observed live opens in full: its rows arrive one by one and the
   // reader watches them settle. Once the agent moves past it, and for a settled
@@ -1961,6 +1978,18 @@ function FunctionCallGroup({
       item.kind === 'function-call' &&
       (item.message.running === true || item.message.pendingApproval === true),
   )
+  // A phase of nothing but observer activity counts what it observed; one
+  // with calls in it says what it called.
+  const observedOnly = row.items.every(
+    (item) => item.kind === 'observer-activity',
+  )
+  const noun = observedOnly
+    ? row.items.length === 1
+      ? 'event'
+      : 'events'
+    : row.items.length === 1
+      ? 'function'
+      : 'functions'
   const failedCount = row.items.filter(
     (item) =>
       item.kind === 'function-call' &&
@@ -2027,12 +2056,16 @@ function FunctionCallGroup({
     item.message.id === focusMessageId ||
     (item.kind === 'observer-activity' &&
       item.notification?.id === focusMessageId)
+  // A run of observer events shows as an eye and a count that opens the side
+  // panel. One event shows as itself: its text is the news.
+  const rollsUp = observedOnly && !!onShowObservers && row.items.length > 1
   if (
     !expanded &&
     focusMessageId != null &&
-    !collapsedItems.some(ownsFocusTarget) &&
+    (rollsUp || !collapsedItems.some(ownsFocusTarget)) &&
     row.items.some(ownsFocusTarget)
   ) {
+    // A landing needs the target's row on screen: the roll-up has none.
     setExpanded(true)
   }
   const hiddenCount = row.items.length - collapsedItems.length
@@ -2089,6 +2122,48 @@ function FunctionCallGroup({
     return { item, index, key, semanticVisible, mounted, ordinal }
   })
 
+  if (rollsUp && !expanded) {
+    const label = `${row.items.length} observer ${noun}`
+    // Which observers the run came from, most recent first: two names, then
+    // a count, so a run from several observers says so.
+    const names: string[] = []
+    for (let i = row.items.length - 1; i >= 0; i--) {
+      const fired = row.items[i].message
+      const name =
+        fired.role === 'system'
+          ? (fired.observer?.label ?? fired.observer?.action)
+          : undefined
+      if (name && !names.includes(name)) names.push(name)
+    }
+    const sources =
+      names.length > 2
+        ? `${names.slice(0, 2).join(', ')} +${names.length - 2}`
+        : names.join(', ')
+    return (
+      <section ref={sectionRef} data-observer-rollup="">
+        <Hint label="Show in Observers">
+          <button
+            type="button"
+            onClick={onShowObservers}
+            aria-label={`${label}${sources ? ` from ${sources}` : ''} · show in Observers`}
+            className="-ml-2 inline-flex h-8 max-w-full items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            <ObserverIcon aria-hidden className="size-4 shrink-0 fill-warn" />
+            <span className="font-medium text-ink tabular-nums">
+              {row.items.length}
+            </span>
+            <span>{noun}</span>
+            {sources ? (
+              <span className="min-w-0 truncate" data-observer-sources="">
+                · {sources}
+              </span>
+            ) : null}
+          </button>
+        </Hint>
+      </section>
+    )
+  }
+
   return (
     <section
       ref={sectionRef}
@@ -2116,7 +2191,7 @@ function FunctionCallGroup({
         type="button"
         aria-expanded={expanded}
         aria-disabled={!canCollapse || undefined}
-        aria-label={`Agent called ${row.items.length} functions · ${expanded ? 'show latest' : 'show all'}`}
+        aria-label={`${observedOnly ? 'Observed' : 'Agent called'} ${row.items.length} ${noun} · ${expanded ? 'show latest' : 'show all'}`}
         aria-controls={contentId}
         onClick={canCollapse ? toggleExpanded : undefined}
         tabIndex={canCollapse ? undefined : -1}
@@ -2126,10 +2201,10 @@ function FunctionCallGroup({
         <span className="chat-tool-group__label">
           <span className="chat-call-disclosure-label">
             <span data-active={live} aria-hidden={!live}>
-              Calling
+              {observedOnly ? 'Observing' : 'Calling'}
             </span>
             <span data-active={!live} aria-hidden={live}>
-              Called
+              {observedOnly ? 'Observed' : 'Called'}
             </span>
           </span>
           <AnimatedCount
@@ -2137,7 +2212,7 @@ function FunctionCallGroup({
             reducedMotion={reducedMotion}
           />
           {/* iii has functions, not "tools": the batch says what it called. */}
-          <span>{row.items.length === 1 ? 'function' : 'functions'}</span>
+          <span>{noun}</span>
         </span>
         {failedCount > 0 ? (
           <span
