@@ -70,7 +70,10 @@ import {
   ghViewer,
   readPrActivity,
 } from '@/lib/auto-fix'
-import type { SessionObserverInfo } from '@/lib/backend/observers'
+import {
+  firedGhostRow,
+  type SessionObserverInfo,
+} from '@/lib/backend/observers'
 import {
   type ChatFile,
   capRows,
@@ -453,6 +456,28 @@ export function ChatContextPanel({
     () => observers.filter((observer) => !observer.fired),
     [observers],
   )
+  // One row per observer, not per event: a standing observer checks many
+  // times, and each check is a transcript event. Ended observers stay while
+  // this chat holds their events, so the transcript's roll-up has a row here.
+  const observerListing = useMemo(() => {
+    const counts = new Map<string, number>()
+    const latest = new Map<string, NonNullable<SystemMessage['observer']>>()
+    for (const event of observerEvents) {
+      const fired = event.observer
+      if (!fired) continue
+      counts.set(fired.observer_id, (counts.get(fired.observer_id) ?? 0) + 1)
+      latest.set(fired.observer_id, fired)
+    }
+    const live = new Set(liveObservers.map((observer) => observer.id))
+    const ended = [...latest]
+      .filter(([id]) => !live.has(id))
+      .map(
+        ([id, fired]) =>
+          observers.find((observer) => observer.id === id) ??
+          firedGhostRow(fired),
+      )
+    return { rows: [...liveObservers, ...ended], counts }
+  }, [observerEvents, liveObservers, observers])
   const [openObserverId, setOpenObserverId] = useState<string | null>(null)
   const [busyObserverId, setBusyObserverId] = useState<string | null>(null)
   const [confirmObserver, setConfirmObserver] =
@@ -467,20 +492,16 @@ export function ChatContextPanel({
     }
   }
   const openObserver =
-    liveObservers.find((observer) => observer.id === openObserverId) ?? null
+    observerListing.rows.find((observer) => observer.id === openObserverId) ??
+    null
 
   const ticketRowsShown = capRows(tickets, SECTION_CAP, !!expanded.tickets)
   const prRows = capRows(listedPrs, SECTION_CAP, !!expanded.prs)
   const subagentRows = capRows(subagents, SUBAGENT_CAP, !!expanded.subagents)
-  const observerRows = capRows(liveObservers, SECTION_CAP, !!expanded.observers)
-  const newestEvents = useMemo(
-    () => [...observerEvents].reverse(),
-    [observerEvents],
-  )
-  const eventRows = capRows(
-    newestEvents,
+  const observerRows = capRows(
+    observerListing.rows,
     SECTION_CAP,
-    !!expanded['observer-events'],
+    !!expanded.observers,
   )
   const linkRows = capRows(links, SECTION_CAP, !!expanded.links)
   const imageRows = capRows(images, IMAGE_CAP, !!expanded.images)
@@ -911,31 +932,40 @@ export function ChatContextPanel({
         </Section>
       ) : null,
     observers:
-      liveObservers.length > 0 || newestEvents.length > 0 ? (
+      observerListing.rows.length > 0 ? (
         <Section
           id="observers"
           label="Observers"
-          count={liveObservers.length}
+          count={observerListing.rows.length}
           brief={
             <span className="truncate font-mono text-ink-ghost">
-              {liveObservers.length > 0
-                ? [...new Set(liveObservers.map((t) => t.functionId))].join(
-                    ' · ',
-                  )
-                : `${newestEvents.length} ${newestEvents.length === 1 ? 'event' : 'events'}`}
+              {[...new Set(observerListing.rows.map((t) => t.functionId))].join(
+                ' · ',
+              )}
             </span>
           }
         >
           {observerRows.shown.map((observer) => {
             const label =
               observer.label ?? observer.action ?? observer.functionId
+            const ended = observer.fired === true
+            const events = observerListing.counts.get(observer.id) ?? 0
+            const summary = [
+              events > 0
+                ? `${events} ${events === 1 ? 'event' : 'events'}`
+                : null,
+              ended ? 'ended' : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')
             return (
               <Row
                 key={observer.id}
+                data-observer-row={ended ? 'ended' : 'live'}
                 icon={
                   <ObserverIcon
                     size={16}
-                    className="fill-current"
+                    className={ended ? 'fill-ink-ghost' : 'fill-current'}
                     aria-hidden
                   />
                 }
@@ -944,28 +974,32 @@ export function ChatContextPanel({
                 onActivate={() => setOpenObserverId(observer.id)}
                 ariaLabel={`Show ${label}`}
                 meta={
-                  label === observer.functionId ? null : (
+                  summary ? (
+                    <span className={uiClasses.treeItemMeta}>{summary}</span>
+                  ) : label === observer.functionId ? null : (
                     <span className={cn(uiClasses.treeItemMeta, 'font-mono')}>
                       {observer.functionId}
                     </span>
                   )
                 }
                 actions={
-                  <Hint label="Remove">
-                    <button
-                      type="button"
-                      className={uiClasses.treeItemAction}
-                      data-tone="alert"
-                      aria-label={`Remove ${label}`}
-                      disabled={busyObserverId === observer.id}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        setConfirmObserver(observer)
-                      }}
-                    >
-                      <X aria-hidden />
-                    </button>
-                  </Hint>
+                  ended ? undefined : (
+                    <Hint label="Remove">
+                      <button
+                        type="button"
+                        className={uiClasses.treeItemAction}
+                        data-tone="alert"
+                        aria-label={`Remove ${label}`}
+                        disabled={busyObserverId === observer.id}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setConfirmObserver(observer)
+                        }}
+                      >
+                        <X aria-hidden />
+                      </button>
+                    </Hint>
+                  )
                 }
               />
             )
@@ -973,58 +1007,10 @@ export function ChatContextPanel({
           <ShowMore
             hidden={observerRows.hidden}
             expanded={!!expanded.observers}
-            total={liveObservers.length}
+            total={observerListing.rows.length}
             cap={SECTION_CAP}
             onToggle={() => toggle('observers')}
           />
-          {newestEvents.length > 0 ? (
-            <>
-              <div
-                className="px-2 pt-2 pb-1 font-sans text-xs text-ink-faint"
-                data-observer-events-label=""
-              >
-                Events · {newestEvents.length}
-              </div>
-              {eventRows.shown.map((event) => {
-                const fired = event.observer
-                const live = liveObservers.find(
-                  (observer) => observer.id === fired?.observer_id,
-                )
-                const waiting = event.id.startsWith('e_obsskip_')
-                return (
-                  <Row
-                    key={event.id}
-                    data-observer-event=""
-                    icon={
-                      <ObserverIcon
-                        size={16}
-                        className={waiting ? 'fill-ink-ghost' : 'fill-warn'}
-                        aria-hidden
-                      />
-                    }
-                    label={fired?.action ?? event.content}
-                    title={fired?.label ?? live?.label}
-                    onActivate={
-                      live ? () => setOpenObserverId(live.id) : undefined
-                    }
-                    meta={
-                      <span className={uiClasses.treeItemMeta}>
-                        {waiting ? 'not yet · ' : ''}
-                        {formatRelative(fired?.fired_at ?? event.createdAt)}
-                      </span>
-                    }
-                  />
-                )
-              })}
-              <ShowMore
-                hidden={eventRows.hidden}
-                expanded={!!expanded['observer-events']}
-                total={newestEvents.length}
-                cap={SECTION_CAP}
-                onToggle={() => toggle('observer-events')}
-              />
-            </>
-          ) : null}
         </Section>
       ) : null,
     links:
