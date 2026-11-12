@@ -83,8 +83,8 @@ pub(crate) struct SummaryWitness {
     pub inputs: Vec<SourceSlot>,
     /// Only exact full lines of authenticated Memory inputs, in summary order.
     pub lines: Vec<LineWitness>,
-    /// Line digests of each certified group, replayed whole. In-process only;
-    /// a witness without them replays the contiguous runs of `lines`.
+    /// Line digests of each certified group, each once, replayed whole.
+    /// In-process only: never part of the emitted event.
     #[serde(skip)]
     pub groups: Vec<Vec<String>>,
 }
@@ -179,17 +179,10 @@ pub(crate) fn bind_summary(
                 return None;
             }
             // Replay each certified group on its own: a later compaction may put
-            // summary text between two groups that were once adjacent. A witness
-            // without group boundaries falls back to its contiguous runs.
-            let groups: Vec<Vec<String>> = if prior.groups.is_empty() {
-                prior
-                    .lines
-                    .chunk_by(|a, b| b.line == a.line + 1)
-                    .map(|run| run.iter().map(|line| line.sha256.clone()).collect())
-                    .collect()
-            } else {
-                prior.groups
-            };
+            // summary text between two groups that were once adjacent. The ledger
+            // is in-process and only ever holds witnesses bind_summary built, so
+            // every witness with lines carries its groups.
+            let groups = prior.groups;
             if allowed.iter().chain(&groups).map(Vec::len).sum::<usize>() > MAX_LINES {
                 return None;
             }
@@ -241,7 +234,9 @@ pub(crate) fn bind_summary(
                     sha256: digest.clone(),
                 });
             }
-            result.groups.push(source);
+            if !result.groups.contains(&source) {
+                result.groups.push(source);
+            }
         }
     }
     if result.lines.is_empty() {

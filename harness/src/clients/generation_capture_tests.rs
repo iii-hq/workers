@@ -927,19 +927,19 @@ fn summary_replay_keeps_certified_groups_split_by_unrelated_text() {
         [3]
     );
 
-    // A record without group boundaries (the emitted shape) replays its
-    // contiguous runs as before: split runs bind, adjacent groups are one run.
-    let old_shape = |witness: &SummaryWitness| -> SummaryWitness {
-        serde_json::from_value(serde_json::to_value(witness).unwrap()).unwrap()
-    };
-    remember_summary(session, "old-split", &old_shape(&witness));
-    assert_eq!(lines(&replay("old-split", text, text).unwrap()), [0, 1, 3]);
-    remember_summary(session, "old-adjacent", &old_shape(&adjacent_witness));
-    assert!(replay("old-adjacent", adjacent, text).is_none());
-    assert_eq!(
-        lines(&replay("old-adjacent", adjacent, adjacent).unwrap()),
-        [0, 1, 2]
-    );
+    // The same notices summarized again beside the replayed witness: each
+    // group is kept once, so repeated compactions cannot grow the witness.
+    let digest = raw_digest(text);
+    let both = bind_summary(
+        session,
+        &summary(text, Some(vec![0, 1])),
+        text,
+        &candidate,
+        Some(("split-summary", &digest)),
+    )
+    .unwrap();
+    assert_eq!(lines(&both), [0, 1, 3]);
+    assert_eq!(both.groups.len(), 2);
 }
 
 #[tokio::test]

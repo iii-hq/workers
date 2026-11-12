@@ -799,6 +799,24 @@ mod tests {
                 envelope(&record, &e, Some(&r), &[])["source"]["kind"],
                 expected
             );
+            // A receipt from before full-text digests still resolves on its query;
+            // one whose digest no longer matches the entry grants nothing.
+            let legacy = Receipt {
+                full_text_sha256: None,
+                ..r.clone()
+            };
+            assert_eq!(
+                envelope(&record, &e, Some(&legacy), &[])["source"]["kind"],
+                expected
+            );
+            let stale = Receipt {
+                full_text_sha256: Some("stale".into()),
+                ..r.clone()
+            };
+            assert_eq!(
+                envelope(&record, &e, Some(&stale), &[])["source"]["kind"],
+                "unknown"
+            );
             let wrong = Receipt {
                 session_id: "another".into(),
                 ..r
