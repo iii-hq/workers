@@ -229,11 +229,20 @@ jobs:
             (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
 
+      # The worker's web/, ui/ and native-ui/ projects are members of the root
+      # pnpm workspace, which the pre-build above installed. Warning only.
+      - name: Check unused Node dependencies (warning only)
+        if: steps.frontends.outputs.found == 'true'
+        working-directory: ${{ github.workspace }}
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: python3 .github/scripts/unused_deps.py knip -- --workspace "./$WORKER/*"
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       # Unused dependencies are a warning, never a failure: findings become
-      # annotations on the manifest lines (.github/scripts/cargo_shear_warnings.sh).
+      # annotations on the manifest lines (.github/scripts/unused_deps.py).
       # A failed install only makes the check warn that it could not run.
       - name: Install cargo-shear
         uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
@@ -243,9 +252,10 @@ jobs:
           fallback: none
 
       - name: Check unused dependencies (warning only)
+        working-directory: ${{ github.workspace }}
         env:
           WORKER: ${{ matrix.worker }}
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/cargo_shear_warnings.sh" "$WORKER"
+        run: python3 .github/scripts/unused_deps.py cargo-shear --directory "$WORKER"
 
       # browser is the one worker whose --all-features build needs external
       # pinned artifacts: `scrapling-compat` links a certified
@@ -893,7 +903,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       # Unused dependencies are a warning, never a failure: findings become
-      # annotations on the manifest lines (.github/scripts/cargo_shear_warnings.sh).
+      # annotations on the manifest lines (.github/scripts/unused_deps.py).
       # A failed install only makes the check warn that it could not run.
       - name: Install cargo-shear
         uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
@@ -903,9 +913,10 @@ jobs:
           fallback: none
 
       - name: Check unused dependencies (warning only)
+        working-directory: ${{ github.workspace }}
         env:
           CRATE: crates/${{ matrix.crate }}
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/cargo_shear_warnings.sh" "$CRATE"
+        run: python3 .github/scripts/unused_deps.py cargo-shear --directory "$CRATE"
 
       - name: Run clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -1649,6 +1660,12 @@ jobs:
           cache-dependency-path: ${{ matrix.worker }}/go.sum
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
+      # Modules `go mod tidy` would drop become warnings, never a failure.
+      - name: Check unused dependencies (warning only)
+        working-directory: ${{ github.workspace }}
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: python3 .github/scripts/unused_deps.py go --directory "$WORKER"
       - name: Vet
         run: go vet ./...
       - name: Run tests
@@ -1691,6 +1708,12 @@ jobs:
       - name: Biome lint
         run: npx --yes @biomejs/biome@2.4.10 ci ${{ matrix.worker }}
 
+      # knip over the worker's own project; findings are warnings only.
+      - name: Check unused dependencies (warning only)
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: python3 .github/scripts/unused_deps.py knip --directory "$WORKER"
+
       - name: Run tests
         if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}
@@ -1728,6 +1751,17 @@ jobs:
       - name: Install worker
         working-directory: ${{ matrix.worker }}
         run: pip install -e ".[dev]" || pip install -e .
+
+      # deptry reads the worker's installed environment; findings are warnings
+      # only, and a failed install only makes the check warn that it could not run.
+      - name: Install deptry
+        continue-on-error: true
+        run: pip install --quiet deptry==0.25.1
+
+      - name: Check unused dependencies (warning only)
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: python3 .github/scripts/unused_deps.py deptry --directory "$WORKER"
 
       - name: Run pytest
         if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
