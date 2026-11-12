@@ -375,8 +375,8 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
 }
 
 /// Captured source is retained independently of the queue's retry lifetime.
-/// Version 1 holds the redacted text; version 2 (an entry over the text
-/// bound) holds only text digests and is never extracted.
+/// It holds what the model reads of each entry (redacted, a long text cut to
+/// its head and tail) and a digest over the full text.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingExtraction {
@@ -493,22 +493,12 @@ impl PendingExtraction {
         validate_name(&pending.bank)?;
         if !matches!(
             (pending.version, pending.source_digest.as_deref()),
-            (1 | 2, Some(_))
+            (1, Some(_))
         ) || pending.source_digest.as_ref().is_some_and(|digest| {
             digest.len() != 32 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
         }) {
             return Err(MemoryError::Storage(
                 "unsupported pending extraction schema or digest".into(),
-            ));
-        }
-        if pending.version == 2
-            && pending
-                .entries
-                .iter()
-                .any(|e| e.2.len() != 64 || !e.2.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            return Err(MemoryError::Storage(
-                "invalid quarantined source digest".into(),
             ));
         }
         let mut ids = HashSet::new();
@@ -526,17 +516,17 @@ impl PendingExtraction {
         Ok(pending)
     }
 
-    /// Non-cryptographic change detector over the unredacted ordered source.
-    /// Never authority: exact redacted source AND trusted policy must also match.
-    pub(crate) fn digest(entries: &[(String, String, String, u64)]) -> Result<String, MemoryError> {
-        Self::entries_bytes(entries)?;
+    /// Non-cryptographic change detector over the full unredacted ordered
+    /// source. Never authority: exact captured source AND trusted policy must
+    /// also match.
+    pub(crate) fn digest(entries: &[(String, String, String, u64)]) -> String {
         let bytes = serde_json::to_vec(entries).expect("source tuples serialize");
         let hash = bytes
             .iter()
             .fold(0x6c62272e07bb014262b821756295c58d_u128, |h, b| {
                 (h ^ u128::from(*b)).wrapping_mul(0x0000000001000000000000000000013b)
             });
-        Ok(format!("{hash:032x}"))
+        format!("{hash:032x}")
     }
 
     pub fn same_source(&self, other: &Self) -> bool {
@@ -590,18 +580,6 @@ fn remove_if_exists(path: &Path) -> Result<(), MemoryError> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
         _ => Ok(()),
-    }
-}
-
-/// The oldest-first eviction order of a full ledger: quarantined (version 2)
-/// records only, never source still waiting for extraction.
-fn evict_quarantined(ranges: &mut Vec<ExtractionRange>) -> bool {
-    match ranges.iter().position(|r| r.pending.version == 2) {
-        Some(at) => {
-            ranges.remove(at);
-            true
-        }
-        None => false,
     }
 }
 
@@ -937,11 +915,6 @@ impl Store {
         }
         let mut ids = HashSet::new();
         for range in &ledger.ranges {
-            if range.completed && range.pending.version == 2 {
-                return Err(MemoryError::Storage(
-                    "quarantined source cannot be completed".into(),
-                ));
-            }
             range.pending.checked_bytes()?;
             PendingExtraction::parse(
                 serde_json::to_value(&range.pending)
@@ -982,11 +955,6 @@ impl Store {
         completed: bool,
     ) -> Result<(), MemoryError> {
         extraction_identifier(session)?;
-        if completed && pending.version == 2 {
-            return Err(MemoryError::InvalidInput(
-                "quarantined source cannot be completed".into(),
-            ));
-        }
         pending.checked_bytes()?;
         PendingExtraction::parse(
             serde_json::to_value(&pending).map_err(|e| MemoryError::Storage(e.to_string()))?,
@@ -994,18 +962,6 @@ impl Store {
         let plan = pending.source_key(session);
         let _lock = extraction_lock();
         let mut ranges = self.extraction_ranges_unlocked(session)?;
-        if pending.version == 2 {
-            // A changed oversized source replaces its old quarantine record.
-            ranges.retain(|r| {
-                r.pending.version != 2
-                    || r.pending.same_source(&pending)
-                    || !r
-                        .pending
-                        .entries
-                        .iter()
-                        .any(|e| pending.entries.iter().any(|p| e.0 == p.0))
-            });
-        }
         if let Some(existing) = ranges.iter_mut().find(|r| r.pending.same_source(&pending)) {
             existing.completed |= completed;
             existing.pending.attempts = existing.pending.attempts.max(pending.attempts);
@@ -1020,25 +976,18 @@ impl Store {
             }
             ranges.push(ExtractionRange { pending, completed });
         }
-        // A full ledger evicts quarantined records oldest-first; source still
-        // waiting for extraction is never evicted.
-        loop {
-            let mut budget = 1024;
-            let mut fits = ranges.len() <= MAX_RANGES;
-            for range in &ranges {
-                fits &= crate::extraction_proof::charge(
-                    &mut budget,
-                    range.pending.checked_bytes()?,
-                    crate::extraction_proof::HISTORY_BYTES,
-                )
-                .is_ok();
-            }
-            if fits {
-                break;
-            }
-            if !evict_quarantined(&mut ranges) {
-                return Err(MemoryError::Storage("extraction retention bound".into()));
-            }
+        // Source still waiting for extraction is never evicted.
+        let mut budget = 1024;
+        for range in &ranges {
+            crate::extraction_proof::charge(
+                &mut budget,
+                range.pending.checked_bytes()?,
+                crate::extraction_proof::HISTORY_BYTES,
+            )
+            .map_err(MemoryError::Storage)?;
+        }
+        if ranges.len() > MAX_RANGES {
+            return Err(MemoryError::Storage("extraction retention bound".into()));
         }
         self.write_ranges(session, ranges)?;
         if completed {
@@ -1517,21 +1466,7 @@ impl Bank {
         mut memory: Memory,
         expected: Option<Option<&Memory>>,
     ) -> Result<Option<CommitKind>, MemoryError> {
-        // The backstop for every write path: no known secret shape reaches
-        // memories.jsonl, whoever built the record (the entry points redact
-        // first, so dedup fingerprints the redacted text).
-        let mut redacted = crate::redact::redact(&memory.text);
-        redacted
-            .labels
-            .extend(crate::redact::drop_secrets(&mut memory.entities));
-        redacted
-            .labels
-            .extend(crate::redact::drop_secrets(&mut memory.tags));
-        if !redacted.labels.is_empty() {
-            tracing::warn!(bank = %self.name, id = %memory.id, labels = ?redacted.labels,
-                "redacted secrets from a memory at commit");
-            memory.text = redacted.text;
-        }
+        self.redact_record(&mut memory);
         let mut inner = self.inner.write().await;
         if expected.is_some_and(|expected| inner.memories.get(&memory.id) != expected) {
             return Ok(None);
@@ -1567,31 +1502,39 @@ impl Bank {
         Ok(Some(kind))
     }
 
+    /// The backstop for every write path: no known secret shape reaches
+    /// memories.jsonl, whoever built the record (the entry points redact
+    /// first, so dedup fingerprints the redacted text), a record stored
+    /// before a pattern existed included.
+    fn redact_record(&self, memory: &mut Memory) {
+        let mut redacted = crate::redact::redact(&memory.text);
+        redacted
+            .labels
+            .extend(crate::redact::drop_secrets(&mut memory.entities));
+        redacted
+            .labels
+            .extend(crate::redact::drop_secrets(&mut memory.tags));
+        if !redacted.labels.is_empty() {
+            tracing::warn!(bank = %self.name, id = %memory.id, labels = ?redacted.labels,
+                "redacted secrets from a memory at commit");
+            memory.text = redacted.text;
+        }
+    }
+
     /// Publish one extraction effect and its source receipt in one append.
     /// `old`, when given, is retired by `replacement` in the same write.
     /// `Ok(None)`: the receipt was already recorded, or a snapshot changed
     /// since the extraction read it; a conflict appends a terminal skipped
-    /// receipt and publishes neither record.
+    /// receipt and publishes neither record. A stored record never fails
+    /// the effect: one carrying a secret is written redacted, and one the
+    /// injection screen flags (only a stored twin can be) skips it.
     pub async fn extraction_expected(
         &self,
         receipt: &str,
-        replacement: Memory,
+        mut replacement: Memory,
         expected: Option<&Memory>,
         old: Option<&Memory>,
     ) -> Result<Option<Option<Memory>>, MemoryError> {
-        for record in old.into_iter().chain(std::iter::once(&replacement)) {
-            let mut entities = record.entities.clone();
-            let mut tags = record.tags.clone();
-            if !crate::redact::redact(&record.text).labels.is_empty()
-                || !crate::redact::drop_secrets(&mut entities).is_empty()
-                || !crate::redact::drop_secrets(&mut tags).is_empty()
-            {
-                return Err(MemoryError::InvalidInput(
-                    "extraction requires redacted records".into(),
-                ));
-            }
-        }
-        crate::redact::reject_injection("extraction", &replacement.text)?;
         if old.is_some_and(|old| old.id == replacement.id || old.pinned || !old.is_live())
             || !replacement.is_live()
             || expected.is_some_and(|m| !m.is_live() || (m.pinned && m != &replacement))
@@ -1600,20 +1543,25 @@ impl Bank {
                 "invalid extraction boundary".into(),
             ));
         }
+        let flagged = crate::redact::reject_injection("extraction", &replacement.text).is_err();
+        self.redact_record(&mut replacement);
         let mut inner = self.inner.write().await;
         if inner.receipts.contains(receipt) {
             return Ok(None);
         }
-        let conflict = inner.memories.get(&replacement.id) != expected
+        let conflict = flagged
+            || inner.memories.get(&replacement.id) != expected
             || old.is_some_and(|old| inner.memories.get(&old.id) != Some(old));
         let retired = old.filter(|_| !conflict).map(|old| {
-            crate::functions::items::supersede_transition(
+            let mut retired = crate::functions::items::supersede_transition(
                 old.clone(),
                 replacement.clone(),
                 false,
                 now_ms(),
             )
-            .0
+            .0;
+            self.redact_record(&mut retired);
+            retired
         });
         let mut lines = Vec::new();
         if !conflict {
@@ -1725,23 +1673,13 @@ impl Bank {
                 "supersede requires a live unpinned loser and a live winner".into(),
             ));
         }
-        // Loaded legacy records can predate commit-time redaction. A merge
-        // cannot silently change the text certified by its caller, nor append
-        // a secret again: reject and leave both originals untouched instead.
-        for record in [&loser, &winner] {
-            let mut entities = record.entities.clone();
-            let mut tags = record.tags.clone();
-            if !crate::redact::redact(&record.text).labels.is_empty()
-                || !crate::redact::drop_secrets(&mut entities).is_empty()
-                || !crate::redact::drop_secrets(&mut tags).is_empty()
-            {
-                return Err(MemoryError::InvalidInput(
-                    "supersede requires redacted records".into(),
-                ));
-            }
-        }
-        let (retired, survivor) =
+        let (mut retired, mut survivor) =
             crate::functions::items::supersede_transition(loser, winner, reinforce, now_ms());
+        // A loaded record can predate commit-time redaction: it is written
+        // back redacted, never with its secret again.
+        for memory in std::iter::once(&mut retired).chain(survivor.iter_mut()) {
+            self.redact_record(memory);
+        }
         let mut lines = Vec::new();
         for memory in std::iter::once(&retired).chain(survivor.iter()) {
             push_line(&mut lines, memory)?;
@@ -2375,7 +2313,7 @@ mod tests {
         let entries = vec![("e1".into(), "user".into(), "source".into(), 1)];
         let range = PendingExtraction {
             version: 1,
-            source_digest: Some(PendingExtraction::digest(&entries).unwrap()),
+            source_digest: Some(PendingExtraction::digest(&entries)),
             entries,
             bank: "private".into(),
             derived: false,
@@ -2416,7 +2354,7 @@ mod tests {
         let entries = vec![("entry".into(), "user".into(), "source".into(), 1)];
         let pending = PendingExtraction {
             version: 1,
-            source_digest: Some(PendingExtraction::digest(&entries).unwrap()),
+            source_digest: Some(PendingExtraction::digest(&entries)),
             entries,
             bank: "private".into(),
             derived: false,
@@ -2473,7 +2411,6 @@ mod tests {
             .is_err());
         bad.entries[0].0 = "entry".into();
         bad.entries[0].2 = "x".repeat(crate::extraction_proof::TEXT_BYTES + 1);
-        assert!(PendingExtraction::digest(&bad.entries).is_err());
         assert!(store.retain_extraction_range(&session, bad, true).is_err());
         assert_eq!(snapshot(), before);
         let mut aggregate = pending.clone();

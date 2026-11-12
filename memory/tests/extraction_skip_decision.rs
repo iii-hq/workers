@@ -401,7 +401,6 @@ async fn untrusted_stale_unknown_and_nonterminal_deliveries_never_prove_skip() {
         "unknown",
         "malformed-kind",
         "mismatch",
-        "session-error",
         "nonterminal",
         "bad-status",
         "missing-status",
@@ -516,7 +515,8 @@ async fn untrusted_stale_unknown_and_nonterminal_deliveries_never_prove_skip() {
 
 #[tokio::test]
 async fn eligible_registered_calls_keep_completed_cancelled_failed_queue_backcompat() {
-    for kind in ["user", "legacy"] {
+    // A failed session lookup proves nothing: the job checks the kind again.
+    for kind in ["user", "legacy", "session-error"] {
         for status in ["completed", "cancelled", "failed"] {
             for binding in [false, true] {
                 let dir = tempfile::tempdir().unwrap();

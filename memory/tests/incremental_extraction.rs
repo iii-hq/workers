@@ -1941,6 +1941,29 @@ mod productive {
     }
 
     #[tokio::test]
+    async fn a_correction_of_a_record_stored_before_redaction_completes() {
+        let stack = correction_stack().await;
+        // The record predates a redaction pattern: its text holds a key.
+        let key = format!("AKIA{}", "Q".repeat(16));
+        let path = stack.dir.path().join("private/memories.jsonl");
+        let old = "Amber instruments require copper calibration.";
+        let log = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace(old, &format!("{old} Key {key}."));
+        std::fs::write(&path, &log).unwrap();
+        let stack = stack.restart().await;
+        stack.run(&job("end")).await.unwrap();
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        let after = std::fs::read_to_string(&path).unwrap();
+        let written: Vec<_> = after.lines().skip(log.lines().count()).collect();
+        assert_eq!(written.len(), 3, "replacement, retired record, receipt");
+        assert!(written.iter().all(|line| !line.contains(&key)));
+        let records = stack.log_records("private");
+        let retired = records.last().unwrap();
+        assert!(!retired.is_live() && retired.text.starts_with(old));
+    }
+
+    #[tokio::test]
     async fn correction_io_failure_publishes_neither_record_nor_cursor_then_retry_is_atomic() {
         let stack = correction_stack().await;
         let path = stack.dir.path().join("private/memories.jsonl");
@@ -2297,107 +2320,55 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn oversized_turn_is_terminal_and_never_pins_the_cursor() {
-        let later_text = "Birch archives retain monthly invoices.";
+    async fn a_long_message_is_read_from_its_head_and_tail() {
+        let head = "Amber instruments require copper calibration.";
+        let tail = "Birch archives retain monthly invoices.";
+        let long = format!("{head} {} {tail}", "filler ".repeat(150_000));
         let stack = Boundary::new(Script {
             path: vec![
                 message("anchor", ""),
-                message("large", &"a".repeat(1000000)),
+                message("large", &long),
                 stamped("large-end", "large-turn", "private", true),
-                message("later", later_text),
-                stamped("end", "later-turn", "other", true),
             ],
             cursor: Some("anchor".into()),
             persistent_cursor: true,
-            observe_events: true,
-            model_items: VecDeque::from([fact(later_text)]),
+            model_items: VecDeque::from([fact(head)]),
             ..Script::default()
         })
         .await;
         let mut owner = job("large-end");
         owner.turn_id = Some("large-turn".into());
-        // Never extracted and never an error: the cursor moves past it.
         stack.run(&owner).await.unwrap();
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"large-end"}));
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
-        let ranges = stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap();
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].pending.version, 2);
-        assert_eq!(
-            ranges[0].pending.entries[0].2,
-            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
-        );
-        assert!(!ranges[0].completed);
-        assert!(serde_json::to_vec(&ranges).unwrap().len() < 4096);
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .retain_extraction_range("incremental-fixture", ranges[0].pending.clone(), true)
-            .is_err());
-        stack
-            .deps
-            .store()
-            .await
-            .ensure_bank("private", None)
-            .await
-            .unwrap();
-        stack
-            .deps
-            .store()
-            .await
-            .trash_bank("private")
-            .await
-            .unwrap();
+        {
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 1);
+            let input = &s.inputs()[0];
+            assert!(input.contains(head) && input.contains(tail));
+            assert!(input.len() < 16_000, "{} bytes", input.len());
+        }
+        // A redelivered job asks the model nothing.
         let stack = stack.restart().await;
-        let mut later = job("end");
-        later.bank = Some("other".into());
-        later.turn_id = Some("later-turn".into());
-        stack.run(&later).await.unwrap();
-        stack.run(&later).await.unwrap();
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
-        assert!(stack.log_records("private").is_empty());
-        let records = stack.log_records("other");
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].text, later_text);
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
-        assert_eq!(
-            stack
-                .script
-                .lock()
-                .unwrap()
-                .count("memory::on-item-changed"),
-            1
-        );
-        assert_eq!(stack.script.lock().unwrap().count("state::set"), 1);
-        assert!(stack
-            .deps
-            .store()
-            .await
+        stack.run(&owner).await.unwrap();
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"large-end"}));
+        assert_eq!(stack.log_records("private").len(), 1);
+        let store = stack.deps.store().await;
+        assert!(store
+            .extraction_ranges("incremental-fixture")
+            .unwrap()
+            .is_empty());
+        assert!(store
             .pending_extraction("incremental-fixture")
             .unwrap()
             .is_none());
-        // Only the quarantine record stays; the later range was acknowledged.
-        let ranges = stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap();
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].pending.version, 2);
     }
 
     #[tokio::test]
-    async fn an_oversized_message_never_stops_the_turns_after_it() {
+    async fn a_long_message_never_stops_the_turns_after_it() {
+        let long = "Amber instruments require copper calibration.";
         let mut path = vec![
             message("anchor", ""),
-            message("large", &"a".repeat(97 * 1024)),
+            message("large", &format!("{long} {}", "a".repeat(97 * 1024))),
             stamped("large-end", "large-turn", "private", true),
         ];
         let texts: Vec<String> = (0..130)
@@ -2416,7 +2387,10 @@ mod productive {
             path,
             cursor: Some("anchor".into()),
             persistent_cursor: true,
-            model_items: texts.iter().map(|text| fact(text)).collect(),
+            model_items: std::iter::once(long)
+                .chain(texts.iter().map(String::as_str))
+                .map(fact)
+                .collect(),
             ..Script::default()
         })
         .await;
@@ -2430,17 +2404,17 @@ mod productive {
         }
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end-129"}));
         let records = stack.log_records("private");
-        assert_eq!(records.len(), 130);
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 130);
-        // Only the quarantine record stays: every later range was acknowledged.
-        let ranges = stack
+        assert_eq!(records.len(), 131);
+        assert_eq!(records[0].text, long);
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 131);
+        // Every range was acknowledged: the ledger is empty.
+        assert!(stack
             .deps
             .store()
             .await
             .extraction_ranges("incremental-fixture")
-            .unwrap();
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].pending.version, 2);
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -2624,8 +2598,8 @@ mod productive {
     #[tokio::test]
     async fn large_sources_never_stop_extraction() {
         // A tool call of 1.2 MB in each reply (a delta over 4 MiB) and a
-        // request over 1 MiB of text: the request's run is quarantined, the
-        // rest is extracted, and the cursor reaches the last turn.
+        // request over 1 MiB of text: every run is read, the long request
+        // from its head and tail, and the cursor reaches the last turn.
         let reply = |id: &str, turn: &str| {
             let mut item = stamped(id, turn, "private", true);
             item["message"]["content"] = json!([
@@ -2649,7 +2623,7 @@ mod productive {
                     reply("a3", "t2"),
                 ],
                 cursor: Some("anchor".into()),
-                model_items: VecDeque::from([fact(first), fact(last)]),
+                model_items: VecDeque::from([fact(first), json!([]), fact(last)]),
                 ..Script::default()
             })
             .await;
@@ -2669,16 +2643,15 @@ mod productive {
                 Some("a3"),
                 "root {root}"
             );
-            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 2);
-            let ranges = stack
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 3);
+            assert!(stack.script.lock().unwrap().inputs()[1].len() < 16_000);
+            assert!(stack
                 .deps
                 .store()
                 .await
                 .extraction_ranges("incremental-fixture")
-                .unwrap();
-            assert_eq!(ranges.len(), 1);
-            assert_eq!(ranges[0].pending.version, 2);
-            assert_eq!(ranges[0].pending.entries[0].0, "u1");
+                .unwrap()
+                .is_empty());
             let texts: Vec<_> = stack
                 .log_records("private")
                 .into_iter()
@@ -3083,6 +3056,41 @@ mod productive {
                 assert!(s.inputs()[0].contains(text));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_missed_hook_on_the_jobs_own_turn_still_extracts_its_request() {
+        // The pre-generate hook timed out, or its bank lookup failed, on the
+        // turn's only step: no stamp. The job resolves the bank itself, and a
+        // failed lookup retries instead of passing the request unextracted.
+        let text = "Amber instruments require copper calibration.";
+        let mut end = stamped("end", "on", "private", true);
+        end["origin"] = json!({"turn_id":"on"});
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("user", text), end],
+            cursor: Some("anchor".into()),
+            session_error: true,
+            model_items: VecDeque::from([fact(text)]),
+            ..Script::default()
+        })
+        .await;
+        let mut input = job("end");
+        input.turn_id = Some("on".into());
+        input.bank = None;
+        assert!(stack.run(&input).await.is_err());
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+        assert_eq!(
+            stack.script.lock().unwrap().cursor.as_deref(),
+            Some("anchor")
+        );
+        stack.script.lock().unwrap().session_error = false;
+        stack.run(&input).await.unwrap();
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 1);
+        assert!(s.inputs()[0].contains(text));
+        assert_eq!(s.cursor.as_deref(), Some("end"));
+        drop(s);
+        assert_eq!(stack.log_records("private")[0].text, text);
     }
 
     #[tokio::test]

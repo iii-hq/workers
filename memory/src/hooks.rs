@@ -265,11 +265,14 @@ pub async fn pre_generate(
     // Persisted on the step's assistant entry: a turn this process never
     // saw (a restart) reads them back (`scope::stamped_bank`), and extraction
     // reads the policy from it. Stamped even with injection off, before every
-    // early return.
-    annotations.insert(
-        "memory_extraction".into(),
-        json!(cfg.extraction_enabled && matches!(&resolved, Ok(Some(_)))),
-    );
+    // early return. A failed lookup stamps nothing: the turn's job resolves
+    // the bank again, and retries, instead of reading the step as OFF.
+    if let Ok(scope) = &resolved {
+        annotations.insert(
+            "memory_extraction".into(),
+            json!(cfg.extraction_enabled && scope.is_some()),
+        );
+    }
     if let Ok(Some(scope)) = &resolved {
         annotations.insert("memory_bank".into(), json!(scope.bank));
         if let Some(layer) = scope.layer(&cfg.default_bank) {

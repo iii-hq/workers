@@ -251,8 +251,8 @@ pub(crate) fn content_bytes(content: Option<&Value>) -> Result<usize, String> {
 }
 
 /// Validate the identifiers of a borrowed SDK reply before DeltaReader or
-/// root recovery clone them. Sizes are not capped here: an entry too large to
-/// retain becomes a quarantined run, never a failed read.
+/// root recovery clone them. Sizes are not capped here: a run captures only
+/// what the model reads of a long entry, never a failed read.
 pub(crate) fn source_page(reply: &Value) -> Result<(), String> {
     if let Some(cursor) = reply.get("next_cursor").and_then(Value::as_str) {
         if !bounded(cursor) {

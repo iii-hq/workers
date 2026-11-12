@@ -183,10 +183,14 @@ pub fn register_turn_completed(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
                     );
                 // Same authoritative own SessionMeta lookup used by extraction;
                 // parent links, caller role and input kind never select eligibility.
-                let meta = crate::scope::session_meta(&deps.iii, input.session_id.clone()).await;
-                let Ok(Some(meta)) = meta else {
-                    return Ok::<_, iii_sdk::errors::Error>(hooks::AckResponse { ok: true });
-                };
+                let meta =
+                    match crate::scope::session_meta(&deps.iii, input.session_id.clone()).await {
+                        Ok(Some(meta)) => meta,
+                        Ok(None) => return Ok(hooks::AckResponse { ok: true }),
+                        // A failed lookup proves nothing: the job checks the kind
+                        // again, and the queue retries it.
+                        Err(_) => return hooks::turn_completed(&deps, input).await,
+                    };
                 if meta.get("kind").is_some_and(|kind| !kind.is_string()) {
                     return Ok(hooks::AckResponse { ok: true });
                 }

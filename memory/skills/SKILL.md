@@ -65,8 +65,8 @@ rule; point-in-time information belongs in memories.
 - Extraction reads only what arrived after the session's confirmed cursor,
   at most 4 model calls per pass; the rest retries from the last confirmed
   run. A redelivered job adds no second revision (each effect is appended
-  with a source receipt). A message over 96 KiB is never extracted, only its
-  digest kept, and never blocks the turns after it. Item events are
+  with a source receipt). A long message is read from its head and tail,
+  and never blocks the turns after it. Item events are
   best-effort, at most once. Deleting a session or trashing a bank purges its
   in-flight extraction state.
 - Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an

@@ -645,22 +645,19 @@ async fn registered_receiver_large_source_keeps_full_digest_and_later_owned_prog
                 .await
                 .extraction_ranges("synthetic-session")
                 .unwrap();
-            assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
-            assert!(!dir.path().join("old-bank/memories.jsonl").exists());
-            // An oversized turn is terminal: the cursor moves past it.
+            // The large request is read from its head and tail under its
+            // own turn's bank; the cursor moves past both turns.
+            let on = policy == "on";
+            let prompts = stack.fixture.lock().unwrap().prompts.clone();
+            assert_eq!(prompts.len(), usize::from(on) + 1);
+            assert!(prompts.iter().all(|prompt| prompt.len() < 64 * 1024));
+            assert_eq!(dir.path().join("old-bank/memories.jsonl").exists(), on);
             assert_eq!(
                 stack.fixture.lock().unwrap().cursor,
                 json!({"last_entry_id":"next-end"})
             );
-            if policy == "on" {
-                // Only its digest is kept, never its text.
-                assert_eq!(ranges.len(), 1);
-                assert!(!ranges[0].completed);
-                assert_eq!(ranges[0].pending.version, 2);
-                assert_eq!(ranges[0].pending.entries[0].2, digest);
-                assert_eq!(ranges[0].pending.bank, "old-bank");
-                assert_eq!(ranges[0].pending.turn_id.as_deref(), Some("old-large"));
-                assert!(serde_json::to_vec(&ranges).unwrap().len() < 4096);
+            assert!(ranges.is_empty());
+            if on {
                 *stack.deps.store.write().await = Arc::new(Store::open(dir.path().into()).unwrap());
                 memory::extract::try_run(&stack.deps, &later).await.unwrap();
                 let old = memory::hooks::ExtractJobInput {
@@ -673,12 +670,9 @@ async fn registered_receiver_large_source_keeps_full_digest_and_later_owned_prog
                 memory::extract::try_run(&stack.deps, &old).await.unwrap();
                 assert_eq!(
                     stack.fixture.lock().unwrap().prompts.len(),
-                    1,
+                    2,
                     "a redelivered job asks the model nothing"
                 );
-                assert!(!dir.path().join("old-bank/memories.jsonl").exists());
-            } else {
-                assert!(ranges.is_empty());
             }
         }
     }

@@ -1041,8 +1041,6 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         .await?;
         retained = ext(deps, |s| s.extraction_ranges(session_id)).await?;
     }
-    // A quarantine record is terminal provenance: it never routes a pass.
-    retained.retain(|range| range.pending.version != 2);
     let saved = ext(deps, |s| s.pending_extraction(session_id))
         .await?
         .map(PendingExtraction::parse)
@@ -1107,8 +1105,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                 && entries.iter().any(|e| e.0 == row.attestation.entry_id)
         })
     });
-    let quarantined = intervals.iter().any(|(_, _, entries)| oversized(entries));
-    if !retained.is_empty() || orphaned || deleted_interval || authenticated_cut || quarantined {
+    if !retained.is_empty() || orphaned || deleted_interval || authenticated_cut {
         return retained_pass(deps, &cfg, job, intervals, saved).await;
     }
     if job.skip && intervals.iter().any(|(scope, _, _)| scope.is_some()) {
@@ -1354,22 +1351,21 @@ fn stamped_intervals(
         let turn = origin
             .and_then(|o| o.get("turn_id"))
             .and_then(Value::as_str);
+        let stamp = origin.and_then(|o| o.get("memory_extraction"));
         // `Some(None)` is a stamped OFF step, `None` a policy nobody knows.
-        let scope = match (
-            origin
-                .and_then(|o| o.get("memory_extraction"))
-                .and_then(Value::as_bool),
-            turn,
-        ) {
-            (Some(false), Some(_)) => Some(None),
-            (Some(true), Some(turn)) => {
+        let scope = match (stamp.map(Value::as_bool), turn) {
+            (Some(Some(false)), Some(_)) => Some(None),
+            (Some(Some(true)), Some(turn)) => {
                 crate::scope::stamped_bank(&json!({"messages":[{"origin":origin}]}), turn).map(Some)
             }
+            // The hook missed a step of the job's own turn (a timeout, a failed
+            // bank lookup): the job's bank, resolved again on a retry, holds.
+            (None, Some(turn)) if job.turn_id.as_deref() == Some(turn) => Some(fallback.cloned()),
             _ => None,
         };
         let (Some(scope), Some(turn)) = (scope, turn) else {
-            // The hook missed this step (a timeout, a restart) or it predates
-            // the stamp: unknown is OFF, and the cursor passes it unextracted.
+            // Another turn's step the hook missed, or one that predates the
+            // stamp: unknown is OFF, and the cursor passes it unextracted.
             intervals.push((None, turn.map(str::to_string), std::mem::take(&mut pending)));
             continue;
         };
@@ -1406,40 +1402,13 @@ fn stamped_intervals(
     Ok(intervals)
 }
 
-/// Source too large to retain as text: an entry over the text bound, or a
-/// run over the retention budget. It is kept as digests, never extracted.
-fn oversized(entries: &[Entry]) -> bool {
-    entries
-        .iter()
-        .any(|e| e.2.len() > crate::extraction_proof::TEXT_BYTES)
-        || PendingExtraction::entries_bytes(entries).is_err()
-}
-
+/// A run's source as the model reads it (every line bounded by
+/// [`model_text`]), with a digest over the full text to notice an edit.
 fn capture_run(
     scope: &crate::scope::Resolved,
     turn: Option<&str>,
     entries: &[Entry],
 ) -> Result<PendingExtraction, String> {
-    if oversized(entries) {
-        // A full digest is provenance, never a model decision or an extracted
-        // prefix. Version 2 is never extracted, and the cursor passes it.
-        let provenance: Vec<_> = entries
-            .iter()
-            .map(|(id, role, text, ts)| {
-                (
-                    id.clone(),
-                    role.clone(),
-                    crate::extraction_proof::sha256(text.as_bytes()),
-                    *ts,
-                )
-            })
-            .collect();
-        // Digests fit unless the identifiers alone break the bound.
-        PendingExtraction::entries_bytes(&provenance).map_err(|e| e.to_string())?;
-        let mut capture = capture_run(scope, turn, &provenance)?;
-        capture.version = 2;
-        return Ok(capture);
-    }
     for id in std::iter::once(scope.bank.as_str())
         .chain(scope.agent.as_deref())
         .chain(turn)
@@ -1448,20 +1417,15 @@ fn capture_run(
             return Err("extraction scope byte bound".into());
         }
     }
+    let read: Vec<Entry> = entries
+        .iter()
+        .map(|(id, role, text, ts)| (id.clone(), role.clone(), model_text(role, text), *ts))
+        .collect();
+    PendingExtraction::entries_bytes(&read).map_err(|e| e.to_string())?;
     Ok(PendingExtraction {
         version: 1,
-        source_digest: Some(PendingExtraction::digest(entries).map_err(|e| e.to_string())?),
-        entries: entries
-            .iter()
-            .map(|(id, role, text, ts)| {
-                (
-                    id.clone(),
-                    role.clone(),
-                    crate::redact::redact(text).text,
-                    *ts,
-                )
-            })
-            .collect(),
+        source_digest: Some(PendingExtraction::digest(entries)),
+        entries: read,
         bank: scope.bank.clone(),
         derived: scope.derived,
         agent: scope.agent.clone(),
@@ -1485,8 +1449,7 @@ fn range_on_path(range: &PendingExtraction, intervals: &PolicyIntervals) -> bool
 /// Runs a pass over a session with retained ranges. Every run executes under
 /// the scope its own turn stamped, whichever job reaches it first; an OFF job
 /// leaves eligible runs to the next eligible one. A range the path no longer
-/// holds as recorded, an oversized source and a deleted bank never pin the
-/// cursor.
+/// holds as recorded and a deleted bank never pin the cursor.
 async fn retained_pass(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -1507,7 +1470,6 @@ async fn retained_pass(
         .iter()
         .map(|r| &r.pending)
         .chain(pending.iter())
-        .filter(|range| range.version != 2)
         .filter(|range| {
             let appears = intervals.iter().any(|(_, _, entries)| {
                 entries
@@ -1549,24 +1511,9 @@ async fn retained_pass(
                 continue;
             };
             let capture = capture_run(scope, turn.as_deref(), &run)?;
-            if capture.version == 2 {
-                // Never extracted: keep its digest, move the cursor past it.
-                tracing::warn!(
-                    session_id = session,
-                    entries = run.len(),
-                    "extraction skipped a source over the text bound; its digest is kept"
-                );
-                ext(deps, |s| s.retain_extraction_range(session, capture, false)).await?;
-                if !gap {
-                    if let Some(end) = run.last() {
-                        cursor_set(&deps.iii, session, &end.0).await?;
-                    }
-                }
-                continue;
-            }
             let ranges = ext(deps, |s| s.extraction_ranges(session)).await?;
-            // A range over this run with other boundaries (an oversized
-            // message edited down, a run cut otherwise) can never complete.
+            // A range over this run with other boundaries (an edited
+            // message, a run cut otherwise) can never complete.
             for old in ranges.iter().filter(|r| {
                 !r.pending.same_source(&capture)
                     && r.pending
@@ -1679,7 +1626,6 @@ async fn execute_run(
     entries: Vec<Entry>,
     advance_cursor: bool,
 ) -> Result<bool, String> {
-    PendingExtraction::entries_bytes(&entries).map_err(|e| e.to_string())?;
     let bank_name = resolved.bank.as_str();
     // Bound the serialized source-key material before json! copies any ID,
     // and before persisting pending state for a source we cannot address.
@@ -1833,10 +1779,8 @@ async fn execute_run(
         known = plan.known;
         layered = plan.layered;
         learned = plan.learned;
-        agents = plan.agents;
-        if agents.iter().any(|agent| !usable(agent)) {
-            return Err("pending extraction agent bank deleted or invalid".into());
-        }
+        // An agent bank deleted since the plan was made takes nothing.
+        agents = plan.agents.into_iter().filter(|a| usable(a)).collect();
         plan.items
     } else {
         let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
@@ -2850,7 +2794,7 @@ fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
         role => role,
     }
     .to_string();
-    // Unbounded: a text over the retention bound becomes a quarantined run.
+    // Unbounded: a run captures only what the model reads ([`model_text`]).
     let text = content_text(message.get("content"));
     let ts = message
         .get("timestamp")
@@ -2869,11 +2813,21 @@ fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
     if trimmed.is_empty() || trimmed.starts_with("<memory ") {
         return None;
     }
+    Some(format!(
+        "{role} [{}]: {}",
+        local_date(ts, "%Y-%m-%d %A"),
+        model_text(role, trimmed)
+    ))
+}
+
+/// What the extraction model reads of one entry's text, and all a run
+/// captures of it.
+fn model_text(role: &str, text: &str) -> String {
     // Redacted before it reaches the extraction model: a secret it never
     // sees is one it cannot copy into a memory.
     // Redact before the cut: a key crossing it would otherwise reach the
     // model half-visible.
-    let mut excerpt = crate::redact::redact(trimmed).text;
+    let mut excerpt = crate::redact::redact(text.trim()).text;
     // A user's own message is read whole to 12,000 chars (about 3k tokens):
     // their notes for a project hold facts all the way through. Past that,
     // and past 2,000 for any other line, keep the head and the tail: a
@@ -2884,10 +2838,7 @@ fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
         let tail = clamp_char_boundary(&excerpt, excerpt.len() - max / 2);
         excerpt.replace_range(head..tail, " … ");
     }
-    Some(format!(
-        "{role} [{}]: {excerpt}",
-        local_date(ts, "%Y-%m-%d %A")
-    ))
+    excerpt
 }
 
 /// Largest index <= `max` that lands on a UTF-8 char boundary of `s`.
