@@ -607,15 +607,18 @@ pub(crate) async fn edit_direct(
 }
 
 /// Scoped lifecycle cleanup: no global scan, no transcript contents retained.
-/// Retries a lost race (a finalizer stamping the same ledger) like every
-/// other ledger writer, so it never fails the session deletion.
-pub(crate) async fn purge(deps: &Deps, session: &str) -> Result<(), HarnessError> {
+/// Best effort: a failure is logged and never fails the session deletion,
+/// since a leftover ledger holds digests only.
+pub(crate) async fn purge(deps: &Deps, session: &str) {
     let timeout = deps.cfg().await.session_timeout_ms;
     // Never parses the ledger: a corrupt one must not block session deletion.
-    update_ledger(&deps.iii, session, timeout, |old| {
+    let purged = update_ledger(&deps.iii, session, timeout, |old| {
         Ok((!old.is_null()).then_some(Value::Null))
     })
-    .await
+    .await;
+    if let Err(error) = purged {
+        tracing::warn!(session, %error, "recall receipts not purged; deletion continues");
+    }
 }
 
 /// A receipt's full-text digest, when it has one, still matches the entry.

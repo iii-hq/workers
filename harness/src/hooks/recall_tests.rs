@@ -1177,7 +1177,7 @@ async fn recall_receipt_purge_only_clears_the_selected_session() {
     )
     .await
     .unwrap();
-    purge(&stack.deps, "selected").await.unwrap();
+    purge(&stack.deps, "selected").await;
     assert!(stack.data.lock().unwrap().get(SCOPE, "selected").is_null());
     assert_eq!(stack.data.lock().unwrap().get(SCOPE, "other"), before);
     // The delete dropped the turn record; a fresh one finds no receipt.

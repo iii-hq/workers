@@ -531,7 +531,7 @@ async fn edit_purge_legacy_and_malformed_rows_never_inherit_policy() {
         stack.data.lock().unwrap().get(SCOPE, "s")[0]["extraction"][0]["bank"],
         "a"
     );
-    purge(&stack.deps, "s").await.unwrap();
+    purge(&stack.deps, "s").await;
     assert!(history(&stack, "s").await["rows"]
         .as_array()
         .unwrap()
