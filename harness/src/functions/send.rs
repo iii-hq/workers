@@ -932,8 +932,6 @@ pub async fn edit_queued(
         ));
     }
     let cfg = deps.cfg().await;
-    let _guard = deps.locks.guard(&req.session_id).await;
-    writable_session_metadata(&deps.session().await, &req.session_id).await?;
     let rows =
         crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
     let Some(mut row) = rows

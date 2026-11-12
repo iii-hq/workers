@@ -929,10 +929,22 @@ async fn recall_receipt_purge_only_clears_the_selected_session() {
         .get(SCOPE, "selected")
         .to_string()
         .contains("Sensitive topic"));
-    purge(&stack.deps, "selected").await.unwrap();
+    // A plain `session::delete` reaches the ledger too, not only delete-session-tree.
+    crate::functions::on_session_deleted::handle(
+        &stack.deps,
+        crate::functions::on_session_deleted::SessionDeletedEvent {
+            session_id: "selected".into(),
+        },
+    )
+    .await
+    .unwrap();
     purge(&stack.deps, "selected").await.unwrap();
     assert!(stack.data.lock().unwrap().get(SCOPE, "selected").is_null());
     assert_eq!(stack.data.lock().unwrap().get(SCOPE, "other"), before);
+    // The delete dropped the turn record; a fresh one finds no receipt.
+    stack
+        .reset_turn("selected", crate::types::turn::TurnStatus::Completed)
+        .await;
     assert_eq!(stack.context("selected").await["source"]["kind"], "unknown");
     assert_eq!(
         stack.context("other").await["source"]["kind"],

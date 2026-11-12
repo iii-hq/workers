@@ -58,6 +58,7 @@ pub async fn handle(
     crate::budget::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     crate::context_snapshot::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     crate::usage_report::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
+    crate::hooks::recall::purge(deps, &event.session_id).await?;
     // Last, so a failed purge above keeps the record for the handler's retry.
     // Under the step guards, as delete-session-tree's erase: a running step
     // writes back the record it holds when it ends, so delete after that write
