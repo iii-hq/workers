@@ -141,7 +141,11 @@ pub fn chain_id(raw: Option<&Raw>) -> Option<String> {
 
 /// The Keychain service Claude Code keeps an account's sign-in under:
 /// `config_dir_env` is the `CLAUDE_CONFIG_DIR` it runs with (`None` for the
-/// default account).
+/// default account). Claude Code 2.1.322 (`I6()` in its Keychain chunk)
+/// hashes `Be()`, which it imports from its config chunk as
+/// `(CLAUDE_CONFIG_DIR ?? ~/.claude).normalize("NFC")`: the exact string
+/// set, NFC-normalised, never resolved to a real path. Pass the very string
+/// put in `CLAUDE_CONFIG_DIR`.
 pub fn keychain_service(config_dir_env: Option<&str>) -> String {
     match config_dir_env.filter(|dir| !dir.is_empty()) {
         None => "Claude Code-credentials".to_string(),
@@ -410,8 +414,11 @@ impl SecretStore for KeychainStore {
         let secret = hex(&json);
         let line = keychain_add_line(&self.account, &service, &secret);
         // Claude Code's own way: the secret on standard input, never on the
-        // command line, unless it is longer than `security -i` takes; then
-        // it goes as arguments, as Claude Code passes it too.
+        // command line, unless it is longer than `security -i` takes (4032
+        // bytes, Claude Code's `ve`); then the whole store, hex-encoded with
+        // its refresh tokens, goes as arguments, where another process of
+        // the same user could read it while `security` runs. That is the
+        // same as Claude Code does, and only for a store over 4 KB.
         let (code, _) = if line.len() <= INTERACTIVE_MAX {
             run_security(&self.program, &["-i"], Some(line.as_bytes()))?
         } else {

@@ -117,6 +117,8 @@ impl LockSet {
         deadline: Instant,
     ) -> Result<(), LockError> {
         let mut pause = Duration::from_millis(20);
+        // Why a stale lock could not be removed, when it could not.
+        let mut stuck: Option<String> = None;
         loop {
             match std::fs::create_dir(path) {
                 Ok(()) => {
@@ -135,8 +137,12 @@ impl LockSet {
                             if age > stale {
                                 // proper-lockfile's own rule: a lock not
                                 // touched within its stale period is gone.
-                                let _ = std::fs::remove_dir(path);
-                                continue;
+                                match remove_stale(path, &meta) {
+                                    Ok(()) => continue,
+                                    // Waited for like a held lock, so a
+                                    // folder that refuses never spins.
+                                    Err(why) => stuck = Some(why),
+                                }
                             }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -148,7 +154,10 @@ impl LockSet {
                         }
                     }
                     if Instant::now() >= deadline {
-                        return Err(LockError::Busy);
+                        return Err(match stuck {
+                            Some(why) => LockError::Io(why),
+                            None => LockError::Busy,
+                        });
                     }
                     std::thread::sleep(
                         pause.min(deadline.saturating_duration_since(Instant::now())),
@@ -210,6 +219,42 @@ impl Drop for LockSet {
     fn drop(&mut self) {
         self.release_all();
     }
+}
+
+/// Remove the stale lock at `path` (`meta` as it was looked at). It is
+/// first renamed to a name of its own, so a lock someone took between the
+/// look and the removal is never the one removed: when the directory
+/// renamed is not the one looked at, it goes back.
+fn remove_stale(path: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut aside = path.as_os_str().to_owned();
+    aside.push(format!(".stale-{}", uuid::Uuid::new_v4().simple()));
+    let aside = PathBuf::from(aside);
+    match std::fs::rename(path, &aside) {
+        Ok(()) => {}
+        // Someone removed it first: free to take.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Could not remove the stale lock {} ({error}).",
+                path.display()
+            ))
+        }
+    }
+    let same = std::fs::symlink_metadata(&aside)
+        .is_ok_and(|now| now.dev() == meta.dev() && now.ino() == meta.ino());
+    if !same {
+        // Theirs, taken meanwhile: back where it was, unless a new one is
+        // there already.
+        if std::fs::symlink_metadata(path).is_err() {
+            let _ = std::fs::rename(&aside, path);
+        }
+        return Ok(());
+    }
+    if let Err(error) = std::fs::remove_dir(&aside) {
+        tracing::warn!(lock = %aside.display(), %error, "stale lock moved aside but not removed");
+    }
+    Ok(())
 }
 
 /// `rmdir`, only when the directory is still the one taken: a lock removed
@@ -311,6 +356,54 @@ mod tests {
         assert!(set.holds(&lock));
         drop(set);
         assert!(!lock.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_stale_lock_that_cant_be_removed_is_an_error_not_a_spin() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("stuck");
+        let lock = dir.join(".storage-write.lock");
+        std::fs::create_dir(&lock).unwrap();
+        age(&lock, STORAGE_STALE + Duration::from_secs(1));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let mut set = LockSet::new();
+        let started = Instant::now();
+        let taken = set.take(
+            &lock,
+            STORAGE_STALE,
+            Instant::now() + Duration::from_millis(300),
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        match taken {
+            Err(LockError::Io(why)) => assert!(why.contains("stale lock"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(lock.is_dir());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_stale_lock_is_moved_aside_before_it_goes() {
+        let dir = temp("aside");
+        let lock = dir.join(".oauth_refresh.lock");
+        std::fs::create_dir(&lock).unwrap();
+        age(&lock, REFRESH_STALE + Duration::from_secs(1));
+        let looked = std::fs::symlink_metadata(&lock).unwrap();
+        // Someone took a fresh lock between the look and the removal.
+        std::fs::remove_dir(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        remove_stale(&lock, &looked).unwrap();
+        assert!(lock.is_dir(), "theirs is put back");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1, "nothing left aside");
+        // The very one looked at goes.
+        age(&lock, REFRESH_STALE + Duration::from_secs(1));
+        let looked = std::fs::symlink_metadata(&lock).unwrap();
+        remove_stale(&lock, &looked).unwrap();
+        assert!(!lock.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 
