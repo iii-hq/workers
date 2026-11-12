@@ -82,11 +82,15 @@ impl Data {
                 Ok(json!({"entry_id":id}))
             }
             "engine::workers::register" => Ok(json!({"success":true})),
-            "engine::functions::list" => Ok(if self.memory_owner && p["worker"] == "memory" {
-                json!({"functions":[{"function_id":"memory::hook::pre-generate"}]})
-            } else {
-                json!({"functions":[]})
-            }),
+            // The engine hides `metadata.internal` functions, as Memory's hook
+            // is, unless the caller asks for them.
+            "engine::functions::list" => Ok(
+                if self.memory_owner && p["worker"] == "memory" && p["include_internal"] == true {
+                    json!({"functions":[{"function_id":"memory::hook::pre-generate"}]})
+                } else {
+                    json!({"functions":[]})
+                },
+            ),
             "state::claim-namespace" => Ok(json!({"claimed":true})),
             "memory::hook::pre-generate" => {
                 self.hooks.push(p.clone());

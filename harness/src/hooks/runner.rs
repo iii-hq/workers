@@ -650,7 +650,8 @@ async fn memory_target_owned(iii: &IIIClient, timeout_ms: u64) -> bool {
     let Ok(value) = iii
         .call(CallRequest {
             function_id: "engine::functions::list".into(),
-            payload: json!({"worker":"memory", "prefix":MEMORY_PRE_GENERATE}),
+            // Memory registers its hook `internal`, which the default list hides.
+            payload: json!({"worker":"memory", "prefix":MEMORY_PRE_GENERATE, "include_internal":true}),
             action: None,
             timeout_ms: Some(timeout_ms),
         })

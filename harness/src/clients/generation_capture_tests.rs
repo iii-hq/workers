@@ -259,7 +259,11 @@ async fn loopback_with_capture(
                 "engine::functions::list" if mode.ends_with("owner_forged") => {
                     json!({"functions":[]})
                 }
-                "engine::functions::list" if mode.starts_with("origin_") => {
+                // The engine hides `metadata.internal` functions, as Memory's
+                // hook is, unless the caller asks for them.
+                "engine::functions::list"
+                    if mode.starts_with("origin_") && data["include_internal"] == true =>
+                {
                     json!({"functions":[{"function_id":"memory::hook::pre-generate"}]})
                 }
                 "memory::hook::pre-generate" | "synthetic::forger" => {
