@@ -1,10 +1,9 @@
 @engine @resources
-Feature: resources/* delegates to skills with empty fallbacks
-  The bridge forwards `resources/list`, `resources/read`, and
-  `resources/templates/list` to the `skills` worker. When skills isn't
-  registered (the bdd harness only registers `mcp::handler`), the
-  bridge falls through to empty payloads so MCP clients still see a
-  well-formed envelope. Pinning that fallback contract here.
+Feature: resources/* serve skills from iii-directory
+  Skills are resources at `iii://<id>`, read from the `iii-directory`
+  worker (`directory::skills::list` / `directory::skills::get`). An
+  unknown skill, a foreign URI, or a missing directory all give empty
+  but well-formed envelopes.
 
   Background:
     Given the iii engine is reachable
