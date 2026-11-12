@@ -233,7 +233,9 @@ async fn complete_child(parent_prompt_present: bool) {
 
 /// A completing turn decides once whether it ends the exchange. Its extraction
 /// proof and its completion event agree even when the session's wake store
-/// answers differently between the two writes (unreadable, then empty).
+/// answers differently between the two writes (unreadable, then empty). Memory
+/// acknowledged the turn and left before it ended: no pre_generate observer is
+/// left, and the boundary is still recorded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_completion_gives_its_proof_and_its_event_one_terminal_decision() {
     use crate::events::ON_TURN_COMPLETED_FN;
@@ -326,7 +328,7 @@ async fn a_completion_gives_its_proof_and_its_event_one_terminal_decision() {
     .expect("the completion event's observer activates");
     let mut record: TurnRecord = serde_json::from_value(json!({
         "session_id": "s", "turn_id": "t1", "status": "running",
-        "step": 1, "turn_count": 2, "depth": 0,
+        "step": 1, "turn_count": 2, "depth": 0, "recall_sent": true,
         "options": {"model": "fake", "max_turns": 16}, "created_at": 1, "updated_at": 1
     }))
     .unwrap();
@@ -536,11 +538,11 @@ async fn a_step_ending_the_turn_writes_no_live_phase_after_its_projection() {
     );
 }
 
-/// Recall provenance is read only for a pre_generate observer the step calls:
-/// a stack without one reads no ledger. (The step goes on to run a call: a
-/// finishing step also stamps the turn's extraction boundary, once per turn.)
+/// Recall provenance is read only when the step calls Memory's pre_generate
+/// hook: a stack without Memory reads no ledger, neither per step nor when the
+/// turn ends, even with another pre_generate observer called every step.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_step_without_a_called_pre_generate_observer_reads_no_recall_ledger() {
+async fn only_a_step_calling_memory_reads_the_recall_ledger() {
     let ledger_reads = |calls: &[(String, Value)]| {
         calls
             .iter()
@@ -549,20 +551,25 @@ async fn a_step_without_a_called_pre_generate_observer_reads_no_recall_ledger() 
             })
             .count()
     };
-    let reply = || hold_reply()["message"].clone();
-    let (result, calls, _) = generate(reply()).await;
-    assert_eq!(result.unwrap().next_step, Some(2));
+    let finished = || text_reply(0.25)["message"].clone();
+    let (result, calls, _) = generate(finished()).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
     assert_eq!(ledger_reads(&calls), 0, "{calls:?}");
 
     let gate = json!({"harness::hook::on-pre-generate": {"decision": "continue"}});
-    let (result, calls, _) = generate_observed(reply(), gate).await;
-    assert_eq!(result.unwrap().next_step, Some(2));
+    let (result, calls, turn) = generate_observed(finished(), gate).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
     assert!(phases(&calls).contains(&"harness::hook::on-pre-generate"));
-    assert_eq!(
-        ledger_reads(&calls),
-        1,
-        "the called observer gets the source"
-    );
+    assert_eq!(ledger_reads(&calls), 0, "{calls:?}");
+    assert!(turn.get("recall_sent").is_none(), "{turn}");
+
+    let memory = json!({"harness::hook::on-pre-generate":
+        {"decision": "continue", "target": "memory::hook::pre-generate"}});
+    let (result, calls, turn) = generate_observed(hold_reply()["message"].clone(), memory).await;
+    assert_eq!(result.unwrap().next_step, Some(2));
+    assert_eq!(ledger_reads(&calls), 1, "Memory gets the source");
+    // Stored: the turn's end records its boundary even once Memory left.
+    assert_eq!(turn["recall_sent"], true, "{turn}");
 }
 
 /// A stop mid-generation still runs the post_generate hooks: writing the next
@@ -805,7 +812,8 @@ async fn generate(
     generate_observed(reply, json!({})).await
 }
 
-/// [`generate`] with `hooks` (hook function -> chain outcome) observed.
+/// [`generate`] with `hooks` (hook function -> chain outcome) observed. An
+/// outcome's `target` names its observer's target (default `test::gate`).
 async fn generate_observed(
     reply: Value,
     hooks: Value,
@@ -880,8 +888,9 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
             if message["type"] == "registerfunction" {
                 let id = message["id"].as_str().unwrap();
                 if !hooks[id].is_null() {
+                    let target = hooks[id]["target"].as_str().unwrap_or("test::gate");
                     let registered = json!({"type": "functionregistered", "id": id, "revision": 1,
-                        "observers": [{"id": format!("o_{id}"), "target": "test::gate"}]});
+                        "observers": [{"id": format!("o_{id}"), "target": target}]});
                     let frame = tokio_tungstenite::tungstenite::Message::Text(
                         registered.to_string().into(),
                     );

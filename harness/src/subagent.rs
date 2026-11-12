@@ -1095,6 +1095,7 @@ mod tests {
             turn_id: "t_parent".into(),
             session_id: "s_parent".into(),
             recall_context: None,
+            recall_sent: false,
             status: TurnStatus::AwaitingFunctions,
             step: 1,
             turn_count: 1,

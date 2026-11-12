@@ -40,6 +40,7 @@ async fn delivered(stack: &Stack, session: &str, id: &str, text: &str) -> TurnRe
     record.turn_id = format!("opaque-turn-{id}");
     let entries = transcript(stack, session).await;
     record.recall_context = resolve(&stack.deps, &record, &entries).await;
+    record.recall_sent = record.recall_context.is_some();
     record
 }
 

@@ -636,15 +636,16 @@ async fn generate_step(
 
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
-    // Only a pre_generate observer the step calls reads recall provenance: a
-    // stack without one reads no ledger.
+    // Only Memory's pre_generate hook reads recall provenance: a step that does
+    // not call it reads no ledger.
     let pre_generate = deps.hooks.bindings(crate::hooks::HookPoint::PreGenerate);
     record.recall_context =
-        if crate::hooks::pre_generate_calls_a_target(&pre_generate, &record.session_id) {
+        if crate::hooks::pre_generate_calls_memory(&pre_generate, &record.session_id) {
             crate::hooks::recall::resolve(deps, &record, &entries).await
         } else {
             None
         };
+    record.recall_sent |= record.recall_context.is_some();
     // The previous step's watermark marks which entries arrived while that
     // step was generating (the window moves them past the reply they
     // interrupted — see crate::window::build). The new watermark is

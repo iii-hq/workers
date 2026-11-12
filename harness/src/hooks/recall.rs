@@ -213,10 +213,14 @@ pub(super) fn acknowledgement_input(input: &Value) -> Value {
 }
 
 /// Terminal boundaries are recorded from the finalizer, never an event payload.
-/// A turn that never received a Memory acknowledgement has no eligible proof.
+/// A turn that never received a Memory acknowledgement has no eligible proof,
+/// and one that never sent Memory its recall provenance reads no ledger.
 /// A boundary is written once, except that an unfinished exchange may later be
 /// marked finished (with the turn's status then); a finished one never moves.
 pub(crate) async fn finish_extraction(deps: &Deps, record: &TurnRecord, exchange_finished: bool) {
+    if !record.recall_sent {
+        return;
+    }
     let timeout = deps.cfg().await.session_timeout_ms;
     let result = finish_extraction_inner(&deps.iii, record, exchange_finished, timeout).await;
     if let Err(error) = result {

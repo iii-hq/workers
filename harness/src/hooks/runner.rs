@@ -729,7 +729,7 @@ pub(crate) async fn test_memory_invocation(
         .await;
 }
 
-const MEMORY_PRE_GENERATE: &str = "memory::hook::pre-generate";
+pub(super) const MEMORY_PRE_GENERATE: &str = "memory::hook::pre-generate";
 
 /// Engine registry ownership, not a payload/metadata caller claim. The engine
 /// and the registered Memory worker are trusted; this is not a human/operator ACL.

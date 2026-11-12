@@ -346,12 +346,15 @@ pub fn ordered(mut bindings: Vec<HookBinding>) -> Vec<HookBinding> {
     bindings
 }
 
-/// Whether a pre_generate chain for `session_id` may call one of `bindings`'
-/// targets: one without a static `inject_prompt` whose `sessions` globs select
-/// the session. Filters need the assembled input, so a filtered one counts.
-pub(crate) fn pre_generate_calls_a_target(bindings: &[HookBinding], session_id: &str) -> bool {
+/// Whether a pre_generate chain for `session_id` may call Memory's hook, the
+/// only reader of recall provenance: an observer targeting it without a static
+/// `inject_prompt`, whose `sessions` globs select the session. Filters need the
+/// assembled input, so a filtered one counts.
+pub(crate) fn pre_generate_calls_memory(bindings: &[HookBinding], session_id: &str) -> bool {
     bindings.iter().any(|binding| {
-        binding.inject_prompt.is_none() && runner::sessions_match(binding, session_id)
+        binding.target == runner::MEMORY_PRE_GENERATE
+            && binding.inject_prompt.is_none()
+            && runner::sessions_match(binding, session_id)
     })
 }
 
@@ -665,16 +668,18 @@ mod tests {
     }
 
     #[test]
-    fn only_a_called_pre_generate_observer_counts_as_called() {
+    fn only_a_called_memory_pre_generate_observer_counts_as_called() {
         let point = HookPoint::PreGenerate;
-        let injection = binding(point, "fp", "fp::guide", json!({ "inject_prompt": "g" }));
-        let scoped = binding(point, "m", "m::hook", json!({ "sessions": ["other-*"] }));
-        assert!(!pre_generate_calls_a_target(&[], "s"));
-        assert!(!pre_generate_calls_a_target(
-            &[injection, scoped.clone()],
+        let memory = "memory::hook::pre-generate";
+        let injection = binding(point, "fp", memory, json!({ "inject_prompt": "g" }));
+        let scoped = binding(point, "m", memory, json!({ "sessions": ["other-*"] }));
+        let other = binding(point, "ade", "ade::mention", json!({}));
+        assert!(!pre_generate_calls_memory(&[], "s"));
+        assert!(!pre_generate_calls_memory(
+            &[injection, scoped.clone(), other],
             "s"
         ));
-        assert!(pre_generate_calls_a_target(&[scoped], "other-1"));
+        assert!(pre_generate_calls_memory(&[scoped], "other-1"));
     }
 
     #[test]
