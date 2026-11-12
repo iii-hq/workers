@@ -640,15 +640,20 @@ async fn recall_delivery_real_send_invoked_and_notification_ignore_claims() {
         let context = stack.context(session).await;
         assert_eq!(context["source"]["kind"], expected);
         if session == "notice" {
-            assert!(crate::functions::send::inject(
+            // A notice re-fired under its stable id still delivers, but cannot
+            // rewrite the receipt or the source the first text resolved to.
+            let receipts = stack.data.lock().unwrap().get(SCOPE, session);
+            crate::functions::send::inject(
                 &stack.deps,
                 session,
                 AgentMessage::user_text("Different reused entry"),
                 Some("e-notice"),
-                None
+                None,
             )
             .await
-            .is_err());
+            .unwrap();
+            assert_eq!(stack.data.lock().unwrap().get(SCOPE, session), receipts);
+            assert_eq!(stack.context(session).await, context);
         }
         assert_eq!(context["session_id"], session);
         assert_eq!(context["turn_id"], stack.record(session).await.turn_id);

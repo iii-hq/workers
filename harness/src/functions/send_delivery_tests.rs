@@ -10,6 +10,7 @@ struct Data {
     state: BTreeMap<(String, String), Value>,
     messages: BTreeMap<String, Vec<Value>>,
     calls: Vec<(String, Value)>,
+    fail_appends: usize,
 }
 impl Data {
     fn get(&self, scope: &str, key: &str) -> Value {
@@ -64,6 +65,10 @@ impl Data {
                 Ok(json!({"messages":self.messages.get(session).cloned().unwrap_or_default()}))
             }
             "session::append" => {
+                if self.fail_appends > 0 {
+                    self.fail_appends -= 1;
+                    return Err("session append unavailable".into());
+                }
                 let id = p["entry_id"].as_str().ok_or("entry id missing")?;
                 let entries = self.messages.entry(session.into()).or_default();
                 if !entries.iter().any(|e| e["entry_id"] == id) {
@@ -493,4 +498,48 @@ async fn continuation_rejects_missing_mismatched_or_cross_channel_receipts_befor
             "{mode}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refired_notice_with_new_text_delivers_after_its_first_append_failed() {
+    let stack = Stack::new().await;
+    let session = "condfail";
+    // Same stable entry id and origin as the condition-failure notice.
+    let id = "e_condfail_sub_1";
+    let origin = json!({"notification": true, "binding": "sub_1"});
+    stack.reset(session, TurnStatus::Completed).await;
+    stack.data.lock().unwrap().fail_appends = 1;
+    let notice = |reason: &str| {
+        AgentMessage::user_text(format!(
+            "[notification] binding sub_1 fired but was NOT delivered: {reason}."
+        ))
+    };
+    assert!(inject(
+        &stack.deps,
+        session,
+        notice("condition timed out"),
+        Some(id),
+        Some(&origin)
+    )
+    .await
+    .is_err());
+    // The receipt landed before the failed append and certifies the old text.
+    assert_eq!(stack.receipt(session, id)["channel"], "notification");
+    inject(
+        &stack.deps,
+        session,
+        notice("condition function not found"),
+        Some(id),
+        Some(&origin),
+    )
+    .await
+    .unwrap();
+    let messages = stack.data.lock().unwrap().messages[session].clone();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0]["message"]
+        .to_string()
+        .contains("condition function not found"));
+    let context = stack.context(session).await;
+    assert_eq!(context["source"]["entry_id"], id);
+    assert_eq!(context["source"]["kind"], "unknown");
 }
