@@ -55,10 +55,26 @@ PEOPLE = {
 
 
 def write_json(path, value, mode=0o600):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(value, f, indent=2)
-    os.chmod(path, mode)
+    """Whole or not at all, as Claude Code writes: a reader (the worker,
+    looking at a sign-in) never sees a half-written file. Written where a
+    link points, which stays a link."""
+    path = os.path.realpath(path)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    temp = os.path.join(folder, ".%s.tmp.%d.%s" % (
+        os.path.basename(path), os.getpid(), uuid.uuid4().hex[:12]))
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w") as f:
+            json.dump(value, f, indent=2)
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def token_name(account_id):

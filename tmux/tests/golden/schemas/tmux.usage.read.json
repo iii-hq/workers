@@ -97,7 +97,7 @@
             "type": "string"
           },
           "dir": {
-            "description": "Its folder, absolute: `<accounts root>/<id>`.",
+            "description": "Its folder, absolute: `<accounts root>/<id>`. Without `accounts.json`, the one account (`default`) has none, and this is `~/.claude`.",
             "type": "string"
           },
           "dir_display": {

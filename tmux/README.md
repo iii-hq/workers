@@ -349,7 +349,8 @@ the global one, not one a switch waits to make global. Claude Code panes on
 its folder keep running. `delete_files: true` deletes its folder too, only
 when it is a real folder directly inside the accounts folder (a link is never
 followed out of it), and is refused while Claude Code runs on it, while any
-pane is being moved, or when tmux could not list its panes.
+pane is being moved, or when tmux could not list its panes; it looks at the
+processes again first, never at a scan from a few seconds before.
 
 ### The global account
 
@@ -411,15 +412,22 @@ given the same inode, has new modification and birth times; the old one
 may have been touched again), unless something new took its place; what
 was moved aside and left goes once stale, at start and before each lock is
 taken. The worker releases a lock only while it is still the one it
-touched last. One switch, recovery or
-move runs at a time, and a new Claude Code pane (`claude` on
+touched last. A swap and its settling hold `swap.lock` in the accounts
+folder (an `flock`, let go of when the process ends) so that a second
+worker on the same accounts leaves a swap that runs alone. One switch,
+recovery or move runs at a time, and a new Claude Code pane (`claude` on
 `tmux::windows::create`, `tmux::sessions::create`) waits for the one running
 too: nothing starts on a folder whose sign-in is moving, and nothing plans
-on what a swap half-way shows. Once a call has its turn, its work runs to
-the end on its own, even when the caller goes away (a timeout, a
-disconnect): a switch is never left half-way by a call that stopped
-waiting, and no other one starts before it is over. An account a swap
-involves (running, or left half-way) can't be removed. A session that
+on what a swap half-way shows. While a swap left half-way can't be settled
+yet, a new Claude Code pane on `~/.claude` or on either account it moves is
+refused ("A switch of the global account left half-way is being settled;
+try again in a moment."), and no pane moves. Once a call has its turn, its
+work (a new Claude Code pane included) runs to the end on its own, even
+when the caller goes away (a timeout, a disconnect): a switch is never left
+half-way by a call that stopped waiting, and no other one starts before it
+is over. A switch or a move needs tmux to list every pane: when it can't
+(a timeout), nothing is switched or moved and the error says so. An
+account a swap involves (running, or left half-way) can't be removed. A session that
 fetched the old profile right before the swap
 and writes it back within a minute gets the new one put back. Claude Code
 has a feature gate (`tengu_bubbly_fountain`, off today) that would stop a
@@ -677,7 +685,7 @@ iii call tmux::accounts::dismiss suggestion=default:week_90:personal
 
 | Variable | Replaces |
 |---|---|
-| `III_CLAUDE_HOME` | `~/.claude`, the global account's place; its `.claude.json` is then the one next to it, in its parent folder, as `~/.claude.json` is next to `~/.claude` |
+| `III_CLAUDE_HOME` | `~/.claude`, the global account's place; its `.claude.json` is then the one next to it, in its parent folder, as `~/.claude.json` is next to `~/.claude`. Claude Code started on it finds it through its own `HOME`: give the tmux server the `HOME` that holds it, or panes on the global account use that `HOME`'s `~/.claude` |
 | `III_CLAUDE_ACCOUNTS_DIR` | the accounts folder |
 | `III_CLAUDE_USAGE_URL` | `https://api.anthropic.com` for the usage endpoint; loopback addresses only, so a sign-in never goes to another host |
 | `CODEX_HOME` | `~/.codex` (Codex's own variable) |

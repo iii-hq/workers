@@ -106,8 +106,10 @@
   don't share conversations (never over a longer copy). It moves only when its status is
   `idle`, looked at again right before it stops, and only to a signed-in account; a working
   or waiting pane moves once its turn ends, and a move that fails says why (`move_error`).
-  `tmux::accounts::move_idle` moves every idle pane of one account to another.
-  Pinned panes move this way; panes that follow the global account never need to.
+  `tmux::accounts::move_idle` moves the idle panes using one account to another and pins
+  them there: those that follow the global account (when it is that account), those pinned
+  to it and those started by hand, never those pinned elsewhere. A switch of the global
+  account moves the panes that follow it by itself.
 - **Rules for when the global account runs low.** `tmux::accounts::rules` sets a threshold
   (week 80 %, 90 % or the limit, and optionally a full 5-hour window) and whether the worker
   suggests another account (`suggestion` in the feed, `tmux::accounts::dismiss` for "Not

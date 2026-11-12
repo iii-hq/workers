@@ -476,7 +476,7 @@ pub struct ClaudeAccount {
     pub name: String,
     /// `blue`, `green`, `violet`, `orange` or `pink`.
     pub color: String,
-    /// Its folder, absolute: `<accounts root>/<id>`.
+    /// Its folder, absolute: `<accounts root>/<id>`. Without `accounts.json`, the one account (`default`) has none, and this is `~/.claude`.
     pub dir: String,
     /// Its folder with `~` for the home folder.
     pub dir_display: String,
