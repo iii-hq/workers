@@ -53,6 +53,39 @@ def test_findings_become_warnings_on_the_repository_path(tmp_path: Path) -> None
     assert "cargo shear --fix" in result.stdout
 
 
+def test_warning_level_findings_on_a_zero_exit_are_kept(tmp_path: Path) -> None:
+    # cargo-shear reports unused optional dependencies as ::warning and exits 0.
+    result = run_with_fake_cargo(
+        tmp_path,
+        "::warning file=Cargo.toml,line=7,col=1,title=shear/unused_optional_dependency::"
+        "unused optional dependency `b`",
+        0,
+    )
+
+    assert result.returncode == 0
+    assert (
+        "::warning file=crates/judge-provider/Cargo.toml,line=7,col=1,"
+        "title=shear/unused_optional_dependency::unused optional dependency `b`"
+    ) in result.stdout
+    assert "no unused dependencies" not in result.stdout
+
+
+def test_errors_are_downgraded_and_warnings_kept_together(tmp_path: Path) -> None:
+    result = run_with_fake_cargo(
+        tmp_path,
+        "::error file=Cargo.toml,line=28,col=1,title=shear/unused_dependency::"
+        "unused dependency `tempfile`\n"
+        "::warning file=crates/x/Cargo.toml,line=7,col=1,"
+        "title=shear/unused_feature_dependency::unused feature dependency `b`",
+        1,
+    )
+
+    assert result.returncode == 0
+    assert "::error" not in result.stdout
+    assert "::warning file=crates/judge-provider/Cargo.toml,line=28," in result.stdout
+    assert "::warning file=crates/judge-provider/crates/x/Cargo.toml,line=7," in result.stdout
+
+
 def test_a_check_that_cannot_run_warns_instead_of_failing(tmp_path: Path) -> None:
     result = run_with_fake_cargo(tmp_path, "error: no such command: `shear`", 101)
 
