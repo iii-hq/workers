@@ -232,6 +232,21 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # Unused dependencies are a warning, never a failure: findings become
+      # annotations on the manifest lines (.github/scripts/cargo_shear_warnings.sh).
+      # A failed install only makes the check warn that it could not run.
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
+        continue-on-error: true
+        with:
+          tool: cargo-shear@1.13.4
+          fallback: none
+
+      - name: Check unused dependencies (warning only)
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/cargo_shear_warnings.sh" "$WORKER"
+
       # browser is the one worker whose --all-features build needs external
       # pinned artifacts: `scrapling-compat` links a certified
       # curl-impersonate static library and its tests hard-require the frozen
@@ -876,6 +891,21 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      # Unused dependencies are a warning, never a failure: findings become
+      # annotations on the manifest lines (.github/scripts/cargo_shear_warnings.sh).
+      # A failed install only makes the check warn that it could not run.
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
+        continue-on-error: true
+        with:
+          tool: cargo-shear@1.13.4
+          fallback: none
+
+      - name: Check unused dependencies (warning only)
+        env:
+          CRATE: crates/${{ matrix.crate }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/cargo_shear_warnings.sh" "$CRATE"
 
       - name: Run clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
