@@ -183,6 +183,8 @@ async fn run_upstream(
             let Some(data) = data_line(data_block) else {
                 return vec![];
             };
+            // Raw-stream capture: RUST_LOG=provider_openai_codex::upstream=trace.
+            tracing::trace!(data, "sse event");
             if data == "[DONE]" {
                 return vec![
                     AssistantMessageEvent::Stop {
