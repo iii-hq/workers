@@ -242,7 +242,7 @@ impl DeltaReader {
             let watermark = self
                 .pending
                 .last()
-                .expect("corte presente")
+                .expect("the cut is present")
                 .entry_id
                 .clone();
             let entries = std::mem::take(&mut self.pending);

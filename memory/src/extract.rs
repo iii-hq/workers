@@ -1226,53 +1226,30 @@ fn authenticated_intervals(
             .iter()
             .filter(|r| r.attestation.entry_id == entry.0)
             .collect();
-        if rows.is_empty() {
+        let [row] = rows[..] else {
+            // No row, or rows of several turns: no authority.
             pending.push(entry.clone());
             continue;
-        }
-        if rows
-            .iter()
-            .all(|r| r.attestation.terminal.status == "completed")
-        {
-            // Completed turns retain the existing assistant-origin contract.
-            pending.push(entry.clone());
-            continue;
-        }
-        if rows.len() != 1 {
-            return Err("history ambiguous source turns retained".into());
-        }
-        let row = rows[0];
+        };
         let a = &row.attestation;
         let item = source
             .iter()
             .find(|v| v["entry_id"] == entry.0)
             .ok_or("history source missing")?;
-        if a.session_id != job.session_id || !row.matches_source(item) {
-            return Err("history source changed or ineligible; retained".into());
-        }
-        let scope = row.scope()?;
-        // A frozen layer is exact, not permission to borrow today's default.
-        // Configuration rotation quarantines it rather than routing elsewhere.
-        if scope
-            .as_ref()
-            .is_some_and(|scope| scope.layer(default_bank) != a.layer.as_deref())
+        // Only a finished failed or cancelled request with no assistant step
+        // after it is cut on its own. Any other row is no authority: the
+        // stamped path decides the entry as it would without the ledger, so
+        // a row can never stop the cursor.
+        if a.session_id != job.session_id
+            || !row.matches_source(item)
+            || !a.terminal.exchange_finished
+            || !matches!(a.terminal.status.as_str(), "failed" | "cancelled")
+            || entries
+                .get(index + 1)
+                .is_some_and(|next| next.1 == "assistant")
         {
-            return Err("history frozen layer requires original configuration; retained".into());
-        }
-        if !a.terminal.exchange_finished {
-            return Err("history exchange unfinished; retained".into());
-        }
-        if !matches!(a.terminal.status.as_str(), "failed" | "cancelled") {
             pending.push(entry.clone());
             continue;
-        }
-        // A failed-before-assistant cut is exactly its request; do not steal
-        // assistant text or an earlier unproved request into that old turn.
-        if entries
-            .get(index + 1)
-            .is_some_and(|next| next.1 == "assistant")
-        {
-            return Err("history failed request has assistant boundary; retained".into());
         }
         if !pending.is_empty() {
             intervals.extend(causal_intervals(
@@ -1283,6 +1260,19 @@ fn authenticated_intervals(
                 allow_legacy,
             )?);
         }
+        // A proved cut cannot lend the calling job's policy to its tail.
+        allow_legacy = false;
+        // An unknown policy is OFF, and a frozen layer is exact, not
+        // permission to borrow today's default: after a configuration
+        // rotation the request closes unextracted, never routed elsewhere.
+        let Some(scope) = row.scope().ok().filter(|scope| {
+            scope
+                .as_ref()
+                .is_none_or(|scope| scope.layer(default_bank) == a.layer.as_deref())
+        }) else {
+            intervals.push((None, Some(a.turn_id.clone()), vec![entry.clone()]));
+            continue;
+        };
         if job.until.as_deref() == Some(entry.0.as_str())
             && (job.turn_id.as_deref() != Some(a.turn_id.as_str())
                 || scope.as_ref() != fallback
@@ -1291,8 +1281,6 @@ fn authenticated_intervals(
             return Err("history job/source policy mismatch".into());
         }
         intervals.push((scope, Some(a.turn_id.clone()), vec![entry.clone()]));
-        // A proved cut cannot lend the calling job's policy to its tail.
-        allow_legacy = false;
     }
     if !pending.is_empty() {
         intervals.extend(causal_intervals(
@@ -1629,27 +1617,13 @@ async fn execute_run(
     let bank_name = resolved.bank.as_str();
     // Bound the serialized source-key material before json! copies any ID,
     // and before persisting pending state for a source we cannot address.
-    let mut source_key_bytes = 128;
-    for id in std::iter::once(session_id)
-        .chain(std::iter::once(bank_name))
-        .chain(resolved.agent.as_deref())
-        .chain(turn_id)
-        .chain(entries.iter().map(|entry| entry.0.as_str()))
-    {
-        if !crate::extraction_proof::bounded(id) {
-            return Err("extraction source key identifier byte bound".into());
-        }
-        let bytes = id
-            .len()
-            .checked_mul(6)
-            .and_then(|n| n.checked_add(32))
-            .ok_or("extraction source key overflow")?;
-        crate::extraction_proof::charge(
-            &mut source_key_bytes,
-            bytes,
-            crate::extraction_proof::SOURCE_BYTES / 6,
-        )?;
-    }
+    source_key_bound(
+        std::iter::once(session_id)
+            .chain(std::iter::once(bank_name))
+            .chain(resolved.agent.as_deref())
+            .chain(turn_id)
+            .chain(entries.iter().map(|entry| entry.0.as_str())),
+    )?;
     let layer_name = resolved.layer(&cfg.default_bank);
     let query = entries
         .iter()
@@ -2551,23 +2525,53 @@ fn said_at(entries: &[Entry], now: u64) -> u64 {
     entries.last().map_or(now, |(.., ts)| *ts).min(now)
 }
 
+/// What one id costs in a run's serialized source key (JSON escaping
+/// reserves six bytes per byte).
+fn key_bytes(id: &str) -> usize {
+    id.len() * 6 + 32
+}
+
+/// The serialized source-key material of a run's ids, within its budget.
+fn source_key_bound<'a>(ids: impl Iterator<Item = &'a str>) -> Result<(), String> {
+    let mut source_key_bytes = 128;
+    for id in ids {
+        if !crate::extraction_proof::bounded(id) {
+            return Err("extraction source key identifier byte bound".into());
+        }
+        crate::extraction_proof::charge(
+            &mut source_key_bytes,
+            key_bytes(id),
+            crate::extraction_proof::SOURCE_BYTES / 6,
+        )?;
+    }
+    Ok(())
+}
+
+/// The source-key budget a run's entry ids may take: what is left once the
+/// session, bank, agent and turn ids took theirs at the 256-byte id bound.
+const RUN_KEY_BYTES: usize = crate::extraction_proof::SOURCE_BYTES / 6 - 128 - 4 * (256 * 6 + 32);
+
 /// A span cut into the runs one extraction call reads, oldest first: whole
 /// entries, at most `budget` chars of excerpt each, unless one line alone
-/// is longer, which is then a run of its own. Nothing is dropped.
+/// is longer, which is then a run of its own. Entries with no text (tool-only
+/// steps) cost no excerpt, so their ids also close a run at
+/// [`RUN_KEY_BYTES`]. Nothing is dropped.
 fn chunks(entries: Vec<Entry>, budget: usize) -> Vec<Vec<Entry>> {
     let mut runs: Vec<Vec<Entry>> = Vec::new();
-    let mut used = 0;
+    let (mut used, mut keys) = (0, 0);
     for entry in entries {
         // The excerpt joins lines with "\n": one char each.
         let len = transcript_line(&entry.1, &entry.2, entry.3).map_or(0, |l| l.len() + 1);
+        let key = key_bytes(&entry.0);
         match runs.last_mut() {
-            Some(run) if used + len <= budget => run.push(entry),
+            Some(run) if used + len <= budget && keys + key <= RUN_KEY_BYTES => run.push(entry),
             _ => {
-                used = 0;
+                (used, keys) = (0, 0);
                 runs.push(vec![entry]);
             }
         }
         used += len;
+        keys += key;
     }
     runs
 }
@@ -3777,6 +3781,23 @@ mod tests {
             [1, 1]
         );
         assert!(chunks(Vec::new(), CALL_CHARS).is_empty());
+    }
+
+    #[test]
+    fn a_long_silent_turn_splits_into_runs_whose_keys_fit() {
+        // Tool-only steps carry no text, so only their ids close a run.
+        let id = |i: usize| format!("{i:0>256}");
+        let span: Vec<Entry> = (0..1000).map(|i| said(&id(i), "assistant", "")).collect();
+        let runs = pass_runs(span, 12);
+        assert!(runs.len() > 1);
+        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 1000);
+        let context = id(0);
+        for run in &runs {
+            source_key_bound(
+                std::iter::repeat_n(context.as_str(), 4).chain(run.iter().map(|e| e.0.as_str())),
+            )
+            .unwrap();
+        }
     }
 
     #[test]

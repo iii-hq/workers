@@ -509,14 +509,10 @@ async fn authenticated_failed_request_recovers_original_bank_after_restart_and_e
             until: Some("next-end".into()),
             ..Default::default()
         };
-        let result = memory::extract::try_run(&stack.deps, &next_job).await;
-        if policy == "unknown" {
-            assert!(result.unwrap_err().contains("unknown policy"));
-            assert!(stack.fixture.lock().unwrap().prompts.is_empty());
-            assert!(stack.fixture.lock().unwrap().cursor.is_null());
-            continue;
-        }
-        result.unwrap();
+        // An unknown policy is OFF: the request closes unextracted.
+        memory::extract::try_run(&stack.deps, &next_job)
+            .await
+            .unwrap();
         let prompts = stack.fixture.lock().unwrap().prompts.clone();
         if policy == "on" {
             // The later job runs the failed request first, under the bank of
@@ -631,14 +627,7 @@ async fn registered_receiver_large_source_keeps_full_digest_and_later_owned_prog
                 until: Some("next-end".into()),
                 ..Default::default()
             };
-            let result = memory::extract::try_run(&stack.deps, &later).await;
-            if policy == "unknown" {
-                assert!(result.unwrap_err().contains("unknown policy"));
-                assert!(stack.fixture.lock().unwrap().prompts.is_empty());
-                assert!(stack.fixture.lock().unwrap().cursor.is_null());
-                continue;
-            }
-            result.unwrap();
+            memory::extract::try_run(&stack.deps, &later).await.unwrap();
             let ranges = stack
                 .deps
                 .store()
@@ -979,8 +968,29 @@ async fn registered_receiver_caps_full_join_and_path_before_copying_without_pref
     );
 }
 
+/// A later turn: its request and its stamped reply, under `new-bank`.
+fn next_turn(stack: &Stack, mut path: Vec<Value>) -> memory::hooks::ExtractJobInput {
+    path.push(json!({"entry_id":"next-request","message":{"role":"user","timestamp":1700000001000u64,"content":[{"type":"text","text":"The next request belongs only to the next bank."}]}}));
+    path.push(json!({"entry_id":"next-end","message":{"role":"assistant","timestamp":1700000002000u64,"content":[{"type":"text","text":"Next answer."}]},"origin":{"turn_id":"next-turn","memory_extraction":true,"memory_bank":"new-bank"}}));
+    stack.fixture.lock().unwrap().path = path;
+    memory::hooks::ExtractJobInput {
+        session_id: "synthetic-session".into(),
+        turn_id: Some("next-turn".into()),
+        bank: Some("new-bank".into()),
+        until: Some("next-end".into()),
+        ..Default::default()
+    }
+}
+
+async fn enable_extraction(stack: &Stack) {
+    let mut cfg = (*stack.deps.config().await).clone();
+    cfg.extraction_enabled = true;
+    cfg.extraction_model = "fixture-only".into();
+    *stack.deps.config.write().await = Arc::new(cfg);
+}
+
 #[tokio::test]
-async fn bounded_cancelled_proof_and_frozen_layer_rotation_stay_in_original_scope() {
+async fn a_cancelled_request_after_a_layer_rotation_closes_unextracted() {
     let dir = tempfile::tempdir().unwrap();
     let stack = Stack::new(dir.path()).await;
     let mut delivery = input("cancelled");
@@ -990,9 +1000,15 @@ async fn bounded_cancelled_proof_and_frozen_layer_rotation_stay_in_original_scop
     stack
         .invoke(delivery, "owner-one", Some(stack.handle.id()))
         .await;
-    let before = stack.deps.store().await.extraction_plan(&key()).unwrap();
-    assert!(before.is_some());
+    assert!(stack
+        .deps
+        .store()
+        .await
+        .extraction_plan(&key())
+        .unwrap()
+        .is_some());
     *stack.deps.store.write().await = Arc::new(Store::open(dir.path().into()).unwrap());
+    enable_extraction(&stack).await;
     let mut cfg = (*stack.deps.config().await).clone();
     cfg.default_bank = "rotated".into();
     *stack.deps.config.write().await = Arc::new(cfg);
@@ -1004,25 +1020,31 @@ async fn bounded_cancelled_proof_and_frozen_layer_rotation_stay_in_original_scop
         until: Some("opaque-entry".into()),
         ..Default::default()
     };
-    assert!(memory::extract::try_run(&stack.deps, &job)
-        .await
-        .unwrap_err()
-        .contains("frozen layer"));
-    assert!(stack.fixture.lock().unwrap().cursor.is_null());
-    assert!(stack.fixture.lock().unwrap().prompts.is_empty());
+    // The frozen layer is gone: the cursor passes the request with no model
+    // call and nothing is written to any bank.
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
     assert_eq!(
-        stack.deps.store().await.extraction_plan(&key()).unwrap(),
-        before
+        stack.fixture.lock().unwrap().cursor,
+        json!({"last_entry_id":"opaque-entry"})
+    );
+    assert!(stack.fixture.lock().unwrap().prompts.is_empty());
+    assert!(!dir.path().join("old-bank/memories.jsonl").exists());
+    assert!(!dir.path().join("rotated/memories.jsonl").exists());
+    // The next turn extracts as usual.
+    let next = next_turn(&stack, vec![source()]);
+    memory::extract::try_run(&stack.deps, &next).await.unwrap();
+    assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
+    assert_eq!(
+        stack.fixture.lock().unwrap().cursor,
+        json!({"last_entry_id":"next-end"})
     );
 }
 
 #[tokio::test]
-async fn unfinished_terminal_and_contradictory_frozen_turn_never_authorize_recovery() {
+async fn an_unfinished_turn_never_authorizes_recovery_nor_stops_the_next_turn() {
     let dir = tempfile::tempdir().unwrap();
     let stack = Stack::new(dir.path()).await;
-    let mut cfg = (*stack.deps.config().await).clone();
-    cfg.extraction_enabled = true;
-    *stack.deps.config.write().await = Arc::new(cfg);
+    enable_extraction(&stack).await;
     let mut unfinished = input("unfinished");
     unfinished["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]
         ["exchange_finished"] = json!(false);
@@ -1048,10 +1070,56 @@ async fn unfinished_terminal_and_contradictory_frozen_turn_never_authorize_recov
         until: Some("opaque-entry".into()),
         ..Default::default()
     };
-    assert!(memory::extract::try_run(&stack.deps, &job)
-        .await
-        .unwrap_err()
-        .contains("unfinished"));
+    // No authority: the request waits for its turn's reply, as without the
+    // ledger, and nothing fails.
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
     assert!(stack.fixture.lock().unwrap().prompts.is_empty());
     assert!(stack.fixture.lock().unwrap().cursor.is_null());
+    // The next turn's request opens its own run: the unfinished request
+    // closes unextracted and the cursor moves past both.
+    let next = next_turn(&stack, vec![source()]);
+    memory::extract::try_run(&stack.deps, &next).await.unwrap();
+    assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
+    assert!(!dir.path().join("old-bank/memories.jsonl").exists());
+    assert_eq!(
+        stack.fixture.lock().unwrap().cursor,
+        json!({"last_entry_id":"next-end"})
+    );
+}
+
+#[tokio::test]
+async fn a_failed_turn_with_an_assistant_step_extracts_and_the_next_turn_follows() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    let text = "The user prefers copper instruments.";
+    let request = json!({"entry_id":"opaque-entry","message":{"role":"user","timestamp":1700000000000u64,"content":[{"type":"text","text":text}]}});
+    let step = json!({"entry_id":"failed-step","message":{"role":"assistant","timestamp":1700000000500u64,"content":[{"type":"text","text":"Checking the instruments."}]},"origin":{"turn_id":"old-now","memory_extraction":true,"memory_bank":"old-bank"}});
+    stack.fixture.lock().unwrap().path = vec![request.clone(), step.clone()];
+    let mut delivery = input("now");
+    delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"]["text_sha256"] =
+        json!("75a1e6098f1a3f42d47fb37d2f317b2b836b7798edbd06b88d37c0114b6ae438");
+    stack
+        .invoke(delivery, "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(stack
+        .deps
+        .store()
+        .await
+        .extraction_plan(&key())
+        .unwrap()
+        .is_some());
+    // The row is no cut (an assistant step follows): the stamped step takes
+    // the request into its own turn's bank, then the next turn runs.
+    let next = next_turn(&stack, vec![request, step]);
+    memory::extract::try_run(&stack.deps, &next).await.unwrap();
+    let prompts = stack.fixture.lock().unwrap().prompts.clone();
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[0].contains(text));
+    assert!(!prompts[1].contains(text));
+    assert!(dir.path().join("old-bank/memories.jsonl").exists());
+    assert_eq!(
+        stack.fixture.lock().unwrap().cursor,
+        json!({"last_entry_id":"next-end"})
+    );
 }

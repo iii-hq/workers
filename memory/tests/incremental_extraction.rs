@@ -211,7 +211,7 @@ fn later_page_cut_keeps_prefix_and_never_requests_its_successor() {
     assert_eq!(transport.requests[1]["cursor"], "opaque-A");
     assert!(transport.requests[1].get("after_entry_id").is_none());
     let Outcome::Complete(delta) = read.outcome() else {
-        panic!("corte posterior completo")
+        panic!("the later cut completes")
     };
     assert_eq!(
         delta
@@ -393,7 +393,7 @@ fn transient_error_is_not_a_fork_or_empty_success_and_retry_starts_fresh() {
     assert_eq!(retry.next_request().unwrap()["after_entry_id"], "anchor");
     retry.accept(Ok(page(&["prefix", "end"], None)));
     let Outcome::Complete(delta) = retry.outcome() else {
-        panic!("retry independente completo")
+        panic!("an independent retry completes")
     };
     assert_eq!(delta.entries.len(), 2);
     assert_eq!(delta.entries[0].entry_id, "prefix");
@@ -1378,7 +1378,11 @@ mod productive {
         stack.run(&job("first")).await.unwrap();
         {
             let s = stack.script.lock().unwrap();
-            assert_eq!(s.requests().len(), 2, "delta ausente exige root completo");
+            assert_eq!(
+                s.requests().len(),
+                2,
+                "a missing delta needs a full root read"
+            );
             assert_eq!(s.count("router::complete"), 0);
             assert_eq!(s.count("state::set"), 0);
             assert_eq!(s.cursor.as_deref(), Some("end"));
