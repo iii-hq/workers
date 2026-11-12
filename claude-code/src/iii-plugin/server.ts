@@ -10,6 +10,7 @@
  *   resources  `iii-skill://<id>` per skill
  */
 
+import { type CallArgs, callFunction, type ObserveArgs, ObserverBuffer } from './bus.js';
 import type { Directory } from './directory.js';
 
 const PROTOCOL = '2025-06-18';
@@ -52,11 +53,100 @@ const TOOLS = [
     },
   },
   {
+    name: 'iii_call',
+    description:
+      'Call any function on the iii engine by id and return its result. The way to act on the engine: use it instead of the `iii call` CLI. Find ids with engine::functions::list or directory::search_functions, and read a contract with engine::functions::info before the first call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        function_id: { type: 'string', description: 'e.g. `engine::workers::list`' },
+        payload: {
+          type: 'object',
+          description: 'The function arguments (a JSON object). Default {}.',
+        },
+        timeout_ms: { type: 'number' },
+        namespace: { type: 'string', description: 'Route to another namespace.' },
+        void: {
+          type: 'boolean',
+          description: 'Fire and forget: return without waiting for a result.',
+        },
+        max_chars: { type: 'number', description: 'Cap on the returned JSON (default 100000).' },
+      },
+      required: ['function_id'],
+    },
+  },
+  {
+    name: 'iii_observe',
+    description:
+      'Observe a function on the iii engine: every matching invocation of it is buffered for this session. Returns an observer_id; read what happened with iii_events, remove it with iii_unobserve. Use it instead of polling.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        function_id: { type: 'string', description: 'The function to observe, e.g. `state::set`.' },
+        filters: {
+          type: 'object',
+          description:
+            "Which calls match, e.g. { 'input.scope': { $eq: 'jobs' } }. Default: every call.",
+        },
+        args: {
+          type: 'object',
+          description: "The observed function's args_format (see engine::functions::info).",
+        },
+        capture: {
+          type: 'array',
+          items: { type: 'string', enum: ['input', 'output', 'error', 'caller', 'metadata'] },
+          description:
+            "What each event carries. Default ['input','output','caller'] (successes only); add 'error' for failures.",
+        },
+        namespace: { type: 'string' },
+        max_events: { type: 'number', description: 'Remove the observer after this many matches.' },
+        expires_in_ms: { type: 'number', description: 'Remove the observer after this long.' },
+      },
+      required: ['function_id'],
+    },
+  },
+  {
+    name: 'iii_events',
+    description:
+      'Read (and remove) the buffered events of one observer, or of all of them, oldest first. Reports how many remain and how many were dropped because the buffer was full.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        observer_id: { type: 'string', description: 'Omit for every observer.' },
+        max: { type: 'number', description: 'Default 50.' },
+      },
+    },
+  },
+  {
+    name: 'iii_observers',
+    description:
+      "This session's observers: function, filters, state, and buffered / received / dropped counts.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'iii_unobserve',
+    description: 'Remove an observer created with iii_observe, discarding its unread events.',
+    inputSchema: {
+      type: 'object',
+      properties: { observer_id: { type: 'string' } },
+      required: ['observer_id'],
+    },
+  },
+  {
     name: 'iii_get_skill',
     description: 'Fetch one skill by id and return its markdown body.',
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
   },
 ];
+
+/** What Claude Code shows the model about this server. */
+export const INSTRUCTIONS = [
+  'The running iii engine. Everything on it is a function, called by id.',
+  'Act on the engine with iii_call (any function id, with a JSON payload) instead of the `iii call` CLI or curl; discover ids with iii_call on engine::functions::list or directory::search_functions, and read a contract with engine::functions::info before its first call.',
+  'React to the engine with iii_observe instead of polling: it buffers every matching invocation of a function for this session; read them with iii_events, list them with iii_observers, and remove each one with iii_unobserve when done.',
+  'Profiles written for the iii harness say agent_call and harness::observe: here those are iii_call and iii_observe.',
+  'Agent profiles: iii_list_agents / iii_get_agent (or /iii:profile). Skills: iii_list_skills / iii_get_skill (or /iii:skills).',
+].join(' ');
 
 class RpcError extends Error {
   constructor(
@@ -78,7 +168,12 @@ function requireId(args: Json): string {
   return id;
 }
 
-async function callTool(dir: Directory, name: string, args: Json): Promise<Json> {
+async function callTool(
+  dir: Directory,
+  observers: ObserverBuffer,
+  name: string,
+  args: Json,
+): Promise<Json> {
   try {
     switch (name) {
       case 'iii_status': {
@@ -88,6 +183,24 @@ async function callTool(dir: Directory, name: string, args: Json): Promise<Json>
           (err: unknown) => String(err instanceof Error ? err.message : err),
         );
         return text({ ...dir.status(), ...(error ? { error } : {}) });
+      }
+      case 'iii_call':
+        return text(await callFunction(await dir.bus(), args as unknown as CallArgs));
+      case 'iii_observe':
+        return text(await observers.observe(args as unknown as ObserveArgs));
+      case 'iii_events':
+        return text(
+          observers.events({
+            ...(typeof args.observer_id === 'string' ? { observer_id: args.observer_id } : {}),
+            ...(typeof args.max === 'number' ? { max: args.max } : {}),
+          }),
+        );
+      case 'iii_observers':
+        return text(observers.list());
+      case 'iii_unobserve': {
+        const id = typeof args.observer_id === 'string' ? args.observer_id.trim() : '';
+        if (!id) throw new RpcError(-32602, '`observer_id` is required');
+        return text(await observers.unobserve(id));
       }
       case 'iii_list_agents':
         return text(await dir.listAgents(args.include_hidden === true));
@@ -114,7 +227,10 @@ async function callTool(dir: Directory, name: string, args: Json): Promise<Json>
   }
 }
 
-export function createHandler(dir: Directory) {
+export function createHandler(
+  dir: Directory,
+  observers: ObserverBuffer = new ObserverBuffer(() => dir.bus()),
+) {
   return async function handle(req: Request): Promise<unknown> {
     const params = req.params ?? {};
     switch (req.method) {
@@ -124,8 +240,7 @@ export function createHandler(dir: Directory) {
           protocolVersion: SUPPORTED.has(asked) ? asked : PROTOCOL,
           capabilities: { tools: {}, resources: {} },
           serverInfo: { name: 'iii-plugin', version: '0.1.0' },
-          instructions:
-            'Agent profiles and skills from the running iii engine. Use iii_list_agents / iii_get_agent to adopt an iii agent profile, and iii_list_skills / iii_get_skill to read iii skills.',
+          instructions: INSTRUCTIONS,
         };
       }
       case 'ping':
@@ -133,7 +248,12 @@ export function createHandler(dir: Directory) {
       case 'tools/list':
         return { tools: TOOLS };
       case 'tools/call':
-        return callTool(dir, String(params.name ?? ''), (params.arguments as Json) ?? {});
+        return callTool(
+          dir,
+          observers,
+          String(params.name ?? ''),
+          (params.arguments as Json) ?? {},
+        );
       case 'resources/list': {
         const skills = await dir.listSkills().catch(() => []);
         return {
@@ -160,12 +280,13 @@ export function createHandler(dir: Directory) {
 
 /** Serve MCP on stdin/stdout until stdin closes. */
 export async function serve(dir: Directory): Promise<void> {
+  const observers = new ObserverBuffer(() => dir.bus());
   // stdout is the protocol channel: anything else printed there corrupts it,
   // and iii-sdk logs its connection banners to stdout. Keep the real writer for
   // JSON-RPC and send every other stdout write to stderr.
   const out = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
-  const handle = createHandler(dir);
+  const handle = createHandler(dir, observers);
   const write = (msg: unknown) => out(`${JSON.stringify(msg)}\n`);
   let buffer = '';
   process.stdin.setEncoding('utf8');
@@ -200,5 +321,8 @@ export async function serve(dir: Directory): Promise<void> {
     }
   });
   await new Promise<void>((resolve) => process.stdin.once('end', resolve));
+  // Observers are not replayed on reconnect and die with the connection, but
+  // dispose them explicitly so the engine forgets them at once.
+  await observers.close();
   await dir.close();
 }

@@ -18,6 +18,8 @@
  * copy.
  */
 
+import { approveHookEntry } from './iii-plugin/mode.js';
+
 /** Where the plugin is materialised, relative to a workspace. */
 export const PLUGIN_DIR_NAME = '.iii-plugin';
 
@@ -67,6 +69,8 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
     const entry = { hooks: [{ type: 'command', command }] };
     hooks[event] = [shape === 'matcher' ? { matcher: '*', ...entry } : entry];
   }
+  // The iii mode's read-only approvals, after the activity report.
+  hooks.PreToolUse.push(approveHookEntry());
 
   // The manifest, MCP server and commands are the committed `iii-plugin/`
   // folder (see `iii-plugin/install.ts`); these are the parts only a worker

@@ -47,6 +47,15 @@ function shorten(text: string): string {
   return flat.length > DESCRIPTION_MAX ? `${flat.slice(0, DESCRIPTION_MAX - 1).trimEnd()}…` : flat;
 }
 
+/** Every plugin prompt says how to reach the engine. */
+export const ENGINE_NOTE = `
+While you work, act on the engine with \`iii_call\` (any function id, with a
+payload) instead of the \`iii\` CLI, and react to it with \`iii_observe\` (then
+\`iii_events\`, and \`iii_unobserve\` when done) instead of polling. Where a
+profile or skill says \`agent_call\` or \`harness::observe\`, use \`iii_call\` and
+\`iii_observe\`.
+`;
+
 export function profileCommand(row: AgentRow): PluginFile {
   const about = shorten(row.description || row.name || '');
   const tools = ['iii_get_agent', 'iii_get_skill', 'iii_status']
@@ -74,7 +83,7 @@ Load the iii agent profile \`${row.id}\` from the running engine, through the
    Confirm in one line which profile is active.
 4. If a task was given, start it as that profile now. Otherwise wait for the
    next message.
-`,
+${ENGINE_NOTE}`,
   };
 }
 

@@ -3,12 +3,13 @@
   "inputs": [
     "pnpm-lock.yaml",
     "scripts/build-iii-plugin.mjs",
+    "src/iii-plugin/bus.ts",
     "src/iii-plugin/commands.ts",
     "src/iii-plugin/directory.ts",
     "src/iii-plugin/engine.ts",
     "src/iii-plugin/main.ts",
     "src/iii-plugin/server.ts"
   ],
-  "inputs_sha256": "d9c1825bc56ee75f914971da498de69b4192b4ce08a9e1d5449acbaae2aba118",
-  "output_sha256": "0a1e565bd9b9d3a39bd7f47fb2e673ec337c312e84358fcfee4bb702856eba6f"
+  "inputs_sha256": "a18cffc7b281ef16e0d17e2204c3b2ca19c9fd623a6e33b34d81e06af0537832",
+  "output_sha256": "db024b4a210a5e3e090573a0ef3629ce657fbc0b79310b43488c0ddbb52b7c06"
 }

@@ -200,6 +200,26 @@ describe('executeRun', () => {
     ).toContain('name: iii-runtime');
   });
 
+  it('runs the turn in iii mode: the iii agent of the plugin', async () => {
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1' });
+    expect(capture.options?.agent).toBe('iii:iii');
+  });
+
+  it('does not select the iii agent when the plugin is not loaded', async () => {
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1', iii_context: false });
+    expect(capture.options?.plugins).toBeUndefined();
+    expect(capture.options?.agent).toBeUndefined();
+  });
+
+  it("lets a caller's own options.agent win over iii mode", async () => {
+    const { capture } = await runTurn({
+      prompt: 'x',
+      session_id: 's1',
+      options: { agent: 'reviewer' },
+    });
+    expect(capture.options?.agent).toBe('reviewer');
+  });
+
   it('a caller-supplied system_prompt wins verbatim with nothing appended', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1', system_prompt: 'override' });
     expect(capture.options?.systemPrompt).toBe('override');
