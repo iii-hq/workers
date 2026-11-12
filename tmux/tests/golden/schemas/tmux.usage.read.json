@@ -23,7 +23,7 @@
         "description": "The latest change of the global account.",
         "properties": {
           "after_turn": {
-            "description": "Panes that move when their turn ends.",
+            "description": "Panes pinned to the old global account that restart on its folder when their turn ends.",
             "items": {
               "type": "string"
             },
@@ -48,24 +48,32 @@
               "null"
             ]
           },
+          "following": {
+            "default": 0,
+            "description": "Claude Code panes on the slot that switched with it, on their next message.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "from": {
             "description": "The global account before.",
             "type": "string"
           },
-          "moved": {
-            "description": "Panes moved at once.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "reason": {
             "default": null,
-            "description": "`week_80`, `week_90`, `limit`, `five_hour` or `back` for an automatic switch; null when someone switched.",
+            "description": "`week_80`, `week_90`, `limit`, `five_hour` or `back` for an automatic switch; `login` (someone signed in to a known account with `/login`), `login_new` (to a new one, added then), `upgrade` (the worker took the slot's sign-in for global when it was updated); null when someone switched.",
             "type": [
               "string",
               "null"
             ]
+          },
+          "restarted": {
+            "default": [],
+            "description": "Pinned panes restarted: the new global account's (now on the slot) and the old one's (now on its folder).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "to": {
             "description": "The global account after.",
@@ -77,24 +85,23 @@
           "at_ms",
           "auto",
           "from",
-          "moved",
           "to"
         ],
         "type": "object"
       },
       "ClaudeAccount": {
-        "description": "A Claude Code account (agent-accounts D1): one config folder.",
+        "description": "A Claude Code account (agent-accounts G1, G2): one sign-in, kept in the global slot while it is global and in its own folder otherwise.",
         "properties": {
           "color": {
             "description": "`blue`, `green`, `violet`, `orange` or `pink`.",
             "type": "string"
           },
           "dir": {
-            "description": "Its config folder, absolute.",
+            "description": "Its folder, absolute: `<accounts root>/<id>`.",
             "type": "string"
           },
           "dir_display": {
-            "description": "Its config folder with `~` for the home folder.",
+            "description": "Its folder with `~` for the home folder.",
             "type": "string"
           },
           "email": {
@@ -106,11 +113,11 @@
             ]
           },
           "id": {
-            "description": "`default` for `~/.claude`, else a slug of its first name.",
+            "description": "`default` for the sign-in `~/.claude` had when accounts began, else a slug of its first name.",
             "type": "string"
           },
           "is_default": {
-            "description": "It is the built-in account (`~/.claude`, `CLAUDE_CONFIG_DIR` unset).",
+            "description": "Its id is `default`.",
             "type": "boolean"
           },
           "name": {
@@ -126,7 +133,7 @@
             ]
           },
           "panes": {
-            "description": "Claude Code panes running on it now.",
+            "description": "Claude Code panes using it now (for the global account, every pane on the slot, its followers included).",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
@@ -140,7 +147,7 @@
             ]
           },
           "shared": {
-            "description": "The groups it shares with `~/.claude`: `settings`, `extensions`, `plugins`, `conversations`.",
+            "description": "The groups its folder shares with `~/.claude`: `settings`, `extensions`, `plugins`, `conversations`.",
             "items": {
               "type": "string"
             },
@@ -204,7 +211,7 @@
             "type": "boolean"
           },
           "global": {
-            "description": "Id of the global account: what plain `claude` uses in new windows.",
+            "description": "Id of the global account: the sign-in of the slot (`~/.claude`), what plain `claude` uses anywhere.",
             "type": "string"
           },
           "last_switch": {
@@ -222,6 +229,18 @@
           "managed": {
             "description": "The accounts registry exists (an account was added or a setting saved).",
             "type": "boolean"
+          },
+          "pending_global": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PendingGlobal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A switch of the global account that waits for windows on the new account's folder to finish their turn."
           },
           "rules": {
             "allOf": [
@@ -246,6 +265,13 @@
             ],
             "default": null,
             "description": "Another account suggested for global, while the global one is low."
+          },
+          "switch_delay_s": {
+            "default": 0,
+            "description": "How long a running Claude Code may take to notice a switch, in seconds: 0 on Linux (its next message), 30 on macOS (the Keychain).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
           }
         },
         "required": [
@@ -499,6 +525,39 @@
         ],
         "type": "object"
       },
+      "PendingGlobal": {
+        "description": "A switch of the global account waiting for windows to finish their turn (agent-accounts G4).",
+        "properties": {
+          "account": {
+            "description": "The account becoming global.",
+            "type": "string"
+          },
+          "at_ms": {
+            "description": "When it was asked for.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "by": {
+            "description": "`person` or `rule`.",
+            "type": "string"
+          },
+          "waiting_for": {
+            "description": "The Claude Code panes on its folder still working or waiting.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "at_ms",
+          "by",
+          "waiting_for"
+        ],
+        "type": "object"
+      },
       "RulesMode": {
         "description": "What the worker does when the global account runs low.",
         "oneOf": [
@@ -535,7 +594,7 @@
             "type": "integer"
           },
           "following": {
-            "description": "Claude Code panes that follow the global account.",
+            "description": "Claude Code panes on the slot that are not pinned: they switch with the global account.",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
@@ -597,11 +656,6 @@
             ],
             "default": "suggest",
             "description": "`off`, `suggest` or `switch`."
-          },
-          "move_idle": {
-            "default": true,
-            "description": "A switch also moves the idle windows that follow the global account.",
-            "type": "boolean"
           },
           "order": {
             "default": [],

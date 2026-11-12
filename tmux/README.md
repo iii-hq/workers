@@ -266,11 +266,14 @@ iii call tmux::panes::kill pane=%7
 ## Claude Code accounts and usage
 
 The worker reads how much of their weekly allowance Claude Code and Codex
-have used, and keeps several Claude Code accounts side by side, each a config
-folder of its own (`CLAUDE_CONFIG_DIR`). One of them is the **global**
-account: the one plain `claude` gets in a new tmux window. Panes follow it or
-are pinned to one account, and move between accounts between turns, resuming
-their conversation.
+have used, and keeps several Claude Code accounts side by side. One of them
+is the **global** account: the one signed in to `~/.claude`, which every
+Claude Code that isn't pinned uses, plain `claude` typed in any shell
+included. Switching it works like `/login`: the sign-ins change places, and
+every session on `~/.claude` uses the new account with its next message,
+keeping its conversation, with no restart. A pane can also be pinned to one
+account; pinned panes move between accounts between turns, resuming their
+conversation.
 
 ```bash
 # Accounts, their usage and reset times, Codex's usage, the rules and any suggestion
@@ -285,23 +288,28 @@ iii call tmux::accounts::login account=personal session=work
 iii call tmux::windows::create --json '{"session":"work","claude":{"account":"personal"}}'
 iii call tmux::windows::create --json '{"session":"work","claude":{"account":"global","skip_permissions":true}}'
 
-# Move a pane to another account, make another account global
+# Make a pane follow the global account, make another account global
 iii call tmux::panes::account pane=%5 account=global
-iii call tmux::accounts::global account=personal move=idle_now_working_after
+iii call tmux::accounts::global account=personal
 ```
 
 ### Accounts
 
-The account `default` is `~/.claude`, with `~/.claude.json` next to it, and
-Claude Code runs on it with `CLAUDE_CONFIG_DIR` unset (set to `~/.claude`,
-Claude Code would look for `.claude.json` inside the folder and, on macOS, for
-its sign-in under another Keychain name). Every other account is a folder
-under `~/.local/share/iii/claude-accounts` (`$XDG_DATA_HOME/iii/claude-accounts`
-when that is set), listed with its name, colour and what it shares in
-`accounts.json` there (0600, written whole, then renamed into place; its
-`revision` goes up by one on each change the worker makes). Without
-`accounts.json` there is one account, `default`, and the worker leaves tmux's
-environment alone.
+Every account has a folder under `~/.local/share/iii/claude-accounts`
+(`$XDG_DATA_HOME/iii/claude-accounts` when that is set), `default` included
+(`…/claude-accounts/default`), listed with its name, colour and what it
+shares in `accounts.json` there (0600, written whole, then renamed into
+place; its `revision` goes up by one on each change the worker makes).
+`default` is the account `~/.claude` was signed in to when accounts began.
+Without `accounts.json` there is one account, `default`, on `~/.claude`, and
+the worker changes nothing.
+
+An account's sign-in (its chain of tokens) lives in exactly one place: in
+`~/.claude` while it is the global account, in its own folder otherwise.
+Two copies of one chain would part on the first token refresh, and Claude
+Code would sign the losing copy out, so the worker always moves a sign-in,
+never copies it. Each folder's `.claude.json` keeps the account's profile
+(`oauthAccount`), which is how the worker knows who is signed in where.
 
 `tmux::accounts::add` takes a `name` (no two alike, case aside), a `color`
 token (`blue`, `green`, `violet`, `orange` or `pink`; the apps draw anything
@@ -310,8 +318,9 @@ characters, never `default` or `global`); a folder of that name left in the
 accounts folder is never reused, the id gets `-2`. The new folder is 0700 and
 signed out.
 
-`shared` names what the account takes from `~/.claude` through symbolic links
-(all four groups unless it says otherwise):
+`shared` names what the account's folder takes from `~/.claude` through
+symbolic links (all four groups unless it says otherwise; `default` shares
+all four):
 
 | Group | Links |
 |---|---|
@@ -328,43 +337,101 @@ linked. `tmux::accounts::update` renames, recolours or changes the groups:
 dropping one removes only the worker's own links into `~/.claude`.
 
 `tmux::accounts::login` opens a window named `login` in `session` that runs
-`claude auth login` for the account (`env CLAUDE_CONFIG_DIR=<folder> claude
-auth login`, `env -u CLAUDE_CONFIG_DIR …` for `default`). Claude Code prints a
-sign-in link and waits for the code to be pasted, with or without a browser on
-the computer; the window closes when it is done. The worker never signs in,
-refreshes or signs out by itself.
+`claude auth login`: on the account's folder (`env CLAUDE_CONFIG_DIR=<folder>
+claude auth login`), or on `~/.claude` for the global account (`env -u
+CLAUDE_CONFIG_DIR claude auth login`). Claude Code prints a sign-in link and
+waits for the code to be pasted, with or without a browser on the computer;
+the window closes when it is done. The worker never signs in, refreshes or
+signs out by itself.
 
 `tmux::accounts::remove` takes an account off the list; not `default`, not
-the global one. Claude Code panes on it keep running. `delete_files: true`
-deletes its folder too, only when it is a real folder directly inside the
-accounts folder (a link is never followed out of it), and is refused while
-Claude Code runs on it, while any pane is being moved, or when tmux could not
-list its panes.
+the global one, not one a switch waits to make global. Claude Code panes on
+its folder keep running. `delete_files: true` deletes its folder too, only
+when it is a real folder directly inside the accounts folder (a link is never
+followed out of it), and is refused while Claude Code runs on it, while any
+pane is being moved, or when tmux could not list its panes.
 
 ### The global account
 
-The global account lives in tmux's global environment: the worker runs
-`set-environment -g CLAUDE_CONFIG_DIR <folder>` (`-gu` for `default`) when it
-starts, when the global account changes and every 15 seconds after that, so a
-tmux server started later gets it too. Every window tmux opens from then on
-inherits it; shells already open keep the environment they started with. A
-session that sets a `CLAUDE_CONFIG_DIR` of its own (`set-environment -t`, or
-`update-environment`) keeps it: tmux gives a session's value precedence, and
-the worker never changes a session's environment. There, plain `claude`
-typed in a new window runs on the session's account (and its pane shows
-that account); a window the worker starts on the global account names that
-account outright instead (see below).
+The global account is whoever is signed in to `~/.claude`: its
+`.credentials.json` (on macOS the login Keychain item `Claude Code-credentials`)
+and the `oauthAccount` profile in `~/.claude.json`. `tmux::accounts::global`
+makes another signed-in account global by swapping sign-ins, under Claude
+Code's own locks and in its order, so a Claude Code renewing its token never
+sees half a swap:
 
-Once `accounts.json` exists, the worker owns tmux's global `CLAUDE_CONFIG_DIR`:
-a value set in `tmux.conf` or by hand is replaced within 15 seconds by the
-global account's. Without `accounts.json` the worker never sets or unsets it.
+1. The locks: `~/.claude/.oauth_refresh.lock`, `~/.claude.lock`,
+   `~/.claude/.storage-write.lock`, then the same in the two account folders
+   (directories made with `mkdir`, as Claude Code's lock library makes them;
+   one older than its stale period is taken over). If Claude Code holds one
+   for more than 10 seconds, nothing changes and the call fails with `busy`.
+2. The old global account's newest sign-in (it may have been renewed while it
+   was global) goes from `~/.claude` to its folder; the new one's goes from its
+   folder into `~/.claude`, and is removed from its folder. Only Claude
+   Code's `claudeAiOauth` entry changes, every other key stays; files are
+   written to a temporary file (0600), synced and renamed. On macOS the
+   Keychain item is written the way Claude Code writes it (`security -i`,
+   the secret never on a command line unless it is longer than 4032 bytes),
+   and a plaintext `~/.claude/.credentials.json`, when there is one, gets the
+   same change.
+3. Under `~/.claude.json.lock`, the old account's profile is kept in its
+   folder's `.claude.json`, the new one's goes into `~/.claude.json`, and the
+   keys `/login` clears (the old account's cached models, organisation
+   defaults, usage and status readings) are cleared.
+4. `accounts.json` says the new account is global, with `last_switch`.
 
-`tmux::accounts::global` makes another account global; it must be signed in.
-`move` says what happens to the panes that follow it: `idle_now_working_after`
-(the default) moves the idle ones now and the working or waiting ones once
-their turn ends; `new_only` leaves them running where they are, pinned there.
-The answer lists the panes `moved`, `after_turn` and `stayed`; a pane that
-could not move says why in its `move_error`.
+No network is used while a lock is held, and nothing is ever signed out or
+revoked. Before it starts, the worker writes `swap.json` in the accounts
+folder (0600, no tokens: the first 16 hex digits of the SHA-256 of each
+refresh token, so it can tell which sign-in is where); a worker stopped in
+the middle finishes the swap when it starts again, from what the stores
+really hold. A session that fetched the old profile right before the swap
+and writes it back within a minute gets the new one put back. Claude Code
+has a feature gate (`tengu_bubbly_fountain`, off today) that would stop a
+running session whose account changes; when `~/.claude.json` shows it on,
+the switch is refused with `owner_check_on`.
+
+Every Claude Code on `~/.claude` that isn't pinned switches with its next
+request (`following`): on Linux at once (Claude Code looks at
+`.credentials.json` on every request), on macOS within 30 seconds (Claude
+Code keeps what it read from the Keychain that long; `switch_delay_s` in the
+snapshot). Pinned panes:
+
+- Pinned to the **new** account (they run on its folder, whose sign-in has to
+  move): idle ones are stopped before the swap and started again on
+  `~/.claude` after it, still pinned (`restarted`). While one is working or
+  waiting, the switch waits: the answer is `state: "waiting"` with
+  `waiting_for`, the snapshot carries `pending_global`, and the worker
+  finishes the switch within seconds of the last of them going idle. Another
+  switch replaces a waiting one; switching to the account that is global
+  now cancels it. A Claude Code on that folder the worker can't restart
+  (started by hand in a shell that isn't in front, or sharing a window
+  before tmux 3.0) refuses the switch with `blocked` and `blocked_by`.
+- Pinned to the **old** account (they ran on `~/.claude`): idle ones restart
+  on its folder (`restarted`); working ones finish their turn on `~/.claude`,
+  now as the new account, and then restart on its folder (`after_turn`).
+- Pinned to any other account: untouched.
+
+Errors come as one JSON object in the error's message, `{"code", "message",
+"blocked_by"?}`: `not_signed_in`, `busy`, `blocked`, `owner_check_on` or
+`failed`.
+
+Someone signing in by hand on `~/.claude` (`/login`, or `claude auth login`
+without `CLAUDE_CONFIG_DIR`) changes the global account the same way: the
+worker notices within about 2 seconds, makes a known account global
+(`last_switch.reason: "login"`) or adds an unknown one, named after its
+profile and sharing all four groups, and makes it global (`"login_new"`).
+Signing out there by hand leaves the global account as it is, signed out.
+
+**From 0.3.0.** 0.3.0 kept the global account in tmux's global
+environment instead. The first start of this version takes the account
+signed in to `~/.claude` as global (`last_switch.reason: "upgrade"`, usually
+`default`), gives `default` its folder, pins the panes that followed the
+global account onto the folder they run on, and removes the account folder
+0.3.0 put in tmux's global `CLAUDE_CONFIG_DIR` (nothing else of tmux's
+environment is touched, then or later). Shells opened while 0.3.0 had set it
+still carry it in their environment: plain `claude` there runs on that
+folder until the shell is closed (`unset CLAUDE_CONFIG_DIR` fixes one).
 
 ### Windows on an account
 
@@ -375,15 +442,12 @@ the pane, and answers it as `runs`:
 
 | Account | Command |
 |---|---|
-| `global` | `claude` |
-| `default`, pinned | `env -u CLAUDE_CONFIG_DIR claude` |
-| any other, pinned | `env CLAUDE_CONFIG_DIR=<folder> claude` |
+| `global`, or pinned to the account that is global now | `claude` |
+| pinned to any other account | `env CLAUDE_CONFIG_DIR=<folder> claude` |
 
-For `global`, tmux's global environment is brought in step first; when that
-fails, nothing starts and the call fails (the pane is closed). In a session
-with a `CLAUDE_CONFIG_DIR` of its own, `global` runs the global account's
-pinned command (still marked `global`), and `runs` says so. The pane's
-`remain-on-exit` is set as asked, on or off.
+When the pane's session or tmux's global environment sets
+`CLAUDE_CONFIG_DIR`, `claude` becomes `env -u CLAUDE_CONFIG_DIR claude`, and
+`runs` says so. The pane's `remain-on-exit` is set as asked, on or off.
 
 `skip_permissions: true` adds `--dangerously-skip-permissions`: Claude Code
 then runs commands and changes files without asking. It is never on unless
@@ -397,8 +461,10 @@ they are options of the pane's window, and a window with more than one Claude
 Code pane can't keep an account per pane: its panes are not movable there.
 Each pane running Claude Code has a
 `claude` object in `tmux::sessions::list`: the `account` its process uses (read
-from that process's `CLAUDE_CONFIG_DIR`, so a `claude` started by hand counts
-too), `config_dir`, `follow` (`global`, `pinned`, or `manual` when unmarked),
+from that process's `CLAUDE_CONFIG_DIR`: `~/.claude` is the global account,
+so a `claude` started by hand counts too), `config_dir`, `follow` (`global`
+on `~/.claude` and not pinned, `pinned` with an account mark, `manual` when
+started by hand on an account's folder),
 `pending`, `skip_permissions` (the process's own arguments:
 `--dangerously-skip-permissions` or `--permission-mode bypassPermissions`;
 a mark left from an earlier process in the pane never counts), `session_id`, `movable` with
@@ -408,8 +474,11 @@ failed (cleared by its next account change).
 ### Moving a pane
 
 `tmux::panes::account` with `account: global` makes a pane follow the global
-account, with an account id pins it there. When Claude Code runs on another
-account, which must be signed in, the pane moves:
+account (it runs on `~/.claude`), with an account id pins it there (on
+`~/.claude` while that account is global, on its folder otherwise; pinning a
+pane on `~/.claude` to the account that is global now restarts nothing).
+When Claude Code has to run elsewhere for that, the account must be signed
+in, and the pane moves:
 
 1. Right before, the worker looks again: the pane must still run the same
    program, with the same Claude Code process under it (its session
@@ -424,28 +493,26 @@ account, which must be signed in, the pane moves:
    then Claude Code starts again on the account it ran on, resuming its
    conversation, and `remain-on-exit` is put back. Started by hand in a
    shell, it just gives the shell the terminal back.
-3. The target account is made to see the conversation: if its
+3. The target folder is made to see the conversation: if its
    `projects/<project>/<session>.jsonl` is not the same file (accounts sharing
    conversations link the same folder), the transcript and its `<session>/`
    folder are copied there. A copy already there is only replaced by a longer
    or equally long and newer one; when the account has a longer copy, Claude
    Code starts again on the account it ran on, resuming the conversation, and
    the move fails.
-4. Claude Code starts again on the target account with `--resume <session>`
-   (and `--dangerously-skip-permissions` again when it had it), always with
-   that account named in the command, also for a pane that follows the
-   global account (its mark says it follows): the conversation was copied
-   there. A pane the worker started is respawned in place. Claude Code started by hand in a
+4. Claude Code starts again there with `--resume <session>` (and
+   `--dangerously-skip-permissions` again when it had it), the place named
+   in the command: `env CLAUDE_CONFIG_DIR=<folder> claude …`, or `env -u
+   CLAUDE_CONFIG_DIR claude …` for `~/.claude`. A pane the worker started is
+   respawned in place. Claude Code started by hand in a
    shell is started again by typing into that shell (`C-e`, `C-u`, the
    command, Enter), only once the shell has the terminal back within 3
    seconds and still has it right before typing; otherwise nothing is typed
    and the move fails. A shell started with `-c` (also `-lc`, `-ec`,
    `--command`) runs one command and ends: its pane is respawned instead.
 
-Another switch of the global account while a pane moves can't move that
-pane (it is busy); once its move is over, the pane gets a pending move to
-the newer global account. While a pane moves, a change of its account
-(`tmux::panes::account`) answers "This pane is being moved already.".
+While a pane moves, a change of its account (`tmux::panes::account`) answers
+"This pane is being moved already.".
 
 A pane moves only when Claude Code's own status is `idle`. Working, waiting
 for a permission answer, running a background command or with no status, it
@@ -458,24 +525,29 @@ cancelled or changed meanwhile is left to the next round, and a round whose
 look at tmux failed changes nothing. Choosing the account it runs on changes no process and cancels
 a waiting move (`cancelled`).
 
-`tmux::accounts::move_idle` moves every idle pane on account `from` to `to`
-and pins it there: those that follow the global account, are pinned to `from`
-or were started by hand, never one pinned elsewhere.
+`tmux::accounts::move_idle` moves every idle pane using account `from` (its
+folder, or `~/.claude` when it is global) to `to` and pins it there: those
+that follow the global account, are pinned to `from` or were started by
+hand, never one pinned elsewhere.
 
 ### Usage readings
 
 Claude Code's usage comes from `GET https://api.anthropic.com/api/oauth/usage`,
 the endpoint Claude Code reads its own usage from, with the account's sign-in
-(`Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`). It answers each
+(`Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`), read from
+where it lives now: `~/.claude` for the global account, its folder for the
+others. It answers each
 window (`five_hour`, `seven_day`, per-model weeks) as `utilization` from 0 to
 100 with its `resets_at`. The sign-in is `<folder>/.credentials.json` on
 Linux; on macOS it is in the login Keychain, a generic password whose account
-is `$USER` and whose service is `Claude Code-credentials` for `default` and
-`Claude Code-credentials-<first 8 hex digits of sha256(folder)>` for any other
-folder, with the file as fallback. The worker only reads it: it never
+is `$USER` and whose service is `Claude Code-credentials` for `~/.claude` and
+`Claude Code-credentials-<first 8 hex digits of sha256(folder)>` for an
+account's folder, with the file as fallback. The worker only reads it: it never
 refreshes a token, never sends one anywhere but that endpoint, and never logs
 or returns one. An expired sign-in is not used (`token_expired: true`, the
-last reading kept); a window whose reset time has passed reads 0 %
+last reading kept; an account that isn't global ages out like this, since
+nobody renews its token, and becoming global renews it on its first
+request); a window whose reset time has passed reads 0 %
 (`reset_since_read`). The reading Claude Code itself left in `.claude.json`
 (`cachedUsageUtilization`) is used when it is newer.
 
@@ -515,16 +587,15 @@ one with most room this week (an account whose sign-in expired only when no
 other has room). `tmux::accounts::dismiss` answers "Not now": no suggestion
 from that account for that reason until its window resets or it runs lower
 (week 80 % → 90 % → 5-hour window full → week limit). With `mode: switch` the
-worker switches by itself, the app open or not, moving the idle panes that
-follow along when `move_idle` is on, and leaves `last_switch` (`auto: true`)
-for the app; `back_after_reset` (in mode `switch` only, and while it stays
+worker switches by itself, the app open or not, the same way a person does
+(never to an account with Claude Code working on its folder: the next one
+instead), and leaves `last_switch` (`auto: true`) for the app; `back_after_reset` (in mode `switch` only, and while it stays
 on) switches back once the old account's window resets, unless someone made
 another account global since. A switch someone makes leaves `last_switch`
 too, with `auto: false` and no `reason`. A switch of the rules happens only on the `accounts.json` they
 decided on (any change written meanwhile, even back to the same global
-account, drops it until the next look), and any switch stops moving panes
-once another account is made global. Until changed, the rules suggest at `week_90`, with `move_idle` on;
-`mode: off` stops them.
+account, drops it until the next look). Until changed, the rules suggest at
+`week_90`; `mode: off` stops them.
 
 ```bash
 iii call tmux::accounts::rules --json '{"mode":"switch","at":"week_90","order":["personal"],"back_after_reset":true}'
@@ -535,7 +606,7 @@ iii call tmux::accounts::dismiss suggestion=default:week_90:personal
 
 | Variable | Replaces |
 |---|---|
-| `III_CLAUDE_HOME` | `~/.claude`, the default account; its `.claude.json` is then the one next to it, in its parent folder, as `~/.claude.json` is next to `~/.claude` |
+| `III_CLAUDE_HOME` | `~/.claude`, the global account's place; its `.claude.json` is then the one next to it, in its parent folder, as `~/.claude.json` is next to `~/.claude` |
 | `III_CLAUDE_ACCOUNTS_DIR` | the accounts folder |
 | `III_CLAUDE_USAGE_URL` | `https://api.anthropic.com` for the usage endpoint; loopback addresses only, so a sign-in never goes to another host |
 | `CODEX_HOME` | `~/.codex` (Codex's own variable) |

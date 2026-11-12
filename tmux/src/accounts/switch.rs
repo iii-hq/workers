@@ -24,6 +24,8 @@ use super::moves::{self, Stopped, NOT_IDLE};
 use super::panes::PaneState;
 use super::registry::{self, PendingSwitch, Registry};
 use super::slot::{self, Crash, Journal, Place, SwapError};
+#[cfg(test)]
+use super::{shared, DEFAULT as DEFAULT_ID};
 use super::{Accounts, RecentSwap};
 use crate::model::{now_ms, AccountSwitch};
 use crate::tmux_cli::Tmux;
@@ -835,6 +837,278 @@ pub async fn migrate_tmux(tmux: &Tmux, accounts: &Accounts, panes: &HashMap<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::test_support::Home;
+    use serde_json::{json, Value};
+
+    fn chain(token: &str) -> Value {
+        json!({"claudeAiOauth": {"accessToken": format!("at-{token}"), "refreshToken": format!("rt-{token}"),
+            "expiresAt": 4_102_444_800_000u64, "subscriptionType": "max"}})
+    }
+
+    fn record(uuid: &str, name: &str, email: &str) -> Value {
+        json!({"accountUuid": uuid, "displayName": name, "emailAddress": email})
+    }
+
+    fn write(path: &std::path::Path, value: &Value) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, value.to_string()).unwrap();
+    }
+
+    /// `~/.claude.json` as Claude Code leaves it after a sign-in.
+    fn sign_in_on_slot(home: &Home, token: &str, record: Value) {
+        write(
+            &home.paths.claude_home.join(".credentials.json"),
+            &chain(token),
+        );
+        write(
+            &home.paths.default_json,
+            &json!({"oauthAccount": record, "numStartups": 3}),
+        );
+    }
+
+    /// The slot signed in to `default` (Work), `personal` in its folder,
+    /// `accounts.json` made by an add.
+    fn managed(name: &str) -> (Home, Arc<Accounts>) {
+        let home = Home::new(name);
+        sign_in_on_slot(&home, "work", record("uuid-work", "Work", "work@x.dev"));
+        let accounts = home.accounts();
+        accounts
+            .update_registry(|registry| {
+                registry.accounts.push(registry::Entry {
+                    id: "personal".into(),
+                    name: "Personal".into(),
+                    color: "green".into(),
+                    shared: vec![],
+                    created_at_ms: 1,
+                });
+                Ok(())
+            })
+            .unwrap();
+        let folder = home.paths.account_dir("personal");
+        write(&folder.join(".credentials.json"), &chain("personal"));
+        write(
+            &home.paths.account_json("personal"),
+            &json!({"oauthAccount": record("uuid-personal", "Personal", "me@x.dev")}),
+        );
+        (home, accounts)
+    }
+
+    fn look_again(accounts: &Accounts) {
+        *accounts.slot_stamp.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn the_default_folder_holds_the_slots_record_from_the_start() {
+        let (home, accounts) = managed("g6-seed");
+        let stores = accounts.stores().unwrap();
+        assert_eq!(
+            stores.uuid(&Place::Folder(DEFAULT_ID.into())).as_deref(),
+            Some("uuid-work")
+        );
+        assert!(!home
+            .paths
+            .account_dir(DEFAULT_ID)
+            .join(".credentials.json")
+            .exists());
+        // Nothing changed by hand: nothing to take in.
+        assert!(!accounts.watch_slot_blocking());
+    }
+
+    #[test]
+    fn a_sign_in_by_hand_to_a_known_account_makes_it_global() {
+        let (home, accounts) = managed("g6-known");
+        assert!(!accounts.watch_slot_blocking());
+        // `/login` as Personal on the slot (another chain of Personal).
+        sign_in_on_slot(
+            &home,
+            "personal-2",
+            record("uuid-personal", "Personal", "me@x.dev"),
+        );
+        look_again(&accounts);
+        assert!(accounts.watch_slot_blocking());
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "personal");
+        let last = registry.last_switch.unwrap();
+        assert_eq!(
+            (last.from.as_str(), last.to.as_str()),
+            ("default", "personal")
+        );
+        assert_eq!(last.reason.as_deref(), Some("login"));
+        assert!(!last.auto);
+        // Looked at once per change.
+        assert!(!accounts.watch_slot_blocking());
+    }
+
+    #[test]
+    fn a_sign_in_by_hand_to_a_new_account_adds_it() {
+        let (home, accounts) = managed("g6-new");
+        sign_in_on_slot(&home, "ana", record("uuid-ana", "Personal", "ana@y.dev"));
+        look_again(&accounts);
+        assert!(accounts.watch_slot_blocking());
+        let registry = accounts.registry();
+        let added = registry.accounts.last().unwrap();
+        assert_eq!(
+            added.name, "Personal 2",
+            "named after its profile, never twice"
+        );
+        assert_eq!(registry.global, added.id);
+        assert_eq!(added.shared.len(), shared::GROUPS.len());
+        assert_eq!(
+            registry.last_switch.as_ref().unwrap().reason.as_deref(),
+            Some("login_new")
+        );
+        let stores = accounts.stores().unwrap();
+        assert_eq!(
+            stores.uuid(&Place::Folder(added.id.clone())).as_deref(),
+            Some("uuid-ana"),
+            "its folder holds its record"
+        );
+        assert!(
+            !home
+                .paths
+                .account_dir(&added.id)
+                .join(".credentials.json")
+                .exists(),
+            "its chain stays in the slot"
+        );
+    }
+
+    #[test]
+    fn signing_out_by_hand_keeps_the_global_account() {
+        let (home, accounts) = managed("g6-out");
+        write(&home.paths.default_json, &json!({"numStartups": 9}));
+        let _ = std::fs::remove_file(home.paths.claude_home.join(".credentials.json"));
+        look_again(&accounts);
+        assert!(!accounts.watch_slot_blocking());
+        assert_eq!(accounts.registry().global, "default");
+    }
+
+    #[test]
+    fn the_old_profile_written_back_after_a_swap_is_put_right() {
+        let (home, accounts) = managed("g6-back");
+        let stores = accounts.stores().unwrap();
+        slot::swap(
+            &stores,
+            "default",
+            "personal",
+            None,
+            &|journal| accounts.commit_swap(journal),
+            Crash::None,
+        )
+        .unwrap();
+        accounts.note_swap("default", "personal");
+        assert_eq!(accounts.registry().global, "personal");
+        assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-personal"));
+        // A session that fetched Work's profile right before writes it back.
+        let mut config = slot::read_config(&home.paths.default_json)
+            .unwrap()
+            .unwrap();
+        config.insert(
+            slot::IDENTITY_KEY.into(),
+            record("uuid-work", "Work", "work@x.dev"),
+        );
+        write(&home.paths.default_json, &Value::Object(config));
+        look_again(&accounts);
+        assert!(!accounts.watch_slot_blocking(), "no sign-in by hand");
+        assert_eq!(accounts.registry().global, "personal");
+        assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-personal"));
+    }
+
+    #[test]
+    fn nothing_is_watched_without_accounts_json() {
+        let home = Home::new("g6-plain");
+        sign_in_on_slot(&home, "work", record("uuid-work", "Work", "work@x.dev"));
+        let accounts = home.accounts();
+        sign_in_on_slot(&home, "other", record("uuid-other", "Other", "o@x.dev"));
+        assert!(!accounts.watch_slot_blocking());
+        assert!(!accounts.managed());
+        assert!(!home.paths.account_dir(DEFAULT_ID).exists());
+    }
+
+    /// `accounts.json` as 0.3.0 left it: no `slot_version`, `global`
+    /// naming a folder account.
+    fn old_registry(home: &Home, global: &str) {
+        let mut registry = Registry::default();
+        registry.accounts.push(registry::Entry {
+            id: "personal".into(),
+            name: "Personal".into(),
+            color: "green".into(),
+            shared: vec!["settings".into()],
+            created_at_ms: 1,
+        });
+        registry.accounts[0].shared = Vec::new();
+        registry.global = global.into();
+        registry.slot_version = 0;
+        let text = serde_json::to_string(&registry).unwrap();
+        assert!(!text.contains("slot_version"));
+        write(
+            &home.paths.registry_file(),
+            &serde_json::from_str(&text).unwrap(),
+        );
+    }
+
+    #[test]
+    fn an_upgrade_takes_the_slots_account_for_global() {
+        let home = Home::new("g11");
+        sign_in_on_slot(&home, "work", record("uuid-work", "Work", "work@x.dev"));
+        let folder = home.paths.account_dir("personal");
+        write(&folder.join(".credentials.json"), &chain("personal"));
+        write(
+            &home.paths.account_json("personal"),
+            &json!({"oauthAccount": record("uuid-personal", "Personal", "me@x.dev")}),
+        );
+        old_registry(&home, "personal");
+        let accounts = home.accounts();
+        assert!(accounts.needs_upgrade());
+        accounts.upgrade().unwrap();
+        let registry = accounts.registry();
+        assert_eq!(registry.slot_version, registry::SLOT_VERSION);
+        assert_eq!(registry.global, "default", "the slot holds Work");
+        let last = registry.last_switch.clone().unwrap();
+        assert_eq!(last.reason.as_deref(), Some("upgrade"));
+        assert_eq!((last.from.as_str(), last.auto), ("personal", false));
+        assert_eq!(
+            registry.get(DEFAULT_ID).unwrap().shared.len(),
+            shared::GROUPS.len()
+        );
+        let stores = accounts.stores().unwrap();
+        assert_eq!(
+            stores.uuid(&Place::Folder(DEFAULT_ID.into())).as_deref(),
+            Some("uuid-work")
+        );
+        assert!(!accounts.needs_upgrade());
+        // Personal's chain stayed in its folder.
+        assert!(accounts.folder_signed_in("personal"));
+    }
+
+    #[test]
+    fn an_upgrade_keeps_a_global_account_already_in_the_slot() {
+        let home = Home::new("g11-same");
+        sign_in_on_slot(
+            &home,
+            "personal",
+            record("uuid-personal", "Personal", "me@x.dev"),
+        );
+        write(
+            &home.paths.account_json("personal"),
+            &json!({"oauthAccount": record("uuid-personal", "Personal", "me@x.dev")}),
+        );
+        old_registry(&home, "personal");
+        let accounts = home.accounts();
+        accounts.upgrade().unwrap();
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "personal");
+        assert!(registry.last_switch.is_none(), "nothing changed: no notice");
+        // Default's folder exists, with no record of the slot's (Personal's).
+        assert!(home.paths.account_dir(DEFAULT_ID).is_dir());
+        assert_eq!(
+            accounts
+                .stores()
+                .unwrap()
+                .uuid(&Place::Folder(DEFAULT_ID.into())),
+            None
+        );
+    }
 
     #[test]
     fn errors_carry_a_stable_code() {

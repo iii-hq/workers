@@ -118,24 +118,24 @@
         "type": "object"
       },
       "Follow": {
-        "description": "How a pane's Claude Code account is chosen.",
+        "description": "How a pane's Claude Code account is chosen (agent-accounts G12).",
         "oneOf": [
           {
-            "description": "Started on the global account, and moves when it changes.",
+            "description": "Runs on the global slot (`~/.claude`) and is not pinned, started by the worker or by hand: it switches with the global account on its next message.",
             "enum": [
               "global"
             ],
             "type": "string"
           },
           {
-            "description": "Stays on its account whatever the global one is.",
+            "description": "Pinned to an account: on its folder, or on the slot while that account is global (it restarts on its folder when the global one changes).",
             "enum": [
               "pinned"
             ],
             "type": "string"
           },
           {
-            "description": "Claude Code was started by hand in a shell: no mark.",
+            "description": "Started by hand on an account's folder (`CLAUDE_CONFIG_DIR` set): no mark.",
             "enum": [
               "manual"
             ],
@@ -361,7 +361,7 @@
         "properties": {
           "account": {
             "default": null,
-            "description": "Id of the account the running Claude Code uses, read from its `CLAUDE_CONFIG_DIR`. Null when that folder is no registered account (see `config_dir`) or Claude Code is not running.",
+            "description": "Id of the account the running Claude Code uses: the global account on the slot (`~/.claude`), else the account whose folder its `CLAUDE_CONFIG_DIR` names. Null when that folder is no registered account (see `config_dir`) or Claude Code is not running.",
             "type": [
               "string",
               "null"
@@ -403,7 +403,7 @@
           },
           "pending": {
             "default": null,
-            "description": "The account the pane moves to when its turn ends.",
+            "description": "The account the pane moves to when its turn ends (`global`: the slot).",
             "type": [
               "string",
               "null"

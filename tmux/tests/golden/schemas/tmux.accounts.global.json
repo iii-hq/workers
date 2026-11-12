@@ -1,41 +1,12 @@
 {
-  "description": "Make a Claude Code account the global one (it must be signed in): what plain `claude` gets in new tmux windows (tmux's global CLAUDE_CONFIG_DIR). Panes that follow the global account go along as `move` says: `idle_now_working_after` (default: idle ones move now, resuming their conversation; working or waiting ones after their turn) or `new_only` (they stay where they run, pinned there). Shells already open keep the environment they started with.",
+  "description": "Make a Claude Code account the global one (it must be signed in), like /login: its sign-in moves into ~/.claude and the old global account's goes to that account's folder. Every Claude Code on ~/.claude that isn't pinned, started by the worker or by hand, uses the new account with its next message, without a restart (`following`; within `switch_delay_s` seconds on macOS). Windows pinned to the new account are restarted on ~/.claude and windows pinned to the old one on its folder, resuming their conversations (`restarted`; working ones after their turn: `after_turn`). While a window pinned to the new account is in a turn, the switch waits (`state: waiting`, `waiting_for`, the snapshot's `pending_global`) and the worker finishes it once they are idle; another switch replaces it, switching to the current global account cancels it. Errors are one JSON object `{code, message, blocked_by?}` with `code` `not_signed_in`, `busy` (Claude Code is renewing its sign-in), `blocked` (a Claude Code on that account's folder can't be restarted: `blocked_by`), `owner_check_on` or `failed` (anything else).",
   "function_id": "tmux::accounts::global",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "definitions": {
-      "GlobalMove": {
-        "description": "How panes that follow the global account go along (D8).",
-        "oneOf": [
-          {
-            "description": "Idle ones move now, working or waiting ones after their turn.",
-            "enum": [
-              "idle_now_working_after"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "They stay on the account they run on, pinned there.",
-            "enum": [
-              "new_only"
-            ],
-            "type": "string"
-          }
-        ]
-      }
-    },
     "properties": {
       "account": {
         "description": "Account id.",
         "type": "string"
-      },
-      "move": {
-        "allOf": [
-          {
-            "$ref": "#/definitions/GlobalMove"
-          }
-        ],
-        "description": "What panes following the global account do (default `idle_now_working_after`)."
       }
     },
     "required": [
@@ -46,27 +17,46 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GlobalState": {
+        "description": "`switched` (the account is global now) or `waiting` (for `waiting_for`).",
+        "enum": [
+          "switched",
+          "waiting"
+        ],
+        "type": "string"
+      }
+    },
     "properties": {
       "after_turn": {
-        "description": "Panes that move once their turn ends.",
+        "description": "Panes pinned to the old account that restart on its folder once their turn ends.",
         "items": {
           "type": "string"
         },
         "type": "array"
+      },
+      "following": {
+        "description": "Claude Code panes on ~/.claude that aren't pinned: they use the new account with their next message.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
       },
       "global": {
-        "description": "The global account now.",
+        "description": "The global account now (the old one while the switch waits).",
         "type": "string"
       },
-      "moved": {
-        "description": "Panes moved to it now.",
+      "restarted": {
+        "description": "Pinned panes restarted now (the new account's on ~/.claude, the old one's on its folder).",
         "items": {
           "type": "string"
         },
         "type": "array"
       },
-      "stayed": {
-        "description": "Panes that stay where they run (pinned there with `new_only`, or that can't move).",
+      "state": {
+        "$ref": "#/definitions/GlobalState"
+      },
+      "waiting_for": {
+        "description": "Panes on the new account's folder the switch waits for.",
         "items": {
           "type": "string"
         },
@@ -75,9 +65,11 @@
     },
     "required": [
       "after_turn",
+      "following",
       "global",
-      "moved",
-      "stayed"
+      "restarted",
+      "state",
+      "waiting_for"
     ],
     "title": "GlobalOutput",
     "type": "object"

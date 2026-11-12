@@ -46,18 +46,18 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "ClaudeAccount": {
-        "description": "A Claude Code account (agent-accounts D1): one config folder.",
+        "description": "A Claude Code account (agent-accounts G1, G2): one sign-in, kept in the global slot while it is global and in its own folder otherwise.",
         "properties": {
           "color": {
             "description": "`blue`, `green`, `violet`, `orange` or `pink`.",
             "type": "string"
           },
           "dir": {
-            "description": "Its config folder, absolute.",
+            "description": "Its folder, absolute: `<accounts root>/<id>`.",
             "type": "string"
           },
           "dir_display": {
-            "description": "Its config folder with `~` for the home folder.",
+            "description": "Its folder with `~` for the home folder.",
             "type": "string"
           },
           "email": {
@@ -69,11 +69,11 @@
             ]
           },
           "id": {
-            "description": "`default` for `~/.claude`, else a slug of its first name.",
+            "description": "`default` for the sign-in `~/.claude` had when accounts began, else a slug of its first name.",
             "type": "string"
           },
           "is_default": {
-            "description": "It is the built-in account (`~/.claude`, `CLAUDE_CONFIG_DIR` unset).",
+            "description": "Its id is `default`.",
             "type": "boolean"
           },
           "name": {
@@ -89,7 +89,7 @@
             ]
           },
           "panes": {
-            "description": "Claude Code panes running on it now.",
+            "description": "Claude Code panes using it now (for the global account, every pane on the slot, its followers included).",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
@@ -103,7 +103,7 @@
             ]
           },
           "shared": {
-            "description": "The groups it shares with `~/.claude`: `settings`, `extensions`, `plugins`, `conversations`.",
+            "description": "The groups its folder shares with `~/.claude`: `settings`, `extensions`, `plugins`, `conversations`.",
             "items": {
               "type": "string"
             },

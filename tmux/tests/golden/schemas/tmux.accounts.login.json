@@ -1,5 +1,5 @@
 {
-  "description": "Sign a Claude Code account in: opens a window named `login` in `session` running `claude auth login` for that account's folder, which prints a sign-in link and waits for the code. The window closes when the command ends; the account then shows signed in.",
+  "description": "Sign a Claude Code account in: opens a window named `login` in `session` running `claude auth login`, on the account's folder, or on ~/.claude for the global account, which prints a sign-in link and waits for the code. The window closes when the command ends; the account then shows signed in. Signing in to another account on ~/.claude makes that one global (added when it is new).",
   "function_id": "tmux::accounts::login",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -1,5 +1,5 @@
 {
-  "description": "Change the rules for when the global Claude Code account runs low (what is left out stays): mode `off`, `suggest` (a suggestion in the feed) or `switch` (the worker makes another account global by itself, even with the app closed, and leaves `last_switch`); `at` `week_80`, `week_90` or `limit`; `five_hour` also acts when the 5-hour window is full; `move_idle` moves the idle windows that follow the global account on a switch (else they stay pinned where they run); `back_after_reset` switches back once the old account's window resets; `order` the accounts to try first, then the one with most room this week.",
+  "description": "Change the rules for when the global Claude Code account runs low (what is left out stays): mode `off`, `suggest` (a suggestion in the feed) or `switch` (the worker makes another account global by itself, even with the app closed, and leaves `last_switch`; never one with Claude Code working on its folder); `at` `week_80`, `week_90` or `limit`; `five_hour` also acts when the 5-hour window is full; `back_after_reset` switches back once the old account's window resets; `order` the accounts to try first, then the one with most room this week.",
   "function_id": "tmux::accounts::rules",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -99,14 +99,6 @@
         "default": null,
         "description": "`off`, `suggest` or `switch`."
       },
-      "move_idle": {
-        "default": null,
-        "description": "A switch moves the idle windows that follow the global account.",
-        "type": [
-          "boolean",
-          "null"
-        ]
-      },
       "order": {
         "default": null,
         "description": "Account ids to try first, in order.",
@@ -181,11 +173,6 @@
             ],
             "default": "suggest",
             "description": "`off`, `suggest` or `switch`."
-          },
-          "move_idle": {
-            "default": true,
-            "description": "A switch also moves the idle windows that follow the global account.",
-            "type": "boolean"
           },
           "order": {
             "default": [],
