@@ -65,7 +65,11 @@ async fn fake_desktop(port: u16) {
                         }
                         _ => json!({ "success": true }),
                     };
-                    if ws.send(Message::Text(reply.to_string())).await.is_err() {
+                    if ws
+                        .send(Message::Text(reply.to_string().into()))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                 }
