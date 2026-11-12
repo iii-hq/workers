@@ -446,7 +446,8 @@ pub(crate) struct Injection {
     /// The memories the appended message carries, in order, with their
     /// recall score and the bank holding them.
     pub memories: Vec<(Memory, f32, String)>,
-    /// The appended `<memory>` message, when a memory fits the budget.
+    /// The appended `<memory>` message: the memories that fit the budget,
+    /// the rules reminder, or both.
     pub message: Option<String>,
     /// `none` (no recall ran), `bm25-entity`, or `bm25-entity-semantic`.
     pub retrieval: &'static str,
@@ -827,7 +828,8 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// small for a z-score anchors on any meaning match), one line per fact,
 /// `limit` of them, or more for a list (every line on the same two or more
 /// question words, each leading with its own subject, or on the `user` of a
-/// question about what memory holds of the user: all its siblings come);
+/// question about what memory holds of the user: all its siblings come; a
+/// line kept only on the words outside a read slot takes no part in that);
 /// nothing when none has any.
 /// An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
