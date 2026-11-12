@@ -799,6 +799,8 @@ async fn seed_child(
         &child_session_id,
         options,
         send::Delivery {
+            channel: send::DeliveryChannel::InvokedAgent,
+            continuation_entry_id: None,
             message: &task,
             entry_id: entry_id.as_deref(),
             origin: origin.as_ref(),
@@ -1092,6 +1094,8 @@ mod tests {
         TurnRecord {
             turn_id: "t_parent".into(),
             session_id: "s_parent".into(),
+            recall_context: None,
+            recall_sent: false,
             status: TurnStatus::AwaitingFunctions,
             step: 1,
             turn_count: 1,

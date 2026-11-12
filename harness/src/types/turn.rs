@@ -372,6 +372,16 @@ pub struct FailedCall {
 pub struct TurnRecord {
     pub turn_id: String,
     pub session_id: String,
+    /// Resolved from Harness-owned delivery receipts on the active path,
+    /// not writer-supplied transcript origin or options metadata. Each step
+    /// resolves it again, and it holds the user's text, so it is never stored.
+    #[serde(skip)]
+    pub recall_context: Option<Value>,
+    /// A step of this turn sent recall provenance to Memory, which may have
+    /// acknowledged it: only then does the turn's end record an extraction
+    /// boundary, even when Memory is gone by then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall_sent: bool,
     pub status: TurnStatus,
     /// Monotonic step counter; guards against stale/duplicate dequeues.
     pub step: u64,
@@ -576,6 +586,8 @@ pub(crate) mod tests {
         TurnRecord {
             turn_id: "t_1".into(),
             session_id: "s_1".into(),
+            recall_context: None,
+            recall_sent: false,
             status: TurnStatus::AwaitingFunctions,
             step: 2,
             turn_count: 1,

@@ -794,7 +794,7 @@ async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(),
             function_id: CLAIM_NAMESPACE_ID.into(),
             payload: json!({
                 "functions_prefix": NAMESPACE_PREFIX,
-                "scopes": [BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::functions::delete_session_tree::OPERATIONS,
+                "scopes": [BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::hooks::recall::SCOPE, crate::functions::delete_session_tree::OPERATIONS,
                     crate::functions::delete_session_tree::GUARDS, crate::functions::delete_session_tree::DISPATCHES],
             }),
             action: None,
@@ -854,7 +854,10 @@ fn is_unregistered_accessor(error: &HarnessError) -> bool {
 }
 
 fn is_binding_scope(scope: &str) -> bool {
-    matches!(scope, BINDING_SCOPE | BINDING_OWNER_SCOPE) || is_deletion_scope(scope)
+    matches!(
+        scope,
+        BINDING_SCOPE | BINDING_OWNER_SCOPE | crate::hooks::recall::SCOPE
+    ) || is_deletion_scope(scope)
 }
 
 fn is_deletion_scope(scope: &str) -> bool {

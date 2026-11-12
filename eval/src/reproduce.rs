@@ -652,6 +652,7 @@ async fn plan(
             tools: rebuilt.tools.clone(),
             request_overhead_tokens: 0,
             allow_prune: harness::window::binds_thinking(&rebuilt.model).then_some(false),
+            provenance: false,
         })
         .await
         .map_err(EvalError::Dependency)?;

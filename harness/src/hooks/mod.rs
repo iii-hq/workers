@@ -346,6 +346,18 @@ pub fn ordered(mut bindings: Vec<HookBinding>) -> Vec<HookBinding> {
     bindings
 }
 
+/// Whether a pre_generate chain for `session_id` may call Memory's hook, the
+/// only reader of recall provenance: an observer targeting it without a static
+/// `inject_prompt`, whose `sessions` globs select the session. Filters need the
+/// assembled input, so a filtered one counts.
+pub(crate) fn pre_generate_calls_memory(bindings: &[HookBinding], session_id: &str) -> bool {
+    bindings.iter().any(|binding| {
+        binding.target == runner::MEMORY_PRE_GENERATE
+            && binding.inject_prompt.is_none()
+            && runner::sessions_match(binding, session_id)
+    })
+}
+
 /// Whether any of `bindings` targets `target_function_id` and consults on
 /// calls of `function_id`.
 pub fn has_function_binding(
@@ -370,6 +382,8 @@ pub struct HookRegistry {
     /// (the observer is disposed with the old connection; nothing re-creates
     /// it). Persist to state if that bites.
     owned: Arc<Mutex<HashMap<String, (String, ObserverHandle)>>>,
+    /// Memory hook ownership the registry confirmed for a running turn.
+    memory_owner: runner::MemoryOwnership,
 }
 
 impl HookRegistry {
@@ -409,6 +423,7 @@ impl HookRegistry {
         HookRegistry {
             iii,
             owned: Arc::new(Mutex::new(HashMap::new())),
+            memory_owner: runner::MemoryOwnership::default(),
         }
     }
 
@@ -547,6 +562,7 @@ pub fn filesystem_boundary(
     }
 }
 
+pub(crate) mod recall;
 pub mod runner;
 
 #[cfg(test)]
@@ -649,6 +665,21 @@ mod tests {
             filesystem_boundary(&watch, "fp::batch"),
             FilesystemBoundary::Workspace
         );
+    }
+
+    #[test]
+    fn only_a_called_memory_pre_generate_observer_counts_as_called() {
+        let point = HookPoint::PreGenerate;
+        let memory = "memory::hook::pre-generate";
+        let injection = binding(point, "fp", memory, json!({ "inject_prompt": "g" }));
+        let scoped = binding(point, "m", memory, json!({ "sessions": ["other-*"] }));
+        let other = binding(point, "ade", "ade::mention", json!({}));
+        assert!(!pre_generate_calls_memory(&[], "s"));
+        assert!(!pre_generate_calls_memory(
+            &[injection, scoped.clone(), other],
+            "s"
+        ));
+        assert!(pre_generate_calls_memory(&[scoped], "other-1"));
     }
 
     #[test]

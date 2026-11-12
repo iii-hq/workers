@@ -176,6 +176,7 @@ async fn complete_child(parent_prompt_present: bool) {
         record,
         strategy: crate::contract::OutputStrategy::Text,
         outcome: crate::clients::router::ChatOutcome {
+            generation_id: None,
             message,
             ok: true,
             stop_reason: None,
@@ -228,6 +229,128 @@ async fn complete_child(parent_prompt_present: bool) {
         if parent_prompt_present { 1 } else { 2 },
         "a failed pre-check must reach the parent resolver's error handling"
     );
+}
+
+/// A completing turn decides once whether it ends the exchange. Its extraction
+/// proof and its completion event agree even when the session's wake store
+/// answers differently between the two writes (unreadable, then empty). Memory
+/// acknowledged the turn and left before it ended: no pre_generate observer is
+/// left, and the boundary is still recorded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completion_gives_its_proof_and_its_event_one_terminal_decision() {
+    use crate::events::ON_TURN_COMPLETED_FN;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let calls = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+    let observed = calls.clone();
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let send =
+            |value: Value| tokio_tungstenite::tungstenite::Message::Text(value.to_string().into());
+        let hello = json!({"type": "workerregistered", "worker_id": "w",
+            "features": ["observe.v2"]});
+        socket.send(send(hello)).await.unwrap();
+        ready_tx.send(()).unwrap();
+        let mut ledger = json!([{"session_id": "s", "entry_id": "e_user", "channel": "direct",
+            "query": null, "continuation": null, "extraction": [{"version": 1,
+            "session_id": "s", "turn_id": "t1", "entry_id": "e_user", "text_sha256": "h",
+            "policy": "on", "bank": "b"}]}]);
+        let mut wake_reads = 0;
+        while let Some(Ok(frame)) = socket.next().await {
+            let Ok(text) = frame.to_text() else { continue };
+            let Ok(message) = serde_json::from_str::<Value>(text) else {
+                continue;
+            };
+            if message["type"] == "registerfunction" && message["id"] == ON_TURN_COMPLETED_FN {
+                let registered = json!({"type": "functionregistered", "id": ON_TURN_COMPLETED_FN,
+                    "revision": 1, "observers": [{"id": "o_completed", "target": "test::gate"}]});
+                socket.send(send(registered)).await.unwrap();
+                continue;
+            }
+            if message["type"] != "invokefunction" {
+                continue;
+            }
+            let function = message["function_id"].as_str().unwrap().to_string();
+            let data = message["data"].clone();
+            observed
+                .lock()
+                .unwrap()
+                .push((function.clone(), data.clone()));
+            let scope = data["scope"].as_str().unwrap_or_default();
+            let mut reply = json!({"type": "invocationresult",
+                "invocation_id": message["invocation_id"], "function_id": function});
+            match (function.as_str(), scope) {
+                ("harness::state::list", crate::state::BINDING_SCOPE) => {
+                    wake_reads += 1;
+                    if wake_reads == 1 {
+                        reply["error"] = json!({"code": "UNAVAILABLE", "message": "store busy"});
+                    } else {
+                        reply["result"] = json!([]);
+                    }
+                }
+                ("harness::state::get", crate::hooks::recall::SCOPE) => {
+                    reply["result"] = ledger.clone();
+                }
+                ("harness::state::compare-and-set", crate::hooks::recall::SCOPE) => {
+                    ledger = data["value"].clone();
+                    reply["result"] = json!({"swapped": true});
+                }
+                ("state::list" | "harness::state::list", _) => reply["result"] = json!([]),
+                _ => reply["result"] = Value::Null,
+            }
+            if !message["invocation_id"].is_null() && socket.send(send(reply)).await.is_err() {
+                break;
+            }
+        }
+        ledger
+    });
+    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    ready_rx.await.unwrap();
+    let deps = Deps::new(
+        iii.clone(),
+        Arc::new(RwLock::new(Arc::new(crate::config::WorkerConfig {
+            session_timeout_ms: 2_000,
+            ..Default::default()
+        }))),
+        crate::discovery::new_cell(),
+        crate::skills::new_cell(),
+        crate::events::TurnEvents::register(&iii),
+        crate::hooks::HookRegistry::register(&iii),
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !iii.is_observed(ON_TURN_COMPLETED_FN) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the completion event's observer activates");
+    let mut record: TurnRecord = serde_json::from_value(json!({
+        "session_id": "s", "turn_id": "t1", "status": "running",
+        "step": 1, "turn_count": 2, "depth": 0, "recall_sent": true,
+        "options": {"model": "fake", "max_turns": 16}, "created_at": 1, "updated_at": 1
+    }))
+    .unwrap();
+    let session = deps.session().await;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        finalize_completed(&deps, &session, &mut record, None),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    iii.shutdown();
+    let ledger = server.await.unwrap();
+    let proof = ledger[0]["extraction"][0]["terminal"]["exchange_finished"].clone();
+    let calls = calls.lock().unwrap();
+    let event = calls
+        .iter()
+        .find(|(function, _)| function == ON_TURN_COMPLETED_FN)
+        .map(|(_, data)| data["terminal"].clone())
+        .expect("the completion event");
+    assert!(proof.is_boolean(), "the proof records a boundary: {ledger}");
+    assert_eq!(proof, event, "one terminal decision for proof and event");
 }
 
 /// A redelivered step whose reply already dispatched a call (checkpoint still
@@ -413,6 +536,40 @@ async fn a_step_ending_the_turn_writes_no_live_phase_after_its_projection() {
             "done"
         ]
     );
+}
+
+/// Recall provenance is read only when the step calls Memory's pre_generate
+/// hook: a stack without Memory reads no ledger, neither per step nor when the
+/// turn ends, even with another pre_generate observer called every step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_step_calling_memory_reads_the_recall_ledger() {
+    let ledger_reads = |calls: &[(String, Value)]| {
+        calls
+            .iter()
+            .filter(|(f, data)| {
+                f.ends_with("state::get") && data["scope"] == crate::hooks::recall::SCOPE
+            })
+            .count()
+    };
+    let finished = || text_reply(0.25)["message"].clone();
+    let (result, calls, _) = generate(finished()).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
+    assert_eq!(ledger_reads(&calls), 0, "{calls:?}");
+
+    let gate = json!({"harness::hook::on-pre-generate": {"decision": "continue"}});
+    let (result, calls, turn) = generate_observed(finished(), gate).await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
+    assert!(phases(&calls).contains(&"harness::hook::on-pre-generate"));
+    assert_eq!(ledger_reads(&calls), 0, "{calls:?}");
+    assert!(turn.get("recall_sent").is_none(), "{turn}");
+
+    let memory = json!({"harness::hook::on-pre-generate":
+        {"decision": "continue", "target": "memory::hook::pre-generate"}});
+    let (result, calls, turn) = generate_observed(hold_reply()["message"].clone(), memory).await;
+    assert_eq!(result.unwrap().next_step, Some(2));
+    assert_eq!(ledger_reads(&calls), 1, "Memory gets the source");
+    // Stored: the turn's end records its boundary even once Memory left.
+    assert_eq!(turn["recall_sent"], true, "{turn}");
 }
 
 /// A stop mid-generation still runs the post_generate hooks: writing the next
@@ -655,7 +812,8 @@ async fn generate(
     generate_observed(reply, json!({})).await
 }
 
-/// [`generate`] with `hooks` (hook function -> chain outcome) observed.
+/// [`generate`] with `hooks` (hook function -> chain outcome) observed. An
+/// outcome's `target` names its observer's target (default `test::gate`).
 async fn generate_observed(
     reply: Value,
     hooks: Value,
@@ -730,8 +888,9 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
             if message["type"] == "registerfunction" {
                 let id = message["id"].as_str().unwrap();
                 if !hooks[id].is_null() {
+                    let target = hooks[id]["target"].as_str().unwrap_or("test::gate");
                     let registered = json!({"type": "functionregistered", "id": id, "revision": 1,
-                        "observers": [{"id": format!("o_{id}"), "target": "test::gate"}]});
+                        "observers": [{"id": format!("o_{id}"), "target": target}]});
                     let frame = tokio_tungstenite::tungstenite::Message::Text(
                         registered.to_string().into(),
                     );
