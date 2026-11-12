@@ -424,6 +424,16 @@ pub(crate) async fn record_delivery(
         .entry_id
         .ok_or_else(|| HarnessError::InvalidRequest("delivery has no entry id".into()))?;
     if session.len() > 256 || entry.is_empty() || entry.len() > 256 {
+        if delivery.continuation_entry_id.is_none() {
+            // A long idempotency key must not fail an ordinary send: skip the
+            // receipt, so this turn's recall source resolves as unknown.
+            tracing::warn!(
+                session,
+                entry,
+                "recall delivery ids over the ledger bound; delivering without recall authority"
+            );
+            return Ok(());
+        }
         return Err(HarnessError::InvalidRequest(
             "invalid recall delivery identifiers".into(),
         ));

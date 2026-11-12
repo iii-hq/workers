@@ -384,6 +384,40 @@ async fn idempotency_keys_keep_legacy_ids_and_cannot_rewrite_continuation_receip
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idempotency_key_over_the_receipt_bound_still_delivers_without_recall_authority() {
+    let stack = Stack::new().await;
+    for (session, status) in [
+        ("long-direct", TurnStatus::Completed),
+        ("long-queue", TurnStatus::Running),
+    ] {
+        let key = format!("{session}/{}", "k".repeat(300));
+        stack.reset(session, status).await;
+        handle(
+            &stack.deps,
+            request(session, "Keyed request", Some(&key), None),
+        )
+        .await
+        .unwrap();
+        if status == TurnStatus::Running {
+            assert_eq!(stack.drain(session).await, 1);
+        }
+        let id = ids::idem_user_entry_id(&key);
+        assert_eq!(stack.data.lock().unwrap().messages[session].len(), 1);
+        assert!(stack.data.lock().unwrap().get(SCOPE, session).is_null());
+        let context = stack.context(session).await;
+        assert_eq!(context["source"]["entry_id"], id);
+        assert_eq!(context["source"]["kind"], "unknown");
+        // A continuation still needs a receipt, so the bound stays an error there.
+        assert!(handle(
+            &stack.deps,
+            request(session, "Continue", Some(&format!("{key}-next")), Some(&id))
+        )
+        .await
+        .is_err());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continuation_rejects_missing_mismatched_or_cross_channel_receipts_before_append() {
     let stack = Stack::new().await;
     for mode in [
