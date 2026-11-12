@@ -241,6 +241,7 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             stated_at: None,
+            snapshot: Default::default(),
         }
     }
 

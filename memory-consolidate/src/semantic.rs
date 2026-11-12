@@ -19,12 +19,11 @@
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
-use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::consolidate::{call, BankReport, MemoryRow};
+use crate::consolidate::{call, BankReport, ConsolidationTransport, MemoryRow};
 
 /// Static system prompt (identical for every bank and batch, so providers
 /// can cache it).
@@ -374,6 +373,18 @@ fn number_tokens(text: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Operators and signs (`<`, `!=`, `C++`, a leading `-5`), sorted: a merge
+/// between texts that differ in them would flip a fact, not restate it.
+fn operator_tokens(text: &str) -> Vec<char> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut ops: Vec<char> = (0..chars.len())
+        .filter(|&i| crate::consolidate::is_operator(&chars, i))
+        .map(|i| chars[i])
+        .collect();
+    ops.sort_unstable();
+    ops
+}
+
 /// Every check a judge action must pass before anything is written.
 /// `retired` = ids retired earlier this run; `budget` = supersedes left.
 pub fn validate(
@@ -446,6 +457,12 @@ pub fn validate(
             continue;
         }
         let seen = |r: &MemoryRow| stated.get(&r.id).copied().unwrap_or_else(|| last_stated(r));
+        if kind == ActionKind::Supersede && seen(retire) == seen(keep) {
+            verdict
+                .rejected
+                .push((label, "replacement needs a strictly later statement"));
+            continue;
+        }
         if kind == ActionKind::Supersede && seen(retire) > seen(keep) {
             verdict
                 .rejected
@@ -460,6 +477,13 @@ pub fn validate(
             verdict
                 .rejected
                 .push((label, "the survivor would lose a number"));
+            continue;
+        }
+        if kind == ActionKind::Merge && operator_tokens(&retire.text) != operator_tokens(&keep.text)
+        {
+            verdict
+                .rejected
+                .push((label, "the texts differ in an operator or sign"));
             continue;
         }
         let reason: String = a.reason.trim().chars().take(MAX_REASON_CHARS).collect();
@@ -486,7 +510,9 @@ pub fn validate(
     verdict
 }
 
-/// One semantic-tier decision as reported (and kept in `last_report`).
+/// One applied semantic-tier decision as reported (and kept in
+/// `last_report`). Actions dropped by the pre-write freshness check are not
+/// listed; they count in `semantic_rejected` with a note.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SemanticAction {
     pub kind: ActionKind,
@@ -497,9 +523,6 @@ pub struct SemanticAction {
     pub retire_id: String,
     pub retire_text: String,
     pub reason: String,
-    /// False on dry runs. Actions dropped by the pre-write freshness check
-    /// are not listed here; they count in `semantic_rejected` with a note.
-    pub applied: bool,
 }
 
 // ---- async glue ----------------------------------------------------------
@@ -515,8 +538,8 @@ fn cursor_key(bank: &str) -> String {
     format!("semantic_cursor:{bank}")
 }
 
-async fn recall_arm(
-    iii: &IIIClient,
+async fn recall_arm<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     text: &str,
     mode: &str,
@@ -535,7 +558,11 @@ async fn recall_arm(
 /// saw, so a record edited, retired, or gone meanwhile drops the action
 /// (`Ok(false)`). Any other failure is transport (`Err`), which stops the
 /// tier with the cursor held, never a silent drop.
-async fn still_as_seen(iii: &IIIClient, bank: &str, seen: &MemoryRow) -> Result<bool, String> {
+async fn still_as_seen<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    bank: &str,
+    seen: &MemoryRow,
+) -> Result<bool, String> {
     match call(iii, "memory::get", json!({ "bank": bank, "id": seen.id })).await {
         Ok(v) => {
             let m = v.get("memory").cloned().unwrap_or(Value::Null);
@@ -558,11 +585,10 @@ enum Step {
 
 /// The tier for one bank. Runs LAST (after the deterministic and reorder
 /// tiers) on a fresh fetch, so it never sees records those tiers retired.
-pub async fn run_semantic_tier(
-    iii: &IIIClient,
+pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     opts: &SemanticOptions,
-    dry_run: bool,
     budget: &mut usize,
     report: &mut BankReport,
 ) {
@@ -602,6 +628,10 @@ pub async fn run_semantic_tier(
         .map(<[MemoryRow]>::to_vec)
         .collect();
     let mut retired: HashSet<String> = HashSet::new();
+    // A reinforced survivor changes: later actions, in this batch or a later
+    // one (a pending record can be an earlier batch's candidate), expect the
+    // snapshot memory returned, not the one read before.
+    let mut written: BTreeMap<String, Value> = BTreeMap::new();
 
     while let Some(group) = queue.pop_front() {
         if *budget == 0 {
@@ -614,28 +644,26 @@ pub async fn run_semantic_tier(
             iii,
             bank,
             opts,
-            dry_run,
             budget,
             report,
             &group,
             &mut retired,
+            &mut written,
         )
         .await
         {
             Step::Done => {
-                if !dry_run {
-                    if let Some(last) = group.last() {
-                        cursor = Cursor::of(last);
-                        if let Err(e) = crate::functions::state_set(
-                            iii,
-                            &cursor_key(bank),
-                            serde_json::to_value(&cursor).unwrap_or(Value::Null),
-                        )
-                        .await
-                        {
-                            report.notes.push(format!("semantic cursor not saved: {e}"));
-                            break;
-                        }
+                if let Some(last) = group.last() {
+                    cursor = Cursor::of(last);
+                    if let Err(e) = crate::functions::state_set(
+                        iii,
+                        &cursor_key(bank),
+                        serde_json::to_value(&cursor).unwrap_or(Value::Null),
+                    )
+                    .await
+                    {
+                        report.notes.push(format!("semantic cursor not saved: {e}"));
+                        break;
                     }
                 }
             }
@@ -650,15 +678,15 @@ pub async fn run_semantic_tier(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn judge_group(
-    iii: &IIIClient,
+async fn judge_group<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     opts: &SemanticOptions,
-    dry_run: bool,
     budget: &mut usize,
     report: &mut BankReport,
     group: &[MemoryRow],
     retired: &mut HashSet<String>,
+    written: &mut BTreeMap<String, Value>,
 ) -> Step {
     // Candidates are recalled per batch, after earlier batches wrote: a
     // record retired since then is no longer live and drops out.
@@ -686,14 +714,14 @@ async fn judge_group(
     }
 
     let batch = build_batch(&items);
-    let result = crate::llm::complete(
-        iii,
-        &opts.model,
-        SEMANTIC_SYSTEM,
-        batch.prompt.clone(),
-        MAX_OUTPUT_TOKENS,
-    )
-    .await;
+    let result = iii
+        .complete(
+            &opts.model,
+            SEMANTIC_SYSTEM,
+            batch.prompt.clone(),
+            MAX_OUTPUT_TOKENS,
+        )
+        .await;
     let parsed = match classify(&result) {
         Outcome::Reply(text) => parse_actions(&text).map_err(Outcome::InputShaped),
         other => Err(other),
@@ -717,51 +745,53 @@ async fn judge_group(
         tracing::debug!(bank, why, action = %what, "semantic action rejected");
     }
     for action in verdict.accepted {
-        let mut applied = false;
-        if !dry_run {
-            let fresh = match (
-                still_as_seen(iii, bank, &action.keep).await,
-                still_as_seen(iii, bank, &action.retire).await,
-            ) {
-                (Ok(a), Ok(b)) => a && b,
-                (Err(e), _) | (_, Err(e)) => {
-                    report.notes.push(format!("semantic tier stopped: {e}"));
-                    return Step::Stop;
-                }
-            };
-            if !fresh {
-                report.semantic_rejected += 1;
-                report.notes.push(format!(
-                    "semantic action dropped: `{}` or `{}` changed since the judge read it",
-                    action.keep.id, action.retire.id
-                ));
-                continue;
+        let fresh = match (
+            still_as_seen(iii, bank, &action.keep).await,
+            still_as_seen(iii, bank, &action.retire).await,
+        ) {
+            (Ok(a), Ok(b)) => a && b,
+            (Err(e), _) | (_, Err(e)) => {
+                report.notes.push(format!("semantic tier stopped: {e}"));
+                return Step::Stop;
             }
-            let reply = call(
-                iii,
-                "memory::supersede",
-                json!({
-                    "bank": bank,
-                    "id": action.retire.id,
-                    "superseded_by": action.keep.id,
-                    "reinforce": action.kind == ActionKind::Merge,
-                    "reason": action.reason,
-                }),
-            )
-            .await;
-            match reply {
-                Ok(reply) => {
-                    applied = true;
-                    *budget = budget.saturating_sub(1);
-                    report.superseded += 1;
-                    if action.kind == ActionKind::Merge {
-                        crate::consolidate::tally_reinforcement(report, &reply);
-                    }
+        };
+        if !fresh {
+            report.semantic_rejected += 1;
+            report.notes.push(format!(
+                "semantic action dropped: `{}` or `{}` changed since the judge read it",
+                action.keep.id, action.retire.id
+            ));
+            continue;
+        }
+        let expected = |row: &MemoryRow| guard_snapshot(row, written.get(&row.id));
+        let reply = call(
+            iii,
+            "memory::supersede",
+            json!({
+                "bank": bank,
+                "id": action.retire.id,
+                "superseded_by": action.keep.id,
+                "expected_memory": expected(&action.retire),
+                "expected_superseded_by": expected(&action.keep),
+                "reinforce": action.kind == ActionKind::Merge,
+                "reason": action.reason,
+            }),
+        )
+        .await;
+        match reply {
+            Ok(reply) => {
+                *budget = budget.saturating_sub(1);
+                report.superseded += 1;
+                if action.kind == ActionKind::Merge {
+                    crate::consolidate::tally_reinforcement(report, &reply);
                 }
-                Err(e) => {
-                    report.errors.push(e);
-                    return Step::Stop;
+                if let Some(survivor) = reply.get("survivor").filter(|v| !v.is_null()) {
+                    written.insert(action.keep.id.clone(), survivor.clone());
                 }
+            }
+            Err(e) => {
+                report.errors.push(e);
+                return Step::Stop;
             }
         }
         retired.insert(action.retire.id.clone());
@@ -772,7 +802,6 @@ async fn judge_group(
             retire_id: action.retire.id,
             retire_text: action.retire.text,
             reason: action.reason,
-            applied,
         });
     }
     if verdict.capped > 0 {
@@ -785,9 +814,35 @@ async fn judge_group(
     Step::Done
 }
 
+/// The snapshot a supersede is guarded with: what this batch read, unless an
+/// earlier write in this run returned a newer one for the same record.
+fn guard_snapshot(row: &MemoryRow, written: Option<&Value>) -> Value {
+    let read = row.expected_snapshot();
+    let revision = |v: &Value| v["revision"].as_u64().unwrap_or(0);
+    match written {
+        Some(w) if revision(w) > revision(&read) => w.clone(),
+        _ => read,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_guard_takes_the_newer_of_the_read_and_the_written_snapshot() {
+        let at = |revision: u64| {
+            let mut r = row("x", "User drinks green tea.", 1, 1);
+            r.snapshot.insert("revision".into(), json!(revision));
+            r
+        };
+        let written = json!({"id": "x", "revision": 1});
+        // A row read before an earlier batch reinforced it: the write is newer.
+        assert_eq!(guard_snapshot(&at(0), Some(&written))["revision"], 1);
+        // A row recalled after another writer moved it on: the read is newer.
+        assert_eq!(guard_snapshot(&at(2), Some(&written))["revision"], 2);
+        assert_eq!(guard_snapshot(&at(2), None)["revision"], 2);
+    }
 
     fn row(id: &str, text: &str, created_at: u64, updated_at: u64) -> MemoryRow {
         MemoryRow {
@@ -798,6 +853,7 @@ mod tests {
             created_at,
             updated_at,
             stated_at: None,
+            snapshot: Default::default(),
         }
     }
 
@@ -1165,6 +1221,30 @@ mod tests {
             10,
         );
         assert_eq!(v.accepted.len(), 1, "{:?}", v.rejected);
+    }
+
+    #[test]
+    fn a_merge_never_flips_an_operator_or_a_sign() {
+        assert_eq!(
+            operator_tokens("from 2026-10-15 to 10:00"),
+            Vec::<char>::new()
+        );
+        for (survivor, dup) in [
+            ("limit > 5", "limit < 5"),
+            ("delta is -5", "delta is 5"),
+            ("uses C++", "uses C#"),
+            ("a != b", "a = b"),
+        ] {
+            let batch = build_batch(&[(row("d", dup, 2, 2), vec![row("s", survivor, 1, 1)])]);
+            let v = validate(
+                &[action("merge", "c1", "n1", "same fact")],
+                &batch,
+                &HashSet::new(),
+                10,
+            );
+            assert!(v.accepted.is_empty(), "{survivor:?} vs {dup:?}");
+            assert_eq!(v.rejected[0].1, "the texts differ in an operator or sign");
+        }
     }
 
     #[test]
