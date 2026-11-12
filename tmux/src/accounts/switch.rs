@@ -825,8 +825,7 @@ pub async fn switch_locked(
                     return wait(accounts, &registry, &to, &by, vec![*pane], sorted.following)
                         .await;
                 }
-                // These pass: a switch that waits tries again.
-                if [moves::DID_NOT_STOP, moves::BUSY, moves::IN_MODE].contains(&error.as_str()) {
+                if passes(&error) {
                     return Err(SwitchError::Failed(error));
                 }
                 return Err(SwitchError::Blocked(vec![pane.pane_id.clone()], error));
@@ -1053,8 +1052,23 @@ async fn restart(
     }
 }
 
+/// Why a pane on the new account's folder did not stop, when it passes:
+/// a switch that waits tries again. A Claude Code that got SIGTERM but
+/// had not ended yet (in its pane or under its shell) is ending; the
+/// others are a move under way or a pane in copy mode.
+fn passes(error: &str) -> bool {
+    [
+        moves::DID_NOT_STOP,
+        moves::DID_NOT_STOP_SHELL,
+        moves::BUSY,
+        moves::IN_MODE,
+    ]
+    .contains(&error)
+}
+
 /// The switch waits for `busy` (G4): `pending_global` says so, replacing
-/// any other. The rules never wait.
+/// any other, and a switch back the rules planned is off (as with a
+/// person's switch made at once). The rules never wait.
 async fn wait(
     accounts: &Arc<Accounts>,
     registry: &Registry,
@@ -1079,6 +1093,9 @@ async fn wait(
     accounts
         .update_registry_at_async(move |registry, _| {
             registry.pending_global = Some(pending);
+            if let Some(last) = registry.last_switch.as_mut() {
+                last.back_at_ms = None;
+            }
             Ok(())
         })
         .await
@@ -1879,6 +1896,55 @@ mod tests {
         let registry = accounts.registry();
         assert_eq!(registry.global, "default");
         assert!(registry.pending_global.is_none(), "called off");
+    }
+
+    #[tokio::test]
+    async fn a_person_s_switch_that_waits_calls_off_the_switch_back() {
+        let (_home, accounts) = managed("wait-no-back");
+        // The rules made Work global, planning to switch back once the
+        // account they left resets.
+        accounts
+            .update_registry(|registry| {
+                registry.last_switch = Some(AccountSwitch {
+                    from: "side".into(),
+                    to: "default".into(),
+                    reason: Some("week_90".into()),
+                    auto: true,
+                    following: 0,
+                    restarted: Vec::new(),
+                    after_turn: Vec::new(),
+                    at_ms: 1,
+                    back_at_ms: Some(9_000),
+                });
+                Ok(())
+            })
+            .unwrap();
+        // Personal's folder has Claude Code in a turn: the switch waits.
+        let mut panes = unmovable_on_personal();
+        let pane = panes.get_mut("%3").unwrap();
+        pane.info.movable = true;
+        pane.info.not_movable_reason = None;
+        pane.kind = Some(super::super::panes::MoveKind::Respawn);
+        pane.record.as_mut().unwrap().status = Some("busy".into());
+        let outcome = switch_locked(&no_tmux(), &accounts, &panes, "personal", By::Person)
+            .await
+            .unwrap();
+        assert!(outcome.waiting);
+        let registry = accounts.registry();
+        assert_eq!(registry.pending_global.unwrap().account, "personal");
+        assert_eq!(
+            registry.last_switch.unwrap().back_at_ms,
+            None,
+            "no switch back to discard the one asked for"
+        );
+    }
+
+    #[test]
+    fn a_claude_code_still_ending_does_not_call_off_a_waiting_switch() {
+        assert!(passes(moves::DID_NOT_STOP));
+        assert!(passes(moves::DID_NOT_STOP_SHELL));
+        assert!(passes(moves::IN_MODE));
+        assert!(!passes(super::super::panes::NESTED));
     }
 
     #[tokio::test]
