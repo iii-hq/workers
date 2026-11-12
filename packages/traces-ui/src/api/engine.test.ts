@@ -67,6 +67,11 @@ describe('createEngineTraceSource', () => {
       Promise.reject('socket closed'),
     )
     await expect(source.listTraces()).rejects.toBeInstanceOf(Error)
+    await expect(source.traceSpans()).rejects.toBeInstanceOf(Error)
+    await expect(
+      source.groupTraces({ attribute: 'iii.session.id' }),
+    ).rejects.toBeInstanceOf(Error)
+    await expect(source.logs()).rejects.toBeInstanceOf(Error)
     await expect(source.hiddenFunctionIds?.()).resolves.toEqual(new Set())
     // A watch without a client has nothing to stop, and throws nothing.
     source.watch?.(vi.fn())?.()

@@ -3,11 +3,11 @@
  * seed"): the newest turn of the chat that is RUNNING when one can be told
  * apart, else of the active chat.
  *
- * Running comes from the conversation record's `status`, which the console
- * sets to `working` when a turn starts and `session::on-status-changed` keeps
- * current. It picks a chat only when it is unambiguous: the active chat when
- * it is the one running, or the one chat running when the active one is
- * idle. Several chats running with the active one idle has no single answer,
+ * Running comes from the session's `status`, which the host sets to
+ * `working` when a turn starts and keeps current from
+ * `session::on-status-changed`. It picks a chat only when it is
+ * unambiguous: the active chat when it is the one running, or the one chat
+ * running when the active one is idle. Several chats running with the active one idle has no single answer,
  * and the active chat stands — the list follows it either way.
  */
 

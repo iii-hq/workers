@@ -14,7 +14,7 @@ export const MESSAGE_ID_ATTR = 'iii.message.id'
 export const SESSION_NAME_ATTR = 'iii.session.name'
 
 export interface TraceChatLink {
-  /** engine session_id (= the console's `Conversation.id`) */
+  /** engine session_id (= the host session's `id`) */
   sessionId: string
   /** session title at emit time, for the button label */
   sessionName?: string

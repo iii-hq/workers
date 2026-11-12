@@ -155,6 +155,8 @@ def test_a_traces_ui_change_rebuilds_ade(
     payload = json.loads(capsys.readouterr().out)
     assert "ade" in payload["by_language"]["rust"]
     assert payload["source_changed"] == []
+    assert payload["traces_ui"] is True
+    assert payload["native_ui"] is False
 
 
 def test_sdk_docs_alone_rebuild_no_worker(

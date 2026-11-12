@@ -634,7 +634,7 @@ export function TraceTimeline({
 
   // The hidden-group/worker selection lives with the CALLER (`spanFilter`)
   // so the timeline and waterfall share one selection and it persists in
-  // the console configuration. This component only derives menu entries
+  // the host's settings. This component only derives menu entries
   // and applies the selection.
   const filterEnabled = !!spanGroupKey && !!spanFilter
 

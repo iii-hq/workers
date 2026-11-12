@@ -1,4 +1,8 @@
-export { createEngineTraceSource, type EngineClient } from './api/engine'
+export {
+  createEngineTraceSource,
+  type EngineClient,
+  type EngineConnect,
+} from './api/engine'
 export type {
   OtelLog,
   OtelLogsFilterParams,

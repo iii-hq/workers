@@ -155,6 +155,12 @@ NATIVE_UI_INFRA_PATHS = {
     ".github/workflows/ci.yml",
 }
 
+# The traces-ui job (ci.yml) runs the @iii-dev/traces-ui package's own
+# biome, typecheck, tests and build, and the ADE design scans that cover it.
+# It runs when the package, the root pnpm workspace or this CI changes (the
+# same infra paths as native-ui).
+TRACES_UI_PREFIX = "packages/traces-ui/"
+
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a
 # source change.
@@ -363,6 +369,10 @@ def native_ui_changed(files: list[str]) -> bool:
     )
 
 
+def traces_ui_changed(files: list[str]) -> bool:
+    return any(f in NATIVE_UI_INFRA_PATHS or f.startswith(TRACES_UI_PREFIX) for f in files)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", required=True, help="base git ref")
@@ -455,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     provider_contract = provider_contract_selection(files, workers)
     native_ui = native_ui_changed(files)
+    traces_ui = traces_ui_changed(files)
     by_language: dict[str, list[str]] = {"rust": [], "go": [], "node": [], "python": []}
     for w in changed:
         lang = language_of(worker_specs[w])
@@ -472,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         "provider_contract": provider_contract,
         "crates": changed_crates,
         "native_ui": native_ui,
+        "traces_ui": traces_ui,
     }
     print(json.dumps(payload))
 
@@ -494,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
             f.write(f"provider_contract={json.dumps(provider_contract)}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
             f.write(f"native_ui={'true' if native_ui else 'false'}\n")
+            f.write(f"traces_ui={'true' if traces_ui else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 
     return 0

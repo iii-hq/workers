@@ -42,8 +42,8 @@ export function createEngineTraceSource(client: EngineConnect): TraceSource {
     watch(onTraceIds, onResync) {
       let stop: (() => void) | undefined
       let active = true
-      void Promise.resolve(client())
-        .then((resolved) => {
+      void Promise.resolve(client()).then(
+        (resolved) => {
           if (!active) return
           const offFeed = startTraceActivityFeed(resolved, onTraceIds)
           const offConnection = onResync
@@ -55,9 +55,11 @@ export function createEngineTraceSource(client: EngineConnect): TraceSource {
             offFeed()
             offConnection?.()
           }
-        })
-        // No client, no live updates: the reads report the failure.
-        .catch(() => {})
+        },
+        // No client, no live updates: the reads report the failure. (Only
+        // the client's rejection: a throw while subscribing stays loud.)
+        () => {},
+      )
       return () => {
         active = false
         stop?.()

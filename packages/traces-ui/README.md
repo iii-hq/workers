@@ -97,7 +97,7 @@ pnpm --filter @iii-dev/traces-ui build   # dist/, what npm gets
 ```
 
 Publish with `pnpm publish`: the published `main`, `types` and `exports`
-come from `publishConfig`, which npm ignores. `dist/index.js` is one ESM
+come from `publishConfig`, and npm does not apply those overrides. `dist/index.js` is one ESM
 bundle with every dependency left external; the type declarations suit
 `moduleResolution: "bundler"`.
 

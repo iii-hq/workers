@@ -240,6 +240,7 @@ fn dist_is_fresh(dist_index: &Path, web_dir: &Path) -> bool {
         web_dir.join("pnpm-lock.yaml"),
         web_dir.join("vite.config.ts"),
         web_dir.join(".env.production"),
+        web_dir.join("../../packages/traces-ui/package.json"),
     ];
     for f in watched_files.iter() {
         if !f.exists() {
