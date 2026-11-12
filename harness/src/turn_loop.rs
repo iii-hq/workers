@@ -2859,12 +2859,9 @@ async fn finalize_completed(
     record.updated_at = AgentMessage::now_ms();
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    crate::hooks::recall::finish_extraction(
-        deps,
-        record,
-        turn_is_terminal(deps, &record.session_id).await,
-    )
-    .await;
+    // One decision for the proof and the event: a wake can retire in between.
+    let terminal = turn_is_terminal(deps, &record.session_id).await;
+    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
     crate::session_status::project(session, record).await;
     deps.events
@@ -2877,7 +2874,7 @@ async fn finalize_completed(
             None,
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
-            turn_is_terminal(deps, &record.session_id).await,
+            terminal,
             record.context_snapshot.as_ref(),
         )
         .await;
@@ -3493,7 +3490,9 @@ async fn try_finish_stopped_exchange(
         )
         .await;
     record.exchange_finished = true;
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await
+    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    crate::hooks::recall::finish_extraction(deps, &record, true).await;
+    Ok(())
 }
 
 const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {

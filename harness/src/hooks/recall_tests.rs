@@ -44,7 +44,7 @@ impl Data {
                 self.state.remove(&(scope.into(), key.into()));
                 Ok(json!({}))
             }
-            "state::list" => Ok(json!(self
+            "state::list" | "harness::state::list" => Ok(json!(self
                 .state
                 .iter()
                 .filter(|((s, _), _)| s == scope)

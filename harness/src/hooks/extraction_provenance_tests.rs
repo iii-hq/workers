@@ -656,3 +656,47 @@ async fn a_memory_hook_step_lists_once_reads_no_transcript_and_acks_once() {
     let ledger = stack.data.lock().unwrap().get(SCOPE, "s");
     assert_eq!(ledger[0]["extraction"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_exchange_ending_later_finishes_its_proof_boundary() {
+    use crate::types::turn::TurnStatus::{Cancelled, Completed};
+    let stack = Stack::with_target("memory::hook::pre-generate").await;
+    let mut record = delivered(&stack, "s", "opaque-a", "Wire the run").await;
+    acknowledge(
+        &stack,
+        &record,
+        json!({"memory_extraction":true,"memory_bank":"bank-a","memory_derived":true}),
+    )
+    .await;
+    // The turn completed while its session still waited on a wake.
+    record.status = Completed;
+    record.exchange_finished = false;
+    crate::state::put_turn(&stack.deps.iii, &record, 1000)
+        .await
+        .unwrap();
+    finish_extraction(&stack.deps, &record, false).await;
+    let parked = history(&stack, "s").await;
+    assert_eq!(
+        parked["rows"][0]["attestation"]["terminal"],
+        json!({"status":"completed","exchange_finished":false})
+    );
+    // A stop reached it, and its last wake went without a delivery.
+    crate::turn_loop::finish_stopped_exchange(&stack.deps, "s", &record.turn_id).await;
+    let closed = stack.record("s").await;
+    assert_eq!(closed.status, Cancelled);
+    assert!(closed.exchange_finished);
+    let finished = history(&stack, "s").await;
+    let mut expected = parked["rows"][0].clone();
+    expected["attestation"]["terminal"] = json!({"status":"cancelled","exchange_finished":true});
+    assert_eq!(
+        finished["rows"],
+        json!([expected]),
+        "only the boundary moves"
+    );
+    // A finished boundary never moves again.
+    finish_extraction(&stack.deps, &closed, false).await;
+    let mut completed = closed.clone();
+    completed.status = Completed;
+    finish_extraction(&stack.deps, &completed, true).await;
+    assert_eq!(history(&stack, "s").await, finished);
+}

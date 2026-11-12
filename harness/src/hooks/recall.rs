@@ -222,6 +222,8 @@ pub(super) async fn acknowledge_extraction(
 
 /// Terminal boundaries are recorded from the finalizer, never an event payload.
 /// A turn that never received a Memory acknowledgement has no eligible proof.
+/// A boundary is written once, except that an unfinished exchange may later be
+/// marked finished (with the turn's status then); a finished one never moves.
 pub(crate) async fn finish_extraction(deps: &Deps, record: &TurnRecord, exchange_finished: bool) {
     let timeout = deps.cfg().await.session_timeout_ms;
     let result = finish_extraction_inner(&deps.iii, record, exchange_finished, timeout).await;
@@ -254,7 +256,10 @@ async fn finish_extraction_inner(
             for proof in &mut row.extraction {
                 if proof.session_id == record.session_id
                     && proof.turn_id == record.turn_id
-                    && proof.terminal.is_none()
+                    && proof
+                        .terminal
+                        .as_ref()
+                        .is_none_or(|t| exchange_finished && !t.exchange_finished)
                 {
                     proof.terminal = Some(ExtractionTerminal {
                         status: status.into(),
