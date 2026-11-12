@@ -933,6 +933,39 @@ async fn recall_delivery_explicit_continuation_uses_active_path_same_channel_onl
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_source_skips_user_entries_the_turn_wrote_itself() {
+    let stack = Stack::new().await;
+    stack
+        .reset_turn("own", crate::types::turn::TurnStatus::Completed)
+        .await;
+    crate::functions::send::handle(&stack.deps, request("own", "Ledgerly PostgreSQL", None))
+        .await
+        .unwrap();
+    let opened = stack.context("own").await;
+    assert_eq!(opened["source"]["kind"], "direct");
+    let turn = stack.record("own").await.turn_id;
+    // A step-0 skills update (the catalog changed since the last turn) and the
+    // later retry nudges are user-role entries no sender delivered.
+    for id in [
+        crate::ids::skill_update_entry_id(&turn, 0),
+        crate::ids::validation_nudge_entry_id(&turn, 1),
+        crate::ids::transient_resume_nudge_entry_id(&turn, 1),
+    ] {
+        stack.data.lock().unwrap().messages.get_mut("own").unwrap().push(
+            json!({"entry_id":id,"message":AgentMessage::user_text("The available skills have changed."),"origin":{"skill_update":true}}),
+        );
+        assert_eq!(stack.context("own").await, opened, "{id}");
+    }
+    // A message steered in mid-turn is a delivery: it becomes the source.
+    crate::functions::send::handle(&stack.deps, request("own", "Also check the tests", None))
+        .await
+        .unwrap();
+    let steered = drained_context(&stack, "own").await;
+    assert_eq!(steered["source"]["kind"], "direct");
+    assert_eq!(steered["query"]["text"], "Also check the tests");
+}
+
 /// Append `count` assistant replies to the session's transcript.
 fn push_replies(stack: &Stack, session: &str, count: usize) {
     let mut data = stack.data.lock().unwrap();

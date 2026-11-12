@@ -687,18 +687,23 @@ fn envelope(
     })
 }
 
-/// Latest persisted user entry, not model notices appended by assembly/hooks.
+/// Latest persisted user entry, not model notices appended by assembly/hooks
+/// nor the user-role entries the turn writes itself (a skills update, a retry
+/// nudge): those were never delivered, so they would resolve as unknown.
+/// A message steered in mid-turn is a delivery and does become the source.
 /// Receipt failure is recall-only fail-closed; generation and rules continue.
 pub(crate) async fn resolve(
     deps: &Deps,
     record: &TurnRecord,
     entries: &[LoadedEntry],
 ) -> Option<Value> {
+    let own = format!("e_{}_", record.turn_id);
     let entry = entries.iter().rev().find(|e| {
-        matches!(
-            e.message.as_ref(),
-            Some(AgentMessage::User(_) | AgentMessage::Custom(_))
-        )
+        !e.entry_id.starts_with(&own)
+            && matches!(
+                e.message.as_ref(),
+                Some(AgentMessage::User(_) | AgentMessage::Custom(_))
+            )
     })?;
     let rows = receipts(deps, &record.session_id).await.unwrap_or_default();
     let find = |id: &str| rows.iter().find(|r| r.entry_id == id);
