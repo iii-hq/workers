@@ -2126,7 +2126,12 @@ impl Bank {
         }
         let content = redacted.text.as_str();
         let dir = self.rules_dir();
-        std::fs::create_dir_all(&dir)?;
+        // Never the bank folder too: one trashed under a held handle (a
+        // running extraction) stays deleted.
+        match std::fs::create_dir(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e.into()),
+            _ => {}
+        }
         let path = dir.join(format!("{name}.md"));
         if content.trim().is_empty() {
             if path.exists() {
@@ -2798,6 +2803,21 @@ mod tests {
         let dest = store.trash_bank("scratch", "main").await.unwrap();
         assert!(std::path::Path::new(&dest).join(MEMORIES_FILE).exists());
         assert!(store.bank("scratch").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_rule_write_never_brings_a_trashed_bank_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("scratch", None).await.unwrap();
+        store.trash_bank("scratch", "main").await.unwrap();
+        // A handle taken before the trash, as a running extraction holds.
+        assert!(bank
+            .extraction_rule_expected("learned", "", "- Learned line.\n")
+            .is_err());
+        assert!(bank.set_rule("style", "- Hand-written.\n").is_err());
+        assert!(!dir.path().join("scratch").exists());
+        assert!(store.is_deleted("scratch"));
     }
 
     #[test]
