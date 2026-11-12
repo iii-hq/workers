@@ -4,6 +4,7 @@ use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::accounts::ClaudeLaunchInput;
 use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
 use crate::tmux_cli::{
     find_window, format_literal, resolve_cwd, unescape_separators, validate_command, validate_name,
@@ -42,6 +43,9 @@ pub struct CreateWindowInput {
     /// Keep its pane once its program ends, shown dead, so tmux::panes::respawn can restart it (default false: tmux closes it). On tmux before 3.0, which has no pane options, every pane of the window is kept.
     #[serde(default)]
     pub remain_on_exit: bool,
+    /// Start Claude Code on an account instead of `command` (not both): the worker builds the command (returned as `runs`) and marks the pane with its account.
+    #[serde(default)]
+    pub claude: Option<ClaudeLaunchInput>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -54,6 +58,9 @@ pub struct CreatedWindow {
     pub window_index: u32,
     /// Its first pane id.
     pub pane_id: String,
+    /// With `claude`: the exact command the pane runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -206,6 +213,7 @@ pub fn parse_created(output: &str) -> Result<CreatedWindow, String> {
         window_id: fields[1].to_string(),
         window_index: fields[2].parse().unwrap_or_default(),
         pane_id: fields[3].to_string(),
+        runs: None,
     })
 }
 
@@ -250,10 +258,29 @@ pub async fn create(ctx: &Ctx, input: CreateWindowInput) -> Result<CreatedWindow
         None => "#{session_path}".to_string(),
     };
     args.extend(["-c".into(), cwd]);
-    if let Some(command) = input.command.as_deref() {
+    let launch =
+        super::accounts::plan(ctx, input.claude.as_ref(), input.command.as_deref()).await?;
+    if launch.is_some() {
+        args.extend(["--".into(), HOLD.to_string()]);
+    } else if let Some(command) = input.command.as_deref() {
         validate_command(command)?;
         let first = if input.remain_on_exit { HOLD } else { command };
         args.extend(["--".into(), first.to_string()]);
+    }
+    if let Some((launch, gate)) = launch {
+        let (output, runs) = super::accounts::create_with_claude(
+            &tmux,
+            args,
+            launch,
+            gate,
+            input.remain_on_exit,
+            |output| parse_created(output).map(|created| created.pane_id),
+        )
+        .await?;
+        ctx.monitor.poke();
+        let mut created = parse_created(&output)?;
+        created.runs = Some(runs);
+        return Ok(created);
     }
     let output = tmux.run(&args).await.map_err(|error| error.sentence())?;
     ctx.monitor.poke();

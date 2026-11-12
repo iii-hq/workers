@@ -1,0 +1,532 @@
+//! Which account a pane's Claude Code runs on, how it follows the global
+//! account, and whether the worker can move it (agent-accounts D4–D6, G12).
+//! A Claude Code on the slot (`~/.claude`) uses the global account; one on
+//! an account's folder, that account.
+
+use std::path::Path;
+
+use super::registry::Registry;
+use super::slot::Place;
+use super::{Accounts, GLOBAL};
+use crate::activity::ClaudeRecord;
+use crate::model::{Follow, PaneClaude};
+use crate::procs::{ProcInfo, ProcTable};
+
+/// The account marks a pane carries (tmux user options, D4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Marks {
+    /// `global` or an account id.
+    pub account: Option<String>,
+    pub skip: bool,
+    pub pending: Option<String>,
+}
+
+impl Marks {
+    pub fn from_raw(account: &str, skip: bool, pending: &str) -> Self {
+        let text = |value: &str| Some(value.trim().to_string()).filter(|v| !v.is_empty());
+        Self {
+            account: text(account),
+            skip,
+            pending: text(pending),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.account.is_none() && !self.skip && self.pending.is_none()
+    }
+
+    /// How a pane with these marks follows the global account, running on
+    /// `place` (`None`: not running, or on no account's folder): pinned
+    /// with an account mark; following with `global`, or unmarked on the
+    /// slot; started by hand when unmarked elsewhere.
+    pub fn follow(&self, place: Option<&Place>) -> Follow {
+        match self.account.as_deref() {
+            Some(GLOBAL) => Follow::Global,
+            Some(_) => Follow::Pinned,
+            None if place == Some(&Place::Slot) => Follow::Global,
+            None => Follow::Manual,
+        }
+    }
+
+    /// Pinned to an account (not `global`).
+    pub fn pinned(&self) -> Option<&str> {
+        self.account.as_deref().filter(|mark| *mark != GLOBAL)
+    }
+}
+
+/// How a Claude Code pane is moved to another account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveKind {
+    /// Claude Code is the pane's program: `respawn-pane` starts it again.
+    Respawn,
+    /// Claude Code runs under the pane's interactive shell: it is stopped and
+    /// the command typed into the shell.
+    Shell,
+}
+
+pub const NO_SESSION: &str = "Claude Code has not recorded its session yet.";
+pub const NESTED: &str =
+    "Claude Code runs inside another program in this pane (ssh, docker, tmux, a script…).";
+pub const NOT_RUNNING: &str = "Claude Code is not running in this pane.";
+
+const SHELLS: [&str; 12] = [
+    "sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
+];
+
+/// `name` (a process or `#{pane_current_command}`) is a shell's.
+pub fn is_shell_name(name: &str) -> bool {
+    SHELLS.contains(&name.trim_start_matches('-'))
+}
+
+fn is_shell(proc: &ProcInfo) -> bool {
+    proc.names().any(is_shell_name)
+}
+
+/// A shell started with `-c` runs one command and ends with it: `-c`
+/// alone, among other short options (`-lc`, `-ec`) or fish's `--command`.
+/// Only the options before the first operand count; what follows is the
+/// command, or a script and its own arguments.
+fn runs_one_command(proc: &ProcInfo) -> bool {
+    let mut args = proc.argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        let arg = arg.as_str();
+        if arg == "--command" || arg.starts_with("--command=") {
+            return true;
+        }
+        if arg == "--" {
+            return false;
+        }
+        if arg.starts_with("--") {
+            continue;
+        }
+        let Some(letters) = arg.strip_prefix('-').or_else(|| arg.strip_prefix('+')) else {
+            return false;
+        };
+        if letters.is_empty() {
+            return false;
+        }
+        if arg.starts_with('-') && letters.contains('c') {
+            return true;
+        }
+        // `-o pipefail`, `-eo pipefail`, `-O extglob`: the next word is
+        // the option's value.
+        if letters.ends_with(['o', 'O']) {
+            args.next();
+        }
+    }
+    false
+}
+
+/// How Claude Code process `claude_pid` in the pane whose program is
+/// `pane_pid` can be moved, or why not.
+pub fn move_kind(
+    table: &ProcTable,
+    pane_pid: u32,
+    claude_pid: u32,
+) -> Result<MoveKind, &'static str> {
+    if claude_pid == pane_pid {
+        return Ok(MoveKind::Respawn);
+    }
+    let parent = table.get(claude_pid).and_then(|proc| proc.ppid);
+    if parent != Some(pane_pid) {
+        return Err(NESTED);
+    }
+    match table.get(pane_pid) {
+        // `sh -c 'claude …'` where the shell did not hand itself over.
+        Some(pane) if is_shell(pane) && runs_one_command(pane) => Ok(MoveKind::Respawn),
+        Some(pane) if is_shell(pane) => Ok(MoveKind::Shell),
+        _ => Err(NESTED),
+    }
+}
+
+/// Claude Code's own status says it is between turns (D7).
+pub fn is_idle_status(status: &str) -> bool {
+    status == "idle"
+}
+
+pub const SHARED_MARKS: &str = "tmux before 3.0 keeps one account mark per window, and this window has more than one Claude Code pane.";
+
+/// The process runs without permission prompts.
+pub fn skips_permissions(argv: &[String]) -> bool {
+    argv.iter().enumerate().any(|(at, arg)| {
+        arg == "--dangerously-skip-permissions"
+            || arg == "--permission-mode=bypassPermissions"
+            || (arg == "--permission-mode"
+                && argv.get(at + 1).map(String::as_str) == Some("bypassPermissions"))
+    })
+}
+
+/// A pane that runs Claude Code or carries a mark, as the last collection
+/// saw it.
+#[derive(Debug, Clone)]
+pub struct PaneState {
+    pub pane_id: String,
+    /// The pane's program.
+    pub pane_pid: u32,
+    /// Claude Code's process, when it runs.
+    pub claude_pid: Option<u32>,
+    pub record: Option<ClaudeRecord>,
+    pub marks: Marks,
+    pub info: PaneClaude,
+    /// The state the collector derived (screen and records).
+    pub agent_state: Option<crate::model::AgentState>,
+    /// The pane's current directory.
+    pub cwd: String,
+    /// Where its Claude Code runs: the slot or an account's folder.
+    pub place: Option<Place>,
+    /// How Claude Code would be moved, when it runs and can be.
+    pub kind: Option<MoveKind>,
+    /// tmux before 3.0 keeps marks per window, and another Claude Code pane
+    /// shares this one's window: its marks can't be its own.
+    pub marks_shared: bool,
+}
+
+impl PaneState {
+    /// Claude Code is between turns: its own status is exactly `idle`
+    /// (`shell` means a background command still runs). Without a status
+    /// it is not: the screen is no proof (D7).
+    pub fn idle(&self) -> bool {
+        self.record
+            .as_ref()
+            .and_then(|r| r.status.as_deref())
+            .is_some_and(is_idle_status)
+    }
+
+    /// Claude Code runs here.
+    pub fn running(&self) -> bool {
+        self.claude_pid.is_some()
+    }
+
+    /// The worker can stop and start this Claude Code again.
+    pub fn can_move(&self) -> bool {
+        self.info.movable && self.kind.is_some() && !self.marks_shared
+    }
+
+    /// Why it can't be moved, in one sentence.
+    pub fn why_not_movable(&self) -> String {
+        self.info
+            .not_movable_reason
+            .clone()
+            .unwrap_or_else(|| "Claude Code in this pane can't be moved.".to_string())
+    }
+}
+
+/// Claude Code running in a pane.
+#[derive(Debug, Clone)]
+pub struct ClaudeProc<'a> {
+    pub pid: u32,
+    pub record: Option<&'a ClaudeRecord>,
+}
+
+/// The pane's `claude` field, present when Claude Code runs in it or it
+/// carries a mark, and where its Claude Code runs.
+pub fn pane_claude(
+    accounts: &Accounts,
+    registry: &Registry,
+    table: &ProcTable,
+    pane_pid: u32,
+    marks: &Marks,
+    claude: Option<ClaudeProc<'_>>,
+) -> Option<(PaneClaude, Option<Place>)> {
+    let Some(claude) = claude else {
+        if marks.is_empty() {
+            return None;
+        }
+        let info = PaneClaude {
+            account: None,
+            config_dir: None,
+            follow: marks.follow(None),
+            pending: marks.pending.clone(),
+            skip_permissions: marks.skip,
+            session_id: None,
+            movable: false,
+            not_movable_reason: Some(NOT_RUNNING.to_string()),
+            move_error: None,
+        };
+        return Some((info, None));
+    };
+    let record = claude.record;
+    let config_dir = record.map(|r| r.config_dir.as_path());
+    let place = config_dir.and_then(|dir| accounts.place_of_dir(registry, dir));
+    let account = place.as_ref().map(|place| match place {
+        Place::Slot => registry.global.clone(),
+        Place::Folder(id) => id.clone(),
+    });
+    let session_id = record.and_then(|r| r.session_id.clone());
+    let argv = table
+        .get(claude.pid)
+        .map(|proc| proc.argv.as_slice())
+        .unwrap_or_default();
+    let movable = match (&session_id, &account) {
+        (None, _) => Err(NO_SESSION),
+        (_, None) => Err("Claude Code runs on a folder that is no account here."),
+        _ => move_kind(table, pane_pid, claude.pid).map(drop),
+    };
+    let info = PaneClaude {
+        account,
+        config_dir: config_dir.map(|dir| display(accounts, dir)),
+        follow: marks.follow(place.as_ref()),
+        pending: marks.pending.clone(),
+        // From the process alone: a mark left by an earlier Claude Code in
+        // this pane (respawned since with a plain command) must never make
+        // a move start this one without permission prompts.
+        skip_permissions: skips_permissions(argv),
+        session_id,
+        movable: movable.is_ok(),
+        not_movable_reason: movable.err().map(str::to_string),
+        move_error: None,
+    };
+    Some((info, place))
+}
+
+/// What the snapshot needs of the panes: how many use each account, how
+/// many follow the global one (running on the slot, not pinned), and which
+/// are working or waiting on each account's folder.
+pub fn counts(panes: &std::collections::HashMap<String, PaneState>) -> super::PaneCounts {
+    let mut out = super::PaneCounts::default();
+    for state in panes.values().filter(|state| state.running()) {
+        if let Some(account) = state.info.account.as_ref() {
+            *out.per_account.entry(account.clone()).or_default() += 1;
+        }
+        match &state.place {
+            Some(Place::Slot) if state.marks.pinned().is_none() => out.following += 1,
+            Some(Place::Folder(id)) if !state.idle() => out
+                .busy_on_folder
+                .entry(id.clone())
+                .or_default()
+                .push(state.pane_id.clone()),
+            _ => {}
+        }
+    }
+    for panes in out.busy_on_folder.values_mut() {
+        panes.sort();
+    }
+    out
+}
+
+fn display(accounts: &Accounts, dir: &Path) -> String {
+    match accounts.paths() {
+        Some(paths) => paths.display(dir),
+        None => dir.display().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proc(pid: u32, ppid: u32, name: &str, argv: &[&str]) -> ProcInfo {
+        ProcInfo {
+            pid,
+            ppid: Some(ppid),
+            name: name.into(),
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn panes_move_by_how_claude_runs_in_them() {
+        let table = ProcTable::from_procs([
+            // Started by the worker: `env … claude` handed itself over.
+            proc(10, 1, "claude", &["claude", "--resume", "x"]),
+            // By hand in an interactive shell.
+            proc(20, 1, "zsh", &["-zsh"]),
+            proc(21, 20, "claude", &["claude"]),
+            // A shell that kept `-c`.
+            proc(30, 1, "fish", &["fish", "-c", "env X=1 claude"]),
+            proc(31, 30, "claude", &["claude"]),
+            // `-c` among other options: runs one command, then ends.
+            proc(32, 1, "bash", &["bash", "-lc", "claude; echo done"]),
+            proc(33, 32, "claude", &["claude"]),
+            proc(34, 1, "bash", &["bash", "-o", "pipefail", "-ec", "claude"]),
+            proc(35, 34, "claude", &["claude"]),
+            proc(36, 1, "fish", &["fish", "--command=claude"]),
+            proc(37, 36, "claude", &["claude"]),
+            // A login shell, and a script's own `-c` after its name.
+            proc(38, 1, "bash", &["bash", "-l"]),
+            proc(39, 38, "claude", &["claude"]),
+            proc(43, 1, "bash", &["bash", "run.sh", "-c"]),
+            proc(44, 43, "claude", &["claude"]),
+            // Over ssh.
+            proc(40, 1, "zsh", &["-zsh"]),
+            proc(41, 40, "ssh", &["ssh", "box"]),
+            proc(42, 41, "claude", &["claude"]),
+            // A wrapper that is no shell.
+            proc(50, 1, "node", &["node", "wrap.js"]),
+            proc(51, 50, "claude", &["claude"]),
+        ]);
+        assert_eq!(move_kind(&table, 10, 10), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 20, 21), Ok(MoveKind::Shell));
+        assert_eq!(move_kind(&table, 30, 31), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 32, 33), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 34, 35), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 36, 37), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 38, 39), Ok(MoveKind::Shell));
+        assert_eq!(move_kind(&table, 43, 44), Ok(MoveKind::Shell));
+        assert_eq!(move_kind(&table, 40, 42), Err(NESTED));
+        assert_eq!(move_kind(&table, 50, 51), Err(NESTED));
+    }
+
+    #[test]
+    fn an_old_skip_mark_never_skips_for_another_process() {
+        let home = super::super::test_support::Home::new("skip-mark");
+        let accounts = home.accounts();
+        let registry = accounts.registry();
+        let table = ProcTable::from_procs([
+            // Respawned with a plain command since the mark was set.
+            proc(10, 1, "claude", &["claude"]),
+            proc(
+                20,
+                1,
+                "claude",
+                &["claude", "--dangerously-skip-permissions"],
+            ),
+        ]);
+        let marks = Marks::from_raw("global", true, "");
+        let info = |pid: u32| {
+            pane_claude(
+                &accounts,
+                &registry,
+                &table,
+                pid,
+                &marks,
+                Some(ClaudeProc { pid, record: None }),
+            )
+            .unwrap()
+            .0
+        };
+        assert!(!info(10).skip_permissions);
+        assert!(info(20).skip_permissions);
+    }
+
+    #[test]
+    fn skipping_permissions_shows_in_the_arguments() {
+        let argv = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert!(skips_permissions(&argv(&[
+            "claude",
+            "--dangerously-skip-permissions"
+        ])));
+        assert!(skips_permissions(&argv(&[
+            "claude",
+            "--permission-mode",
+            "bypassPermissions"
+        ])));
+        assert!(skips_permissions(&argv(&[
+            "claude",
+            "--permission-mode=bypassPermissions"
+        ])));
+        assert!(!skips_permissions(&argv(&[
+            "claude",
+            "--permission-mode",
+            "plan"
+        ])));
+        assert!(!skips_permissions(&argv(&["claude"])));
+    }
+
+    #[test]
+    fn marks_and_the_place_say_how_a_pane_follows() {
+        let folder = Place::Folder("personal".into());
+        let unmarked = Marks::from_raw("", false, "");
+        // Started by hand: on the slot it follows, on a folder it is manual.
+        assert_eq!(unmarked.follow(Some(&Place::Slot)), Follow::Global);
+        assert_eq!(unmarked.follow(Some(&folder)), Follow::Manual);
+        assert_eq!(unmarked.follow(None), Follow::Manual);
+        assert!(Marks::from_raw(" ", false, "").is_empty());
+        assert_eq!(
+            Marks::from_raw("global", false, "").follow(Some(&folder)),
+            Follow::Global
+        );
+        let pinned = Marks::from_raw("personal", true, "work");
+        assert_eq!(pinned.follow(Some(&Place::Slot)), Follow::Pinned);
+        assert_eq!(pinned.pinned(), Some("personal"));
+        assert_eq!(Marks::from_raw("global", false, "").pinned(), None);
+        assert_eq!(pinned.pending.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn a_pane_reads_its_account_from_the_folder() {
+        let home = super::super::test_support::Home::new("panes");
+        let accounts = home.accounts();
+        let registry = accounts.registry();
+        let table = ProcTable::from_procs([proc(
+            10,
+            1,
+            "claude",
+            &["claude", "--dangerously-skip-permissions"],
+        )]);
+        let record = ClaudeRecord {
+            config_dir: home.paths.claude_home.clone(),
+            session_id: Some("s1".into()),
+            status: Some("idle".into()),
+            cwd: Some("/w".into()),
+        };
+        let marks = Marks::from_raw("global", false, "");
+        let pane = pane_claude(
+            &accounts,
+            &registry,
+            &table,
+            10,
+            &marks,
+            Some(ClaudeProc {
+                pid: 10,
+                record: Some(&record),
+            }),
+        )
+        .unwrap();
+        assert_eq!(pane.1, Some(Place::Slot));
+        let pane = pane.0;
+        // On the slot: the global account.
+        assert_eq!(pane.account.as_deref(), Some("default"));
+        assert_eq!(pane.config_dir.as_deref(), Some("~/.claude"));
+        assert_eq!(pane.follow, Follow::Global);
+        assert!(pane.skip_permissions && pane.movable);
+        // Started by hand on default's folder while default is global.
+        let on_folder = ClaudeRecord {
+            config_dir: home.paths.account_dir("default"),
+            ..record.clone()
+        };
+        let (pane, place) = pane_claude(
+            &accounts,
+            &registry,
+            &table,
+            10,
+            &Marks::default(),
+            Some(ClaudeProc {
+                pid: 10,
+                record: Some(&on_folder),
+            }),
+        )
+        .unwrap();
+        assert_eq!(place, Some(Place::Folder("default".into())));
+        assert_eq!(pane.account.as_deref(), Some("default"));
+        assert_eq!(pane.follow, Follow::Manual);
+        // A folder no account owns: shown, never moved.
+        let stranger = ClaudeRecord {
+            config_dir: "/opt/other".into(),
+            ..record.clone()
+        };
+        let pane = pane_claude(
+            &accounts,
+            &registry,
+            &table,
+            10,
+            &Marks::default(),
+            Some(ClaudeProc {
+                pid: 10,
+                record: Some(&stranger),
+            }),
+        )
+        .unwrap()
+        .0;
+        assert_eq!(pane.account, None);
+        assert_eq!(pane.config_dir.as_deref(), Some("/opt/other"));
+        assert_eq!(pane.follow, Follow::Manual);
+        assert!(!pane.movable);
+        assert!(pane_claude(&accounts, &registry, &table, 99, &Marks::default(), None).is_none());
+        let dead = pane_claude(&accounts, &registry, &table, 99, &marks, None)
+            .unwrap()
+            .0;
+        assert!(!dead.movable);
+    }
+}

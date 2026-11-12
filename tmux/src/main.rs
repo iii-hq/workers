@@ -159,6 +159,15 @@ async fn main() -> Result<()> {
 
     monitor.spawn();
     terminals.spawn_reaper();
+    {
+        let iii = iii.clone();
+        tmux::accounts::daemon::spawn(
+            collector.clone(),
+            monitor.clone(),
+            Arc::new(move || iii.is_observed(events::ON_CHANGED_FN)),
+        );
+        tmux::accounts::daemon::spawn_pending(collector.clone(), monitor.clone());
+    }
 
     let info = collector.info().await;
     match (&info.path, &info.version) {

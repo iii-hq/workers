@@ -1,0 +1,29 @@
+{
+  "description": "Take a Claude Code account off the list. Not the default account, the global one, nor one a switch waits to make global. Claude Code panes on its folder keep running. With delete_files, its folder (sign-in, history of its own) is deleted too, never what its links point at; refused while Claude Code runs on it.",
+  "function_id": "tmux::accounts::remove",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "account": {
+        "description": "Account id.",
+        "type": "string"
+      },
+      "delete_files": {
+        "default": false,
+        "description": "Delete its folder too (default false: the folder stays where it was).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "account"
+    ],
+    "title": "RemoveAccountInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Nothing to return.",
+    "title": "EmptyOutput",
+    "type": "object"
+  }
+}

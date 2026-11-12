@@ -1,0 +1,226 @@
+{
+  "description": "Change the rules for when the global Claude Code account runs low (what is left out stays): mode `off`, `suggest` (a suggestion in the feed) or `switch` (the worker makes another account global by itself, even with the app closed, and leaves `last_switch`; never one with Claude Code working on its folder); `at` `week_80`, `week_90` or `limit`; `five_hour` also acts when the 5-hour window is full; `back_after_reset` switches back once the old account's window resets; `order` the accounts to try first, then the one with most room this week.",
+  "function_id": "tmux::accounts::rules",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "RulesMode": {
+        "description": "What the worker does when the global account runs low.",
+        "oneOf": [
+          {
+            "description": "Nothing.",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Suggest another account.",
+            "enum": [
+              "suggest"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Make another account global by itself.",
+            "enum": [
+              "switch"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Threshold": {
+        "description": "When the global account counts as low.",
+        "oneOf": [
+          {
+            "description": "80 % of the week.",
+            "enum": [
+              "week_80"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "90 % of the week.",
+            "enum": [
+              "week_90"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The week's limit.",
+            "enum": [
+              "limit"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "The rules to change; what is left out stays.",
+    "properties": {
+      "at": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Threshold"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "`week_80`, `week_90` or `limit`."
+      },
+      "back_after_reset": {
+        "default": null,
+        "description": "Switch back once the old account's window resets.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "five_hour": {
+        "default": null,
+        "description": "Also act when the 5-hour window is full.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "mode": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RulesMode"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "`off`, `suggest` or `switch`."
+      },
+      "order": {
+        "default": null,
+        "description": "Account ids to try first, in order.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "title": "RulesInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "RulesMode": {
+        "description": "What the worker does when the global account runs low.",
+        "oneOf": [
+          {
+            "description": "Nothing.",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Suggest another account.",
+            "enum": [
+              "suggest"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Make another account global by itself.",
+            "enum": [
+              "switch"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "SwitchRules": {
+        "description": "The rules for the global account (agent-accounts D14).",
+        "properties": {
+          "at": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Threshold"
+              }
+            ],
+            "default": "week_90",
+            "description": "`week_80`, `week_90` or `limit`."
+          },
+          "back_after_reset": {
+            "default": false,
+            "description": "After switching away by itself, switch back once that account's window resets.",
+            "type": "boolean"
+          },
+          "five_hour": {
+            "default": false,
+            "description": "Also act when the 5-hour window reaches 100 %.",
+            "type": "boolean"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/RulesMode"
+              }
+            ],
+            "default": "suggest",
+            "description": "`off`, `suggest` or `switch`."
+          },
+          "order": {
+            "default": [],
+            "description": "Accounts to try first, in order; then the one with most room this week.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "Threshold": {
+        "description": "When the global account counts as low.",
+        "oneOf": [
+          {
+            "description": "80 % of the week.",
+            "enum": [
+              "week_80"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "90 % of the week.",
+            "enum": [
+              "week_90"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The week's limit.",
+            "enum": [
+              "limit"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "rules": {
+        "$ref": "#/definitions/SwitchRules"
+      }
+    },
+    "required": [
+      "rules"
+    ],
+    "title": "RulesOutput",
+    "type": "object"
+  }
+}

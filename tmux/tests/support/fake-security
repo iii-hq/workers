@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""A stand-in for macOS's /usr/bin/security, for tests: the worker's tests
+never ask the real Keychain. Items are files in the folder named by
+FAKE_KEYCHAIN_DIR (or, when unset, the folder this script is in): one file
+per (account, service), holding the secret's bytes. Every call is noted in
+calls.log there, with the verb and the account and service, never a secret.
+
+Understands what the worker and Claude Code run:
+  find-generic-password -a ACCOUNT -w -s SERVICE   (prints the secret; 44 when missing)
+  add-generic-password -U -a ACCOUNT -s SERVICE -X HEX
+  delete-generic-password -a ACCOUNT -s SERVICE     (44 when missing)
+  -i   (the same commands, one per line, on standard input)
+FAKE_SECURITY_FAIL=1 makes every write fail (exit 36, a locked Keychain).
+"""
+import hashlib
+import os
+import shlex
+import sys
+
+HERE = os.environ.get("FAKE_KEYCHAIN_DIR") or os.path.dirname(os.path.abspath(__file__))
+NOT_FOUND = 44
+
+
+def item(account, service):
+    key = hashlib.sha256(f"{account}\0{service}".encode()).hexdigest()[:24]
+    return os.path.join(HERE, f"item-{key}")
+
+
+def note(words):
+    with open(os.path.join(HERE, "calls.log"), "a") as log:
+        log.write(" ".join(words) + "\n")
+
+
+def options(args):
+    found = {}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-a", "-s", "-X") and i + 1 < len(args):
+            found[arg] = args[i + 1]
+            i += 2
+            continue
+        found[arg] = True
+        i += 1
+    return found
+
+
+def run(args, interactive):
+    if not args:
+        return 1
+    verb, rest = args[0], options(args[1:])
+    account, service = rest.get("-a"), rest.get("-s")
+    if verb == "find-generic-password":
+        note(["find", str(account), str(service)])
+        path = item(account, service)
+        if not os.path.exists(path):
+            return NOT_FOUND
+        with open(path, "rb") as f:
+            sys.stdout.write(f.read().decode())
+        sys.stdout.write("\n")
+        return 0
+    if verb == "add-generic-password":
+        note(["add-stdin" if interactive else "add-argv", str(account), str(service)])
+        if os.environ.get("FAKE_SECURITY_FAIL") == "1":
+            return 36
+        secret = bytes.fromhex(rest.get("-X", ""))
+        path = item(account, service)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(secret)
+        os.replace(tmp, path)
+        return 0
+    if verb == "delete-generic-password":
+        note(["delete", str(account), str(service)])
+        path = item(account, service)
+        if not os.path.exists(path):
+            return NOT_FOUND
+        os.remove(path)
+        return 0
+    return 1
+
+
+def main():
+    args = sys.argv[1:]
+    if args == ["-i"]:
+        code = 0
+        for line in sys.stdin.read().splitlines():
+            if line.strip():
+                code = run(shlex.split(line), True) or code
+        return code
+    return run(args, False)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

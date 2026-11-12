@@ -1,0 +1,734 @@
+{
+  "description": "The weekly usage of Claude Code (per account: 5-hour window, week, per-model weeks, each with when it resets) and of Codex (plan, 5-hour window, week, credits), with the Claude Code accounts, the global one, the rules and any suggestion. The same object the live feed carries as `usage`. Readings are at most five minutes old while the app watches; refresh asks again now (at most once a minute per account). Never returns a token.",
+  "function_id": "tmux::usage::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "refresh": {
+        "default": null,
+        "description": "Read every signed-in account again now instead of returning the latest readings (each account at most once a minute).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "title": "UsageReadInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AccountSwitch": {
+        "description": "The latest change of the global account.",
+        "properties": {
+          "after_turn": {
+            "description": "Panes pinned to the old global account that restart on its folder when their turn ends.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "at_ms": {
+            "description": "When it happened.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "auto": {
+            "description": "The worker switched by itself (rules mode `switch`).",
+            "type": "boolean"
+          },
+          "back_at_ms": {
+            "description": "With `back_after_reset`: when `from`'s window resets and the worker switches back.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "following": {
+            "default": 0,
+            "description": "Claude Code panes on the slot that switched with it, on their next message.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "from": {
+            "description": "The global account before.",
+            "type": "string"
+          },
+          "reason": {
+            "default": null,
+            "description": "`week_80`, `week_90`, `limit`, `five_hour` or `back` for an automatic switch; `login` (someone signed in to a known account with `/login`), `login_new` (to a new one, added then), `upgrade` (the worker took the slot's sign-in for global when it was updated); null when someone switched.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restarted": {
+            "default": [],
+            "description": "Pinned panes restarted: the new global account's (now on the slot) and the old one's (now on its folder).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to": {
+            "description": "The global account after.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "after_turn",
+          "at_ms",
+          "auto",
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "ClaudeAccount": {
+        "description": "A Claude Code account (agent-accounts G1, G2): one sign-in, kept in the global slot while it is global and in its own folder otherwise.",
+        "properties": {
+          "color": {
+            "description": "`blue`, `green`, `violet`, `orange` or `pink`.",
+            "type": "string"
+          },
+          "dir": {
+            "description": "Its folder, absolute: `<accounts root>/<id>`. Without `accounts.json`, the one account (`default`) has none, and this is `~/.claude`.",
+            "type": "string"
+          },
+          "dir_display": {
+            "description": "Its folder with `~` for the home folder.",
+            "type": "string"
+          },
+          "email": {
+            "default": null,
+            "description": "The signed-in email.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`default` for the sign-in `~/.claude` had when accounts began, else a slug of its first name.",
+            "type": "string"
+          },
+          "is_default": {
+            "description": "Its id is `default`.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The name people gave it.",
+            "type": "string"
+          },
+          "organization": {
+            "default": null,
+            "description": "The organization it belongs to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "panes": {
+            "description": "Claude Code panes using it now (for the global account, every pane on the slot, its followers included).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "plan": {
+            "default": null,
+            "description": "`pro`, `max`, `team`, `enterprise` or what Claude Code recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shared": {
+            "description": "The groups its folder shares with `~/.claude`: `settings`, `extensions`, `plugins`, `conversations`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "signed_in": {
+            "description": "It holds a Claude sign-in.",
+            "type": "boolean"
+          },
+          "tier": {
+            "default": null,
+            "description": "The rate-limit tier, e.g. `default_claude_max_20x`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_expired": {
+            "description": "Its sign-in expired; running Claude Code there renews it.",
+            "type": "boolean"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ClaudeUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The latest usage reading."
+          }
+        },
+        "required": [
+          "color",
+          "dir",
+          "dir_display",
+          "id",
+          "is_default",
+          "name",
+          "panes",
+          "shared",
+          "signed_in",
+          "token_expired"
+        ],
+        "type": "object"
+      },
+      "ClaudeSnapshot": {
+        "description": "Claude Code's accounts as the worker sees them.",
+        "properties": {
+          "accounts": {
+            "description": "The default account first, then the others in the order they were added.",
+            "items": {
+              "$ref": "#/definitions/ClaudeAccount"
+            },
+            "type": "array"
+          },
+          "available": {
+            "description": "A `claude` binary is on PATH or `~/.claude` exists.",
+            "type": "boolean"
+          },
+          "global": {
+            "description": "Id of the global account: the sign-in of the slot (`~/.claude`), what plain `claude` uses anywhere.",
+            "type": "string"
+          },
+          "last_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AccountSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The latest change of the global account."
+          },
+          "managed": {
+            "description": "The accounts registry exists (an account was added or a setting saved).",
+            "type": "boolean"
+          },
+          "pending_global": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PendingGlobal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A switch of the global account that waits for windows on the new account's folder to finish their turn."
+          },
+          "rules": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SwitchRules"
+              }
+            ],
+            "description": "The rules for the global account."
+          },
+          "runs_as_root": {
+            "description": "The worker runs as root, where Claude Code refuses `--dangerously-skip-permissions`.",
+            "type": "boolean"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Suggestion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Another account suggested for global, while the global one is low."
+          },
+          "switch_delay_s": {
+            "default": 0,
+            "description": "How long a running Claude Code may take to notice a switch, in seconds: 0 on Linux (its next message), 30 on macOS (the Keychain).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accounts",
+          "available",
+          "global",
+          "managed",
+          "rules",
+          "runs_as_root"
+        ],
+        "type": "object"
+      },
+      "ClaudeUsage": {
+        "description": "One reading of a Claude Code account's usage.",
+        "properties": {
+          "as_of_ms": {
+            "description": "When this reading was taken.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error": {
+            "default": null,
+            "description": "Why the latest attempt to read failed: `rate_limited`, `unauthorized`, `network`, `token_expired`, `not_signed_in`, `unreadable`. The windows are then the last good reading, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extra": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ExtraUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Usage beyond the plan."
+          },
+          "five_hour": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The current 5-hour window."
+          },
+          "week": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, all models."
+          },
+          "week_models": {
+            "default": [],
+            "description": "Every per-model weekly window the account has, Opus and Sonnet included.",
+            "items": {
+              "$ref": "#/definitions/ModelLimit"
+            },
+            "type": "array"
+          },
+          "week_opus": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, Opus only."
+          },
+          "week_sonnet": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, Sonnet only."
+          }
+        },
+        "required": [
+          "as_of_ms"
+        ],
+        "type": "object"
+      },
+      "CodexCredits": {
+        "description": "Codex's credits.",
+        "properties": {
+          "balance": {
+            "description": "The balance as Codex reports it, e.g. `62500.0000000000`.",
+            "type": "string"
+          },
+          "unlimited": {
+            "description": "Credits are unlimited.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "balance",
+          "unlimited"
+        ],
+        "type": "object"
+      },
+      "CodexUsage": {
+        "description": "Codex's usage, from the newest session it recorded (agent-accounts D13).",
+        "properties": {
+          "as_of_ms": {
+            "description": "When Codex recorded it.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "credits": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CodexCredits"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Credits, when the plan has them."
+          },
+          "five_hour": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The 5-hour window, when the plan has one."
+          },
+          "plan": {
+            "default": null,
+            "description": "The ChatGPT plan, e.g. `pro`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "week": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week."
+          }
+        },
+        "required": [
+          "as_of_ms"
+        ],
+        "type": "object"
+      },
+      "ExtraUsage": {
+        "description": "Usage beyond the plan.",
+        "properties": {
+          "enabled": {
+            "description": "Extra usage is turned on for the account.",
+            "type": "boolean"
+          },
+          "used_percent": {
+            "default": null,
+            "description": "How much of its monthly limit is used, 0 to 100, when there is one.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "Limit": {
+        "description": "One usage window of an account.",
+        "properties": {
+          "reset_since_read": {
+            "default": false,
+            "description": "The window reset after the reading, so `used_percent` is 0 until the next reading.",
+            "type": "boolean"
+          },
+          "resets_at_ms": {
+            "default": null,
+            "description": "When the window starts again.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "used_percent": {
+            "description": "How much of the window is used, 0 to 100.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "used_percent"
+        ],
+        "type": "object"
+      },
+      "ModelLimit": {
+        "description": "A weekly window of one model family (Claude Code's `weekly_scoped` limits).",
+        "properties": {
+          "limit": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              }
+            ],
+            "description": "The window."
+          },
+          "name": {
+            "description": "The model's display name, e.g. `Opus`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "limit",
+          "name"
+        ],
+        "type": "object"
+      },
+      "PendingGlobal": {
+        "description": "A switch of the global account waiting for windows to finish their turn (agent-accounts G4).",
+        "properties": {
+          "account": {
+            "description": "The account becoming global.",
+            "type": "string"
+          },
+          "at_ms": {
+            "description": "When it was asked for.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "by": {
+            "description": "`person` or `rule`.",
+            "type": "string"
+          },
+          "waiting_for": {
+            "description": "The Claude Code panes on its folder still working or waiting.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "at_ms",
+          "by",
+          "waiting_for"
+        ],
+        "type": "object"
+      },
+      "RulesMode": {
+        "description": "What the worker does when the global account runs low.",
+        "oneOf": [
+          {
+            "description": "Nothing.",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Suggest another account.",
+            "enum": [
+              "suggest"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Make another account global by itself.",
+            "enum": [
+              "switch"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Suggestion": {
+        "description": "Another account suggested for global.",
+        "properties": {
+          "at_ms": {
+            "description": "When the reason was first seen.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "following": {
+            "description": "Claude Code panes on the slot that are not pinned: they switch with the global account.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "from": {
+            "description": "The global account.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Pass it to `tmux::accounts::dismiss`.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "`week_80`, `week_90`, `limit` or `five_hour`.",
+            "type": "string"
+          },
+          "to": {
+            "description": "The account suggested.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at_ms",
+          "following",
+          "from",
+          "id",
+          "reason",
+          "to"
+        ],
+        "type": "object"
+      },
+      "SwitchRules": {
+        "description": "The rules for the global account (agent-accounts D14).",
+        "properties": {
+          "at": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Threshold"
+              }
+            ],
+            "default": "week_90",
+            "description": "`week_80`, `week_90` or `limit`."
+          },
+          "back_after_reset": {
+            "default": false,
+            "description": "After switching away by itself, switch back once that account's window resets.",
+            "type": "boolean"
+          },
+          "five_hour": {
+            "default": false,
+            "description": "Also act when the 5-hour window reaches 100 %.",
+            "type": "boolean"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/RulesMode"
+              }
+            ],
+            "default": "suggest",
+            "description": "`off`, `suggest` or `switch`."
+          },
+          "order": {
+            "default": [],
+            "description": "Accounts to try first, in order; then the one with most room this week.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "Threshold": {
+        "description": "When the global account counts as low.",
+        "oneOf": [
+          {
+            "description": "80 % of the week.",
+            "enum": [
+              "week_80"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "90 % of the week.",
+            "enum": [
+              "week_90"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The week's limit.",
+            "enum": [
+              "limit"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "Claude Code accounts and the weekly usage of Claude Code and Codex.",
+    "properties": {
+      "claude": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ClaudeSnapshot"
+          }
+        ],
+        "description": "Claude Code's accounts and their usage."
+      },
+      "codex": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CodexUsage"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Codex's usage, when Codex recorded any."
+      },
+      "generated_at_ms": {
+        "description": "When the snapshot was taken.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "claude",
+      "generated_at_ms"
+    ],
+    "title": "UsageSnapshot",
+    "type": "object"
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "description": "Choose the Claude Code account of a pane: `global` follows the global account (it runs on ~/.claude and switches with it, with no restart), an account id pins the pane there (on ~/.claude while that account is global, on its folder otherwise). When Claude Code has to run elsewhere for that (the account must be signed in), it moves: it stops and starts again there, resuming its conversation (copied there if the account doesn't share conversations). Pinning a pane on ~/.claude to the account that is global now restarts nothing. An idle pane moves now (looked at again right before it stops); one that is working or waiting moves once its turn ends (`after_turn`). Choosing what it already is changes no process, and cancels a move that waits (`cancelled`).",
+  "function_id": "tmux::panes::account",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "account": {
+        "description": "`global` (follow the global account) or an account id (pin to it).",
+        "type": "string"
+      },
+      "pane": {
+        "description": "Pane id, e.g. `%5`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "account",
+      "pane"
+    ],
+    "title": "PaneAccountInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PaneAccountState": {
+        "description": "What became of the pane.",
+        "oneOf": [
+          {
+            "description": "It follows the global account, which it already runs on (or Claude Code is not running).",
+            "enum": [
+              "following"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "It is pinned to the account it already runs on (or Claude Code is not running).",
+            "enum": [
+              "pinned"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claude Code was idle and now runs on the account.",
+            "enum": [
+              "moved"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claude Code is working or waiting: it moves once its turn ends.",
+            "enum": [
+              "after_turn"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A move that waited for the turn was called off.",
+            "enum": [
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "account": {
+        "description": "The account it runs on now, or will after its turn.",
+        "type": "string"
+      },
+      "state": {
+        "$ref": "#/definitions/PaneAccountState"
+      }
+    },
+    "required": [
+      "account",
+      "state"
+    ],
+    "title": "PaneAccountOutput",
+    "type": "object"
+  }
+}

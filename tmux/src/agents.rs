@@ -266,6 +266,15 @@ impl AgentTracker {
         (state, since_ms)
     }
 
+    /// What the last look at `pane_id` found, while it still runs the same
+    /// agent process: its state and since when.
+    pub fn last(&self, pane_id: &str, agent_id: &str, pid: u32) -> Option<(AgentState, u64)> {
+        self.panes
+            .get(pane_id)
+            .filter(|track| track.agent_id == agent_id && track.pid == pid)
+            .map(|track| (track.state, track.since_ms))
+    }
+
     /// Forget panes that no longer run an agent.
     pub fn retain(&mut self, live: &HashSet<String>) {
         self.panes.retain(|pane_id, _| live.contains(pane_id));
