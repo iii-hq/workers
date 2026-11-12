@@ -503,12 +503,12 @@ mod tests {
 
     #[test]
     fn a_stale_lock_that_cant_be_removed_is_an_error_not_a_spin() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = temp("stuck");
-        let lock = dir.join(".storage-write.lock");
+        // A name that leaves no room for the one it is moved aside to (over
+        // 255 bytes): it can't be, by root too.
+        let lock = dir.join(format!("{}.lock", "s".repeat(240)));
         std::fs::create_dir(&lock).unwrap();
         age(&lock, STORAGE_STALE + Duration::from_secs(1));
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
         let mut set = LockSet::new();
         let started = Instant::now();
         let taken = set.take(
@@ -516,7 +516,6 @@ mod tests {
             STORAGE_STALE,
             Instant::now() + Duration::from_millis(300),
         );
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         match taken {
             Err(LockError::Io(why)) => assert!(why.contains("stale lock"), "{why}"),
             other => panic!("{other:?}"),

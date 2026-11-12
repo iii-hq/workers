@@ -1761,17 +1761,18 @@ mod tests {
 
         // Step 6 (`~/.claude.json` can't be written): finished on the next
         // look too.
-        use std::os::unix::fs::PermissionsExt;
         let home = Home::new("fail-6");
         setup(&home);
         let paths = &home.paths;
         let stores = stores_of(paths, &FileStore);
-        // `~/.claude.json` is a link into a folder that can't be written.
-        let folder = home.dir.join("read-only");
+        // `~/.claude.json` is a link to a file whose name leaves no room for
+        // the temporary file a write makes beside it (over 255 bytes): it
+        // reads, but can't be written, by root too.
+        let folder = home.dir.join("elsewhere");
         std::fs::create_dir_all(&folder).unwrap();
-        std::fs::rename(&paths.default_json, folder.join("claude.json")).unwrap();
-        std::os::unix::fs::symlink(folder.join("claude.json"), &paths.default_json).unwrap();
-        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let long = folder.join("c".repeat(250));
+        std::fs::rename(&paths.default_json, &long).unwrap();
+        std::os::unix::fs::symlink(&long, &paths.default_json).unwrap();
         let failed = swap(
             &stores,
             "default",
@@ -1780,7 +1781,10 @@ mod tests {
             &no_commit,
             Crash::None,
         );
-        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let short = folder.join("claude.json");
+        std::fs::rename(&long, &short).unwrap();
+        std::fs::remove_file(&paths.default_json).unwrap();
+        std::os::unix::fs::symlink(&short, &paths.default_json).unwrap();
         assert!(failed.is_err());
         assert!(holds_new_chain(&stores));
         assert!(recover(&stores, &no_commit).unwrap().is_some());
