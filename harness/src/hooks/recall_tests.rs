@@ -700,6 +700,43 @@ async fn recall_diverged_receipt_does_not_block_a_later_queued_edit() {
     assert_eq!(context["query"]["text"], "Third text");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_unrefreshed_edit_past_the_query_bound_drops_continuation() {
+    use crate::types::turn::TurnStatus::{Completed, Running};
+    let stack = Stack::new().await;
+    stack.reset_turn("edit-tail", Completed).await;
+    crate::functions::send::handle(
+        &stack.deps,
+        request("edit-tail", "Ledgerly PostgreSQL", None),
+    )
+    .await
+    .unwrap();
+    let prior = stack.context("edit-tail").await["source"]["entry_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    stack.reset_turn("edit-tail", Running).await;
+    let head = "a".repeat(MAX_TEXT_BYTES);
+    crate::functions::send::handle(
+        &stack.deps,
+        request("edit-tail", &format!("{head} old tail"), Some(&prior)),
+    )
+    .await
+    .unwrap();
+    let row = crate::state::list_queued(&stack.deps.iii, "edit-tail", 1000)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    stack.data.lock().unwrap().ledger_stalls = true;
+    assert!(edit_text(&stack, &row, &format!("{head} new tail")).await);
+    stack.data.lock().unwrap().ledger_stalls = false;
+    // The bounded query is unchanged; only the full-text digest shows the edit.
+    let context = drained_context(&stack, "edit-tail").await;
+    assert_eq!(context["source"]["kind"], "unknown");
+    assert!(context["continuation"].is_null());
+}
+
 fn request(session: &str, text: &str, prior: Option<&str>) -> crate::functions::send::SendRequest {
     serde_json::from_value(json!({"session_id":session,"message":{"role":"user","content":[{"type":"text","text":text}],"timestamp":0,"origin":{"kind":"direct"}},
         "options":{"continuation_entry_id":prior,"metadata":{"origin":{"kind":"direct"},"recall_context":{"source":{"kind":"direct"}}}}})).unwrap()

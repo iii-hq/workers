@@ -618,6 +618,11 @@ fn envelope(
         r.session_id == record.session_id
             && r.entry_id == entry.entry_id
             && r.query == current.clone().map(stamp)
+            // The query is bounded; an unrefreshed edit past the bound shows
+            // only here. Legacy receipts carry no digest and still resolve.
+            && r.full_text_sha256
+                .as_ref()
+                .is_none_or(|digest| full_stamp(entry).as_ref() == Some(digest))
     });
     // The send bounded the reference's age; here it only has to still precede
     // this entry. A window from the tail would drop it as the turn's own steps
