@@ -212,11 +212,28 @@ them with `observable: false`. Details:
 | Function | Input | Output |
 |---|---|---|
 | `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, active_connections, version }` |
+| `rbac-proxy::session` | `{}` | `{ proxied: true, proxy_version, session_id, function_registration_prefix, policy: { auth_function, expose_functions, exposes_everything } }` |
 
 `rbac-proxy::status` is a read-only health and identity probe: the bound
 host and port, the upstream engine URL with any `user:pass@` redacted,
 whether an auth function is configured, the live connection count and the
 worker version.
+
+`rbac-proxy::session` answers "is **this** connection behind rbac-proxy?".
+`rbac-proxy::status` cannot: it is an ordinary engine function, so a worker
+connected straight to the engine can call it too. The session probe is
+answered by the proxy's interceptor for every proxied connection, before any
+RBAC gate, and is never forwarded to the engine. A worker connected directly
+to the engine gets `function_not_found`. `policy` says what the proxy
+enforces: whether an auth function is configured, how many
+`expose_functions` rules there are, and whether one of them lets every
+function through in `default`.
+
+A worker that must only run behind the proxy (the `mcp` worker does) calls
+it at boot and refuses to start on `function_not_found`. This guards against
+a misconfigured URL, not against an attacker: anything that can register
+functions on the engine directly could register a fake `rbac-proxy::session`
+there. The proxy refuses to register that id for the connections it serves.
 
 The proxy hosts no observable event source. Two internal functions are the
 targets of its own observers; both are never agent-callable (denied in
