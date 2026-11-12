@@ -2002,7 +2002,9 @@ async fn execute_run(
             .await
             .map_err(|e| format!("learned rule write failed: {e}"))?;
             match written {
-                Some(false) => continue,
+                // Unchanged is settled too: a retry never re-adds a line a
+                // human removed since.
+                Some(false) => {}
                 Some(true) => {
                     deps.emitter.bank("rules-changed", name).await;
                     tracing::info!(session_id, bank = %name, changed, "extraction pass learned rules");

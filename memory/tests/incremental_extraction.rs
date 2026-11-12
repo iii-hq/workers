@@ -2904,6 +2904,66 @@ mod productive {
     }
 
     #[tokio::test]
+    async fn an_unchanged_learned_rule_is_not_relearned_after_a_human_removes_it() {
+        let rule = "Always calibrate Amber instruments with copper before shipping.";
+        let fact_text = "Amber instruments ship on Fridays.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("first", rule),
+                message("end", &format!("{rule} {fact_text}")),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([
+                json!([{"text":rule,"scope":"project","kind":"rule"}]),
+                json!([{"text":rule,"scope":"project","kind":"rule"},
+                    {"text":fact_text,"entities":["fixture"],"scope":"project","kind":"memory"}]),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        let learning = |stack: &Boundary| {
+            let config = stack.deps.config.clone();
+            async move {
+                let mut cfg = (*config.read().await.clone()).clone();
+                cfg.rule_learning_enabled = true;
+                *config.write().await = Arc::new(cfg);
+            }
+        };
+        learning(&stack).await;
+        stack.run(&job("first")).await.unwrap();
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        assert!(bank.list_rules().unwrap()[0].content.contains(rule));
+        // The next run restates the rule (unchanged), then its memory write fails.
+        let log = bank.dir().join("memories.jsonl");
+        std::fs::write(&log, b"").unwrap();
+        let read_only = |on: bool| {
+            let mut permissions = std::fs::metadata(&log).unwrap().permissions();
+            permissions.set_readonly(on);
+            std::fs::set_permissions(&log, permissions).unwrap();
+        };
+        read_only(true);
+        assert!(stack
+            .run(&job("end"))
+            .await
+            .unwrap_err()
+            .contains("memory commit failed"));
+        read_only(false);
+        // A human removes the rule before the retry.
+        let human = "- Human-authored instruction only.\n";
+        bank.set_rule("learned", human).unwrap();
+        let stack = stack.restart().await;
+        learning(&stack).await;
+        stack.run(&job("end")).await.unwrap();
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        assert_eq!(bank.list_rules().unwrap()[0].content, human);
+        assert_eq!(stack.log_records("private")[0].text, fact_text);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+    }
+
+    #[tokio::test]
     async fn pending_recovery_runs_changed_source_text_as_the_path_holds_it() {
         let text = "Amber instruments require copper calibration.";
         let stack = Boundary::new(Script {
