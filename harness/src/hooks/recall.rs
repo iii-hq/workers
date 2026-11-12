@@ -53,6 +53,9 @@ struct ExtractionAttestation {
     layer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
+    /// Memory's `memory_derived` stamp: the bank was resolved, not named.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    derived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal: Option<ExtractionTerminal>,
 }
@@ -84,7 +87,7 @@ fn full_message_stamp(message: &AgentMessage) -> Option<String> {
 
 fn acknowledged_policy(
     annotations: &Value,
-) -> (String, Option<String>, Option<String>, Option<String>) {
+) -> (String, Option<String>, Option<String>, Option<String>, bool) {
     let bounded = |key: &str| {
         annotations
             .get(key)
@@ -106,6 +109,7 @@ fn acknowledged_policy(
         bank,
         bounded("memory_layer"),
         bounded("memory_agent"),
+        annotations.get("memory_derived").and_then(Value::as_bool) == Some(true),
     )
 }
 
@@ -181,7 +185,7 @@ pub(super) async fn acknowledge_extraction(
         }) else {
             return Ok(());
         };
-        let (policy, bank, layer, agent) = acknowledged_policy(&response["annotations"]);
+        let (policy, bank, layer, agent, derived) = acknowledged_policy(&response["annotations"]);
         row.extraction.push(ExtractionAttestation {
             version: 1,
             session_id: session.into(),
@@ -192,6 +196,7 @@ pub(super) async fn acknowledge_extraction(
             bank,
             layer,
             agent,
+            derived,
             terminal: None,
         });
         let excess = row.extraction.len().saturating_sub(MAX_EXTRACTION_TURNS);
@@ -693,6 +698,39 @@ mod tests {
     use super::*;
     fn entry(id: &str, text: &str) -> LoadedEntry {
         serde_json::from_value(json!({"entry_id":id,"message":{"role":"user","content":[{"type":"text","text":text}],"timestamp":0},"origin":{"kind":"direct"}})).unwrap()
+    }
+    #[test]
+    fn acknowledged_policy_carries_memory_derived_and_omits_it_when_false() {
+        let derived = acknowledged_policy(
+            &json!({"memory_extraction":true,"memory_bank":"main","memory_derived":true}),
+        );
+        assert_eq!(
+            derived,
+            ("on".into(), Some("main".into()), None, None, true)
+        );
+        let named = acknowledged_policy(&json!({"memory_extraction":true,"memory_bank":"blog"}));
+        assert!(!named.4);
+        let row = |derived| ExtractionAttestation {
+            version: 1,
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            entry_id: "e".into(),
+            text_sha256: "h".into(),
+            policy: "on".into(),
+            bank: Some("main".into()),
+            layer: None,
+            agent: None,
+            derived,
+            terminal: None,
+        };
+        assert_eq!(
+            serde_json::to_value(row(true)).unwrap()["derived"],
+            json!(true)
+        );
+        assert!(serde_json::to_value(row(false))
+            .unwrap()
+            .get("derived")
+            .is_none());
     }
     #[test]
     fn recall_provenance_query_bounds_unicode_without_splitting_codepoints() {
