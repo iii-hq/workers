@@ -1,12 +1,14 @@
 //! `ade::subscribe` — add an address to the iii product-update list.
 //!
 //! The console's email prompt hands its address here and nowhere else. The
-//! POST to the list happens in this worker, not the browser: the list checks
-//! an `Origin` allowlist the console's own origin is not on, and one place to
-//! change the destination is enough. After the list has taken the address it
-//! is announced on `email:signup` for the engine's telemetry worker, which
-//! writes it to this machine's person. That announcement is best effort and
-//! never fails the signup. The address is never logged.
+//! POST to `iii.dev/api/subscribe` happens in this worker, not the browser, so
+//! there is one place to change the destination. After the list has taken the
+//! address it is announced on `email:signup` for the engine's telemetry
+//! worker, which writes it to this machine's person. That announcement is best
+//! effort and never fails the signup. The address is never logged.
+//!
+//! Every answer from the list comes back as an [`Outcome`], not an error, so
+//! the prompt can tell a typo it should show from a service it should wait out.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,13 +27,11 @@ const IDENTIFY_TOPIC: &str = "email:signup";
 const PUBLISH_ID: &str = "iii::durable::publish";
 const PUBLISH_TIMEOUT_MS: u64 = 10_000;
 
-/// The same public signup form the iii.dev landing page posts to (its URL is
-/// a meta tag in that page's head, so it is not a secret).
-const DEFAULT_SIGNUP_URL: &str =
-    "https://api.mailmodo.com/api/v1/at/f/y0trGR0lfL/c6aefeeb-e66a-5c8a-9c71-4733d9ea1836";
-/// Mailmodo matches `Origin` against an allowlist and this literal is on it.
-/// `localhost` and `[::1]` are refused even though they name the same host.
-const DEFAULT_SIGNUP_ORIGIN: &str = "http://127.0.0.1";
+/// iii's own signup API. It sends the confirmation email itself.
+const DEFAULT_SIGNUP_URL: &str = "https://iii.dev/api/subscribe";
+/// The `source` the API knows this product by. Fixed: the API refuses any
+/// source it has not opened to.
+const SIGNUP_SOURCE: &str = "ade";
 const SIGNUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// RFC 5321's ceiling for a whole address.
@@ -40,19 +40,44 @@ pub const MAX_EMAIL_LENGTH: usize = 254;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SubscribeInput {
     pub email: String,
-    /// Where the address was captured, reported with it. Defaults to `console`.
+    /// Where in the console the address was captured, reported with the
+    /// telemetry announcement. Defaults to `console`.
     #[serde(default)]
     pub source: Option<String>,
+}
+
+/// What the list made of the address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    /// A confirmation email went out, or the address was already on the list.
+    Subscribed,
+    /// The list refused the address itself. Worth showing; the person can fix it.
+    InvalidEmail,
+    /// The list could not take it now: not open to this source yet, rate
+    /// limited, down, or unreachable. Nothing for the person to fix, so the
+    /// prompt closes quietly and asks again on a later run.
+    RetryLater,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SubscribeOutput {
     pub subscribed: bool,
+    pub outcome: Outcome,
+}
+
+impl From<Outcome> for SubscribeOutput {
+    fn from(outcome: Outcome) -> Self {
+        Self {
+            subscribed: outcome == Outcome::Subscribed,
+            outcome,
+        }
+    }
 }
 
 /// One address, an `@`, and a dot after it. The list does the real validation;
 /// this only stops an obvious typo, or a pasted paragraph, from becoming a
-/// POST to someone else's service.
+/// POST to the list.
 pub fn is_emailish(value: &str) -> bool {
     let email = value.trim();
     if email.is_empty() || email.len() > MAX_EMAIL_LENGTH {
@@ -71,55 +96,122 @@ pub fn is_emailish(value: &str) -> bool {
             .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty())
 }
 
-/// The signup endpoint, from `III_CONSOLE_SIGNUP_URL` or the default. An
-/// override that downgrades the address to plain HTTP is refused, not used.
+/// The signup endpoint, from `III_CONSOLE_SIGNUP_URL` or the default.
 pub fn signup_url() -> Result<String, String> {
     let url = std::env::var("III_CONSOLE_SIGNUP_URL").unwrap_or_else(|_| DEFAULT_SIGNUP_URL.into());
-    if !url.starts_with("https://") {
-        return Err("III_CONSOLE_SIGNUP_URL must be an https URL".into());
-    }
+    check_signup_url(&url)?;
     Ok(url)
 }
 
-/// What the list's answer means for the caller.
-pub fn signup_outcome(status: u16) -> Result<(), String> {
-    // Mailmodo answers 200 "added/updated" for an address already on the
-    // list, so there is nothing to tell the caller apart from success.
-    if (200..300).contains(&status) {
+/// An override that would send the address over plain HTTP is refused, not
+/// used. Plain HTTP to this machine is allowed, so a local stand-in for the
+/// list can be tested against; nothing leaves the machine.
+fn check_signup_url(url: &str) -> Result<(), String> {
+    const LOOPBACK: [&str; 3] = ["http://127.0.0.1", "http://localhost", "http://[::1]"];
+    let loopback = LOOPBACK.iter().any(|host| {
+        url.strip_prefix(host)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+    });
+    if url.starts_with("https://") || loopback {
         Ok(())
     } else {
-        Err(format!("the signup service answered {status}"))
+        Err("III_CONSOLE_SIGNUP_URL must be an https URL, or http to this machine".into())
     }
 }
 
-async fn post_signup(email: &str) -> Result<(), String> {
-    let url = signup_url()?;
-    let origin =
-        std::env::var("III_CONSOLE_SIGNUP_ORIGIN").unwrap_or_else(|_| DEFAULT_SIGNUP_ORIGIN.into());
-    let client = reqwest::Client::builder()
+/// What the list's answer means for the caller, from its status and the
+/// `error` code in its body (when there is one).
+pub fn signup_outcome(status: u16, error: Option<&str>) -> Outcome {
+    match (status, error) {
+        // Already subscribed is a 200 too, so there is nothing to tell apart.
+        (200..=299, _) => Outcome::Subscribed,
+        (400, Some("invalid_email")) => Outcome::InvalidEmail,
+        (400, Some("invalid_source")) | (403, _) => {
+            tracing::warn!(
+                status,
+                error = error.unwrap_or(""),
+                "the signup API is not open to `{SIGNUP_SOURCE}` yet; asking again on a later run"
+            );
+            Outcome::RetryLater
+        }
+        (429, _) => {
+            tracing::info!(
+                status,
+                "the signup API is rate limiting; asking again on a later run"
+            );
+            Outcome::RetryLater
+        }
+        _ => {
+            tracing::warn!(
+                status,
+                error = error.unwrap_or(""),
+                "the signup API answered unexpectedly; asking again on a later run"
+            );
+            Outcome::RetryLater
+        }
+    }
+}
+
+/// The `error` code out of a JSON body like `{ "error": "invalid_email" }`.
+fn error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("error")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+async fn post_signup(email: &str) -> Outcome {
+    let url = match signup_url() {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::warn!("{error}");
+            return Outcome::RetryLater;
+        }
+    };
+    let client = match reqwest::Client::builder()
         // A redirect would carry the address to a host we never checked.
         .redirect(reqwest::redirect::Policy::none())
         .timeout(SIGNUP_TIMEOUT)
         .build()
-        .map_err(|error| format!("http client init failed: {error}"))?;
-    // `data` carries the form fields and must be present; each key must match
-    // a contact property in Mailmodo, so `email` is the only one sent.
+    {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(error = %error, "http client init failed");
+            return Outcome::RetryLater;
+        }
+    };
     let response = client
         .post(&url)
-        .header(reqwest::header::ORIGIN, origin)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(json!({ "email": email, "data": { "email": email } }).to_string())
+        .body(json!({ "email": email, "source": SIGNUP_SOURCE }).to_string())
         .send()
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                "the signup service did not answer in time".to_string()
-            } else {
-                // reqwest's message names the URL, never the body.
-                format!("the signup service could not be reached: {error}")
-            }
-        })?;
-    signup_outcome(response.status().as_u16())
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            // reqwest's message names the URL, never the body.
+            tracing::warn!(
+                error = %error,
+                timeout = error.is_timeout(),
+                "the signup API could not be reached; asking again on a later run"
+            );
+            return Outcome::RetryLater;
+        }
+    };
+    let status = response.status().as_u16();
+    // The body is a short JSON object; a read that fails just means no code.
+    let body = response.text().await.unwrap_or_default();
+    let error = error_code(&body);
+    // One line per attempt, so a signup can be followed in the worker log.
+    // The address itself is never logged.
+    tracing::info!(
+        url = %url,
+        status,
+        error = error.as_deref().unwrap_or(""),
+        "signup API answered"
+    );
+    signup_outcome(status, error.as_deref())
 }
 
 async fn publish_identify(iii: &IIIClient, email: &str, source: &str) {
@@ -148,17 +240,18 @@ pub fn register(iii: &Arc<IIIClient>) {
             async move {
                 let email = input.email.trim().to_string();
                 if !is_emailish(&email) {
-                    return Err(Error::Handler(format!(
-                        "that does not look like an email address (one address, up to {MAX_EMAIL_LENGTH} characters)"
-                    )));
+                    return Ok::<SubscribeOutput, Error>(Outcome::InvalidEmail.into());
                 }
-                post_signup(&email).await.map_err(Error::Handler)?;
+                let outcome = post_signup(&email).await;
+                if outcome != Outcome::Subscribed {
+                    return Ok(outcome.into());
+                }
                 // The list has the address; that is the signup. The
                 // announcement runs off the response path so its own timeout
                 // cannot push this call past the browser's deadline.
                 let source = input.source.unwrap_or_else(|| "console".into());
                 tokio::spawn(async move { publish_identify(&iii, &email, &source).await });
-                Ok::<_, Error>(SubscribeOutput { subscribed: true })
+                Ok(Outcome::Subscribed.into())
             }
         })
         .description("Add an email address to the iii product-update list.")
@@ -196,16 +289,79 @@ mod tests {
     }
 
     #[test]
-    fn only_a_2xx_answer_is_a_signup() {
-        assert_eq!(signup_outcome(200), Ok(()));
-        assert_eq!(signup_outcome(204), Ok(()));
+    fn a_2xx_answer_is_a_signup() {
+        // Sent, and already subscribed, are both a 200.
+        assert_eq!(signup_outcome(200, None), Outcome::Subscribed);
+        assert_eq!(signup_outcome(204, None), Outcome::Subscribed);
+    }
+
+    #[test]
+    fn only_invalid_email_is_shown_to_the_person() {
         assert_eq!(
-            signup_outcome(400),
-            Err("the signup service answered 400".into())
+            signup_outcome(400, Some("invalid_email")),
+            Outcome::InvalidEmail
         );
+    }
+
+    #[test]
+    fn everything_else_waits_for_a_later_run() {
+        for (status, error) in [
+            (400, Some("invalid_source")),
+            (403, Some("forbidden")),
+            (403, None),
+            (429, Some("rate_limited")),
+            (500, None),
+            (503, Some("unavailable")),
+            // A redirect is not followed and not a signup.
+            (302, None),
+            (400, None),
+            (404, None),
+        ] {
+            assert_eq!(
+                signup_outcome(status, error),
+                Outcome::RetryLater,
+                "{status} {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_https_or_this_machine_is_a_signup_url() {
+        for url in [
+            "https://iii.dev/api/subscribe",
+            "http://127.0.0.1:8787/api/subscribe",
+            "http://localhost:8787",
+            "http://[::1]:8787/x",
+        ] {
+            assert_eq!(check_signup_url(url), Ok(()), "{url}");
+        }
+        for url in [
+            "http://iii.dev/api/subscribe",
+            "http://127.0.0.1.evil.example/x",
+            "http://localhost.evil.example",
+            "ftp://127.0.0.1",
+        ] {
+            assert!(check_signup_url(url).is_err(), "{url} should be refused");
+        }
+    }
+
+    #[test]
+    fn reads_the_error_code_from_the_body() {
         assert_eq!(
-            signup_outcome(302),
-            Err("the signup service answered 302".into())
+            error_code(r#"{"error":"invalid_email"}"#).as_deref(),
+            Some("invalid_email")
+        );
+        assert_eq!(error_code(r#"{"ok":true}"#), None);
+        assert_eq!(error_code("<html>bad gateway</html>"), None);
+        assert_eq!(error_code(""), None);
+    }
+
+    #[test]
+    fn output_names_the_outcome_in_snake_case() {
+        let out = serde_json::to_value(SubscribeOutput::from(Outcome::RetryLater)).unwrap();
+        assert_eq!(
+            out,
+            json!({ "subscribed": false, "outcome": "retry_later" })
         );
     }
 }
