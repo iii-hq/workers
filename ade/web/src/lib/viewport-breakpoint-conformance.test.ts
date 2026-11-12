@@ -131,8 +131,14 @@ const cssMediaAllowlist: Record<string, { max: number; reason: string }> = {
 const VIEWPORT_UTILITY = /(?<![@\w])(?:max-)?(?:2xl|sm|md|lg|xl):(?=\S)/g
 const WIDTH_MEDIA = /@media[^{]*\((?:min|max)-width/g
 
+// The Traces screen, built from this workspace package.
+const tracesRoot = join(srcRoot, '../../../packages/traces-ui/src')
+
 function walk(ext: string): string[] {
-  return readdirSync(srcRoot, { recursive: true, encoding: 'utf8' })
+  const traces = readdirSync(tracesRoot, { recursive: true, encoding: 'utf8' })
+    .filter((file) => !file.startsWith('ui/shadcn/'))
+    .map((file) => relative(srcRoot, join(tracesRoot, file)))
+  return [...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }), ...traces]
     .filter((file) => file.endsWith(ext))
     .map((file) => relative(srcRoot, join(srcRoot, file)))
     .filter(

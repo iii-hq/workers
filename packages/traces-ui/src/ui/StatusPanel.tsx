@@ -1,0 +1,99 @@
+import type * as React from 'react'
+import { cn } from './utils'
+
+export type StatusVariant = 'info' | 'success' | 'warn' | 'alert'
+
+const variantTone: Record<
+  StatusVariant,
+  { fill: string; icon: string; headline: string }
+> = {
+  info: {
+    fill: 'bg-card',
+    icon: 'text-ink',
+    headline: 'text-ink',
+  },
+  success: {
+    fill: 'bg-ok-muted',
+    icon: 'text-ok',
+    headline: 'text-ok',
+  },
+  warn: {
+    fill: 'bg-warn-muted',
+    icon: 'text-warn',
+    headline: 'text-warn-strong',
+  },
+  alert: {
+    fill: 'bg-alert-muted',
+    icon: 'text-alert',
+    headline: 'text-alert-strong',
+  },
+}
+
+interface StatusPanelProps extends React.HTMLAttributes<HTMLDivElement> {
+  variant?: StatusVariant
+  icon?: React.ReactNode
+  headline: React.ReactNode
+  detail?: React.ReactNode
+  /** Trailing slot for a retry/dismiss `Button`; never text. */
+  action?: React.ReactNode
+}
+
+/**
+ * The one way to show a status with copy: a card (the shadcn Card's 12px
+ * radius and 10% ink ring; the card fill for `info`, a tint for the other
+ * tones), headline in the status colour, detail in faint ink, an optional
+ * action at the end. `role` passes through — `alert` for an error the user
+ * must see now, `status` for the rest.
+ */
+export function StatusPanel({
+  variant = 'info',
+  icon,
+  headline,
+  detail,
+  action,
+  className,
+  ...props
+}: StatusPanelProps) {
+  const tone = variantTone[variant]
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-x-3 rounded-xl px-3.5 py-3 font-inter text-sm ring-1 ring-card-edge',
+        tone.fill,
+        className,
+      )}
+      {...props}
+    >
+      {icon ? (
+        <span aria-hidden className={cn('size-[18px] shrink-0', tone.icon)}>
+          {icon}
+        </span>
+      ) : null}
+      <div className="min-w-0 flex flex-col gap-y-0.5">
+        <div
+          className={cn(
+            'font-inter text-sm font-medium [overflow-wrap:anywhere]',
+            tone.headline,
+          )}
+        >
+          {headline}
+        </div>
+        {detail ? (
+          <div
+            className={cn(
+              'font-inter text-xs [overflow-wrap:anywhere]',
+              variant === 'success' ? 'text-ink' : 'text-ink-faint',
+            )}
+          >
+            {detail}
+          </div>
+        ) : null}
+      </div>
+      {action ? (
+        <div className="ml-auto flex shrink-0 items-center gap-1.5 self-center">
+          {action}
+        </div>
+      ) : null}
+    </div>
+  )
+}

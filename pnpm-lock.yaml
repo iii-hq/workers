@@ -135,6 +135,9 @@ importers:
       '@fontsource/inter':
         specifier: ^5.2.8
         version: 5.3.0
+      '@iii-dev/traces-ui':
+        specifier: workspace:*
+        version: link:../../packages/traces-ui
       '@lexical/code-core':
         specifier: ^0.44.0
         version: 0.44.0
@@ -1257,6 +1260,67 @@ importers:
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
+
+  packages/traces-ui:
+    dependencies:
+      '@base-ui/react':
+        specifier: ^1.9.0
+        version: 1.9.0(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@iii-dev/console-ui':
+        specifier: workspace:*
+        version: link:../console-ui
+      '@tanstack/react-virtual':
+        specifier: ^3.13.24
+        version: 3.14.7(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      cn:
+        specifier: ^0.5.0
+        version: 0.5.0
+      lucide-react:
+        specifier: ^1.16.0
+        version: 1.25.0(react@19.2.8)
+      motion:
+        specifier: ^14.0.0
+        version: 14.0.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      prism-react-renderer:
+        specifier: ^2.4.1
+        version: 2.4.1(react@19.2.8)
+      tailwind-merge:
+        specifier: ^3.6.0
+        version: 3.6.0
+    devDependencies:
+      '@tanstack/react-query':
+        specifier: ^5.100.10
+        version: 5.101.3(react@19.2.8)
+      '@types/node':
+        specifier: ^25.8.0
+        version: 25.9.5
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.25.12
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   pdf/ui:
     dependencies:

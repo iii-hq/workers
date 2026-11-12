@@ -62,6 +62,7 @@ jobs:
       llm_router_integration: ${{ steps.bucket.outputs.llm_router_integration }}
       provider_contract: ${{ steps.bucket.outputs.provider_contract }}
       native_ui: ${{ steps.bucket.outputs.native_ui }}
+      traces_ui: ${{ steps.bucket.outputs.traces_ui }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -990,6 +991,75 @@ jobs:
 
       - name: Native apps tests
         run: pnpm --filter '@iii-workers/*-native-ui' test
+
+  # ──────────────────────────────────────────────────────────────
+  # The traces page package (packages/traces-ui, @iii-dev/traces-ui). The rust
+  # matrix only builds it into ade's bundle on the way to the binary (and
+  # discover's BUNDLED_PACKAGES puts ade there when it changes); this job runs
+  # its own biome, typecheck, tests and build, and the ADE design scans that
+  # cover its sources. discover's traces_ui gates it.
+  # ──────────────────────────────────────────────────────────────
+  traces-ui:
+    name: "traces-ui: package"
+    needs: discover
+    if: needs.discover.outputs.traces_ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Install the package and the ADE console
+        run: pnpm --filter '@iii-dev/traces-ui...' --filter 'chat-app...' install --frozen-lockfile
+
+      - name: Biome
+        run: npx --yes @biomejs/biome@2.4.10 ci packages/traces-ui
+
+      - name: Typecheck
+        run: pnpm --filter '@iii-dev/traces-ui' typecheck
+
+      - name: Tests
+        run: pnpm --filter '@iii-dev/traces-ui' test
+
+      - name: Build (what npm gets)
+        run: pnpm --filter '@iii-dev/traces-ui' build
+
+      - name: ADE design scans over the package
+        working-directory: ade/web
+        # vitest reads file arguments as filters: a renamed scan would drop out
+        # silently, so each must exist first.
+        run: |
+          set -euo pipefail
+          scans=(
+            src/lib/typography-conformance.test.ts
+            src/lib/icon-size-conformance.test.ts
+            src/lib/theme-hover-conformance.test.ts
+            src/lib/viewport-breakpoint-conformance.test.ts
+          )
+          for scan in "${scans[@]}"; do test -f "$scan"; done
+          pnpm exec vitest run "${scans[@]}"
+
+      - name: ADE selection scan over the package
+        working-directory: ade/web
+        # Only the case that lists the package's files: the file's other cases
+        # cover other workers. `-t` matching nothing exits 0, so the step
+        # requires that one case to have run and passed.
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/selection-scan.json"
+          pnpm exec vitest run src/lib/selection-conformance.test.ts \
+            -t 'keeps selected native Console labels' \
+            --reporter=default --reporter=json --outputFile.json="$report"
+          jq -e '.numPassedTests == 1' "$report"
 
   # ──────────────────────────────────────────────────────────────
   # llm-router lifecycle contract: unlike the regular Rust job, this always

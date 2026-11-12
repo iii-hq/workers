@@ -37,13 +37,14 @@ the existing `internal: true` convention (`engine::functions::list` returns
 it back), so it needs no SDK or engine changes and works from every SDK
 language.
 
-**Who consumes it.** The console's traces page
-(`workers/ade/web/src/lib/trace-hidden-functions.ts`) fetches
+**Who consumes it.** The traces page (`@iii-dev/traces-ui`,
+`workers/packages/traces-ui/src/api/hidden-functions.ts`) fetches
 `engine::functions::list { include_internal: true }`, collects the ids whose
 `metadata.trace_hidden === true`, and merges them into the span filter as
-defaults. A user unhiding a group persists that override in the `console`
-configuration entry (`traces.spanFilters.shownGroups`), so the default never
-fights an explicit choice. Other trace UIs can adopt the same rule.
+defaults. A user unhiding a group persists that override in the host's
+settings (`traces.spanFilters.shownGroups`; the ADE keeps them in its
+`console` configuration entry), so the default never fights an explicit
+choice. Other trace UIs can adopt the same rule.
 
 ## 2. Tagging a function (Rust SDK)
 

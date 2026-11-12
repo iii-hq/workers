@@ -1,0 +1,58 @@
+{
+  "name": "@iii-dev/traces-ui",
+  "version": "0.1.0",
+  "description": "The traces page of the iii console as React components: trace list, live timeline, waterfall and span panel over any trace source.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && esbuild src/index.ts --bundle --format=esm --packages=external --jsx=automatic --target=es2022 --outfile=dist/index.js && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "node -e \"if (!process.env.npm_config_user_agent?.startsWith('pnpm')) { console.error('publish with pnpm publish: npm does not apply publishConfig main/types/exports'); process.exit(1) }\""
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5",
+    "react": ">=19",
+    "react-dom": ">=19"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.9.0",
+    "@iii-dev/console-ui": "workspace:*",
+    "@tanstack/react-virtual": "^3.13.24",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cn": "^0.5.0",
+    "lucide-react": "^1.16.0",
+    "motion": "^14.0.0",
+    "prism-react-renderer": "^2.4.1",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.100.10",
+    "@types/node": "^25.8.0",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

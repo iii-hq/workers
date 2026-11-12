@@ -59,7 +59,7 @@ import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/cha
  * Location-agnostic by design: it is props-only (no chat store, no session
  * context). Chat renders it from live session messages; TracesV2 renders it
  * in the span info tab by synthesizing a `FunctionCallMessage` from an OTel
- * span (`pages/TracesV2/lib/functionCallFromSpan.ts`); any other surface can
+ * span (`packages/traces-ui/src/lib/functionCallFromSpan.ts`); any other surface can
  * do the same — `FunctionCallMessage` (types/chat.ts) is a plain data shape
  * whose base is just `{ id, createdAt }`.
  */

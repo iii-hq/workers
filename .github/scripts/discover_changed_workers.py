@@ -135,13 +135,14 @@ SHARED_TEST_SUPPORT = {
 # Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's
 # binary: the worker's build.rs builds a sub-project that bundles the package
 # (packages/native-ui → <worker>/native-ui/dist/native.js, embedded with
-# include_str!). A source change there fans out, like a crate's, to every
+# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed).
+# A source change there fans out, like a crate's, to every
 # worker with a sub-project whose package.json depends on the package (found
 # by name, so a new native app needs no edit here). packages/console-ui is
 # deliberately absent: worker UIs keep it external (the console serves the
 # real module), so its changes do not change a worker's artifact.
 PACKAGES_DIR = "packages"
-BUNDLED_PACKAGES = ("native-ui",)
+BUNDLED_PACKAGES = ("native-ui", "traces-ui")
 
 # The native-ui job (ci.yml) runs the @iii-dev/native-ui SDK's suite and every
 # <worker>/native-ui app's suite. It runs when the SDK, an app, the crate that
@@ -154,6 +155,16 @@ NATIVE_UI_INFRA_PATHS = {
     ".github/scripts/discover_changed_workers.py",
     ".github/workflows/ci.yml",
 }
+
+# The traces-ui job (ci.yml) runs the @iii-dev/traces-ui package's own
+# biome, typecheck, tests and build, and the ADE design scans that cover it.
+# It runs when the package, the console-ui helpers it imports, the root
+# biome config its own extends, the ADE design scans it runs (and the
+# vitest setup they run under), the root pnpm workspace or this CI changes
+# (the same infra paths as native-ui).
+TRACES_UI_PREFIXES = ("packages/traces-ui/", "packages/console-ui/")
+TRACES_UI_PATHS = {"biome.json", "ade/web/package.json", "ade/web/vite.config.ts"}
+TRACES_UI_SCANS = "ade/web/src/lib/"
 
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a
@@ -363,6 +374,16 @@ def native_ui_changed(files: list[str]) -> bool:
     )
 
 
+def traces_ui_changed(files: list[str]) -> bool:
+    return any(
+        f in NATIVE_UI_INFRA_PATHS
+        or f in TRACES_UI_PATHS
+        or f.startswith(TRACES_UI_PREFIXES)
+        or (f.startswith(TRACES_UI_SCANS) and f.endswith("-conformance.test.ts"))
+        for f in files
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", required=True, help="base git ref")
@@ -455,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     provider_contract = provider_contract_selection(files, workers)
     native_ui = native_ui_changed(files)
+    traces_ui = traces_ui_changed(files)
     by_language: dict[str, list[str]] = {"rust": [], "go": [], "node": [], "python": []}
     for w in changed:
         lang = language_of(worker_specs[w])
@@ -472,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
         "provider_contract": provider_contract,
         "crates": changed_crates,
         "native_ui": native_ui,
+        "traces_ui": traces_ui,
     }
     print(json.dumps(payload))
 
@@ -494,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
             f.write(f"provider_contract={json.dumps(provider_contract)}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
             f.write(f"native_ui={'true' if native_ui else 'false'}\n")
+            f.write(f"traces_ui={'true' if traces_ui else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 
     return 0

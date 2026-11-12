@@ -16,6 +16,10 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* The traces page lives in its own package; Tailwind does not scan
+   node_modules, so name its sources. */
+@source "../../../packages/traces-ui/src";
+
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /* `static`: every token here reaches :root even when no utility uses it.

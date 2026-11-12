@@ -143,6 +143,50 @@ def test_an_sdk_change_rebuilds_the_workers_that_bundle_it(
     assert payload["native_ui"] is True
 
 
+def test_a_traces_ui_change_rebuilds_ade(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        discover, "changed_files", lambda base, head: ["packages/traces-ui/src/TracesView.tsx"]
+    )
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "ade" in payload["by_language"]["rust"]
+    assert payload["source_changed"] == []
+    assert payload["traces_ui"] is True
+    assert payload["native_ui"] is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "packages/traces-ui/src/host.tsx",
+        "packages/console-ui/format.mjs",
+        "biome.json",
+        "ade/web/src/lib/icon-size-conformance.test.ts",
+        "ade/web/vite.config.ts",
+        "pnpm-lock.yaml",
+    ],
+)
+def test_traces_ui_runs_for_its_inputs(path: str) -> None:
+    assert discover.traces_ui_changed([path]) is True, path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "packages/native-ui/src/list.ts",
+        "ade/web/src/App.tsx",
+        "ade/web/src/lib/iii-client.ts",
+        "harness/src/main.rs",
+    ],
+)
+def test_traces_ui_skips_other_changes(path: str) -> None:
+    assert discover.traces_ui_changed([path]) is False, path
+
+
 def test_sdk_docs_alone_rebuild_no_worker(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
