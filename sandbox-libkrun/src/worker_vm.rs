@@ -637,6 +637,11 @@ impl WorkerVms {
         let writer = ChannelWriter::new(iii.address(), &req.channel);
         let vms = self.clone();
         tokio::spawn(async move {
+            // Connected now, not at the first record. When this adapter goes away, the engine
+            // aborts a connected writer's stream, and that is how a supervisor learns its VM
+            // went with it. An unattached writer would leave the reader open until the engine
+            // sweeps the channel, minutes later.
+            let _ = writer.write(&[]).await;
             let channel = &writer;
             let pumped = tokio::select! {
                 pumped = vms.pump_logs(&req, |record| async move {
@@ -2782,6 +2787,28 @@ mod tests {
             go = go.display()
         );
         (sh(&script), go)
+    }
+
+    /// A follower's writer connects before the VM prints anything. The engine ends a connected
+    /// writer's stream when this adapter goes away, and a supervisor waits on that end.
+    #[tokio::test]
+    async fn a_quiet_vm_connects_its_followers_writer_at_once() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = Arc::new(vms(t, Some("t"), vec![]));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let iii = IIIClient::new(&format!("ws://{}", listener.local_addr().unwrap()));
+        let id = vms
+            .launch("k", sh("sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        vms.logs(&iii, logs_req("t", &id, true)).await.unwrap();
+        let connected = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await;
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+        assert!(
+            connected.is_ok(),
+            "the writer waited for a record to connect"
+        );
     }
 
     #[tokio::test]
