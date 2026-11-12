@@ -17,21 +17,28 @@
  *    real height. Use `LabFrame` (or `fullscreen` + `h-screen`) to guarantee it.
  */
 
-import type { Decorator } from '@storybook/react-vite'
-import type { ISdk } from 'iii-browser-sdk'
-import { type ReactNode, useEffect, useState } from 'react'
-import {
-  __resetIiiClientForTests,
-  __setIiiClientDepsForTests,
-} from '@/lib/iii-client'
-import type { SpanTreeNode, StoredSpan, TraceSummary } from '../api/traces'
+import { createEngineTraceSource, TracesProvider } from '@iii-dev/traces-ui'
+import type {
+  SpanTreeNode,
+  StoredSpan,
+  TraceSummary,
+} from '@iii-dev/traces-ui/src/api/traces'
 import {
   ALL_SPANS,
   LIST_SPANS,
   OTEL_LOGS_FIXTURE,
   T0,
   TRACE_GROUPS_FIXTURE,
-} from '../fixtures/traces-fixtures'
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
+import type { Decorator } from '@storybook/react-vite'
+import type { ISdk } from 'iii-browser-sdk'
+import { type ReactNode, useEffect, useState } from 'react'
+import { useFunctionCallRenderers } from '@/components/function-call/renderer-registry'
+import {
+  __resetIiiClientForTests,
+  __setIiiClientDepsForTests,
+  getIiiClient,
+} from '@/lib/iii-client'
 
 type CallArgs = { function_id: string; payload?: Record<string, unknown> }
 
@@ -182,11 +189,14 @@ export function resetFakeIiiClient(): void {
   __resetIiiClientForTests()
 }
 
+const fakeSource = createEngineTraceSource(getIiiClient)
+
 /**
  * Decorator: install the fake client before the story's components mount, and
- * restore it on unmount. The `useState` lazy initializer runs synchronously
- * during this wrapper's render — i.e. before the wrapped `<Story/>` renders and
- * calls `getIiiClient()`.
+ * restore it on unmount, with a trace source over it for components that read
+ * one. The `useState` lazy initializer runs synchronously during this
+ * wrapper's render — i.e. before the wrapped `<Story/>` renders and calls
+ * `getIiiClient()`.
  */
 export const withFakeIiiClient: Decorator = (Story) => {
   useState(() => {
@@ -194,7 +204,12 @@ export const withFakeIiiClient: Decorator = (Story) => {
     return null
   })
   useEffect(() => resetFakeIiiClient, [])
-  return <Story />
+  const renderers = useFunctionCallRenderers()
+  return (
+    <TracesProvider source={fakeSource} functionCallRenderers={renderers}>
+      <Story />
+    </TracesProvider>
+  )
 }
 
 /**

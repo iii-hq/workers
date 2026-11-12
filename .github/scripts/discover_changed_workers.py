@@ -135,13 +135,13 @@ SHARED_TEST_SUPPORT = {
 # Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's
 # binary: the worker's build.rs builds a sub-project that bundles the package
 # (packages/native-ui → <worker>/native-ui/dist/native.js, embedded with
-# include_str!). A source change there fans out, like a crate's, to every
+# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed). A source change there fans out, like a crate's, to every
 # worker with a sub-project whose package.json depends on the package (found
 # by name, so a new native app needs no edit here). packages/console-ui is
 # deliberately absent: worker UIs keep it external (the console serves the
 # real module), so its changes do not change a worker's artifact.
 PACKAGES_DIR = "packages"
-BUNDLED_PACKAGES = ("native-ui",)
+BUNDLED_PACKAGES = ("native-ui", "traces-ui")
 
 # The native-ui job (ci.yml) runs the @iii-dev/native-ui SDK's suite and every
 # <worker>/native-ui app's suite. It runs when the SDK, an app, the crate that

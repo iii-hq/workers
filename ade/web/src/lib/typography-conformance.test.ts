@@ -1,15 +1,22 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url))
 const srcRoot = join(repoRoot, 'ade/web/src')
 const uiRoot = join(srcRoot, 'components/ui')
+/** The Traces screen, built from this workspace package. */
+const tracesRoot = join(repoRoot, 'packages/traces-ui/src')
 
-/** Every console `.tsx` outside the marketing demo, stories and tests. */
+/** Every console `.tsx` outside the marketing demo, stories and tests,
+ *  relative to `srcRoot` (the Traces package's as `../../../packages/…`). */
 function consoleSources(): string[] {
-  return readdirSync(srcRoot, { recursive: true, encoding: 'utf8' })
+  const traces = readdirSync(tracesRoot, {
+    recursive: true,
+    encoding: 'utf8',
+  }).map((file) => relative(srcRoot, join(tracesRoot, file)))
+  return [...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }), ...traces]
     .filter(
       (file) =>
         file.endsWith('.tsx') &&

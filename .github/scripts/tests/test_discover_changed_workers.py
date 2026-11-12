@@ -143,6 +143,20 @@ def test_an_sdk_change_rebuilds_the_workers_that_bundle_it(
     assert payload["native_ui"] is True
 
 
+def test_a_traces_ui_change_rebuilds_ade(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        discover, "changed_files", lambda base, head: ["packages/traces-ui/src/TracesView.tsx"]
+    )
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "ade" in payload["by_language"]["rust"]
+    assert payload["source_changed"] == []
+
+
 def test_sdk_docs_alone_rebuild_no_worker(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

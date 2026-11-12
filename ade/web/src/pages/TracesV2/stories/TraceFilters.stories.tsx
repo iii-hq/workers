@@ -1,7 +1,7 @@
+import { TraceFilters } from '@iii-dev/traces-ui/src/components/TraceFilters'
+import type { TraceFilterState } from '@iii-dev/traces-ui/src/hooks/useTraceFilters'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
-import { TraceFilters } from '../components/TraceFilters'
-import type { TraceFilterState } from '../hooks/useTraceFilters'
 
 const INITIAL_FILTERS: TraceFilterState = {
   status: null,

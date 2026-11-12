@@ -1,0 +1,94 @@
+import { useQuery } from '@tanstack/react-query'
+import { useMemo } from 'react'
+import type { TraceGroup, TracesGroupByResponse } from '../api/traces'
+import { useTraceSource } from '../host'
+import type { GroupByOption } from '../lib/groupTraces'
+import { isGroupByUnavailable, orderTraceGroups } from '../lib/groupTraces'
+
+const DEFAULT_GROUP_LIMIT = 100
+const EMPTY_GROUPS: readonly TraceGroup[] = []
+
+export interface UseTraceGroupsOptions {
+  /** When 'none', the hook is disabled (no network calls). */
+  groupBy: GroupByOption
+  /** Include engine-internal spans. */
+  includeInternal: boolean
+  /**
+   * Attribute resolved per group into a human-readable heading (e.g.
+   * `iii.session.name` when grouping by `iii.session.id`). See
+   * `defaultLabelAttribute` in lib/groupTraces.
+   */
+  labelAttribute?: string
+}
+
+export interface UseTraceGroupsReturn {
+  groups: readonly TraceGroup[]
+  isLoading: boolean
+  /**
+   * Set when the engine doesn't expose `engine::traces::group_by` (older
+   * deploy or `iii-observability` not running). UI should hide the group
+   * view and fall back to the flat list when this is true.
+   */
+  unavailable: boolean
+  refetch: () => void
+}
+
+/**
+ * React Query wrapper around `fetchTracesGroupBy`. Returns the
+ * server-aggregated group list and surfaces a soft-failure flag when
+ * the endpoint isn't available so callers can degrade gracefully
+ * rather than showing an error pill.
+ *
+ * Differs from the motia version in one respect: the trace source comes
+ * from the nearest `TracesProvider`, so this hook doesn't take an `sdk`
+ * argument.
+ */
+export function useTraceGroups({
+  groupBy,
+  includeInternal,
+  labelAttribute,
+}: UseTraceGroupsOptions): UseTraceGroupsReturn {
+  const source = useTraceSource()
+  const enabled = groupBy !== 'none'
+
+  const { data, isLoading, error, refetch } = useQuery<
+    TracesGroupByResponse,
+    Error
+  >({
+    queryKey: ['traceGroups', groupBy, includeInternal, labelAttribute],
+    enabled,
+    queryFn: () =>
+      source.groupTraces({
+        attribute: groupBy,
+        limit: DEFAULT_GROUP_LIMIT,
+        include_internal: includeInternal,
+        label_attribute: labelAttribute,
+      }),
+    // Live updates: `useTraceData`'s `trace-rows` stream effect invalidates
+    // the ['traceGroups'] key on span activity (the aggregate can't be
+    // appended like the flat list), so the group view refetches reactively —
+    // no polling interval.
+    refetchInterval: false,
+    staleTime: 1000,
+    retry: (failureCount, err) => {
+      // Don't retry when the endpoint is missing — the UI hides the
+      // affordance in that case and waits for the user to switch back
+      // to flat-list mode.
+      if (isGroupByUnavailable(err)) return false
+      return failureCount < 2
+    },
+  })
+
+  // Deterministic order: the engine's tie order changes call to call.
+  const groups = useMemo(
+    () => orderTraceGroups(data?.groups ?? EMPTY_GROUPS),
+    [data],
+  )
+
+  return {
+    groups,
+    isLoading,
+    unavailable: !!error && isGroupByUnavailable(error),
+    refetch,
+  }
+}

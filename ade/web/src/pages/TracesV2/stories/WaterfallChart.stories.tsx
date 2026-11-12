@@ -1,11 +1,11 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { fn } from 'storybook/test'
-import { WaterfallChart } from '../components/WaterfallChart'
+import { WaterfallChart } from '@iii-dev/traces-ui/src/components/WaterfallChart'
 import {
   ERROR_SPAN,
   WATERFALL_FIXTURE,
   WATERFALL_SIMPLE,
-} from '../fixtures/traces-fixtures'
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { fn } from 'storybook/test'
 import { LabFrame } from './harness'
 
 /**

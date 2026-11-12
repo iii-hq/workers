@@ -11,12 +11,12 @@
  * Lifecycle: idle → typing the prompt → streaming → done → (hold) → reset.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { StoredSpan } from '@/pages/TracesV2/api/traces'
+import type { StoredSpan } from '@iii-dev/traces-ui/src/api/traces'
 import {
   toWaterfallData,
   type WaterfallData,
-} from '@/pages/TracesV2/lib/traceTransform'
+} from '@iii-dev/traces-ui/src/lib/traceTransform'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AssistantMessage,
   Conversation,

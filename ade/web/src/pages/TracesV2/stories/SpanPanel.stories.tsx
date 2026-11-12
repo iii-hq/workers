@@ -1,13 +1,13 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { fn } from 'storybook/test'
-import { SpanPanel } from '../components/SpanPanel'
+import { SpanPanel } from '@iii-dev/traces-ui/src/components/SpanPanel'
 import {
   ERROR_SPAN,
   FN_SPAN,
   LLM_SPAN,
   ROOT_SPAN,
   WATERFALL_FIXTURE,
-} from '../fixtures/traces-fixtures'
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { fn } from 'storybook/test'
 import { LabFrame, withFakeIiiClient } from './harness'
 
 const meta = {
