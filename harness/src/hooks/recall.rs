@@ -430,18 +430,27 @@ fn query(entry_id: &str, message: &AgentMessage) -> Option<Query> {
     })
 }
 
-async fn receipt(deps: &Deps, session: &str, entry: &str) -> Result<Option<Receipt>, HarnessError> {
+/// This session's receipts, read once.
+async fn receipts(deps: &Deps, session: &str) -> Result<Vec<Receipt>, HarnessError> {
     let cfg = deps.cfg().await;
     let value =
         crate::state::state_get(&deps.iii, SCOPE, &key(session), cfg.session_timeout_ms).await?;
     if value.is_null() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let rows: Vec<Receipt> = serde_json::from_value(value)
         .map_err(|e| HarnessError::State(format!("invalid recall receipt: {e}")))?;
     Ok(rows
         .into_iter()
-        .find(|r| r.session_id == session && r.entry_id == entry))
+        .filter(|r| r.session_id == session)
+        .collect())
+}
+
+async fn receipt(deps: &Deps, session: &str, entry: &str) -> Result<Option<Receipt>, HarnessError> {
+    Ok(receipts(deps, session)
+        .await?
+        .into_iter()
+        .find(|r| r.entry_id == entry))
 }
 
 /// Called before append/queue by every ordinary delivery path. A notification
@@ -482,13 +491,12 @@ pub(crate) async fn record_delivery(
         // The production session resolver follows every page and rejects
         // malformed evidence; never read an unhydrated raw state reference.
         let entries = deps.session().await.messages_strict(session).await?;
-        let prior = entries
+        let (prior_entry, prior) = entries
             .iter()
             .rev()
             .take(REFERENCE_WINDOW)
             .find(|e| e.entry_id == prior_id)
-            .and_then(|e| e.message.as_ref())
-            .and_then(|m| query(prior_id, m))
+            .and_then(|e| Some((e, query(prior_id, e.message.as_ref()?)?)))
             .ok_or_else(|| {
                 HarnessError::InvalidRequest(
                     "continuation is not a recent user entry on this active path".into(),
@@ -497,7 +505,9 @@ pub(crate) async fn record_delivery(
         let authority = receipt(deps, session, prior_id)
             .await?
             .filter(|r| {
-                r.channel == delivery.channel && r.query.as_ref() == Some(&stamp(prior.clone()))
+                r.channel == delivery.channel
+                    && r.query.as_ref() == Some(&stamp(prior.clone()))
+                    && receipt_matches_full_text(r, prior_entry)
             })
             .ok_or_else(|| {
                 HarnessError::InvalidRequest("continuation has no matching delivery receipt".into())
@@ -604,10 +614,19 @@ pub(crate) async fn purge(deps: &Deps, session: &str) -> Result<(), HarnessError
     .await
 }
 
+/// A receipt's full-text digest, when it has one, still matches the entry.
+fn receipt_matches_full_text(r: &Receipt, entry: &LoadedEntry) -> bool {
+    r.entry_id == entry.entry_id
+        && r.full_text_sha256
+            .as_ref()
+            .is_none_or(|digest| full_stamp(entry).as_ref() == Some(digest))
+}
+
 fn envelope(
     record: &TurnRecord,
     entry: &LoadedEntry,
     authority: Option<&Receipt>,
+    target: Option<&Receipt>,
     entries: &[LoadedEntry],
 ) -> Value {
     let current = entry
@@ -620,9 +639,7 @@ fn envelope(
             && r.query == current.clone().map(stamp)
             // The query is bounded; an unrefreshed edit past the bound shows
             // only here. Legacy receipts carry no digest and still resolve.
-            && r.full_text_sha256
-                .as_ref()
-                .is_none_or(|digest| full_stamp(entry).as_ref() == Some(digest))
+            && receipt_matches_full_text(r, entry)
     });
     // The send bounded the reference's age; here it only has to still precede
     // this entry. A window from the tail would drop it as the turn's own steps
@@ -634,11 +651,15 @@ fn envelope(
     let continuation = valid
         .and_then(|r| r.continuation.as_ref())
         .and_then(|prior| {
-            before
-                .iter()
-                .rev()
-                .find(|e| e.entry_id == prior.entry_id)
-                .and_then(|e| e.message.as_ref().and_then(|m| query(&e.entry_id, m)))
+            let e = before.iter().rev().find(|e| e.entry_id == prior.entry_id)?;
+            // The target's own receipt must still match its full text: an
+            // unrefreshed edit past the query bound shows only there.
+            if target.is_some_and(|t| !receipt_matches_full_text(t, e)) {
+                return None;
+            }
+            e.message
+                .as_ref()
+                .and_then(|m| query(&e.entry_id, m))
                 .filter(|q| stamp(q.clone()) == *prior)
         });
     // A reference that left the active path must not silently revert to the
@@ -672,14 +693,16 @@ pub(crate) async fn resolve(
             Some(AgentMessage::User(_) | AgentMessage::Custom(_))
         )
     })?;
-    let authority = receipt(deps, &record.session_id, &entry.entry_id)
-        .await
-        .ok()
-        .flatten();
+    let rows = receipts(deps, &record.session_id).await.unwrap_or_default();
+    let find = |id: &str| rows.iter().find(|r| r.entry_id == id);
+    let authority = find(&entry.entry_id);
+    let target = authority
+        .and_then(|r| r.continuation.as_ref())
+        .and_then(|prior| find(&prior.entry_id));
     // Historical proof is deliberately not persisted in TurnRecord (whose
     // ordinary bookkeeping surface is public). The trusted Memory call alone
     // receives a fresh active-path projection from the private receipt ledger.
-    Some(envelope(record, entry, authority.as_ref(), entries))
+    Some(envelope(record, entry, authority, target, entries))
 }
 
 #[cfg(test)]
@@ -778,7 +801,7 @@ mod tests {
         let record = crate::types::turn::tests::record();
         let e = entry("e1", "Ledgerly PostgreSQL");
         assert_eq!(
-            envelope(&record, &e, None, &[])["source"]["kind"],
+            envelope(&record, &e, None, None, &[])["source"]["kind"],
             "unknown"
         );
         for (channel, expected) in [
@@ -796,7 +819,7 @@ mod tests {
                 extraction: Vec::new(),
             };
             assert_eq!(
-                envelope(&record, &e, Some(&r), &[])["source"]["kind"],
+                envelope(&record, &e, Some(&r), None, &[])["source"]["kind"],
                 expected
             );
             // A receipt from before full-text digests still resolves on its query;
@@ -806,7 +829,7 @@ mod tests {
                 ..r.clone()
             };
             assert_eq!(
-                envelope(&record, &e, Some(&legacy), &[])["source"]["kind"],
+                envelope(&record, &e, Some(&legacy), None, &[])["source"]["kind"],
                 expected
             );
             let stale = Receipt {
@@ -814,7 +837,7 @@ mod tests {
                 ..r.clone()
             };
             assert_eq!(
-                envelope(&record, &e, Some(&stale), &[])["source"]["kind"],
+                envelope(&record, &e, Some(&stale), None, &[])["source"]["kind"],
                 "unknown"
             );
             let wrong = Receipt {
@@ -822,10 +845,52 @@ mod tests {
                 ..r
             };
             assert_eq!(
-                envelope(&record, &e, Some(&wrong), &[])["source"]["kind"],
+                envelope(&record, &e, Some(&wrong), None, &[])["source"]["kind"],
                 "unknown"
             );
         }
+    }
+    #[test]
+    fn recall_continuation_target_needs_its_own_receipt_to_match_its_full_text() {
+        let record = crate::types::turn::tests::record();
+        let old = entry("e0", "Ledgerly PostgreSQL");
+        let current = entry("e1", "Continue.");
+        let receipt_of = |e: &LoadedEntry, continuation| Receipt {
+            session_id: record.session_id.clone(),
+            entry_id: e.entry_id.clone(),
+            channel: DeliveryChannel::Direct,
+            full_text_sha256: full_stamp(e),
+            query: e
+                .message
+                .as_ref()
+                .and_then(|m| query(&e.entry_id, m))
+                .map(stamp),
+            continuation,
+            extraction: Vec::new(),
+        };
+        let r = receipt_of(
+            &current,
+            old.message.as_ref().and_then(|m| query("e0", m)).map(stamp),
+        );
+        let entries = [old.clone(), current.clone()];
+        let resolved =
+            |target: Option<&Receipt>| envelope(&record, &current, Some(&r), target, &entries);
+        let target = receipt_of(&old, None);
+        assert_eq!(resolved(Some(&target))["source"]["kind"], "direct");
+        assert_eq!(resolved(None)["source"]["kind"], "direct");
+        let legacy = Receipt {
+            full_text_sha256: None,
+            ..target.clone()
+        };
+        assert_eq!(resolved(Some(&legacy))["source"]["kind"], "direct");
+        // The target was edited past the query bound without its receipt.
+        let stale = Receipt {
+            full_text_sha256: Some("stale".into()),
+            ..target
+        };
+        let context = resolved(Some(&stale));
+        assert_eq!(context["source"]["kind"], "unknown");
+        assert!(context["continuation"].is_null());
     }
     #[test]
     fn recall_provenance_continuation_revalidates_active_path_and_text() {
@@ -846,12 +911,23 @@ mod tests {
             extraction: Vec::new(),
         };
         assert_eq!(
-            envelope(&record, &current, Some(&r), &[old.clone(), current.clone()])["continuation"]
-                ["text"],
+            envelope(
+                &record,
+                &current,
+                Some(&r),
+                None,
+                &[old.clone(), current.clone()]
+            )["continuation"]["text"],
             "Ledgerly PostgreSQL"
         );
         assert_eq!(
-            envelope(&record, &current, Some(&r), std::slice::from_ref(&current))["source"]["kind"],
+            envelope(
+                &record,
+                &current,
+                Some(&r),
+                None,
+                std::slice::from_ref(&current)
+            )["source"]["kind"],
             "unknown"
         );
         assert_eq!(
@@ -859,6 +935,7 @@ mod tests {
                 &record,
                 &current,
                 Some(&r),
+                None,
                 &[entry("e0", "Different topic"), current.clone()]
             )["source"]["kind"],
             "unknown"

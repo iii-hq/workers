@@ -735,6 +735,17 @@ async fn recall_unrefreshed_edit_past_the_query_bound_drops_continuation() {
     let context = drained_context(&stack, "edit-tail").await;
     assert_eq!(context["source"]["kind"], "unknown");
     assert!(context["continuation"].is_null());
+    // Nor can a later send continue the edited entry on its stale receipt.
+    stack.reset_turn("edit-tail", Completed).await;
+    let refused = crate::functions::send::handle(
+        &stack.deps,
+        request("edit-tail", "Go on", Some(&row.entry_id)),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(crate::error::HarnessError::InvalidRequest(_))),
+        "{refused:?}"
+    );
 }
 
 fn request(session: &str, text: &str, prior: Option<&str>) -> crate::functions::send::SendRequest {
