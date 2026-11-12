@@ -138,15 +138,25 @@ pub async fn create(ctx: &Ctx, input: CreateSessionInput) -> Result<CreatedSessi
         let first = if input.remain_on_exit { HOLD } else { command };
         args.extend(["--".into(), first.to_string()]);
     }
+    if let Some((launch, gate)) = launch {
+        let (output, runs) = super::accounts::create_with_claude(
+            &tmux,
+            args,
+            launch,
+            gate,
+            input.remain_on_exit,
+            |output| parse_created(output).map(|created| created.pane_id),
+        )
+        .await?;
+        ctx.monitor.poke();
+        let mut created = parse_created(&output)?;
+        created.runs = Some(runs);
+        return Ok(created);
+    }
     let output = tmux.run(&args).await.map_err(|error| error.sentence())?;
     ctx.monitor.poke();
-    let mut created = parse_created(&output)?;
-    if let Some((launch, _gate)) = launch {
-        let runs =
-            super::accounts::start_claude(&tmux, &created.pane_id, &launch, input.remain_on_exit)
-                .await?;
-        created.runs = Some(runs);
-    } else if input.remain_on_exit {
+    let created = parse_created(&output)?;
+    if input.remain_on_exit {
         tmux.keep_when_done(&created.pane_id, input.command.as_deref())
             .await?;
     }

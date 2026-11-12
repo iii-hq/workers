@@ -2404,3 +2404,49 @@ async fn a_switch_whose_caller_goes_away_finishes_holding_the_gate() {
     assert_eq!(info.session_id.as_deref(), Some(session.as_str()));
     assert_eq!(w.ask(&p, "who").await, "personal");
 }
+
+#[tokio::test]
+async fn a_launch_whose_caller_goes_away_still_starts_claude() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("launch-dropped");
+    w.with_accounts(&["Personal"], Some(vec![])).await;
+    // The worker's tmux takes two seconds to show an environment while
+    // `slow` is there: the start on the slot looks at one first.
+    let wrapper = w.sandbox.dir.join("tmux");
+    let slow = w.sandbox.dir.join("slow");
+    let script = std::fs::read_to_string(&wrapper).unwrap().replacen(
+        "export PATH\n",
+        &format!(
+            "export PATH\ncase \" $* \" in *\" show-environment \"*) [ -e {} ] && sleep 2;; esac\n",
+            sh_quote(&slow.to_string_lossy())
+        ),
+        1,
+    );
+    std::fs::write(&wrapper, script).unwrap();
+    std::fs::write(&slow, "").unwrap();
+    let cut = tokio::time::timeout(
+        Duration::from_millis(800),
+        windows::create(&w.ctx, window("dropped", claude("global", false))),
+    )
+    .await;
+    assert!(cut.is_err(), "the call was cut off mid-start");
+    std::fs::remove_file(&slow).unwrap();
+    let pane = w.tmux_out(&["list-panes", "-t", "base:dropped", "-F", "#{pane_id}"]);
+    assert!(pane.starts_with('%'), "the window was made: {pane:?}");
+    // Claude Code starts in it all the same, never tmux's placeholder left.
+    let info = w.claude(&pane).await;
+    assert_eq!(info.account.as_deref(), Some("default"));
+    assert_ne!(
+        w.tmux_out(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{pane_current_command}"
+        ]),
+        "cat"
+    );
+}

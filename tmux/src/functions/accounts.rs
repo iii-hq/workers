@@ -108,13 +108,14 @@ fn global_account() -> String {
 }
 
 /// The launch `claude` asks for; never together with `command`. It comes
-/// with the swap gate, held until Claude Code has started: a switch would
-/// move the sign-in out of the folder it starts on.
-pub(super) async fn plan<'a>(
-    ctx: &'a Ctx,
+/// with the swap gate, held until Claude Code has started
+/// ([`create_with_claude`]): a switch would move the sign-in out of the
+/// folder it starts on.
+pub(super) async fn plan(
+    ctx: &Ctx,
     claude: Option<&ClaudeLaunchInput>,
     command: Option<&str>,
-) -> Result<Option<(Launch, tokio::sync::MutexGuard<'a, ()>)>, String> {
+) -> Result<Option<(Launch, crate::accounts::Gate)>, String> {
     let Some(claude) = claude else {
         return Ok(None);
     };
@@ -122,7 +123,7 @@ pub(super) async fn plan<'a>(
         return Err("Give either command or claude, not both.".to_string());
     }
     let accounts = ctx.collector.accounts();
-    let gate = accounts.swap_gate.lock().await;
+    let gate = accounts.gate().await;
     let unsettled = accounts.unsettled_swap().await;
     let launch = accounts.plan_launch(&claude.account, claude.skip_permissions, None)?;
     if unsettled.is_some_and(|journal| {
@@ -131,6 +132,32 @@ pub(super) async fn plan<'a>(
         return Err(crate::accounts::switch::SWAP_UNSETTLED.to_string());
     }
     Ok(Some((launch, gate)))
+}
+
+/// Make a pane with `args` (tmux's command that starts [`HOLD`] in it and
+/// prints its line, the pane's id read by `pane_of`), then start `launch`
+/// in it, in a task of its own that holds `gate`: a call that goes away
+/// meanwhile (its future dropped) leaves neither a pane holding nor the
+/// gate free before Claude Code has started. Returns what tmux printed and
+/// the command Claude Code runs.
+pub(super) async fn create_with_claude(
+    tmux: &Tmux,
+    args: Vec<String>,
+    launch: Launch,
+    gate: crate::accounts::Gate,
+    remain_on_exit: bool,
+    pane_of: fn(&str) -> Result<String, String>,
+) -> Result<(String, String), String> {
+    let tmux = tmux.clone();
+    tokio::spawn(async move {
+        let _gate = gate;
+        let output = tmux.run(&args).await.map_err(|error| error.sentence())?;
+        let pane = pane_of(&output)?;
+        let runs = start_claude(&tmux, &pane, &launch, remain_on_exit).await?;
+        Ok((output, runs))
+    })
+    .await
+    .map_err(|error| format!("The worker failed to finish ({error})."))?
 }
 
 /// Start `launch` in new pane `pane` (running [`HOLD`]): its marks and
