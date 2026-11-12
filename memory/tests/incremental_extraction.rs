@@ -4419,12 +4419,9 @@ mod productive {
             input.skip = skip;
             stack.run(&input).await.unwrap();
             let s = stack.script.lock().unwrap();
-            assert_eq!(
-                s.cursor.as_deref(),
-                Some(if skip { "end" } else { "anchor" })
-            );
+            assert_eq!(s.cursor.as_deref(), Some("end"));
             assert_eq!(s.count("router::complete"), 0);
-            assert_eq!(s.count("state::set"), usize::from(skip));
+            assert_eq!(s.count("state::set"), 1);
             assert_eq!(stack.commits(), 0);
         }
     }

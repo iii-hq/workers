@@ -25,6 +25,7 @@ struct Fixture {
     children: Vec<Value>,
     reply: Option<Value>,
     gone: bool,
+    kind: Option<&'static str>,
 }
 struct Stack {
     deps: Arc<Deps>,
@@ -136,7 +137,7 @@ impl Stack {
                                     },
                                     "session::list" => json!({"sessions":replies.lock().unwrap().children,"next_cursor":null}),
                                     "session::get" if replies.lock().unwrap().gone => Value::Null,
-                                    "session::get" => json!({"meta":{"session_id":"synthetic-session","kind":"user","metadata":{}}}),
+                                    "session::get" => json!({"meta":{"session_id":"synthetic-session","kind":replies.lock().unwrap().kind.unwrap_or("user"),"metadata":{}}}),
                                     _ => Value::Null,
                                 };
                                 if !request["invocation_id"].is_null() {
@@ -1332,4 +1333,22 @@ async fn a_deleted_session_keeps_no_ledger_and_is_not_extracted() {
     let fixture = stack.fixture.lock().unwrap();
     assert!(fixture.queued.is_empty());
     assert!(fixture.cursor.is_null());
+}
+
+#[tokio::test]
+async fn a_non_user_session_is_read_past_and_teaches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    stack.fixture.lock().unwrap().kind = Some("e2e");
+    let job = serde_json::from_value(
+        json!({"session_id":"synthetic-session","bank":"main","until":"opaque-entry"}),
+    )
+    .unwrap();
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
+    let fixture = stack.fixture.lock().unwrap();
+    // The cursor is how a caller sees the session was read.
+    assert_eq!(fixture.cursor["last_entry_id"], "opaque-entry");
+    assert!(fixture.prompts.is_empty());
+    assert!(!dir.path().join("main/memories.jsonl").exists());
 }

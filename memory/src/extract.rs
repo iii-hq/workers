@@ -1004,7 +1004,30 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         return Ok(false);
     };
     if !extracts(meta.get("kind").and_then(Value::as_str)) {
-        // A saved plan is not session authority: no cursor or receipt access.
+        // Not the user's session: step past what it read, as main does, so
+        // the cursor still says the session was read. A saved plan is not
+        // session authority, so a pending or retained run keeps the cursor.
+        if ext(deps, |s| s.pending_extraction(session_id))
+            .await?
+            .is_some()
+            || !ext(deps, |s| s.extraction_ranges(session_id))
+                .await?
+                .is_empty()
+        {
+            return Ok(false);
+        }
+        let since = cursor_get(&deps.iii, session_id).await?;
+        let (entries, until_seen, _) = fetch_span(
+            &deps.iii,
+            session_id,
+            since.as_deref(),
+            job.until.as_deref(),
+            cfg.extraction_window,
+        )
+        .await?;
+        if let Some((id, ..)) = entries.last().filter(|_| until_seen || job.until.is_none()) {
+            cursor_set(&deps.iii, session_id, id).await?;
+        }
         return Ok(false);
     }
     // Deleted after the turn ran: the pass must not bring it back.
