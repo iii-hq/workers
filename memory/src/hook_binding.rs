@@ -171,6 +171,9 @@ pub fn register_pre_generate(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 /// Rows the ledger already holds, or the last import dismissed because the
 /// cursor had passed them, add nothing: no lookup, no path walk. A failed
 /// import keeps earlier evidence.
+// shortcut: a dismissed row is not re-checked if the cursor later leaves the
+// active path (a branch switch), so it is not re-imported then; key the record
+// on the cursor entry if that case shows up.
 fn spawn_import(
     deps: &Arc<Deps>,
     invocation: Option<InvocationCtx>,

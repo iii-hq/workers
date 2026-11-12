@@ -1551,3 +1551,63 @@ async fn a_deleted_session_forgets_the_rows_its_cursor_passed() {
         .await;
     assert!(walks(&stack) > 0);
 }
+
+#[tokio::test]
+async fn the_rows_an_import_dismissed_are_replaced_each_time_and_go_when_none_was_passed() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    stack.fixture.lock().unwrap().cursor = json!({"last_entry_id":"opaque-entry"});
+    let dismissed = json!(["dismissed-history-v1", "synthetic-session"]).to_string();
+    let turns = |plan: Option<Value>| -> Vec<String> {
+        plan.map(|plan| {
+            plan.as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["attestation"]["turn_id"].as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+    };
+    stack
+        .invoke(input("a"), "owner-one", Some(stack.handle.id()))
+        .await;
+    let held = stack
+        .deps
+        .store()
+        .await
+        .extraction_plan(&dismissed)
+        .unwrap();
+    assert_eq!(turns(held), ["old-a"]);
+    // Replaced, never added to: only the last import's passed rows.
+    stack
+        .invoke(input("b"), "owner-one", Some(stack.handle.id()))
+        .await;
+    let held = stack
+        .deps
+        .store()
+        .await
+        .extraction_plan(&dismissed)
+        .unwrap();
+    assert_eq!(turns(held), ["old-b"]);
+    // An import none of whose rows the cursor passed removes the record.
+    stack
+        .fixture
+        .lock()
+        .unwrap()
+        .path
+        .push(json!({"entry_id":"later-entry",
+        "message":{"role":"user","content":[{"type":"text","text":"abc"}]}}));
+    let mut delivery = input("c");
+    delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"]["entry_id"] =
+        json!("later-entry");
+    stack
+        .invoke(delivery, "owner-one", Some(stack.handle.id()))
+        .await;
+    let held = stack
+        .deps
+        .store()
+        .await
+        .extraction_plan(&dismissed)
+        .unwrap();
+    assert_eq!(held, None);
+}
