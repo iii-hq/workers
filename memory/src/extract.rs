@@ -1148,9 +1148,6 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         };
         let end = pending.entries.last().map(|e| e.0.clone());
         if since != end {
-            if job.skip || resolved.as_ref() != Some(&scope) {
-                return Err("pending extraction requires eligible matching job bank".into());
-            }
             let current = intervals
                 .iter()
                 .find_map(|(current_scope, turn, entries)| {
@@ -1164,7 +1161,12 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                         .flatten()
                         .map(<[Entry]>::to_vec)
                 })
-                .ok_or("pending extraction source no longer on path or policy changed")?;
+                .filter(|_| !job.skip && resolved.as_ref() == Some(&scope));
+            // Not this job's run as recorded (an edit, a changed policy or
+            // bank): the retained pass drops it and runs the path as it is.
+            let Some(current) = current else {
+                return retained_pass(deps, &cfg, job, intervals, Some(pending)).await;
+            };
             read_run(
                 deps,
                 &cfg,

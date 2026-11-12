@@ -687,6 +687,8 @@ mod productive {
         observe_events: bool,
         cursor_file: Option<std::path::PathBuf>,
         model_pause: Option<Arc<(tokio::sync::Semaphore, tokio::sync::Semaphore)>>,
+        // The bank the session's metadata names; `private` when unset.
+        session_bank: Option<String>,
     }
     impl Script {
         fn answer(&mut self, function: &str, data: &Value) -> Reply {
@@ -696,7 +698,7 @@ mod productive {
                     Err(("invocation_error", "session/storage: unavailable"))
                 }
                 "session::get" => Ok(
-                    json!({"meta":{"session_id":data["session_id"],"kind":self.kind,"metadata":{"memory_bank":"private"}}}),
+                    json!({"meta":{"session_id":data["session_id"],"kind":self.kind,"metadata":{"memory_bank":self.session_bank.as_deref().unwrap_or("private")}}}),
                 ),
                 "session::list" => Ok(json!({"sessions":[],"next_cursor":null})),
                 "state::get" | "state::set" if self.state_function_absent => {
@@ -2902,14 +2904,14 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn pending_recovery_rejects_changed_source_text_without_ack_or_repeat() {
+    async fn pending_recovery_runs_changed_source_text_as_the_path_holds_it() {
         let text = "Amber instruments require copper calibration.";
         let stack = Boundary::new(Script {
             path: vec![message("anchor", ""), message("end", text)],
             cursor: Some("anchor".into()),
             persistent_cursor: true,
             state_write_error: true,
-            model_items: VecDeque::from([fact(text)]),
+            model_items: VecDeque::from([fact(text), fact(text)]),
             ..Script::default()
         })
         .await;
@@ -2918,22 +2920,54 @@ mod productive {
         {
             let mut s = stack.script.lock().unwrap();
             s.state_write_error = false;
-            s.path[1] = message(
-                "end",
-                "Different text with the same identifier must fail closed.",
-            );
+            s.path[1] = message("end", "Different text with the same identifier.");
         }
         let stack = stack.restart().await;
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("source no longer on path"));
+        // The saved run can never run as recorded: it is dropped, and the
+        // edited text runs as the path holds it now. No retry is stuck on it.
+        stack.run(&job("end")).await.unwrap();
         assert_eq!(stack.log_records("private"), original);
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        {
+            let store = stack.deps.store().await;
+            let session = "incremental-fixture";
+            assert!(store.pending_extraction(session).unwrap().is_none());
+            assert!(store.extraction_ranges(session).unwrap().is_empty());
+        }
         let s = stack.script.lock().unwrap();
-        assert_eq!(s.count("router::complete"), 0);
-        assert_eq!(s.count("state::set"), 0);
+        assert_eq!(s.count("router::complete"), 1);
+        assert!(s.inputs()[0].contains("Different text with the same identifier."));
+    }
+
+    #[tokio::test]
+    async fn pending_recovery_after_the_session_bank_changed_runs_under_the_new_bank() {
+        let text = "Amber instruments require copper calibration.";
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("end", text)],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_failures: 1,
+            model_items: VecDeque::from([fact(text)]),
+            ..Script::default()
+        })
+        .await;
+        // A job without a bank resolves the session's bank on every attempt.
+        let mut unbound = job("end");
+        unbound.bank = None;
+        assert!(stack.run(&unbound).await.is_err());
+        stack.script.lock().unwrap().session_bank = Some("other".into());
+        let stack = stack.restart().await;
+        stack.run(&unbound).await.unwrap();
+        assert!(stack.log_records("private").is_empty());
+        assert_eq!(stack.log_records("other")[0].text, text);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        assert!(stack
+            .deps
+            .store()
+            .await
+            .pending_extraction("incremental-fixture")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -3297,6 +3331,22 @@ mod productive {
                     _ => {}
                 }
                 let rejection = stack.run(&wrong).await;
+                if denied == "policy" {
+                    // The source now says OFF: the saved ON run can never run
+                    // as recorded, so it is dropped and the turn passes
+                    // unextracted. Nothing is published from the saved run.
+                    rejection.unwrap();
+                    assert_eq!(stack.log_records("private"), records);
+                    assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+                    let store = stack.deps.store().await;
+                    let session = "incremental-fixture";
+                    assert!(store.pending_extraction(session).unwrap().is_none());
+                    assert!(store.extraction_ranges(session).unwrap().is_empty());
+                    let s = stack.script.lock().unwrap();
+                    assert_eq!(s.count("router::complete"), 0);
+                    assert_eq!(s.count("memory::on-item-changed"), 0);
+                    continue;
+                }
                 if matches!(denied, "automation" | "skip") {
                     rejection.unwrap();
                 } else {
