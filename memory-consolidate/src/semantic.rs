@@ -628,6 +628,10 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
         .map(<[MemoryRow]>::to_vec)
         .collect();
     let mut retired: HashSet<String> = HashSet::new();
+    // A reinforced survivor changes: later actions, in this batch or a later
+    // one (a pending record can be an earlier batch's candidate), expect the
+    // snapshot memory returned, not the one read before.
+    let mut written: BTreeMap<String, Value> = BTreeMap::new();
 
     while let Some(group) = queue.pop_front() {
         if *budget == 0 {
@@ -636,7 +640,18 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
                 .push("semantic tier deferred: per-run supersede cap reached".into());
             break;
         }
-        match judge_group(iii, bank, opts, budget, report, &group, &mut retired).await {
+        match judge_group(
+            iii,
+            bank,
+            opts,
+            budget,
+            report,
+            &group,
+            &mut retired,
+            &mut written,
+        )
+        .await
+        {
             Step::Done => {
                 if let Some(last) = group.last() {
                     cursor = Cursor::of(last);
@@ -662,6 +677,7 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn judge_group<T: ConsolidationTransport + ?Sized>(
     iii: &T,
     bank: &str,
@@ -670,6 +686,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
     report: &mut BankReport,
     group: &[MemoryRow],
     retired: &mut HashSet<String>,
+    written: &mut BTreeMap<String, Value>,
 ) -> Step {
     // Candidates are recalled per batch, after earlier batches wrote: a
     // record retired since then is no longer live and drops out.
@@ -727,9 +744,6 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
     for (what, why) in &verdict.rejected {
         tracing::debug!(bank, why, action = %what, "semantic action rejected");
     }
-    // A reinforced survivor changes: later actions in this batch expect the
-    // snapshot memory returned, not the one the judge read.
-    let mut written: BTreeMap<String, Value> = BTreeMap::new();
     for action in verdict.accepted {
         let fresh = match (
             still_as_seen(iii, bank, &action.keep).await,

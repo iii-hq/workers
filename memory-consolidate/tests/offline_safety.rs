@@ -1111,6 +1111,33 @@ async fn two_merges_into_one_survivor_in_a_batch_expect_its_returned_snapshot() 
     assert_eq!(calls[1]["expected_superseded_by"]["revision"], 1);
 }
 
+#[tokio::test]
+async fn a_survivor_reinforced_in_an_earlier_batch_is_guarded_by_its_returned_snapshot() {
+    // All three are pending, one per batch. Batch 1 merges `a` into `b`, a
+    // candidate that is itself pending in batch 2; batch 2 then acts on `b`.
+    let boundary = Boundary::with_rows(vec![
+        row("a", "User drinks tea every morning.", 1),
+        row("b", "Every morning the user drinks green tea.", 2),
+        row("c", "Each morning the user has green tea.", 3),
+    ]);
+    boundary.0.lock().unwrap().guarded = true;
+    boundary.decision(json!({"actions":[{"type":"merge","survivor":"c1","retired":"n1","reason":"Synthetic supplied equivalence."}]}));
+    boundary.decision(json!({"actions":[{"type":"merge","survivor":"n1","retired":"c1","reason":"Synthetic supplied equivalence."}]}));
+    let opts = SemanticOptions {
+        max_per_run: 3,
+        ..options()
+    };
+    let mut budget = 3;
+    let mut report = consolidate::BankReport::default();
+    semantic::run_semantic_tier(&boundary, "offline", &opts, &mut budget, &mut report).await;
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.superseded, 2);
+    let calls = supersedes(&boundary);
+    assert_eq!(calls.iter().map(guarded_id).collect::<Vec<_>>(), ["a", "c"]);
+    assert_eq!(calls[1]["superseded_by"], "b");
+    assert_eq!(calls[1]["expected_superseded_by"]["revision"], 1);
+}
+
 /// Every `dup_of` pair of memory's recall golden set, supplied as the judge's
 /// merge decision, passes the validator and reaches `memory::supersede`.
 #[tokio::test]
