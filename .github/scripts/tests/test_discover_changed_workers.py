@@ -159,6 +159,33 @@ def test_a_traces_ui_change_rebuilds_ade(
     assert payload["native_ui"] is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "packages/traces-ui/src/host.tsx",
+        "packages/console-ui/format.mjs",
+        "biome.json",
+        "ade/web/src/lib/icon-size-conformance.test.ts",
+        "pnpm-lock.yaml",
+    ],
+)
+def test_traces_ui_runs_for_its_inputs(path: str) -> None:
+    assert discover.traces_ui_changed([path]) is True, path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "packages/native-ui/src/list.ts",
+        "ade/web/src/App.tsx",
+        "ade/web/src/lib/iii-client.ts",
+        "harness/src/main.rs",
+    ],
+)
+def test_traces_ui_skips_other_changes(path: str) -> None:
+    assert discover.traces_ui_changed([path]) is False, path
+
+
 def test_sdk_docs_alone_rebuild_no_worker(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

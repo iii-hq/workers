@@ -157,9 +157,12 @@ NATIVE_UI_INFRA_PATHS = {
 
 # The traces-ui job (ci.yml) runs the @iii-dev/traces-ui package's own
 # biome, typecheck, tests and build, and the ADE design scans that cover it.
-# It runs when the package, the root pnpm workspace or this CI changes (the
-# same infra paths as native-ui).
-TRACES_UI_PREFIX = "packages/traces-ui/"
+# It runs when the package, the console-ui helpers it imports, the root
+# biome config its own extends, the ADE design scans it runs, the root pnpm
+# workspace or this CI changes (the same infra paths as native-ui).
+TRACES_UI_PREFIXES = ("packages/traces-ui/", "packages/console-ui/")
+TRACES_UI_PATHS = {"biome.json"}
+TRACES_UI_SCANS = "ade/web/src/lib/"
 
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a
@@ -370,7 +373,13 @@ def native_ui_changed(files: list[str]) -> bool:
 
 
 def traces_ui_changed(files: list[str]) -> bool:
-    return any(f in NATIVE_UI_INFRA_PATHS or f.startswith(TRACES_UI_PREFIX) for f in files)
+    return any(
+        f in NATIVE_UI_INFRA_PATHS
+        or f in TRACES_UI_PATHS
+        or f.startswith(TRACES_UI_PREFIXES)
+        or (f.startswith(TRACES_UI_SCANS) and f.endswith("-conformance.test.ts"))
+        for f in files
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

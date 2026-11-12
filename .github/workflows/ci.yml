@@ -994,12 +994,27 @@ jobs:
 
       - name: ADE design scans over the package
         working-directory: ade/web
-        run: >-
-          pnpm exec vitest run
-          src/lib/typography-conformance.test.ts
-          src/lib/icon-size-conformance.test.ts
-          src/lib/theme-hover-conformance.test.ts
-          src/lib/viewport-breakpoint-conformance.test.ts
+        # vitest reads file arguments as filters: a renamed scan would drop out
+        # silently, so each must exist first.
+        run: |
+          set -euo pipefail
+          scans=(
+            src/lib/typography-conformance.test.ts
+            src/lib/icon-size-conformance.test.ts
+            src/lib/theme-hover-conformance.test.ts
+            src/lib/viewport-breakpoint-conformance.test.ts
+          )
+          for scan in "${scans[@]}"; do test -f "$scan"; done
+          pnpm exec vitest run "${scans[@]}"
+
+      - name: ADE selection scan over the package
+        working-directory: ade/web
+        # Only the case that lists the package's files: the file's other cases
+        # cover other workers.
+        run: |
+          set -euo pipefail
+          test -f src/lib/selection-conformance.test.ts
+          pnpm exec vitest run src/lib/selection-conformance.test.ts -t 'keeps selected native Console labels'
 
   # ──────────────────────────────────────────────────────────────
   # llm-router lifecycle contract: unlike the regular Rust job, this always

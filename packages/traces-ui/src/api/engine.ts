@@ -42,24 +42,33 @@ export function createEngineTraceSource(client: EngineConnect): TraceSource {
     watch(onTraceIds, onResync) {
       let stop: (() => void) | undefined
       let active = true
-      void Promise.resolve(client()).then(
-        (resolved) => {
-          if (!active) return
-          const offFeed = startTraceActivityFeed(resolved, onTraceIds)
-          const offConnection = onResync
-            ? resolved.addConnectionStateListener((state) => {
-                if (state === 'connected') onResync()
-              })
-            : undefined
-          stop = () => {
-            offFeed()
-            offConnection?.()
-          }
-        },
-        // No client, no live updates: the reads report the failure. (Only
-        // the client's rejection: a throw while subscribing stays loud.)
-        () => {},
-      )
+      // `then(client)`: a connect that throws instead of rejecting is still
+      // one rejection here, never a throw out of `watch`.
+      void Promise.resolve()
+        .then(client)
+        .then(
+          (resolved) => {
+            if (!active) return
+            const offFeed = startTraceActivityFeed(resolved, onTraceIds)
+            // Set before the connection listener, so a throw there cannot
+            // leave the feed running past the unsubscribe.
+            stop = offFeed
+            if (onResync) {
+              const offConnection = resolved.addConnectionStateListener(
+                (state) => {
+                  if (state === 'connected') onResync()
+                },
+              )
+              stop = () => {
+                offFeed()
+                offConnection()
+              }
+            }
+          },
+          // No client, no live updates: the reads report the failure. (Only
+          // the client's rejection: a throw while subscribing stays loud.)
+          () => {},
+        )
       return () => {
         active = false
         stop?.()

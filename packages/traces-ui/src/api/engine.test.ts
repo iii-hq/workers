@@ -76,4 +76,13 @@ describe('createEngineTraceSource', () => {
     // A watch without a client has nothing to stop, and throws nothing.
     source.watch?.(vi.fn())?.()
   })
+
+  it('treats a connect that throws like one that rejects', async () => {
+    const source = createEngineTraceSource(() => {
+      throw new Error('no engine')
+    })
+    expect(() => source.watch?.(vi.fn(), vi.fn())?.()).not.toThrow()
+    await expect(source.listTraces()).rejects.toThrow('no engine')
+    await expect(source.hiddenFunctionIds?.()).resolves.toEqual(new Set())
+  })
 })
