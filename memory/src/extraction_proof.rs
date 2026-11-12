@@ -444,7 +444,8 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
     }
     // Rows of entries the cursor already passed are never read again: drop
     // them, stored and delivered, so the ledger holds only pending turns.
-    // An unreadable cursor prunes nothing.
+    // The delivered ones are remembered, so the next step that delivers them
+    // again imports nothing. An unreadable cursor prunes nothing.
     let cursor = crate::extract::cursor_get(&deps.iii, &input.session_id)
         .await
         .ok()
@@ -456,15 +457,15 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
         Some(at) => order[..=at].iter().map(String::as_str).collect(),
         None => HashSet::new(),
     };
-    let rows: Vec<Row> = h
+    let (rows, dismissed): (Vec<Row>, Vec<Row>) = h
         .rows
         .into_iter()
-        .filter(|row| !confirmed.contains(row.attestation.entry_id.as_str()))
-        .collect();
+        .partition(|row| !confirmed.contains(row.attestation.entry_id.as_str()));
     let store = deps.store().await;
     crate::store::run_blocking(|| {
         store.prune_authenticated_history(&input.session_id, &confirmed)?;
-        store.save_authenticated_history(&input.session_id, &rows)
+        store.save_authenticated_history(&input.session_id, &rows)?;
+        store.save_dismissed_history(&input.session_id, &dismissed)
     })
     .await
     .map_err(|e| format!("history persistence failed: {e}"))?;

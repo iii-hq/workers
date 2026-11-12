@@ -1449,3 +1449,105 @@ async fn the_next_turns_job_waits_for_its_sessions_history_import() {
         json!({"last_entry_id":"next-end"})
     );
 }
+
+/// A step of turn `turn` that re-delivers the same failed request.
+fn same_history(turn: &str) -> Value {
+    let mut delivery = input(turn);
+    delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"]["turn_id"] =
+        json!("old-failed");
+    delivery
+}
+
+/// The path pages and owner lookups made since the last call.
+fn walks(stack: &Stack) -> usize {
+    std::mem::take(&mut stack.fixture.lock().unwrap().calls)
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.as_str(),
+                "session::messages" | "engine::functions::info" | "engine::workers::info"
+            )
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn a_row_the_cursor_passed_is_not_imported_again_on_every_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    stack.fixture.lock().unwrap().cursor = json!({"last_entry_id":"opaque-entry"});
+    stack
+        .invoke(same_history("t0"), "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(walks(&stack) > 0);
+    assert_eq!(
+        stack.deps.store().await.extraction_plan(&key()).unwrap(),
+        None
+    );
+    // Every later step carries the same history: nothing to look up or walk.
+    for step in 1..=5 {
+        stack
+            .invoke(
+                same_history(&format!("t{step}")),
+                "owner-one",
+                Some(stack.handle.id()),
+            )
+            .await;
+    }
+    assert_eq!(walks(&stack), 0);
+    // A new failed request the cursor has not passed is still imported.
+    stack
+        .fixture
+        .lock()
+        .unwrap()
+        .path
+        .push(json!({"entry_id":"later-entry",
+        "message":{"role":"user","content":[{"type":"text","text":"abc"}]}}));
+    let mut delivery = same_history("t6");
+    let rows = &mut delivery["recall_context"]["extraction_history"]["rows"];
+    let mut later = rows[0].clone();
+    later["attestation"]["turn_id"] = json!("old-later");
+    later["attestation"]["entry_id"] = json!("later-entry");
+    rows.as_array_mut().unwrap().push(later);
+    stack
+        .invoke(delivery, "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(walks(&stack) > 0);
+    let held = stack.deps.store().await.extraction_plan(&key()).unwrap();
+    let held = held.unwrap();
+    assert_eq!(held.as_array().unwrap().len(), 1);
+    assert_eq!(held[0]["attestation"]["turn_id"], "old-later");
+}
+
+#[tokio::test]
+async fn a_deleted_session_forgets_the_rows_its_cursor_passed() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    stack.fixture.lock().unwrap().cursor = json!({"last_entry_id":"opaque-entry"});
+    for turn in ["t0", "t1"] {
+        stack
+            .invoke(same_history(turn), "owner-one", Some(stack.handle.id()))
+            .await;
+    }
+    walks(&stack);
+    stack
+        .invoke(same_history("t2"), "owner-one", Some(stack.handle.id()))
+        .await;
+    assert_eq!(walks(&stack), 0);
+    memory::hooks::session_deleted(
+        &stack.deps,
+        memory::hooks::SessionDeletedInput {
+            session_id: "synthetic-session".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(std::fs::read_dir(dir.path().join(".extraction"))
+        .map(|files| files.count() == 0)
+        .unwrap_or(true));
+    // Nothing of the session is left to skip a delivery with.
+    stack
+        .invoke(same_history("t3"), "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(walks(&stack) > 0);
+}

@@ -168,8 +168,9 @@ pub fn register_pre_generate(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 }
 
 /// Authenticate a delivery once and import its history off the hook path.
-/// Rows the ledger already holds add nothing: no lookup, no path walk. A
-/// failed import keeps earlier evidence.
+/// Rows the ledger already holds, or the last import dismissed because the
+/// cursor had passed them, add nothing: no lookup, no path walk. A failed
+/// import keeps earlier evidence.
 fn spawn_import(
     deps: &Arc<Deps>,
     invocation: Option<InvocationCtx>,
@@ -187,16 +188,16 @@ fn spawn_import(
     }
     let session_id = delivered.session_id.clone();
     let deps = deps.clone();
-    // shortcut: a row the cursor already passed is dropped, not held, so each
-    // later delivery of it walks the path again until the harness stops
-    // sending it; remember dismissed rows if that shows in engine load.
     let import = tokio::spawn(async move {
         let store = deps.store().await;
-        let stored =
-            crate::store::run_blocking(|| store.authenticated_history(&delivered.session_id))
-                .await
-                .unwrap_or_default();
-        if rows.iter().all(|row| stored.contains(row))
+        let held = crate::store::run_blocking(|| {
+            let mut held = store.authenticated_history(&delivered.session_id)?;
+            held.extend(store.dismissed_history(&delivered.session_id)?);
+            Ok(held)
+        })
+        .await
+        .unwrap_or_default();
+        if rows.iter().all(|row| held.contains(row))
             || !deps
                 .hook_binding
                 .authenticates(&deps.iii, invocation.as_ref())

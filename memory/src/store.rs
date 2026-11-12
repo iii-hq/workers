@@ -606,6 +606,10 @@ fn history_key(session: &str) -> String {
     serde_json::json!(["authenticated-history-v1", session]).to_string()
 }
 
+fn dismissed_key(session: &str) -> String {
+    serde_json::json!(["dismissed-history-v1", session]).to_string()
+}
+
 fn extraction_identifier(id: &str) -> Result<(), MemoryError> {
     if !crate::extraction_proof::bounded(id) {
         return Err(MemoryError::InvalidInput(
@@ -774,6 +778,34 @@ impl Store {
             .map_err(MemoryError::InvalidInput)?;
         rows.extend(additions.into_iter().cloned());
         self.write_extraction_record(&key, serde_json::json!({"source":key,"plan":rows}))
+    }
+
+    /// The delivered rows the last import dropped because the cursor had
+    /// passed them: delivered again, they need no new import.
+    pub(crate) fn dismissed_history(
+        &self,
+        session: &str,
+    ) -> Result<Vec<crate::extraction_proof::Row>, MemoryError> {
+        extraction_identifier(session)?;
+        Self::decode_authenticated_history(self.extraction_plan(&dismissed_key(session))?)
+    }
+
+    /// Replaces, never adds to, the rows an earlier import dismissed: it holds
+    /// one delivery at most, and a row the harness stops sending goes with it.
+    pub(crate) fn save_dismissed_history(
+        &self,
+        session: &str,
+        rows: &[crate::extraction_proof::Row],
+    ) -> Result<(), MemoryError> {
+        extraction_identifier(session)?;
+        crate::extraction_proof::rows_bytes(rows).map_err(MemoryError::InvalidInput)?;
+        let key = dismissed_key(session);
+        let _lock = extraction_lock();
+        if rows.is_empty() {
+            remove_if_exists(&self.extraction_plan_path(&key))
+        } else {
+            self.write_extraction_record(&key, serde_json::json!({"source":key,"plan":rows}))
+        }
     }
 
     /// Drop the history rows of entries the confirmed cursor already passed:
@@ -1076,7 +1108,8 @@ impl Store {
         Ok(())
     }
 
-    /// A deleted session's pending slot, ranges, history ledger and plans.
+    /// A deleted session's pending slot, ranges, history ledger, dismissed
+    /// history rows and plans.
     pub fn purge_session_extraction(&self, session: &str) -> Result<(), MemoryError> {
         self.purge_extraction(|key| match key {
             [owner, ..] if key.len() == PLAN_KEY_LEN => owner == session,
@@ -2408,6 +2441,8 @@ mod tests {
                 .is_err());
             assert!(store.authenticated_history(&invalid).is_err());
             assert!(store.save_authenticated_history(&invalid, &[]).is_err());
+            assert!(store.dismissed_history(&invalid).is_err());
+            assert!(store.save_dismissed_history(&invalid, &[]).is_err());
             assert_eq!(snapshot(), before);
         }
         let oversized_source = "x".repeat(crate::extraction_proof::SOURCE_BYTES / 6 + 1);
