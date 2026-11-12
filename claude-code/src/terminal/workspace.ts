@@ -7,7 +7,8 @@
 
 import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
-import { PLUGIN_DIR_NAME, pluginDetail, pluginFiles } from '../plugin.js';
+import { installOnHost } from '../iii-plugin/install.js';
+import { III_AGENT } from '../iii-plugin/mode.js';
 import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
 import { fetchIiiContext } from '../iii-context.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
@@ -60,7 +61,9 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
     try {
       const context = await fetchIiiContext(iii);
       await writeNotes(iii, workspace, context);
-      const written = await writePlugin(iii, workspace, context);
+      // The `iii` plugin: activity hooks, the runtime skill, the MCP server for
+      // profiles and skills, and the /iii:* commands (../iii-plugin/install.ts).
+      const written = await installOnHost(iii, workspace, context);
       bridge = written.bridge;
       plugin = written.dir;
       if (written.detail) {
@@ -82,7 +85,10 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   // The plugin is how a session gets its hooks and the iii skill; the flag is
   // the same one the Agent SDK emits for a headless turn.
-  const args = plugin ? [...config.args, '--plugin-dir', plugin] : config.args;
+  const args = plugin ? [...config.args, '--plugin-dir', plugin] : [...config.args];
+  // iii mode: the session runs as the plugin's `iii` agent, unless the
+  // operator configured an agent of their own.
+  if (plugin && !config.args.includes('--agent')) args.push('--agent', III_AGENT);
   return { ...base, args, executable, detail, bridge, plugin };
 }
 
@@ -166,34 +172,4 @@ async function writeNotes(
     next = current.trim() ? `${block}\n\n${current.trimStart()}` : `${block}\n`;
   }
   if (next !== current) await writeFile(iii, path, next);
-}
-
-/**
- * The iii plugin, materialised in the workspace.
- *
- * Claude Code loads it with `--plugin-dir`, which is also what the Agent SDK
- * emits for a local plugin — so this is the same directory a headless turn
- * gets, from the same description (`../plugin.ts`). The hooks that report
- * activity live in it, which is why nothing writes `.claude/settings.json` any
- * more: that file is the operator's, and a plugin directory is this worker's.
- *
- * Returns the CLI it found, or '' — the plugin is written either way (a CLI
- * installed later then works), but an empty answer means the hooks are mute and
- * the caller says so out loud.
- */
-export async function writePlugin(
-  iii: IIIClient,
-  workspace: string,
-  context: { text: string; detail: string },
-): Promise<{ bridge: string; dir: string; detail: string }> {
-  const found = await probe(iii, 'command -v iii');
-  const dir = `${workspace}/${PLUGIN_DIR_NAME}`;
-  const options = { cli: found || 'iii', context: context.text, contextDetail: context.detail };
-  for (const file of pluginFiles(options)) {
-    const path = `${dir}/${file.path}`;
-    // Written whole, every boot: the plugin is this worker's directory, so
-    // there is no operator content in it to merge around.
-    if ((await readFile(iii, path)) !== file.content) await writeFile(iii, path, file.content);
-  }
-  return { bridge: found, dir, detail: pluginDetail(options) };
 }

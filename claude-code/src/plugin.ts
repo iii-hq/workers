@@ -18,6 +18,8 @@
  * copy.
  */
 
+import { approveHookEntry } from './iii-plugin/mode.js';
+
 /** Where the plugin is materialised, relative to a workspace. */
 export const PLUGIN_DIR_NAME = '.iii-plugin';
 
@@ -67,24 +69,13 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
     const entry = { hooks: [{ type: 'command', command }] };
     hooks[event] = [shape === 'matcher' ? { matcher: '*', ...entry } : entry];
   }
+  // The iii mode's read-only approvals, after the activity report.
+  hooks.PreToolUse.push(approveHookEntry());
 
+  // The manifest, MCP server and commands are the committed `iii-plugin/`
+  // folder (see `iii-plugin/install.ts`); these are the parts only a worker
+  // can write: hooks that call this host's `iii` CLI, and the runtime skill.
   const files: PluginFile[] = [
-    {
-      path: '.claude-plugin/plugin.json',
-      content: `${JSON.stringify(
-        {
-          name: 'iii',
-          description:
-            'This engine, as Claude Code sees it: the iii runtime skill, and the hooks that report every turn onto claude::on-agent-event.',
-          version: '0.1.0',
-          // `claude plugin validate` asks for attribution; the worker that
-          // wrote the directory is the honest answer.
-          author: { name: 'iii claude-code worker' },
-        },
-        null,
-        2,
-      )}\n`,
-    },
     { path: 'hooks/hooks.json', content: `${JSON.stringify({ hooks }, null, 2)}\n` },
   ];
 

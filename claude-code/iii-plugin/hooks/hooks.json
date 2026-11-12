@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server/index.mjs\" sync --quiet >/dev/null 2>&1 &"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__plugin_iii_iii__(iii_status|iii_list_agents|iii_get_agent|iii_list_skills|iii_get_skill|iii_events|iii_observers|iii_unobserve)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"iii plugin: read-only engine tool\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}

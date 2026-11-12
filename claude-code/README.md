@@ -441,3 +441,7 @@ those keys rather than in one covering span; a headless turn gets both.
 | extra capability | another iii worker on the bus (`shell`, `database`, `storage`, ...) |
 | interactive CLI session | `shell::pty` session on the injected **claude** console page |
 | terminal hook event | `claude::terminal::activity` -> the same `claude::on-agent-event` frames |
+
+## The iii Claude Code plugin
+
+`iii-plugin/` is the `iii` Claude Code plugin: `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by an MCP server that reads the engine's `iii-directory` live. The worker embeds it in its bundle and installs it for every session (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), adding the activity hooks that feed `claude::on-agent-event` and the `iii-runtime` skill. It also works in a standalone `claude` on any machine that can reach an engine. `pnpm run build:iii-plugin` builds it (part of `build`, `build:bundle`, `typecheck` and `test`); the server build is committed for git installs, and CI fails when it is stale (`check:committed-build`). See [iii-plugin/README.md](iii-plugin/README.md).
