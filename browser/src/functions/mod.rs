@@ -2275,9 +2275,19 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     None => issues.push(doctor::missing_executable_issue(&cfg)),
                     Some(path) if chromium_silent => issues.push(doctor::DoctorIssue {
                         what: format!("executable '{}' printed no version", path.display()),
-                        enable_how: "run it with --version by hand; if it is a wrapper, fix the \
-                                     path it execs"
-                            .to_string(),
+                        enable_how: chromium_source
+                            .and_then(|source| {
+                                let chosen = crate::chromium::Resolved {
+                                    path: path.clone(),
+                                    source,
+                                };
+                                crate::chromium::chosen_binary_advice(&cfg, &chosen)
+                            })
+                            .unwrap_or_else(|| {
+                                "run it with --version by hand; if it is a wrapper, fix the \
+                                 path it execs"
+                                    .to_string()
+                            }),
                     }),
                     Some(_) => {}
                 }

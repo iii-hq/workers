@@ -3387,11 +3387,11 @@ async fn launch_chromium(
     std::fs::create_dir_all(profile)
         .map_err(|e| format!("cannot create profile dir {}: {e}", profile.display()))?;
     let browser_config = build_browser_config(cfg, &resolved.path, no_sandbox, headless, profile)?;
-    match Browser::launch(browser_config).await {
-        Ok(launched) => Ok(launched),
+    let error = match Browser::launch(browser_config).await {
+        Ok(launched) => return Ok(launched),
         Err(first) if reap_orphan_chromium(profile) => {
             tracing::warn!(error = %first, "launch failed against an orphaned Chromium; reaped it, retrying");
-            Browser::launch(build_browser_config(
+            match Browser::launch(build_browser_config(
                 cfg,
                 &resolved.path,
                 no_sandbox,
@@ -3399,9 +3399,37 @@ async fn launch_chromium(
                 profile,
             )?)
             .await
-            .map_err(|e| format!("failed to launch Chromium: {e}"))
+            {
+                Ok(launched) => return Ok(launched),
+                Err(e) => e,
+            }
         }
-        Err(e) => Err(format!("failed to launch Chromium: {e}")),
+        Err(e) => e,
+    };
+    Err(launch_error(cfg, &resolved, error.to_string()).await)
+}
+
+/// A failed launch. When the binary was someone's choice and does not even
+/// print a version (a config `executable` wrapper whose target is gone), the
+/// error names the knob and what the search would launch instead; any other
+/// failure is reported as it is.
+async fn launch_error(
+    cfg: &WorkerConfig,
+    resolved: &crate::chromium::Resolved,
+    e: String,
+) -> String {
+    let path = resolved.path.clone();
+    let runs = tokio::task::spawn_blocking(move || doctor::chromium_version(&path))
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    match (!runs)
+        .then(|| crate::chromium::chosen_binary_advice(cfg, resolved))
+        .flatten()
+    {
+        Some(advice) => format!("failed to launch Chromium: {e}. To fix it, {advice}"),
+        None => format!("failed to launch Chromium: {e}"),
     }
 }
 

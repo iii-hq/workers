@@ -161,6 +161,8 @@ async fn main() -> Result<()> {
                     None => tracing::warn!(
                         path = %found.path.display(),
                         source = found.source.as_str(),
+                        fix = browser::chromium::chosen_binary_advice(&cfg, &found)
+                            .unwrap_or_default(),
                         "chromium found but `--version` printed nothing; sessions will fail \
                          to start (a wrapper script may exec a missing binary)"
                     ),
