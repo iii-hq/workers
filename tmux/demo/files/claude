@@ -5,8 +5,16 @@ like Claude Code 2.1.322 for the worker: it records itself in
 <config>/projects/<cwd slug>/<session>.jsonl, sets its pane title, honours
 --resume <id> (and refuses one its config folder can't see, like the real
 one), shows --dangerously-skip-permissions, and `auth login` prints a sign-in
-link and waits for a pasted code. `claude-state <pane> working|waiting|idle|limit`
-changes what it shows. SIGTERM ends it cleanly, as it does Claude Code.
+link and waits for a pasted code (`personal`, `side-project` or `as:<id>`
+pasted as the code signs in as that account). `claude-state <pane> working|waiting|idle|limit` changes
+what it shows. SIGTERM ends it cleanly, as it does Claude Code.
+
+Each line typed into it is a request: like Claude Code, it reads
+<config>/.credentials.json again right then, answers with the account its
+token is for ("as personal": the fake token's name, `demo-<name>`; never any
+other token's text) and appends "<pid> <name>" to <state>/requests.log, so a
+switch of the global account shows in an idle session. `/login [id]` typed
+into it signs in on its own config folder, as /login does.
 
 Environment: CLAUDE_CONFIG_DIR (else ~/.claude), FAKE_CLAUDE_STATE_DIR (where
 claude-state leaves states, /tmp/fake-claude), FAKE_CLAUDE_TITLE (a new
@@ -30,8 +38,10 @@ import uuid
 HOME = os.path.expanduser("~")
 CONFIG_ENV = os.environ.get("CLAUDE_CONFIG_DIR") or None
 CONFIG = CONFIG_ENV or os.path.join(HOME, ".claude")
-ACCOUNT = "default" if CONFIG_ENV is None or os.path.realpath(CONFIG) == os.path.realpath(
-    os.path.join(HOME, ".claude")) else os.path.basename(CONFIG.rstrip("/"))
+ON_SLOT = CONFIG_ENV is None or os.path.realpath(CONFIG) == os.path.realpath(
+    os.path.join(HOME, ".claude"))
+# The account a sign-in here is for when nothing names one: its folder's.
+ACCOUNT = "default" if ON_SLOT else os.path.basename(CONFIG.rstrip("/"))
 STATE_DIR = os.environ.get("FAKE_CLAUDE_STATE_DIR") or "/tmp/fake-claude"
 PID = os.getpid()
 
@@ -90,6 +100,47 @@ def account_json():
         CONFIG, ".claude.json")
 
 
+def token_label():
+    """The account the sign-in in CONFIG is for now, read afresh as Claude
+    Code does on every request: the fake token's name (`demo-personal` →
+    `personal`), `signed out`, or `?` for a token that isn't a demo one."""
+    try:
+        with open(os.path.join(CONFIG, ".credentials.json")) as f:
+            token = (json.load(f).get("claudeAiOauth") or {}).get("accessToken") or ""
+    except (OSError, ValueError, AttributeError):
+        token = ""
+    if not token:
+        return "signed out"
+    return token[len("demo-"):] if token.startswith("demo-") else "?"
+
+
+def setup_demo():
+    """setup_demo.py, next to this script (a test) or in /opt/demo."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    for folder in (here, "/opt/demo"):
+        if os.path.isfile(os.path.join(folder, "setup_demo.py")):
+            sys.path.insert(0, folder)
+            break
+    import setup_demo as module  # the same people as the seeded accounts
+
+    return module
+
+
+def sign_in_here(account_id):
+    """Sign in on CONFIG as `account_id`, with setup_demo's people."""
+    setup_demo().sign_in(CONFIG, account_json(), account_id)
+
+
+def account_from_code(code):
+    """A code naming a demo person (`personal`) or `as:<id>` (anyone, a new
+    account) signs in as that account; any other code as this folder's."""
+    if code.startswith("as:"):
+        code = code[3:]
+    elif code not in setup_demo().PEOPLE:
+        return ACCOUNT
+    return code if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", code) else ACCOUNT
+
+
 def auth_login():
     sys.stdout.write("Opening browser to sign in…\n")
     sys.stdout.write(
@@ -103,10 +154,7 @@ def auth_login():
     if not code:
         sys.stdout.write("\nLogin cancelled.\n")
         return 1
-    sys.path.insert(0, "/opt/demo")
-    import setup_demo  # the same people as the seeded accounts
-
-    setup_demo.sign_in(CONFIG, account_json(), ACCOUNT)
+    sign_in_here(account_from_code(code))
     sys.stdout.write("\nLogin successful.\n")
     time.sleep(1)
     return 0
@@ -118,7 +166,7 @@ def auth_status():
             signed = bool(json.load(f).get("claudeAiOauth", {}).get("accessToken"))
     except (OSError, ValueError):
         signed = False
-    print(json.dumps({"loggedIn": signed, "account": ACCOUNT}))
+    print(json.dumps({"loggedIn": signed, "account": token_label()}))
     return 0
 
 
@@ -143,6 +191,7 @@ class Session:
         self.skip = skip
         self.started = int(time.time() * 1000)
         self.lines = []
+        self.label = token_label()
         if resume:
             path = find_transcript(resume)
             if path is None:
@@ -158,7 +207,7 @@ class Session:
                         self.title = entry.get("summary") or self.title
                     elif entry.get("type") in ("user", "assistant"):
                         self.lines.append((entry["type"], entry["message"]["content"]))
-            self.append("assistant", "Resumed on the %s account." % ACCOUNT)
+            self.append("assistant", "Resumed, signed in as %s." % self.label)
         else:
             self.id = str(uuid.uuid4())
             self.transcript = os.path.join(CONFIG, "projects", slug(os.getcwd()), self.id + ".jsonl")
@@ -195,7 +244,7 @@ class Session:
         glyph = "⠂" if self.state == "working" else "✳"
         out = ["\033]2;%s %s\033\\" % (glyph, self.title), "\033[2J\033[H"]
         out.append("\033[1m✻ Claude Code\033[0m \033[2m(demo) · %s · %s\033[0m\r\n" % (
-            ACCOUNT, self.id[:8]))
+            self.label, self.id[:8]))
         out.append("\033[2m  %s\033[0m\r\n\r\n" % os.getcwd())
         for kind, text in self.lines[-8:]:
             prefix = "\033[2m>\033[0m " if kind == "user" else "\033[32m●\033[0m "
@@ -214,6 +263,23 @@ class Session:
             out.append("\033[31m  ⏵⏵ bypass permissions on\033[0m\r\n")
         sys.stdout.write("".join(out))
         sys.stdout.flush()
+
+    def ask(self, text):
+        """One request: the sign-in read again now, as Claude Code does."""
+        self.append("user", text)
+        if text.split()[:1] == ["/login"]:
+            words = text.split()
+            sign_in_here(account_from_code(words[1]) if len(words) > 1 else ACCOUNT)
+            self.label = token_label()
+            self.append("assistant", "Login successful, as %s." % self.label)
+            return
+        self.label = token_label()
+        try:
+            with open(os.path.join(STATE_DIR, "requests.log"), "a") as f:
+                f.write("%d %s\n" % (PID, self.label))
+        except OSError:
+            pass
+        self.append("assistant", "(demo) Noted, as %s." % self.label)
 
     def poll_state(self):
         try:
@@ -283,8 +349,7 @@ def main():
             if not line:
                 session.end()
             if line.strip():
-                session.append("user", line.strip())
-                session.append("assistant", "(demo) Noted.")
+                session.ask(line.strip())
                 session.draw()
         if session.poll_state():
             session.record()

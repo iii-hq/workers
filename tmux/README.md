@@ -616,7 +616,9 @@ server, a fake `claude` and `codex`, three fake accounts and a mock usage
 endpoint) against an engine on the host: `demo/run.sh <engine-port>`, then
 `demo/seed.sh`, `demo/usage.sh` to change what the mock answers and
 `demo/state.sh` to make a fake Claude Code work, wait, go idle or hit its
-limit. Nothing in it reads the host's own Claude Code or Codex, and its
+limit, and `demo/ask.sh` to send one a message: it reads its sign-in again,
+as Claude Code does, and answers with the account it used (`/login <id>`
+typed into it signs in as that account). Nothing in it reads the host's own Claude Code or Codex, and its
 scripts that write files or call tmux refuse to run outside the container
 (they need `/.dockerenv` and `DEMO_CONTAINER=1`, which the image sets).
 
