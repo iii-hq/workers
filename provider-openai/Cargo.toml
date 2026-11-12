@@ -53,3 +53,11 @@ tokio = { version = "1", features = ["test-util"] }
 # The injectable console UI (ui.rs + the pnpm bundle in build.rs).
 default = ["console-ui"]
 console-ui = ["dep:iii-console-ui"]
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

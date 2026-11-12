@@ -27,3 +27,11 @@ clap = { version = "4", features = ["derive", "env"] }
 # Must stay on the same schemars major as iii-sdk so the derived
 # `JsonSchema` impls satisfy `RegisterFunction::new_async`.
 schemars = "0.8"
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

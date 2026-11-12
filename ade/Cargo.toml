@@ -61,3 +61,11 @@ which = "8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
