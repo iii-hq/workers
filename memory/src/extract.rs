@@ -997,18 +997,13 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         }),
         (None, false) => crate::scope::resolve(deps, session_id, None).await?,
     };
-    // A stamp or a history row keeps a policy as its bank, layer and agent
-    // only: the job's takes that form, or a default bank no name chose never
-    // matches its own turn's stamp.
-    let resolved = resolved.map(|r| crate::scope::Resolved {
-        derived: r.layer(&cfg.default_bank).is_some() || r.agent.is_some(),
-        ..r
-    });
     // Only the user's own sessions are extracted: checked here, where every
-    // path (queued, inline, redelivered, re-resolved) passes.
-    let meta = crate::scope::session_meta(&deps.iii, session_id.to_string()).await?;
-    let kind = meta.as_ref().and_then(|m| m.get("kind"));
-    if !extracts(kind.and_then(Value::as_str)) {
+    // path (queued, inline, redelivered, re-resolved) passes. A deleted one
+    // is never extracted: its cursor and state are gone.
+    let Some(meta) = crate::scope::session_meta(&deps.iii, session_id.to_string()).await? else {
+        return Ok(false);
+    };
+    if !extracts(meta.get("kind").and_then(Value::as_str)) {
         // A saved plan is not session authority: no cursor or receipt access.
         return Ok(false);
     }

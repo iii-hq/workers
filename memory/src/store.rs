@@ -2149,6 +2149,7 @@ mod tests {
                 bank: Some("private".into()),
                 layer: None,
                 agent: None,
+                derived: false,
                 terminal: Terminal {
                     status: "failed".into(),
                     exchange_finished: true,
@@ -2293,6 +2294,7 @@ mod tests {
                 bank: Some("private".into()),
                 layer: None,
                 agent: None,
+                derived: false,
                 terminal: Terminal {
                     status: "failed".into(),
                     exchange_finished: true,

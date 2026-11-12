@@ -23,6 +23,9 @@ pub struct Attestation {
     pub bank: Option<String>,
     pub layer: Option<String>,
     pub agent: Option<String>,
+    /// The stamp's `memory_derived`; absent on an older row.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub derived: bool,
     pub terminal: Terminal,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -465,6 +468,16 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
     })
     .await
     .map_err(|e| format!("history persistence failed: {e}"))?;
+    // The session's purge runs once it is gone: one that ran before this save
+    // is redone here, so the ledger never outlives the session.
+    if crate::scope::session_meta(&deps.iii, input.session_id.clone())
+        .await?
+        .is_none()
+    {
+        return crate::store::run_blocking(|| store.purge_session_extraction(&input.session_id))
+            .await
+            .map_err(|e| format!("history purge failed: {e}"));
+    }
     // Queue messages carry correlation only, never history or a trusted flag.
     // Re-delivery is safe: extraction receipts bind effects to the original source.
     let cfg = deps.config().await;
@@ -567,7 +580,7 @@ impl Row {
                     .transpose()?;
                 Ok(Some(crate::scope::Resolved {
                     bank: bank.clone(),
-                    derived: a.layer.is_some() || agent.is_some(),
+                    derived: a.derived || a.layer.is_some() || agent.is_some(),
                     agent,
                 }))
             }

@@ -22,6 +22,9 @@ struct Fixture {
     cursor: Value,
     prompts: Vec<String>,
     calls: Vec<String>,
+    children: Vec<Value>,
+    reply: Option<Value>,
+    gone: bool,
 }
 struct Stack {
     deps: Arc<Deps>,
@@ -126,9 +129,13 @@ impl Stack {
                                     "state::get" => replies.lock().unwrap().cursor.clone(),
                                     "state::set" => { replies.lock().unwrap().cursor = request["data"]["value"].clone(); json!({"ok":true}) },
                                     "router::complete" => {
-                                        replies.lock().unwrap().prompts.push(request["data"].to_string());
-                                        json!({"message":{"role":"assistant","stop_reason":"stop","content":[{"type":"text","text":"[{\"text\":\"The user prefers copper instruments.\",\"entities\":[\"user\"],\"tags\":[],\"confidence\":\"extracted\",\"kind\":\"memory\",\"scope\":\"project\"}]"}]}})
+                                        let mut fixture = replies.lock().unwrap();
+                                        fixture.prompts.push(request["data"].to_string());
+                                        let items = fixture.reply.clone().unwrap_or_else(|| json!([{"text":"The user prefers copper instruments.","entities":["user"],"tags":[],"confidence":"extracted","kind":"memory","scope":"project"}]));
+                                        json!({"message":{"role":"assistant","stop_reason":"stop","content":[{"type":"text","text":items.to_string()}]}})
                                     },
+                                    "session::list" => json!({"sessions":replies.lock().unwrap().children,"next_cursor":null}),
+                                    "session::get" if replies.lock().unwrap().gone => Value::Null,
                                     "session::get" => json!({"meta":{"session_id":"synthetic-session","kind":"user","metadata":{}}}),
                                     _ => Value::Null,
                                 };
@@ -1228,4 +1235,101 @@ async fn a_failed_request_into_a_trashed_default_bank_is_still_recovered() {
     let queued = stack.fixture.lock().unwrap().queued.clone();
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0]["bank"], "old-bank");
+}
+
+#[tokio::test]
+async fn a_default_bank_turn_teaches_its_sub_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    // A top-level chat with no workspace root and no profile of its own
+    // started a "reviewer" sub-agent; the user corrects that sub-agent.
+    let said = "The reviewer must always check migrations.";
+    {
+        let mut fixture = stack.fixture.lock().unwrap();
+        fixture.children = vec![json!({"session_id":"reviewer-child",
+            "metadata":{"parent_session_id":"synthetic-session","agent_profile":"reviewer"}})];
+        fixture.reply = Some(json!([{"text":said,"entities":["migrations"],"tags":[],
+            "confidence":"extracted","kind":"memory","scope":"agent","agent":"reviewer"}]));
+    }
+    let hook = stack
+        .invoke(
+            json!({"session_id":"synthetic-session","turn_id":"reviewer-turn"}),
+            "owner-one",
+            Some(stack.handle.id()),
+        )
+        .await;
+    let mut origin = hook["result"]["annotations"].clone();
+    origin["turn_id"] = json!("reviewer-turn");
+    stack.fixture.lock().unwrap().path = vec![
+        json!({"entry_id":"reviewer-request","message":{"role":"user","timestamp":1700000000000u64,"content":[{"type":"text","text":said}]}}),
+        json!({"entry_id":"reviewer-end","message":{"role":"assistant","timestamp":1700000000500u64,"content":[{"type":"text","text":"Noted."}]},"origin":origin}),
+    ];
+    let completed =
+        serde_json::from_value(json!({"session_id":"synthetic-session","turn_id":"reviewer-turn"}))
+            .unwrap();
+    memory::hooks::turn_completed(&stack.deps, completed)
+        .await
+        .unwrap();
+    let queued = stack.fixture.lock().unwrap().queued.clone();
+    let job: memory::hooks::ExtractJobInput = serde_json::from_value(queued[0].clone()).unwrap();
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
+    let taught = std::fs::read_to_string(dir.path().join("agent-reviewer/memories.jsonl"))
+        .unwrap_or_default();
+    assert!(taught.contains(said), "the item reaches agent-reviewer");
+}
+
+#[tokio::test]
+async fn an_older_stamp_still_matches_the_job_read_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    // Stamped before `memory_derived` existed, by a process that is gone:
+    // the job reads its bank back from the stamp.
+    let origin = json!({"turn_id":"older-turn","memory_extraction":true,"memory_bank":"main"});
+    let text = "The user prefers copper instruments.";
+    stack.fixture.lock().unwrap().path = vec![
+        json!({"entry_id":"older-request","message":{"role":"user","timestamp":1700000000000u64,"content":[{"type":"text","text":text}]}}),
+        json!({"entry_id":"older-end","message":{"role":"assistant","timestamp":1700000000500u64,"content":[{"type":"text","text":"Noted."}]},"origin":origin}),
+    ];
+    let completed =
+        serde_json::from_value(json!({"session_id":"synthetic-session","turn_id":"older-turn"}))
+            .unwrap();
+    memory::hooks::turn_completed(&stack.deps, completed)
+        .await
+        .unwrap();
+    let queued = stack.fixture.lock().unwrap().queued.clone();
+    let job: memory::hooks::ExtractJobInput = serde_json::from_value(queued[0].clone()).unwrap();
+    assert_eq!((job.bank.as_deref(), job.derived), (Some("main"), false));
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
+    assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
+    assert!(dir.path().join("main/memories.jsonl").exists());
+}
+
+#[tokio::test]
+async fn a_deleted_session_keeps_no_ledger_and_is_not_extracted() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    stack.fixture.lock().unwrap().gone = true;
+    // Deleted while its import walked the path: the purge ran before the save.
+    stack
+        .invoke(input("gone"), "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(stack
+        .deps
+        .store()
+        .await
+        .extraction_plan(&key())
+        .unwrap()
+        .is_none());
+    // A job queued before the deletion writes no cursor back.
+    let job = serde_json::from_value(
+        json!({"session_id":"synthetic-session","bank":"main","until":"opaque-entry"}),
+    )
+    .unwrap();
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
+    let fixture = stack.fixture.lock().unwrap();
+    assert!(fixture.queued.is_empty());
+    assert!(fixture.cursor.is_null());
 }

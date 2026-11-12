@@ -276,6 +276,8 @@ pub async fn pre_generate(
     }
     if let Ok(Some(scope)) = &resolved {
         annotations.insert("memory_bank".into(), json!(scope.bank));
+        // The default bank no name chose has no layer to show it.
+        annotations.insert("memory_derived".into(), json!(scope.derived));
         if let Some(layer) = scope.layer(&cfg.default_bank) {
             annotations.insert("memory_layer".into(), json!(layer));
         }
