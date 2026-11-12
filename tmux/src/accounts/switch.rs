@@ -501,12 +501,27 @@ impl Accounts {
         if stores.uuid(&Place::Folder(recent.to.clone())).as_deref() != Some(slot_uuid.as_str()) {
             return;
         }
-        let Ok(Some(chain)) = stores
-            .read(&Place::Slot)
-            .map(|raw| super::credentials::chain_id(raw.as_ref()))
-        else {
+        let chain_now = || {
+            stores
+                .read(&Place::Slot)
+                .ok()
+                .and_then(|raw| super::credentials::chain_id(raw.as_ref()))
+        };
+        let Some(chain) = chain_now() else {
             return;
         };
+        if recent.to_chains.contains(&chain) {
+            return;
+        }
+        // A sign-in by hand may write its chain before its profile: a new
+        // chain is the new account's only once the profile is still its
+        // own a moment later.
+        std::thread::sleep(super::LOGIN_SETTLE);
+        if stores.uuid(&Place::Slot).as_deref() != Some(slot_uuid.as_str())
+            || chain_now().as_ref() != Some(&chain)
+        {
+            return;
+        }
         let mut kept = self.recent_swap.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(kept) = kept
             .as_mut()
@@ -1492,6 +1507,34 @@ mod tests {
         assert_eq!(slot_chain(&home), chain_of("work-again"));
         // Nothing to put right afterwards either.
         assert!(!accounts.watch_slot_blocking());
+        assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-work"));
+    }
+
+    /// A sign-in by hand that writes its chain before its profile: a look
+    /// in between sees a new chain under Personal's profile, which is not
+    /// taken for Personal's renewal once Work's profile follows.
+    #[test]
+    fn a_sign_in_by_hand_chain_first_is_not_taken_for_a_renewal() {
+        let (home, accounts) = swapped_to_personal("p23-chain-first");
+        write(
+            &home.paths.claude_home.join(".credentials.json"),
+            &chain("work-again"),
+        );
+        let config = home.paths.default_json.clone();
+        let profile = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let mut json = slot::read_config(&config).unwrap().unwrap();
+            json.insert(
+                slot::IDENTITY_KEY.into(),
+                record("uuid-work", "Work", "work@x.dev"),
+            );
+            write(&config, &Value::Object(json));
+        });
+        assert!(!accounts.watch_slot_blocking());
+        profile.join().unwrap();
+        assert!(accounts.watch_slot_blocking(), "a sign-in by hand");
+        assert_eq!(accounts.registry().global, "default");
+        let stores = accounts.stores().unwrap();
         assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-work"));
     }
 
