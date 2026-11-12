@@ -217,7 +217,7 @@ func TestSetRuntimeIsIdempotentAndEmptyURLSuspends(t *testing.T) {
 }
 
 // A stale twin holding the worker name gets the bridge rejected for good; the
-// hub's applies repeat the same runtime, so only the tick can reconnect it.
+// hub's applies repeat the same runtime, so only Sync or the retry can reconnect it.
 func TestSyncReconnectsAfterFatalRejection(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var conns atomic.Int32
@@ -254,12 +254,71 @@ func TestSyncReconnectsAfterFatalRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b.remote == rejected {
-		t.Fatal("tick kept the rejected client")
+		t.Fatal("Sync kept the rejected client")
 	}
 	waitUntil(t, "shared after reconnect", func() bool {
 		s := b.Shared("laptop")
 		return len(s) == 1 && s[0].State == "shared"
 	})
+}
+
+// A connection the hub rejected is replaced by itself, with no Sync, waiting
+// longer each time until the hub accepts one.
+func TestBridgeRetriesARejectedConnection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	defer func(d time.Duration) { bridgeRetry = d }(bridgeRetry)
+	bridgeRetry = 50 * time.Millisecond
+	var mu sync.Mutex
+	var opened []time.Time
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		mu.Lock()
+		opened = append(opened, time.Now())
+		n := len(opened)
+		mu.Unlock()
+		var frame []byte
+		if n <= 2 {
+			frame, _ = iii.MarshalMessage(&iii.RegistrationRejectedMessage{Code: "WORKER_NAMESPACE_CONFLICT", Namespace: "hub", WorkerName: "rbac-proxy:laptop::mesh-bridge"})
+		} else {
+			frame, _ = json.Marshal(map[string]any{"type": "workerregistered", "worker_id": "bridge"})
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, frame)
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	defer hub.Close()
+	rows := []map[string]any{row("probe::echo", "local", "probe")}
+	b := NewBridge(engine(&rows), "local")
+	var changes atomic.Int32
+	b.Changed = func() { changes.Add(1) }
+	defer b.Close()
+	if err := b.Sync(context.Background(), []string{"probe"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetRuntime(context.Background(), node.Runtime{Node: "laptop", Namespace: "hub", URL: "ws" + strings.TrimPrefix(hub.URL, "http")}); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "shared after two rejections", func() bool {
+		s := b.Shared("laptop")
+		return len(s) == 1 && s[0].State == "shared"
+	})
+	waitUntil(t, "the backoff ends once the hub accepts", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.backoff == 0
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(opened) != 3 || opened[1].Sub(opened[0]) < bridgeRetry || opened[2].Sub(opened[1]) < 2*bridgeRetry || changes.Load() == 0 {
+		t.Fatalf("connections at %v, %d changes", opened, changes.Load())
+	}
 }
 
 func waitUntil(t *testing.T, what string, ok func() bool) {

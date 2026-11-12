@@ -45,6 +45,20 @@ type Bridge struct {
 	share     []string
 	functions map[string]function // desired, by local function id
 	refs      map[string]*iii.FunctionRef
+	retry     *time.Timer   // reconnects a connection the hub rejected
+	backoff   time.Duration // wait before that reconnect
+
+	// Changed runs under the bridge's lock whenever Status or Shared may report something new; it must not block.
+	Changed func()
+}
+
+// The first reconnect after the hub rejected the bridge; later ones wait up to a minute.
+var bridgeRetry = 5 * time.Second
+
+func (b *Bridge) changed() {
+	if b.Changed != nil {
+		b.Changed()
+	}
 }
 
 func NewBridge(local caller, namespace string) *Bridge {
@@ -66,17 +80,49 @@ func (b *Bridge) SetRuntime(_ context.Context, rt node.Runtime) error {
 func (b *Bridge) connect(rt node.Runtime) {
 	b.closeRemote()
 	b.rt = rt
+	defer b.changed()
 	if rt.URL == "" {
 		return
 	}
 	// An Authorization key with no value stops the SDK sending the local III_TOKEN to the hub.
-	b.remote = iii.New(rt.URL, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-bridge"), iii.WithNamespace(rt.Namespace), iii.WithHeaders(http.Header{"Authorization": nil}))
+	remote := iii.New(rt.URL, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-bridge"), iii.WithNamespace(rt.Namespace), iii.WithHeaders(http.Header{"Authorization": nil}))
+	b.remote = remote
 	b.register()
+	// The SDK calls listeners on a goroutine of its own, never under Close, so this may take b.mu.
+	remote.AddConnectionStateListener(func(state iii.ConnectionState) {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.remote != remote {
+			return
+		}
+		if state == iii.StateFailed {
+			// A registration rejection (a stale twin still holding the worker name) stops the SDK for good.
+			b.backoff = min(max(bridgeRetry, 2*b.backoff), time.Minute)
+			b.retry = time.AfterFunc(b.backoff, func() {
+				b.mu.Lock()
+				defer b.mu.Unlock()
+				if b.remote == remote {
+					b.connect(b.rt)
+				}
+			})
+		}
+		b.changed()
+	})
 	// A cancelled ctx starts the SDK's reconnect loop (and its iii ps marker)
 	// before returning, so nothing of this client outlives Close.
 	started, cancel := context.WithCancel(context.Background())
 	cancel()
 	_ = b.remote.Connect(started)
+	go func() {
+		// Connected comes before the hub rejects the worker: only an accepted one ends the backoff.
+		if remote.WaitUntilRegistered(context.Background()) == nil {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			if b.remote == remote {
+				b.backoff = 0
+			}
+		}
+	}()
 }
 
 // Status reads the cached state only; the hub gives mesh-node::status 5 s.
@@ -116,7 +162,6 @@ func (b *Bridge) Close() {
 }
 
 // Sync re-lists the shared workers' functions and updates the hub registrations.
-// shortcut: 5s poll; observe engine::on-functions-changed if lag matters
 func (b *Bridge) Sync(ctx context.Context, share []string) error {
 	found := map[string]function{}
 	var err error
@@ -132,12 +177,12 @@ func (b *Bridge) Sync(ctx context.Context, share []string) error {
 	} else {
 		b.functions = found
 	}
-	// A registration rejection (a stale twin still holding the worker name) stops
-	// the SDK for good; retry on this tick, never on the hub's repeated applies.
+	// A rejected connection is replaced here too, never on the hub's repeated applies.
 	if b.remote != nil && b.remote.FatalError() != nil {
 		b.connect(b.rt)
 	}
 	b.register()
+	b.changed()
 	return err
 }
 
@@ -250,6 +295,10 @@ func (b *Bridge) register() {
 }
 
 func (b *Bridge) closeRemote() {
+	if b.retry != nil {
+		b.retry.Stop()
+		b.retry = nil
+	}
 	if b.remote != nil {
 		b.remote.Close()
 		b.remote = nil

@@ -72,12 +72,17 @@ func (n *Node) handle(ctx context.Context, fn string, s Signed) (json.RawMessage
 		if err = json.Unmarshal(raw, &request); err != nil {
 			return nil, err
 		}
-		n.statusMu.Lock()
-		n.wantedVersion = ""
+		wanted := ""
 		if request.HubVersion != n.version {
-			n.wantedVersion = request.HubVersion
+			wanted = request.HubVersion
 		}
+		n.statusMu.Lock()
+		moved := n.wantedVersion != wanted
+		n.wantedVersion = wanted
 		n.statusMu.Unlock()
+		if moved {
+			n.changed()
+		}
 		result = n.Status()
 	case "mesh-node::workers::apply":
 		var request WorkersRequest

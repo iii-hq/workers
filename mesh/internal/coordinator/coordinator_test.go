@@ -854,3 +854,109 @@ func TestAcceptedMachineRotationConcurrentLogout(t *testing.T) {
 		c.join = func(secret, addr string) (string, error) { return "", nil }
 	}
 }
+
+// A rename picks a name as a join does and is reported as the old name leaving.
+func TestRenameAllocatesLikeAJoin(t *testing.T) {
+	c := newCoordinator(t, t.TempDir())
+	registerNode(t, c, "hub")
+	machine, k := registerNode(t, c, "laptop")
+	registerNode(t, c, "desk")
+	c.SetNameTaken(func(s string) bool { return s == "analytics" })
+	events := make(chan NodeChange, 32)
+	c.SetNodeObserver(func(e NodeChange) { events <- e })
+	var gone []string
+	c.SetGone(func(s string) { gone = append(gone, s) })
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	raw, _ := json.Marshal(tailcfg.MapRequest{NodeKey: k, Stream: true})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.serveMap(httptest.NewRecorder(), httptest.NewRequest("POST", "/machine/map", bytes.NewReader(raw)).WithContext(ctx), machine)
+	}()
+	expectNodeChange(t, events, "laptop", "online")
+	old := "laptop"
+	for _, tc := range []struct{ ask, want string }{{"work", "work"}, {"hub", "hub-2"}, {"desk", "desk-2"}, {"analytics", "analytics-2"}, {"Bad Name!", "bad-name"}} {
+		if got, err := c.rename(machine, k, tc.ask); err != nil || got != tc.want {
+			t.Fatalf("rename %q: %q %v, want %q", tc.ask, got, err, tc.want)
+		}
+		if len(gone) == 0 || gone[len(gone)-1] != old {
+			t.Fatalf("rename %q answered before the hub dropped %q: %v", tc.ask, old, gone)
+		}
+		expectNodeChange(t, events, old, "removed")
+		expectNodeChange(t, events, tc.want, "joined")
+		expectNodeChange(t, events, tc.want, "online")
+		old = tc.want
+	}
+	if got, err := c.rename(machine, k, "bad-name"); err != nil || got != "bad-name" || len(gone) != 5 || len(events) != 0 {
+		t.Fatalf("same name: %q %v, gone %v, %d events", got, err, gone, len(events))
+	}
+	cancel()
+	<-done
+	names := []string{}
+	for _, n := range c.Nodes() {
+		names = append(names, n.Name)
+	}
+	if slices.Sort(names); !slices.Equal(names, []string{"bad-name", "desk", "hub"}) {
+		t.Fatalf("nodes %v", names)
+	}
+}
+
+// Anyone can open a control channel: only a member's own keys get the hub to list function prefixes.
+func TestRenameRefusesStrangersBeforeHubWork(t *testing.T) {
+	c := newCoordinator(t, t.TempDir())
+	hubMachine, hubKey := registerNode(t, c, "hub")
+	machine, k := registerNode(t, c, "laptop")
+	other, otherKey := registerNode(t, c, "desk")
+	work := 0
+	c.SetBeforeRename(func() error { work++; return nil })
+	for _, tc := range []struct {
+		machine key.MachinePublic
+		node    key.NodePublic
+	}{{other, k}, {machine, otherKey}, {key.NewMachine().Public(), key.NewNode().Public()}, {hubMachine, hubKey}} {
+		if got, err := c.rename(tc.machine, tc.node, "x"); err == nil {
+			t.Fatalf("renamed to %q", got)
+		}
+	}
+	if err := c.Remove("desk"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.rename(other, otherKey, "x"); err == nil || work != 0 {
+		t.Fatalf("removed node renamed (%v) or the hub worked %d times", err, work)
+	}
+	// Removed while the hub listed function prefixes: still refused.
+	c.SetBeforeRename(func() error { return c.Remove("laptop") })
+	if _, err := c.rename(machine, k, "x"); err == nil {
+		t.Fatal("a node removed during the rename was renamed")
+	}
+}
+
+// The creating token follows the name, or the hub refuses its own state at the next start.
+func TestRenameKeepsStateValid(t *testing.T) {
+	dir := t.TempDir()
+	c := newCoordinator(t, dir)
+	_, _, secret := issueToken(t, c, join.TokenOptions{})
+	machine := key.NewMachine().Public()
+	req := tokenRequest(secret, "runner")
+	if !c.register(machine, "127.0.0.1", req).MachineAuthorized {
+		t.Fatal("token join")
+	}
+	if got, err := c.rename(machine, req.NodeKey, "work"); err != nil || got != "work" {
+		t.Fatalf("rename: %q %v", got, err)
+	}
+	file := c.file
+	c.file = t.TempDir()
+	if got, err := c.rename(machine, req.NodeKey, "again"); err == nil {
+		t.Fatalf("rename with a failed save: %q", got)
+	}
+	c.file = file
+	if n := c.Nodes(); len(n) != 1 || n[0].Name != "work" || !slices.Equal(c.st.Tokens[0].Nodes, []string{"work"}) {
+		t.Fatalf("failed save kept %+v, token nodes %v", n, c.st.Tokens[0].Nodes)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(dir, nil); err != nil {
+		t.Fatalf("renamed state does not load: %v", err)
+	}
+}

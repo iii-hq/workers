@@ -99,7 +99,7 @@ try {
   const results = []
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const theme of ['light', 'dark']) {
-      // The 5 s polling cadence is checked in real time once; other contexts refresh by hand.
+      // That nothing is polled is checked in real time once: the page moves only on what the worker pushes.
       const timed = viewport.width === 1440 && theme === 'light'
       const context = await browser.newContext({ viewport, permissions: ['clipboard-read', 'clipboard-write'], reducedMotion: 'reduce' })
       const page = await context.newPage()
@@ -139,13 +139,34 @@ try {
       // Calls named in `hold` wait in `held` until release() answers them.
       let hold = new Set()
       const held = []
-      // The page's latest mesh::on-node-changed observe, to deliver a join as the hub would.
+      // The page's latest mesh::on-node-changed and mesh::on-status-changed observes, to deliver events as the worker would.
       let nodeObserver = null
+      let statusObserver = null
       const release = () => held.splice(0).forEach((answer) => answer())
-      // Only a running node has a name; a removed one says how to come back, and a left one keeps the leave's warning.
-      const clientStatus = () => ({ mode: 'client', hub_url: config.client?.hub_url ?? '', namespace: 'project',
-        node: clientState === 'connected' || clientState === 'restart required' ? config.client?.name ?? '' : '',
-        state: clientState, error: clientState === 'removed by hub' ? 'the hub removed this machine; leave the hub, then join with a new join code' : clientState === 'left hub' ? leaveWarning : '', shared: [{ worker: 'shell', state: 'running', functions: ['shell::exec', 'shell::spawn'].map((id) => `${config.client?.name ?? ''}::${id}`) }] })
+      // What the client worker has applied; null follows the saved entry at once. A worker lags a save until it handles the event.
+      let appliedShare = null
+      let hubName = null
+      let requestedName = null
+      let joinedHub = null
+      // error, retrying and rename_error, as the worker reports them.
+      let clientExtra = {}
+      // Only a joined node has a name; a removed one says how to come back, and a left one keeps the leave's warning.
+      const clientStatus = () => {
+        const joined = ['connected', 'renaming', 'restart required'].includes(clientState)
+        const node = joined ? hubName ?? config.client?.name ?? '' : ''
+        return { mode: 'client', hub_url: joinedHub ?? config.client?.hub_url ?? '', namespace: 'project', node, state: clientState,
+          ...(joined ? { requested_name: requestedName ?? config.client?.name ?? '' } : {}),
+          error: clientState === 'removed by hub' ? 'the hub removed this machine; leave the hub, then join with a new join code' : clientState === 'left hub' ? leaveWarning : '',
+          shared: (appliedShare ?? config.client?.share ?? []).map((worker) => ({ worker, state: joined ? 'shared' : 'pending',
+            functions: worker === 'shell' ? ['shell::exec', 'shell::spawn'].map((id) => node ? `${node}::${id}` : id) : [] })),
+          ...clientExtra }
+      }
+      // One call of mesh::on-status-changed, delivered to the page's observer: the worker's current mesh::status.
+      const pushStatus = () => {
+        assert(statusObserver, 'the page observes mesh::on-status-changed')
+        statusObserver.socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: statusObserver.frame.target.function_id,
+          activation: { observer_id: statusObserver.frame.id }, data: running === 'client' ? clientStatus() : hubStatus() }))
+      }
       await page.routeWebSocket('**/ws', (socket) => {
         socket.onMessage(async (message) => {
           const frame = JSON.parse(String(message))
@@ -155,6 +176,7 @@ try {
           if (frame.type === 'registerfunction') socket.send(JSON.stringify({ type: 'functionregistered', id: frame.id, namespace: frame.namespace ?? 'project', revision: 0, local_dispatch: false, observers: [] }))
           if (frame.type === 'observe') socket.send(JSON.stringify({ type: 'observeresult', id: frame.id, state: 'active' }))
           if (frame.type === 'observe' && frame.source.function_id === 'mesh::on-node-changed') nodeObserver = { socket, frame }
+          if (frame.type === 'observe' && frame.source.function_id === 'mesh::on-status-changed') statusObserver = { socket, frame }
           if (frame.type === 'observe' && frame.source.function_id === 'ade::ui::on-assets-changed') {
             socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: frame.target.function_id,
               activation: { observer_id: frame.id }, data: { op: 'sync', assets: [{ path: 'mesh/styles.css', kind: 'style', hash: 'fixture-css' }, { path: 'mesh/page.js', kind: 'script', hash: 'fixture-js' }] } }))
@@ -223,9 +245,17 @@ try {
         assert.deepEqual(saved.at(-1).value, expected, 'configuration::set receives the stored entry with only the changed keys')
         return expected
       }
-      const refreshTo = async (phase) => {
+      // The hub pushes each tunnel change; nothing is clicked.
+      const pushTo = (phase) => {
         tunnelPhase = phase
-        await button('Refresh').click()
+        pushStatus()
+      }
+      // In real time, once: with nothing pushed, the page reads mesh::status no more.
+      const idle = async (what) => {
+        if (!timed) return
+        const before = statusCalls()
+        await delay(6000)
+        assert.equal(statusCalls(), before, `${what} is not polled`)
       }
       const openPage = async () => {
         await page.goto(`${url}/#/worker/mesh/mesh-manager`)
@@ -350,18 +380,14 @@ try {
         await expect(badge).toHaveCount(0)
         await expect(tunnelLine).toHaveText('Starting the tunnel…')
         await capture('tunnel-starting')
+        await idle('a tunnel that is still starting')
+        assert.equal(statusObserver?.frame.source.args, undefined, 'mesh::on-status-changed takes no args')
         let before = statusCalls()
-        tunnelPhase = { state: 'ready', url: tunnelURL, proxy_protocol: 'v2' }
-        if (!timed) await button('Refresh').click()
-        await expect(tunnelLine.getByRole('button', { name: 'Copy Tunnel URL' })).toBeVisible({ timeout: 8000 })
-        if (timed) {
-          assert(statusCalls() > before, 'mesh::status is re-read without a click while the tunnel settles')
-          before = statusCalls()
-          await delay(6000)
-          assert.equal(statusCalls(), before, 'polling stops once the tunnel is ready')
-        }
+        pushTo({ state: 'ready', url: tunnelURL, proxy_protocol: 'v2' })
+        await expect(tunnelLine.getByRole('button', { name: 'Copy Tunnel URL' })).toBeVisible()
+        assert(statusCalls() > before, 'the pushed status change makes the page read mesh::status again, without a click')
         await expect(tunnelLine.locator('code')).toHaveText(tunnelURL)
-        // The line is an item of the settings list and announces what polling finds.
+        // The line is an item of the settings list and announces what the hub reports.
         await expect(tunnelLine).toHaveAttribute('aria-live', 'polite')
         await expect(page.getByRole('region', { name: 'Hub address', exact: true }).locator('[role="list"] > :not([role="listitem"])')).toHaveCount(0)
         await tunnelLine.getByRole('button', { name: 'Copy Tunnel URL' }).click()
@@ -373,28 +399,19 @@ try {
         await button('Copy Hub URL').click()
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(tunnelURL)
         await capture('tunnel-ready')
-        await refreshTo({ state: 'reconnecting' })
+        pushTo({ state: 'reconnecting' })
         await expect(tunnelLine).toHaveText('Starting the tunnel…')
-        await refreshTo({ state: 'unavailable', error: 'quick-tunnel is not responding' })
+        pushTo({ state: 'unavailable', error: 'quick-tunnel is not responding' })
         await expect(tunnelLine.getByText('The tunnel is unavailable', { exact: true })).toBeVisible()
         await expect(tunnelLine.getByText('quick-tunnel is not responding', { exact: true })).toBeVisible()
         await capture('tunnel-unavailable')
-        await refreshTo({ state: 'failed', error: 'opentunnel relay unreachable' })
+        pushTo({ state: 'failed', error: 'opentunnel relay unreachable' })
         await expect(tunnelLine.getByText('The tunnel failed', { exact: true })).toBeVisible()
         await expect(tunnelLine.getByText('opentunnel relay unreachable', { exact: true })).toBeVisible()
         await expect(tunnelLine.getByText('The tunnel is unavailable', { exact: true })).toHaveCount(0)
-        if (timed) {
-          before = statusCalls()
-          await delay(6000)
-          assert.equal(statusCalls(), before, 'polling stops once the tunnel failed')
-        }
-        await refreshTo({ state: 'stopped' })
+        pushTo({ state: 'stopped' })
         await expect(tunnelLine).toHaveCount(0)
         await expect(tunnelSwitch).toBeChecked()
-        if (timed) {
-          before = statusCalls()
-          await expect.poll(statusCalls, { timeout: 8000 }).toBeGreaterThan(before)
-        }
         await textbox('Public URL').fill('https://mesh.example.com')
         await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
         stored = await savePage({ ...stored, public_url: 'https://mesh.example.com' })
@@ -471,17 +488,13 @@ try {
         await expect(page.getByText('Removed archive-laptop. The join code was replaced.', { exact: true })).toBeAttached()
         await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
         await capture('tunnel-overridden')
-        // The hub drops the tunnel only when it applies the entry; the page keeps reading until it does.
-        if (timed) applied = config
+        // The hub drops the tunnel only when it applies the entry, and says so then.
+        applied = config
         await tunnelSwitch.click()
         stored = await savePage({ ...stored, tunnel: { enabled: false } })
-        if (timed) {
-          await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
-          before = statusCalls()
-          applied = null
-          await expect(tunnelLine).toHaveCount(0, { timeout: 8000 })
-          assert(statusCalls() > before, 'mesh::status is re-read without a click until the hub drops the tunnel')
-        }
+        await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
+        applied = null
+        pushStatus()
         await expect(tunnelLine).toHaveCount(0)
         await expect(badge).toHaveCount(0)
         // A template that expands to nothing leaves the hub without an address: the page follows what the hub reports.
@@ -494,9 +507,8 @@ try {
         await button('Refresh').click()
         await expect(tunnelLine).toHaveText('Starting the tunnel…')
         await expect(badge).toHaveCount(0)
-        tunnelPhase = { state: 'ready', url: tunnelURL }
-        if (!timed) await button('Refresh').click()
-        await expect(tunnelLine.locator('code')).toHaveText(tunnelURL, { timeout: 8000 })
+        pushTo({ state: 'ready', url: tunnelURL })
+        await expect(tunnelLine.locator('code')).toHaveText(tunnelURL)
         // The Hub URL is what the hub expanded, never the template.
         await button('Copy Hub URL').click()
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(tunnelURL)
@@ -519,7 +531,7 @@ try {
         await button('Refresh').click()
         await button('Discard').click()
         await expect(tunnelSwitch).not.toBeChecked()
-        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, templated address, raw root refused${timed ? ', polling until settled' : ''}`)
+        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state pushed by the hub, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, templated address, raw root refused${timed ? ', nothing polled' : ''}`)
 
         // The configuration form holds only the advanced settings.
         await button('Settings').click()
@@ -573,16 +585,25 @@ try {
         for (const never of ['mesh', 'secrets']) await expect(page.getByRole('switch', { name: `Share ${never}` })).toHaveCount(0)
         await expect(saveBar).toContainText('Unsaved changes · applied after a restart')
         await textbox('Hub URL').fill('https://hub.example.com')
-        await textbox('Machine name').fill('Bad Name')
-        await expect(page.getByText('Use lowercase letters, digits or hyphens, starting with a letter.')).toBeVisible()
-        await expect(button('Save')).toBeDisabled()
+        // Refused as well: names the hub would change (a hyphen at the end or next to another).
+        for (const bad of ['Bad Name', 'work-', 'a--b']) {
+          await textbox('Machine name').fill(bad)
+          await expect(page.getByText('Use lowercase letters, digits and single hyphens, starting with a letter and not ending with a hyphen.')).toBeVisible()
+          await expect(button('Save')).toBeDisabled()
+        }
         await textbox('Machine name').fill('laptop')
         await expect(button('Save')).toBeEnabled()
         await page.getByRole('switch', { name: 'Share shell', exact: true }).click()
         await expect(page.getByText('shell can run commands on this machine', { exact: true })).toBeVisible()
+        // "not saved yet" means only that the form differs from the stored entry.
+        const shareRow = (name) => page.locator('.mesh-ui-share > li').filter({ has: page.getByRole('switch', { name: `Share ${name}`, exact: true }) })
+        await expect(shareRow('shell').getByText('not saved yet', { exact: true })).toBeVisible()
         await capture('client')
         stored = await savePage({ ...stored, mode: 'client', client: { hub_url: 'https://hub.example.com', name: 'laptop', share: ['shell'] } })
         await expect(page.getByText('Restart the mesh worker to switch to client mode', { exact: true })).toBeVisible()
+        // Saved, and the worker still runs as a hub: the share waits for the restart, it is not "not saved".
+        await expect(shareRow('shell').getByText('starts after the restart', { exact: true })).toBeVisible()
+        await expect(page.getByText('not saved yet')).toHaveCount(0)
         await button('Restart mesh').click()
         await expect(page.getByText('Restart the mesh worker to switch to client mode')).toHaveCount(0)
         assert(calls.some((call) => call.id === 'compose::restart'), 'Restart mesh calls compose::restart')
@@ -621,20 +642,179 @@ try {
         await expect(button('Leave hub')).toHaveCount(0)
         await expect(page.getByText('joined as')).toHaveCount(0)
         await capture('client-left')
-        // The warning comes from the worker, so a re-read keeps it; a client that is not connected is re-read without a click.
-        before = statusCalls()
-        if (!timed) await button('Refresh').click()
-        await expect.poll(statusCalls, { timeout: 8000 }).toBeGreaterThan(before)
+        // The warning comes from the worker, so a re-read keeps it.
+        await button('Refresh').click()
         await expect(connection.getByText(leaveWarning, { exact: true })).toBeVisible()
-        clientState = 'connected'
-        if (!timed) await button('Refresh').click()
-        await expect(connection.getByText('connected', { exact: true })).toBeVisible({ timeout: 8000 })
-        await expect(page.getByText('This engine left the hub')).toHaveCount(0)
-        if (timed) {
+        await idle('a client that is not connected')
+
+        // A join, as the worker pushes it: every step says what is happening, with no click and no timer.
+        const panel = (headline) => connection.getByText(headline, { exact: true })
+        const step = async (state, extra, headline, ...texts) => {
+          clientState = state
+          clientExtra = extra
           before = statusCalls()
-          await delay(6000)
-          assert.equal(statusCalls(), before, 'polling stops once the client is connected')
+          pushStatus()
+          // The pushed status makes the page read mesh::status again, with no click.
+          await expect.poll(statusCalls).toBeGreaterThan(before)
+          await expect(panel(headline)).toBeVisible()
+          if (state) await expect(connection.getByText(state, { exact: true })).toBeVisible()
+          for (const text of texts) await expect(connection.getByText(text, { exact: false }).first()).toBeVisible()
         }
+        await step('starting', {}, 'Starting…', 'The mesh worker is reading its settings.')
+        await step('waiting for join', {}, 'Not joined yet', 'The worker joins as soon as they are stored.')
+        await step('waiting for join', { error: 'resolve secret://MESH_JOIN: iii: invocation failed: function_not_found: secrets::resolve', retrying: true }, 'Not joined yet',
+          'resolve secret://MESH_JOIN: iii: invocation failed: function_not_found: secrets::resolve', 'The worker keeps trying by itself.')
+        await expect(connection.getByText('The worker joins as soon as they are stored.')).toHaveCount(0)
+        await step('joining', {}, 'Joining the hub…', 'The worker is sending the join code to the hub.')
+        await step('waiting for hub', {}, 'Waiting for the hub to accept this machine…', 'This takes up to a minute. Nothing to do.')
+        await capture('client-waiting-for-hub')
+        await step('error', { error: 'start mesh: hub did not accept the registration within 1m', retrying: true }, 'Not sharing',
+          'start mesh: hub did not accept the registration within 1m', 'The worker keeps trying by itself.')
+        await capture('client-error')
+        await step('join failed', { error: 'hub refused the registration: invalid join code (change client.join to retry)' }, 'The hub refused the join',
+          'hub refused the registration: invalid join code (change client.join to retry)', 'Store another join code or token. This one is not tried again.')
+        await capture('client-join-failed')
+        await step('connecting', {}, 'Connecting to the hub…', 'The worker is waiting for its name and gateway.')
+        // Each step is announced to a screen reader.
+        await expect(page.locator('.mesh-ui-progress')).toHaveAttribute('aria-live', 'polite')
+        clientState = 'connected'
+        clientExtra = {}
+        pushStatus()
+        await expect(connection.getByText('connected', { exact: true })).toBeVisible()
+        await expect(page.locator('.mesh-ui-progress')).toBeEmpty()
+        await expect(page.getByText('This engine left the hub')).toHaveCount(0)
+        await idle('a connected client')
+
+        // A share is "not saved yet" only while the form is dirty; saved, it is being applied until the worker says otherwise.
+        const stateSwitch = page.getByRole('switch', { name: 'Share state', exact: true })
+        await expect(shareRow('shell').getByText('shared', { exact: true })).toBeVisible()
+        await stateSwitch.click()
+        await expect(shareRow('state').getByText('not saved yet', { exact: true })).toBeVisible()
+        appliedShare = ['shell']
+        stored = await savePage({ ...stored, client: { ...stored.client, share: ['shell', 'state'] } })
+        await expect(shareRow('state').getByText('applying…', { exact: true })).toBeVisible()
+        await expect(page.getByText('not saved yet')).toHaveCount(0)
+        await capture('client-share-applying')
+        appliedShare = null
+        pushStatus()
+        await expect(shareRow('state').getByText('shared', { exact: true })).toBeVisible()
+        // Switched off: still shared until the save, then stopping until the worker dropped it.
+        await stateSwitch.click()
+        await expect(shareRow('state').getByText('shared until you save', { exact: true })).toBeVisible()
+        appliedShare = ['shell', 'state']
+        stored = await savePage({ ...stored, client: { ...stored.client, share: ['shell'] } })
+        await expect(shareRow('state').getByText('stopping…', { exact: true })).toBeVisible()
+        appliedShare = null
+        pushStatus()
+        await expect(shareRow('state').locator('.mesh-ui-muted')).toHaveCount(0)
+
+        // A new machine name renames the joined machine, with no restart.
+        hubName = 'laptop'
+        requestedName = 'laptop'
+        await textbox('Machine name').fill('work')
+        await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
+        stored = await savePage({ ...stored, client: { ...stored.client, name: 'work' } })
+        await expect(page.getByText(/Restart the mesh worker/)).toHaveCount(0)
+        // Read before the worker handled the save: the rename is on its way, the old name still works.
+        await expect(panel('Renaming this machine…')).toBeVisible()
+        await expect(page.getByText('joined as')).toContainText('laptop')
+        clientState = 'renaming'
+        pushStatus()
+        await expect(connection.getByText('renaming', { exact: true })).toBeVisible()
+        await expect(panel('Renaming this machine…')).toBeVisible()
+        await capture('client-renaming')
+        // The hub gave another name than the one asked for: the page shows the one the machine has.
+        clientState = 'connected'
+        hubName = 'work-2'
+        requestedName = null
+        pushStatus()
+        await expect(page.getByText('joined as')).toContainText('work-2')
+        await expect(connection.getByText('The hub named this machine work-2: work is taken or reserved there.', { exact: true })).toBeVisible()
+        await expect(panel('Renaming this machine…')).toHaveCount(0)
+        // The shared function ids follow the name.
+        if (!(await shareRow('shell').locator('details').evaluate((el) => el.open))) await shareRow('shell').locator('summary').click()
+        await expect(page.getByText('Ids start with work-2::shell::', { exact: true })).toBeVisible()
+        await capture('client-renamed')
+        // A refused rename keeps the old name and says why.
+        await textbox('Machine name').fill('desk')
+        requestedName = 'work'
+        clientExtra = { rename_error: 'the hub cannot rename machines; update the hub\'s mesh worker' }
+        stored = await savePage({ ...stored, client: { ...stored.client, name: 'desk' } })
+        await expect(connection.getByText('Could not rename this machine to desk', { exact: true })).toBeVisible()
+        await expect(connection.getByText('the hub cannot rename machines; update the hub\'s mesh worker', { exact: true })).toBeVisible()
+        await expect(connection.getByText('It keeps the name work-2.')).toBeVisible()
+        await expect(connection.getByText('connected', { exact: true })).toBeVisible()
+        await expect(panel('Renaming this machine…')).toHaveCount(0)
+        await capture('client-rename-refused')
+        // Set back to the name the hub answered for: the worker keeps the old refusal, the page does not show it.
+        await textbox('Machine name').fill('work')
+        stored = await savePage({ ...stored, client: { ...stored.client, name: 'work' } })
+        await expect(connection.getByText(/Could not rename/)).toHaveCount(0)
+        await expect(panel('Renaming this machine…')).toHaveCount(0)
+        // Cleared, the name asks for nothing: a refusal still in the status until the worker reads the save is not shown.
+        await textbox('Machine name').fill('')
+        stored = await savePage({ ...stored, client: { ...stored.client, name: '' } })
+        await expect(connection.getByText(/Could not rename/)).toHaveCount(0)
+        await expect(panel('Renaming this machine…')).toHaveCount(0)
+        await textbox('Machine name').fill('desk')
+        stored = await savePage({ ...stored, client: { ...stored.client, name: 'desk' } })
+        await expect(connection.getByText('Could not rename this machine to desk', { exact: true })).toBeVisible()
+        // A ${VAR} name is expanded by the worker only: the page names what it can and invents no pending rename.
+        const templated = { ...stored, client: { ...stored.client, name: '${MESH_NAME}' } }
+        config = structuredClone(templated)
+        pushStatus()
+        await expect(connection.getByText('Could not rename this machine', { exact: true })).toBeVisible()
+        clientExtra = {}
+        requestedName = 'desk'
+        hubName = 'desk'
+        pushStatus()
+        await expect(connection.getByText(/Could not rename/)).toHaveCount(0)
+        await expect(connection.getByText('connected', { exact: true })).toBeVisible()
+        await expect(panel('Renaming this machine…')).toHaveCount(0)
+        await expect(connection.getByText(/The hub named this machine/)).toHaveCount(0)
+        // A name the hub had to adjust (set outside this page) is called invalid, not taken.
+        config = { ...stored, client: { ...stored.client, name: 'desk-' } }
+        requestedName = 'desk-'
+        pushStatus()
+        await expect(connection.getByText('The hub named this machine desk: desk- is not a valid machine name.', { exact: true })).toBeVisible()
+        config = structuredClone(stored)
+        requestedName = 'work'
+        hubName = 'work-2'
+        clientExtra = { rename_error: 'the hub cannot rename machines; update the hub\'s mesh worker' }
+        pushStatus()
+        await expect(connection.getByText('Could not rename this machine to desk', { exact: true })).toBeVisible()
+        // The hub gives the name after all (its worker was updated and this one restarted).
+        clientExtra = {}
+        hubName = null
+        requestedName = null
+        pushStatus()
+        await expect(page.getByText('joined as')).toContainText('desk')
+        await expect(connection.getByText(/Could not rename/)).toHaveCount(0)
+        await expect(connection.getByText(/The hub named this machine/)).toHaveCount(0)
+        // Another hub URL does not move a joined machine, and the page says what does once the worker reports it unused.
+        joinedHub = 'https://hub.example.com'
+        await textbox('Hub URL').fill('https://other.example.com')
+        stored = await savePage({ ...stored, client: { ...stored.client, hub_url: 'https://other.example.com' } })
+        clientExtra = { join_unused: true }
+        pushStatus()
+        await expect(connection.getByText('Joined to https://hub.example.com. Another Hub URL or join code is used only after Leave hub.', { exact: true })).toBeVisible()
+        await expect(page.getByText(/Restart the mesh worker/)).toHaveCount(0)
+        await capture('client-joined-elsewhere')
+        await textbox('Hub URL').fill('https://hub.example.com')
+        stored = await savePage({ ...stored, client: { ...stored.client, hub_url: 'https://hub.example.com' } })
+        clientExtra = {}
+        pushStatus()
+        await expect(connection.getByText(/Joined to/)).toHaveCount(0)
+        // The same for a registration the hub has not accepted yet, or a new token behind the same reference: only the worker can tell.
+        clientState = 'error'
+        clientExtra = { error: 'start mesh: hub did not accept the registration within 1m', retrying: true, join_unused: true }
+        pushStatus()
+        await expect(connection.getByText('Joined to https://hub.example.com. Another Hub URL or join code is used only after Leave hub.', { exact: true })).toBeVisible()
+        clientState = 'connected'
+        clientExtra = {}
+        joinedHub = null
+        pushStatus()
+        await expect(connection.getByText(/Joined to/)).toHaveCount(0)
         // A machine the hub removed gets the same action, and a hub that was told leaves no warning.
         clientState = 'removed by hub'
         leaveWarning = ''
@@ -649,11 +829,17 @@ try {
         await expect(page.getByText('Not sharing')).toHaveCount(0)
         await expect(page.getByText('Left the hub. This engine no longer shares workers.', { exact: true })).toBeAttached()
         clientState = 'connected'
-        await button('Refresh').click()
+        pushStatus()
         await expect(button('Leave hub')).toBeVisible()
+        // Only the mode needs a restart: the worker says so when the stored entry is no longer a client.
+        config = { ...stored, mode: 'hub' }
         clientState = 'restart required'
-        await button('Refresh').click()
-        await expect(page.getByText('Restart the mesh worker to apply the new connection', { exact: true })).toBeVisible()
+        pushStatus()
+        await expect(page.getByText('Restart the mesh worker to switch to hub mode', { exact: true })).toBeVisible()
+        config = structuredClone(stored)
+        clientState = 'connected'
+        pushStatus()
+        await expect(page.getByText(/Restart the mesh worker/)).toHaveCount(0)
         // The host form keeps the entry it loaded before the page saved; a fresh document reads the stored one.
         await page.goto(`${url}/?client=${randomUUID()}#/worker/mesh/mesh-manager`)
         await button('Settings').click()
@@ -664,7 +850,7 @@ try {
         assert(calls.some((call) => call.id === 'configuration::get' && call.data.raw === true && call.namespace === 'default'))
         assert(calls.every((call) => !call.id.startsWith('configuration::') || call.namespace === 'default'))
         assert.deepEqual(errors, [])
-        console.log(`PASS ${viewport.width}px ${theme}: client fields, machine-name validation, share list, leave hub confirmed and offered after a removal, leave warning kept on re-read, ${timed ? 'client polled until connected' : 'rejoin shown on refresh'}, restart panel, client-only form`)
+        console.log(`PASS ${viewport.width}px ${theme}: client fields, machine-name validation, share list, leave hub confirmed and offered after a removal, leave warning kept on re-read, every join step pushed and announced, saved shares applying and stopping, rename pending, adjusted and refused, hub URL kept while joined, restart only for the mode${timed ? ', nothing polled' : ''}, client-only form`)
       }
       const openDraft = async (value) => {
         config = structuredClone(value)
@@ -774,25 +960,22 @@ try {
         console.log('PASS opaque shape matrix: 4 custom roots, 3 nested boundaries, absent optional parents, explicit conversion and complete sibling/template preservation')
       }
       if (timed && !opaqueOnly && !focusOnly) {
-        // A hub that never applies the saved tunnel: polling stops after its limit and the page says so.
+        // A hub that never applies the saved tunnel: after its deadline the page says so, having read nothing meanwhile.
         // Last in this context, because the fake clock stays installed in it.
         config = { ...initialConfig, tunnel: { enabled: true } }
         applied = initialConfig
         await page.clock.install()
         await page.goto(`${url}/?stall=${randomUUID()}#/worker/mesh/mesh-manager`)
         await expect(tunnelSwitch).toBeChecked()
-        let before = statusCalls()
-        await expect.poll(statusCalls, { timeout: 8000 }).toBeGreaterThan(before)
         const stalled = page.getByText('The hub has not reported a tunnel result. Check the mesh and quick-tunnel workers, then refresh.', { exact: true })
         await expect(stalled).toHaveCount(0)
+        const before = statusCalls()
         await page.clock.fastForward(13 * 60_000)
         await expect(stalled).toBeVisible()
-        before = statusCalls()
-        await page.clock.fastForward(30_000)
         await delay(1000)
-        assert.equal(statusCalls(), before, 'polling stops at its limit')
+        assert.equal(statusCalls(), before, 'the deadline reads nothing')
         applied = null
-        console.log(`PASS ${viewport.width}px ${theme}: tunnel polling stops after its limit and says so`)
+        console.log(`PASS ${viewport.width}px ${theme}: a hub that goes quiet is named after the deadline, with no polling`)
       }
       assert.deepEqual(errors, [], 'opaque drafts render without host/loader errors')
       await context.close()

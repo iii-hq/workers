@@ -75,6 +75,8 @@ type Hub struct {
 	tunnel          tunnelState
 	tunnelClient    rpc
 	tunnelKick      chan struct{}
+	refreshing      atomic.Bool  // a re-read of the online nodes is scheduled
+	emit            func([]byte) // delivers a mesh::status answer to its observers; nil publishes nothing
 	// Set only by reconcileTunnel. tunnelProxy: PROXY v2 headers from loopback are
 	// quick-tunnel's. tunnelRaw: the tunnel is OpenTunnel, which hands a visitor's
 	// bytes to loopback unchanged, so forwarding headers from loopback are the visitor's.
@@ -128,6 +130,7 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 		if err = h.refreshNames(ctx); err != nil {
 			return h, err
 		}
+		h.Coordinator.SetBeforeRename(func() error { return h.refreshNames(ctx) })
 	}
 	admissionListener, e := net.Listen("tcp4", "127.0.0.1:0")
 	if e != nil {

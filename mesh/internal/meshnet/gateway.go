@@ -8,8 +8,8 @@ const gatewayCapability tailcfg.NodeCapability = "https://iii.dev/mesh/gateway"
 // the hub service. Callers must wait rather than assume the default port.
 func (m *Mesh) GatewayPort() (uint16, bool) { p := m.gateway.Load(); return uint16(p), p != 0 }
 
-// GatewayChanges coalesces updates; consumers re-read GatewayPort and reconnect
-// their worker bus sessions when it changes. It remains open until Mesh closes.
+// GatewayChanges coalesces changes of the gateway port and the assigned name; consumers re-read
+// GatewayPort and SelfName and reconnect their worker bus sessions. It remains open until Mesh closes.
 func (m *Mesh) GatewayChanges() <-chan struct{} { return m.gatewayChanges }
 
 func (m *Mesh) updateGateway() {
@@ -27,7 +27,12 @@ func (m *Mesh) updateGateway() {
 			}
 		}
 	}
-	if old := m.gateway.Swap(port); old != port {
+	name, _ := m.SelfName()
+	renamed := false
+	if old, _ := m.name.Swap(name).(string); old != name {
+		renamed = true
+	}
+	if old := m.gateway.Swap(port); old != port || renamed {
 		select {
 		case m.gatewayChanges <- struct{}{}:
 		default:

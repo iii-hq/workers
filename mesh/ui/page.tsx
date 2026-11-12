@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ComponentType, type Reac
 import {
   Badge, Button, ConfirmDialog, EmptyState, Input, LiveRegion, PageHeader, PageMain, PageShell,
   RawValueInput, SegmentedControl, SettingsField, SettingsList, SettingsSection, StatusPanel, Switch,
-  type ConfigFormProps, type Host, type JsonValue, type PageRenderProps, type SecretKeyFieldProps,
+  type ConfigFormProps, type Host, type JsonValue, type PageRenderProps, type SecretKeyFieldProps, type StatusPanelProps,
 } from '@iii-dev/console-ui'
 import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
@@ -19,9 +19,12 @@ type Node = {
 }
 type Join = { code: string }
 // The hub's mesh::status has no `mode`; only a client-mode worker reports one.
+// retrying: the worker tries again by itself. requested_name: the client.name the hub last answered for.
 type ClientStatus = {
   mode: 'client'; hub_url: string; node: string; namespace: string; state: string; error: string
-  hub_wants_version?: string; shared: { worker: string; state: string; functions: string[] }[]
+  retrying?: boolean; requested_name?: string; rename_error?: string
+  // join_unused: client.hub_url or client.join is not the enrollment in use; it is used only after a leave.
+  join_unused?: boolean; hub_wants_version?: string; shared: { worker: string; state: string; functions: string[] }[]
 }
 // The hub's mesh::status; `tunnel` is present only while the tunnel is enabled.
 type Tunnel = { enabled: boolean; tunnel_id: string; state: string; url?: string; error?: string }
@@ -96,8 +99,6 @@ const BASIC_PATHS: Record<keyof Basics, string[]> = {
   mode: ['mode'], public_url: ['public_url'], tunnel: ['tunnel', 'enabled'], hub_url: ['client', 'hub_url'], join: ['client', 'join'],
   name: ['client', 'name'], share: ['client', 'share'],
 }
-// The running worker applies these without a restart.
-const LIVE = new Set<keyof Basics>(['share', 'public_url', 'tunnel'])
 function basicsOf(config: JsonValue | null): Basics {
   const text = (path: string[]) => { const v = config === null ? undefined : at(config, path); return typeof v === 'string' ? v : '' }
   const share = config === null ? undefined : at(config, BASIC_PATHS.share)
@@ -120,19 +121,37 @@ const MODE_HELP: Record<Mode, string> = {
 const NEVER_SHARED = new Set(['mesh', 'secrets', 'configuration', 'rbac-proxy'])
 // Sharing one of these lets the hub project run commands on this machine.
 const RUNS_COMMANDS = new Set(['ide', 'harness', 'shell', 'coder', 'tmux', 'code-runner'])
-const NAME = /^[a-z][a-z0-9-]{0,30}$/
+// A name the hub keeps as it is: no hyphen at the end or next to another.
+const NAME = /^(?=.{1,31}$)[a-z](?:-?[a-z0-9])*$/
 const RAW_CONFIG = 'The mesh settings are one raw value. Open Settings and replace it with individual settings first.'
 const STATE_BADGE: Record<string, 'ok' | 'warn' | 'alert' | 'default'> = {
   connected: 'ok', 'restart required': 'warn', 'join failed': 'alert', error: 'alert', 'removed by hub': 'alert',
 }
+// What each client state means to the person watching: the headline, and what happens next or what to do.
+const CLIENT_STATE: Record<string, [StatusPanelProps['variant'], string, string]> = {
+  starting: ['info', 'Starting…', 'The mesh worker is reading its settings.'],
+  'waiting for join': ['info', 'Not joined yet', 'Enter the hub\'s URL and join code, or a token, and save. The worker joins as soon as they are stored.'],
+  joining: ['info', 'Joining the hub…', 'The worker is sending the join code to the hub.'],
+  'waiting for hub': ['info', 'Waiting for the hub to accept this machine…', 'This takes up to a minute. Nothing to do.'],
+  connecting: ['info', 'Connecting to the hub…', 'The hub knows this machine. The worker is waiting for its name and gateway.'],
+  renaming: ['info', 'Renaming this machine…', 'Shared functions reconnect under the new name by themselves.'],
+  error: ['alert', 'Not sharing', ''],
+  'join failed': ['alert', 'The hub refused the join', 'Store another join code or token. This one is not tried again.'],
+  'removed by hub': ['alert', 'The hub removed this machine', ''],
+  'left hub': ['info', 'This engine left the hub', 'To join again, store a different join code or token. The one used before is not tried again.'],
+}
+const RETRYING = 'The worker keeps trying by itself.'
+// The error is its own element, as the worker wrote it; the sentence after it starts on its own.
+const said = (error: string | undefined, next: string) => <>{error ? <span>{error}</span> : null}{error && next ? (/[.!?]$/.test(error) ? ' ' : '. ') : null}{next}</>
 // Client states with no enrollment to forget.
-const NOTHING_TO_LEAVE = new Set(['', 'starting', 'waiting for join', 'join failed', 'left hub'])
+const NOTHING_TO_LEAVE = new Set(['', 'starting', 'waiting for join', 'joining', 'join failed', 'left hub'])
 
 function JoinField({ value, onChange, secretInput: SecretKeyField }: { value: string; onChange: (next: string) => void; secretInput?: SecretInput }) {
   // A non-reference stays in this draft: the join code itself never reaches the versioned entry.
   const [draft, setDraft] = useState<string | null>(null)
   if (SecretKeyField) return <div data-field="client.join">
-    <SecretKeyField name="MESH_JOIN" label="Join code or token" value={value || undefined} consumers={['mesh']} environment onChange={(next: string | undefined) => onChange(next ?? '')} />
+    {/* No `environment`: the worker reads env:// from its own process, not from the secrets worker's env file. */}
+    <SecretKeyField name="MESH_JOIN" label="Join code or token" value={value || undefined} consumers={['mesh']} onChange={(next: string | undefined) => onChange(next ?? '')} />
   </div>
   return <SettingsField label="Join code or token" field="client.join"
     description="A secret://NAME or env://NAME reference to the hub's join code or token; mesh must be a consumer."
@@ -157,12 +176,12 @@ function TunnelLine({ tunnel, stalled }: { tunnel?: Tunnel; stalled: boolean }) 
     : tunnel?.state === 'unavailable' || tunnel?.state === 'failed' ? <StatusPanel variant="warn"
       headline={tunnel.state === 'failed' ? 'The tunnel failed' : 'The tunnel is unavailable'} detail={tunnel.error} />
     : null
-  // An item of the settings list, and announced when polling changes it.
+  // An item of the settings list, and announced when the hub reports a change.
   return line ? <div role="listitem" aria-live="polite" className="mesh-ui-tunnel">{line}</div> : null
 }
 
-function ClientSetup({ basics, edit, status, workers, secretInput, onLeave }: {
-  basics: Basics; edit: <K extends keyof Basics>(key: K, value: Basics[K]) => void
+function ClientSetup({ basics, saved, edit, status, workers, secretInput, onLeave }: {
+  basics: Basics; saved: Basics; edit: <K extends keyof Basics>(key: K, value: Basics[K]) => void
   status: ClientStatus | null; workers: string[]; secretInput?: SecretInput
   onLeave: () => void
 }) {
@@ -170,7 +189,17 @@ function ClientSetup({ basics, edit, status, workers, secretInput, onLeave }: {
   // A shared name that is not running locally still needs its switch, to turn it off.
   const names = [...new Set([...workers, ...basics.share])].filter((n) => !NEVER_SHARED.has(n)).sort()
   const risky = basics.share.filter((n) => RUNS_COMMANDS.has(n))
-  const state = status?.state ?? ''
+  // The saved client.name; '' for a ${VAR} template, which only the worker expands, so it compares with nothing the worker reports.
+  const wanted = saved.name.includes('${') ? '' : saved.name
+  // The worker has not asked the hub for the saved name yet: it does on the event of the save.
+  const renamePending = status?.state === 'connected' && wanted !== '' && status.requested_name !== wanted && !status.rename_error
+  const state = renamePending ? 'renaming' : status?.state ?? ''
+  const [variant, headline, next] = CLIENT_STATE[state] ?? (status?.error ? CLIENT_STATE.error : [])
+  const renamed = state === 'connected' && wanted !== '' && status?.requested_name === wanted && status.node !== wanted
+  // What the worker has not shown yet about a saved share switch.
+  const pending = (name: string, on: boolean) => on !== saved.share.includes(name) ? (on ? 'not saved yet' : 'shared until you save')
+    : on ? (shared.get(name)?.state ?? (status ? 'applying…' : 'starts after the restart'))
+    : shared.has(name) ? 'stopping…' : null
   return <>
     <section className="mesh-ui-section" aria-labelledby="mesh-connect-title">
       <div className="mesh-ui-section-head"><h2 id="mesh-connect-title">Hub connection</h2>
@@ -178,9 +207,16 @@ function ClientSetup({ basics, edit, status, workers, secretInput, onLeave }: {
         {status?.node ? <span className="mesh-ui-muted">joined as <code>{status.node}</code>{status.namespace ? <> in namespace <code>{status.namespace}</code></> : null}</span> : null}
         {NOTHING_TO_LEAVE.has(state) ? null : <Button variant="ghost" size="sm" className="mesh-ui-head-action" onClick={onLeave}>Leave hub</Button>}
       </div>
-      {state === 'left hub' ? <StatusPanel variant="info" headline="This engine left the hub"
-        detail="To join again, store a different join code or token. The one used before is not tried again." /> : null}
-      {status?.error ? <StatusPanel variant="alert" headline="Not sharing" detail={status.error} /> : null}
+      {/* Announced: the worker pushes each step of a join, and nobody is clicking Refresh. */}
+      <div aria-live="polite" className="mesh-ui-progress">
+        {headline ? <StatusPanel variant={status?.error && variant === 'info' ? 'warn' : variant} headline={headline}
+          detail={said(status?.error, status?.retrying ? RETRYING : next ?? '')} /> : null}
+        {/* Until the worker reads a save, the status keeps the failure of the name asked before. */}
+        {status?.rename_error && saved.name !== '' && wanted !== status.requested_name ? <StatusPanel variant="warn" headline={`Could not rename this machine${wanted ? ` to ${wanted}` : ''}`}
+          detail={said(status.rename_error, `It keeps the name ${status.node}.${status.retrying ? ` ${RETRYING}` : ''}`)} /> : null}
+        {renamed ? <p className="mesh-ui-muted">The hub named this machine <code>{status?.node}</code>: <code>{wanted}</code> {NAME.test(wanted) ? 'is taken or reserved there.' : 'is not a valid machine name.'}</p> : null}
+        {status?.join_unused ? <p className="mesh-ui-muted">Joined to <code>{status.hub_url}</code>. Another Hub URL or join code is used only after Leave hub.</p> : null}
+      </div>
       {status?.hub_wants_version ? <StatusPanel variant="warn" headline={`The hub wants version ${status.hub_wants_version}`}
         detail="Nothing is shared until this project's mesh worker runs the hub's version." /> : null}
       <SettingsList>
@@ -188,7 +224,7 @@ function ClientSetup({ basics, edit, status, workers, secretInput, onLeave }: {
           renderControl={(props) => <Input {...props} placeholder="https://mesh.example.com" value={basics.hub_url} onChange={(next) => edit('hub_url', next)} />} />
         <JoinField value={basics.join} onChange={(next) => edit('join', next)} secretInput={secretInput} />
         <SettingsField label="Machine name" field="client.name" description="How this project appears on the hub. The hub may add a suffix such as -2."
-          error={basics.name && !NAME.test(basics.name) ? 'Use lowercase letters, digits or hyphens, starting with a letter.' : undefined}
+          error={basics.name && !NAME.test(basics.name) ? 'Use lowercase letters, digits and single hyphens, starting with a letter and not ending with a hyphen.' : undefined}
           renderControl={(props) => <Input {...props} placeholder="my-laptop" value={basics.name} onChange={(next) => edit('name', next)} />} />
       </SettingsList>
     </section>
@@ -202,12 +238,13 @@ function ClientSetup({ basics, edit, status, workers, secretInput, onLeave }: {
       <ul className="mesh-ui-share">{names.map((name) => {
         const on = basics.share.includes(name)
         const live = shared.get(name)
+        const label = pending(name, on)
         return <li key={name}>
           <label><Switch checked={on} aria-label={`Share ${name}`}
             onChange={(e) => edit('share', e.currentTarget.checked ? [...basics.share, name].sort() : basics.share.filter((n) => n !== name))} />
             <code>{name}</code>
             {RUNS_COMMANDS.has(name) ? <Badge variant="warn">runs commands</Badge> : null}
-            {on ? <span className="mesh-ui-muted">{live?.state ?? 'not saved yet'}</span> : null}
+            {label ? <span className="mesh-ui-muted">{label}</span> : null}
           </label>
           {on && live?.functions?.length ? <FunctionList worker={name} machine={status?.node ?? ''} functions={live.functions.map((id) => ({ function_id: id }))} /> : null}
         </li>
@@ -255,6 +292,12 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       return host.iii.observe({ function_id: 'mesh::on-node-changed', args: {} }, `iii::mesh-ui::events::${host.iii.browserId}`)
     } catch { return undefined }
   }, [host, isHub])
+  // The worker calls this with every change of its mesh::status, in either mode: nothing here re-reads on a timer.
+  useEffect(() => {
+    try {
+      return host.iii.observe('mesh::on-status-changed', `iii::mesh-ui::events::${host.iii.browserId}`)
+    } catch { return undefined }
+  }, [host])
   // What the last Save wrote, shown until the next read replaces it, so the old values never flash back.
   const [written, setWritten] = useState<JsonValue | null>(null)
   // Likewise the code mesh::join::cycle returned.
@@ -327,24 +370,20 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   }
   const running: Mode = data?.client ? 'client' : 'hub'
   const hubView = basics.mode !== 'client' && running !== 'client'
-  const needsRestart = !dirty && data !== undefined && config !== null && (saved.mode !== running || data?.client?.state === 'restart required')
-  // mesh::status is not pushed, and a tunnel settles seconds to minutes after a save: re-read until the hub
-  // shows the saved switch and a resting state. Only the hub knows what a templated Public URL expands to.
+  // Only the mode needs a restart: the worker picks hub or client when it starts.
+  const needsRestart = !dirty && data !== undefined && config !== null && saved.mode !== running
+  // A tunnel settles seconds to minutes after a save; the hub pushes each step.
   const tunnel = data?.hub?.tunnel
-  // A client's state moves on its 5 s ticks (a join, a leave, a removal) until it connects.
   const settling = Boolean(data?.hub) && (saved.tunnel !== Boolean(tunnel) || (tunnel !== undefined && !TUNNEL_RESTING.has(tunnel.state)))
-    || (data?.client != null && data.client.state !== 'connected')
   const [stalled, setStalled] = useState(false)
   useEffect(() => {
     setStalled(false)
     if (!settling) return
-    const until = Date.now() + SETTLE_MS
-    const timer = setInterval(() => {
-      if (Date.now() > until) { clearInterval(timer); setStalled(true) } else if (!document.hidden) refresh()
-    }, 5000)
-    return () => clearInterval(timer)
+    // A deadline, not a poll: it only says the hub went quiet.
+    const timer = setTimeout(() => setStalled(true), SETTLE_MS)
+    return () => clearTimeout(timer)
     // `written` changes on every save, so each save gets a full window.
-  }, [settling, refresh, written])
+  }, [settling, written])
   // A template can expand to nothing; then the hub's own address decides.
   const hasAddress = saved.public_url.includes('${') && data?.hub ? Boolean(data.hub.public_url) : Boolean(saved.public_url)
   return <PageShell className="mesh-ui-shell">
@@ -363,7 +402,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       {data?.configError ? <section className="mesh-ui-section"><StatusPanel variant="alert" headline="Could not load the mesh settings"
         detail={data.configError} action={<Button onClick={refresh}>Retry</Button>} /></section> : null}
       {needsRestart ? <section className="mesh-ui-section"><StatusPanel variant="warn"
-        headline={saved.mode !== running ? `Restart the mesh worker to switch to ${saved.mode} mode` : 'Restart the mesh worker to apply the new connection'}
+        headline={`Restart the mesh worker to switch to ${saved.mode} mode`}
         detail="Saved settings take effect when the worker starts again."
         action={<Button disabled={busy !== null} onClick={restart}>{busy === 'restart' ? 'Restarting…' : 'Restart mesh'}</Button>} /></section> : null}
       {hubView ? <section className="mesh-ui-section" aria-labelledby="mesh-nodes-title" aria-busy={loading}>
@@ -392,7 +431,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
         </article>)}</div>
       </section> : null}
       {raw ? null : basics.mode === 'client'
-        ? <ClientSetup basics={basics} edit={edit} status={data?.client ?? null} workers={data?.workers ?? []} secretInput={secretInput}
+        ? <ClientSetup basics={basics} saved={saved} edit={edit} status={data?.client ?? null} workers={data?.workers ?? []} secretInput={secretInput}
           onLeave={() => setLeaving(true)} />
         : <section className="mesh-ui-section" aria-labelledby="mesh-address-title">
           <div className="mesh-ui-section-head"><h2 id="mesh-address-title">Hub address</h2>
@@ -409,7 +448,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       {dirty || failure ? <section className="mesh-ui-section mesh-ui-save" aria-live="polite">
         {failure ? <StatusPanel variant="alert" headline="Could not save" detail={failure} /> : null}
         {dirty ? <div className="mesh-ui-save-bar">
-          <span className="mesh-ui-muted">Unsaved changes{changed.some((k) => !LIVE.has(k)) ? ' · applied after a restart' : ' · applied within a few seconds'}</span>
+          <span className="mesh-ui-muted">Unsaved changes{changed.includes('mode') || saved.mode !== running ? ' · applied after a restart' : ' · applied within a few seconds'}</span>
           <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => setEdits({})}>Discard</Button>
           <Button size="sm" disabled={busy !== null || (basics.mode === 'client' && basics.name !== '' && !NAME.test(basics.name))} onClick={save}>{busy === 'save' ? 'Saving…' : 'Save'}</Button>
         </div> : null}

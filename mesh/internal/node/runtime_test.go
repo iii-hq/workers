@@ -121,3 +121,49 @@ func TestRunReturnsRemoval(t *testing.T) {
 		t.Fatalf("got %v want %v", err, ErrRemoved)
 	}
 }
+
+// A new name is picked up on the network's signal, never by polling it.
+func TestRunFollowsARenameOnlyOnTheSignal(t *testing.T) {
+	changed := make(chan struct{}, 8)
+	n, _, m, w := testNodeWith(t, Options{Changed: func() { changed <- struct{}{} }})
+	m.port = 0
+	n.namespace = "real-project"
+	w.runtimes = make(chan Runtime, 8)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- n.Run(ctx) }()
+	follows := func(want Runtime) {
+		t.Helper()
+		select {
+		case got := <-w.runtimes:
+			if got != want {
+				t.Fatalf("runtime %+v, want %+v", got, want)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			t.Fatal("Changed did not run")
+		}
+	}
+	follows(Runtime{Node: "laptop-2", Namespace: "real-project"})
+	m.mu.Lock()
+	m.name = "work"
+	m.mu.Unlock()
+	select {
+	case got := <-w.runtimes:
+		t.Fatalf("followed %+v with no signal", got)
+	case <-changed:
+		t.Fatal("Changed ran with no signal")
+	case <-time.After(1200 * time.Millisecond):
+	}
+	m.changes <- struct{}{}
+	follows(Runtime{Node: "work", Namespace: "real-project"})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

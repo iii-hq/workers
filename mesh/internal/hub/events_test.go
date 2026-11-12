@@ -361,6 +361,7 @@ func TestNodeEventsRealPeerTransitionsPreserveRevocation(t *testing.T) {
 	h.SetHooks(Hooks{RevokeNode: func(name string) { revoked <- name }})
 	c.SetGone(h.revoke)
 	e := newEventWire(t, h)
+	h.startNodeCalls(e.ctx) // as Run does: its coordinator observer must still feed the node events
 	if !e.bind("peer", `{"node":"laptop"}`) {
 		t.Fatal("bind")
 	}

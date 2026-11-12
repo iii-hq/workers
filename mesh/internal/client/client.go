@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
@@ -25,6 +27,7 @@ type Options struct {
 	Namespace string      // local project namespace
 	Version   string
 	Dir       string // state directory; empty means $III_COMPOSE_DIR/data/mesh-client
+	ConfigID  string // the mesh configuration entry, observed for changes
 	// Fetch re-reads the mesh configuration entry: its mode and client section.
 	Fetch func(context.Context) (mode string, c *Config, err error)
 }
@@ -37,6 +40,10 @@ type Status struct {
 	Namespace       string         `json:"namespace"`
 	State           string         `json:"state"`
 	Error           string         `json:"error"`
+	Retrying        bool           `json:"retrying,omitempty"`       // a retry is scheduled: nothing to do but wait
+	RequestedName   string         `json:"requested_name,omitempty"` // the client.name the hub last answered for
+	RenameError     string         `json:"rename_error,omitempty"`   // why the machine does not have client.name
+	JoinUnused      bool           `json:"join_unused,omitempty"`    // client.hub_url or client.join is not the enrollment in use: used only after a leave
 	HubWantsVersion string         `json:"hub_wants_version,omitempty"`
 	Shared          []SharedStatus `json:"shared"`
 }
@@ -75,21 +82,64 @@ type runner struct {
 	// enroll reports spent when the hub may have counted a join attempt.
 	enroll func(context.Context, Config, string) (st joinState, spent bool, err error)
 
-	cfg      *Config // last configuration read
-	started  *Config // configuration the running node was started with
-	tried    string  // last join value that may have spent a hub join attempt
-	triedErr error   // why tried failed; nil while it succeeded or is registering
+	cfg      *Config    // last configuration read
+	joined   *joinState // enrollment of the running node
+	tried    string     // last join value that may have spent a hub join attempt
+	triedErr error      // why tried failed; nil while it succeeded or is registering
+	fetchErr error      // why the last read of the settings failed
+	retry    bool       // the last pass failed in a way no event announces
 	cancel   context.CancelFunc
 	done     chan error
+	since    time.Time            // when the running node started
 	leaving  chan chan leaveReply // mesh::leave requests, served by loop
+	wake     chan struct{}        // capacity 1; pending says what to do
+	pending  atomic.Uint32
+	dirty    chan struct{} // capacity 1: the status may have changed
+	force    atomic.Bool   // publish the status even when it is unchanged
+	emit     func([]byte)  // delivers one status change; nil publishes nothing
 
-	mu      sync.Mutex
-	state   string // shown while no node runs
-	err     string
-	hubURL  string
-	restart bool
-	mesh    *meshnet.Mesh
-	n       *node.Node
+	mu        sync.Mutex
+	state     string // shown while no node runs
+	err       string
+	hubURL    string
+	restart   bool
+	retrying  bool
+	renaming  bool
+	requested string // joined.RequestedName, for status
+	renameTo  string // name the hub gave, until the node's map shows it
+	renameErr string
+	unused    bool // see Status.JoinUnused
+	mesh      *meshnet.Mesh
+	n         *node.Node
+}
+
+// What a wake asks of loop.
+const (
+	wakeApply uint32 = 1 << iota // the settings or the join value may have changed
+	wakeSync                     // local functions changed
+	wakeNode                     // the node's name or gateway changed
+)
+
+// StatusChanged is the private function the worker calls with each new mesh::status answer; the Console observes it.
+const StatusChanged = "mesh::on-status-changed"
+
+// The first retry of a failed pass and the longest wait between two.
+var retryMin, retryMax = 2 * time.Second, time.Minute
+
+func (r *runner) kick(why uint32) {
+	r.pending.Or(why)
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// changed says the status may differ from the one last published.
+func (r *runner) changed() {
+	select {
+	case r.dirty <- struct{}{}:
+	default:
+	}
 }
 
 // Run never returns an error for a join or network failure: compose would
@@ -98,7 +148,9 @@ func Run(ctx context.Context, o Options) error {
 	if o.Dir == "" {
 		o.Dir = filepath.Join(os.Getenv("III_COMPOSE_DIR"), "data", "mesh-client")
 	}
-	r := &runner{o: o, dir: o.Dir, bridge: NewBridge(o.Local, o.Namespace), enroll: enroll, leaving: make(chan chan leaveReply), state: "starting"}
+	r := &runner{o: o, dir: o.Dir, bridge: NewBridge(o.Local, o.Namespace), enroll: enroll, leaving: make(chan chan leaveReply), state: "starting",
+		wake: make(chan struct{}, 1), dirty: make(chan struct{}, 1)}
+	r.bridge.Changed = r.changed
 	defer r.bridge.Close()
 	if _, err := iii.RegisterFunctionTyped(o.Local, "mesh::status", func(context.Context, struct{}) (Status, error) { return r.status(), nil }); err != nil {
 		return fmt.Errorf("register mesh status: %w", err)
@@ -106,39 +158,190 @@ func Run(ctx context.Context, o Options) error {
 	if _, err := iii.RegisterFunctionTyped(o.Local, "mesh::leave", func(ctx context.Context, _ struct{}) (LeaveResult, error) { return r.requestLeave(ctx) }); err != nil {
 		return fmt.Errorf("register mesh leave: %w", err)
 	}
-	r.loop(ctx, 5*time.Second)
+	if err := r.observe(ctx); err != nil {
+		return err
+	}
+	r.loop(ctx)
 	return nil
 }
 
-// loop is the only goroutine that starts, stops and forgets the node.
-func (r *runner) loop(ctx context.Context, every time.Duration) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+// StatusEvents registers StatusChanged; current runs once a new observer is active, so one added after a status read misses nothing.
+func StatusEvents(ctx context.Context, c *iii.Client, current func()) (emit func(status []byte), err error) {
+	c.OnObserverAddedFor(StatusChanged, func(_ context.Context, obs *iii.Observer) error {
+		go func() {
+			if obs.Accepted(ctx) == nil {
+				current()
+			}
+		}()
+		return nil
+	})
+	if _, err = c.RegisterFunction(StatusChanged, iii.Identity, iii.RegisterFunctionOptions{Private: true, Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`),
+		Description: "Called by the mesh worker with its mesh::status answer when that answer changes."}); err != nil {
+		return nil, fmt.Errorf("register mesh status events: %w", err)
+	}
+	return func(status []byte) {
+		if c.IsObserved(StatusChanged) {
+			_, _ = c.Call(ctx, iii.CallRequest{FunctionID: StatusChanged, Payload: status, Action: iii.VoidAction()})
+		}
+	}, nil
+}
+
+// observe turns the engine's events into wakes. No payload is read: each event only says what to read again.
+func (r *runner) observe(ctx context.Context) error {
+	local := r.o.Local
+	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
+	emit, err := StatusEvents(ctx, local, func() {
+		r.force.Store(true)
+		r.changed()
+	})
+	if err != nil {
+		return err
+	}
+	r.emit = emit
+	type ack struct {
+		OK bool `json:"ok"`
+	}
+	for id, why := range map[string]uint32{"mesh::on-config-change": wakeApply, "mesh::on-functions-change": wakeSync} {
+		if _, err := iii.RegisterFunctionTyped(local, id, func(context.Context, json.RawMessage) (ack, error) {
+			r.kick(why)
+			return ack{true}, nil
+		}, internal); err != nil {
+			return fmt.Errorf("register %s: %w", id, err)
+		}
+	}
+	for _, o := range []struct {
+		source iii.Source
+		target string
+	}{
+		{iii.Source{FunctionID: "configuration::on-updated", Namespace: "default", Deliver: iii.DeliverOutput, Filters: iii.Filters{
+			"input.id":         iii.Op{"$eq": r.o.ConfigID},
+			"input.event_type": iii.Op{"$in": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}},
+		}}, "mesh::on-config-change"},
+		// client.join may be a secret:// reference: any secret change reads it again.
+		{iii.Source{FunctionID: "secrets::on-changed", Deliver: iii.DeliverOutput}, "mesh::on-config-change"},
+		{iii.Source{FunctionID: "engine::on-functions-changed", Deliver: iii.DeliverOutput}, "mesh::on-functions-change"},
+	} {
+		if _, err := local.Observe(o.source, o.target); err != nil {
+			return fmt.Errorf("observe %s: %w", o.source.FunctionID, err)
+		}
+	}
+	// Observers replay no history: read everything again after a reconnect.
+	first := true // the listener is first called with the current state, which loop already acts on
+	local.AddConnectionStateListener(func(s iii.ConnectionState) {
+		if s == iii.StateConnected && !first {
+			r.kick(wakeApply)
+		}
+		first = false
+	})
+	return nil
+}
+
+// loop is the only goroutine that starts, stops, renames and forgets the node; a timer only retries what failed.
+func (r *runner) loop(ctx context.Context) {
+	var publishing sync.WaitGroup
+	publishing.Go(func() { r.publish(ctx) })
+	defer publishing.Wait()
 	serve := func(reply chan leaveReply) {
 		res, err := r.leave(ctx)
 		reply <- leaveReply{res, err}
+		r.pending.Or(wakeApply) // a new join value may already be stored
 	}
+	var timer *time.Timer
+	var retry <-chan time.Time
+	var backoff time.Duration
+	// settle starts the retry a failure asks for and publishes whether one waits.
+	settle := func() {
+		if !r.retry {
+			// A node that has not run for retryMax yet may fail again at once: its next failure keeps backing off.
+			if r.done == nil || time.Since(r.since) >= retryMax {
+				backoff = 0
+			}
+		} else if timer == nil {
+			backoff = min(max(retryMin, 2*backoff), retryMax)
+			timer = time.NewTimer(backoff)
+			retry = timer.C
+		}
+		r.mu.Lock()
+		r.retrying = r.retry
+		r.mu.Unlock()
+		r.changed()
+	}
+	r.pending.Or(wakeApply)
 	for {
-		// A leave queued behind a tick, which can take a minute, goes first: select picks among ready cases at random.
+		// A leave queued behind a pass, which can take a minute, goes first: select picks among ready cases at random.
 		select {
 		case reply := <-r.leaving:
 			serve(reply)
 		default:
-			r.tick(ctx)
+		}
+		if why := r.pending.Swap(0); why != 0 {
+			if why&wakeApply != 0 {
+				r.apply(ctx)
+				// Only a whole pass ends a pending retry: another event must not push it back.
+				if timer != nil {
+					timer.Stop()
+					timer, retry = nil, nil
+				}
+			} else {
+				if why&wakeSync != 0 {
+					r.sync(ctx)
+				}
+				if why&wakeNode != 0 {
+					r.rename(ctx)
+				}
+			}
+			settle()
 		}
 		select {
 		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
 			if r.done != nil {
 				r.cancel()
 				r.stop(<-r.done)
 			}
 			return
 		case err := <-r.done:
+			ran := time.Since(r.since)
 			r.stop(err)
+			if err == nil || errors.Is(err, node.ErrRemoved) {
+				r.pending.Or(wakeApply)
+				break
+			}
+			// Started again only after the backoff: a cause that holds would rebuild the mesh in a loop.
+			if ran >= retryMax {
+				backoff = 0
+			}
+			r.retry = true
+			settle()
 		case reply := <-r.leaving:
 			serve(reply)
-		case <-ticker.C:
+		case <-r.wake:
+		case <-retry:
+			r.pending.Or(wakeApply)
 		}
+	}
+}
+
+// publish delivers the status each time it changes. It is not loop, which a join holds for up to a minute.
+func (r *runner) publish(ctx context.Context) {
+	var last []byte
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.dirty:
+		}
+		if r.emit == nil {
+			continue
+		}
+		status, _ := json.Marshal(r.status())
+		if !r.force.Swap(false) && bytes.Equal(status, last) {
+			continue
+		}
+		last = status
+		r.emit(status)
 	}
 }
 
@@ -153,35 +356,110 @@ func (r *runner) requestLeave(ctx context.Context) (LeaveResult, error) {
 	return out.res, out.err
 }
 
-func (r *runner) tick(ctx context.Context) {
-	mode, c, fetchErr := r.o.Fetch(ctx)
-	if fetchErr != nil {
-		fetchErr = fmt.Errorf("read configuration: %w", fetchErr)
+// apply reads the settings and brings the node in line with them.
+func (r *runner) apply(ctx context.Context) {
+	r.retry = false
+	mode, c, err := r.o.Fetch(ctx)
+	if r.fetchErr = err; err != nil {
+		r.fetchErr = fmt.Errorf("read configuration: %w", err)
 	} else {
 		if c == nil {
 			c = &Config{}
 		}
-		r.cfg = c
-		changed := r.started != nil && (c.HubURL != r.started.HubURL || c.Join != r.started.Join || c.Name != r.started.Name)
 		r.mu.Lock()
-		r.restart = mode != "client" || changed
-		if r.started == nil {
-			r.hubURL = c.HubURL
+		if r.cfg != nil && r.cfg.Name != c.Name {
+			r.renameErr = "" // it was about the name asked before
+		}
+		r.cfg = c
+		r.restart = mode != "client" // the worker picks hub or client when it starts
+		if r.done == nil {
+			r.hubURL, r.unused = c.HubURL, false // start sets both from the enrollment it finds
 		}
 		r.mu.Unlock()
 	}
 	if r.cfg == nil {
-		r.set("error", fetchErr)
+		r.fail("error", r.fetchErr)
 		return
 	}
-	err := errors.Join(fetchErr, r.bridge.Sync(ctx, r.cfg.Share))
+	r.sync(ctx)
+	if r.done == nil {
+		r.start(ctx, *r.cfg)
+	} else {
+		r.rename(ctx)
+		unused := r.isUnused(ctx, *r.cfg, r.joined)
+		r.mu.Lock()
+		r.unused = unused
+		r.mu.Unlock()
+	}
+}
+
+// isUnused says whether client.hub_url or client.join names another hub or join value than the enrollment st.
+func (r *runner) isUnused(ctx context.Context, c Config, st *joinState) bool {
+	if c.HubURL != "" && c.HubURL != st.PublicURL {
+		return true
+	}
+	if c.Join == "" || st.JoinDigest == "" {
+		return false
+	}
+	value, err := resolveJoin(ctx, r.o.Local, c.Join)
+	return err == nil && joinDigest(value) != st.JoinDigest
+}
+
+// sync shows the shared workers' current functions to the hub. A running node reports what failed.
+func (r *runner) sync(ctx context.Context) {
+	if r.cfg == nil {
+		return
+	}
+	err := errors.Join(r.fetchErr, r.bridge.Sync(ctx, r.cfg.Share))
+	if err != nil {
+		r.retry = true
+	}
 	if r.done != nil {
 		r.mu.Lock()
 		r.err = errText(err)
 		r.mu.Unlock()
-	} else {
-		r.start(ctx, *r.cfg)
 	}
+}
+
+const renameTimeout = 15 * time.Second
+
+// rename asks the hub for client.name. A failure is asked again after the retry backoff: the hub may be
+// unreachable, fail on its side or run an earlier build that an update replaces.
+func (r *runner) rename(ctx context.Context) {
+	if r.done == nil || r.cfg == nil {
+		return
+	}
+	want := r.cfg.Name
+	if want == "" || want == r.joined.RequestedName {
+		return
+	}
+	r.mu.Lock()
+	m := r.mesh
+	r.mu.Unlock()
+	if _, named := m.SelfName(); !named {
+		return // the node's first map wakes this again
+	}
+	r.mu.Lock()
+	r.renaming = true // the last failure stays shown while the same name is asked again
+	r.mu.Unlock()
+	r.changed()
+	renameCtx, cancel := context.WithTimeout(ctx, renameTimeout)
+	name, err := m.Rename(renameCtx, want)
+	cancel()
+	var refused *meshnet.RenameRefused
+	switch {
+	case err == nil:
+		r.joined.RequestedName = want
+		err = savePrivate(r.dir, "join.json", r.joined)
+	case errors.As(err, &refused), errors.Is(err, meshnet.ErrRenameUnsupported):
+		r.retry = true
+	default:
+		r.retry = true
+		err = fmt.Errorf("hub not reached: %w", err)
+	}
+	r.mu.Lock()
+	r.renaming, r.renameTo, r.renameErr, r.requested = false, name, errText(err), r.joined.RequestedName
+	r.mu.Unlock()
 }
 
 const (
@@ -202,7 +480,7 @@ func (r *runner) start(ctx context.Context, c Config) {
 		return
 	}
 	// node.New refuses a build without a version; checked before joining so it
-	// never joins and leaves the hub every tick.
+	// never joins and leaves the hub on every pass.
 	if r.o.Version == "" {
 		r.set("error", errors.New("binary has no version; build it with make build"))
 		return
@@ -211,9 +489,13 @@ func (r *runner) start(ctx context.Context, c Config) {
 	if err != nil || st == nil {
 		return
 	}
+	unused := r.isUnused(ctx, c, st)
 	r.mu.Lock()
-	r.hubURL = st.PublicURL
+	r.hubURL, r.unused = st.PublicURL, unused
 	r.mu.Unlock()
+	if fresh {
+		r.set("waiting for hub", nil)
+	}
 	m, err := meshnet.UpUserspace(filepath.Join(r.dir, "mesh"), st.PublicURL, st.Secret, st.RequestedName, st.Identity.Control)
 	refused := false
 	if err == nil && fresh {
@@ -234,22 +516,23 @@ func (r *runner) start(ctx context.Context, c Config) {
 			r.triedErr = err
 			r.set("join failed", fmt.Errorf("%w (change client.join to retry)", err))
 		} else {
-			// A kept pending join.json is retried next tick: the hub may have accepted it.
-			r.set("error", fmt.Errorf("start mesh: %w", err))
+			// A kept pending join.json is retried: the hub may have accepted it.
+			r.fail("error", fmt.Errorf("start mesh: %w", err))
 		}
 		return
 	}
 	n, err := r.newNode(m, st)
 	if err != nil {
 		m.Close()
-		r.set("error", err)
+		r.fail("error", err)
 		return
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	r.cancel, r.done, r.started = cancel, make(chan error, 1), &c
+	r.cancel, r.done, r.joined, r.since = cancel, make(chan error, 1), st, time.Now()
 	r.mu.Lock()
-	r.mesh, r.n, r.err = m, n, ""
+	r.mesh, r.n, r.err, r.requested = m, n, "", st.RequestedName
 	r.mu.Unlock()
+	r.changed()
 	go func(done chan<- error) { done <- n.Run(runCtx) }(r.done)
 }
 
@@ -258,7 +541,10 @@ func (r *runner) newNode(m *meshnet.Mesh, st *joinState) (*node.Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("start forwarder: %w", err)
 	}
-	return node.New(node.Options{Mesh: m, HubIdentity: st.Identity.Identity, Version: r.o.Version, Workers: r.bridge, URL: url})
+	return node.New(node.Options{Mesh: m, HubIdentity: st.Identity.Identity, Version: r.o.Version, Workers: r.bridge, URL: url, Changed: func() {
+		r.kick(wakeNode)
+		r.changed()
+	}})
 }
 
 // join loads the enrollment, or enrolls with client.join. A value that may
@@ -276,7 +562,7 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 		_, err = os.Stat(filepath.Join(r.dir, "mesh", "state"))
 		return st, st.Pending || errors.Is(err, os.ErrNotExist), nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		r.set("error", err)
+		r.fail("error", err)
 		return nil, false, err
 	}
 	if c.Join == "" {
@@ -285,6 +571,7 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 	}
 	value, err := resolveJoin(ctx, r.o.Local, c.Join)
 	if err != nil {
+		r.retry = !strings.HasPrefix(c.Join, "env://") // this process's environment never changes
 		r.set("waiting for join", fmt.Errorf("resolve %s: %w", c.Join, err))
 		return nil, false, err
 	}
@@ -292,6 +579,7 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 		r.set("join failed", fmt.Errorf("%w (change client.join to retry)", r.triedErr))
 		return nil, false, r.triedErr
 	}
+	r.set("joining", nil)
 	enrolled, spent, err := r.enroll(ctx, c, value)
 	if err == nil {
 		// Saved before registering: the hub replaces the code when it accepts the
@@ -305,8 +593,10 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 	if err != nil {
 		if spent {
 			r.set("join failed", fmt.Errorf("%w (change client.join to retry)", err))
+		} else if errors.As(err, new(invalidJoin)) {
+			r.set("waiting for join", err) // only a save fixes it, and a save is an event
 		} else {
-			r.set("waiting for join", err) // nothing counted against the hub: retried next tick
+			r.fail("waiting for join", err) // nothing counted against the hub: retried
 		}
 		return nil, false, err
 	}
@@ -328,7 +618,7 @@ func (r *runner) left(ctx context.Context, c Config) bool {
 		return false
 	}
 	if err != nil {
-		r.set("error", err)
+		r.fail("error", err)
 		return true
 	}
 	var note leftNote
@@ -339,12 +629,13 @@ func (r *runner) left(ctx context.Context, c Config) bool {
 	}
 	// A leave cut short may have kept the enrollment; deleting it again is harmless.
 	if err = r.forget(); err != nil {
-		r.set("error", err)
+		r.fail("error", err)
 		return true
 	}
 	value := ""
 	if c.Join != "" {
 		if value, err = resolveJoin(ctx, r.o.Local, c.Join); err != nil {
+			r.retry = !strings.HasPrefix(c.Join, "env://")
 			r.set(leftState, errors.Join(warning, fmt.Errorf("resolve %s: %w", c.Join, err)))
 			return true
 		}
@@ -354,7 +645,7 @@ func (r *runner) left(ctx context.Context, c Config) bool {
 		// An enrollment saved by an earlier build does not name its join value: the first one read counts as it.
 		note.JoinDigest = now
 		if err = savePrivate(r.dir, leftMarker, note); err != nil {
-			r.set("error", err)
+			r.fail("error", err)
 			return true
 		}
 	}
@@ -363,7 +654,7 @@ func (r *runner) left(ctx context.Context, c Config) bool {
 		return true
 	}
 	if err = os.Remove(path); err != nil {
-		r.set("error", err)
+		r.fail("error", err)
 		return true
 	}
 	return false
@@ -375,7 +666,7 @@ func (r *runner) forget() error {
 }
 
 // leave logs the node out of the hub when it can, then forgets the enrollment.
-// It runs on loop, so it never overlaps tick, start or stop.
+// It runs on loop, so it never overlaps a pass, start or stop.
 func (r *runner) leave(ctx context.Context) (LeaveResult, error) {
 	b, err := os.ReadFile(filepath.Join(r.dir, "join.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -425,8 +716,9 @@ func (r *runner) leave(ctx context.Context) (LeaveResult, error) {
 		return res, err
 	}
 	r.mu.Lock()
-	r.state, r.err, r.restart = leftState, res.Warning, false // nothing runs, so no changed connection waits for a restart
+	r.state, r.err, r.unused = leftState, res.Warning, false
 	r.mu.Unlock()
+	r.changed()
 	return res, nil
 }
 
@@ -436,8 +728,7 @@ var errRefused = errors.New("hub refused the registration")
 func awaitRegistration(ctx context.Context, m *meshnet.Mesh) error {
 	deadline := time.NewTimer(time.Minute)
 	defer deadline.Stop()
-	poll := time.NewTicker(100 * time.Millisecond)
-	defer poll.Stop()
+	changes := m.GatewayChanges()
 	for {
 		if _, ok := m.SelfName(); ok {
 			return nil
@@ -449,7 +740,10 @@ func awaitRegistration(ctx context.Context, m *meshnet.Mesh) error {
 			return errors.New("hub did not accept the registration within 1m")
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-poll.C:
+		case _, open := <-changes:
+			if !open {
+				changes = nil // the mesh closed: the error or the deadline says why
+			}
 		}
 	}
 }
@@ -485,6 +779,9 @@ func resolveJoin(ctx context.Context, local caller, ref string) (string, error) 
 
 type joinArgs struct{ PublicURL, Code, Token string }
 
+// invalidJoin is a join value or hub URL that does not parse: no retry fixes it.
+type invalidJoin struct{ error }
+
 // parseJoin reads client.join: a token carries its hub URL, a code needs client.hub_url.
 func parseJoin(hubURL, value string) (joinArgs, error) {
 	if strings.HasPrefix(value, "iiimj_") {
@@ -506,7 +803,7 @@ func parseJoin(hubURL, value string) (joinArgs, error) {
 func enroll(ctx context.Context, c Config, value string) (joinState, bool, error) {
 	args, err := parseJoin(c.HubURL, value)
 	if err != nil {
-		return joinState{}, false, err
+		return joinState{}, false, invalidJoin{err}
 	}
 	name := c.Name
 	if name == "" {
@@ -564,30 +861,45 @@ func (r *runner) stop(err error) {
 	r.mu.Unlock()
 	_ = r.bridge.SetRuntime(context.Background(), node.Runtime{})
 	m.Close()
-	r.done, r.started = nil, nil
+	r.done, r.joined = nil, nil
+	r.mu.Lock()
+	r.renameTo, r.renameErr, r.requested = "", "", ""
+	r.mu.Unlock()
 	if errors.Is(err, node.ErrRemoved) {
 		r.set(removedState, errRemovedByHub)
 	} else if err != nil {
 		r.set("error", err)
 	}
+	r.changed()
 }
 
+// set also publishes: loop may sit in the next step for a minute.
 func (r *runner) set(state string, err error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.state, r.err = state, errText(err)
+	r.mu.Unlock()
+	r.changed()
+}
+
+// fail is set for a failure no event announces the end of: loop tries again later.
+func (r *runner) fail(state string, err error) {
+	r.retry = true
+	r.set(state, err)
 }
 
 func (r *runner) status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := Status{Mode: "client", HubURL: r.hubURL, Namespace: r.bridge.Namespace(), State: r.state, Error: r.err}
+	s := Status{Mode: "client", HubURL: r.hubURL, Namespace: r.bridge.Namespace(), State: r.state, Error: r.err, Retrying: r.retrying, RequestedName: r.requested, RenameError: r.renameErr, JoinUnused: r.unused}
 	if r.mesh != nil {
 		var named bool
 		s.Node, named = r.mesh.SelfName()
 		s.State = "connecting"
 		if named {
 			s.State = "connected"
+		}
+		if r.renaming || r.renameTo != "" && s.Node != r.renameTo {
+			s.State = "renaming"
 		}
 		s.HubWantsVersion = r.n.WantedVersion()
 	}

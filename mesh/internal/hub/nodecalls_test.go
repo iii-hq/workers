@@ -16,6 +16,7 @@ import (
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"github.com/iii-hq/workers/mesh/internal/coordinator"
+	"github.com/iii-hq/workers/mesh/internal/gateway"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
 	"github.com/iii-hq/workers/mesh/internal/node"
 	"tailscale.com/tsnet"
@@ -62,6 +63,14 @@ func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMess
 }
 func nodeCallHub(t *testing.T) (*Hub, *nodeCallRPC) {
 	t.Helper()
+	h, r, up := idleNodeCallHub(t)
+	up()
+	return h, r
+}
+
+// idleNodeCallHub is nodeCallHub before its peer joins; up joins it.
+func idleNodeCallHub(t *testing.T) (*Hub, *nodeCallRPC, func()) {
+	t.Helper()
 	c, err := coordinator.New(t.TempDir(), func(string, string) (string, error) { return "", nil })
 	if err != nil {
 		t.Fatal(err)
@@ -79,14 +88,16 @@ func nodeCallHub(t *testing.T) (*Hub, *nodeCallRPC) {
 	t.Cleanup(func() { shim.Close() })
 	peer := &tsnet.Server{Dir: t.TempDir(), Hostname: "laptop", ControlURL: shim.URL(), AuthKey: rand.Text(), Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
 	t.Cleanup(func() { peer.Close() })
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	if _, err = peer.Up(ctx); err != nil {
-		t.Fatal(err)
-	}
 	r := &nodeCallRPC{status: node.Status{Name: "laptop", OS: "linux", Arch: "amd64", Version: "0.1.0", Workers: []node.WorkerStatus{}}, verifier: node.NewVerifier(c.Identity().Public().(ed25519.PublicKey), time.Minute)}
 	h := &Hub{Coordinator: c, Namespace: "project", Version: "0.2.0", config: DefaultConfig(), nodeClient: r}
-	return h, r
+	return h, r, func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		if _, err := peer.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 func TestVersionMismatchSharesNothing(t *testing.T) {
 	h, r := nodeCallHub(t)
@@ -121,8 +132,8 @@ func TestVersionMismatchSharesNothing(t *testing.T) {
 	}
 }
 func TestOnlineNodeWorkersRefresh(t *testing.T) {
-	defer func(n int) { nodeRefreshTicks = n }(nodeRefreshTicks)
-	nodeRefreshTicks = 1
+	defer func(d time.Duration) { nodeRefreshDelay = d }(nodeRefreshDelay)
+	nodeRefreshDelay = time.Millisecond
 	h, r := nodeCallHub(t)
 	r.status.Version = h.Version
 	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "not running", Functions: []string{}}}
@@ -145,7 +156,38 @@ func TestOnlineNodeWorkersRefresh(t *testing.T) {
 	r.mu.Lock()
 	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "shared", Functions: []string{"coder::read-file"}}}
 	r.mu.Unlock()
+	h.onFunctionsChange() // what the hub engine's function change event does
 	waitWorkers(`[{"name":"ide","state":"shared","functions":["laptop::coder::read-file"]}]`)
+}
+
+// A node's path and a worker shared with no functions change with no event: the periodic re-read follows them.
+func TestOnlineNodeChangesWithoutAnEventAreReadAgain(t *testing.T) {
+	defer func(d time.Duration) { nodeRefreshEvery = d }(nodeRefreshEvery)
+	nodeRefreshEvery = 20 * time.Millisecond
+	h, r := nodeCallHub(t)
+	r.status.Version = h.Version
+	r.status.Peers = []meshnet.PeerStatus{{Name: "hub", Path: "relay hub"}}
+	h.SetHooks(Hooks{})
+	h.startNodeCalls(t.Context())
+	defer h.Close()
+	wait := func(path, workers string) {
+		t.Helper()
+		var got NodeEntry
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			list, _ := h.ListNodes(t.Context(), struct{}{})
+			w, _ := json.Marshal(list[0].Workers)
+			if got = list[0]; got.Path == path && string(w) == workers {
+				return
+			}
+		}
+		t.Fatalf("node %+v, want path %q workers %s", got, path, workers)
+	}
+	wait("relay hub", `[]`)
+	r.mu.Lock()
+	r.status.Peers = []meshnet.PeerStatus{{Name: "hub", Path: "direct 192.0.2.1:41641"}}
+	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "not running", Functions: []string{}}}
+	r.mu.Unlock()
+	wait("direct 192.0.2.1:41641", `[{"name":"ide","state":"not running","functions":[]}]`)
 }
 func TestApplyOnReconnect(t *testing.T) {
 	h, r := nodeCallHub(t)
@@ -161,4 +203,173 @@ func TestApplyOnReconnect(t *testing.T) {
 	if err := h.OnNodeOnline(t.Context(), "laptop"); err == nil || !reflect.DeepEqual(r.calls, []string{"workers::apply"}) {
 		t.Fatalf("continued after failed apply %v %v", err, r.calls)
 	}
+}
+
+// A machine that comes online after the reconciler started is read on its online event, not by polling.
+func TestNodeGoingOnlineIsReconciledByItsEvent(t *testing.T) {
+	h, r, up := idleNodeCallHub(t)
+	r.status.Version = h.Version
+	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "shared", Functions: []string{"coder::read-file"}}}
+	h.SetHooks(Hooks{})
+	h.startNodeCalls(t.Context())
+	defer h.Close()
+	up()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		list, _ := h.ListNodes(t.Context(), struct{}{})
+		if len(list) == 1 && len(list[0].Workers) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("online node not reconciled: %+v", list)
+		}
+	}
+	// A failing re-read retries until the machine is gone, then stops on that event.
+	r.mu.Lock()
+	r.status.Version = "0.0.9"
+	r.mu.Unlock()
+	h.queueNode("laptop")
+	if err := h.Coordinator.Remove("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	h.nodeReconciler.mu.Lock()
+	defer h.nodeReconciler.mu.Unlock()
+	if len(h.nodeReconciler.tasks) != 0 {
+		t.Fatal("a removed machine is still re-read")
+	}
+}
+
+// A rename drops everything the hub keyed by the old name before the machine hears its new one.
+func TestRenameFollowsOnTheHub(t *testing.T) {
+	c, err := coordinator.New(t.TempDir(), func(string, string) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	mux := http.NewServeMux()
+	c.Handle(mux)
+	front := httptest.NewServer(mux)
+	t.Cleanup(front.Close)
+	h := &Hub{Coordinator: c, Namespace: "project", Version: "0.1.0", config: DefaultConfig(), Sessions: &Sessions{}, Tickets: gateway.NewTickets(10*time.Second, time.Now)}
+	h.MeshGateway = gateway.New(c.Node, "ws://127.0.0.1:1", h.Tickets)
+	defer h.MeshGateway.Close()
+	revoked := make(chan string, 4)
+	h.SetHooks(Hooks{RevokeNode: func(name string) { revoked <- name }})
+	c.SetGone(h.revoke)
+	m, err := meshnet.UpUserspace(t.TempDir(), front.URL, "secret", "laptop", c.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	named := func(want string) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if got, _ := m.SelfName(); got == want {
+				return
+			} else if time.Now().After(deadline) {
+				t.Fatalf("self name %q, want %q", got, want)
+			}
+		}
+	}
+	named("laptop")
+	session := h.Sessions.Open("laptop")
+	h.mu.Lock()
+	h.nodeDetails = map[string]NodeDetails{"laptop": {NodeEntry: NodeEntry{Name: "laptop", Workers: []ComponentState{{Name: "ide", State: "shared", Functions: []string{"laptop::coder::read-file"}}}}}}
+	h.mu.Unlock()
+	if name, err := m.Rename(t.Context(), "work"); err != nil || name != "work" {
+		t.Fatalf("rename: %q %v", name, err)
+	}
+	select {
+	case old := <-revoked:
+		if old != "laptop" {
+			t.Fatalf("revoked %q", old)
+		}
+	default:
+		t.Fatal("the hub answered before it dropped the old name")
+	}
+	h.mu.RLock()
+	_, cached := h.nodeDetails["laptop"]
+	h.mu.RUnlock()
+	if _, ok := h.Sessions.Valid(session); ok || cached {
+		t.Fatalf("old name kept: session %v, cached details %v", ok, cached)
+	}
+	if list, _ := h.ListNodes(t.Context(), struct{}{}); len(list) != 1 || list[0].Name != "work" || len(list[0].Workers) != 0 {
+		t.Fatalf("nodes %+v", list)
+	}
+	named("work")
+}
+
+// The page re-reads mesh::status on these pushes instead of polling it.
+func TestStatusChangesArePublished(t *testing.T) {
+	var mu sync.Mutex
+	var published []StatusResult
+	record := func(h *Hub) {
+		h.emit = func(b []byte) {
+			var s StatusResult
+			if err := json.Unmarshal(b, &s); err != nil {
+				t.Error(err)
+			}
+			mu.Lock()
+			published = append(published, s)
+			mu.Unlock()
+		}
+	}
+	take := func(what string, n int) []StatusResult {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		p := published
+		published = nil
+		if len(p) != n {
+			t.Fatalf("%s: %d pushes, want %d: %+v", what, len(p), n, p)
+		}
+		return p
+	}
+	ctx := t.Context()
+
+	h, f := tunnelHub(t, true)
+	record(h)
+	h.reconcileTunnel(ctx)
+	if p := take("tunnel starting", 1); p[0].Tunnel == nil || p[0].Tunnel.State != "starting" {
+		t.Fatalf("%+v", p[0])
+	}
+	h.reconcileTunnel(ctx)
+	take("the same tunnel state", 0)
+	f.state, f.url = "ready", "https://abc234.opentunnel.xyz"
+	h.reconcileTunnel(ctx)
+	if p := take("tunnel ready", 1); p[0].PublicURL != f.url {
+		t.Fatalf("%+v", p[0])
+	}
+	f.statusErr = iii.ErrTimeout // the lease still holds, so the URL stays
+	h.reconcileTunnel(ctx)
+	h.reconcileTunnel(ctx)
+	if p := take("a failure under a live lease", 1); p[0].PublicURL != f.url || p[0].Tunnel.Error != tunnelNotResponding {
+		t.Fatalf("%+v %+v", p[0], p[0].Tunnel)
+	}
+
+	hc, _ := tunnelHub(t, true)
+	hc.ConfigID = "project_mesh"
+	record(hc)
+	if _, err := hc.onConfigChange(ctx, &configRPC{t: t, value: json.RawMessage(`{"value":{"public_url":"https://hub.example"}}`)}, ConfigChangeEvent{ID: "project_mesh"}); err != nil {
+		t.Fatal(err)
+	}
+	if p := take("an applied configuration", 1); p[0].PublicURL != "https://hub.example" {
+		t.Fatalf("%+v", p[0])
+	}
+
+	hn, r := nodeCallHub(t)
+	record(hn)
+	r.status.Version = hn.Version
+	if err := hn.OnNodeOnline(ctx, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	take("a new node entry", 1)
+	if err := hn.OnNodeOnline(ctx, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	take("the same node entry", 0)
+	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "shared", Functions: []string{"coder::read-file"}}}
+	if err := hn.OnNodeOnline(ctx, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	take("a node sharing a worker", 1)
 }

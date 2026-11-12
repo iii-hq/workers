@@ -39,6 +39,8 @@ type Options struct {
 	// URL reaches the hub gateway (the client's loopback forwarder). It is used
 	// only once the gateway is authenticated.
 	URL string
+	// Changed runs after the assigned name, the gateway or the hub's wanted version changed; it must not block.
+	Changed func()
 }
 type Node struct {
 	mesh          Network
@@ -50,13 +52,19 @@ type Node struct {
 	statusMu      sync.RWMutex
 	wantedVersion string
 	namespace     string
+	onChange      func()
 }
 
 func New(o Options) (*Node, error) {
 	if o.Mesh == nil || o.Workers == nil || len(o.HubIdentity) != ed25519.PublicKeySize || o.Version == "" || o.URL == "" {
 		return nil, errors.New("node requires mesh, workers, pinned identity, version and gateway URL")
 	}
-	return &Node{mesh: o.Mesh, verifier: NewVerifier(o.HubIdentity, time.Minute), version: o.Version, workers: o.Workers, url: o.URL}, nil
+	return &Node{mesh: o.Mesh, verifier: NewVerifier(o.HubIdentity, time.Minute), version: o.Version, workers: o.Workers, url: o.URL, onChange: o.Changed}, nil
+}
+func (n *Node) changed() {
+	if n.onChange != nil {
+		n.onChange()
+	}
 }
 
 // WantedVersion is the hub's version while it differs from this node's.

@@ -33,10 +33,13 @@ iii call --engine ws://127.0.0.1:49834 mesh::nodes::get name=laptop
 Status reports front-door, gateway and proxy health plus total, online and
 outdated node counts. The list holds each node's name, address, platform,
 version, online state and shared workers; each shared worker lists its hub
-function ids (`<node>::<function>`). The hub re-reads each online node every
-30 seconds, so a worker shared or stopped after the join shows within that
-time. An empty list means no client has joined. An offline node exposes no
-functions, though its workers may still list the ids it last reported.
+function ids (`<node>::<function>`). The hub re-reads the online nodes when the
+functions registered on its engine change, so a worker shared or stopped after
+the join shows within about a second. What changes with no such event, a node's
+connection path or a worker shared with no functions, shows within 30 seconds:
+the hub also re-reads every online node at that interval. An empty list means
+no client has joined. An offline node exposes no functions, though its workers
+may still list the ids it last reported.
 
 ## Node events
 
@@ -66,8 +69,9 @@ The target receives `{"name":"laptop","event":"online","at":"2026-10-30T12:00:00
 Events are `joined`, `online`, `offline`, `removed` and `outdated`. Connectivity
 follows the node's active control streams. Removal includes logout and ephemeral
 expiry. `outdated` is emitted when authenticated runtime metadata changes to a
-version different from the hub, matching the status count. The hub itself is
-excluded.
+version different from the hub, matching the status count. A rename is reported
+as `removed` under the old name, then `joined` and `online` under the new one.
+The hub itself is excluded.
 
 Delivery is best effort, with no event history or replay for new observers.
 Restored inventory is a baseline; use `mesh::nodes::list` for a current snapshot.
@@ -89,6 +93,10 @@ Each card lists the workers that machine shares, each with its hub function ids
 and their descriptions, then its address, platform, version and connection path.
 **Remove** on a card removes that machine after a confirmation.
 The **Hub address** section follows.
+The page does not poll. The worker calls the private `mesh::on-status-changed`
+with its `mesh::status` answer whenever that answer changes, and the page
+observes it; in hub mode that covers the tunnel, an applied configuration and
+a machine's shared workers, and `mesh::on-node-changed` covers the machines.
 Use **Refresh** for a new snapshot; the page also refreshes when you return to
 the tab. The **Connect another engine** section shows this hub's URL and join
 code, to paste into the Mesh page of the other project in **Client** mode. If
@@ -96,11 +104,14 @@ the public URL is missing, set **Public URL** or turn on **Expose through a
 tunnel** in the page's **Hub address** section, then refresh the join
 instructions.
 
-In **Client** mode the **Hub connection** section shows the client's state and,
-while there is an enrollment to forget, **Leave hub**. Until the client is
-connected the page re-reads its state every 5 seconds, for up to 12 minutes
-after each save. Both actions are
-described under [State and removal](#state-and-removal).
+In **Client** mode the **Hub connection** section shows the client's state as
+the worker pushes it (`starting`, `waiting for join`, `joining`,
+`waiting for hub`, `connecting`, `connected`, `renaming`, `error`,
+`join failed`, `removed by hub`, `left hub`), what happens next and whether the
+worker keeps trying, and, while there is an enrollment to forget, **Leave
+hub**. A shared worker reads `not saved yet` only while the form differs from
+the stored entry; once saved it reads `applying…` until the worker reports it.
+Both actions are described under [State and removal](#state-and-removal).
 
 The settings action opens the hub's effective configuration entry, including
 an `III_CONFIG_NAME` override. Console owns validation, unsaved changes, save
@@ -381,9 +392,41 @@ compose so the first boot is already a client:
     scripts: { pre_run: make build, run: ./bin/mesh }
 ```
 
-`share` changes apply within about five seconds; other changes need a restart.
-`mesh::status` and the Console's Mesh page report the hub, assigned name, hub
-namespace, state and each shared worker with its hub function IDs.
+The client runs on events and polls nothing. It observes
+`configuration::on-updated` for its entry, `secrets::on-changed` (a
+`secret://` join value) and `engine::on-functions-changed` (the shared workers'
+functions) and applies each change at once: `share` and `name` always,
+`hub_url` and `join` while it is not joined. A joined client keeps its hub:
+another `hub_url` or `join` is used only after `mesh::leave`, and
+`mesh::status` reports `join_unused: true` while one is stored. Only `mode`
+needs a restart. An `env://NAME` join value is read from the mesh worker's own
+environment, which changes only with a restart. A join value or hub URL that
+does not parse waits for the save that fixes it. A failure no event announces
+the end of (an unreachable hub, configuration or secrets worker, a node the hub
+engine disconnected, a failed rename) is retried after 2 seconds and then at
+doubling intervals up to a minute, and `mesh::status` reports `retrying: true`
+meanwhile.
+
+`mesh::status` and the Console's Mesh page report the hub, assigned name
+(`node`), hub namespace, state and each shared worker with its hub function
+IDs.
+
+Saving another `client.name` on a joined client renames the machine without
+leaving. The client asks the hub over its control connection, which proves the
+machine's keys, so a machine renames only itself. The hub applies the rules of
+a join: the name is sanitized, and `hub`, the other reserved words, another
+machine's name and an engine function prefix get a suffix such as `-2`. The
+answer is the name the machine now has, reported as `node`; `requested_name` is
+the `client.name` the hub last answered for. Shared function IDs change prefix
+(`old::x` becomes `new::x`): the hub closes the machine's sessions under the
+old name and the client reconnects by itself, so calls in flight fail and the
+shared functions are away for a moment, while the state reads `renaming`. A
+rename that fails keeps the old name working, sets `rename_error` until another
+name is saved and is asked again with the retry backoff, so a hub that was
+unreachable, failed on its side or answered that it cannot rename machines (a
+build before renames existed) renames the machine once it can. Configuration
+entries named `<old>__*` are not moved. A client joined by an earlier build whose
+`client.name` was changed since is renamed when this build first connects.
 
 Anyone in the hub project can call shared workers, and calls reach the local
 engine as caller `mesh`. Sharing `ide`, `harness` or any worker that runs

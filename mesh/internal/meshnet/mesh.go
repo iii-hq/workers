@@ -74,6 +74,7 @@ type Mesh struct {
 	removed        chan struct{}
 	resources      sync.Once
 	gateway        atomic.Uint32
+	name           atomic.Value // last assigned name seen, a string
 	gatewayChanges chan struct{}
 	errors         chan string
 	done           chan struct{}

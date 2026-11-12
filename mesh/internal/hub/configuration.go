@@ -118,14 +118,23 @@ func (h *Hub) onConfigChange(ctx context.Context, client rpc, event ConfigChange
 	if err = h.applyConfig(ctx, cfg); err != nil {
 		return ConfigChangeResult{}, err
 	}
+	h.statusChanged()
 	h.kickTunnel() // not a direct reconcile: this runs under reload
 	return ConfigChangeResult{OK: true}, nil
 }
-func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, local bool) error {
-	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if _, err := iii.RegisterFunctionTyped(client, "mesh::configuration-id", func(context.Context, struct{}) (ConfigurationIdentity, error) {
+
+var internalFunction = iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
+
+// registerConfigurationID tells the Console which configuration entry the page edits.
+func (h *Hub) registerConfigurationID(client *iii.Client) error {
+	_, err := iii.RegisterFunctionTyped(client, "mesh::configuration-id", func(context.Context, struct{}) (ConfigurationIdentity, error) {
 		return ConfigurationIdentity{ID: h.ConfigID}, nil
-	}, internal); err != nil {
+	}, internalFunction)
+	return err
+}
+func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, local bool) error {
+	internal := internalFunction
+	if err := h.registerConfigurationID(client); err != nil {
 		return err
 	}
 	if _, err := iii.RegisterFunctionTyped(client, "mesh::on-config-change", func(ctx context.Context, e ConfigChangeEvent) (ConfigChangeResult, error) {
@@ -142,8 +151,18 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 	}, internal); err != nil {
 		return err
 	}
+	// Only schedules a re-read of the online nodes; the observed payload is never read.
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::on-functions-change", func(context.Context, json.RawMessage) (ConfigChangeResult, error) {
+		h.onFunctionsChange()
+		return ConfigChangeResult{OK: true}, nil
+	}, internal); err != nil {
+		return err
+	}
 	if local {
 		return nil
+	}
+	if _, err := client.Observe(iii.Source{FunctionID: "engine::on-functions-changed", Deliver: iii.DeliverOutput}, "mesh::on-functions-change", iii.ObserverOptions{TargetNamespace: h.Namespace}); err != nil {
+		return err
 	}
 	for _, id := range []string{h.ConfigID, "rbac-proxy"} {
 		if id == "rbac-proxy" && !h.proxyReady {

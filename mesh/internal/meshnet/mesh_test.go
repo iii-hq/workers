@@ -242,3 +242,25 @@ func TestUserspaceNodeDeniesInboundFlows(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A hub without the endpoint, the hub's refusal and a failure to reach it are told apart.
+func TestRenameAnswer(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed} {
+		if _, err := renameAnswer(status, strings.NewReader("404 page not found")); !errors.Is(err, ErrRenameUnsupported) {
+			t.Fatalf("%d: %v", status, err)
+		}
+	}
+	var refused *RenameRefused
+	if name, err := renameAnswer(http.StatusOK, strings.NewReader(`{"name":"","error":"node keys refused"}`)); !errors.As(err, &refused) || refused.Reason != "node keys refused" || name != "" {
+		t.Fatalf("refusal: %q %v", name, err)
+	}
+	if _, err := renameAnswer(http.StatusInternalServerError, strings.NewReader("boom")); err == nil || errors.As(err, &refused) || errors.Is(err, ErrRenameUnsupported) {
+		t.Fatalf("server error: %v", err)
+	}
+	if _, err := renameAnswer(http.StatusOK, strings.NewReader("not json")); err == nil || errors.As(err, &refused) {
+		t.Fatalf("garbled answer: %v", err)
+	}
+	if name, err := renameAnswer(http.StatusOK, strings.NewReader(`{"name":"work-2"}`)); err != nil || name != "work-2" {
+		t.Fatalf("answer: %q %v", name, err)
+	}
+}

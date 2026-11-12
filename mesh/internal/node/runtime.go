@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
@@ -40,6 +39,7 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		closeSession()
 		activeURL, activeName = url, name
+		defer n.changed()
 		n.applyMu.Lock()
 		if n.namespace != "" {
 			err := n.workers.SetRuntime(ctx, Runtime{Node: name, Namespace: n.namespace, URL: url})
@@ -67,8 +67,6 @@ func (n *Node) Run(ctx context.Context) error {
 		return nil
 	}
 	changes := n.mesh.GatewayChanges()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
 	if err := refresh(); err != nil {
 		return err
 	}
@@ -87,10 +85,6 @@ func (n *Node) Run(ctx context.Context) error {
 			if !ok {
 				return ErrRemoved
 			}
-			if err := refresh(); err != nil {
-				return err
-			}
-		case <-ticker.C:
 			if err := refresh(); err != nil {
 				return err
 			}

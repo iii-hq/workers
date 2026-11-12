@@ -10,6 +10,7 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	meshclient "github.com/iii-hq/workers/mesh/internal/client"
 	"github.com/iii-hq/workers/mesh/internal/join"
 )
 
@@ -251,7 +252,14 @@ func (h *Hub) refreshNames(ctx context.Context) error {
 	h.Coordinator.SetNameTaken(func(name string) bool { return taken[name] })
 	return nil
 }
-func (h *Hub) registerFunctions(client *iii.Client) error {
+func (h *Hub) registerFunctions(ctx context.Context, client *iii.Client) error {
+	publish, err := meshclient.StatusEvents(ctx, client, h.statusChanged)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	h.emit = publish
+	h.mu.Unlock()
 	if _, err := iii.RegisterFunctionTyped(client, "mesh::status", func(context.Context, struct{}) (StatusResult, error) { return h.Status(), nil }); err != nil {
 		return err
 	}
@@ -273,6 +281,6 @@ func (h *Hub) registerFunctions(client *iii.Client) error {
 	if _, err := iii.RegisterFunctionTyped(client, "mesh::join::revoke", h.RevokeToken); err != nil {
 		return err
 	}
-	_, err := iii.RegisterFunctionTyped(client, "mesh::join::cycle", h.CycleCode)
+	_, err = iii.RegisterFunctionTyped(client, "mesh::join::cycle", h.CycleCode)
 	return err
 }

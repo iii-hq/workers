@@ -66,3 +66,6 @@
 [data-iii-ui="mesh"] .mesh-ui-save-bar > span { margin-right: auto; }
 [data-iii-ui="mesh"] .mesh-ui-tunnel { padding: 0 16px 12px; }
 [data-iii-ui="mesh"] .mesh-ui-tunnel > p { margin: 0; }
+[data-iii-ui="mesh"] .mesh-ui-progress { display: grid; gap: 8px; margin-bottom: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-progress:empty { display: none; }
+[data-iii-ui="mesh"] .mesh-ui-progress > p { margin: 0; }

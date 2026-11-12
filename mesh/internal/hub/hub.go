@@ -67,7 +67,7 @@ func Run(ctx context.Context, o Options) (err error) {
 			return err
 		}
 		if cfg.Mode == "client" { // never binds the hub listener nor creates hub state
-			if err := h.registerConfiguration(ctx, client, true); err != nil {
+			if err := h.registerConfigurationID(client); err != nil {
 				return fmt.Errorf("register configuration: %w", err)
 			}
 			if err := h.registerUI(client); err != nil {
@@ -76,7 +76,7 @@ func Run(ctx context.Context, o Options) (err error) {
 			// Compose sets III_WORKER_NAME and the SDK applies it over WithName to every
 			// later client; the hub-facing clients need their own names.
 			os.Unsetenv("III_WORKER_NAME")
-			return meshclient.Run(ctx, meshclient.Options{Local: client, Namespace: namespace, Version: o.Version, Fetch: func(ctx context.Context) (string, *meshclient.Config, error) {
+			return meshclient.Run(ctx, meshclient.Options{Local: client, Namespace: namespace, Version: o.Version, ConfigID: h.ConfigID, Fetch: func(ctx context.Context) (string, *meshclient.Config, error) {
 				c, err := fetchConfig(ctx, client, h.ConfigID)
 				return c.Mode, c.Client, err
 			}})
@@ -90,7 +90,7 @@ func Run(ctx context.Context, o Options) (err error) {
 	if err := h.registerNodeEvents(ctx, client); err != nil {
 		return fmt.Errorf("register mesh node events: %w", err)
 	}
-	if err := h.registerFunctions(client); err != nil {
+	if err := h.registerFunctions(ctx, client); err != nil {
 		return fmt.Errorf("register mesh functions: %w", err)
 	}
 	if err := h.registerProxyFunctions(ctx, o.URL); err != nil {

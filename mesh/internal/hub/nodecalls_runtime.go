@@ -5,10 +5,16 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/iii-hq/workers/mesh/internal/coordinator"
 )
 
-// nodeRefreshTicks is how many 1 s watch ticks pass between status re-reads of an online node.
-var nodeRefreshTicks = 30
+// nodeRefreshDelay folds a burst of engine function changes into one re-read of the online nodes.
+var nodeRefreshDelay = 250 * time.Millisecond
+
+// nodeRefreshEvery re-reads the online nodes for what changes with no event the hub observes:
+// a node's connection path and a worker it shares with no functions.
+var nodeRefreshEvery = 30 * time.Second
 
 type nodeReconcileTask struct {
 	cancel context.CancelFunc
@@ -30,7 +36,46 @@ func (h *Hub) startNodeCalls(ctx context.Context) {
 	h.mu.Lock()
 	h.nodeReconciler = r
 	h.mu.Unlock()
-	go r.watch()
+	// Subscribed before the first read: the coordinator replays nothing.
+	events := h.events
+	h.Coordinator.SetNodeObserver(func(change coordinator.NodeChange) {
+		if events != nil {
+			events.publish(change)
+		}
+		switch change.Event {
+		case "online":
+			r.enqueue(change.Name)
+		case "offline", "removed":
+			r.remove(change.Name)
+		}
+	})
+	h.queueNodes()
+	go func() {
+		defer close(r.done)
+		ticker := time.NewTicker(nodeRefreshEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				h.queueNodes()
+			case <-ctx.Done():
+				r.mu.Lock() // an enqueue that saw the live context has added its task
+				r.mu.Unlock()
+				r.wg.Wait()
+				return
+			}
+		}
+	}()
+}
+
+// onFunctionsChange re-reads the online nodes: a bridge shares or drops workers over its open connection, with no new gateway auth.
+func (h *Hub) onFunctionsChange() {
+	if h.refreshing.CompareAndSwap(false, true) {
+		time.AfterFunc(nodeRefreshDelay, func() {
+			h.refreshing.Store(false)
+			h.queueNodes()
+		})
+	}
 }
 func (h *Hub) queueNode(name string) {
 	h.mu.RLock()
@@ -136,37 +181,6 @@ func (r *nodeReconciler) reconcile(ctx context.Context, name string, task *nodeR
 			timer.Stop()
 			return
 		case <-timer.C:
-		}
-	}
-}
-func (r *nodeReconciler) watch() {
-	defer close(r.done)
-	defer r.wg.Wait()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	previous := map[string]bool{}
-	for tick := 0; ; tick++ {
-		current := map[string]bool{}
-		for _, n := range r.hub.Coordinator.Nodes() {
-			if n.Name == "hub" || !n.Online {
-				continue
-			}
-			current[n.Name] = true
-			// A bridge shares or drops workers over its open connection, with no new gateway auth; re-read every online node so nodes::list follows.
-			if !previous[n.Name] || tick%nodeRefreshTicks == 0 {
-				r.enqueue(n.Name)
-			}
-		}
-		for name := range previous {
-			if !current[name] {
-				r.remove(name)
-			}
-		}
-		previous = current
-		select {
-		case <-r.ctx.Done():
-			return
-		case <-ticker.C:
 		}
 	}
 }

@@ -182,6 +182,12 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 							uiAssets[path] = true
 							continue
 						}
+						if source.FunctionID == "engine::on-functions-changed" {
+							if source.Namespace != "default" || source.Deliver != "output" || len(source.Filters) != 0 || target.FunctionID != "mesh::on-functions-change" {
+								t.Fatalf("invalid functions observer: %s", f)
+							}
+							continue
+						}
 						if source.FunctionID != "configuration::on-updated" || source.Namespace != "default" || source.Deliver != "output" || target.FunctionID != "mesh::on-config-change" {
 							t.Fatalf("invalid configuration observer: %s", f)
 						}

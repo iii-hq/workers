@@ -102,6 +102,7 @@ type Coordinator struct {
 	self         string
 	gone         func(name string)
 	nodeObserver func(NodeChange)
+	beforeRename func() error
 	mu           sync.Mutex
 	st           state
 	host         string
@@ -350,6 +351,7 @@ func (c *Coordinator) upgrade(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(c.register(machine, addr, req))
 	})
 	mux.HandleFunc("POST /machine/map", func(w http.ResponseWriter, r *http.Request) { c.serveMap(w, r, machine) })
+	mux.HandleFunc("POST "+renamePath, func(w http.ResponseWriter, r *http.Request) { c.serveRename(w, r, machine) })
 	(&http2.Server{ReadIdleTimeout: pingIdle}).ServeConn(conn, &http2.ServeConnOpts{Context: ctx, BaseConfig: &http.Server{Handler: http.MaxBytesHandler(mux, bodyLimit)}})
 }
 

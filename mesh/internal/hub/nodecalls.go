@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
@@ -66,8 +67,12 @@ func (h *Hub) fetchNodeStatus(ctx context.Context, name string) (node.Status, er
 	if h.nodeDetails == nil {
 		h.nodeDetails = map[string]NodeDetails{}
 	}
+	moved := !reflect.DeepEqual(h.nodeDetails[name].NodeEntry, details.NodeEntry)
 	h.nodeDetails[name] = details
 	h.mu.Unlock()
+	if moved {
+		h.statusChanged() // the page lists these workers
+	}
 	return status, nil
 }
 func (h *Hub) signedNodeDetails(ctx context.Context, name string) (NodeDetails, error) {

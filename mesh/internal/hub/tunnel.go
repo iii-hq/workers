@@ -136,11 +136,28 @@ func (h *Hub) tunnelConsumer() string {
 func (h *Hub) publishTunnel(phase, errText, url string) {
 	h.mu.Lock()
 	before := h.publicURLLocked()
+	moved := phase != h.tunnelPhase || errText != h.tunnelErr || url != h.tunnelURL
 	h.tunnelPhase, h.tunnelErr, h.tunnelURL = phase, errText, url
 	changed := h.publicURLLocked() != before
 	h.mu.Unlock()
 	if changed {
 		h.syncRelay()
+	}
+	if moved {
+		h.statusChanged()
+	}
+}
+
+// statusChanged tells the observers of mesh::on-status-changed that what the Mesh page reads besides node events moved.
+func (h *Hub) statusChanged() {
+	h.mu.RLock()
+	emit := h.emit
+	h.mu.RUnlock()
+	if emit == nil {
+		return
+	}
+	if b, err := json.Marshal(h.Status()); err == nil {
+		emit(b)
 	}
 }
 
@@ -168,9 +185,10 @@ func (h *Hub) tunnelFailed(err error, id, listen string) {
 		text = "quick-tunnel refused: " + remote.Message
 	}
 	if h.tunnel.leaseID != "" && time.Now().Before(h.tunnel.expires) {
-		h.mu.Lock()
-		h.tunnelErr = text
-		h.mu.Unlock()
+		h.mu.RLock()
+		phase, url := h.tunnelPhase, h.tunnelURL
+		h.mu.RUnlock()
+		h.publishTunnel(phase, text, url)
 		return
 	}
 	h.publishTunnel("unavailable", text, "")
