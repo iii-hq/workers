@@ -3,7 +3,15 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { MAX_EMAIL_LENGTH, isEmailish } from '../src/subscribe.mjs'
+import {
+  DEFAULT_SIGNUP_URL,
+  errorCode,
+  isEmailish,
+  isSignupUrlAllowed,
+  MAX_EMAIL_LENGTH,
+  SIGNUP_SOURCE,
+  signupOutcome,
+} from '../src/subscribe.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -54,4 +62,60 @@ test('a signup is remembered as a time on the progress, never as the address', (
   const handler = source.slice(source.indexOf("'learn-iii::subscribe'"), source.indexOf('// Injected console UI'))
   assert.match(handler, /merge', value: \{ subscribed_at: at, updated_at: at \}/)
   assert.doesNotMatch(handler, /stateUpdate\([^)]*email/s, 'the address must not reach state')
+})
+
+test('the signup goes to iii.dev as source ade, with no Origin of our own', () => {
+  assert.equal(DEFAULT_SIGNUP_URL, 'https://iii.dev/api/subscribe')
+  assert.equal(SIGNUP_SOURCE, 'ade')
+  const source = readFileSync(join(root, 'src', 'index.mjs'), 'utf8')
+  const signup = source.slice(source.indexOf('// Product updates'), source.indexOf('// Injected console UI'))
+  assert.match(signup, /body: JSON\.stringify\(\{ email, source: SIGNUP_SOURCE \}\)/)
+  assert.doesNotMatch(source, /mailmodo/i, 'the Mailmodo form is gone')
+  assert.doesNotMatch(signup, /['"]?origin['"]?\s*:\s*[A-Za-z'"`]/i, 'the API takes server-to-server calls without an Origin')
+})
+
+test('each API answer means one thing for the page', () => {
+  // Sent, and already subscribed, are both a 200.
+  assert.equal(signupOutcome(200, null), 'subscribed')
+  assert.equal(signupOutcome(204, null), 'subscribed')
+  // Only a refused address is the person's to fix.
+  assert.equal(signupOutcome(400, 'invalid_email'), 'invalid_email')
+  for (const [status, error] of [
+    [400, 'invalid_source'],
+    [403, 'forbidden'],
+    [429, 'rate_limited'],
+    [500, null],
+    [503, 'unavailable'],
+    [302, null],
+    [400, null],
+  ]) {
+    assert.equal(signupOutcome(status, error), 'retry_later', `${status} ${error}`)
+  }
+})
+
+test('reads the error code from the body, and nothing from a page that is not JSON', () => {
+  assert.equal(errorCode('{"error":"invalid_email"}'), 'invalid_email')
+  assert.equal(errorCode('{"ok":true}'), null)
+  assert.equal(errorCode('<html>bad gateway</html>'), null)
+  assert.equal(errorCode(''), null)
+})
+
+test('the address only travels over https, or plain http to this machine', () => {
+  for (const url of [
+    'https://iii.dev/api/subscribe',
+    'http://127.0.0.1:8787/api/subscribe',
+    'http://localhost:8787',
+    'http://[::1]:8787/x',
+  ]) {
+    assert.ok(isSignupUrlAllowed(url), url)
+  }
+  for (const url of [
+    'http://iii.dev/api/subscribe',
+    'http://127.0.0.1.evil.example/x',
+    'http://localhost.evil.example',
+    'ftp://127.0.0.1',
+    'not a url',
+  ]) {
+    assert.equal(isSignupUrlAllowed(url), false, `${url} should be refused`)
+  }
 })

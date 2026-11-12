@@ -16,7 +16,14 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
-import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
+import {
+  DEFAULT_SIGNUP_URL,
+  errorCode,
+  isEmailish,
+  isSignupUrlAllowed,
+  SIGNUP_SOURCE,
+  signupOutcome,
+} from './subscribe.mjs'
 import { findStep, getTour, listTours, TOURS } from './tours.mjs'
 
 const WORKER = 'onboarding'
@@ -278,29 +285,19 @@ iii.registerFunction(
 // Product updates
 // ---------------------------------------------------------------------------
 
-/**
- * The same public signup form the iii.dev landing page posts to (its URL is
- * a meta tag in that page's head, so it is not a secret). The POST happens
- * here and not in the browser: the injected page has no network of its own,
- * and one place to change the destination is enough.
- */
 const SIGNUP_TIMEOUT_MS = 10_000
 
-const SIGNUP_URL =
-  process.env.III_LEARN_III_SIGNUP_URL ??
-  'https://api.mailmodo.com/api/v1/at/f/y0trGR0lfL/c6aefeeb-e66a-5c8a-9c71-4733d9ea1836'
+/**
+ * The POST happens here and not in the browser: the injected page has no
+ * network of its own, and one place to change the destination is enough.
+ */
+const SIGNUP_URL = process.env.III_LEARN_III_SIGNUP_URL ?? DEFAULT_SIGNUP_URL
 
 // The operator's address goes over this URL, so an override that downgrades it
-// to plain HTTP is refused rather than used.
-if (URL.parse(SIGNUP_URL)?.protocol !== 'https:') {
-  throw new Error(`III_LEARN_III_SIGNUP_URL must be an https URL: ${SIGNUP_URL}`)
+// to plain HTTP anywhere but this machine is refused rather than used.
+if (!isSignupUrlAllowed(SIGNUP_URL)) {
+  throw new Error(`III_LEARN_III_SIGNUP_URL must be an https URL, or http to this machine: ${SIGNUP_URL}`)
 }
-
-// Mailmodo matches the Origin against an allowlist and this one literal is on
-// it. `localhost` and `[::1]` are refused even though they name the same host,
-// so the value is fixed rather than derived from wherever the engine happens to
-// be listening.
-const SIGNUP_ORIGIN = process.env.III_LEARN_III_SIGNUP_ORIGIN ?? 'http://127.0.0.1'
 
 /**
  * The topic a captured address is announced on. The engine's telemetry worker
@@ -327,58 +324,66 @@ const publishIdentify = (email, source) =>
       console.error(`[${WORKER}] could not publish ${IDENTIFY_TOPIC}: ${cause?.message ?? cause}`)
     })
 
-iii.registerFunction(
-  'learn-iii::subscribe',
-  async (input) => {
-    const email = String(input.email ?? '').trim()
-    if (!isEmailish(email)) {
-      throw new Error(
-        `that does not look like an email address (one address, up to ${MAX_EMAIL_LENGTH} characters)`,
-      )
-    }
+/**
+ * POST the address to the API and say what its answer means. Never throws:
+ * an API that cannot be reached is a `retry_later` like any other outage.
+ */
+const postSignup = async (email) => {
+  let response
+  try {
     // A signup host that accepts the connection and never answers would hold
     // this invocation open until the caller gives up, with the socket still
     // in hand. The deadline is ours, not the caller's.
-    const response = await fetch(SIGNUP_URL, {
+    response = await fetch(SIGNUP_URL, {
       method: 'POST',
-      // Mailmodo checks an Origin allowlist and answers 400 "Unauthorized
-      // domain" without one. A worker is not a browser, so nothing sets the
-      // header for us and we must send it ourselves.
-      headers: { 'content-type': 'application/json', origin: SIGNUP_ORIGIN },
-      // `data` carries the form fields and must be present: without it the
-      // address is refused as "'email' key must be present!", which names the
-      // wrong key. Each key here has to match a contact property in Mailmodo
-      // or the submission lands with its mapping unresolved, so `email` is the
-      // only one we send.
-      body: JSON.stringify({ email, data: { email } }),
+      // No Origin header: the API accepts server-to-server calls without one.
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, source: SIGNUP_SOURCE }),
       // A redirect would carry the address to a host we never checked, so a
       // moved endpoint is an error here rather than a silent second request.
       redirect: 'error',
       signal: AbortSignal.timeout(SIGNUP_TIMEOUT_MS),
-    }).catch((cause) => {
-      if (cause?.name === 'TimeoutError') throw new Error('the signup service did not answer in time')
-      throw cause
     })
-    if (!response.ok) {
-      throw new Error(`the signup service answered ${response.status}`)
-    }
-    // Mailmodo answers 200 "added/updated" for an address already on the list,
-    // so there is nothing to tell the caller apart from success.
+  } catch (cause) {
+    // fetch's message names the URL at most, never the body.
+    console.error(`[${WORKER}] the signup API could not be reached: ${cause?.name ?? ''} ${cause?.message ?? cause}`)
+    return 'retry_later'
+  }
+  const error = errorCode(await response.text().catch(() => ''))
+  // One line per attempt, so a signup can be followed in the worker log. The
+  // address itself is never logged.
+  console.log(`[${WORKER}] signup API answered ${response.status}${error ? ` ${error}` : ''}`)
+  return signupOutcome(response.status, error)
+}
+
+iii.registerFunction(
+  'learn-iii::subscribe',
+  async (input) => {
+    const email = String(input.email ?? '').trim()
+    if (!isEmailish(email)) return { subscribed: false, outcome: 'invalid_email' }
+    const outcome = await postSignup(email)
+    if (outcome !== 'subscribed') return { subscribed: false, outcome }
     await publishIdentify(email, String(input.source ?? 'learn-iii'))
     // Remembered beside the tour progress (the time only, never the address),
-    // so a reopened Stay in touch step says the person is on the list instead
-    // of asking again.
+    // so a reopened Stay in touch step says the person signed up instead of
+    // asking again.
     const at = Date.now()
     await stateUpdate(progressKey(input?.subject ?? 'local'), [
       { type: 'merge', value: { subscribed_at: at, updated_at: at } },
     ])
-    return { subscribed: true }
+    return { subscribed: true, outcome }
   },
   {
     description:
-      'Add an email address to the iii product-update list, and record the signup time (not the address) on the subject\u2019s progress as `subscribed_at`.',
+      'Add an email address to the iii product-update list (iii sends a confirmation email first), and record the signup time (not the address) on the subject\u2019s progress as `subscribed_at`. `outcome` is `subscribed`, `invalid_email` (show it), or `retry_later` (the API could not take it now; ask another time).',
     request_format: object({ email: string, source: string, subject: string }, ['email']),
-    response_format: object({ subscribed: { type: 'boolean' } }, ['subscribed']),
+    response_format: object(
+      {
+        subscribed: { type: 'boolean' },
+        outcome: { type: 'string', enum: ['subscribed', 'invalid_email', 'retry_later'] },
+      },
+      ['subscribed', 'outcome'],
+    ),
   },
 )
 

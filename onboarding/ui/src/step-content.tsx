@@ -1,6 +1,6 @@
-import { Button, type Host, Input, StatusPanel, uiClasses } from '@iii-dev/console-ui'
+import { Button, type Host, Input, uiClasses } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { Check, ChevronRight, Copy } from 'lucide-react'
+import { Check, ChevronRight, Copy, MailCheck } from 'lucide-react'
 import { useCallback, useId, useState } from 'react'
 import type { Condition } from './conditions'
 import type { Step, StepRecord, StepState, TourController } from './use-tour'
@@ -41,10 +41,8 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
         <StayInTouch
           host={host}
           subscribed={tour.subscribed}
-          onSubscribed={() => {
-            tour.markSubscribed()
-            if (state !== 'complete') tour.complete(step.id)
-          }}
+          // The step stays open on "check your inbox"; Continue closes it.
+          onSubscribed={tour.markSubscribed}
           onContinue={() => (state === 'complete' ? tour.setOpen(tour.active?.id ?? null) : tour.complete(step.id))}
         />
       ) : null}
@@ -215,9 +213,22 @@ const SOCIALS: { label: string; href: string; path: string }[] = [
   },
 ]
 
+/** `learn-iii::subscribe`'s answer. */
+interface SubscribeResult {
+  subscribed?: boolean
+  outcome?: 'subscribed' | 'invalid_email' | 'retry_later'
+}
+
+const INVALID_EMAIL = 'Enter an email address like name@example.com'
+
 /**
- * The signup box, then the same places as links. The worker does the POST —
+ * The signup box, then the same places as links. The worker does the POST;
  * the page only carries the address the operator typed.
+ *
+ * iii sends a confirmation email before anyone gets updates, so a signup ends
+ * on "check your inbox". Only an address the API refuses is shown as an
+ * error; an API that cannot take it now (not open yet, rate limited, down)
+ * gets a quiet note with a way to try again, never an error.
  */
 function StayInTouch({
   host,
@@ -232,63 +243,121 @@ function StayInTouch({
   onContinue: () => void
 }) {
   const fieldId = useId()
+  const errorId = useId()
   const [email, setEmail] = useState('')
-  const [status, setStatus] = useState<'idle' | 'sending' | 'done' | 'failed'>('idle')
-  const [message, setMessage] = useState('')
+  const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'invalid' | 'later'>('idle')
+  const [sentTo, setSentTo] = useState('')
 
   const submit = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault()
-      if (!email.trim() || status === 'sending') return
+      const address = email.trim()
+      if (!address || status === 'sending') return
       setStatus('sending')
       void host.iii
-        .call('learn-iii::subscribe', { email: email.trim(), source: 'learn_iii_flow' })
-        .then(() => {
-          setStatus('done')
-          onSubscribed()
-        })
+        .call<SubscribeResult>('learn-iii::subscribe', { email: address, source: 'learn_iii_flow' })
         .catch((error: unknown) => {
-          setStatus('failed')
-          setMessage(
-            error instanceof Error ? error.message : 'Unable to sign you up. Check your connection and try again.',
-          )
+          // The worker is missing or did not answer: nothing to fix here.
+          console.warn('[learn-iii] signup did not complete', error)
+          return null
+        })
+        .then((result) => {
+          // The API is called from the worker, so the Network tab never shows
+          // it. This line is the page's record of the answer.
+          console.info(`[learn-iii] learn-iii::subscribe answered: ${result?.outcome ?? 'no answer'}`)
+          if (result?.outcome === 'invalid_email') {
+            setStatus('invalid')
+          } else if (result?.subscribed) {
+            setSentTo(address)
+            setStatus('sent')
+            onSubscribed()
+          } else {
+            setStatus('later')
+          }
         })
     },
     [email, host, status, onSubscribed],
   )
 
+  const continueButton = (
+    <Button type="button" className="learn-action" onClick={onContinue}>
+      Continue
+    </Button>
+  )
+
   return (
     <div className="learn-stack">
       {/* One inset panel for the signup, so the field and its two actions
-          read as one thing; the confirmation takes its place in the same
+          read as one thing; what follows a signup takes its place in the same
           panel, so the card does not jump. */}
       <div className="learn-signup">
-        {subscribed || status === 'done' ? (
-          // Already on the list (an earlier visit, a restarted tour): the
-          // step still needs a way on.
-          <div className="learn-form-actions">
+        {status === 'sent' ? (
+          <>
+            <p className="learn-signup-done" role="status">
+              <MailCheck className={uiClasses.icon} strokeWidth={2} aria-hidden="true" />
+              Check your inbox
+            </p>
+            <p className="learn-signup-note">
+              We sent a confirmation link to <span className="learn-signup-address">{sentTo}</span>. Click it to start
+              getting updates. Can&apos;t find it? Check your spam folder.
+            </p>
+            <div className="learn-form-actions">
+              <Button type="button" variant="ghost" className="learn-ghost" onClick={() => setStatus('idle')}>
+                Use a different email
+              </Button>
+              {continueButton}
+            </div>
+          </>
+        ) : status === 'later' ? (
+          <>
+            <p className="learn-signup-note" role="status">
+              We couldn&apos;t sign you up right now. Please try again later.
+            </p>
+            <div className="learn-form-actions">
+              <Button type="button" variant="ghost" className="learn-ghost" onClick={() => setStatus('idle')}>
+                Try again
+              </Button>
+              {continueButton}
+            </div>
+          </>
+        ) : subscribed && !sentTo && status === 'idle' ? (
+          // Signed up on an earlier visit (or a restarted tour): the step
+          // still needs a way on. A signup made here goes back to the form
+          // instead, to use a different address.
+          <>
             <p className="learn-signup-done" role="status">
               <Check className={uiClasses.icon} strokeWidth={2.5} aria-hidden="true" />
-              You are on the list.
+              You signed up for updates.
             </p>
-            <Button type="button" className="learn-action" onClick={onContinue}>
-              Continue
-            </Button>
-          </div>
+            <p className="learn-signup-note">If you haven&apos;t yet, confirm from the email we sent.</p>
+            <div className="learn-form-actions learn-form-actions--end">{continueButton}</div>
+          </>
         ) : (
-          <form className="learn-form" onSubmit={submit}>
+          <form className="learn-form" onSubmit={submit} noValidate>
             <label className="learn-signup-label" htmlFor={fieldId}>
               Email for product updates
             </label>
             <Input
               id={fieldId}
               type="email"
+              autoComplete="email"
               required
               value={email}
-              onChange={setEmail}
-              placeholder="you@example.com"
+              onChange={(next: string) => {
+                setEmail(next)
+                if (status === 'invalid') setStatus('idle')
+              }}
+              placeholder="name@example.com"
               className="learn-field"
+              aria-invalid={status === 'invalid' || undefined}
+              aria-describedby={status === 'invalid' ? errorId : undefined}
+              disabled={status === 'sending'}
             />
+            {status === 'invalid' ? (
+              <p id={errorId} className="learn-signup-error" role="alert">
+                {INVALID_EMAIL}
+              </p>
+            ) : null}
             <div className="learn-form-actions">
               <Button
                 type="button"
@@ -299,13 +368,12 @@ function StayInTouch({
               >
                 Skip this step
               </Button>
-              <Button type="submit" className="learn-action" disabled={status === 'sending'}>
+              <Button type="submit" className="learn-action" disabled={status === 'sending' || !email.trim()}>
                 {status === 'sending' ? 'Sending…' : 'Get updates'}
               </Button>
             </div>
           </form>
         )}
-        {status === 'failed' ? <StatusPanel variant="alert" headline={message} role="alert" /> : null}
       </div>
       <div className="learn-follow">
         <span className="learn-follow-label">Follow along</span>
