@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3
+
+- **A short example in the empty composer.** The placeholder listed every argument with its default, and without the `args:` prefix the orchestrator reads. It now shows one example goal: "Describe the goal, e.g. “Add retries to the webhook sender, with tests”". The arguments stay in the README.
+
 ## 0.7.2
 
 - **The orchestrator reads R with `kanban::ticket::get` again, without `fp`.** 0.5.0 had it read R through `fp::pipe` and `fp::get`, because a long run's record outgrew the 256 KB cap on a function result. The kit never declared the `fp` worker, so in a project without it those calls failed, and `directory::agents::get` listed both as unknown functions of `deepwork`.

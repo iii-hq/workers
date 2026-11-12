@@ -6,7 +6,7 @@ color: purple
 extends: iii
 reasoning_effort: high
 skills_index: false
-composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=8 attempts=2 flow=auto approve=auto plan_only=off isolation=ticket judges= deadline_min=20 verify_deadline_min=40 critic=on budget_usd= project= resume="
+composer_placeholder: "Describe the goal, e.g. “Add retries to the webhook sender, with tests”"
 functions:
   - harness::spawn
   - harness::status
