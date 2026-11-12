@@ -465,12 +465,17 @@ pub struct PaneAccountOutput {
 pub async fn account(ctx: &Ctx, input: PaneAccountInput) -> Result<PaneAccountOutput, String> {
     use crate::accounts::moves;
     let pane = pane_arg(&input.pane)?.to_string();
-    let tmux = ctx.tmux().await?;
+    ctx.tmux().await?;
     // Never during a switch (it moves sign-ins between the folders), and
-    // planned on the panes as they are once it is over.
+    // planned on the panes as they are once it is over, on the server as
+    // configured then: pane ids are a server's own.
     let collector = ctx.collector.clone();
     let done = super::accounts::gated(ctx, move || async move {
-        let panes = collector.claude_panes(true).await;
+        let tmux = collector.tmux().await?;
+        let panes = collector
+            .claude_panes_checked()
+            .await
+            .map_err(|error| super::accounts::not_listed(&error, "nothing was moved."))?;
         let state = panes.get(&pane).ok_or_else(|| {
             format!("Claude Code is not running in pane {pane}, and it has no account.")
         })?;

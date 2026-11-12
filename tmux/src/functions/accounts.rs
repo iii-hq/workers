@@ -222,12 +222,25 @@ where
     .map_err(|error| format!("The worker failed to finish ({error})."))
 }
 
+/// What a move or switch says when tmux did not list its panes: a failed
+/// look is no proof that nothing runs on an account's folder.
+pub(crate) fn not_listed(error: &str, what: &str) -> String {
+    format!("tmux did not list its panes ({error}); {what}")
+}
+
 pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, String> {
     use crate::accounts::switch::{switch_locked, By, SwitchError};
-    let tmux = ctx.tmux().await?;
+    ctx.tmux().await?;
     let collector = ctx.collector.clone();
     let switched = gated(ctx, move || async move {
-        let panes = collector.claude_panes(true).await;
+        // The server as configured once it is this call's turn, and its
+        // panes as they are then: the new account's folder must be free
+        // (G4), which only a look that listed every pane can tell.
+        let tmux = collector.tmux().await.map_err(SwitchError::Failed)?;
+        let panes = collector
+            .claude_panes_checked()
+            .await
+            .map_err(|error| SwitchError::Failed(not_listed(&error, "nothing was switched.")))?;
         switch_locked(
             &tmux,
             collector.accounts(),
@@ -256,11 +269,15 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
 }
 
 pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput, String> {
-    let tmux = ctx.tmux().await?;
+    ctx.tmux().await?;
     // Never during a switch: it moves sign-ins between the folders.
     let collector = ctx.collector.clone();
     let moved = gated(ctx, move || async move {
-        let panes = collector.claude_panes(true).await;
+        let tmux = collector.tmux().await?;
+        let panes = collector
+            .claude_panes_checked()
+            .await
+            .map_err(|error| not_listed(&error, "nothing was moved."))?;
         collector
             .accounts()
             .load_accounts_now(vec![input.to.trim().to_string()])
@@ -405,9 +422,10 @@ pub async fn remove(ctx: &Ctx, input: RemoveAccountInput) -> Result<EmptyOutput,
     let collector = ctx.collector.clone();
     gated(ctx, move || async move {
         let running = if input.delete_files {
-            // Its folder goes only on a look that saw every pane: a failed
-            // one is no proof that nothing runs on it.
-            let panes = collector.claude_panes_checked().await.map_err(|error| {
+            // Its folder goes only on a look that saw every pane, and every
+            // process as it is now: a failed or reused one is no proof that
+            // nothing runs on it.
+            let panes = collector.claude_panes_rescanned().await.map_err(|error| {
                 format!("The panes could not be looked at ({error}); the folder was kept.")
             })?;
             // A move stops Claude Code before it copies the conversation:
@@ -436,11 +454,12 @@ pub async fn remove(ctx: &Ctx, input: RemoveAccountInput) -> Result<EmptyOutput,
 }
 
 pub async fn login(ctx: &Ctx, input: LoginInput) -> Result<LoginWindow, String> {
-    let tmux = ctx.tmux().await?;
+    ctx.tmux().await?;
     // Where it signs in (`~/.claude` or the folder) is decided and started
     // with no switch half-way.
     let collector = ctx.collector.clone();
     let created = gated(ctx, move || async move {
+        let tmux = collector.tmux().await?;
         open_login(&collector, &tmux, input).await
     })
     .await??;

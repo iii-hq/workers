@@ -63,6 +63,9 @@ struct ProcCache {
     env: Arc<HashMap<u32, IiiEnv>>,
     error: Option<String>,
     scanned_at: Option<Instant>,
+    /// When `table` was last read from the system (a scan that failed
+    /// keeps the one before).
+    table_at: Option<Instant>,
     pane_signature: u64,
 }
 
@@ -177,6 +180,22 @@ impl Collector {
                 .error
                 .unwrap_or_else(|| "tmux did not list its panes".to_string())),
         }
+    }
+
+    /// [`Collector::claude_panes_checked`] on processes scanned now too.
+    /// A scan is reused while the panes' programs look the same, for up to
+    /// `ports_interval_ms`: a shell that started another Claude Code since,
+    /// on another account, would still show the one before. For deleting
+    /// an account's folder, which no reused scan may decide.
+    pub async fn claude_panes_rescanned(&self) -> Result<HashMap<String, PaneState>, String> {
+        let asked = Instant::now();
+        self.procs.lock().await.scanned_at = None;
+        let panes = self.claude_panes_checked().await?;
+        let scanned = self.procs.lock().await.table_at;
+        if !scanned.is_some_and(|at| at >= asked) {
+            return Err("the processes could not be scanned".to_string());
+        }
+        Ok(panes)
     }
 
     pub fn config(&self) -> Arc<WorkerConfig> {
@@ -315,6 +334,7 @@ impl Collector {
             match scanned {
                 Ok((table, listeners, env)) => {
                     cache.table = Arc::new(table);
+                    cache.table_at = Some(Instant::now());
                     match listeners {
                         Ok(listeners) => {
                             cache.listeners = Arc::new(listeners);
@@ -842,6 +862,34 @@ mod tests {
         let collector = Collector::new(config.into_shared(), ConsoleClients::default());
         collector.binary.seed(binary, found);
         collector
+    }
+
+    #[tokio::test]
+    async fn a_rescan_sees_what_a_reused_scan_misses() {
+        let config = WorkerConfig {
+            tmux_binary: "tmux-not-here".to_string(),
+            ports_interval_ms: 300_000,
+            ..WorkerConfig::default()
+        };
+        let collector = Collector::new(config.into_shared(), ConsoleClients::default());
+        collector
+            .binary
+            .seed("tmux-not-here", Err("not installed".to_string()));
+        collector.claude_panes_checked().await.unwrap();
+        // Started after that scan, the panes looking the same.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        collector.claude_panes_checked().await.unwrap();
+        let reused = collector.proc_table().await.get(pid).is_some();
+        collector.claude_panes_rescanned().await.unwrap();
+        let rescanned = collector.proc_table().await.get(pid).is_some();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!reused, "the scan before is reused");
+        assert!(rescanned, "scanned again");
     }
 
     // Only where an official build exists is the answer known without looking

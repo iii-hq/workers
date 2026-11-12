@@ -63,15 +63,31 @@ pub async fn start(collector: &Arc<Collector>, accounts: &Arc<Accounts>) {
     {
         // tmux first: should the worker stop in between, the next start
         // does it again (the registry still says 0.3.0).
-        if let Ok(tmux) = collector.tmux().await {
-            let panes = collector.claude_panes(true).await;
-            super::switch::migrate_tmux(&tmux, accounts, &panes).await;
-        }
-        let upgrade = accounts.clone();
-        match tokio::task::spawn_blocking(move || upgrade.upgrade()).await {
-            Ok(Ok(())) => tracing::info!("accounts brought to the global slot"),
-            Ok(Err(error)) => tracing::warn!(%error, "accounts not brought to the global slot"),
-            Err(error) => tracing::warn!(%error, "accounts not brought to the global slot"),
+        // A listing that failed re-pins nothing: the registry stays at
+        // 0.3.0 for the next start to do it all again.
+        let migrated = match collector.tmux().await {
+            Ok(tmux) => match collector.claude_panes_checked().await {
+                Ok(panes) => {
+                    super::switch::migrate_tmux(&tmux, accounts, &panes).await;
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "panes not listed; accounts brought to the global slot on the next start");
+                    false
+                }
+            },
+            // No tmux: no pane to re-pin.
+            Err(_) => true,
+        };
+        if migrated {
+            let upgrade = accounts.clone();
+            match tokio::task::spawn_blocking(move || upgrade.upgrade()).await {
+                Ok(Ok(())) => tracing::info!("accounts brought to the global slot"),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "accounts not brought to the global slot")
+                }
+                Err(error) => tracing::warn!(%error, "accounts not brought to the global slot"),
+            }
         }
     }
     let relink = accounts.clone();
@@ -355,12 +371,20 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
     let Some(decision) = super::rules::decide(&registry, &snapshot.claude.accounts, now) else {
         return read;
     };
+    // The panes as they are under the gate, which the switch holds on,
+    // from a look that listed them all: an empty one from a failed look
+    // would take every folder for free (G4).
+    let _gate = accounts.swap_gate.lock().await;
     let Ok(tmux) = collector.tmux().await else {
         return read;
     };
-    // The panes as they are under the gate, which the switch holds on.
-    let _gate = accounts.swap_gate.lock().await;
-    let panes = collector.claude_panes(true).await;
+    let panes = match collector.claude_panes_checked().await {
+        Ok(panes) => panes,
+        Err(error) => {
+            tracing::debug!(%error, "panes not listed; the rules switch on a later look");
+            return read;
+        }
+    };
     // Never an account with Claude Code working on its folder, or one that
     // can't be restarted: the next one instead (G12).
     let unready = super::switch::unready_targets(&panes);
