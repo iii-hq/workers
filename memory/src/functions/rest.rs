@@ -133,6 +133,7 @@ mod tests {
             ..WorkerConfig::default()
         };
         Deps {
+            hook_binding: Arc::default(),
             emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
             iii,
             store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),

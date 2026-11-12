@@ -42,6 +42,9 @@ schemars = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+# In-process SDK transport for hook tests; never a live engine.
+futures-util = "0.3"
+tokio-tungstenite = "0.28"
 
 # Release binary size: strip drops the symbol table too (panic backtraces
 # become unresolved addresses); fat LTO + a single codegen unit let the

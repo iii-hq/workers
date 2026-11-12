@@ -12,6 +12,14 @@
           "null"
         ]
       },
+      "expected_memory": {
+        "default": null,
+        "description": "Optional proof-bound snapshot of the loser; compared under the same storage lock as the winner snapshot and both writes."
+      },
+      "expected_superseded_by": {
+        "default": null,
+        "description": "Optional proof-bound snapshot of the winner. Legacy callers may omit both."
+      },
       "id": {
         "description": "Memory to retire.",
         "type": "string"
@@ -211,6 +219,17 @@
       "reinforced": {
         "description": "True when the survivor was reinforced (`reinforce` asked and the survivor is not pinned).",
         "type": "boolean"
+      },
+      "survivor": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Memory"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Post-commit survivor snapshot for a subsequent proof-bound absorption."
       }
     },
     "required": [
