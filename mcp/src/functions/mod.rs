@@ -1,3 +1,11 @@
+//! The worker's functions and routes.
+//!
+//! - `mcp::handler` serves the MCP Streamable HTTP endpoint: it observes
+//!   `http::on-request` for `POST <api_path>` and `DELETE <api_path>`, runs
+//!   [`handle_http`], and streams the reply as one SSE event.
+//! - `mcp::observed` is the target of every observer an MCP session creates
+//!   with `iii_observe`; it hands each delivery to [`Sessions::deliver`].
+
 use std::sync::Arc;
 
 use iii_helpers::observability::Logger;
@@ -10,34 +18,58 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::config::McpConfig;
-use crate::handler::{handle_mcp_body, Outcome};
+use crate::engine::SdkEngine;
+use crate::handler::{handle_http, App, HttpReply};
+use crate::rbac_guard::RbacMode;
+use crate::sessions::Sessions;
 use crate::transport::encode_sse_jsonrpc;
 
 pub const FUNCTION_ID: &str = "mcp::handler";
-/// The http worker's request function: each observer serves one route.
+pub const SINK_FUNCTION_ID: &str = "mcp::observed";
 pub const HTTP_ON_REQUEST_FN: &str = "http::on-request";
 
-/// Per-handler context: shared engine handle, config, and a logger.
 #[derive(Clone)]
-struct Ctx {
-    iii: Arc<IIIClient>,
-    cfg: Arc<McpConfig>,
+pub struct Ctx {
+    pub engine: SdkEngine,
+    pub cfg: Arc<McpConfig>,
+    pub sessions: Arc<Sessions>,
+    pub mode: Arc<RbacMode>,
     log: Logger,
 }
 
-/// Subset of the http worker's `HttpRequest` (what an `http::on-request`
-/// route target receives): the parsed body plus the response channel writer
-/// ref. We deserialize directly off `serde_json::Value` so we can capture the
-/// `response` field that the typed request strips.
+impl Ctx {
+    pub fn new(
+        engine: SdkEngine,
+        cfg: Arc<McpConfig>,
+        sessions: Arc<Sessions>,
+        mode: Arc<RbacMode>,
+    ) -> Self {
+        Self {
+            engine,
+            cfg,
+            sessions,
+            mode,
+            log: Logger::new(),
+        }
+    }
+}
+
+/// The parts of an `http::on-request` `HttpRequest` the bridge reads.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct McpRequest {
+    #[serde(default = "default_method")]
+    method: String,
+    #[serde(default)]
+    headers: Value,
     #[serde(default)]
     body: Value,
     response: StreamChannelRef,
 }
 
-/// Build a published JSON Schema for `T`, stripping the root `$schema` key the
-/// registry publish validator has no meta-schema for (mirrors codex).
+fn default_method() -> String {
+    "POST".to_string()
+}
+
 fn schema_value<T: schemars::JsonSchema>() -> Value {
     let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
     let mut v = serde_json::to_value(root).expect("schema serializes");
@@ -47,42 +79,35 @@ fn schema_value<T: schemars::JsonSchema>() -> Value {
     v
 }
 
-/// Body to render onto the SSE response channel.
-enum RespondPayload {
-    /// A pre-encoded JSON-RPC SSE frame (`event: message\ndata: ...\n\n`).
-    Single(String),
-    /// Notification-only requests get a 202 ack with no body.
-    Notification,
+pub fn register_all(iii: &Arc<IIIClient>, ctx: &Ctx) {
+    register_handler(iii, ctx);
+    register_sink(iii, ctx);
+    tracing::info!(
+        function_id = FUNCTION_ID,
+        sink = SINK_FUNCTION_ID,
+        "functions registered"
+    );
 }
 
-pub fn register_all(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
-    register_handler(iii, cfg);
-    tracing::info!(function_id = FUNCTION_ID, "all functions registered");
+pub fn route_args(method: &str, api_path: &str) -> Value {
+    json!({ "method": method, "path": api_path })
 }
 
-/// The `http::on-request` args of the bridge's route: `POST <api_path>`.
-pub fn route_args(api_path: &str) -> Value {
-    json!({ "method": "POST", "path": api_path })
+/// The `POST` and `DELETE` routes of the endpoint.
+pub fn observe_routes(iii: &IIIClient, api_path: &str) -> Vec<ObserverHandle> {
+    ["POST", "DELETE"]
+        .iter()
+        .map(|m| {
+            iii.observe(
+                Source::function(HTTP_ON_REQUEST_FN).args(route_args(m, api_path)),
+                FUNCTION_ID,
+            )
+        })
+        .collect()
 }
 
-/// Serve `POST <api_path>` with [`FUNCTION_ID`]: observe `http::on-request`
-/// with the route as args. The http worker calls `mcp::handler` with each
-/// matching request and streams what it writes to the response channel. The
-/// observer stays pending while the http worker is absent, and is rejected
-/// with `HTTP_ROUTE_CONFLICT` when another observer holds the route.
-pub fn observe_route(iii: &IIIClient, api_path: &str) -> ObserverHandle {
-    iii.observe(
-        Source::function(HTTP_ON_REQUEST_FN).args(route_args(api_path)),
-        FUNCTION_ID,
-    )
-}
-
-fn register_handler(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
-    let ctx = Ctx {
-        iii: iii.clone(),
-        cfg: cfg.clone(),
-        log: Logger::new(),
-    };
+fn register_handler(iii: &Arc<IIIClient>, ctx: &Ctx) {
+    let ctx = ctx.clone();
     iii.register_function(
         FUNCTION_ID,
         RegisterFunction::new_async(move |req: Value| {
@@ -98,120 +123,94 @@ fn register_handler(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
                         return Ok(Value::Null);
                     }
                 };
-
-                let outcome = handle_mcp_body(&envelope.body, &ctx.iii, &ctx.cfg).await;
-                let payload = match outcome {
-                    Outcome::Notification => RespondPayload::Notification,
-                    Outcome::Response(rpc) => RespondPayload::Single(encode_sse_jsonrpc(&rpc)),
+                let app = App {
+                    bus: &ctx.engine,
+                    cfg: &ctx.cfg,
+                    sessions: &ctx.sessions,
+                    mode: &ctx.mode,
+                    sink: SINK_FUNCTION_ID,
                 };
-
-                respond_sse(&ctx, &envelope.response, payload).await
+                let reply =
+                    handle_http(&app, &envelope.method, &envelope.headers, &envelope.body).await;
+                respond(&ctx, &envelope.response, reply).await
             }
         })
         .request_format(schema_value::<McpRequest>())
         .response_format(json!({ "type": "null" }))
-        .description("MCP 2025-06-18 Streamable HTTP bridge."),
+        .description("MCP 2025-06-18 Streamable HTTP endpoint (gateway tools, sessions, observe)."),
     );
 }
 
-async fn respond_sse(
+fn register_sink(iii: &Arc<IIIClient>, ctx: &Ctx) {
+    let sessions = ctx.sessions.clone();
+    // Not `private`: the engine refuses a private observer target. Anything
+    // delivered here that is not one of a live session's observers is dropped.
+    iii.register_function(
+        SINK_FUNCTION_ID,
+        RegisterFunction::new_async(move |event: Value| {
+            let sessions = sessions.clone();
+            async move {
+                sessions.deliver(event);
+                Ok(json!({}))
+            }
+        })
+        .metadata(json!({ "internal": true, "trace_hidden": true }))
+        .description("Receives invocations observed by MCP sessions (iii_observe); internal."),
+    );
+}
+
+async fn respond(
     ctx: &Ctx,
     writer_ref: &StreamChannelRef,
-    payload: RespondPayload,
+    reply: HttpReply,
 ) -> Result<Value, Error> {
-    let writer = ChannelWriter::new(ctx.iii.address(), writer_ref);
-
-    let status: u16 = match payload {
-        RespondPayload::Single(_) => 200,
-        // MCP Streamable HTTP §"server response": notification-only
-        // requests MUST get 202 Accepted with no body.
-        RespondPayload::Notification => 202,
-    };
-
-    if let Err(err) = send_sse_control(&writer, status).await {
-        ctx.log.warn(
-            "mcp: failed to send SSE control frames",
-            Some(json!({
-                "error": err.to_string(),
-                "status": status,
-                "channel_id": writer_ref.channel_id,
-            })),
-        );
-        return Ok(Value::Null);
+    let writer = ChannelWriter::new(ctx.engine.client.address(), writer_ref);
+    let mut headers = json!({
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+    });
+    if let Some(sid) = &reply.session_id {
+        headers["mcp-session-id"] = json!(sid);
     }
-
-    if let RespondPayload::Single(frame) = payload {
-        let bytes = frame.len();
+    let control = [
+        json!({ "type": "set_status", "status_code": reply.status }),
+        json!({ "type": "set_headers", "headers": headers }),
+    ];
+    for frame in control {
+        if let Err(err) = writer.send_message(&frame.to_string()).await {
+            ctx.log.warn(
+                "mcp: failed to send SSE control frames",
+                Some(json!({ "error": err.to_string(), "status": reply.status, "channel_id": writer_ref.channel_id })),
+            );
+            return Ok(Value::Null);
+        }
+    }
+    if let Some(rpc) = &reply.rpc {
+        let frame = encode_sse_jsonrpc(rpc);
         if let Err(err) = writer.write(frame.as_bytes()).await {
             ctx.log.warn(
                 "mcp: failed to write SSE body frame",
-                Some(json!({
-                    "error": err.to_string(),
-                    "bytes": bytes,
-                    "channel_id": writer_ref.channel_id,
-                })),
-            );
-        } else {
-            ctx.log.debug(
-                "mcp SSE body sent",
-                Some(json!({
-                    "bytes": bytes,
-                    "status": status,
-                    "channel_id": writer_ref.channel_id,
-                })),
+                Some(json!({ "error": err.to_string(), "channel_id": writer_ref.channel_id })),
             );
         }
-    } else {
-        ctx.log.debug(
-            "mcp SSE notification ack",
-            Some(json!({
-                "status": status,
-                "channel_id": writer_ref.channel_id,
-            })),
-        );
     }
-
-    if let Err(err) = writer.close().await {
-        ctx.log.warn(
-            "mcp: failed to close SSE response channel",
-            Some(json!({
-                "error": err.to_string(),
-                "channel_id": writer_ref.channel_id,
-            })),
-        );
-    }
-
     Ok(Value::Null)
 }
 
-/// Send the http worker's response-channel control frames that configure the
-/// response status line and headers. Always advertises `text/event-stream`; even
-/// notification-only acks (which carry no body) keep the same content
-/// type so a browser EventSource can attach without surprises.
-async fn send_sse_control(writer: &ChannelWriter, status: u16) -> Result<(), Error> {
-    writer
-        .send_message(
-            &serde_json::to_string(&json!({
-                "type": "set_status",
-                "status_code": status,
-            }))
-            .expect("set_status frame serializes"),
-        )
-        .await?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    writer
-        .send_message(
-            &serde_json::to_string(&json!({
-                "type": "set_headers",
-                "headers": {
-                    "content-type": "text/event-stream",
-                    "cache-control": "no-cache",
-                    "connection": "keep-alive",
-                },
-            }))
-            .expect("set_headers frame serializes"),
-        )
-        .await?;
-
-    Ok(())
+    #[test]
+    fn routes_cover_post_and_delete_on_the_api_path() {
+        assert_eq!(
+            route_args("POST", "/mcp"),
+            json!({ "method": "POST", "path": "/mcp" })
+        );
+        assert_eq!(
+            route_args("DELETE", "/x"),
+            json!({ "method": "DELETE", "path": "/x" })
+        );
+    }
 }

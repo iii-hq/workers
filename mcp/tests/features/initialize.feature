@@ -1,7 +1,7 @@
 @engine @initialize
 Feature: initialize negotiates a fixed protocol version
   The bridge advertises protocol `2025-06-18` regardless of what the
-  client claims, exposes tools/resources/prompts capabilities, and
+  client claims, exposes tools and resources capabilities (no prompts), and
   identifies itself as the `mcp` worker. Drives the handshake over
   HTTP so the SSE envelope and Content-Type are pinned too.
 
@@ -16,7 +16,9 @@ Feature: initialize negotiates a fixed protocol version
     And  result.protocolVersion is "2025-06-18"
     And  result.capabilities.tools is an object
     And  result.capabilities.resources is an object
-    And  result.capabilities.prompts is an object
+    And  result.capabilities has no prompts
+    And  the response carries an Mcp-Session-Id header
+    And  result.instructions mentions "iii_call"
     And  result.serverInfo.name is "mcp"
     And  result.serverInfo.version matches the crate version
 

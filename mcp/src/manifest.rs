@@ -15,11 +15,15 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "MCP 2025-06-18 Streamable HTTP bridge for the iii engine.".to_string(),
+        description: "MCP 2025-06-18 Streamable HTTP server for the iii engine: iii_call / iii_observe gateway, behind rbac-proxy.".to_string(),
         default_config: serde_json::json!({
             "hidden_prefixes": default_hidden_prefixes(),
             "require_expose": false,
             "api_path": "/mcp",
+            "tools": "gateway",
+            "allowed_origins": [],
+            "session_idle_ttl_secs": crate::config::McpConfig::default().session_idle_ttl_secs,
+            "max_buffered_events": crate::config::McpConfig::default().max_buffered_events,
         }),
         supported_targets: vec![env!("TARGET").to_string()],
     }
@@ -62,5 +66,16 @@ mod tests {
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
         assert_eq!(arr, cfg.hidden_prefixes);
+    }
+
+    #[test]
+    fn default_config_carries_the_gateway_settings() {
+        let m = build_manifest();
+        let cfg = crate::config::McpConfig::default();
+        let d = &m.default_config;
+        assert_eq!(d["tools"], "gateway");
+        assert_eq!(d["allowed_origins"], serde_json::json!([]));
+        assert_eq!(d["session_idle_ttl_secs"], cfg.session_idle_ttl_secs);
+        assert_eq!(d["max_buffered_events"], cfg.max_buffered_events);
     }
 }
