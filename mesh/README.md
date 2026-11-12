@@ -87,6 +87,7 @@ transitions.
 Open **Mesh** in the Console of a hub to see the joined machines, online first.
 Each card lists the workers that machine shares, each with its hub function ids
 and their descriptions, then its address, platform, version and connection path.
+**Remove** on a card removes that machine after a confirmation.
 The **Hub address** section follows.
 Use **Refresh** for a new snapshot; the page also refreshes when you return to
 the tab. The **Connect another engine** section shows this hub's URL and join
@@ -94,6 +95,12 @@ code, to paste into the Mesh page of the other project in **Client** mode. If
 the public URL is missing, set **Public URL** or turn on **Expose through a
 tunnel** in the page's **Hub address** section, then refresh the join
 instructions.
+
+In **Client** mode the **Hub connection** section shows the client's state and,
+while there is an enrollment to forget, **Leave hub**. Until the client is
+connected the page re-reads its state every 5 seconds, for up to 12 minutes
+after each save. Both actions are
+described under [State and removal](#state-and-removal).
 
 The settings action opens the hub's effective configuration entry, including
 an `III_CONFIG_NAME` override. Console owns validation, unsaved changes, save
@@ -231,8 +238,8 @@ On the other machine, run the mesh worker in [client mode](#client-mode) with
 page shows both under **Connect another engine**. The code works once: a
 successful join replaces it, and the joined machine reconnects with its own
 keys. `mesh::join::cycle` and the page's **Generate new code** button replace it
-by hand. `mesh::nodes::remove name=<node>` removes a node, revokes its token
-and replaces the code.
+by hand. `mesh::nodes::remove name=<node>`, or **Remove** on the machine's
+card, removes a node, revokes its token and replaces the code.
 
 ## Node boundary
 
@@ -362,8 +369,9 @@ address per 10 minutes, so a join the hub refused waits until the join value
 changes; an unreachable hub or a missing `hub_url` is retried. `join.json` is
 saved as pending before the hub registers the node, so a join cut short after
 the hub accepted it reconnects without the spent code; a refused one is deleted.
-After the hub removes the node, delete `data/mesh-client` to rejoin. Seed the
-mode from compose so the first boot is already a client:
+To disconnect, or to come back after the hub removed the node, call
+`mesh::leave` (see [State and removal](#state-and-removal)). Seed the mode from
+compose so the first boot is already a client:
 
 ```yaml
   mesh:
@@ -406,8 +414,40 @@ Live acceptance against a running hub remains unverified.
 The hub keeps its identity and enrollment state in
 `$III_COMPOSE_DIR/data/mesh/state.json`. A client keeps its node key, credential
 and pinned hub identity in `$III_COMPOSE_DIR/data/mesh-client` (0700,
-`join.json` 0600). After `mesh::nodes::remove`, the client stops and reports
-`removed by hub; delete data/mesh-client to rejoin`.
+`join.json` 0600).
+
+Either side can disconnect a client:
+
+- **On the hub**, `mesh::nodes::remove {"name":"<node>"}` or **Remove** on the
+  machine's card. The machine stops sharing at once, the hub refuses its keys
+  for good, revokes its token and replaces the join code. It works while the
+  hub has no public URL; the result then carries an empty `code`. The client
+  stops and reports `removed by hub` until it leaves.
+- **On the client**, `mesh::leave {}` or **Leave hub** on its Mesh page. The
+  client logs out, so the hub deletes the machine's record, stops the mesh and
+  the bridge, and deletes `join.json` and `mesh/`. It answers
+  `{"hub_notified":true,"warning":""}`. When the hub cannot be told within 10
+  seconds, or the mesh is not running, the local state is deleted all the same
+  and `warning` says that the hub keeps listing the machine until it is removed
+  there. A client with no enrollment answers `not joined to a hub`. A leave
+  waiting behind a join attempt in flight runs before the next attempt.
+
+After a leave the client reports `left hub` and keeps `data/mesh-client/left`,
+which holds a SHA-256 digest of the join value the forgotten enrollment was made
+with and the leave's warning. `mesh::status` reports that warning as its
+`error` until the client joins again, after a restart too. It joins again, as a
+new machine, only when `client.join` resolves to another value: the same code
+or reusable token is not tried again, after a restart either. A leave cut short
+by a restart keeps out all the same, deletes what it had not deleted yet and
+warns that the hub may still list the machine. An enrollment saved by an earlier
+build does not record its join value; for it, the first value read after the
+leave counts as the old one, so leave first and store the new code afterwards.
+To rejoin with the same reusable token, delete `data/mesh-client/left`.
+
+A machine the hub removed comes back the same way: **Leave hub**, then a new
+join code. A machine removed while it was offline learns it when it next
+connects. Its old code and token no longer work, so a new code stored before
+the leave is tried at once, whichever build saved its enrollment.
 
 State written before 2026-11-10 may hold machine nodes. They stay listed and can
 still connect. On the hub's version the hub hands them an empty worker set, so

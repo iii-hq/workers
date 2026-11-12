@@ -34,3 +34,16 @@ func TestFunctionPrefixesRejectMalformedListing(t *testing.T) {
 		}
 	}
 }
+
+// Machines stay listed while the hub has no address, so removing one must work then.
+func TestRemoveNodeNeedsNoPublicURL(t *testing.T) {
+	c, err := coordinator.New(t.TempDir(), func(secret, addr string) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	h := &Hub{config: DefaultConfig(), Coordinator: c}
+	if _, err = h.RemoveNode(context.Background(), NodeRequest{Name: "ghost"}); err == nil || err.Error() != `no removable node "ghost"` {
+		t.Fatalf("error = %v", err)
+	}
+}

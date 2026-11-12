@@ -122,6 +122,10 @@ try {
       let running = 'hub'
       let tunnelPhase = { state: 'starting' }
       let clientState = 'connected'
+      // The machines this context's hub lists; mesh::nodes::remove drops one.
+      let hubNodes = nodes
+      // What mesh::leave answers when the hub could not be told.
+      let leaveWarning = 'The hub was not told (context deadline exceeded). It keeps listing this machine until it is removed there.'
       // The entry the hub last applied; null follows every save at once. Unset ${VAR} templates expand to their default.
       let applied = null
       const hubStatus = () => {
@@ -138,8 +142,10 @@ try {
       // The page's latest mesh::on-node-changed observe, to deliver a join as the hub would.
       let nodeObserver = null
       const release = () => held.splice(0).forEach((answer) => answer())
-      const clientStatus = () => ({ mode: 'client', hub_url: config.client?.hub_url ?? '', node: config.client?.name ?? '', namespace: 'project',
-        state: clientState, error: '', shared: [{ worker: 'shell', state: 'running', functions: ['shell::exec', 'shell::spawn'].map((id) => `${config.client?.name ?? ''}::${id}`) }] })
+      // Only a running node has a name; a removed one says how to come back, and a left one keeps the leave's warning.
+      const clientStatus = () => ({ mode: 'client', hub_url: config.client?.hub_url ?? '', namespace: 'project',
+        node: clientState === 'connected' || clientState === 'restart required' ? config.client?.name ?? '' : '',
+        state: clientState, error: clientState === 'removed by hub' ? 'the hub removed this machine; leave the hub, then join with a new join code' : clientState === 'left hub' ? leaveWarning : '', shared: [{ worker: 'shell', state: 'running', functions: ['shell::exec', 'shell::spawn'].map((id) => `${config.client?.name ?? ''}::${id}`) }] })
       await page.routeWebSocket('**/ws', (socket) => {
         socket.onMessage(async (message) => {
           const frame = JSON.parse(String(message))
@@ -159,7 +165,16 @@ try {
           const answer = () => {
             switch (frame.function_id) {
               case 'mesh::configuration-id': assert.equal(frame.namespace, 'project'); return send({ id: 'mesh-lab' })
-              case 'mesh::nodes::list': return mode === 'error' ? send(null, 'Mesh hub is unavailable. Reconnect, then retry.') : send(mode === 'empty' || mode === 'loading' ? [] : mode === 'long' ? longNodes : nodes)
+              case 'mesh::nodes::list': return mode === 'error' ? send(null, 'Mesh hub is unavailable. Reconnect, then retry.') : send(mode === 'empty' || mode === 'loading' ? [] : mode === 'long' ? longNodes : hubNodes)
+              case 'mesh::nodes::remove':
+                if (mode === 'remove-error') return send(null, 'The hub could not save its state.')
+                assert(hubNodes.some((node) => node.name === frame.data.name), 'mesh::nodes::remove names a listed machine')
+                hubNodes = hubNodes.filter((node) => node.name !== frame.data.name)
+                return send({ removed: true, code: (joinCode = newCode()) })
+              case 'mesh::leave':
+                if (mode === 'leave-error') return send(null, 'not joined to a hub')
+                clientState = 'left hub'
+                return send({ hub_notified: !leaveWarning, warning: leaveWarning })
               // Like the hub, no join code while there is no public URL (configured or from a ready tunnel).
               case 'mesh::join::code': return mode === 'error' || !hubStatus().public_url ? send(null, 'public_url is not set') : send({ code: joinCode })
               case 'mesh::join::cycle': return mode === 'cycle-error' ? send(null, 'The hub could not store a new code.') : !hubStatus().public_url ? send(null, 'public_url is not set') : send({ code: (joinCode = newCode()) })
@@ -197,6 +212,8 @@ try {
       const tunnelLine = page.locator('.mesh-ui-tunnel')
       const saveBar = page.locator('.mesh-ui-save-bar')
       const badge = page.getByText('needed before machines can join', { exact: true })
+      const dialog = page.getByRole('alertdialog')
+      const inDialog = (name) => dialog.getByRole('button', { name, exact: true })
       // Page Save: only the edited basics change; every other key, templates included, is written back as read.
       const savePage = async (expected) => {
         const count = saved.length
@@ -422,6 +439,36 @@ try {
           activation: { observer_id: nodeObserver.frame.id }, data: { name: 'new-box', event: 'joined', at: new Date().toISOString() } }))
         await expect(joinValue).toHaveText(joinCode)
         assert.notEqual(joinCode, spent)
+        // Remove asks first, says what it does, and a cancel calls nothing.
+        const removeButton = card('archive-laptop').getByRole('button', { name: 'Remove archive-laptop', exact: true })
+        await removeButton.click()
+        await expect(dialog.getByRole('heading', { name: 'Remove archive-laptop?', exact: true })).toBeVisible()
+        await expect(dialog).toContainText('cannot reconnect with its current keys')
+        await expect(dialog).toContainText('The join code is replaced')
+        await capture('remove-confirm')
+        await inDialog('Cancel').click()
+        await expect(dialog).toHaveCount(0)
+        assert(!calls.some((call) => call.id === 'mesh::nodes::remove'), 'a cancelled removal calls nothing')
+        // A failed removal stays in the dialog with its reason; the retry removes the machine and shows the hub's new code.
+        mode = 'remove-error'
+        await removeButton.click()
+        await inDialog('Remove machine').click()
+        await expect(dialog.getByRole('alert')).toContainText('The hub could not save its state.')
+        await expect(page.locator('.mesh-ui-node')).toHaveCount(4)
+        mode = 'populated'
+        hold = new Set(['mesh::nodes::remove'])
+        await inDialog('Retry remove machine').click()
+        await expect(inDialog('Removing…')).toBeDisabled()
+        const beforeRemoval = joinCode
+        hold = new Set()
+        release()
+        await expect(dialog).toHaveCount(0)
+        await expect(card('archive-laptop')).toHaveCount(0)
+        await expect(page.locator('.mesh-ui-node h3')).toHaveText(['gpu-box', 'linux-workstation', 'travel-laptop'])
+        assert.deepEqual(calls.findLast((call) => call.id === 'mesh::nodes::remove').data, { name: 'archive-laptop' })
+        assert.notEqual(joinCode, beforeRemoval, 'a removal replaces the join code')
+        await expect(joinValue).toHaveText(joinCode)
+        await expect(page.getByText('Removed archive-laptop. The join code was replaced.', { exact: true })).toBeAttached()
         await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
         await capture('tunnel-overridden')
         // The hub drops the tunnel only when it applies the entry; the page keeps reading until it does.
@@ -472,7 +519,7 @@ try {
         await button('Refresh').click()
         await button('Discard').click()
         await expect(tunnelSwitch).not.toBeChecked()
-        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, templated address, raw root refused${timed ? ', polling until settled' : ''}`)
+        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, templated address, raw root refused${timed ? ', polling until settled' : ''}`)
 
         // The configuration form holds only the advanced settings.
         await button('Settings').click()
@@ -546,6 +593,64 @@ try {
         await expect(page.getByText('Ids start with laptop::shell::', { exact: true })).toBeVisible()
         await expect(page.getByRole('list', { name: 'shell functions', exact: true }).getByRole('listitem')).toHaveText(['exec', 'spawn'])
         await capture('client-connected')
+        // Leave hub asks first; a cancel calls nothing.
+        const connection = page.getByRole('region', { name: 'Hub connection' })
+        await button('Leave hub').click()
+        await expect(dialog.getByRole('heading', { name: 'Leave the hub?', exact: true })).toBeVisible()
+        await expect(dialog).toContainText('joins again only with a different join code or token')
+        await capture('leave-confirm')
+        await inDialog('Cancel').click()
+        await expect(dialog).toHaveCount(0)
+        assert(!calls.some((call) => call.id === 'mesh::leave'), 'a cancelled leave calls nothing')
+        // A failed leave stays in the dialog; the retry leaves, and a hub that was not told is named.
+        mode = 'leave-error'
+        await button('Leave hub').click()
+        await inDialog('Leave hub').click()
+        await expect(dialog.getByRole('alert')).toContainText('not joined to a hub')
+        mode = 'populated'
+        hold = new Set(['mesh::leave'])
+        await inDialog('Retry leave hub').click()
+        await expect(inDialog('Leaving…')).toBeDisabled()
+        hold = new Set()
+        release()
+        await expect(dialog).toHaveCount(0)
+        await expect(connection.getByText('left hub', { exact: true })).toBeVisible()
+        await expect(page.getByText('This engine left the hub', { exact: true })).toBeVisible()
+        await expect(connection.getByText(leaveWarning, { exact: true })).toBeVisible()
+        await expect(page.getByText(`Left the hub. ${leaveWarning}`, { exact: true })).toBeAttached()
+        await expect(button('Leave hub')).toHaveCount(0)
+        await expect(page.getByText('joined as')).toHaveCount(0)
+        await capture('client-left')
+        // The warning comes from the worker, so a re-read keeps it; a client that is not connected is re-read without a click.
+        before = statusCalls()
+        if (!timed) await button('Refresh').click()
+        await expect.poll(statusCalls, { timeout: 8000 }).toBeGreaterThan(before)
+        await expect(connection.getByText(leaveWarning, { exact: true })).toBeVisible()
+        clientState = 'connected'
+        if (!timed) await button('Refresh').click()
+        await expect(connection.getByText('connected', { exact: true })).toBeVisible({ timeout: 8000 })
+        await expect(page.getByText('This engine left the hub')).toHaveCount(0)
+        if (timed) {
+          before = statusCalls()
+          await delay(6000)
+          assert.equal(statusCalls(), before, 'polling stops once the client is connected')
+        }
+        // A machine the hub removed gets the same action, and a hub that was told leaves no warning.
+        clientState = 'removed by hub'
+        leaveWarning = ''
+        await button('Refresh').click()
+        await expect(connection.getByText('removed by hub', { exact: true })).toBeVisible()
+        await expect(connection.getByText('the hub removed this machine; leave the hub, then join with a new join code', { exact: true })).toBeVisible()
+        await capture('client-removed')
+        await button('Leave hub').click()
+        await expect(dialog).toContainText('The hub already removed this machine')
+        await inDialog('Leave hub').click()
+        await expect(connection.getByText('left hub', { exact: true })).toBeVisible()
+        await expect(page.getByText('Not sharing')).toHaveCount(0)
+        await expect(page.getByText('Left the hub. This engine no longer shares workers.', { exact: true })).toBeAttached()
+        clientState = 'connected'
+        await button('Refresh').click()
+        await expect(button('Leave hub')).toBeVisible()
         clientState = 'restart required'
         await button('Refresh').click()
         await expect(page.getByText('Restart the mesh worker to apply the new connection', { exact: true })).toBeVisible()
@@ -559,7 +664,7 @@ try {
         assert(calls.some((call) => call.id === 'configuration::get' && call.data.raw === true && call.namespace === 'default'))
         assert(calls.every((call) => !call.id.startsWith('configuration::') || call.namespace === 'default'))
         assert.deepEqual(errors, [])
-        console.log(`PASS ${viewport.width}px ${theme}: client fields, machine-name validation, share list, restart panel, client-only form`)
+        console.log(`PASS ${viewport.width}px ${theme}: client fields, machine-name validation, share list, leave hub confirmed and offered after a removal, leave warning kept on re-read, ${timed ? 'client polled until connected' : 'rejoin shown on refresh'}, restart panel, client-only form`)
       }
       const openDraft = async (value) => {
         config = structuredClone(value)

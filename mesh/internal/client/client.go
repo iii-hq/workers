@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,12 +41,31 @@ type Status struct {
 	Shared          []SharedStatus `json:"shared"`
 }
 
+// LeaveResult is the answer of mesh::leave.
+type LeaveResult struct {
+	HubNotified bool   `json:"hub_notified"` // the hub deleted this machine's record
+	Warning     string `json:"warning"`      // set when the hub may still list the machine
+}
+
 type joinState struct {
 	PublicURL     string        `json:"public_url"`
 	Secret        string        `json:"secret"`
 	Identity      join.Identity `json:"hub_identity"`
 	RequestedName string        `json:"requested_name"`
-	Pending       bool          `json:"pending,omitempty"` // saved before the hub accepted it
+	Pending       bool          `json:"pending,omitempty"`     // saved before the hub accepted it
+	JoinDigest    string        `json:"join_digest,omitempty"` // names the join value it enrolled with
+}
+
+type leaveReply struct {
+	res LeaveResult
+	err error
+}
+
+// leftNote is the left marker: the join value left behind, by digest ("" when
+// the enrollment did not name it), and the warning shown until another joins.
+type leftNote struct {
+	JoinDigest string `json:"join_digest"`
+	Warning    string `json:"warning,omitempty"`
 }
 
 type runner struct {
@@ -60,6 +81,7 @@ type runner struct {
 	triedErr error   // why tried failed; nil while it succeeded or is registering
 	cancel   context.CancelFunc
 	done     chan error
+	leaving  chan chan leaveReply // mesh::leave requests, served by loop
 
 	mu      sync.Mutex
 	state   string // shown while no node runs
@@ -76,27 +98,59 @@ func Run(ctx context.Context, o Options) error {
 	if o.Dir == "" {
 		o.Dir = filepath.Join(os.Getenv("III_COMPOSE_DIR"), "data", "mesh-client")
 	}
-	r := &runner{o: o, dir: o.Dir, bridge: NewBridge(o.Local, o.Namespace), enroll: enroll, state: "starting"}
+	r := &runner{o: o, dir: o.Dir, bridge: NewBridge(o.Local, o.Namespace), enroll: enroll, leaving: make(chan chan leaveReply), state: "starting"}
 	defer r.bridge.Close()
 	if _, err := iii.RegisterFunctionTyped(o.Local, "mesh::status", func(context.Context, struct{}) (Status, error) { return r.status(), nil }); err != nil {
 		return fmt.Errorf("register mesh status: %w", err)
 	}
-	ticker := time.NewTicker(5 * time.Second)
+	if _, err := iii.RegisterFunctionTyped(o.Local, "mesh::leave", func(ctx context.Context, _ struct{}) (LeaveResult, error) { return r.requestLeave(ctx) }); err != nil {
+		return fmt.Errorf("register mesh leave: %w", err)
+	}
+	r.loop(ctx, 5*time.Second)
+	return nil
+}
+
+// loop is the only goroutine that starts, stops and forgets the node.
+func (r *runner) loop(ctx context.Context, every time.Duration) {
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
+	serve := func(reply chan leaveReply) {
+		res, err := r.leave(ctx)
+		reply <- leaveReply{res, err}
+	}
 	for {
-		r.tick(ctx)
+		// A leave queued behind a tick, which can take a minute, goes first: select picks among ready cases at random.
+		select {
+		case reply := <-r.leaving:
+			serve(reply)
+		default:
+			r.tick(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			if r.done != nil {
 				r.cancel()
 				r.stop(<-r.done)
 			}
-			return nil
+			return
 		case err := <-r.done:
 			r.stop(err)
+		case reply := <-r.leaving:
+			serve(reply)
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r *runner) requestLeave(ctx context.Context) (LeaveResult, error) {
+	reply := make(chan leaveReply, 1)
+	select {
+	case r.leaving <- reply:
+	case <-ctx.Done():
+		return LeaveResult{}, ctx.Err()
+	}
+	out := <-reply
+	return out.res, out.err
 }
 
 func (r *runner) tick(ctx context.Context) {
@@ -130,11 +184,21 @@ func (r *runner) tick(ctx context.Context) {
 	}
 }
 
-const removedState = "removed by hub; delete data/mesh-client to rejoin"
+const (
+	removedState  = "removed by hub"
+	leftState     = "left hub"
+	leftMarker    = "left" // in the state directory; holds a leftNote
+	logoutTimeout = 10 * time.Second
+)
+
+var errRemovedByHub = errors.New("the hub removed this machine; leave the hub, then join with a new join code")
 
 func (r *runner) start(ctx context.Context, c Config) {
+	if r.left(ctx, c) {
+		return
+	}
 	if _, err := os.Stat(filepath.Join(r.dir, "mesh", meshnet.Removed)); err == nil {
-		r.set(removedState, nil)
+		r.set(removedState, errRemovedByHub)
 		return
 	}
 	// node.New refuses a build without a version; checked before joining so it
@@ -205,7 +269,7 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 	if b, err := os.ReadFile(path); err == nil {
 		st := &joinState{}
 		if err = json.Unmarshal(b, st); err != nil {
-			r.set("error", fmt.Errorf("read join.json (delete data/mesh-client to rejoin): %w", err))
+			r.set("error", fmt.Errorf("read join.json (leave the hub to rejoin): %w", err))
 			return nil, false, err
 		}
 		// A lost mesh state is a new machine key, which the hub has not accepted.
@@ -232,7 +296,7 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 	if err == nil {
 		// Saved before registering: the hub replaces the code when it accepts the
 		// node, so an interrupted join must come back with this secret.
-		enrolled.Pending = true
+		enrolled.Pending, enrolled.JoinDigest = true, joinDigest(value)
 		err = savePrivate(r.dir, "join.json", enrolled)
 	}
 	if spent || err == nil {
@@ -247,6 +311,123 @@ func (r *runner) join(ctx context.Context, c Config) (st *joinState, fresh bool,
 		return nil, false, err
 	}
 	return &enrolled, true, nil
+}
+
+// joinDigest names a join value without keeping it: a leave forgets the credential.
+func joinDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// left reports whether a leave still holds. The node joins again only when
+// client.join resolves to another value than the forgotten enrollment used.
+func (r *runner) left(ctx context.Context, c Config) bool {
+	path := filepath.Join(r.dir, leftMarker)
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		r.set("error", err)
+		return true
+	}
+	var note leftNote
+	_ = json.Unmarshal(b, &note) // an unreadable note names no join value, like an earlier build's enrollment
+	var warning error
+	if note.Warning != "" {
+		warning = errors.New(note.Warning)
+	}
+	// A leave cut short may have kept the enrollment; deleting it again is harmless.
+	if err = r.forget(); err != nil {
+		r.set("error", err)
+		return true
+	}
+	value := ""
+	if c.Join != "" {
+		if value, err = resolveJoin(ctx, r.o.Local, c.Join); err != nil {
+			r.set(leftState, errors.Join(warning, fmt.Errorf("resolve %s: %w", c.Join, err)))
+			return true
+		}
+	}
+	now := joinDigest(value)
+	if note.JoinDigest == "" {
+		// An enrollment saved by an earlier build does not name its join value: the first one read counts as it.
+		note.JoinDigest = now
+		if err = savePrivate(r.dir, leftMarker, note); err != nil {
+			r.set("error", err)
+			return true
+		}
+	}
+	if value == "" || note.JoinDigest == now {
+		r.set(leftState, warning)
+		return true
+	}
+	if err = os.Remove(path); err != nil {
+		r.set("error", err)
+		return true
+	}
+	return false
+}
+
+// forget deletes the enrollment, so the next join is a new machine.
+func (r *runner) forget() error {
+	return errors.Join(os.RemoveAll(filepath.Join(r.dir, "join.json")), os.RemoveAll(filepath.Join(r.dir, "mesh")))
+}
+
+// leave logs the node out of the hub when it can, then forgets the enrollment.
+// It runs on loop, so it never overlaps tick, start or stop.
+func (r *runner) leave(ctx context.Context) (LeaveResult, error) {
+	b, err := os.ReadFile(filepath.Join(r.dir, "join.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		// A refused registration deletes join.json but keeps the mesh state the hub may have removed.
+		if _, e := os.Stat(filepath.Join(r.dir, "mesh")); errors.Is(e, os.ErrNotExist) {
+			return LeaveResult{}, errors.New("not joined to a hub")
+		}
+	} else if err != nil {
+		return LeaveResult{}, err
+	}
+	var st joinState
+	_ = json.Unmarshal(b, &st) // an unreadable enrollment is forgotten too; its join value is then unknown
+	_, err = os.Stat(filepath.Join(r.dir, "mesh", meshnet.Removed))
+	removed := err == nil // the hub no longer lists a machine it removed
+	note := leftNote{JoinDigest: st.JoinDigest}
+	if note.JoinDigest == "" && removed {
+		// The removal replaced the hub's code and revoked its token, so no old value can rejoin: any value may join.
+		note.JoinDigest = joinDigest("")
+	}
+	if !removed {
+		note.Warning = "The leave did not finish, so the hub may still list this machine until it is removed there."
+	}
+	// Written first: a leave cut short must not rejoin with the same join value.
+	if err = savePrivate(r.dir, leftMarker, note); err != nil {
+		return LeaveResult{}, err
+	}
+	logout := errors.New("the mesh is not running")
+	if r.done != nil {
+		r.mu.Lock()
+		m := r.mesh
+		r.mu.Unlock()
+		logoutCtx, cancel := context.WithTimeout(ctx, logoutTimeout)
+		logout = m.Logout(logoutCtx)
+		cancel()
+		r.cancel()
+		r.stop(<-r.done)
+	}
+	res := LeaveResult{HubNotified: logout == nil}
+	if !res.HubNotified && !removed {
+		res.Warning = fmt.Sprintf("The hub was not told (%v). It keeps listing this machine until it is removed there.", logout)
+	}
+	if err = r.forget(); err != nil {
+		return res, fmt.Errorf("delete the enrollment: %w", err)
+	}
+	note.Warning = res.Warning
+	if err = savePrivate(r.dir, leftMarker, note); err != nil {
+		return res, err
+	}
+	r.mu.Lock()
+	r.state, r.err, r.restart = leftState, res.Warning, false // nothing runs, so no changed connection waits for a restart
+	r.mu.Unlock()
+	return res, nil
 }
 
 var errRefused = errors.New("hub refused the registration")
@@ -385,7 +566,7 @@ func (r *runner) stop(err error) {
 	m.Close()
 	r.done, r.started = nil, nil
 	if errors.Is(err, node.ErrRemoved) {
-		r.set(removedState, nil) // the next start re-checks the marker, so deleting data/mesh-client rejoins
+		r.set(removedState, errRemovedByHub)
 	} else if err != nil {
 		r.set("error", err)
 	}

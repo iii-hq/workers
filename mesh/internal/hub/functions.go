@@ -180,14 +180,15 @@ func (h *Hub) RemoveNode(ctx context.Context, r NodeRequest) (RemoveResult, erro
 	defer h.reload.Unlock()
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	if _, err := h.joinCode(); err != nil {
-		return RemoveResult{}, err
+	if h.Coordinator == nil {
+		return RemoveResult{}, errors.New("hub is not running")
 	}
 	if err := h.Coordinator.Remove(r.Name); err != nil {
 		return RemoveResult{}, err
 	}
-	result, err := h.joinCode()
-	return RemoveResult{Removed: true, JoinResult: result}, err
+	// A removal needs no hub address; without one there is no code to return.
+	result, _ := h.joinCode()
+	return RemoveResult{Removed: true, JoinResult: result}, nil
 }
 func (h *Hub) ListNodes(ctx context.Context, _ struct{}) ([]NodeEntry, error) {
 	nodes := []NodeEntry{}

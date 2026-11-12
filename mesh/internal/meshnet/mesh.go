@@ -39,6 +39,7 @@ import (
 	_ "tailscale.com/feature/condregister/portmapper"
 	"tailscale.com/health"
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnauth"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/store"
 	"tailscale.com/net/netmon"
@@ -53,6 +54,9 @@ import (
 )
 
 const Removed = "removed"
+
+// refusedKeys is the hub's register answer to a machine it removed (internal/coordinator).
+const refusedKeys = "node keys refused"
 
 var nodeName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 
@@ -161,7 +165,8 @@ func startMesh(dir string, shim *Shim, secret, name string) (_ *Mesh, err error)
 				default:
 				}
 			}
-			if removed = n.State != nil && *n.State == ipn.NeedsMachineAuth; removed {
+			// A machine removed while offline hears it only as a refused registration.
+			if removed = n.State != nil && *n.State == ipn.NeedsMachineAuth || n.ErrMessage != nil && *n.ErrMessage == refusedKeys; removed {
 				return false
 			}
 			m.updateGateway()
@@ -212,6 +217,22 @@ func (m *Mesh) Peer(name string) (netip.Addr, bool) {
 		}
 	}
 	return netip.Addr{}, false
+}
+
+// Logout asks the hub to delete this machine's record. Close still releases the mesh.
+func (m *Mesh) Logout(ctx context.Context) error {
+	// The watcher stops first: it releases the backend when the hub's answer reads as a removal.
+	m.unwatch()
+	<-m.watched
+	select {
+	case <-m.removed:
+		return nil // the hub removed the machine first
+	default:
+	}
+	if err := m.lb.Logout(ctx, ipnauth.Self); err != nil && err.Error() != refusedKeys {
+		return err
+	}
+	return nil // a refusal means the hub removed the machine before this logout reached it
 }
 func (m *Mesh) Close() error {
 	m.unwatch()

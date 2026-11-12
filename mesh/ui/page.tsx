@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import {
-  Badge, Button, EmptyState, Input, LiveRegion, PageHeader, PageMain, PageShell,
+  Badge, Button, ConfirmDialog, EmptyState, Input, LiveRegion, PageHeader, PageMain, PageShell,
   RawValueInput, SegmentedControl, SettingsField, SettingsList, SettingsSection, StatusPanel, Switch,
   type ConfigFormProps, type Host, type JsonValue, type PageRenderProps, type SecretKeyFieldProps,
 } from '@iii-dev/console-ui'
@@ -26,6 +26,8 @@ type ClientStatus = {
 // The hub's mesh::status; `tunnel` is present only while the tunnel is enabled.
 type Tunnel = { enabled: boolean; tunnel_id: string; state: string; url?: string; error?: string }
 type HubStatus = { public_url?: string; tunnel?: Tunnel }
+// The client's mesh::leave; `warning` is set when the hub may still list the machine.
+type Left = { hub_notified: boolean; warning: string }
 type SecretInput = ComponentType<SecretKeyFieldProps>
 const NO_SOURCES: readonly string[] = []
 
@@ -121,8 +123,10 @@ const RUNS_COMMANDS = new Set(['ide', 'harness', 'shell', 'coder', 'tmux', 'code
 const NAME = /^[a-z][a-z0-9-]{0,30}$/
 const RAW_CONFIG = 'The mesh settings are one raw value. Open Settings and replace it with individual settings first.'
 const STATE_BADGE: Record<string, 'ok' | 'warn' | 'alert' | 'default'> = {
-  connected: 'ok', 'restart required': 'warn', 'join failed': 'alert', error: 'alert',
+  connected: 'ok', 'restart required': 'warn', 'join failed': 'alert', error: 'alert', 'removed by hub': 'alert',
 }
+// Client states with no enrollment to forget.
+const NOTHING_TO_LEAVE = new Set(['', 'starting', 'waiting for join', 'join failed', 'left hub'])
 
 function JoinField({ value, onChange, secretInput: SecretKeyField }: { value: string; onChange: (next: string) => void; secretInput?: SecretInput }) {
   // A non-reference stays in this draft: the join code itself never reaches the versioned entry.
@@ -157,9 +161,10 @@ function TunnelLine({ tunnel, stalled }: { tunnel?: Tunnel; stalled: boolean }) 
   return line ? <div role="listitem" aria-live="polite" className="mesh-ui-tunnel">{line}</div> : null
 }
 
-function ClientSetup({ basics, edit, status, workers, secretInput }: {
+function ClientSetup({ basics, edit, status, workers, secretInput, onLeave }: {
   basics: Basics; edit: <K extends keyof Basics>(key: K, value: Basics[K]) => void
   status: ClientStatus | null; workers: string[]; secretInput?: SecretInput
+  onLeave: () => void
 }) {
   const shared = new Map((status?.shared ?? []).map((s) => [s.worker, s]))
   // A shared name that is not running locally still needs its switch, to turn it off.
@@ -171,7 +176,10 @@ function ClientSetup({ basics, edit, status, workers, secretInput }: {
       <div className="mesh-ui-section-head"><h2 id="mesh-connect-title">Hub connection</h2>
         {state ? <Badge variant={STATE_BADGE[state] ?? 'default'}>{state}</Badge> : null}
         {status?.node ? <span className="mesh-ui-muted">joined as <code>{status.node}</code>{status.namespace ? <> in namespace <code>{status.namespace}</code></> : null}</span> : null}
+        {NOTHING_TO_LEAVE.has(state) ? null : <Button variant="ghost" size="sm" className="mesh-ui-head-action" onClick={onLeave}>Leave hub</Button>}
       </div>
+      {state === 'left hub' ? <StatusPanel variant="info" headline="This engine left the hub"
+        detail="To join again, store a different join code or token. The one used before is not tried again." /> : null}
       {status?.error ? <StatusPanel variant="alert" headline="Not sharing" detail={status.error} /> : null}
       {status?.hub_wants_version ? <StatusPanel variant="warn" headline={`The hub wants version ${status.hub_wants_version}`}
         detail="Nothing is shared until this project's mesh worker runs the hub's version." /> : null}
@@ -289,14 +297,33 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   const restart = () => run('restart', () => host.iii.call('compose::restart', { container: 'mesh' }))
   const [cycling, setCycling] = useState(false)
   const [cycleError, setCycleError] = useState<string | null>(null)
-  // Counts new codes, so each one is announced again.
-  const [cycles, setCycles] = useState(0)
+  // seq counts the announcements, so the same text is read again.
+  const [notice, setNotice] = useState<{ seq: number; text: string } | null>(null)
+  const announce = (text: string) => setNotice((prev) => ({ seq: (prev?.seq ?? 0) + 1, text }))
   const cycle = async () => {
     setCycling(true); setCycleError(null)
     try {
       setCycled((await host.iii.call<Join>('mesh::join::cycle', {})).code)
-      setCycles((n) => n + 1)
+      announce('New join code ready. The old code no longer works.')
     } catch (err) { setCycleError(errorMessage(err)) } finally { setCycling(false); refresh() }
+  }
+  // ConfirmDialog shows why a confirmed action failed only for an Error; a failed call rejects with a plain object.
+  const failed = (err: unknown) => new Error(errorMessage(err))
+  // The machine whose removal is being confirmed.
+  const [removing, setRemoving] = useState<string | null>(null)
+  const remove = async (name: string) => {
+    try {
+      await host.iii.call('mesh::nodes::remove', { name })
+      announce(`Removed ${name}. The join code was replaced.`)
+    } catch (err) { throw failed(err) } finally { refresh() }
+  }
+  const [leaving, setLeaving] = useState(false)
+  const leave = async () => {
+    try {
+      // A leave waits for a join in flight (up to a minute) and then up to 10 s for the hub.
+      const left = await host.iii.call<Left>('mesh::leave', {}, { timeoutMs: 90_000 })
+      announce(left?.warning ? `Left the hub. ${left.warning}` : 'Left the hub. This engine no longer shares workers.')
+    } catch (err) { throw failed(err) } finally { refresh() }
   }
   const running: Mode = data?.client ? 'client' : 'hub'
   const hubView = basics.mode !== 'client' && running !== 'client'
@@ -304,7 +331,9 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   // mesh::status is not pushed, and a tunnel settles seconds to minutes after a save: re-read until the hub
   // shows the saved switch and a resting state. Only the hub knows what a templated Public URL expands to.
   const tunnel = data?.hub?.tunnel
+  // A client's state moves on its 5 s ticks (a join, a leave, a removal) until it connects.
   const settling = Boolean(data?.hub) && (saved.tunnel !== Boolean(tunnel) || (tunnel !== undefined && !TUNNEL_RESTING.has(tunnel.state)))
+    || (data?.client != null && data.client.state !== 'connected')
   const [stalled, setStalled] = useState(false)
   useEffect(() => {
     setStalled(false)
@@ -350,6 +379,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
           <header className="mesh-ui-node-head"><h3><code>{node.name}</code></h3>
             <Badge variant={node.online ? 'ok' : 'default'}>{node.online ? 'Online' : 'Offline'}</Badge>
             {node.ephemeral ? <Badge>Ephemeral</Badge> : null}
+            <Button variant="ghost" size="sm" className="mesh-ui-head-action" aria-label={`Remove ${node.name}`} onClick={() => setRemoving(node.name)}>Remove</Button>
           </header>
           <SharedWorkers node={node} functions={data.functions} />
           <dl className="mesh-ui-details">
@@ -362,7 +392,8 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
         </article>)}</div>
       </section> : null}
       {raw ? null : basics.mode === 'client'
-        ? <ClientSetup basics={basics} edit={edit} status={data?.client ?? null} workers={data?.workers ?? []} secretInput={secretInput} />
+        ? <ClientSetup basics={basics} edit={edit} status={data?.client ?? null} workers={data?.workers ?? []} secretInput={secretInput}
+          onLeave={() => setLeaving(true)} />
         : <section className="mesh-ui-section" aria-labelledby="mesh-address-title">
           <div className="mesh-ui-section-head"><h2 id="mesh-address-title">Hub address</h2>
             {hasAddress || saved.tunnel ? null : <Badge variant="warn">needed before machines can join</Badge>}
@@ -395,8 +426,17 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
             {cycling ? 'Generating…' : 'Generate new code'}
           </Button>} />
         </div> : null}
-        <LiveRegion announcement={cycles ? { seq: cycles, urgency: 'polite', text: 'New join code ready. The old code no longer works.' } : null} />
       </section> : null}
+      <LiveRegion announcement={notice ? { ...notice, urgency: 'polite' } : null} />
+      <ConfirmDialog open={removing !== null} onOpenChange={(open) => { if (!open) setRemoving(null) }} tone="danger"
+        title={`Remove ${removing ?? 'machine'}?`} confirmLabel="Remove machine" busyLabel="Removing…"
+        description="It stops sharing its workers at once and cannot reconnect with its current keys. The join code is replaced. To bring it back, choose Leave hub on that machine, then join with a new code."
+        onConfirm={() => remove(removing ?? '')} />
+      <ConfirmDialog open={leaving} onOpenChange={setLeaving} tone="danger" title="Leave the hub?" confirmLabel="Leave hub" busyLabel="Leaving…"
+        description={data?.client?.state === 'removed by hub'
+          ? 'The hub already removed this machine. Leaving deletes the saved join here, so this engine can join again with a new join code.'
+          : 'This engine stops sharing its workers, the hub drops this machine and the saved join is deleted. It joins again only with a different join code or token, as a new machine.'}
+        onConfirm={leave} />
     </PageMain>
   </PageShell>
 }
