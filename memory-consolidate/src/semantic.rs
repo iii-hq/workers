@@ -763,12 +763,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
             ));
             continue;
         }
-        let expected = |row: &MemoryRow| {
-            written
-                .get(&row.id)
-                .cloned()
-                .unwrap_or_else(|| row.expected_snapshot())
-        };
+        let expected = |row: &MemoryRow| guard_snapshot(row, written.get(&row.id));
         let reply = call(
             iii,
             "memory::supersede",
@@ -819,9 +814,35 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
     Step::Done
 }
 
+/// The snapshot a supersede is guarded with: what this batch read, unless an
+/// earlier write in this run returned a newer one for the same record.
+fn guard_snapshot(row: &MemoryRow, written: Option<&Value>) -> Value {
+    let read = row.expected_snapshot();
+    let revision = |v: &Value| v["revision"].as_u64().unwrap_or(0);
+    match written {
+        Some(w) if revision(w) > revision(&read) => w.clone(),
+        _ => read,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_guard_takes_the_newer_of_the_read_and_the_written_snapshot() {
+        let at = |revision: u64| {
+            let mut r = row("x", "User drinks green tea.", 1, 1);
+            r.snapshot.insert("revision".into(), json!(revision));
+            r
+        };
+        let written = json!({"id": "x", "revision": 1});
+        // A row read before an earlier batch reinforced it: the write is newer.
+        assert_eq!(guard_snapshot(&at(0), Some(&written))["revision"], 1);
+        // A row recalled after another writer moved it on: the read is newer.
+        assert_eq!(guard_snapshot(&at(2), Some(&written))["revision"], 2);
+        assert_eq!(guard_snapshot(&at(2), None)["revision"], 2);
+    }
 
     fn row(id: &str, text: &str, created_at: u64, updated_at: u64) -> MemoryRow {
         MemoryRow {
