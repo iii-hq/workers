@@ -1179,15 +1179,14 @@ async fn record_recall_delivery(
     d: &Delivery<'_>,
 ) -> Result<(), HarnessError> {
     if let Err(error) = crate::hooks::recall::record_delivery(deps, session_id, d).await {
-        if d.continuation_entry_id.is_some()
-            || (d.channel != DeliveryChannel::Notification
-                && matches!(&error, HarnessError::InvalidRequest(_)))
-        {
+        if d.continuation_entry_id.is_some() {
             return Err(error);
         }
-        // Provenance storage unavailable, or a harness notice re-fired under its
-        // stable entry id with new text: deliver normally, resolve as unknown
-        // (rules only). Memory enrichment must never block an ordinary send.
+        // Provenance storage unavailable, or an entry id re-delivered with new
+        // text (a re-fired notice, a keyed retry): deliver normally and leave
+        // the receipt as is. An append that keeps the stored entry still
+        // matches it; otherwise the source resolves as unknown (rules only).
+        // Memory enrichment must never block an ordinary send.
         tracing::warn!(session_id, %error, "recall receipt unavailable; delivering without recall authority");
     }
     Ok(())

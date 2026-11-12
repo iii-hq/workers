@@ -363,12 +363,6 @@ async fn idempotency_keys_keep_legacy_ids_and_cannot_rewrite_continuation_receip
             .remove(&(crate::state::IDEM_SCOPE.into(), key.clone()));
         assert!(handle(
             &stack.deps,
-            request(session, "Changed retry", Some(&key), None)
-        )
-        .await
-        .is_err());
-        assert!(handle(
-            &stack.deps,
             request(session, "Original keyed request", Some(&key), Some(&id))
         )
         .await
@@ -379,6 +373,23 @@ async fn idempotency_keys_keep_legacy_ids_and_cannot_rewrite_continuation_receip
         handle(
             &stack.deps,
             request(session, "Original keyed request", Some(&key), None),
+        )
+        .await
+        .unwrap();
+        stack.drain(session).await;
+        assert_eq!(stack.data.lock().unwrap().messages[session].len(), 2);
+        assert_eq!(stack.receipt(session, &id), receipt);
+        // As on main, a changed retry without a continuation still delivers,
+        // onto the stored entry, and leaves the receipt untouched.
+        stack
+            .data
+            .lock()
+            .unwrap()
+            .state
+            .remove(&(crate::state::IDEM_SCOPE.into(), key.clone()));
+        handle(
+            &stack.deps,
+            request(session, "Changed retry", Some(&key), None),
         )
         .await
         .unwrap();
@@ -542,4 +553,87 @@ async fn a_refired_notice_with_new_text_delivers_after_its_first_append_failed()
     let context = stack.context(session).await;
     assert_eq!(context["source"]["entry_id"], id);
     assert_eq!(context["source"]["kind"], "unknown");
+}
+
+async fn send_as(
+    stack: &Stack,
+    invoked: bool,
+    req: SendRequest,
+) -> Result<SendResponse, HarnessError> {
+    if invoked {
+        handle_from_invoke(&stack.deps, req, "caller", false).await
+    } else {
+        handle(&stack.deps, req).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyed_resend_with_changed_text_lands_on_the_stored_entry_unless_it_continues() {
+    let stack = Stack::new().await;
+    for (session, invoked, kind) in [
+        ("resend-direct", false, "direct"),
+        ("resend-invoked", true, "invoked-agent"),
+    ] {
+        stack.reset(session, TurnStatus::Completed).await;
+        send_as(
+            &stack,
+            invoked,
+            request(session, "Earlier request", None, None),
+        )
+        .await
+        .unwrap();
+        let prior = stack.context(session).await["source"]["entry_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let key = format!("{session}/request");
+        let id = ids::idem_user_entry_id(&key);
+        stack.reset(session, TurnStatus::Completed).await;
+        send_as(
+            &stack,
+            invoked,
+            request(session, "Original keyed request", Some(&key), None),
+        )
+        .await
+        .unwrap();
+        let source = stack.context(session).await["source"].clone();
+        assert_eq!(source, json!({"kind":kind,"entry_id":id}));
+        let receipts = stack.data.lock().unwrap().get(SCOPE, session);
+        // The idempotency mapping expired, so the retry reaches delivery again.
+        stack
+            .data
+            .lock()
+            .unwrap()
+            .state
+            .remove(&(crate::state::IDEM_SCOPE.into(), key.clone()));
+        stack.reset(session, TurnStatus::Completed).await;
+        let error = send_as(
+            &stack,
+            invoked,
+            request(session, "Changed retry", Some(&key), Some(&prior)),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("different provenance"),
+            "{error}"
+        );
+        send_as(
+            &stack,
+            invoked,
+            request(session, "Changed retry", Some(&key), None),
+        )
+        .await
+        .unwrap();
+        // As on main: the session manager keeps the stored entry, so the
+        // untouched receipt still certifies what the transcript holds.
+        let messages = stack.data.lock().unwrap().messages[session].clone();
+        assert_eq!(messages.len(), 2, "{kind}");
+        assert_eq!(messages[1]["entry_id"], id);
+        assert!(messages[1]["message"]
+            .to_string()
+            .contains("Original keyed request"));
+        assert_eq!(stack.data.lock().unwrap().get(SCOPE, session), receipts);
+        assert_eq!(stack.context(session).await["source"], source);
+    }
 }
