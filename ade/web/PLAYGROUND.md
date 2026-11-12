@@ -149,13 +149,15 @@ The seam is `chat-app/src/lib/backend/`:
 
 - [`types.ts`](src/lib/backend/types.ts) — the contract types: `StreamEvent`,
   `ChatStreamOptions`, `ChatBackend`.
-- [`mock.ts`](src/lib/backend/mock.ts) — three canned bodies, jittered token
-  delays, abort-aware sleeps. Used in dev; tree-shaken from prod builds.
+- `mock.ts` — removed. Canned streams now live only in the Playground
+  scenarios ([`src/stories/playground/scenarios/`](src/stories/playground/scenarios)),
+  built with `makeBackend` from
+  [`helpers.ts`](src/stories/playground/scenarios/helpers.ts).
 - [`real.ts`](src/lib/backend/real.ts) — stub that throws
   `'backend not configured'`. Replace its body with your provider; preserve
   the `ChatBackend` shape and you're done.
 - [`index.ts`](src/lib/backend/index.ts) — `getDefaultBackend()` returns the
-  mock when `import.meta.env.DEV`, otherwise the real backend.
+  real backend.
 
 The chat page imports `getDefaultBackend()` once at module load and passes
 it to `ChatView` as a prop. Nothing else in the app depends on the choice.
@@ -204,7 +206,7 @@ important" direction.
 
 Consecutive `function-call` messages collapse into one bordered accordion
 in the message flow. Single-call runs stay rendered as a standalone
-[`FunctionCallMessage`](src/components/chat/FunctionCallMessage.tsx).
+[`FunctionCallCard`](src/components/function-call/FunctionCallCard.tsx).
 
 ```
 ┌─[chat column]──────────────────────┐
@@ -237,7 +239,8 @@ expanded body:
 - **Default open** while any child is pending/running/errored; respects
   user toggle once everything settles.
 - **Files touched**: new
-  [`FunctionCallGroup.tsx`](src/components/chat/FunctionCallGroup.tsx),
+  `FunctionCallGroup` (now a component inside
+  [`MessageList.tsx`](src/components/chat/MessageList.tsx)),
   new `embedded` prop on `FunctionCallMessage`, grouping helper inside
   `MessageList`.
 - **Pros**: minimal change, no layout work, immediate noise reduction,

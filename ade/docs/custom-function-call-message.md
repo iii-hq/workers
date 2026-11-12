@@ -9,13 +9,15 @@ and match the observed `functionId`, not `harness::observe`.
 
 This is the end-to-end authoring guide: architecture, the message contract, the parser/view layer, how to wire a new family into the host component, and the two Storybook surfaces (fixture galleries + Playground scenarios) every renderer must ship with.
 
+> **Current layout.** The host component is now [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx), and families are dispatched through the ordered `FIRST_PARTY_RENDERERS` list in [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx): runtime-injected renderers first, then first-party, then the JSON fallback. The `??` chains quoted below show the hand-wired dispatch that registry replaced.
+
 **Reference implementations** (four families are wired today):
 
 | Family | Module | Predicate | Notable |
 |--------|--------|-----------|---------|
 | `sandbox::*` | [`../web/src/components/chat/sandbox/`](../web/src/components/chat/sandbox) | `isSandboxFunction` | 15 tools, terminal + raw-json tabs, approval previews, shared error handling |
 | `engine::*::list` | [`../web/src/components/chat/engine/`](../web/src/components/chat/engine) | `isEngineListFunction` | read-only list/info views, no preview |
-| `directory::*` | [`../web/src/components/chat/directory/`](../web/src/components/chat/directory) | `isDirectoryFunction` | skills / system prompts / agents / registry views |
+| `directory::*` | [`../../iii-directory/ui/src/function-call/`](../../iii-directory/ui/src/function-call) | `isDirectoryFunction` | skills / system prompts / agents / registry views; now injected UI shipped by the iii-directory worker |
 | `web::fetch` | [`../web/src/components/chat/web/`](../web/src/components/chat/web) | `isWebFunction` | single tool — smallest end-to-end example |
 
 > Starting a brand-new family? Copy [`web/`](../web/src/components/chat/web) for the smallest complete example, or [`sandbox/`](../web/src/components/chat/sandbox) for the full feature set (terminal chrome, error views, previews).
@@ -26,7 +28,7 @@ This is the end-to-end authoring guide: architecture, the message contract, the 
 
 ## 1. The principle: opt in, or fall back to JSON
 
-Every tool invocation becomes a `FunctionCallMessage` (see [`../web/src/types/chat.ts`](../web/src/types/chat.ts)). The host component [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx) (FCM) always renders the same chrome:
+Every tool invocation becomes a `FunctionCallMessage` (see [`../web/src/types/chat.ts`](../web/src/types/chat.ts)). The host component [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx) (FCM) always renders the same chrome:
 
 1. **Header** — status dot, `permission to run` / `running` / `ran`, the function id, and duration.
 2. **Body** — depends on lifecycle and whether a custom renderer returned a node.
@@ -61,7 +63,7 @@ flowchart TB
   families -->|"null"| json
 ```
 
-The exact dispatch in [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx):
+The dispatch as it was hand-chained (now the ordered `FIRST_PARTY_RENDERERS` list in [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx)):
 
 ```tsx
 const customPreview =
@@ -332,7 +334,7 @@ if (running) {
 
 ## 9. Wire the family into `FunctionCallMessage.tsx`
 
-Three edits, all in [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx). Add to the existing chains — order is priority (first non-null wins), so put your family wherever it should win ties (in practice families are disjoint, so order rarely matters).
+Three edits, all in the host component. Today they become one `FIRST_PARTY_RENDERERS` entry in [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx) (`isMatch`, `tryRender`, `tryRenderRunning`, `tryRenderPreview`, `FunctionIdLabel`). Add to the existing chains — order is priority (first non-null wins), so put your family wherever it should win ties (in practice families are disjoint, so order rarely matters).
 
 **1. Import** your `ToolView` and label:
 
@@ -489,7 +491,7 @@ Verify: `pnpm storybook` -> open the scenario under **Playground** -> send any m
 
 ## 11. `FunctionCallMessage` body logic (reference)
 
-Custom renderers interact with these derived flags in [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx):
+Custom renderers interact with these derived flags in [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx):
 
 ```tsx
 const hasCustomTerminal = customTerminal != null
@@ -510,7 +512,7 @@ Which resolve to:
 | Done + custom | hidden | — | Tabs: custom + raw json |
 | Done, no custom | shown | — | request + response JSON |
 
-Approve / deny / always-allow are props on `FunctionCallMessage` (wired by [`FunctionCallGroup.tsx`](../web/src/components/chat/FunctionCallGroup.tsx) to `approval::resolve`). Custom modules never implement approval themselves.
+Approve / deny / always-allow are props on `FunctionCallMessage` (wired by [`Message.tsx`](../web/src/components/chat/Message.tsx) to `approval::resolve`). Custom modules never implement approval themselves.
 
 ---
 
@@ -613,7 +615,7 @@ pnpm storybook   # smoke: family gallery (toggle tabs) + your Playground scenari
 | [`components/chat/FunctionCallMessage.stories.tsx`](../web/src/components/chat/FunctionCallMessage.stories.tsx) | Registers the `FamilyGallery` story |
 | [`stories/playground/scenarios/*.ts`](../web/src/stories/playground/scenarios) | Playground `ChatBackend` scenarios (required) |
 | [`stories/playground/scenarios/index.ts`](../web/src/stories/playground/scenarios/index.ts) | Scenario registry |
-| [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx) | Host integration |
+| [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx), [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx) | Host integration |
 | [`PLAYGROUND.md`](../web/PLAYGROUND.md) | Streaming contract for scenarios |
 
 > An earlier, sandbox-only version of this guide lives at [`../web/docs/custom-function-components.md`](../web/docs/custom-function-components.md). This document is the current, multi-family source of truth.
