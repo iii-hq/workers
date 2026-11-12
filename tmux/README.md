@@ -367,13 +367,22 @@ sees half a swap:
    for more than 10 seconds, nothing changes and the call fails with `busy`.
 2. The old global account's newest sign-in (it may have been renewed while it
    was global) goes from `~/.claude` to its folder; the new one's goes from its
-   folder into `~/.claude`, and is removed from its folder. Only Claude
-   Code's `claudeAiOauth` entry changes, every other key stays; files are
-   written to a temporary file (0600), synced and renamed. On macOS the
-   Keychain item is written the way Claude Code writes it (`security -i`,
-   the secret never on a command line unless it is longer than 4032 bytes),
-   and a plaintext `~/.claude/.credentials.json`, when there is one, gets the
-   same change.
+   folder into `~/.claude`, and is removed from its folder. A sign-in is the
+   store's keys that belong to the Anthropic account, the ones Claude Code's
+   logout removes: `claudeAiOauth`, `designOauth` and `cloudSessionsOauth`
+   (three token chains Claude Code revokes together), `organizationUuid`,
+   `trustedDeviceToken`, `trustedDeviceEnrolledAfterRefusalAtMs` and
+   `enterpriseGateway`. Every other key stays where it is: `mcpOAuth` holds
+   sign-ins to MCP servers, which are yours, not the Claude account's, and
+   stays in `~/.claude`. Files are written to a temporary file (0600), synced
+   and renamed. On macOS the Keychain item is written the way Claude Code
+   writes it (`security -i`, the secret on standard input). A store over
+   4032 bytes goes as arguments instead, hex-encoded with its tokens, where
+   another process of yours could see it while `security` runs: the same as
+   Claude Code does, and only for a store over 4 KB. A plaintext
+   `~/.claude/.credentials.json`, when there is one, gets the same change.
+   The locks are touched before every store call, and a swap that has held
+   them for 8 seconds (a Keychain that hangs) stops safely.
 3. Under `~/.claude.json.lock`, the old account's profile is kept in its
    folder's `.claude.json`, the new one's goes into `~/.claude.json`, and the
    keys `/login` clears (the old account's cached models, organisation
@@ -383,9 +392,18 @@ sees half a swap:
 No network is used while a lock is held, and nothing is ever signed out or
 revoked. Before it starts, the worker writes `swap.json` in the accounts
 folder (0600, no tokens: the first 16 hex digits of the SHA-256 of each
-refresh token, so it can tell which sign-in is where); a worker stopped in
-the middle finishes the swap when it starts again, from what the stores
-really hold. A session that fetched the old profile right before the swap
+refresh token, so it can tell which sign-in is where). A swap left half-way
+(the worker stopped, or a write failed: a full disk, a Keychain that timed
+out) is settled from what the stores really hold, never from the step it
+noted: with the new sign-in in `~/.claude` it is finished; with the old one
+still there it is finished, or undone when the switch already answered with
+an error; with any other sign-in there (someone signed in by hand meanwhile)
+nothing is touched and the sign-in by hand is taken in as below. This
+happens at start, within 2 seconds while the worker runs, and before any
+switch. One switch, recovery or move runs at a time, and a new Claude Code
+pane (`claude` on `tmux::windows::create`, `tmux::sessions::create`) waits
+for the one running too: nothing starts on a folder whose sign-in is moving,
+and nothing plans on what a swap half-way shows. A session that fetched the old profile right before the swap
 and writes it back within a minute gets the new one put back. Claude Code
 has a feature gate (`tengu_bubbly_fountain`, off today) that would stop a
 running session whose account changes; when `~/.claude.json` shows it on,
@@ -404,12 +422,31 @@ snapshot). Pinned panes:
   `waiting_for`, the snapshot carries `pending_global`, and the worker
   finishes the switch within seconds of the last of them going idle. Another
   switch replaces a waiting one; switching to the account that is global
-  now cancels it. A Claude Code on that folder the worker can't restart
-  (started by hand in a shell that isn't in front, or sharing a window
-  before tmux 3.0) refuses the switch with `blocked` and `blocked_by`.
+  now cancels it. A Claude Code on that folder the worker can't stop and
+  restart (inside another program, sharing a window before tmux 3.0, its
+  pane running another program now) refuses the switch with `blocked` and
+  `blocked_by`. One started by hand in a shell that does not take the
+  terminal back once Claude Code has stopped does not: its folder is free
+  then, so the switch goes on, and the pane says it was stopped and not
+  started again (`move_error`). When the conversation can't be made visible
+  on `~/.claude` (it holds a longer copy), Claude Code starts there with a
+  new conversation and `move_error` says so; it never starts again on its
+  folder, whose sign-in is in `~/.claude` now. A waiting switch that fails
+  in a way that may pass (a lock Claude Code holds, a write that failed, a
+  Claude Code slow to stop) is tried again a few times over about a minute;
+  one that can't happen (the account was signed out or removed, a pane
+  can't be restarted, `owner_check_on`), or still fails after those tries,
+  is called off: `pending_global` goes, and the panes it waited for (and
+  any in the way) say why in `move_error` ("The switch to Personal was
+  called off: …").
 - Pinned to the **old** account (they ran on `~/.claude`): idle ones restart
   on its folder (`restarted`); working ones finish their turn on `~/.claude`,
   now as the new account, and then restart on its folder (`after_turn`).
+  One whose Claude Code takes longer than 10 seconds to stop starts again
+  on its folder once it ends. One that can't be moved (inside another
+  program, sharing a window before tmux 3.0, in copy mode) stays on
+  `~/.claude`, so it runs as the new account: it follows the global account
+  from then on, counted in `following`, and its `move_error` says so.
 - Pinned to any other account: untouched.
 
 Errors come as one JSON object in the error's message, `{"code", "message",
@@ -425,7 +462,10 @@ Signing out there by hand leaves the global account as it is, signed out.
 A sign-in by hand replaces the global account's only copy of its sign-in
 (it lives in `~/.claude` while global), so the account that was global
 reads signed out until it signs in again; switching through
-`tmux::accounts::global` keeps both. For a minute after a switch, the old
+`tmux::accounts::global` keeps both. So the panes on `~/.claude` pinned to
+the account that was global, which now run as the new one and can't go to
+its folder, follow the global account from then on, counted in
+`last_switch.following` with the others. For a minute after a switch, the old
 account's profile written back over the slot by a session that fetched it
 just before is put right, but only while the slot still holds the new
 account's sign-in (the one the switch wrote, or one Claude Code renewed it
@@ -467,6 +507,9 @@ an account id), `@iii_skip_permissions` (`1`) and `@iii_claude_pending` (the
 account a move waits to reach). tmux before 3.0 has no pane options, so there
 they are options of the pane's window, and a window with more than one Claude
 Code pane can't keep an account per pane: its panes are not movable there.
+Another pane in a window running Claude Code carries that pane's marks, not
+its own, so it gets no `claude` object there, and nothing done to it changes
+that pane's account or its waiting move.
 Each pane running Claude Code has a
 `claude` object in `tmux::sessions::list`: the `account` its process uses (read
 from that process's `CLAUDE_CONFIG_DIR`: `~/.claude` is the global account,
@@ -515,8 +558,10 @@ in, and the pane moves:
    respawned in place. Claude Code started by hand in a
    shell is started again by typing into that shell (`C-e`, `C-u`, the
    command, Enter), only once the shell has the terminal back within 3
-   seconds and still has it right before typing; otherwise nothing is typed
-   and the move fails. A shell started with `-c` (also `-lc`, `-ec`,
+   seconds and still has it right before typing; otherwise nothing is typed,
+   the pane is marked as the move would have marked it, and the move fails
+   (`move_error`). A shell pane in copy mode is refused before anything is
+   stopped, since the keys would go to copy mode. A shell started with `-c` (also `-lc`, `-ec`,
    `--command`) runs one command and ends: its pane is respawned instead.
 
 While a pane moves, a change of its account (`tmux::panes::account`) answers
@@ -550,7 +595,8 @@ window (`five_hour`, `seven_day`, per-model weeks) as `utilization` from 0 to
 Linux; on macOS it is in the login Keychain, a generic password whose account
 is `$USER` and whose service is `Claude Code-credentials` for `~/.claude` and
 `Claude Code-credentials-<first 8 hex digits of sha256(folder)>` for an
-account's folder, with the file as fallback. The worker only reads it: it never
+account's folder (the folder exactly as put in `CLAUDE_CONFIG_DIR`,
+NFC-normalised, as Claude Code hashes it), with the file as fallback. The worker only reads it: it never
 refreshes a token, never sends one anywhere but that endpoint, and never logs
 or returns one. An expired sign-in is not used (`token_expired: true`, the
 last reading kept; an account that isn't global ages out like this, since

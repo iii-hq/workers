@@ -74,11 +74,18 @@
   conversation, with no restart (within 30 seconds on macOS, where Claude Code keeps the
   Keychain's answer that long). Windows pinned to the new account restart on `~/.claude`,
   windows pinned to the old one on its folder; while one pinned to the new account is in a
-  turn, the switch waits (`pending_global`) and the worker finishes it. A swap stopped
-  half-way is finished when the worker starts again (`swap.json`, without tokens). Signing
+  turn, the switch waits (`pending_global`) and the worker finishes it, trying again after
+  a failure that may pass and calling it off with its reason (`move_error`) when it can't
+  happen. The sign-in that moves is every key Claude Code's logout removes
+  (`claudeAiOauth`, `designOauth`, `cloudSessionsOauth` and four more); `mcpOAuth` stays.
+  A swap stopped half-way (the worker stopped, a write failed) is settled from what the
+  stores hold, at start and within 2 seconds (`swap.json`, without tokens); a sign-in by
+  hand found there is left as it is. One switch, recovery, move or new Claude Code pane runs
+  at a time. Signing
   in by hand on `~/.claude` (`/login`) makes that account global, adding it when it is new,
   even right after a switch (the old account's sign-in, not only its profile, tells it from a
-  session writing the old profile back); the account that was global then reads signed out.
+  session writing the old profile back); the account that was global then reads signed out,
+  and the panes pinned to it on `~/.claude` follow the global account.
   Every change of the global account is in `last_switch` (`auto: false` when someone made
   it). The worker never touches tmux's environment, except once: a build of this branch
   before this change kept the global account in tmux's global `CLAUDE_CONFIG_DIR`, and the
