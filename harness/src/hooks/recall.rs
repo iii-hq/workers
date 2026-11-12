@@ -641,16 +641,22 @@ fn envelope(
             && r.entry_id == entry.entry_id
             && r.query == current.clone().map(stamp)
     });
+    // The send bounded the reference's age; here it only has to still precede
+    // this entry. A window from the tail would drop it as the turn's own steps
+    // append, or as a running turn writes ahead of a queued message.
+    let before = entries
+        .iter()
+        .position(|e| e.entry_id == entry.entry_id)
+        .map_or(entries, |at| &entries[..at]);
     let continuation = valid
         .and_then(|r| r.continuation.as_ref())
         .and_then(|prior| {
-            entries
+            before
                 .iter()
                 .rev()
-                .take(REFERENCE_WINDOW)
-                .filter(|e| e.entry_id != entry.entry_id)
-                .filter_map(|e| e.message.as_ref().and_then(|m| query(&e.entry_id, m)))
-                .find(|q| stamp(q.clone()) == *prior)
+                .find(|e| e.entry_id == prior.entry_id)
+                .and_then(|e| e.message.as_ref().and_then(|m| query(&e.entry_id, m)))
+                .filter(|q| stamp(q.clone()) == *prior)
         });
     // A reference that left the active path must not silently revert to the
     // current chatter or inherit an unrelated history topic.

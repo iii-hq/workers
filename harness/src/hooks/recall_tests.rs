@@ -770,6 +770,78 @@ async fn recall_delivery_explicit_continuation_uses_active_path_same_channel_onl
     );
 }
 
+/// Append `count` assistant replies to the session's transcript.
+fn push_replies(stack: &Stack, session: &str, count: usize) {
+    let mut data = stack.data.lock().unwrap();
+    let entries = data.messages.entry(session.into()).or_default();
+    for _ in 0..count {
+        let id = format!("e-reply-{}", entries.len());
+        entries.push(json!({"entry_id":id,"origin":{"kind":"direct"},"message":{
+            "role":"assistant","content":[{"type":"text","text":"Noted."}],
+            "stop_reason":"end","model":"m","provider":"p","timestamp":0}}));
+    }
+}
+
+/// Entries after `entry_id` in the session's transcript.
+fn entries_after(stack: &Stack, session: &str, entry_id: &str) -> usize {
+    let data = stack.data.lock().unwrap();
+    let entries = &data.messages[session];
+    entries.len()
+        - 1
+        - entries
+            .iter()
+            .position(|e| e["entry_id"] == entry_id)
+            .unwrap()
+}
+
+/// Send `text` as a continuation of a first message, with `gap` entries
+/// between the two; returns the first message's entry id.
+async fn continue_after(stack: &Stack, session: &str, gap: usize) -> Result<String, HarnessError> {
+    use crate::types::turn::TurnStatus::Completed;
+    stack.reset_turn(session, Completed).await;
+    crate::functions::send::handle(&stack.deps, request(session, "Ledgerly PostgreSQL", None))
+        .await
+        .unwrap();
+    let prior = stack.context(session).await["source"]["entry_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let after = entries_after(stack, session, &prior);
+    push_replies(stack, session, gap.checked_sub(after).expect("gap fits"));
+    stack.reset_turn(session, Completed).await;
+    crate::functions::send::handle(&stack.deps, request(session, "Continue.", Some(&prior)))
+        .await
+        .map(|_| prior)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_continuation_holds_for_the_oldest_accepted_reference() {
+    let stack = Stack::new().await;
+    // One entry past the window: the send itself refuses the reference.
+    assert!(continue_after(&stack, "too-old", REFERENCE_WINDOW)
+        .await
+        .is_err());
+    // The oldest reference the send accepts still resolves once the new
+    // message sits after it.
+    continue_after(&stack, "oldest", REFERENCE_WINDOW - 1)
+        .await
+        .expect("the window's oldest entry is accepted");
+    let context = stack.context("oldest").await;
+    assert_eq!(context["source"]["kind"], "direct");
+    assert_eq!(context["continuation"]["text"], "Ledgerly PostgreSQL");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_continuation_holds_through_a_long_multi_step_turn() {
+    let stack = Stack::new().await;
+    continue_after(&stack, "long-turn", 0).await.unwrap();
+    // Each later step appends its reply after the turn's own message.
+    push_replies(&stack, "long-turn", REFERENCE_WINDOW + 1);
+    let context = stack.context("long-turn").await;
+    assert_eq!(context["source"]["kind"], "direct");
+    assert_eq!(context["continuation"]["text"], "Ledgerly PostgreSQL");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recall_delivery_queue_drain_recovery_retains_internal_notification_channel() {
     let stack = Stack::new().await;
