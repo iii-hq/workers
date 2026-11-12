@@ -1,6 +1,7 @@
 package meshnet
 
 import (
+	"bufio"
 	"crypto/rand"
 	"errors"
 	"io"
@@ -94,31 +95,62 @@ func TestNodeBackendPersistsIdentityAndHandlesRemoval(t *testing.T) {
 		}
 		waitFor(t, "hub peer", func() bool { _, ok := m.Peer("hub"); return ok })
 		waitFor(t, "authenticated gateway port", func() bool { p, ok := m.GatewayPort(); return ok && p == 50221 })
-		forward, err := m.Forward()
+		forward, token, err := m.Forward()
 		if err != nil {
 			t.Fatal(err)
 		}
 		forward = strings.TrimPrefix(forward, "ws://")
-		local, err := net.Dial("tcp", forward)
+		upgrade := func(path, token string) net.Conn {
+			t.Helper()
+			c, err := net.Dial("tcp", forward)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.SetReadDeadline(time.Now().Add(10 * time.Second))
+			req, _ := http.NewRequest("GET", "http://"+forward+path, nil)
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "websocket")
+			if token != "" {
+				req.Header.Set(TokenHeader, token)
+			}
+			if err := req.Write(c); err != nil {
+				t.Fatal(err)
+			}
+			return c
+		}
+		// Refused before anything is dialed: the gateway's first connection is the good one below.
+		for _, bad := range []string{"", "wrong"} {
+			c := upgrade("/refused", bad)
+			if _, err := c.Read(make([]byte, 1)); err != io.EOF {
+				t.Fatalf("token %q not refused: %v", bad, err)
+			}
+			c.Close()
+		}
+		// A head over the limit is refused even with the token, before it is read whole.
+		big, err := net.Dial("tcp", forward)
 		if err != nil {
 			t.Fatal(err)
 		}
+		big.SetReadDeadline(time.Now().Add(10 * time.Second))
+		go big.Write([]byte("GET /oversized HTTP/1.1\r\nHost: x\r\n" + TokenHeader + ": " + token + "\r\nX-Pad: " + strings.Repeat("a", 128<<10) + "\r\n\r\n"))
+		if _, err := big.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("oversized head not refused: %v", err)
+		}
+		big.Close()
+		local := upgrade("/accepted", token)
 		remote, err := gateway[0].Accept()
 		if err != nil {
 			t.Fatal(err)
 		}
-		local.SetReadDeadline(time.Now().Add(10 * time.Second))
 		remote.SetReadDeadline(time.Now().Add(10 * time.Second))
 		if got := netip.MustParseAddrPort(remote.RemoteAddr().String()).Addr(); got != m.Self() {
 			t.Fatalf("gateway saw %s, want the client's tailnet address %s", got, m.Self())
 		}
+		head, err := http.ReadRequest(bufio.NewReader(remote))
+		if err != nil || head.URL.Path != "/accepted" || head.Header.Get("Upgrade") != "websocket" || len(head.Header.Values(TokenHeader)) != 0 {
+			t.Fatalf("hub read %+v: %v", head, err)
+		}
 		buf := make([]byte, 2)
-		if _, err := local.Write([]byte("up")); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := io.ReadFull(remote, buf); err != nil || string(buf) != "up" {
-			t.Fatalf("hub read %q: %v", buf, err)
-		}
 		if _, err := remote.Write([]byte("dn")); err != nil {
 			t.Fatal(err)
 		}

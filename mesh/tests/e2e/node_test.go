@@ -31,11 +31,13 @@ type noWorkers struct{}
 
 func (noWorkers) SetRuntime(context.Context, node.Runtime) error { return nil }
 func (noWorkers) Status() []node.WorkerStatus                    { return nil }
+func (noWorkers) SetCatalog(node.Catalog)                        {}
+func (noWorkers) CatalogRev() string                             { return "" }
 
-func (f *fixture) startNode(n *testNode) {
+func (f *fixture) startNode(n *testNode, workers node.WorkerController) {
 	t := f.t
 	t.Helper()
-	control, err := node.New(node.Options{Mesh: nodeNetwork{n}, HubIdentity: f.identity.Public().(ed25519.PublicKey), Version: "0.1.0", Workers: noWorkers{}, URL: n.url})
+	control, err := node.New(node.Options{Mesh: nodeNetwork{n}, HubIdentity: f.identity.Public().(ed25519.PublicKey), Version: "0.1.0", Workers: workers, URL: n.url})
 	if err != nil {
 		t.Fatal(err)
 	}

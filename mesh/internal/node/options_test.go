@@ -9,15 +9,16 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/iii-hq/workers/mesh/internal/meshnet"
 )
 
 func TestURLOverrideKeepsGatewayGateAndDropsToken(t *testing.T) {
 	t.Setenv("III_TOKEN", "local-engine-token")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	auth := make(chan []string, 8)
+	auth := make(chan http.Header, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		auth <- r.Header.Values("Authorization")
+		auth <- r.Header
 		c, err := websocket.Accept(rw, r, nil)
 		if err != nil {
 			return
@@ -31,7 +32,7 @@ func TestURLOverrideKeepsGatewayGateAndDropsToken(t *testing.T) {
 	}))
 	defer server.Close()
 	override := "ws" + strings.TrimPrefix(server.URL, "http")
-	n, k, m, w := testNodeWith(t, Options{URL: override})
+	n, k, m, w := testNodeWith(t, Options{URL: override, Token: "forward-token"})
 	m.port = 0
 	apply, _ := Sign(k, "mesh-node::workers::apply", WorkersRequest{Namespace: "project"}, time.Now())
 	if _, err := n.handle(ctx, "mesh-node::workers::apply", apply); err == nil {
@@ -47,8 +48,8 @@ func TestURLOverrideKeepsGatewayGateAndDropsToken(t *testing.T) {
 	m.setPort(50222)
 	select {
 	case got := <-auth:
-		if len(got) != 0 {
-			t.Fatalf("Authorization leaked to hub: %q", got)
+		if len(got.Values("Authorization")) != 0 || got.Get(meshnet.TokenHeader) != "forward-token" {
+			t.Fatalf("Authorization leaked to hub or forwarder token missing: %q", got)
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
@@ -60,7 +61,7 @@ func TestURLOverrideKeepsGatewayGateAndDropsToken(t *testing.T) {
 	w.mu.Lock()
 	got := w.runtime
 	w.mu.Unlock()
-	if got != (Runtime{Node: "laptop-2", Namespace: "project", URL: override}) {
+	if got != (Runtime{Node: "laptop-2", Namespace: "project", URL: override, Token: "forward-token"}) {
 		t.Fatalf("runtime %+v", got)
 	}
 	cancel()

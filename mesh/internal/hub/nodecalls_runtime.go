@@ -49,7 +49,7 @@ func (h *Hub) startNodeCalls(ctx context.Context) {
 			r.remove(change.Name)
 		}
 	})
-	h.queueNodes()
+	go h.refreshPass() // the first node calls carry the catalog
 	go func() {
 		defer close(r.done)
 		ticker := time.NewTicker(nodeRefreshEvery)
@@ -68,14 +68,39 @@ func (h *Hub) startNodeCalls(ctx context.Context) {
 	}()
 }
 
-// onFunctionsChange re-reads the online nodes: a bridge shares or drops workers over its open connection, with no new gateway auth.
+// onFunctionsChange re-reads the catalog and the online nodes: a bridge shares or drops workers over its open connection, with no new gateway auth.
 func (h *Hub) onFunctionsChange() {
 	if h.refreshing.CompareAndSwap(false, true) {
-		time.AfterFunc(nodeRefreshDelay, func() {
-			h.refreshing.Store(false)
-			h.queueNodes()
-		})
+		time.AfterFunc(nodeRefreshDelay, h.refreshPass)
 	}
+}
+
+// refreshPass reads the catalog, then queues the online nodes, which receive it.
+// A failed read keeps the last catalog and is tried again after a backoff.
+func (h *Hub) refreshPass() {
+	h.passMu.Lock()
+	defer h.passMu.Unlock()
+	h.refreshing.Store(false) // before the read: a change during it schedules another pass
+	if h.passRetry != nil {
+		h.passRetry.Stop() // this pass replaces a pending retry, so an outage keeps one retry chain
+	}
+	h.mu.RLock()
+	r := h.nodeReconciler
+	h.mu.RUnlock()
+	if r == nil || r.ctx.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.ctx, 15*time.Second)
+	err := h.refreshShared(ctx)
+	cancel()
+	h.queueNodes() // node details do not depend on the catalog
+	if err == nil {
+		h.passBackoff = 0
+		return
+	}
+	h.passBackoff = min(max(time.Second, 2*h.passBackoff), time.Minute)
+	log.Printf("mesh share: read shared functions: %v (retry in %s)", err, h.passBackoff)
+	h.passRetry = time.AfterFunc(h.passBackoff, h.onFunctionsChange)
 }
 func (h *Hub) queueNode(name string) {
 	h.mu.RLock()

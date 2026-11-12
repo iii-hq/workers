@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	"github.com/iii-hq/workers/mesh/internal/meshnet"
 )
 
 // Run owns its SDK connection, reconnecting it when authenticated gateway
@@ -42,7 +43,7 @@ func (n *Node) Run(ctx context.Context) error {
 		defer n.changed()
 		n.applyMu.Lock()
 		if n.namespace != "" {
-			err := n.workers.SetRuntime(ctx, Runtime{Node: name, Namespace: n.namespace, URL: url})
+			err := n.workers.SetRuntime(ctx, Runtime{Node: name, Namespace: n.namespace, URL: url, Token: n.token})
 			if err != nil {
 				n.applyMu.Unlock()
 				return fmt.Errorf("update worker runtime: %w", err)
@@ -54,7 +55,7 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		// An explicit Authorization key with no value sends no header and stops the
 		// SDK adding the local engine's III_TOKEN, which the gateway forwards to the hub.
-		client = iii.New(url, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-node"), iii.WithNamespace("default"), iii.WithHeaders(http.Header{"Authorization": nil}))
+		client = iii.New(url, iii.WithOtel(iii.OtelConfig{Enabled: new(bool)}), iii.WithName("mesh-node"), iii.WithNamespace("default"), iii.WithHeaders(http.Header{"Authorization": nil, meshnet.TokenHeader: {n.token}}))
 		if err := n.Register(client); err != nil {
 			return err
 		}

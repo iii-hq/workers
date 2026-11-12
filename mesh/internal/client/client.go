@@ -46,6 +46,7 @@ type Status struct {
 	JoinUnused      bool           `json:"join_unused,omitempty"`    // client.hub_url or client.join is not the enrollment in use: used only after a leave
 	HubWantsVersion string         `json:"hub_wants_version,omitempty"`
 	Shared          []SharedStatus `json:"shared"`
+	Remote          []RemoteStatus `json:"remote"` // what this machine can call in the mesh
 }
 
 // LeaveResult is the answer of mesh::leave.
@@ -537,11 +538,11 @@ func (r *runner) start(ctx context.Context, c Config) {
 }
 
 func (r *runner) newNode(m *meshnet.Mesh, st *joinState) (*node.Node, error) {
-	url, err := m.Forward()
+	url, token, err := m.Forward()
 	if err != nil {
 		return nil, fmt.Errorf("start forwarder: %w", err)
 	}
-	return node.New(node.Options{Mesh: m, HubIdentity: st.Identity.Identity, Version: r.o.Version, Workers: r.bridge, URL: url, Changed: func() {
+	return node.New(node.Options{Mesh: m, HubIdentity: st.Identity.Identity, Version: r.o.Version, Workers: r.bridge, URL: url, Token: token, Changed: func() {
 		r.kick(wakeNode)
 		r.changed()
 	}})
@@ -907,6 +908,7 @@ func (r *runner) status() Status {
 		s.State = "restart required"
 	}
 	s.Shared = r.bridge.Shared(s.Node)
+	s.Remote = r.bridge.Remote()
 	return s
 }
 

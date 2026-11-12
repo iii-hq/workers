@@ -17,7 +17,7 @@ func authHub() *Hub {
 }
 func TestAuthGrants(t *testing.T) {
 	h := authHub()
-	h.defaults = GrantDefaults{Allow: []string{"shell::exec"}}
+	h.defaults = GrantDefaults{Allow: DefaultAllow()}
 	ticket := h.Tickets.Mint("laptop")
 	r := AuthRequest{Headers: map[string]string{gateway.TicketHeader: ticket}}
 	got, err := h.Auth(context.Background(), r)
@@ -27,7 +27,7 @@ func TestAuthGrants(t *testing.T) {
 	if got.FunctionRegistrationPrefix != "laptop" {
 		t.Fatalf("identity: %+v", got)
 	}
-	if !reflect.DeepEqual(got.Namespaces["default"], []string{"configuration::get", "configuration::ensure", "configuration::register", "configuration::set", "configuration::on-updated"}) || !reflect.DeepEqual(got.Namespaces["proj"], []string{"shell::exec"}) {
+	if !reflect.DeepEqual(got.Namespaces["default"], []string{"configuration::get", "configuration::ensure", "configuration::register", "configuration::set", "configuration::on-updated"}) || !reflect.DeepEqual(got.Namespaces["proj"], []string{"mesh::call"}) {
 		t.Fatalf("namespaces: %+v", got.Namespaces)
 	}
 
@@ -58,7 +58,7 @@ func TestAuthGrants(t *testing.T) {
 	}
 	h.Namespace = "default"
 	got, err = h.Auth(context.Background(), AuthRequest{Headers: map[string]string{gateway.TicketHeader: h.Tickets.Mint("laptop")}})
-	if err != nil || len(got.Namespaces) != 1 || !slices.Contains(got.Namespaces["default"], "shell::exec") {
+	if err != nil || len(got.Namespaces) != 1 || !slices.Contains(got.Namespaces["default"], "mesh::call") {
 		t.Fatalf("merged grants: %+v %v", got, err)
 	}
 }

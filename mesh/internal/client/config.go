@@ -22,8 +22,8 @@ type Config struct {
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 var workerPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-// Bridged calls reach the local engine as caller "mesh"; sharing these would
-// hand the hub project the mesh identity's secrets and configuration.
+// Bridged calls reach the engine as caller "mesh"; sharing these would hand
+// other projects the mesh identity's secrets and configuration.
 var deniedWorkers = map[string]bool{"mesh": true, "secrets": true, "configuration": true, "rbac-proxy": true}
 
 func (c Config) Validate() error {
@@ -33,7 +33,12 @@ func (c Config) Validate() error {
 	if c.Name != "" && !namePattern.MatchString(c.Name) {
 		return fmt.Errorf("invalid name %q", c.Name)
 	}
-	for _, w := range c.Share {
+	return ValidateShare(c.Share)
+}
+
+// ValidateShare checks a list of local worker names to share.
+func ValidateShare(share []string) error {
+	for _, w := range share {
 		if !workerPattern.MatchString(w) || deniedWorkers[w] {
 			return fmt.Errorf("worker %q cannot be shared", w)
 		}

@@ -29,6 +29,9 @@ type StatusResult struct {
 	Gateway    string     `json:"gateway"`
 	Proxy      string     `json:"proxy"`
 	Nodes      NodeCounts `json:"nodes"`
+	// The share entries the last catalog read saw, with ids as joined machines call them (hub::<id>).
+	Shared         []meshclient.SharedStatus `json:"shared"`
+	CatalogSkipped []string                  `json:"catalog_skipped"` // machines whose functions do not fit the catalog
 	// Omitted unless tunnel.enabled.
 	Tunnel *TunnelStatus `json:"tunnel,omitempty"`
 }

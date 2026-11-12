@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"io"
@@ -107,7 +108,7 @@ func TestHubCannotReachClientHostLoopback(t *testing.T) {
 		}
 	}
 	// The forward proves the path between hub and client, so the refusal below is not a timeout.
-	forward, err := client.Forward()
+	forward, token, err := client.Forward()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,9 @@ func TestHubCannotReachClientHostLoopback(t *testing.T) {
 	}
 	defer local.Close()
 	local.SetDeadline(time.Now().Add(30 * time.Second))
-	if _, err := local.Write([]byte("hi")); err != nil {
+	req, _ := http.NewRequest("GET", forward, nil)
+	req.Header.Set(meshnet.TokenHeader, token)
+	if err := req.Write(local); err != nil {
 		t.Fatal(err)
 	}
 	remote, err := ls[0].Accept()
@@ -126,10 +129,10 @@ func TestHubCannotReachClientHostLoopback(t *testing.T) {
 	}
 	defer remote.Close()
 	remote.SetDeadline(time.Now().Add(30 * time.Second))
-	got := make([]byte, 2)
-	if _, err := io.ReadFull(remote, got); err != nil || string(got) != "hi" {
-		t.Fatalf("hub read %q: %v", got, err)
+	if _, err := http.ReadRequest(bufio.NewReader(remote)); err != nil {
+		t.Fatalf("hub read: %v", err)
 	}
+	got := make([]byte, 2)
 	if _, err := remote.Write([]byte("ok")); err != nil {
 		t.Fatal(err)
 	}

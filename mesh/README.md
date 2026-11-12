@@ -3,7 +3,9 @@
 Mesh joins iii engines. One project runs the hub. Other projects run the same
 worker in client mode: they join the hub with its URL and a join code or token,
 need no root, and share chosen local workers, which the hub project calls under
-names such as `laptop::shell::exec`. It uses
+names such as `laptop::shell::exec`. The hub can share its own workers too.
+Every joined machine calls what the hub and the other machines share, under
+names such as `hub::shell::exec` and `peer::laptop::shell::exec`. It uses
 [configuration](https://github.com/iii-hq/workers/tree/main/configuration) and
 [rbac-proxy](https://github.com/iii-hq/workers/tree/main/rbac-proxy).
 
@@ -91,12 +93,16 @@ transitions.
 Open **Mesh** in the Console of a hub to see the joined machines, online first.
 Each card lists the workers that machine shares, each with its hub function ids
 and their descriptions, then its address, platform, version and connection path.
+A card also warns when that machine shares more than the mesh carries.
 **Remove** on a card removes that machine after a confirmation.
-The **Hub address** section follows.
+Next comes **Shared workers**: a switch for each of the hub's own workers,
+which joined machines call as `hub::<function>`. A worker that runs commands is
+marked. The **Hub address** section follows.
 The page does not poll. The worker calls the private `mesh::on-status-changed`
 with its `mesh::status` answer whenever that answer changes, and the page
-observes it; in hub mode that covers the tunnel, an applied configuration and
-a machine's shared workers, and `mesh::on-node-changed` covers the machines.
+observes it; in hub mode that covers the tunnel, an applied configuration, the
+hub's shared workers and a machine's shared workers, and
+`mesh::on-node-changed` covers the machines.
 Use **Refresh** for a new snapshot; the page also refreshes when you return to
 the tab. The **Connect another engine** section shows this hub's URL and join
 code, to paste into the Mesh page of the other project in **Client** mode. If
@@ -109,9 +115,15 @@ the worker pushes it (`starting`, `waiting for join`, `joining`,
 `waiting for hub`, `connecting`, `connected`, `renaming`, `error`,
 `join failed`, `removed by hub`, `left hub`), what happens next and whether the
 worker keeps trying, and, while there is an enrollment to forget, **Leave
-hub**. A shared worker reads `not saved yet` only while the form differs from
-the stored entry; once saved it reads `applying…` until the worker reports it.
-Both actions are described under [State and removal](#state-and-removal).
+hub**. Both actions are described under [State and removal](#state-and-removal).
+**Available from the mesh** lists what this machine can call, hub first: the
+hub's functions as `hub::<function>` and each other machine's as
+`peer::<machine>::<function>`, with their descriptions. It updates from the
+same `mesh::on-status-changed` push.
+
+In both modes a shared worker reads `not saved yet` only while the form differs
+from the stored entry; once saved it reads `applying…` until the worker reports
+it.
 
 The settings action opens the hub's effective configuration entry, including
 an `III_CONFIG_NAME` override. Console owns validation, unsaved changes, save
@@ -129,6 +141,7 @@ trusted_proxies: []                  # CIDRs trusted to supply forwarded client 
 gateway_port: 49135                 # private node-to-engine gateway
 proxy_url: ws://127.0.0.1:49200      # direct loopback rbac-proxy endpoint
 stun_port: 0                        # disabled; use a UDP port to enable STUN
+share: []                            # hub workers every joined machine may call
 ```
 
 Set `public_url` to a reachable front door before a client joins. Put the
@@ -154,6 +167,18 @@ proxy endpoint, update that entry to match; mesh does not overwrite it.
 `$III_COMPOSE_DIR/data/mesh`, or `data/mesh` relative to the working directory
 when that variable is absent. Persist this directory to retain the hub identity
 and enrollment state.
+
+`share` lists the hub workers that every joined machine may call; it is empty
+by default. As in `client.share`, `mesh`, `secrets`, `configuration` and
+`rbac-proxy` are refused. A machine that joins or renames cannot take a shared
+worker's name. `mesh::status` reports each entry under `shared`, with its
+function ids as machines call them (`hub::<function>`) and a state: `shared`,
+`not running`, `name conflict` (a joined machine has the name the worker's
+function ids start with) or `too large`. `catalog_skipped` lists the machines
+whose shares do not fit (see [Client mode](#client-mode)). A machine's call runs
+with this project's access and nothing on the hub asks first, so sharing
+`shell` or another worker that runs commands gives every joined machine remote
+code execution on the hub.
 
 Entries written before 2026-11-10 may hold `links`, `nodes` and `drives`. The
 hub accepts and ignores them, and nothing removes them.
@@ -256,13 +281,25 @@ card, removes a node, revokes its token and replaces the code.
 
 Every node connection passes the hub gateway and rbac-proxy. Its functions
 register under the node's name, and `<node>::mesh-node::*` accepts only
-requests signed by the hub. A node gets no call grants in the project's
-namespace. In `default` it may call `configuration::get`, `ensure`, `register`
-and `set` only for entries named `<node>__*` (reads are raw, templates are
-refused) and observe `configuration::on-updated` for those entries. It may also
+requests signed by the hub. A node's only call grant in the project's
+namespace is `mesh::call`. No function registers that id: the hub's middleware
+answers it by running a function from its list of shared functions. It refuses
+with `FORBIDDEN` when the calling machine is not on the hub's version, the
+function is not listed under the stated owner, the owner is the caller, a hub
+worker is no longer in `share` or the call asks to be enqueued. Until it has
+read the calling machine and what is shared, as after a restart, it answers
+`mesh_offline`. A machine with 64 calls in flight gets `mesh_busy`, and
+channel refs either way get `channels_unsupported`. The target runs the call
+as caller `mesh`. Only the
+hub knows the calling machine, and it logs each refusal with the machine, the
+function and the owner, never the payload. In `default` a node may call
+`configuration::get`, `ensure`, `register` and `set` only for entries named
+`<node>__*` (reads are raw, templates are refused) and observe
+`configuration::on-updated` for those entries. It may also
 observe its own `<node>::*` functions in the project's namespace, with empty
 args. Other observations, ADE assets and condition callbacks are refused. A
-client bridge only receives calls and uses none of these grants.
+client bridge receives calls and calls only `mesh::call`; it uses none of the
+configuration grants.
 
 ## Isolated local build and validation
 
@@ -359,9 +396,10 @@ removal.
 A client is a project's own mesh worker joined to another project's hub as a
 node, without root, publishing chosen local workers there. The hub sees them
 as `<node>::<function>`, for example `harness-mbp::mesh-probe::echo`, and
-each call is forwarded to the local engine. Networking runs in userspace: no
-TUN device, no root, no system service. A client opens no hub listener and
-writes no hub state.
+each call is forwarded to the local engine. Every other joined machine calls
+them through the hub as `peer::<node>::<function>`. Networking runs in
+userspace: no TUN device, no root, no system service. A client opens no hub
+listener and writes no hub state.
 
 ```yaml
 mode: client                          # absent means hub
@@ -369,7 +407,7 @@ client:
   hub_url: https://mesh.example.com   # needed with a join code; a token carries its URL
   join: secret://MESH_JOIN            # secret://NAME or env://NAME, never the code itself
   name: harness-mbp                   # requested; the hub may assign harness-mbp-2
-  share: [mesh-probe]                 # local worker names; [] shares nothing
+  share: [mesh-probe]                 # local workers the mesh may call; [] shares nothing
 ```
 
 Store the hub's join code or `iiimj_` token as secret `MESH_JOIN` with
@@ -408,8 +446,22 @@ doubling intervals up to a minute, and `mesh::status` reports `retrying: true`
 meanwhile.
 
 `mesh::status` and the Console's Mesh page report the hub, assigned name
-(`node`), hub namespace, state and each shared worker with its hub function
-IDs.
+(`node`), hub namespace, state, each shared worker with its hub function IDs
+and, under `remote`, what this machine can call in the mesh, hub first.
+
+The client registers on its local engine a mirror for each function the hub or
+another machine shares: `hub::<function>` for the hub's and
+`peer::<machine>::<function>` for a machine's, with the owner's description and
+schemas. Its own functions are never mirrored back, and a mirror is never
+shared again. Calling a mirror calls `mesh::call` on the hub, which runs the
+function where it lives. A mirror fails at once with `mesh_offline` while the
+client is not connected, and a call in flight ends with `mesh_offline` when the
+connection drops. Such a call may still run: the SDK sends a call it queued
+once it reconnects, and a call already sent keeps running where it lives. Retry
+only what is safe to run twice. The hub re-reads what is shared when the functions on its
+engine, its `share` list or a machine's version change. It sends the list in a
+signed control call to each machine that holds another revision, and the
+mirrors follow. Leaving and removal clear them.
 
 Saving another `client.name` on a joined client renames the machine without
 leaving. The client asks the hub over its control connection, which proves the
@@ -428,28 +480,50 @@ build before renames existed) renames the machine once it can. Configuration
 entries named `<old>__*` are not moved. A client joined by an earlier build whose
 `client.name` was changed since is renamed when this build first connects.
 
-Anyone in the hub project can call shared workers, and calls reach the local
-engine as caller `mesh`. Sharing `ide`, `harness` or any worker that runs
-commands gives the hub project remote code execution on this machine. `mesh`,
-`secrets`, `configuration` and `rbac-proxy` cannot be shared, and functions
-under `engine::`, `mesh::`, `mesh-node::`, `secrets::`, `configuration::` and
-`rbac-proxy::` are never published. Inbound tailnet connections to the client
-are refused and the local `III_TOKEN` is not sent to the hub. The hub gateway is
-reached through a random loopback port, so any local process that reaches it
-acts as this node toward the hub.
+The hub project and every machine joined to the hub can call shared workers.
+Calls reach the local engine as caller `mesh`, and nothing asks here first.
+Sharing `ide`, `harness` or any worker that runs commands gives all of them
+remote code execution on this machine, so a join code is execute access to
+everything shared in the mesh. A machine writes the descriptions and schemas of
+its own shared functions, and every other machine lists them under
+`peer::<its name>::`. `mesh`, `secrets`, `configuration` and `rbac-proxy`
+cannot be shared, and functions under `engine::`, `mesh::`, `mesh-node::`,
+`secrets::`, `configuration::`, `rbac-proxy::` and `approval::` are never
+published or mirrored. The approval gate keeps agents away only from ids that
+start with `approval::`, so a mirrored `peer::<machine>::approval::resolve`
+would let an agent on one machine approve another machine's agent calls.
+Inbound tailnet connections to the client are refused and the local
+`III_TOKEN` is not sent to the hub. The hub gateway is reached through a random
+loopback port that accepts a connection only when its request carries a random
+per-process token in a header, so other local processes and web pages cannot
+act as this node toward the hub. A process that can read this worker's memory
+or state directory still can; it already holds the machine's keys.
 
 The hub hands its namespace only to a node that runs its exact version, and
 nothing updates itself. On a mismatch the client's status shows the version the
 hub wants and a client that starts shares nothing; a client that was already
 sharing when the hub restarted on another version keeps its registrations until
-it restarts. Build with `make build`, which stamps the `package.json` version (a
-plain `go build` has none and fails), and bump clients with the hub.
+it restarts. Only machines on the hub's version take part in sharing: a machine
+on another version gets no mirrors, its workers stay out of the other machines'
+lists and its calls through the hub are refused. A client that already shares
+workers makes them callable by every machine once it runs the hub's version,
+without asking again. Build with `make build`, which stamps the `package.json`
+version (a plain `go build` has none and fails), and bump clients with the hub.
 
 Bridging is request/response only. Channel refs in a payload or result are
-refused with `channels_unsupported`; triggers, observers and events are not
-mirrored; local calls time out after 10 minutes and a hub caller's cancellation
-does not reach them. Only whole workers can be shared and local workers cannot
-call hub functions. Windows clients and payloads over 16 MiB are unsupported.
+refused with `channels_unsupported`; triggers, observers and events do not
+cross machines; a call times out after 10 minutes on the machine that runs it,
+and a caller's cancellation does not reach that machine. Only whole workers can
+be shared. A mirror keeps its first description and schemas until the function
+leaves the list. An owner, the hub or a machine, that shares more than 500
+functions or 1 MiB of entries (ids, descriptions and schemas) is left out of
+the list: other machines cannot call it, while the hub project still calls a
+machine's shares. The hub admits its own shares first, then machines by name,
+up to 8 MiB in all. It logs each owner left out, lists the machines under
+`catalog_skipped` in its `mesh::status` and marks its own shares `too large`. A
+machine may have 64 calls through the hub in flight; the next one fails with
+`mesh_busy`. These limits are fixed. Windows clients and payloads over 16 MiB
+are unsupported.
 Live acceptance against a running hub remains unverified.
 
 ## State and removal
@@ -462,14 +536,15 @@ and pinned hub identity in `$III_COMPOSE_DIR/data/mesh-client` (0700,
 Either side can disconnect a client:
 
 - **On the hub**, `mesh::nodes::remove {"name":"<node>"}` or **Remove** on the
-  machine's card. The machine stops sharing at once, the hub refuses its keys
-  for good, revokes its token and replaces the join code. It works while the
+  machine's card. The machine stops sharing and loses access to everything
+  shared at once, the hub refuses its keys for good, revokes its token and
+  replaces the join code. It works while the
   hub has no public URL; the result then carries an empty `code`. The client
   stops and reports `removed by hub` until it leaves.
 - **On the client**, `mesh::leave {}` or **Leave hub** on its Mesh page. The
   client logs out, so the hub deletes the machine's record, stops the mesh and
-  the bridge, and deletes `join.json` and `mesh/`. It answers
-  `{"hub_notified":true,"warning":""}`. When the hub cannot be told within 10
+  the bridge, removes its mirrors, and deletes `join.json` and `mesh/`. It
+  answers `{"hub_notified":true,"warning":""}`. When the hub cannot be told within 10
   seconds, or the mesh is not running, the local state is deleted all the same
   and `warning` says that the hub keeps listing the machine until it is removed
   there. A client with no enrollment answers `not joined to a hub`. A leave
@@ -505,15 +580,25 @@ deletes its record, and `mesh::nodes::remove` fails with `no removable node`
 without revoking the token or replacing the code.
 
 Upgrade the hub before its clients, or both together: a hub of the earlier
-build shares nothing with a client of this one.
+build shares nothing with a client of this one. To downgrade a hub to a build
+before 0.2.0, first remove the `share` key from its entry, even an empty list:
+an earlier build refuses the entry and stops at startup.
 
 ## Agent access
 
-The [Your machines skill](skills/SKILL.md) describes machine discovery and
-remote paths. Discovery reads are allowed; remote shell/coder calls require
-approval by default, even when the local equivalent is allowed. Node control
-(`mesh-node`), proxy, configuration-hook and console internals are denied to
-agents.
+The [Your machines skill](skills/SKILL.md) describes machine discovery, the
+mirrored names and remote paths. Discovery reads are allowed; remote shell/coder
+calls require approval by default, even when the local equivalent is allowed.
+That includes the mirrored `hub::…` and `peer::…` ids on a joined machine: they
+match no allow rule, and deny rules written with `*::`, such as
+`!*::shell::pty::*`, cover them too. Approval happens only on the calling
+machine; the machine that runs the call does not ask and applies none of its
+own rules. A session in `full` mode, an id approved "always" and, in `auto`
+mode, an id on the configured always-allow list run without asking and skip the
+deny rules too. "Always" approvals are kept by id: a machine that later takes a
+removed machine's name inherits those given to its `peer::<name>::…` ids. Node
+control (`mesh-node`), proxy, configuration-hook and console internals are
+denied to agents.
 
 See [NOTICE](NOTICE) for upstream provenance and licenses.
 

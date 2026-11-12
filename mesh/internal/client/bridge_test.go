@@ -23,9 +23,23 @@ import (
 )
 
 type fakeLocal struct {
-	mu    sync.Mutex
-	calls []iii.CallRequest
-	fn    func(iii.CallRequest) (json.RawMessage, error)
+	mu      sync.Mutex
+	calls   []iii.CallRequest
+	fn      func(iii.CallRequest) (json.RawMessage, error)
+	mirrors map[string]iii.Handler // registrations; removals cannot be seen: Unregister of a handle the SDK did not make sends nothing
+	opts    map[string]iii.RegisterFunctionOptions
+	added   int
+}
+
+func (f *fakeLocal) RegisterFunction(id string, h iii.Handler, opts ...iii.RegisterFunctionOptions) (*iii.FunctionRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mirrors == nil {
+		f.mirrors, f.opts = map[string]iii.Handler{}, map[string]iii.RegisterFunctionOptions{}
+	}
+	f.mirrors[id], f.opts[id] = h, opts[0]
+	f.added++
+	return &iii.FunctionRef{ID: id}, nil
 }
 
 func (f *fakeLocal) Call(_ context.Context, r iii.CallRequest) (json.RawMessage, error) {
@@ -75,7 +89,7 @@ func engine(rows *[]map[string]any) *fakeLocal {
 
 // newBridge connects the hub side to a closed port: registrations are kept
 // offline, which is all these tests inspect.
-func newBridge(t *testing.T, local caller) *Bridge {
+func newBridge(t *testing.T, local localEngine) *Bridge {
 	t.Setenv("HOME", t.TempDir()) // the SDK writes an iii ps marker per client
 	b := NewBridge(local, "local")
 	t.Cleanup(b.Close)
@@ -119,8 +133,9 @@ func TestSyncFiltersDeniesAndDiffs(t *testing.T) {
 		row("probe::elsewhere", "other", "probe"), // another namespace
 		row("engine::x", "local", "probe"), row("mesh::status", "local", "probe"), row("mesh-node::status", "local", "probe"),
 		row("secrets::resolve", "local", "probe"), row("configuration::get", "local", "probe"), row("rbac-proxy::x", "local", "probe"),
-		row("bare", "local", "probe"),     // no "::"
-		row("shell::run", "local", "ide"), // not shared, as from an engine ignoring the filter
+		row("approval::resolve", "local", "probe"), // would let another machine approve this one's agent calls
+		row("bare", "local", "probe"),              // no "::"
+		row("shell::run", "local", "ide"),          // not shared, as from an engine ignoring the filter
 	}
 	local := engine(&rows)
 	b := newBridge(t, local)
@@ -135,9 +150,9 @@ func TestSyncFiltersDeniesAndDiffs(t *testing.T) {
 		t.Fatalf("list calls %+v", list)
 	}
 	f := b.functions["probe::echo"]
-	if f.opts.Description != "about probe::echo" || string(f.opts.Metadata) != `{"owner":"probe"}` || string(f.opts.RequestFormat) != `{"title":"probe::echo"}` || f.opts.Observable != nil {
+	if f.Opts.Description != "about probe::echo" || string(f.Opts.Metadata) != `{"owner":"probe"}` || string(f.Opts.RequestFormat) != `{"title":"probe::echo"}` || f.Opts.Observable != nil {
 		// Observable false would be held back by the SDK on hubs without observe.v2.
-		t.Fatalf("copied options %+v", f.opts)
+		t.Fatalf("copied options %+v", f.Opts)
 	}
 
 	rows = []map[string]any{row("probe::echo", "local", "probe"), row("probe::new", "local", "probe")}
@@ -295,7 +310,8 @@ func TestBridgeRetriesARejectedConnection(t *testing.T) {
 	}))
 	defer hub.Close()
 	rows := []map[string]any{row("probe::echo", "local", "probe")}
-	b := NewBridge(engine(&rows), "local")
+	local := engine(&rows)
+	b := NewBridge(local, "local")
 	var changes atomic.Int32
 	b.Changed = func() { changes.Add(1) }
 	defer b.Close()
@@ -305,6 +321,8 @@ func TestBridgeRetriesARejectedConnection(t *testing.T) {
 	if err := b.SetRuntime(context.Background(), node.Runtime{Node: "laptop", Namespace: "hub", URL: "ws" + strings.TrimPrefix(hub.URL, "http")}); err != nil {
 		t.Fatal(err)
 	}
+	// The reconnects keep the mirrors: clearing them would fire a local function change, and a Sync, for each.
+	b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "hub"}}})
 	waitUntil(t, "shared after two rejections", func() bool {
 		s := b.Shared("laptop")
 		return len(s) == 1 && s[0].State == "shared"
@@ -318,6 +336,9 @@ func TestBridgeRetriesARejectedConnection(t *testing.T) {
 	defer mu.Unlock()
 	if len(opened) != 3 || opened[1].Sub(opened[0]) < bridgeRetry || opened[2].Sub(opened[1]) < 2*bridgeRetry || changes.Load() == 0 {
 		t.Fatalf("connections at %v, %d changes", opened, changes.Load())
+	}
+	if b.CatalogRev() != "r1" || local.added != 1 || len(b.Remote()) != 1 {
+		t.Fatalf("mirrors after reconnects: rev %q, %d registrations", b.CatalogRev(), local.added)
 	}
 }
 
@@ -376,5 +397,130 @@ func TestForwardRefusesChannelRefsBothWays(t *testing.T) {
 	}
 	if _, err := b.forward("probe::echo")(context.Background(), json.RawMessage(`{}`)); !errors.As(err, &ie) || ie.Code != "channels_unsupported" {
 		t.Fatalf("result with a channel ref: %v", err)
+	}
+}
+
+func TestCatalogMirrors(t *testing.T) {
+	rows := []map[string]any{}
+	local := engine(&rows)
+	b := newBridge(t, local)
+	catalog := node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{
+		{ID: "shell::exec", Owner: "hub", Description: "run", RequestFormat: json.RawMessage(`{"type":"object"}`)},
+		{ID: "desk::coder::read-file", Owner: "desk"},
+		{ID: "laptop::probe::echo", Owner: "laptop"}, // its own
+	}}
+	b.SetCatalog(catalog)
+	if got := slices.Sorted(maps.Keys(local.mirrors)); !slices.Equal(got, []string{"hub::shell::exec", "peer::desk::coder::read-file"}) {
+		t.Fatalf("mirrors %v", got)
+	}
+	if o := local.opts["hub::shell::exec"]; o.Description != "run" || string(o.RequestFormat) != `{"type":"object"}` || o.Metadata != nil {
+		t.Fatalf("mirror options %+v", o)
+	}
+	if got := b.Remote(); b.CatalogRev() != "r1" || !reflect.DeepEqual(got, []RemoteStatus{{"hub", []string{"hub::shell::exec"}}, {"desk", []string{"peer::desk::coder::read-file"}}}) {
+		t.Fatalf("remote %+v rev %q", got, b.CatalogRev())
+	}
+	var ie *iii.InvocationError
+	if _, err := local.mirrors["hub::shell::exec"](context.Background(), json.RawMessage(`{}`)); !errors.As(err, &ie) || ie.Code != "mesh_offline" {
+		t.Fatalf("offline call: %v", err)
+	}
+	// A mirror is never published back, also when the mesh worker runs under a shared name.
+	rows = []map[string]any{row("hub::shell::exec", "local", "mesh-renamed"), row("probe::echo", "local", "mesh-renamed")}
+	if err := b.Sync(context.Background(), []string{"mesh-renamed"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := registered(b); !slices.Equal(got, []string{"probe::echo"}) {
+		t.Fatalf("published %v", got)
+	}
+	b.SetCatalog(catalog)
+	rt := node.Runtime{Node: "laptop", Namespace: "hub", URL: "ws://127.0.0.1:1"}
+	if err := b.SetRuntime(context.Background(), rt); err != nil || local.added != 2 || b.CatalogRev() != "r1" {
+		t.Fatalf("the same catalog and runtime registered again: %d registrations, rev %q, %v", local.added, b.CatalogRev(), err)
+	}
+	b.SetCatalog(node.Catalog{Rev: "r2", Functions: catalog.Functions[1:]})
+	if b.mirrors["hub::shell::exec"] != nil || len(b.Remote()) != 1 {
+		t.Fatalf("a dropped entry stays mirrored: %v", b.Remote())
+	}
+	rt.Node = "work" // a rename
+	if err := b.SetRuntime(context.Background(), rt); err != nil || b.CatalogRev() != "" || len(b.Remote()) != 0 || len(b.mirrors) != 0 {
+		t.Fatalf("a changed runtime keeps the catalog: rev %q %v", b.CatalogRev(), b.Remote())
+	}
+}
+
+// meshHub accepts the bridge and answers mesh::call with what it received, or drops the connection instead.
+func meshHub(t *testing.T, drop bool) (string, chan map[string]json.RawMessage) {
+	calls := make(chan map[string]json.RawMessage, 4)
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		hello, _ := json.Marshal(map[string]any{"type": "workerregistered", "worker_id": "bridge"})
+		_ = conn.Write(r.Context(), websocket.MessageText, hello)
+		for {
+			_, raw, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			var f map[string]json.RawMessage
+			if json.Unmarshal(raw, &f) != nil || string(f["type"]) != `"invokefunction"` || string(f["function_id"]) != `"mesh::call"` {
+				continue
+			}
+			calls <- f
+			if drop {
+				return
+			}
+			reply, _ := json.Marshal(map[string]any{"type": "invocationresult", "invocation_id": f["invocation_id"], "function_id": f["function_id"], "result": map[string]json.RawMessage{"got": f["data"]}})
+			_ = conn.Write(r.Context(), websocket.MessageText, reply)
+		}
+	}))
+	t.Cleanup(hub.Close)
+	return "ws" + strings.TrimPrefix(hub.URL, "http"), calls
+}
+
+func TestMirrorCallsThroughTheHub(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, drop := range []bool{false, true} {
+		url, calls := meshHub(t, drop)
+		local := engine(&[]map[string]any{})
+		b := NewBridge(local, "local")
+		defer b.Close()
+		if err := b.SetRuntime(context.Background(), node.Runtime{Node: "laptop", Namespace: "hub", URL: url}); err != nil {
+			t.Fatal(err)
+		}
+		b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "desk::coder::read-file", Owner: "desk"}}})
+		waitUntil(t, "connected", func() bool {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			return b.online != nil && b.online.Err() == nil
+		})
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // the SDK alone would wait 620 s
+		defer cancel()
+		out, err := local.mirrors["peer::desk::coder::read-file"](ctx, json.RawMessage(`{"path":"a"}`))
+		f := <-calls
+		var data any
+		json.Unmarshal(f["data"], &data)
+		if string(f["namespace"]) != `"hub"` || !reflect.DeepEqual(data, map[string]any{"owner": "desk", "function_id": "desk::coder::read-file", "payload": map[string]any{"path": "a"}}) {
+			t.Fatalf("hub got %s", mustMarshal(f))
+		}
+		var ie *iii.InvocationError
+		switch {
+		case !drop && (err != nil || string(out.(json.RawMessage)) != `{"got":{"function_id":"desk::coder::read-file","owner":"desk","payload":{"path":"a"}}}`):
+			t.Fatalf("result %s: %v", out, err)
+		case drop && (!errors.As(err, &ie) || ie.Code != "mesh_offline" || time.Since(start) > 5*time.Second):
+			t.Fatalf("a dropped connection left the call: %v after %s", err, time.Since(start))
+		}
+	}
+}
+
+func mustMarshal(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+// The page reads remote from mesh::status: the hub first, as local mirror ids.
+func TestStatusListsRemote(t *testing.T) {
+	r := &runner{bridge: newBridge(t, engine(&[]map[string]any{}))}
+	r.bridge.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "alpha::probe::echo", Owner: "alpha"}, {ID: "shell::exec", Owner: "hub"}}})
+	if b, _ := json.Marshal(r.status()); !strings.Contains(string(b), `"remote":[{"machine":"hub","functions":["hub::shell::exec"]},{"machine":"alpha","functions":["peer::alpha::probe::echo"]}]`) {
+		t.Fatalf("status %s", b)
 	}
 }

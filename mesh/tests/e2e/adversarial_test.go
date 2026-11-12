@@ -14,6 +14,8 @@ import (
 
 	"github.com/coder/websocket"
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	meshclient "github.com/iii-hq/workers/mesh/internal/client"
+	"github.com/iii-hq/workers/mesh/internal/hub"
 )
 
 func fakeWorker(f *fixture, n *testNode, name string) *iii.Client {
@@ -109,7 +111,7 @@ func (f *fixture) startFP() {
 func TestE2ENodeEndpointUnreachable(t *testing.T) {
 	f := newFixture(t, "default")
 	n := f.enroll("laptop")
-	f.startNode(n)
+	f.startNode(n, noWorkers{})
 	f.startFP()
 	eventually(t, 5*time.Second, "signed node endpoint registered", func() error {
 		_, err := call(f.ctx, f.admin, "default", "laptop::mesh-node::workers::apply", map[string]any{})
@@ -306,4 +308,160 @@ func TestE2ETwoNodesSameWorkerName(t *testing.T) {
 			t.Fatalf("missing %s worker: %s", name, workers)
 		}
 	}
+}
+
+// The hub shares probe; beta's bridge shares an echo; alpha runs a real bridge
+// whose local project is a second namespace of the same engine.
+func TestE2EMeshSharing(t *testing.T) {
+	f := newFixture(t, "project")
+	answer := func(c *iii.Client, id, node string) {
+		t.Helper()
+		if _, err := iii.RegisterFunctionTyped(c, id, func(context.Context, json.RawMessage) (map[string]string, error) {
+			return map[string]string{"node": node}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	share := func(workers ...string) {
+		cfg := f.config
+		cfg.Share = workers
+		mustCall(t, f.admin, "default", "configuration::set", map[string]any{"id": "mesh", "value": cfg})
+	}
+	answer(connect(t, f.ctx, f.engineURL, "probe", f.ns), "probe::hello", "hub")
+	share("probe")
+
+	beta := f.enroll("beta")
+	f.startNode(beta, noWorkers{})
+	answer(connect(t, f.ctx, beta.url, "mesh-bridge", f.ns), "probe::echo", "beta")
+
+	alpha := f.enroll("alpha")
+	answer(connect(t, f.ctx, f.engineURL, "probe", "alpha-local"), "probe::echo", "alpha")
+	bridge := meshclient.NewBridge(connect(t, f.ctx, f.engineURL, "mesh", "alpha-local"), "alpha-local")
+	t.Cleanup(bridge.Close)
+	if err := bridge.Sync(f.ctx, []string{"probe"}); err != nil {
+		t.Fatal(err)
+	}
+	f.startNode(alpha, bridge)
+
+	listed := func() (map[string]meshclient.Row, error) {
+		out, err := call(f.ctx, f.admin, "default", "engine::functions::list", map[string]any{})
+		var list struct{ Functions []meshclient.Row }
+		if err == nil {
+			err = json.Unmarshal(out, &list)
+		}
+		rows := map[string]meshclient.Row{}
+		for _, r := range list.Functions {
+			rows[r.Namespace+" "+r.FunctionID] = r
+		}
+		return rows, err
+	}
+	eventually(t, 30*time.Second, "alpha mirrors the hub's and beta's functions", func() error {
+		rows, err := listed()
+		if err != nil {
+			return err
+		}
+		if _, ok := rows["alpha-local hub::probe::hello"]; !ok {
+			return errors.New("hub::probe::hello missing")
+		}
+		if _, ok := rows["alpha-local peer::beta::probe::echo"]; !ok {
+			return errors.New("peer::beta::probe::echo missing")
+		}
+		// The bridge rows carry the worker name that proves their owner.
+		if w := rows["project beta::probe::echo"].WorkerName; w != "rbac-proxy:beta::mesh-bridge" {
+			return fmt.Errorf("beta's echo listed under %q", w)
+		}
+		return nil
+	})
+	// Every machine's functions are in the catalog alpha holds.
+	var last string // the last catalog sent, as JSON
+	pushes := func() []string {
+		revs := []string{}
+		for _, frame := range alpha.snapshot() {
+			if frame.Direction == "hub-to-node" && frame.Data["type"] == "invokefunction" && frame.Data["function_id"] == "mesh-node::catalog::apply" {
+				envelope, _ := frame.Data["data"].(map[string]any)
+				payload, _ := envelope["payload"].(map[string]any)
+				rev, _ := payload["rev"].(string)
+				revs, last = append(revs, rev), mustJSON(payload)
+			}
+		}
+		return revs
+	}
+	eventually(t, 20*time.Second, "the catalog with alpha's own echo sent", func() error {
+		if pushes(); !strings.Contains(last, `"alpha::probe::echo"`) {
+			return fmt.Errorf("last catalog %s", last)
+		}
+		return nil
+	})
+	for id, node := range map[string]string{"hub::probe::hello": "hub", "peer::beta::probe::echo": "beta"} {
+		var reply struct{ Node string }
+		if err := json.Unmarshal(mustCall(t, f.admin, "alpha-local", id, map[string]any{}), &reply); err != nil || reply.Node != node {
+			t.Fatalf("%s answered %+v: %v", id, reply, err)
+		}
+	}
+	var status hub.StatusResult
+	if err := json.Unmarshal(mustCall(t, f.admin, f.ns, "mesh::status", map[string]any{}), &status); err != nil || mustJSON(status.Shared) != `[{"worker":"probe","state":"shared","functions":["hub::probe::hello"]}]` {
+		t.Fatalf("hub status shared %s: %v", mustJSON(status.Shared), err)
+	}
+
+	// What a raw session of alpha can and cannot reach through mesh::call.
+	raw := connect(t, f.ctx, alpha.url, "raw", f.ns)
+	meshCall := func(owner, id string, payload any) map[string]any {
+		return map[string]any{"owner": owner, "function_id": id, "payload": payload}
+	}
+	if out := mustCall(t, raw, f.ns, "mesh::call", meshCall("beta", "beta::probe::echo", map[string]any{})); !strings.Contains(string(out), `"node":"beta"`) {
+		t.Fatalf("beta's echo for alpha: %s", out)
+	}
+	for _, c := range [][2]string{{"hub", "other::hidden"}, {"hub", "mesh::join::code"}, {"hub", "engine::functions::list"}, {"beta", "beta::mesh-node::status"}, {"alpha", "alpha::probe::echo"}, {"hub", "beta::probe::echo"}} {
+		refused(t, raw, f.ns, "mesh::call", meshCall(c[0], c[1], map[string]any{}), "forbidden")
+	}
+	enqueued, _ := json.Marshal(meshCall("beta", "beta::probe::echo", map[string]any{}))
+	if _, err := raw.Call(f.ctx, iii.CallRequest{FunctionID: "mesh::call", Namespace: f.ns, Payload: enqueued, Action: iii.EnqueueAction("mesh"), Timeout: time.Second}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "forbidden") {
+		t.Fatalf("enqueued mesh::call: %v", err)
+	}
+	refused(t, raw, f.ns, "mesh::call", meshCall("beta", "beta::probe::echo", map[string]any{"reader": map[string]any{"channel_id": "c", "access_key": "k", "direction": "read"}}), "channels_unsupported")
+
+	// A catalog is sent only to a node holding another revision.
+	sent := pushes()
+	for i := 1; i < len(sent); i++ {
+		if sent[i] == sent[i-1] {
+			t.Fatalf("the same catalog sent twice: %v", sent)
+		}
+	}
+	answer(connect(t, f.ctx, f.engineURL, "other", f.ns), "other::hidden", "hub") // re-reads the catalog and every node
+	time.Sleep(2 * time.Second)
+	if again := pushes(); len(again) != len(sent) {
+		t.Fatalf("an unchanged catalog sent again: %v after %v", again, sent)
+	}
+	rows, err := listed()
+	for key := range rows {
+		if strings.HasPrefix(key, "alpha-local peer::alpha::") || err != nil {
+			t.Fatalf("own function mirrored: %s %v", key, err)
+		}
+	}
+
+	share()
+	eventually(t, 20*time.Second, "an unshared hub function refused", func() error {
+		if _, err := call(f.ctx, raw, f.ns, "mesh::call", meshCall("hub", "probe::hello", map[string]any{})); err == nil {
+			return errors.New("still callable")
+		}
+		return nil
+	})
+	eventually(t, 20*time.Second, "the mirror removed", func() error {
+		rows, err := listed()
+		if _, ok := rows["alpha-local hub::probe::hello"]; err == nil && ok {
+			return errors.New("hub::probe::hello still mirrored")
+		}
+		return err
+	})
+	if revs := pushes(); len(revs) != len(sent)+1 || revs[len(revs)-1] == sent[len(sent)-1] {
+		t.Fatalf("pushes after the revision moved: %v, before %v", revs, sent)
+	}
+
+	mustCall(t, f.admin, f.ns, "mesh::nodes::remove", map[string]any{"name": "alpha"})
+	eventually(t, 20*time.Second, "a removed machine refused", func() error {
+		if _, err := call(f.ctx, raw, f.ns, "mesh::call", meshCall("beta", "beta::probe::echo", map[string]any{})); err == nil {
+			return errors.New("still callable")
+		}
+		return nil
+	})
 }

@@ -34,6 +34,8 @@ type Config struct {
 	// Hub mode only. Without public_url the hub leases a quick-tunnel target and
 	// uses its URL as the public URL.
 	Tunnel *TunnelConfig `json:"tunnel,omitempty"`
+	// Hub mode only: hub workers every joined machine may call.
+	Share []string `json:"share,omitempty"`
 }
 type TunnelConfig struct {
 	Enabled  bool   `json:"enabled"`
@@ -62,6 +64,9 @@ func (c Config) Validate() error {
 		if err := cc.Validate(); err != nil {
 			return fmt.Errorf("client: %w", err)
 		}
+	}
+	if err := client.ValidateShare(c.Share); err != nil {
+		return fmt.Errorf("share: %w", err)
 	}
 	if t := c.Tunnel; t != nil && t.TunnelID != "" && !tunnelIDPattern.MatchString(t.TunnelID) {
 		return fmt.Errorf("invalid tunnel.tunnel_id %q", t.TunnelID)

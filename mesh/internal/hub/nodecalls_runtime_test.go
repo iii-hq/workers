@@ -38,6 +38,8 @@ func (w *signedWorkers) SetRuntime(_ context.Context, r node.Runtime) error {
 	w.runtimes <- r
 	return nil
 }
+func (w *signedWorkers) SetCatalog(node.Catalog) {}
+func (w *signedWorkers) CatalogRev() string      { return "" }
 func (w *signedWorkers) Status() []node.WorkerStatus {
 	return []node.WorkerStatus{{Name: "shell", State: "shared", Functions: []string{"shell::exec"}}}
 }

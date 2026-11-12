@@ -51,6 +51,7 @@ type testWorkers struct {
 	mu       sync.Mutex
 	runtime  Runtime
 	runtimes chan Runtime
+	catalog  *Catalog
 }
 
 func (w *testWorkers) SetRuntime(_ context.Context, r Runtime) error {
@@ -61,6 +62,19 @@ func (w *testWorkers) SetRuntime(_ context.Context, r Runtime) error {
 		w.runtimes <- r
 	}
 	return nil
+}
+func (w *testWorkers) SetCatalog(c Catalog) {
+	w.mu.Lock()
+	w.catalog = &c
+	w.mu.Unlock()
+}
+func (w *testWorkers) CatalogRev() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.catalog == nil {
+		return ""
+	}
+	return w.catalog.Rev
 }
 func (w *testWorkers) Status() []WorkerStatus {
 	return []WorkerStatus{{Name: "shell", State: "shared", Functions: []string{"shell::exec"}}}
@@ -107,13 +121,17 @@ func TestVerifyReportsSkew(t *testing.T) {
 }
 func TestApplyUsesAssignedIdentityNamespaceAndGateway(t *testing.T) {
 	n, k, _, w := testNode(t)
+	w.catalog = &Catalog{Rev: "r1"}
 	s, _ := Sign(k, "mesh-node::workers::apply", WorkersRequest{Namespace: "project"}, time.Now())
 	raw, err := n.handle(t.Context(), "mesh-node::workers::apply", s)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The reply carries the revision held after the apply, which the hub compares.
+	var reply Status
+	json.Unmarshal(raw, &reply)
 	want := Runtime{Node: "laptop-2", Namespace: "project", URL: "ws://gateway.invalid"}
-	if w.runtime != want || string(raw) != "{}" {
+	if w.runtime != want || reply.Catalog != "r1" {
 		t.Fatalf("runtime %+v reply %s", w.runtime, raw)
 	}
 }
@@ -147,5 +165,34 @@ func TestApplyRequiresNamespaceAndLiveGateway(t *testing.T) {
 				t.Fatal("runtime set")
 			}
 		})
+	}
+}
+
+// The catalog reaches the workers only signed; the status reports the revision they hold.
+func TestCatalogApply(t *testing.T) {
+	n, k, _, w := testNode(t)
+	catalog := Catalog{Rev: "r1", Functions: []CatalogEntry{{ID: "shell::exec", Owner: "hub", Description: "run", RequestFormat: json.RawMessage(`{"type":"object"}`)}}}
+	if _, err := n.handle(t.Context(), "mesh-node::catalog::apply", Signed{Payload: json.RawMessage(`{"rev":"evil","functions":[]}`)}); !errors.Is(err, ErrUnsigned) || w.catalog != nil {
+		t.Fatalf("unsigned catalog: %v %+v", err, w.catalog)
+	}
+	s, _ := Sign(k, "mesh-node::catalog::apply", catalog, time.Now())
+	if raw, err := n.handle(t.Context(), "mesh-node::catalog::apply", s); err != nil || string(raw) != "{}" || !reflect.DeepEqual(*w.catalog, catalog) {
+		t.Fatalf("catalog %+v reply %s: %v", w.catalog, raw, err)
+	}
+	if got := n.Status().Catalog; got != "r1" {
+		t.Fatalf("status catalog %q", got)
+	}
+	// A hub on another version refuses every mirror call, so the mirrors go.
+	s, _ = Sign(k, "mesh-node::status", StatusRequest{HubVersion: "0.9.0"}, time.Now())
+	if _, err := n.handle(t.Context(), "mesh-node::status", s); err != nil || w.catalog.Rev != "" || len(w.catalog.Functions) != 0 {
+		t.Fatalf("a hub on another version kept the catalog: %+v %v", w.catalog, err)
+	}
+	s, _ = Sign(k, "mesh-node::catalog::apply", catalog, time.Now())
+	if _, err := n.handle(t.Context(), "mesh-node::catalog::apply", s); err != nil || w.catalog.Rev != "r1" {
+		t.Fatalf("catalog %+v: %v", w.catalog, err)
+	}
+	s, _ = Sign(k, "mesh-node::catalog::apply", Catalog{Functions: []CatalogEntry{}}, time.Now())
+	if _, err := n.handle(t.Context(), "mesh-node::catalog::apply", s); err != nil || w.catalog.Rev != "" || len(w.catalog.Functions) != 0 || n.Status().Catalog != "" {
+		t.Fatalf("an empty catalog does not clear: %+v %v", w.catalog, err)
 	}
 }

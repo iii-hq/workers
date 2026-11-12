@@ -30,6 +30,8 @@ type nodeCallRPC struct {
 	fail       string
 	workers    node.WorkersRequest
 	hubVersion string
+	statuses   int
+	catalog    *node.Catalog
 }
 
 func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
@@ -52,14 +54,24 @@ func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMess
 		var request node.StatusRequest
 		json.Unmarshal(payload, &request)
 		r.hubVersion = request.HubVersion
+		r.statuses++
 		return json.Marshal(r.status)
 	}
 	r.calls = append(r.calls, strings.TrimPrefix(fn, "mesh-node::"))
 	if r.fail == fn {
 		return nil, errors.New("apply failed")
 	}
+	if fn == "mesh-node::catalog::apply" {
+		r.catalog = &node.Catalog{}
+		json.Unmarshal(payload, r.catalog)
+		return json.RawMessage(`{}`), nil
+	}
+	previous := r.workers.Namespace
 	json.Unmarshal(payload, &r.workers)
-	return json.RawMessage(`{}`), nil
+	if r.workers.Namespace != previous {
+		r.status.Catalog = "" // as the bridge does when its runtime moves
+	}
+	return json.Marshal(r.status)
 }
 func nodeCallHub(t *testing.T) (*Hub, *nodeCallRPC) {
 	t.Helper()
@@ -202,6 +214,49 @@ func TestApplyOnReconnect(t *testing.T) {
 	r.fail = "mesh-node::workers::apply"
 	if err := h.OnNodeOnline(t.Context(), "laptop"); err == nil || !reflect.DeepEqual(r.calls, []string{"workers::apply"}) {
 		t.Fatalf("continued after failed apply %v %v", err, r.calls)
+	}
+}
+
+// The catalog follows the namespace, in its own call, only when the node holds another revision.
+func TestCatalogPushedWhenTheRevisionDiffers(t *testing.T) {
+	h, r := nodeCallHub(t)
+	r.status.Version = h.Version
+	online := func(want ...string) error {
+		t.Helper()
+		r.calls = nil
+		err := h.OnNodeOnline(t.Context(), "laptop")
+		if !reflect.DeepEqual(r.calls, want) {
+			t.Fatalf("calls %v, want %v", r.calls, want)
+		}
+		return err
+	}
+	if err := online("workers::apply"); err != nil {
+		t.Fatal("before the first read: ", err)
+	}
+	catalog := node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "hub", Description: "run"}}}
+	h.shared = shared{catalog: catalog, rows: map[string]sharedRow{"shell::exec": {"hub", "shell"}}}
+	if err := online("workers::apply", "catalog::apply"); err != nil || !reflect.DeepEqual(*r.catalog, catalog) {
+		t.Fatalf("catalog %+v: %v", r.catalog, err)
+	}
+	r.status.Catalog = "r1"
+	if err := online("workers::apply"); err != nil {
+		t.Fatal(err)
+	}
+	// A hub restarted on another namespace: the apply clears the revision the status reported.
+	h.Namespace = "other"
+	if err := online("workers::apply", "catalog::apply"); err != nil {
+		t.Fatal(err)
+	}
+	h.Namespace = "project"
+	h.shared.catalog.Rev = "r2"
+	r.fail, r.workers = "mesh-node::catalog::apply", node.WorkersRequest{}
+	if err := online("workers::apply", "catalog::apply"); err == nil || r.workers.Namespace != "project" {
+		t.Fatalf("a failed catalog call: %v, namespace %q", err, r.workers.Namespace)
+	}
+	r.fail, r.status.Catalog = "", "r1"
+	h.shared.catalog = node.Catalog{Functions: []node.CatalogEntry{}}
+	if err := online("workers::apply", "catalog::apply"); err != nil || r.catalog.Rev != "" || r.catalog.Functions == nil || len(r.catalog.Functions) != 0 {
+		t.Fatalf("an empty catalog: %+v %v", r.catalog, err)
 	}
 }
 

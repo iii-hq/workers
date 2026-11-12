@@ -13,7 +13,7 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/node"
 )
 
-func (h *Hub) callNode(ctx context.Context, name, fn string, payload any) (json.RawMessage, error) {
+func (h *Hub) callNode(ctx context.Context, name, fn string, payload any, timeout time.Duration) (json.RawMessage, error) {
 	if h.Coordinator == nil {
 		return nil, errors.New("hub is not running")
 	}
@@ -32,11 +32,11 @@ func (h *Hub) callNode(ctx context.Context, name, fn string, payload any) (json.
 	if err != nil {
 		return nil, err
 	}
-	return client.Call(ctx, iii.CallRequest{FunctionID: name + "::" + fn, Namespace: "default", Payload: raw, Timeout: 5 * time.Second})
+	return client.Call(ctx, iii.CallRequest{FunctionID: name + "::" + fn, Namespace: "default", Payload: raw, Timeout: timeout})
 }
 func (h *Hub) fetchNodeStatus(ctx context.Context, name string) (node.Status, error) {
 	var status node.Status
-	raw, err := h.callNode(ctx, name, "mesh-node::status", node.StatusRequest{HubVersion: h.Version})
+	raw, err := h.callNode(ctx, name, "mesh-node::status", node.StatusRequest{HubVersion: h.Version}, 5*time.Second)
 	if err != nil {
 		return status, err
 	}
@@ -68,10 +68,14 @@ func (h *Hub) fetchNodeStatus(ctx context.Context, name string) (node.Status, er
 		h.nodeDetails = map[string]NodeDetails{}
 	}
 	moved := !reflect.DeepEqual(h.nodeDetails[name].NodeEntry, details.NodeEntry)
+	versionMoved := h.nodeDetails[name].Version != details.Version
 	h.nodeDetails[name] = details
 	h.mu.Unlock()
 	if moved {
 		h.statusChanged() // the page lists these workers
+	}
+	if versionMoved {
+		h.onFunctionsChange() // only a machine on the hub's version shares and calls
 	}
 	return status, nil
 }
@@ -85,8 +89,8 @@ func (h *Hub) signedNodeDetails(ctx context.Context, name string) (NodeDetails, 
 }
 
 // OnNodeOnline hands the hub namespace to a node on the hub's version, which
-// lets its bridge publish the shared functions. A node on another version gets
-// no namespace.
+// lets its bridge publish the shared functions, then the catalog when the node
+// holds another revision. A node on another version gets neither.
 // shortcut: the lock acts only when the namespace is handed out; a node that
 // already holds one re-applies it (node/runtime.go refresh) and keeps publishing
 // after its hub restarts on another version, until the node restarts. Enforce
@@ -99,6 +103,23 @@ func (h *Hub) OnNodeOnline(ctx context.Context, name string) error {
 	if status.Version != h.Version {
 		return fmt.Errorf("node runs mesh %q, the hub runs %q: run one mesh version on both", status.Version, h.Version)
 	}
-	_, err = h.callNode(ctx, name, "mesh-node::workers::apply", node.WorkersRequest{Namespace: h.Namespace})
+	raw, err := h.callNode(ctx, name, "mesh-node::workers::apply", node.WorkersRequest{Namespace: h.Namespace}, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	// The apply's answer, not the status above: a moved namespace clears the node's catalog.
+	var applied node.Status
+	if err = json.Unmarshal(raw, &applied); err != nil {
+		return err
+	}
+	h.mu.RLock()
+	catalog, read := h.shared.catalog, h.shared.rows != nil
+	h.mu.RUnlock()
+	// Before the first read the hub knows nothing to send; that read queues every node again.
+	if !read || applied.Catalog == catalog.Rev {
+		return nil
+	}
+	// shortcut: every revision change resends the whole catalog to every node, as often as one machine moves its functions; send deltas or fold longer when a real mesh feels it.
+	_, err = h.callNode(ctx, name, "mesh-node::catalog::apply", catalog, 30*time.Second)
 	return err
 }

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -77,6 +78,21 @@ func TestClientModeConfig(t *testing.T) {
 		`{"mode":"hub","client":{"share":["secrets"]}}`,
 		`{"client":{"join":"ABCD-EFGH"}}`,
 	} {
+		if _, err := parseConfig(json.RawMessage(bad)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}
+
+func TestHubShareConfig(t *testing.T) {
+	old := `{"public_url":"","listen":"0.0.0.0:49180","trusted_proxies":[],"gateway_port":49135,"proxy_url":"ws://127.0.0.1:49200","stun_port":0}`
+	if c, err := parseConfig(json.RawMessage(old)); err != nil || c.Share != nil {
+		t.Fatalf("stored value without share: %+v %v", c, err)
+	}
+	if c, err := parseConfig(json.RawMessage(`{"share":["shell","code-runner"]}`)); err != nil || !slices.Equal(c.Share, []string{"shell", "code-runner"}) {
+		t.Fatalf("share: %+v %v", c, err)
+	}
+	for _, bad := range []string{`{"share":["mesh"]}`, `{"share":["secrets"]}`, `{"share":["Bad Name"]}`, `{"share":["rbac-proxy:laptop::mesh-bridge"]}`} {
 		if _, err := parseConfig(json.RawMessage(bad)); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}

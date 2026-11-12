@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +50,7 @@ type Hub struct {
 	proxyReady      bool
 	proxyStatus     string
 	Client          *iii.Client
+	engine          rpc // replaces Client for engine reads in tests
 	DefaultClient   *iii.Client
 	Version         string
 	Namespace       string
@@ -75,8 +77,13 @@ type Hub struct {
 	tunnel          tunnelState
 	tunnelClient    rpc
 	tunnelKick      chan struct{}
-	refreshing      atomic.Bool  // a re-read of the online nodes is scheduled
-	emit            func([]byte) // delivers a mesh::status answer to its observers; nil publishes nothing
+	refreshing      atomic.Bool // a re-read of the online nodes is scheduled
+	passMu          sync.Mutex  // one catalog read and node re-read at a time
+	passBackoff     time.Duration
+	passRetry       *time.Timer    // guarded by passMu: the retry of a failed catalog read
+	shared          shared         // guarded by mu: the last catalog read
+	inFlight        map[string]int // guarded by mu: mesh::call calls per calling machine
+	emit            func([]byte)   // delivers a mesh::status answer to its observers; nil publishes nothing
 	// Set only by reconcileTunnel. tunnelProxy: PROXY v2 headers from loopback are
 	// quick-tunnel's. tunnelRaw: the tunnel is OpenTunnel, which hands a visitor's
 	// bytes to loopback unchanged, so forwarding headers from loopback are the visitor's.
@@ -229,12 +236,16 @@ func (h *Hub) SetHooks(hooks Hooks) {
 	changed, revoke, closeHook := hooks.ConfigChanged, hooks.RevokeNode, hooks.Close
 	hooks.ConfigChanged = func(ctx context.Context, old, next Config) {
 		h.queueNodes()
+		if !slices.Equal(old.Share, next.Share) {
+			h.onFunctionsChange()
+		}
 		if changed != nil {
 			changed(ctx, old, next)
 		}
 	}
 	hooks.RevokeNode = func(name string) {
 		h.cancelNode(name)
+		h.onFunctionsChange() // an offline machine leaves no function change, yet its name may block a hub share
 		if revoke != nil {
 			revoke(name)
 		}

@@ -112,8 +112,15 @@ func (h *Hub) Status() StatusResult {
 	h.mu.RLock()
 	cfg, closed, hooks := h.config, h.closed, h.hooks
 	front, gateway := h.front, h.gateway
+	shared := []meshclient.SharedStatus{}
+	for _, w := range cfg.Share { // the live list: an unshared worker leaves at once
+		if state, ok := h.shared.workers[w]; ok {
+			shared = append(shared, state)
+		}
+	}
+	skipped := append([]string{}, h.shared.skipped...)
 	h.mu.RUnlock()
-	s := StatusResult{Version: h.Version, PublicURL: h.publicURL(), FrontDoor: "not running", Gateway: "gateway is not configured", Proxy: "proxy ownership is not configured", Tunnel: h.tunnelStatus(cfg)}
+	s := StatusResult{Version: h.Version, PublicURL: h.publicURL(), FrontDoor: "not running", Gateway: "gateway is not configured", Proxy: "proxy ownership is not configured", Tunnel: h.tunnelStatus(cfg), Shared: shared, CatalogSkipped: skipped}
 	if h.Coordinator == nil {
 		return s
 	}
@@ -240,14 +247,29 @@ func (h *Hub) GetNode(ctx context.Context, r NodeRequest) (NodeDetails, error) {
 	}
 	return NodeDetails{}, fmt.Errorf("unknown node %q", r.Name)
 }
+
+// engineRPC is the hub's own engine connection: engine when a test sets it, else Client.
+func (h *Hub) engineRPC() rpc {
+	if h.engine != nil {
+		return h.engine
+	}
+	if h.Client != nil {
+		return h.Client
+	}
+	return nil
+}
 func (h *Hub) refreshNames(ctx context.Context) error {
-	raw, err := h.Client.Call(ctx, iii.CallRequest{FunctionID: "engine::functions::list", Namespace: "default", Payload: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
+	raw, err := h.engineRPC().Call(ctx, iii.CallRequest{FunctionID: "engine::functions::list", Namespace: "default", Payload: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
 	if err != nil {
 		return fmt.Errorf("list engine function prefixes: %w", err)
 	}
 	taken, err := functionPrefixes(raw)
 	if err != nil {
 		return err
+	}
+	// A shared worker that is not running yet keeps its name: a machine under it would take its ids.
+	for _, w := range h.Config().Share {
+		taken[w] = true
 	}
 	h.Coordinator.SetNameTaken(func(name string) bool { return taken[name] })
 	return nil

@@ -1,33 +1,47 @@
 ---
 name: your-machines
-description: Use when an agent needs to discover mesh nodes or call workers that another machine shares with this hub.
+description: Use when an agent needs to discover mesh machines or call workers that the hub or another machine shares in the mesh.
 ---
 
 # Your machines
 
-Mesh exposes the workers each online machine shares under that machine's name.
-Remote paths and configured roots belong to that machine.
+Mesh exposes the workers each machine shares. On the hub, an online machine's
+shared workers appear under that machine's name. On a joined machine, the
+hub's shared workers appear as `hub::<function>` and another machine's as
+`peer::<machine>::<function>`. A call runs on the machine that shares the
+function, so its paths and configured roots belong to that machine.
 
 ## Discovery and calls
 
 | Need | Function and input |
 | --- | --- |
-| Find machines | `mesh::nodes::list` with `{}` |
-| Inspect a machine | `mesh::nodes::get` with `{"name":"laptop"}` |
-| Run a command on laptop | `laptop::shell::exec`, same input as `shell::exec` |
-| Read a file on laptop | `laptop::coder::read-file`, same input as `coder::read-file` |
+| Find machines, on the hub | `mesh::nodes::list` with `{}` |
+| Inspect a machine, on the hub | `mesh::nodes::get` with `{"name":"laptop"}` |
+| Run a command on laptop, from the hub | `laptop::shell::exec`, same input as `shell::exec` |
+| Read a file on laptop, from the hub | `laptop::coder::read-file`, same input as `coder::read-file` |
+| Find what you can call, on a joined machine | `mesh::status` with `{}`, field `remote` (the hub first, then each machine with its function ids) |
+| Run a command on laptop, from another machine | `peer::laptop::shell::exec`, same input as `shell::exec` |
+| Run a command on the hub, from a machine | `hub::shell::exec`, same input as `shell::exec` |
 
-For example, to read `src/app.rs` on laptop, use
-`laptop::coder::read-file` with the usual `coder::read-file` input for that
-path. Resolve it under laptop's configured roots, using laptop's filesystem;
-the hub's paths and roots do not apply. Retrieve the usual tool's schema when
-its input fields are unknown.
+For example, to read `src/app.rs` on laptop, use `laptop::coder::read-file`
+on the hub, or `peer::laptop::coder::read-file` on another machine, with the
+usual `coder::read-file` input for that path. Resolve it under laptop's
+configured roots, using laptop's filesystem; the caller's paths and roots do
+not apply. For a `hub::` function the hub's filesystem and roots apply.
+Retrieve the usual tool's schema when its input fields are unknown.
 
 An offline machine has **no functions**. A machine exposes only the workers its
-owner shares; a missing tool means that worker is not shared.
+owner shares; a missing tool means that worker is not shared. A machine's own
+functions keep their local ids and never appear under `peer::`. A `hub::` or
+`peer::` call fails with `mesh_offline` while this machine is not connected or
+the hub, just restarted, has not read it yet, `FORBIDDEN` when the function is
+no longer shared, and `mesh_busy` when this machine already has 64 calls in
+flight. A call that ended with `mesh_offline` or a timeout may still have run
+on its target: check before retrying one that changes something.
 
-Discovery reads are allowed. Remote calls need approval by default; a local
-tool's allow rule does not grant access to its remote counterpart.
+Discovery reads are allowed. Remote calls need approval by default, `hub::` and
+`peer::` calls included; a local tool's allow rule does not grant access to its
+remote counterpart. The machine that runs a remote call does not ask again.
 
 ## Current call and observation API
 

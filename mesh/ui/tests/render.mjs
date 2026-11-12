@@ -94,8 +94,16 @@ try {
   const longNodes = [{ ...nodes[2], name: 'engineering-workstation-archive', path: 'relay / ' + 'long-network-path/'.repeat(12), version: '0.1.0-build-' + '1234567890'.repeat(8),
     workers: [{ name: 'worker-with-a-very-long-name', state: 'waiting for the saved operator to sign in', functions: [longFunction.function_id] },
       { name: 'another-worker-with-a-long-name', state: 'shared', functions: [] }] }]
-  // Local workers the client share list offers; mesh and secrets are never shareable.
-  const localWorkers = ['shell', 'state', 'mesh', 'secrets']
+  // Local workers the share lists offer; mesh, secrets and approval-gate are never shareable.
+  const localWorkers = ['shell', 'state', 'mesh', 'secrets', 'approval-gate']
+  // A client registers what the mesh shares with it as its own functions, under the mesh worker.
+  const mirrorFunctions = [
+    { function_id: 'hub::shell::exec', worker_name: 'mesh', description: 'Runs a command' },
+    { function_id: 'peer::gpu-box::image_resize::resize', worker_name: 'mesh', description: 'Resizes an image' },
+  ]
+  // What a connected client can call, by owner, hub first, as its mesh::status reports it.
+  const meshRemote = [{ machine: 'hub', functions: ['hub::shell::exec', 'hub::shell::spawn'] },
+    { machine: 'gpu-box', functions: ['peer::gpu-box::image_resize::resize', 'peer::gpu-box::image_resize::thumbnail'] }]
   const results = []
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const theme of ['light', 'dark']) {
@@ -128,13 +136,17 @@ try {
       let leaveWarning = 'The hub was not told (context deadline exceeded). It keeps listing this machine until it is removed there.'
       // The entry the hub last applied; null follows every save at once. Unset ${VAR} templates expand to their default.
       let applied = null
+      // shared and catalog_skipped as the hub reports them, over what follows the applied entry.
+      let hubExtra = {}
       const hubStatus = () => {
         const hub = applied ?? config
         const publicURL = String(hub?.public_url ?? '').replace(/\$\{\w+:?([^}]*)\}/g, '$1')
         const tunnel = hub?.tunnel?.enabled !== true ? undefined
           : publicURL ? { enabled: true, tunnel_id: 'mesh', state: 'overridden' }
           : { enabled: true, tunnel_id: 'mesh', ...tunnelPhase }
-        return { version: '0.1.0', public_url: publicURL || tunnel?.url || '', ...(tunnel ? { tunnel } : {}) }
+        const shared = (Array.isArray(hub?.share) ? hub.share : []).map((worker) => ({ worker, state: 'shared',
+          functions: worker === 'shell' ? ['hub::shell::exec', 'hub::shell::spawn'] : [] }))
+        return { version: '0.1.0', public_url: publicURL || tunnel?.url || '', ...(tunnel ? { tunnel } : {}), shared, catalog_skipped: [], ...hubExtra }
       }
       // Calls named in `hold` wait in `held` until release() answers them.
       let hold = new Set()
@@ -150,6 +162,8 @@ try {
       let joinedHub = null
       // error, retrying and rename_error, as the worker reports them.
       let clientExtra = {}
+      // What a joined client can call; a client that is not joined holds nothing.
+      let clientRemote = meshRemote
       // Only a joined node has a name; a removed one says how to come back, and a left one keeps the leave's warning.
       const clientStatus = () => {
         const joined = ['connected', 'renaming', 'restart required'].includes(clientState)
@@ -159,7 +173,7 @@ try {
           error: clientState === 'removed by hub' ? 'the hub removed this machine; leave the hub, then join with a new join code' : clientState === 'left hub' ? leaveWarning : '',
           shared: (appliedShare ?? config.client?.share ?? []).map((worker) => ({ worker, state: joined ? 'shared' : 'pending',
             functions: worker === 'shell' ? ['shell::exec', 'shell::spawn'].map((id) => node ? `${node}::${id}` : id) : [] })),
-          ...clientExtra }
+          remote: joined ? clientRemote : [], ...clientExtra }
       }
       // One call of mesh::on-status-changed, delivered to the page's observer: the worker's current mesh::status.
       const pushStatus = () => {
@@ -206,7 +220,7 @@ try {
               case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
               case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
               case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
-              case 'engine::functions::list': return mode === 'functions-error' ? send(null, 'Engine function list is unavailable.') : send({ functions: [...localWorkers.map((worker) => ({ function_id: `${worker}::fixture`, worker_name: worker })), ...hubFunctions] })
+              case 'engine::functions::list': return mode === 'functions-error' ? send(null, 'Engine function list is unavailable.') : send({ functions: [...localWorkers.map((worker) => ({ function_id: `${worker}::fixture`, worker_name: worker })), ...hubFunctions, ...mirrorFunctions] })
               case 'ade::ui-manifest': return send({ warnings: [], disabled: false })
               case 'harness::sessions::list': return send({ sessions: [] })
               default: return send({})
@@ -236,6 +250,7 @@ try {
       const badge = page.getByText('needed before machines can join', { exact: true })
       const dialog = page.getByRole('alertdialog')
       const inDialog = (name) => dialog.getByRole('button', { name, exact: true })
+      const shareRow = (name) => page.locator('.mesh-ui-share > li').filter({ has: page.getByRole('switch', { name: `Share ${name}`, exact: true }) })
       // Page Save: only the edited basics change; every other key, templates included, is written back as read.
       const savePage = async (expected) => {
         const count = saved.length
@@ -313,7 +328,8 @@ try {
         // The hub keeps an offline machine's last state; showing "shared" would contradict the line above.
         await expect(travel.getByText('shared', { exact: true })).toHaveCount(0)
         const headings = await page.getByRole('heading', { level: 2 }).allTextContents()
-        assert(headings.includes('Machines') && headings.indexOf('Machines') < headings.indexOf('Hub address'), 'Machines comes before Hub address in hub mode')
+        assert(headings.includes('Machines') && headings.indexOf('Machines') < headings.indexOf('Shared workers') && headings.indexOf('Shared workers') < headings.indexOf('Hub address'),
+          'Machines, then Shared workers, then Hub address in hub mode')
         await capture('populated')
         // The hub has no public URL yet: no join code, and the machines stay listed.
         await expect(page.getByText('Join instructions unavailable')).toBeVisible()
@@ -338,14 +354,20 @@ try {
         // Hub mode: the basics are on the page, client fields are not.
         mode = 'populated'
         await expect(page.getByRole('radio', { name: 'Hub', exact: true })).toBeChecked()
-        await expect(page.getByText('This project is the hub. Other projects join it as clients and share workers here.')).toBeVisible()
+        await expect(page.getByText('This project is the hub. Other projects join it as clients; the hub and every machine can call the workers the others share.')).toBeVisible()
         await expect(page.getByRole('heading', { name: 'Hub address', exact: true })).toBeVisible()
         await expect(badge).toBeVisible()
         await expect(tunnelSwitch).not.toBeChecked()
         await expect(textbox('Public URL')).toHaveValue('')
         await expect(tunnelLine).toHaveCount(0)
         await expect(textbox('Hub URL')).toHaveCount(0)
-        await expect(page.getByRole('heading', { name: 'Shared workers' })).toHaveCount(0)
+        await expect(page.getByRole('heading', { name: 'Available from the mesh' })).toHaveCount(0)
+        // The hub shares its own workers: the ones running on its engine, never the mesh's own or approval-gate.
+        const hubShares = page.getByRole('region', { name: 'Shared workers', exact: true })
+        await expect(hubShares.getByText('Nothing shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
+        await expect(hubShares.getByRole('switch')).toHaveCount(2)
+        for (const name of ['shell', 'state']) await expect(hubShares.getByRole('switch', { name: `Share ${name}`, exact: true })).not.toBeChecked()
+        await expect(hubShares.getByText('Every machine joined to this hub can call what you share.', { exact: true })).toBeVisible()
         await expect(saveBar).toHaveCount(0)
         await capture('hub')
         await textbox('Public URL').fill('https://mesh.example.com')
@@ -416,6 +438,7 @@ try {
         await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
         stored = await savePage({ ...stored, public_url: 'https://mesh.example.com' })
         await expect(page.getByRole('heading', { name: 'Connect another engine', exact: true })).toBeVisible()
+        await expect(page.getByText(/A machine that joins can call every worker shared by this hub and by the other machines\./)).toBeVisible()
         await button('Copy Hub URL').click()
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('https://mesh.example.com')
         await capture('connect')
@@ -461,6 +484,7 @@ try {
         await removeButton.click()
         await expect(dialog.getByRole('heading', { name: 'Remove archive-laptop?', exact: true })).toBeVisible()
         await expect(dialog).toContainText('cannot reconnect with its current keys')
+        await expect(dialog).toContainText('loses access to everything shared')
         await expect(dialog).toContainText('The join code is replaced')
         await capture('remove-confirm')
         await inDialog('Cancel').click()
@@ -497,6 +521,40 @@ try {
         pushStatus()
         await expect(tunnelLine).toHaveCount(0)
         await expect(badge).toHaveCount(0)
+        // A hub share writes the top-level share, warns about a command runner, and follows what the hub pushes.
+        await hubShares.getByRole('switch', { name: 'Share shell', exact: true }).click()
+        await expect(hubShares.getByText('shell can run commands on this hub', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('Every machine joined to this hub can call shared workers, and nothing asks here first, so sharing these gives each of them remote code execution with this project\'s access.', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('Every machine joined to this hub can call what you share.')).toHaveCount(0)
+        await expect(shareRow('shell').getByText('not saved yet', { exact: true })).toBeVisible()
+        applied = config
+        stored = await savePage({ ...stored, share: ['shell'] })
+        await expect(shareRow('shell').getByText('applying…', { exact: true })).toBeVisible()
+        applied = null
+        pushStatus()
+        await expect(shareRow('shell').getByText('shared', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('1 shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
+        await shareRow('shell').locator('summary').click()
+        await expect(hubShares.getByText('Ids start with hub::shell::', { exact: true })).toBeVisible()
+        await expect(hubShares.getByRole('list', { name: 'shell functions', exact: true }).getByRole('listitem')).toHaveText(['exec', 'spawn'])
+        await capture('hub-shared')
+        // The states the hub cannot share in, each with what to do, and a machine left out of the catalog on its own card.
+        hubExtra = { shared: [{ worker: 'shell', state: 'name conflict', functions: [] }], catalog_skipped: ['gpu-box'] }
+        pushStatus()
+        await expect(shareRow('shell').getByText('name conflict', { exact: true })).toBeVisible()
+        await expect(shareRow('shell').getByText('A machine has the name these functions start with. Rename or remove it to share this worker.', { exact: true })).toBeVisible()
+        await expect(card('gpu-box').getByText('gpu-box shares more than the mesh carries; other machines cannot call it.', { exact: true })).toBeVisible()
+        await expect(page.getByText(/shares more than the mesh carries/)).toHaveCount(1)
+        await capture('hub-share-conflict')
+        hubExtra = { shared: [{ worker: 'shell', state: 'too large', functions: [] }] }
+        pushStatus()
+        await expect(shareRow('shell').getByText('Too many functions to share.', { exact: true })).toBeVisible()
+        await expect(shareRow('shell').getByText(/A machine has the name/)).toHaveCount(0)
+        await expect(page.getByText(/shares more than the mesh carries/)).toHaveCount(0)
+        hubExtra = {}
+        pushStatus()
+        await expect(shareRow('shell').getByText('shared', { exact: true })).toBeVisible()
+        await expect(shareRow('shell').getByText('Too many functions to share.')).toHaveCount(0)
         // A template that expands to nothing leaves the hub without an address: the page follows what the hub reports.
         config = { ...stored, public_url: '${MESH_PUBLIC_URL:}' }
         await button('Refresh').click()
@@ -531,7 +589,7 @@ try {
         await button('Refresh').click()
         await button('Discard').click()
         await expect(tunnelSwitch).not.toBeChecked()
-        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state pushed by the hub, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, templated address, raw root refused${timed ? ', nothing polled' : ''}`)
+        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state pushed by the hub, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, hub shares saved, applying and pushed with their warning, conflict, size and skipped-machine lines, templated address, raw root refused${timed ? ', nothing polled' : ''}`)
 
         // The configuration form holds only the advanced settings.
         await button('Settings').click()
@@ -572,7 +630,7 @@ try {
         // The page is not re-read on return, so its Save must not write back the entry it loaded before the form saved.
         await openPage()
         await page.getByRole('radio', { name: 'Client', exact: true }).click()
-        await expect(page.getByText('This project joins another project\'s hub and shares the workers you pick below.')).toBeVisible()
+        await expect(page.getByText('This project joins another project\'s hub. It shares the workers you pick below and can call what the hub and other machines share.')).toBeVisible()
         await expect(page.getByRole('heading', { name: 'Hub address' })).toHaveCount(0)
         await expect(tunnelSwitch).toHaveCount(0)
         await expect(textbox('Public URL')).toHaveCount(0)
@@ -582,7 +640,11 @@ try {
         await expect(page.getByRole('heading', { name: 'Shared workers', exact: true })).toBeVisible()
         await expect(page.getByRole('switch', { name: 'Share shell', exact: true })).not.toBeChecked()
         await expect(page.getByRole('switch', { name: 'Share state', exact: true })).not.toBeChecked()
-        for (const never of ['mesh', 'secrets']) await expect(page.getByRole('switch', { name: `Share ${never}` })).toHaveCount(0)
+        for (const never of ['mesh', 'secrets', 'approval-gate']) await expect(page.getByRole('switch', { name: `Share ${never}` })).toHaveCount(0)
+        await expect(page.getByText('The hub project and every machine joined to the hub can call what you share.', { exact: true })).toBeVisible()
+        // Nothing runs as a client yet, so nothing is available from the mesh.
+        const remoteList = page.getByRole('region', { name: 'Available from the mesh', exact: true })
+        await expect(remoteList.getByText('Shown once this machine is connected', { exact: true })).toBeVisible()
         await expect(saveBar).toContainText('Unsaved changes · applied after a restart')
         await textbox('Hub URL').fill('https://hub.example.com')
         // Refused as well: names the hub would change (a hyphen at the end or next to another).
@@ -595,8 +657,8 @@ try {
         await expect(button('Save')).toBeEnabled()
         await page.getByRole('switch', { name: 'Share shell', exact: true }).click()
         await expect(page.getByText('shell can run commands on this machine', { exact: true })).toBeVisible()
+        await expect(page.getByText('The hub project and every machine joined to the hub can call shared workers, and nothing asks here first, so sharing these gives all of them remote code execution here.', { exact: true })).toBeVisible()
         // "not saved yet" means only that the form differs from the stored entry.
-        const shareRow = (name) => page.locator('.mesh-ui-share > li').filter({ has: page.getByRole('switch', { name: `Share ${name}`, exact: true }) })
         await expect(shareRow('shell').getByText('not saved yet', { exact: true })).toBeVisible()
         await capture('client')
         stored = await savePage({ ...stored, mode: 'client', client: { hub_url: 'https://hub.example.com', name: 'laptop', share: ['shell'] } })
@@ -613,12 +675,29 @@ try {
         await page.locator('.mesh-ui-share summary').filter({ hasText: '2 functions' }).click()
         await expect(page.getByText('Ids start with laptop::shell::', { exact: true })).toBeVisible()
         await expect(page.getByRole('list', { name: 'shell functions', exact: true }).getByRole('listitem')).toHaveText(['exec', 'spawn'])
+        await expect(page.getByText('1 shared · the hub calls them as laptop::function, other machines as peer::laptop::function', { exact: true })).toBeVisible()
+        // What the mesh shares with this machine, hub first, each owner behind a count, described from the local listing.
+        await expect(remoteList.locator('summary')).toHaveText(['hub2 functions', 'gpu-box2 functions'])
+        await remoteList.locator('summary').first().click()
+        await expect(remoteList.getByText('Ids start with hub::', { exact: true })).toBeVisible()
+        await expect(remoteList.getByRole('list', { name: 'hub functions', exact: true }).getByRole('listitem')).toHaveText(['shell::exec Runs a command', 'shell::spawn'])
+        await remoteList.locator('summary').nth(1).click()
+        await expect(remoteList.getByText('Ids start with peer::gpu-box::', { exact: true })).toBeVisible()
+        await expect(remoteList.getByRole('list', { name: 'gpu-box functions', exact: true }).getByRole('listitem')).toHaveText(['image_resize::resize Resizes an image', 'image_resize::thumbnail'])
         await capture('client-connected')
+        // The list follows what the worker pushes.
+        clientRemote = []
+        pushStatus()
+        await expect(remoteList.getByText('Nothing is shared with this machine yet', { exact: true })).toBeVisible()
+        clientRemote = meshRemote
+        pushStatus()
+        await expect(remoteList.locator('summary')).toHaveCount(2)
         // Leave hub asks first; a cancel calls nothing.
         const connection = page.getByRole('region', { name: 'Hub connection' })
         await button('Leave hub').click()
         await expect(dialog.getByRole('heading', { name: 'Leave the hub?', exact: true })).toBeVisible()
         await expect(dialog).toContainText('joins again only with a different join code or token')
+        await expect(dialog).toContainText('loses access to everything shared')
         await capture('leave-confirm')
         await inDialog('Cancel').click()
         await expect(dialog).toHaveCount(0)
@@ -641,6 +720,7 @@ try {
         await expect(page.getByText(`Left the hub. ${leaveWarning}`, { exact: true })).toBeAttached()
         await expect(button('Leave hub')).toHaveCount(0)
         await expect(page.getByText('joined as')).toHaveCount(0)
+        await expect(remoteList.getByText('Shown once this machine is connected', { exact: true })).toBeVisible()
         await capture('client-left')
         // The warning comes from the worker, so a re-read keeps it.
         await button('Refresh').click()
@@ -684,6 +764,12 @@ try {
         await expect(page.locator('.mesh-ui-progress')).toBeEmpty()
         await expect(page.getByText('This engine left the hub')).toHaveCount(0)
         await idle('a connected client')
+        clientExtra = { hub_wants_version: '0.2.0' }
+        pushStatus()
+        await expect(page.getByText('Nothing is shared or available until this project\'s mesh worker runs the hub\'s version.', { exact: true })).toBeVisible()
+        clientExtra = {}
+        pushStatus()
+        await expect(page.getByText(/The hub wants version/)).toHaveCount(0)
 
         // A share is "not saved yet" only while the form is dirty; saved, it is being applied until the worker says otherwise.
         const stateSwitch = page.getByRole('switch', { name: 'Share state', exact: true })
@@ -850,7 +936,7 @@ try {
         assert(calls.some((call) => call.id === 'configuration::get' && call.data.raw === true && call.namespace === 'default'))
         assert(calls.every((call) => !call.id.startsWith('configuration::') || call.namespace === 'default'))
         assert.deepEqual(errors, [])
-        console.log(`PASS ${viewport.width}px ${theme}: client fields, machine-name validation, share list, leave hub confirmed and offered after a removal, leave warning kept on re-read, every join step pushed and announced, saved shares applying and stopping, rename pending, adjusted and refused, hub URL kept while joined, restart only for the mode${timed ? ', nothing polled' : ''}, client-only form`)
+        console.log(`PASS ${viewport.width}px ${theme}: client fields, machine-name validation, share list with the mesh-wide warning, what the mesh shares listed and pushed with both empty states, leave hub confirmed and offered after a removal, leave warning kept on re-read, every join step pushed and announced, saved shares applying and stopping, rename pending, adjusted and refused, hub URL kept while joined, restart only for the mode${timed ? ', nothing polled' : ''}, client-only form`)
       }
       const openDraft = async (value) => {
         config = structuredClone(value)

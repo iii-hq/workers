@@ -22,7 +22,8 @@ type Network interface {
 	Removed() <-chan struct{}
 }
 
-type Runtime struct{ Node, Namespace, URL string }
+// Token goes in meshnet.TokenHeader on every dial of URL.
+type Runtime struct{ Node, Namespace, URL, Token string }
 
 // SetRuntime reconnects the shared workers when identity, namespace or URL
 // changes. An empty URL suspends them until authenticated gateway discovery
@@ -30,6 +31,9 @@ type Runtime struct{ Node, Namespace, URL string }
 type WorkerController interface {
 	SetRuntime(context.Context, Runtime) error
 	Status() []WorkerStatus
+	// SetCatalog replaces the functions shared in the mesh; it must not fail on one bad entry.
+	SetCatalog(Catalog)
+	CatalogRev() string // the revision SetCatalog last received, "" after a runtime change
 }
 type Options struct {
 	Mesh        Network
@@ -38,7 +42,8 @@ type Options struct {
 	Workers     WorkerController
 	// URL reaches the hub gateway (the client's loopback forwarder). It is used
 	// only once the gateway is authenticated.
-	URL string
+	URL   string
+	Token string // the forwarder's token, sent in meshnet.TokenHeader
 	// Changed runs after the assigned name, the gateway or the hub's wanted version changed; it must not block.
 	Changed func()
 }
@@ -47,7 +52,7 @@ type Node struct {
 	verifier      *Verifier
 	version       string
 	workers       WorkerController
-	url           string
+	url, token    string
 	applyMu       sync.Mutex
 	statusMu      sync.RWMutex
 	wantedVersion string
@@ -59,7 +64,7 @@ func New(o Options) (*Node, error) {
 	if o.Mesh == nil || o.Workers == nil || len(o.HubIdentity) != ed25519.PublicKeySize || o.Version == "" || o.URL == "" {
 		return nil, errors.New("node requires mesh, workers, pinned identity, version and gateway URL")
 	}
-	return &Node{mesh: o.Mesh, verifier: NewVerifier(o.HubIdentity, time.Minute), version: o.Version, workers: o.Workers, url: o.URL, onChange: o.Changed}, nil
+	return &Node{mesh: o.Mesh, verifier: NewVerifier(o.HubIdentity, time.Minute), version: o.Version, workers: o.Workers, url: o.URL, token: o.Token, onChange: o.Changed}, nil
 }
 func (n *Node) changed() {
 	if n.onChange != nil {
@@ -81,5 +86,5 @@ func (n *Node) setRuntime(ctx context.Context, namespace string) error {
 	if _, ok = n.mesh.GatewayPort(); !ok {
 		return errors.New("authenticated gateway is not available")
 	}
-	return n.workers.SetRuntime(ctx, Runtime{Node: name, Namespace: namespace, URL: n.url})
+	return n.workers.SetRuntime(ctx, Runtime{Node: name, Namespace: namespace, URL: n.url, Token: n.token})
 }

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/iii-hq/workers/mesh/internal/coordinator"
@@ -24,6 +25,24 @@ func TestTakenIncludesEngineFunctionPrefixes(t *testing.T) {
 		if got := coordinator.AllocateName(host, func(s string) bool { return taken[s] }); got != want {
 			t.Fatalf("%s -> %s, want %s", host, got, want)
 		}
+	}
+}
+
+// A machine named like a shared worker that is not running yet would take that worker's ids.
+func TestJoinCannotTakeASharedWorkersName(t *testing.T) {
+	h, _, up := idleNodeCallHub(t)
+	h.engine = &fakeEngine{}
+	h.config.Share = []string{"laptop"}
+	if err := h.refreshNames(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	up()
+	names := []string{}
+	for _, n := range h.Coordinator.Nodes() {
+		names = append(names, n.Name)
+	}
+	if !slices.Equal(names, []string{"laptop-2"}) {
+		t.Fatalf("nodes %v", names)
 	}
 }
 
