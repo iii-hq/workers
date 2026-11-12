@@ -1,9 +1,4 @@
-//! Step defs for `tests/features/prompts.feature`.
-//!
-//! `prompts/*` delegates to the `skills` worker via `prompts::mcp-list`
-//! / `prompts::mcp-get`. These scenarios pin the empty-fallback
-//! envelope shapes so the bridge stays compatible with MCP clients on
-//! a clean engine where skills isn't registered.
+//! Steps for prompts.feature: the server offers no MCP prompts.
 
 use cucumber::{then, when};
 use serde_json::json;

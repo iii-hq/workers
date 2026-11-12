@@ -7,6 +7,7 @@
 //! `tests/steps/<name>.rs` with the step defs, and register it here.
 
 pub mod errors;
+pub mod gateway;
 pub mod initialize;
 pub mod manifest;
 pub mod notifications;

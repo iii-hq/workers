@@ -15,22 +15,39 @@ pub const CT_KEY: &str = "http_content_type";
 pub const BODY_KEY: &str = "http_body";
 pub const RPC_KEY: &str = "jsonrpc";
 
+pub const HEADERS_KEY: &str = "http_headers";
+
 /// POST `body` to `world.http_url`, stash the result. Soft-skip
 /// (no-op) when the engine is not connected so `@engine` scenarios
 /// degrade gracefully on hosts without `iii`.
 pub async fn post_jsonrpc(world: &mut McpWorld, body: Value) {
+    send(world, "POST", &[], Some(body)).await;
+}
+
+/// Send `method` with extra `headers` (and a JSON `body`), stash the
+/// status, Content-Type, body, response headers and parsed JSON-RPC.
+pub async fn send(
+    world: &mut McpWorld,
+    method: &str,
+    headers: &[(&str, &str)],
+    body: Option<Value>,
+) {
     if world.iii.is_none() {
         return;
     }
-    let resp = world
+    let method = reqwest::Method::from_bytes(method.as_bytes()).expect("http method");
+    let mut req = world
         .http
-        .post(&world.http_url)
+        .request(method, &world.http_url)
         .header("content-type", "application/json")
-        .header("accept", "text/event-stream")
-        .body(body.to_string())
-        .send()
-        .await
-        .expect("POST /mcp");
+        .header("accept", "text/event-stream");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    if let Some(b) = body {
+        req = req.body(b.to_string());
+    }
+    let resp = req.send().await.expect("request to /mcp");
     let status = resp.status().as_u16();
     let ct = resp
         .headers()
@@ -38,12 +55,24 @@ pub async fn post_jsonrpc(world: &mut McpWorld, body: Value) {
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
+    let mut stashed = serde_json::Map::new();
+    for (k, v) in resp.headers() {
+        if let Ok(v) = v.to_str() {
+            stashed.insert(
+                k.as_str().to_ascii_lowercase(),
+                Value::String(v.to_string()),
+            );
+        }
+    }
     let text = resp.text().await.expect("body text");
 
     world
         .stash
         .insert(STATUS_KEY.into(), Value::Number(status.into()));
     world.stash.insert(CT_KEY.into(), Value::String(ct));
+    world
+        .stash
+        .insert(HEADERS_KEY.into(), Value::Object(stashed));
     world
         .stash
         .insert(BODY_KEY.into(), Value::String(text.clone()));
@@ -55,6 +84,16 @@ pub async fn post_jsonrpc(world: &mut McpWorld, body: Value) {
             world.stash.remove(RPC_KEY);
         }
     }
+}
+
+/// A response header from the last request, lowercase name.
+pub fn last_header(world: &McpWorld, name: &str) -> Option<String> {
+    world
+        .stash
+        .get(HEADERS_KEY)?
+        .get(name)?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// Strip the SSE envelope from `body` and return the JSON-RPC payload.

@@ -20,7 +20,11 @@ use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::OnceCell;
 
-use iii_mcp::{config::McpConfig, functions};
+use iii_mcp::config::{McpConfig, ToolMode};
+use iii_mcp::engine::SdkEngine;
+use iii_mcp::functions;
+use iii_mcp::rbac_guard::RbacMode;
+use iii_mcp::sessions::{SessionLimits, Sessions};
 
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 const DEFAULT_HTTP_URL: &str = "http://127.0.0.1:3000/mcp";
@@ -80,29 +84,43 @@ pub async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     None
 }
 
-/// Register `mcp::handler` and observe `http::on-request` with it at
-/// `cfg.api_path`. Mirrors the boot sequence in
-/// [`mcp/src/main.rs`](../../../src/main.rs). A route that does not become
-/// active is logged but not propagated so a polluted engine (e.g. a stale
-/// `mcp` binary still holding the route) degrades to a soft skip rather
-/// than a hard failure inside cucumber's `before` hook.
+/// Register `mcp::handler` and `mcp::observed` and observe
+/// `http::on-request` for `POST`/`DELETE` at `cfg.api_path`. Mirrors the boot
+/// sequence in [`mcp/src/main.rs`](../../../src/main.rs), minus the RBAC
+/// check: the harness connects straight to the engine, so it runs in the
+/// `Dangerous` mode the escape hatch would select. Tools are `both`, so the
+/// per-function scenarios still cover the hidden-prefix floor. A route that
+/// does not become active is logged, not propagated, so a polluted engine
+/// degrades to a soft skip.
 async fn register_bridge(iii: &Arc<IIIClient>) {
-    let cfg = Arc::new(McpConfig::default());
-    functions::register_all(iii, &cfg);
+    let cfg = Arc::new(McpConfig {
+        tools: ToolMode::Both,
+        ..McpConfig::default()
+    });
+    let sessions = Arc::new(Sessions::new(SessionLimits::default()));
+    let ctx = functions::Ctx::new(
+        SdkEngine {
+            client: iii.clone(),
+        },
+        cfg.clone(),
+        sessions,
+        Arc::new(RbacMode::Dangerous),
+    );
+    functions::register_all(iii, &ctx);
 
     let api_path = cfg.api_path.clone();
-    let route = functions::observe_route(iii, &api_path);
-    match tokio::time::timeout(Duration::from_secs(5), route.ready()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => eprintln!(
-            "[warn] mcp BDD harness: the http::on-request route at {api_path} was rejected: \
-             {e}; POST /mcp scenarios may fall through to whatever (if anything) already \
-             serves it on this engine"
-        ),
-        Err(_) => eprintln!(
-            "[warn] mcp BDD harness: the http::on-request route at {api_path} is still \
-             pending after 5s; is the http worker running?"
-        ),
+    for route in functions::observe_routes(iii, &api_path) {
+        match tokio::time::timeout(Duration::from_secs(5), route.ready()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!(
+                "[warn] mcp BDD harness: an http::on-request route at {api_path} was rejected: \
+                 {e}; scenarios may fall through to whatever (if anything) already serves it"
+            ),
+            Err(_) => eprintln!(
+                "[warn] mcp BDD harness: an http::on-request route at {api_path} is still \
+                 pending after 5s; is the http worker running?"
+            ),
+        }
     }
 }
 

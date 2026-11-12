@@ -42,15 +42,7 @@ fn no_hidden_prefix_in_tools(world: &mut McpWorld) {
     // The MCP tool name encoding maps `::` to `__`, so check the
     // matching prefixes too.
     let bad: &[&str] = &[
-        "engine__",
-        "state__",
-        "stream__",
-        "iii.",
-        "iii__",
-        "mcp__",
-        "a2a__",
-        "skills__",
-        "prompts__",
+        "engine__", "state__", "stream__", "iii.", "iii__", "mcp__", "a2a__",
     ];
     for tool in arr {
         let name = tool["name"].as_str().unwrap_or("");

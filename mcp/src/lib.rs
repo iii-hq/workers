@@ -23,11 +23,20 @@
 //!     function registry; honours `hidden_prefixes` / `require_expose`.
 //!   * [`transport`] — encodes JSON-RPC responses as a single SSE frame.
 
+pub mod bus;
 pub mod config;
+pub mod directory_bridge;
+pub mod engine;
 pub mod functions;
+pub mod gateway;
 pub mod handler;
 pub mod jsonrpc;
 pub mod manifest;
-pub mod skills_bridge;
+pub mod origin;
+pub mod rbac_guard;
+pub mod sessions;
 pub mod tools;
 pub mod transport;
+
+#[cfg(test)]
+pub mod testkit;
