@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **Links in Console terminals keep their target.** A program's OSC 8 link (Claude Code's
+  `owner/repo#123`) reached the terminal as text only: tmux knows neither xterm.js nor
+  SwiftTerm by name, so it dropped the link and the text had nowhere to open. The worker's
+  tmux client now declares the `hyperlinks` feature (`-T hyperlinks`, tmux 3.4 and later), so
+  the ADE's terminal and the Apple app get the link itself. Android's emulator (Termux) keeps
+  no OSC 8, so there only a URL the screen shows can be opened.
 - **The running tmux server decides what a command may use.** After tmux was upgraded with
   its server still running, the worker went by the new client's version (`tmux -V`) for what
   the old server accepts; it now goes by the server's own (`#{version}`) once it has looked.
