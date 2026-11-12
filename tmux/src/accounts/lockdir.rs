@@ -59,15 +59,24 @@ pub struct LockId {
     pub path: PathBuf,
     pub dev: u64,
     pub ino: u64,
+    /// When last noted; the worker touches it after that too.
     pub mtime_ms: u64,
+    /// When the directory was made, in nanoseconds, where the file system
+    /// keeps it (macOS, and Linux through `statx` on most file systems).
+    #[serde(default)]
+    pub birth_ns: Option<u64>,
 }
 
-fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
-    meta.modified()
-        .ok()
+/// How long after the journal last noted a lock the worker may still touch
+/// it: a swap stops once it has held its locks for 8 seconds (the slot's
+/// `HOLD_BUDGET`). A directory someone made in its place after it went
+/// stale is at least the shortest stale period (10 s) younger than the
+/// worker's last touch.
+const OWN_TOUCHES: Duration = Duration::from_secs(10);
+
+fn since_epoch(at: std::io::Result<SystemTime>) -> Option<Duration> {
+    at.ok()
         .and_then(|at| at.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|at| at.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 fn identity(path: &Path) -> Option<LockId> {
@@ -77,7 +86,8 @@ fn identity(path: &Path) -> Option<LockId> {
         path: path.to_path_buf(),
         dev: meta.dev(),
         ino: meta.ino(),
-        mtime_ms: mtime_ms(&meta),
+        mtime_ms: since_epoch(meta.modified()).map_or(0, |at| at.as_millis() as u64),
+        birth_ns: since_epoch(meta.created()).map(|at| at.as_nanos() as u64),
     })
 }
 
@@ -116,6 +126,7 @@ impl LockSet {
         stale: Duration,
         deadline: Instant,
     ) -> Result<(), LockError> {
+        sweep_aside(path, stale);
         let mut pause = Duration::from_millis(20);
         // Why a stale lock could not be removed, when it could not.
         let mut stuck: Option<String> = None;
@@ -245,9 +256,9 @@ fn remove_stale(path: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
         .is_ok_and(|now| now.dev() == meta.dev() && now.ino() == meta.ino());
     if !same {
         // Theirs, taken meanwhile: back where it was, unless a new one is
-        // there already.
-        if std::fs::symlink_metadata(path).is_err() {
-            let _ = std::fs::rename(&aside, path);
+        // there already (never over it). Left aside, it goes once stale.
+        if let Err(error) = rename_no_replace(&aside, path) {
+            tracing::warn!(lock = %path.display(), %error, "a lock moved aside was not put back");
         }
         return Ok(());
     }
@@ -255,6 +266,94 @@ fn remove_stale(path: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
         tracing::warn!(lock = %aside.display(), %error, "stale lock moved aside but not removed");
     }
     Ok(())
+}
+
+/// `rename(from, to)` that fails when `to` exists, in one call: Linux's
+/// `renameat2(RENAME_NOREPLACE)`, macOS's `renamex_np(RENAME_EXCL)`. Where
+/// the file system can't (an old kernel, some network file systems), a
+/// look then a plain rename, which a directory made in between would lose
+/// to.
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = |path: &Path| {
+        std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    let (from_c, to_c) = (c(from)?, c(to)?);
+    #[cfg(target_os = "linux")]
+    // SAFETY: both paths are NUL-terminated strings that outlive the call.
+    let done = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from_c.as_ptr(),
+            libc::AT_FDCWD,
+            to_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        ) as libc::c_int
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: both paths are NUL-terminated strings that outlive the call.
+    let done = unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let done = {
+        let _ = (&from_c, &to_c);
+        -1
+    };
+    if done == 0 {
+        return Ok(());
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let error = std::io::Error::last_os_error();
+        let unsupported = matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS) | Some(libc::EINVAL) | Some(libc::ENOTSUP)
+        );
+        if !unsupported {
+            return Err(error);
+        }
+    }
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(std::io::ErrorKind::AlreadyExists.into());
+    }
+    std::fs::rename(from, to)
+}
+
+/// Remove the directories [`remove_stale`] moved aside from `lock`
+/// (`<lock>.stale-<32 hex>`) that are past `stale`: one a crash left
+/// between the rename and the removal, or someone's lock that could not be
+/// put back. Each `rmdir` fails on anything not empty.
+pub fn sweep_aside(lock: &Path, stale: Duration) {
+    let (Some(parent), Some(name)) = (lock.parent(), lock.file_name()) else {
+        return;
+    };
+    let mut prefix = name.to_os_string();
+    prefix.push(".stale-");
+    let prefix = prefix.to_string_lossy().into_owned();
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(tag) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if tag.len() != 32 || !tag.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let age = SystemTime::now()
+            .duration_since(meta.modified().unwrap_or(SystemTime::now()))
+            .unwrap_or_default();
+        if meta.is_dir() && age > stale {
+            let _ = std::fs::remove_dir(&path);
+        }
+    }
 }
 
 /// `rmdir`, only when the directory is still the one taken: a lock removed
@@ -271,14 +370,31 @@ fn release(id: &LockId) {
 }
 
 /// Remove the locks a crashed swap of this worker left (G7): each still
-/// the very directory it took (same device, inode and modification time).
-/// Anything else is someone's lock and stays.
+/// the very directory it took. That is the same device and inode, and the
+/// same birth time where the file system keeps one; where it doesn't, a
+/// modification time within the worker's own touches after the journal
+/// noted it ([`OWN_TOUCHES`]), which a directory someone made in its place
+/// (an inode used again) can't have. Anything else is someone's lock and
+/// stays; one of the worker's not recognised is waited out as stale.
 pub fn reclaim(ids: &[LockId]) {
     for id in ids.iter().rev() {
         if let Some(now) = identity(&id.path) {
-            if now.dev == id.dev && now.ino == id.ino && now.mtime_ms == id.mtime_ms {
+            if is_own(id, &now) {
                 let _ = std::fs::remove_dir(&id.path);
             }
+        }
+    }
+}
+
+fn is_own(noted: &LockId, now: &LockId) -> bool {
+    if now.dev != noted.dev || now.ino != noted.ino {
+        return false;
+    }
+    match (noted.birth_ns, now.birth_ns) {
+        (Some(then), Some(now)) => then == now,
+        _ => {
+            now.mtime_ms >= noted.mtime_ms
+                && now.mtime_ms < noted.mtime_ms + OWN_TOUCHES.as_millis() as u64
         }
     }
 }
@@ -471,6 +587,127 @@ mod tests {
         reclaim(&ids);
         assert!(!ours.exists());
         assert!(theirs.is_dir());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_worker_knows_its_locks_after_touching_them() {
+        let dir = temp("reclaim-touched");
+        let lock = dir.join("ours.lock");
+        let mut set = LockSet::new();
+        set.take(
+            &lock,
+            REFRESH_STALE,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        // The journal noted it, then the swap touched it again, then the
+        // worker crashed.
+        let noted = set.ids();
+        std::thread::sleep(Duration::from_millis(20));
+        set.touch();
+        assert_ne!(set.ids()[0].mtime_ms, noted[0].mtime_ms);
+        std::mem::forget(set);
+        reclaim(&noted);
+        assert!(!lock.exists(), "reclaimed at once, not waited out");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_inode_used_again_is_not_the_worker_s_lock() {
+        let noted = LockId {
+            path: "/h/.claude/.oauth_refresh.lock".into(),
+            dev: 1,
+            ino: 7,
+            mtime_ms: 1_000_000,
+            birth_ns: None,
+        };
+        let touched = LockId {
+            mtime_ms: 1_000_000 + 8_000,
+            ..noted.clone()
+        };
+        assert!(is_own(&noted, &touched), "touched by the swap");
+        // Made by someone once the worker's had gone stale.
+        let theirs = LockId {
+            mtime_ms: 1_000_000 + 15_000,
+            ..noted.clone()
+        };
+        assert!(!is_own(&noted, &theirs));
+        assert!(!is_own(
+            &noted,
+            &LockId {
+                ino: 8,
+                ..noted.clone()
+            }
+        ));
+        // With birth times, those decide.
+        let born = LockId {
+            birth_ns: Some(5),
+            ..noted.clone()
+        };
+        assert!(is_own(
+            &born,
+            &LockId {
+                mtime_ms: 9_999_999,
+                ..born.clone()
+            }
+        ));
+        assert!(!is_own(
+            &born,
+            &LockId {
+                birth_ns: Some(6),
+                ..born.clone()
+            }
+        ));
+    }
+
+    #[test]
+    fn a_lock_put_back_never_replaces_a_new_one() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = temp("put-back");
+        let (aside, lock) = (dir.join("x.lock.stale-1"), dir.join("x.lock"));
+        std::fs::create_dir(&aside).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        let theirs = std::fs::metadata(&lock).unwrap().ino();
+        let refused = rename_no_replace(&aside, &lock).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::metadata(&lock).unwrap().ino(), theirs);
+        assert!(aside.is_dir());
+        std::fs::remove_dir(&lock).unwrap();
+        rename_no_replace(&aside, &lock).unwrap();
+        assert!(lock.is_dir() && !aside.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn what_was_moved_aside_goes_once_stale() {
+        let dir = temp("sweep");
+        let lock = dir.join(".storage-write.lock");
+        let aside = |tag: &str| dir.join(format!(".storage-write.lock.stale-{tag}"));
+        let old = aside(&"a".repeat(32));
+        let fresh = aside(&"b".repeat(32));
+        let other = aside("not-ours");
+        let full = aside(&"c".repeat(32));
+        for path in [&old, &fresh, &other, &full] {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::write(full.join("x"), "").unwrap();
+        for path in [&old, &other, &full] {
+            age(path, STORAGE_STALE * 2);
+        }
+        // Taking the lock sweeps first.
+        let mut set = LockSet::new();
+        set.take(
+            &lock,
+            STORAGE_STALE,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(!old.exists(), "ours, stale: gone");
+        assert!(fresh.is_dir(), "not stale yet");
+        assert!(other.is_dir(), "not a name the worker gives");
+        assert!(full.is_dir(), "not empty: not a lock");
+        drop(set);
         let _ = std::fs::remove_dir_all(dir);
     }
 

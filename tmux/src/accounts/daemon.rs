@@ -75,7 +75,21 @@ pub async fn start(collector: &Arc<Collector>, accounts: &Arc<Accounts>) {
         }
     }
     let relink = accounts.clone();
-    let _ = tokio::task::spawn_blocking(move || relink.relink_all()).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        relink.relink_all();
+        // Locks the worker moved aside and could not remove (it stopped
+        // in between, or someone's could not go back): gone once stale.
+        if let Some(stores) = relink.stores() {
+            let folders: Vec<super::slot::Place> = relink
+                .registry()
+                .accounts
+                .iter()
+                .map(|entry| super::slot::Place::Folder(entry.id.clone()))
+                .collect();
+            stores.sweep_aside(&folders);
+        }
+    })
+    .await;
     accounts.watch_slot().await;
 }
 

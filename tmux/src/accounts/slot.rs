@@ -241,6 +241,22 @@ impl<'a> Stores<'a> {
             .and_then(account_uuid)
     }
 
+    /// Remove what the worker moved aside from the locks of the slot and of
+    /// `folders` (`<lock>.stale-*`) once past their stale period: at start.
+    /// Every lock taken does the same for itself first.
+    pub fn sweep_aside(&self, folders: &[Place]) {
+        for place in std::iter::once(&Place::Slot).chain(folders) {
+            let dir = self.dir(place);
+            lockdir::sweep_aside(&dir.join(lockdir::REFRESH), lockdir::REFRESH_STALE);
+            lockdir::sweep_aside(&lockdir::legacy_path(&dir), lockdir::LEGACY_STALE);
+            lockdir::sweep_aside(&dir.join(lockdir::STORAGE), lockdir::STORAGE_STALE);
+            lockdir::sweep_aside(
+                &lockdir::config_lock_path(&self.json(place)),
+                lockdir::CONFIG_STALE,
+            );
+        }
+    }
+
     /// Take the locks of the slot, then of `folders`, in Claude Code's order
     /// (refresh, legacy, storage), waiting at most [`lockdir::WAIT`].
     fn lock_all(&self, folders: &[&Place]) -> Result<(LockSet, PathBuf), SwapError> {
