@@ -224,11 +224,7 @@ async fn keep_observed(
         );
         observer = observe_logged(&iii, &source, target, &options);
         if let Some(binding) = &binding {
-            if target == hooks::TURN_COMPLETED_FN {
-                binding.install_completion(observer.clone());
-            } else {
-                binding.install(observer.clone());
-            }
+            binding.install(observer.clone());
         }
     }
 }
@@ -362,13 +358,9 @@ async fn main() -> Result<()> {
         hooks::EXTRACTION_QUEUE,
     );
     for (source, target, options) in seam_observers(extraction_id) {
-        if target == hooks::PRE_GENERATE_FN || target == hooks::TURN_COMPLETED_FN {
+        if target == hooks::PRE_GENERATE_FN {
             let observer = observe_logged(&iii, &source, target, &options);
-            if target == hooks::TURN_COMPLETED_FN {
-                deps.hook_binding.install_completion(observer.clone());
-            } else {
-                deps.hook_binding.install(observer.clone());
-            }
+            deps.hook_binding.install(observer.clone());
             tokio::spawn(keep_observed(
                 iii.clone(),
                 observer,
@@ -419,7 +411,17 @@ async fn main() -> Result<()> {
 fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     memory::hook_binding::register_pre_generate(iii, deps);
 
-    memory::hook_binding::register_turn_completed(iii, deps);
+    let d = deps.clone();
+    iii.register_function(
+        hooks::TURN_COMPLETED_FN,
+        RegisterFunction::new_async(move |delivered: Delivered<hooks::TurnCompletedInput>| {
+            let d = d.clone();
+            let input = delivered_event(delivered).unwrap_or_default();
+            async move { hooks::turn_completed(&d, input).await }
+        })
+        .description(hooks::TURN_COMPLETED_DESC)
+        .metadata(json!({ "internal": true })),
+    );
 
     let d = deps.clone();
     iii.register_function(

@@ -890,15 +890,8 @@ mod productive {
                         let id = request["id"].as_str().unwrap();
                         assert!(matches!(
                             id,
-                            "memory::on-item-changed"
-                                | "memory::on-bank-changed"
-                                | memory::events::ON_EXTRACTION_DECISION_FN
+                            "memory::on-item-changed" | "memory::on-bank-changed"
                         ));
-                        if id == memory::events::ON_EXTRACTION_DECISION_FN {
-                            assert_eq!(request["private"], true);
-                            assert!(request["request_format"].is_object());
-                            assert_eq!(request["request_format"], request["response_format"]);
-                        }
                         let registered = json!({"type":"functionregistered","id":id,
                             "namespace":"default","revision":1,"local_dispatch":false,
                             "observers":[{"id":format!("offline-{id}"),"target":"fixture::sink","filters":{}}]});
