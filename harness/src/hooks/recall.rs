@@ -375,7 +375,9 @@ async fn update_ledger(
 ) -> Result<(), HarnessError> {
     let mut old = crate::state::state_get(iii, SCOPE, &key(session), timeout).await?;
     let mut stalls = 0;
-    for attempt in 1_u64.. {
+    // A burst of writers drains well inside this; a ledger that never settles
+    // must not hold a delivery, an edit or a finalizer forever.
+    for attempt in 1_u64..=64 {
         let Some(value) = edit(&old)? else {
             return Ok(());
         };

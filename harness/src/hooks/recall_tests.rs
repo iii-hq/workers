@@ -19,6 +19,8 @@ struct Data {
     extraction_cas_conflicts: usize,
     /// Another writer's ledger, stored just before the next ledger CAS lands.
     ledger_race: Option<Value>,
+    /// Another writer lands before every ledger CAS: the ledger never settles.
+    ledger_churn: u64,
 }
 impl Data {
     fn get(&self, scope: &str, key: &str) -> Value {
@@ -59,6 +61,20 @@ impl Data {
                 if scope == SCOPE {
                     if let Some(raced) = self.ledger_race.take() {
                         self.state.insert((scope.into(), key.into()), raced);
+                    }
+                    if self.ledger_churn > 0 {
+                        self.ledger_churn += 1;
+                        let churn = Receipt {
+                            session_id: key.into(),
+                            entry_id: format!("churn-{}", self.ledger_churn),
+                            channel: DeliveryChannel::Notification,
+                            full_text_sha256: None,
+                            query: None,
+                            continuation: None,
+                            extraction: Vec::new(),
+                        };
+                        self.state
+                            .insert((scope.into(), key.into()), json!([churn]));
                     }
                 }
                 let old = self.get(scope, key);
@@ -1423,3 +1439,25 @@ async fn recall_context_reaches_only_pre_generate_and_is_never_stored() {
 
 #[path = "extraction_provenance_tests.rs"]
 mod extraction_provenance_tests;
+
+#[tokio::test]
+async fn recall_ledger_that_never_settles_gives_up_and_still_delivers() {
+    let stack = Stack::new().await;
+    stack
+        .reset_turn("s", crate::types::turn::TurnStatus::Completed)
+        .await;
+    stack.data.lock().unwrap().ledger_churn = 1;
+    let send = crate::functions::send::inject(
+        &stack.deps,
+        "s",
+        AgentMessage::user_text("Mine"),
+        Some("mine"),
+        None,
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), send)
+        .await
+        .expect("a ledger that never settles must not hold the delivery")
+        .unwrap();
+    let rounds = ledger_calls(&stack, "harness::state::compare-and-set");
+    assert!((1..=64).contains(&rounds), "{rounds} ledger rounds");
+}
