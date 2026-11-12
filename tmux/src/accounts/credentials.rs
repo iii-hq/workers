@@ -351,6 +351,15 @@ fn run_security(
         // A failed write shows in the exit code.
         let _ = stdin.write_all(input);
     }
+    // Read while it runs: a store larger than the pipe's buffer (16 KiB on
+    // macOS) would block `security` on its write until it is read.
+    let reader = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            let _ = pipe.read_to_string(&mut out);
+            out
+        })
+    });
     let started = std::time::Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -358,16 +367,21 @@ fn run_security(
             Ok(None) if started.elapsed() > SECURITY_TIMEOUT => {
                 let _ = child.kill();
                 let _ = child.wait();
+                // Its end of the pipe is closed: the reader ends.
+                drop(reader);
                 return Err("The Keychain did not answer.".to_string());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(_) => return Err("The Keychain can't be reached.".to_string()),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("The Keychain can't be reached.".to_string());
+            }
         }
     };
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
-    }
+    let stdout = reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
     Ok((status.code(), stdout))
 }
 
@@ -705,6 +719,29 @@ mod tests {
         .unwrap();
         assert!(!cleared.signed_in());
         assert!(chain_id(None).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn security_printing_more_than_a_pipe_holds_is_read_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("tmux-creds-big-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A store with many MCP sign-ins, printed whole: 200 KB, more than
+        // any pipe buffer.
+        let program = dir.join("security");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' 'a'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let (code, out) = run_security(&program, &["find-generic-password"], None).unwrap();
+        assert_eq!(code, Some(0));
+        assert_eq!(out.len(), 200_000);
+        assert!(started.elapsed() < SECURITY_TIMEOUT);
         let _ = std::fs::remove_dir_all(dir);
     }
 
