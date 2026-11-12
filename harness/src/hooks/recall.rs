@@ -146,13 +146,8 @@ pub(super) async fn acknowledge_extraction(
     let Some(entry_id) = context["source"]["entry_id"].as_str() else {
         return Ok(());
     };
-    for _ in 0..8 {
-        let old = crate::state::state_get(iii, SCOPE, session, timeout).await?;
-        if old.is_null() {
-            return Ok(());
-        }
-        let mut rows: Vec<Receipt> = serde_json::from_value(old.clone())
-            .map_err(|e| HarnessError::State(format!("invalid extraction ledger: {e}")))?;
+    update_ledger(iii, session, timeout, |old| {
+        let mut rows = ledger(old)?;
         // A turn's first acknowledged source/policy is immutable. A later
         // source cannot borrow that policy, even if the first row was edited.
         // Checked before any transcript work: every later step is a no-op.
@@ -162,17 +157,17 @@ pub(super) async fn acknowledge_extraction(
             .flat_map(|r| &r.extraction)
             .any(|p| p.turn_id == turn)
         {
-            return Ok(());
+            return Ok(None);
         }
         let Some(entry) = entries.iter().find(|e| e.entry_id == entry_id) else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(digest) = full_stamp(entry) else {
-            return Ok(());
+            return Ok(None);
         };
         let current_query = entry.message.as_ref().and_then(|m| query(entry_id, m));
         if context["query"] != serde_json::to_value(&current_query).expect("source query") {
-            return Ok(());
+            return Ok(None);
         }
         let current_query = current_query.map(stamp);
         let Some(row) = rows.iter_mut().find(|r| {
@@ -183,7 +178,7 @@ pub(super) async fn acknowledge_extraction(
                 && r.full_text_sha256.as_ref() == Some(&digest)
                 && r.query == current_query
         }) else {
-            return Ok(());
+            return Ok(None);
         };
         let (policy, bank, layer, agent, derived) = acknowledged_policy(&response["annotations"]);
         row.extraction.push(ExtractionAttestation {
@@ -201,23 +196,9 @@ pub(super) async fn acknowledge_extraction(
         });
         let excess = row.extraction.len().saturating_sub(MAX_EXTRACTION_TURNS);
         drop(row.extraction.drain(..excess));
-        if crate::state::cas_value(
-            iii,
-            SCOPE,
-            session,
-            Some(old),
-            serde_json::to_value(rows).expect("extraction ledger"),
-            timeout,
-        )
-        .await?
-        .is_none()
-        {
-            return Ok(());
-        }
-    }
-    Err(HarnessError::State(
-        "concurrent extraction acknowledgement".into(),
-    ))
+        Ok(Some(serde_json::to_value(rows).expect("extraction ledger")))
+    })
+    .await
 }
 
 /// What [`acknowledge_extraction`] reads of a hook input: never the prompt,
@@ -255,13 +236,8 @@ async fn finish_extraction_inner(
         crate::types::turn::TurnStatus::Cancelled => "cancelled",
         _ => return Ok(()),
     };
-    for _ in 0..8 {
-        let old = crate::state::state_get(iii, SCOPE, &record.session_id, timeout).await?;
-        if old.is_null() {
-            return Ok(());
-        }
-        let mut rows: Vec<Receipt> = serde_json::from_value(old.clone())
-            .map_err(|e| HarnessError::State(format!("invalid extraction ledger: {e}")))?;
+    update_ledger(iii, &record.session_id, timeout, |old| {
+        let mut rows = ledger(old)?;
         let mut changed = false;
         for row in &mut rows {
             for proof in &mut row.extraction {
@@ -280,24 +256,9 @@ async fn finish_extraction_inner(
                 }
             }
         }
-        if !changed {
-            return Ok(());
-        }
-        if crate::state::cas_value(
-            iii,
-            SCOPE,
-            &record.session_id,
-            Some(old),
-            serde_json::to_value(rows).expect("extraction boundary"),
-            timeout,
-        )
-        .await?
-        .is_none()
-        {
-            return Ok(());
-        }
-    }
-    Err(HarnessError::State("concurrent extraction boundary".into()))
+        Ok(changed.then(|| serde_json::to_value(rows).expect("extraction boundary")))
+    })
+    .await
 }
 
 pub(super) async fn project_extraction_history(
@@ -392,6 +353,53 @@ fn stamp(q: Query) -> QueryStamp {
 
 fn key(session: &str) -> String {
     session.into()
+}
+
+fn ledger(value: &Value) -> Result<Vec<Receipt>, HarnessError> {
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    Vec::deserialize(value)
+        .map_err(|e| HarnessError::State(format!("invalid recall receipt ledger: {e}")))
+}
+
+/// The one read-modify-CAS loop over a session's ledger. `edit` gets the
+/// stored value (null when absent) and returns what to store, or `None` when
+/// nothing changes. A lost CAS returns what is stored, so the retry needs no
+/// second read.
+async fn update_ledger(
+    iii: &iii_sdk::IIIClient,
+    session: &str,
+    timeout: u64,
+    mut edit: impl FnMut(&Value) -> Result<Option<Value>, HarnessError>,
+) -> Result<(), HarnessError> {
+    let mut old = crate::state::state_get(iii, SCOPE, &key(session), timeout).await?;
+    let mut stalls = 0;
+    for attempt in 1_u64.. {
+        let Some(value) = edit(&old)? else {
+            return Ok(());
+        };
+        let expected = (!old.is_null()).then(|| old.clone());
+        let Some(current) =
+            crate::state::cas_value(iii, SCOPE, &key(session), expected, value, timeout).await?
+        else {
+            return Ok(());
+        };
+        // A changed ledger means another writer landed, so a burst of any
+        // size drains; only a store that keeps refusing its own value is stuck.
+        if current == old {
+            stalls += 1;
+            if stalls == 8 {
+                break;
+            }
+        }
+        old = current;
+        // Deterministic 1..=8 ms spacing so a burst does not hammer the hot key.
+        tokio::time::sleep(std::time::Duration::from_millis(attempt.min(8))).await;
+    }
+    Err(HarnessError::State(
+        "concurrent recall ledger update".into(),
+    ))
 }
 
 fn bounded_receipts(mut rows: Vec<Receipt>, incoming: Receipt) -> Vec<Receipt> {
@@ -505,15 +513,8 @@ pub(crate) async fn record_delivery(
         extraction: Vec::new(),
     };
     let cfg = deps.cfg().await;
-    for _ in 0..8 {
-        let old = crate::state::state_get(&deps.iii, SCOPE, &key(session), cfg.session_timeout_ms)
-            .await?;
-        let rows: Vec<Receipt> = if old.is_null() {
-            Vec::new()
-        } else {
-            serde_json::from_value(old.clone())
-                .map_err(|e| HarnessError::State(format!("invalid recall receipt ledger: {e}")))?
-        };
+    update_ledger(&deps.iii, session, cfg.session_timeout_ms, |old| {
+        let rows = ledger(old)?;
         if let Some(existing) = rows.iter().find(|x| x.entry_id == entry) {
             let mut delivery_only = existing.clone();
             delivery_only.extraction.clear();
@@ -523,32 +524,18 @@ pub(crate) async fn record_delivery(
                 incoming_delivery.full_text_sha256 = None;
             }
             return if delivery_only == incoming_delivery {
-                Ok(())
+                Ok(None)
             } else {
                 Err(HarnessError::InvalidRequest(
                     "delivery entry id already has different provenance".into(),
                 ))
             };
         }
-        let value =
-            serde_json::to_value(bounded_receipts(rows, r.clone())).expect("receipt ledger");
-        if crate::state::cas_value(
-            &deps.iii,
-            SCOPE,
-            &key(session),
-            (!old.is_null()).then_some(old),
-            value,
-            cfg.session_timeout_ms,
-        )
-        .await?
-        .is_none()
-        {
-            return Ok(());
-        }
-    }
-    Err(HarnessError::State(
-        "concurrent recall delivery ledger update".into(),
-    ))
+        Ok(Some(
+            serde_json::to_value(bounded_receipts(rows, r.clone())).expect("receipt ledger"),
+        ))
+    })
+    .await
 }
 
 /// An operator edit can refresh only an existing direct receipt matching the
@@ -562,26 +549,21 @@ pub(crate) async fn edit_direct(
     new_message: &AgentMessage,
 ) -> Result<(), HarnessError> {
     let timeout = deps.cfg().await.session_timeout_ms;
-    for _ in 0..8 {
-        let old = crate::state::state_get(&deps.iii, SCOPE, &key(session), timeout).await?;
-        if old.is_null() {
-            return Ok(());
-        }
-        let mut rows: Vec<Receipt> = serde_json::from_value(old.clone())
-            .map_err(|e| HarnessError::State(format!("invalid recall edit ledger: {e}")))?;
+    update_ledger(&deps.iii, session, timeout, |old| {
+        let mut rows = ledger(old)?;
         let Some(r) = rows
             .iter_mut()
             .find(|r| r.session_id == session && r.entry_id == entry)
         else {
-            return Ok(());
+            return Ok(None);
         };
         if r.channel != DeliveryChannel::Direct {
-            return Ok(());
+            return Ok(None);
         }
         if r.query == query(entry, new_message).map(stamp)
             && r.full_text_sha256 == full_message_stamp(new_message)
         {
-            return Ok(());
+            return Ok(None);
         }
         if r.query != query(entry, old_message).map(stamp)
             || r.full_text_sha256
@@ -598,21 +580,9 @@ pub(crate) async fn edit_direct(
         r.continuation = None;
         // Keep the ack-once tombstone: old digests no longer project, and a
         // source edit must not let the same turn acknowledge a second policy.
-        if crate::state::cas_value(
-            &deps.iii,
-            SCOPE,
-            &key(session),
-            Some(old),
-            serde_json::to_value(rows).expect("edit ledger"),
-            timeout,
-        )
-        .await?
-        .is_none()
-        {
-            return Ok(());
-        }
-    }
-    Err(HarnessError::State("concurrent queued receipt edit".into()))
+        Ok(Some(serde_json::to_value(rows).expect("edit ledger")))
+    })
+    .await
 }
 
 /// Scoped lifecycle cleanup: no global scan, no transcript contents retained.
@@ -620,26 +590,11 @@ pub(crate) async fn edit_direct(
 /// other ledger writer, so it never fails the session deletion.
 pub(crate) async fn purge(deps: &Deps, session: &str) -> Result<(), HarnessError> {
     let timeout = deps.cfg().await.session_timeout_ms;
-    for _ in 0..8 {
-        let old = crate::state::state_get(&deps.iii, SCOPE, &key(session), timeout).await?;
-        if old.is_null()
-            || crate::state::cas_value(
-                &deps.iii,
-                SCOPE,
-                &key(session),
-                Some(old),
-                Value::Null,
-                timeout,
-            )
-            .await?
-            .is_none()
-        {
-            return Ok(());
-        }
-    }
-    Err(HarnessError::State(
-        "concurrent recall ledger update during session deletion".into(),
-    ))
+    // Never parses the ledger: a corrupt one must not block session deletion.
+    update_ledger(&deps.iii, session, timeout, |old| {
+        Ok((!old.is_null()).then_some(Value::Null))
+    })
+    .await
 }
 
 fn envelope(

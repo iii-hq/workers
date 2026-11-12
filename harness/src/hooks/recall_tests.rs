@@ -17,6 +17,8 @@ struct Data {
     /// The recall ledger's reads never answer: a degraded state worker.
     ledger_stalls: bool,
     extraction_cas_conflicts: usize,
+    /// Another writer's ledger, stored just before the next ledger CAS lands.
+    ledger_race: Option<Value>,
 }
 impl Data {
     fn get(&self, scope: &str, key: &str) -> Value {
@@ -54,6 +56,11 @@ impl Data {
                 .map(|(_, v)| v)
                 .collect::<Vec<_>>())),
             "harness::state::compare-and-set" => {
+                if scope == SCOPE {
+                    if let Some(raced) = self.ledger_race.take() {
+                        self.state.insert((scope.into(), key.into()), raced);
+                    }
+                }
                 let old = self.get(scope, key);
                 if scope == SCOPE && self.extraction_cas_conflicts > 0 {
                     self.extraction_cas_conflicts -= 1;
@@ -1238,6 +1245,77 @@ async fn recall_edit_guard_denies_agents_before_rpc_and_preserves_operator_edit(
     assert_eq!(context["source"]["kind"], "direct");
     assert_eq!(context["source"]["entry_id"], row.entry_id);
     assert_eq!(context["query"]["text"], "Operator replacement");
+}
+
+fn ledger_calls(stack: &Stack, function: &str) -> usize {
+    let data = stack.data.lock().unwrap();
+    data.calls
+        .iter()
+        .filter(|(f, p)| f == function && p["scope"] == SCOPE)
+        .count()
+}
+
+fn ledger_entries(stack: &Stack, session: &str) -> Vec<String> {
+    let rows: Vec<Receipt> =
+        serde_json::from_value(stack.data.lock().unwrap().get(SCOPE, session)).unwrap();
+    rows.into_iter().map(|r| r.entry_id).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_ledger_conflict_retries_on_the_value_the_cas_returned() {
+    let stack = Stack::new().await;
+    stack
+        .reset_turn("s", crate::types::turn::TurnStatus::Completed)
+        .await;
+    let raced = Receipt {
+        session_id: "s".into(),
+        entry_id: "raced".into(),
+        channel: DeliveryChannel::Notification,
+        full_text_sha256: None,
+        query: None,
+        continuation: None,
+        extraction: Vec::new(),
+    };
+    stack.data.lock().unwrap().ledger_race = Some(json!([raced]));
+    crate::functions::send::inject(
+        &stack.deps,
+        "s",
+        AgentMessage::user_text("Mine"),
+        Some("mine"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ledger_entries(&stack, "s"), ["raced", "mine"]);
+    // The conflict reply carried the stored ledger: no second read.
+    assert_eq!(ledger_calls(&stack, "harness::state::get"), 1);
+    assert_eq!(ledger_calls(&stack, "harness::state::compare-and-set"), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_ledger_burst_of_concurrent_notifications_keeps_every_receipt() {
+    let stack = Stack::new().await;
+    stack
+        .reset_turn("s", crate::types::turn::TurnStatus::Running)
+        .await;
+    let ids: Vec<String> = (0..24).map(|n| format!("burst-{n}")).collect();
+    let sends = ids.iter().map(|id| {
+        crate::functions::send::inject(
+            &stack.deps,
+            "s",
+            AgentMessage::user_text("Child finished"),
+            Some(id),
+            None,
+        )
+    });
+    for outcome in futures_util::future::join_all(sends).await {
+        outcome.unwrap();
+    }
+    let mut stored = ledger_entries(&stack, "s");
+    stored.sort();
+    let mut expected = ids.clone();
+    expected.sort();
+    assert_eq!(stored, expected);
 }
 
 #[path = "extraction_provenance_tests.rs"]
