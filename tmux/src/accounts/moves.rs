@@ -883,7 +883,19 @@ fn after_late_stop(
                 // Where its account is once no swap is under way: a swap
                 // that runs now moves sign-ins between the folders.
                 let _gate = late.accounts.swap_gate.lock().await;
-                match late.command().await {
+                // One left half-way: the registry may not name the account
+                // the slot holds yet. Started once it is settled (the
+                // pending round settles it).
+                let unsettled = late.accounts.has_journal();
+                if unsettled && Instant::now() < deadline {
+                    continue;
+                }
+                let started = if unsettled {
+                    Err(super::switch::SWAP_UNSETTLED.to_string())
+                } else {
+                    late.command().await
+                };
+                match started {
                     Ok((command, mark)) => {
                         let scope = tmux.pane_scope();
                         let mut commands = Vec::new();

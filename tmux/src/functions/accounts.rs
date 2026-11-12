@@ -123,9 +123,14 @@ pub(super) async fn plan<'a>(
     }
     let accounts = ctx.collector.accounts();
     let gate = accounts.swap_gate.lock().await;
-    accounts
-        .plan_launch(&claude.account, claude.skip_permissions, None)
-        .map(|launch| Some((launch, gate)))
+    let unsettled = accounts.unsettled_swap().await;
+    let launch = accounts.plan_launch(&claude.account, claude.skip_permissions, None)?;
+    if unsettled.is_some_and(|journal| {
+        launch.on_slot || journal.from == launch.account || journal.to == launch.account
+    }) {
+        return Err(crate::accounts::switch::SWAP_UNSETTLED.to_string());
+    }
+    Ok(Some((launch, gate)))
 }
 
 /// Start `launch` in new pane `pane` (running [`HOLD`]): its marks and

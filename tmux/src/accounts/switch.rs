@@ -91,6 +91,10 @@ pub enum SwitchError {
     Failed(String),
 }
 
+/// What waits for a swap left half-way (G7) that could not be settled yet.
+pub const SWAP_UNSETTLED: &str =
+    "A switch of the global account left half-way is being settled; try again in a moment.";
+
 pub const RULES_STALE: &str =
     "The global account changed while the rules decided; nothing was switched.";
 
@@ -260,6 +264,20 @@ impl Accounts {
     pub fn has_journal(&self) -> bool {
         self.stores()
             .is_some_and(|stores| stores.read_journal().is_some())
+    }
+
+    /// A swap left half-way that one more try could not settle (G7).
+    /// Until it is, the registry may not name the account the slot holds,
+    /// and the folders of the two accounts it moves may hold neither
+    /// sign-in: nothing starts or moves on them.
+    pub async fn unsettled_swap(self: &Arc<Self>) -> Option<Journal> {
+        if !self.has_journal() {
+            return None;
+        }
+        if let Err(error) = self.recover().await {
+            tracing::debug!(error = %error.sentence(), "a switch left half-way is not settled yet");
+        }
+        self.stores().and_then(|stores| stores.read_journal())
     }
 
     /// [`Accounts::recover_blocking`] off the async threads.
@@ -1439,6 +1457,31 @@ mod tests {
             chain_of("personal"),
             "Personal's sign-in"
         );
+    }
+
+    #[tokio::test]
+    async fn a_swap_left_half_way_is_settled_before_anything_starts() {
+        let (_home, accounts) = managed("unsettled");
+        {
+            let stores = accounts.stores().unwrap();
+            slot::swap(
+                &stores,
+                "default",
+                "personal",
+                None,
+                &|journal| accounts.commit_swap(journal),
+                Crash::After(3),
+            )
+            .unwrap_err();
+        }
+        // Another worker process holds the swap lock: its swap runs still.
+        let held = accounts.stores().unwrap().hold_swap().unwrap();
+        let unsettled = accounts.unsettled_swap().await;
+        assert!(unsettled.is_some_and(|journal| journal.to == "personal"));
+        assert_eq!(accounts.registry().global, "default");
+        drop(held);
+        assert!(accounts.unsettled_swap().await.is_none(), "settled now");
+        assert_eq!(accounts.registry().global, "personal");
     }
 
     /// Default (Work) swapped out for Personal, as `make_global` does.

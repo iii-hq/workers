@@ -160,7 +160,10 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
             }
             Ok(None) => monitor.poke(),
             Err(error) => {
-                tracing::debug!(error = %error.sentence(), "a switch left half-way is not settled yet")
+                // Nothing moves until it is: the registry may not name the
+                // account the slot holds yet.
+                tracing::debug!(error = %error.sentence(), "a switch left half-way is not settled yet");
+                return;
             }
         }
     }
