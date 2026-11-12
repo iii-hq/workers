@@ -26,7 +26,8 @@ struct PartialToolCall {
 }
 
 pub struct PartialState {
-    text: String,
+    /// One entry per assistant `message` output item, in stream order.
+    texts: Vec<String>,
     thinking: String,
     tool_calls: Vec<PartialToolCall>,
     open_block: Option<OpenBlock>,
@@ -41,7 +42,7 @@ pub struct PartialState {
 impl PartialState {
     pub fn new(warnings: Vec<String>) -> Self {
         PartialState {
-            text: String::new(),
+            texts: Vec::new(),
             thinking: String::new(),
             tool_calls: Vec::new(),
             open_block: None,
@@ -61,7 +62,7 @@ impl PartialState {
     /// Whether any output accumulated (text, thinking, or tool calls) —
     /// distinguishes legitimate close-framing from a truncated/empty stream.
     pub fn has_content(&self) -> bool {
-        !self.text.is_empty() || !self.thinking.is_empty() || !self.tool_calls.is_empty()
+        !self.texts.is_empty() || !self.thinking.is_empty() || !self.tool_calls.is_empty()
     }
 }
 
@@ -107,10 +108,10 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             signature: None,
         });
     }
-    if !state.text.is_empty() {
-        out.push(ContentBlock::Text {
-            text: state.text.clone(),
-        });
+    // A block is only ever empty inside its own TextStart snapshot, where it
+    // tells readers the open block starts empty (not as the previous one).
+    for text in &state.texts {
+        out.push(ContentBlock::Text { text: text.clone() });
     }
     for tc in &state.tool_calls {
         if tc.function_id.is_empty() {
@@ -244,6 +245,9 @@ fn open_text(state: &mut PartialState, model: &str, events: &mut Vec<AssistantMe
     if state.open_block != Some(OpenBlock::Text) {
         close_open_block(state, model, events);
         state.open_block = Some(OpenBlock::Text);
+        // A message item's deltas are contiguous, so (re)opening text always
+        // means a new output item.
+        state.texts.push(String::new());
         events.push(AssistantMessageEvent::TextStart {
             partial: build_partial(state, model),
         });
@@ -330,7 +334,9 @@ pub fn handle_chunk(
                 return events;
             }
             open_text(state, model, &mut events);
-            state.text.push_str(&delta);
+            if let Some(text) = state.texts.last_mut() {
+                text.push_str(&delta);
+            }
             events.push(AssistantMessageEvent::TextDelta {
                 partial: None,
                 delta,
@@ -382,6 +388,25 @@ pub fn handle_chunk(
         }
         n if n.contains("output_item.done") => {
             let item = chunk.get("item").or_else(|| chunk.get("output_item"));
+            // The message item ended: its finished text is authoritative (the
+            // reference client keeps it, not the deltas), and the next
+            // message's text opens a new block.
+            if state.open_block == Some(OpenBlock::Text)
+                && item.and_then(|i| i.get("type")).and_then(Value::as_str) == Some("message")
+            {
+                let done: String = item
+                    .and_then(|i| i.get("content"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| p.get("type").and_then(Value::as_str) == Some("output_text"))
+                    .filter_map(|p| p.get("text").and_then(Value::as_str))
+                    .collect();
+                if let (false, Some(text)) = (done.is_empty(), state.texts.last_mut()) {
+                    *text = done;
+                }
+                close_open_block(state, model, &mut events);
+            }
             if let Some(item) = item
                 .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
             {
@@ -504,6 +529,79 @@ mod tests {
             matches!(&partial.content[0], ContentBlock::Text { text } if text == "Hello"),
             "the End snapshot must carry the cumulative block text"
         );
+    }
+
+    /// The Codex backend can stream several assistant `message` output items
+    /// in one response (a `commentary`-phase preamble, then the
+    /// `final_answer`); each item is its own text block, never glued onto the
+    /// previous one — neither in the Done message nor in the live view
+    /// readers rebuild from the frames.
+    #[test]
+    fn each_message_output_item_is_its_own_text_block() {
+        let msg = |id: &str, phase: &str| json!({"type":"message","id":id,"role":"assistant","phase":phase,"content":[]});
+        let delta =
+            |id: &str, d: &str| json!({"type":"response.output_text.delta","item_id":id,"delta":d});
+        let full = "PROFILE-OK Smoke test acknowledged.";
+        let item_done = |id: &str, phase: &str| {
+            let mut item = msg(id, phase);
+            item["content"] = json!([{"type":"output_text","text":full}]);
+            json!({"type":"response.output_item.done","item":item})
+        };
+        let chunks = [
+            json!({"type":"response.output_item.added","item":msg("msg_1","commentary")}),
+            delta("msg_1", "PROFILE"),
+            delta("msg_1", "-OK Smoke test acknowledged."),
+            json!({"type":"response.output_text.done","item_id":"msg_1","text":full}),
+            json!({"type":"response.content_part.done","item_id":"msg_1","part":{"type":"output_text","text":full}}),
+            item_done("msg_1", "commentary"),
+            json!({"type":"response.output_item.added","item":msg("msg_2","final_answer")}),
+            delta("msg_2", "PROFILE"),
+            delta("msg_2", "-OK Smoke test acknowledged."),
+            json!({"type":"response.output_text.done","item_id":"msg_2","text":full}),
+            item_done("msg_2", "final_answer"),
+            json!({"type":"response.completed"}),
+        ];
+        let texts = |m: &AssistantMessage| -> Vec<String> {
+            m.content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut state = PartialState::new(vec![]);
+        let mut live = llm_router::chat::accumulate::PartialAccumulator::default();
+        let mut events = Vec::new();
+        for c in &chunks {
+            for ev in handle_chunk(c, &mut state, "codex/gpt-6-luna") {
+                live.apply(&ev);
+                for text in texts(&live.current().unwrap()) {
+                    assert!(full.starts_with(&text), "live view glued items: {text:?}");
+                }
+                events.push(ev);
+            }
+        }
+        let Some(AssistantMessageEvent::Done { message }) = events.last() else {
+            panic!("want done, got {:?}", events.last());
+        };
+        assert_eq!(texts(message), vec![full, full]);
+    }
+
+    #[test]
+    fn finished_message_item_text_replaces_its_deltas() {
+        let (_, events) = run(&[
+            json!({"type":"response.output_text.delta","delta":"Hi."}),
+            json!({"type":"response.output_text.delta","delta":"Hi."}),
+            json!({"type":"response.output_item.done","item":{"type":"message","content":[
+                {"type":"output_text","text":"Hi."}
+            ]}}),
+            json!({"type":"response.completed"}),
+        ]);
+        let Some(AssistantMessageEvent::Done { message }) = events.last() else {
+            panic!("want done, got {:?}", events.last());
+        };
+        assert!(matches!(&message.content[..], [ContentBlock::Text { text }] if text == "Hi."));
     }
 
     #[test]
