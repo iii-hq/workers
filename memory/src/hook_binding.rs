@@ -16,6 +16,9 @@ pub const COMPLETION_SOURCE: &str = "harness::on-turn-completed";
 pub struct HookBinding {
     active: Mutex<Option<ObserverHandle>>,
     completion: Mutex<Option<ObserverHandle>>,
+    /// The background history import. One at a time: every step delivers
+    /// the history again, so the next step retries a skipped delivery.
+    import: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl HookBinding {
     pub fn install(&self, handle: ObserverHandle) {
@@ -23,6 +26,13 @@ impl HookBinding {
     }
     pub fn install_completion(&self, handle: ObserverHandle) {
         *self.completion.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    }
+    /// Wait for the background history import, if one runs.
+    pub async fn import_settled(&self) {
+        let import = self.import.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(import) = import {
+            let _ = import.await;
+        }
     }
     fn matches(&self, ctx: &InvocationCtx, iii: &IIIClient, completion: bool) -> bool {
         let (target, active) = if completion {
@@ -242,28 +252,17 @@ pub fn register_pre_generate(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let invocation = iii_sdk::current_invocation();
             let deps = deps.clone();
             async move {
-                // Authenticated once per delivery, and only when it carries
-                // history: only then can that history reach the ledger. A
-                // failed import keeps earlier evidence.
-                let carries_history = input
-                    .recall_context
-                    .as_ref()
-                    .is_some_and(|context| context.get("extraction_history").is_some());
-                if carries_history
-                    && deps
-                        .hook_binding
-                        .authenticates(&deps.iii, invocation.as_ref())
-                        .await
-                {
-                    let import = tokio::time::timeout(
-                        std::time::Duration::from_millis(1500),
-                        crate::extraction_proof::import(&deps, &input),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Err("timed out".into()));
-                    if let Err(error) = import {
-                        tracing::warn!(session_id = %input.session_id, %error, "extraction history import failed");
-                    }
+                // Only a finished failed or cancelled request can add to the
+                // ledger; any other delivery costs this step nothing.
+                let rows = crate::extraction_proof::recoverable(&input);
+                if !rows.is_empty() {
+                    let delivered = hooks::PreGenerateInput {
+                        session_id: input.session_id.clone(),
+                        turn_id: input.turn_id.clone(),
+                        recall_context: input.recall_context.clone(),
+                        ..Default::default()
+                    };
+                    spawn_import(&deps, invocation, delivered, rows);
                 }
                 // The hook never reads delivered history: only the persisted
                 // ledger is authority.
@@ -277,4 +276,51 @@ pub fn register_pre_generate(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         .description(hooks::PRE_GENERATE_DESC)
         .metadata(json!({"internal":true})),
     );
+}
+
+/// Authenticate a delivery once and import its history off the hook path.
+/// Rows the ledger already holds add nothing: no lookup, no path walk. A
+/// failed import keeps earlier evidence.
+fn spawn_import(
+    deps: &Arc<Deps>,
+    invocation: Option<InvocationCtx>,
+    delivered: hooks::PreGenerateInput,
+    rows: Vec<crate::extraction_proof::Row>,
+) {
+    let mut slot = deps
+        .hook_binding
+        .import
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|import| !import.is_finished()) {
+        return;
+    }
+    let deps = deps.clone();
+    // shortcut: a row the cursor already passed is dropped, not held, so each
+    // later delivery of it walks the path again until the harness stops
+    // sending it; remember dismissed rows if that shows in engine load.
+    *slot = Some(tokio::spawn(async move {
+        let store = deps.store().await;
+        let stored =
+            crate::store::run_blocking(|| store.authenticated_history(&delivered.session_id))
+                .await
+                .unwrap_or_default();
+        if rows.iter().all(|row| stored.contains(row))
+            || !deps
+                .hook_binding
+                .authenticates(&deps.iii, invocation.as_ref())
+                .await
+        {
+            return;
+        }
+        let import = tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            crate::extraction_proof::import(&deps, &delivered),
+        )
+        .await
+        .unwrap_or_else(|_| Err("timed out".into()));
+        if let Err(error) = import {
+            tracing::warn!(session_id = %delivered.session_id, %error, "extraction history import failed");
+        }
+    }));
 }

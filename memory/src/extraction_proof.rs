@@ -282,6 +282,26 @@ pub(crate) fn source_page(reply: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The finished failed or cancelled requests a delivery attests: the only
+/// rows that can add recovery authority, so [`import`] runs for no other.
+pub(crate) fn recoverable(input: &PreGenerateInput) -> Vec<Row> {
+    input
+        .recall_context
+        .as_ref()
+        .and_then(|context| context["extraction_history"]["rows"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|row| Row::deserialize(row).ok())
+        .filter(|row| {
+            row.attestation.terminal.exchange_finished
+                && matches!(
+                    row.attestation.terminal.status.as_str(),
+                    "failed" | "cancelled"
+                )
+        })
+        .collect()
+}
+
 /// Entire delivery is validated before any write. Unknown/missing never erases
 /// earlier evidence, changes its bank, or advances a cursor.
 /// The caller authenticated the delivery first.

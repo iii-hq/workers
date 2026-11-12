@@ -1032,11 +1032,11 @@ impl Store {
         remove_if_exists(&self.extraction_plan_path(&pending.source_key(session)))
     }
 
-    /// Delete every `.extraction` record `stale` selects by its parsed key and
-    /// its value. A rare path (session delete, bank trash): it scans.
+    /// Delete every `.extraction` record `stale` selects by its parsed key.
+    /// A rare path (session delete, bank trash): it scans.
     fn purge_extraction(
         &self,
-        stale: impl Fn(&[serde_json::Value], &serde_json::Value) -> bool,
+        stale: impl Fn(&[serde_json::Value]) -> bool,
     ) -> Result<(), MemoryError> {
         let _lock = extraction_lock();
         let entries = match std::fs::read_dir(self.root.join(".extraction")) {
@@ -1061,7 +1061,7 @@ impl Store {
                 .as_str()
                 .and_then(|key| serde_json::from_str(key).ok())
                 .unwrap_or_default();
-            if stale(&key, &record["plan"]) {
+            if stale(&key) {
                 remove_if_exists(&path)?;
             }
         }
@@ -1070,31 +1070,18 @@ impl Store {
 
     /// A deleted session's pending slot, ranges, history ledger and plans.
     pub fn purge_session_extraction(&self, session: &str) -> Result<(), MemoryError> {
-        self.purge_extraction(|key, _| match key {
+        self.purge_extraction(|key| match key {
             [owner, ..] if key.len() == PLAN_KEY_LEN => owner == session,
             [_, owner] => owner == session,
             _ => false,
         })
     }
 
-    /// Plans that read a trashed bank: written to it, teaching its agent, or
-    /// layered over it. The layer is the default bank, unknown here, so any
-    /// layered plan goes: a dropped plan costs one model call on a retry.
+    /// Plans of runs into a trashed bank. A run that only reads or teaches
+    /// it keeps its plan: replaying that plan is what keeps its receipts
+    /// matching its effects, and the plan goes when the run completes.
     fn purge_bank_plans(&self, bank: &str) -> Result<(), MemoryError> {
-        let agent_bank = |agent: &serde_json::Value| {
-            agent
-                .as_str()
-                .is_some_and(|agent| crate::scope::agent_bank(agent) == bank)
-        };
-        self.purge_extraction(|key, plan| {
-            key.len() == PLAN_KEY_LEN
-                && (key[1] == bank
-                    || key[2] == true
-                    || agent_bank(&key[3])
-                    || plan["agents"]
-                        .as_array()
-                        .is_some_and(|agents| agents.iter().any(agent_bank)))
-        })
+        self.purge_extraction(|key| key.len() == PLAN_KEY_LEN && key[1] == bank)
     }
 
     /// Open the root, verify it is writable (a probe file — an unwritable
@@ -1158,13 +1145,15 @@ impl Store {
         self.ensure_bank_inner(name, description, false).await
     }
 
-    /// Automatic extraction cannot undo a concurrent explicit deletion.
+    /// Automatic extraction cannot undo a concurrent explicit deletion,
+    /// except of `default`, which materializes on use like everywhere else.
     /// The policy check shares the bank-map lock with `trash_bank`.
     pub(crate) async fn ensure_extraction_bank(
         &self,
         name: &str,
+        default: &str,
     ) -> Result<(Arc<Bank>, bool), MemoryError> {
-        self.ensure_bank_inner(name, None, true).await
+        self.ensure_bank_inner(name, None, name != default).await
     }
 
     async fn ensure_bank_inner(

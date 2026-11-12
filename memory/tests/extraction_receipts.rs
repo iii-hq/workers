@@ -594,7 +594,7 @@ async fn a_stored_record_never_fails_an_extraction_effect() {
 }
 
 #[tokio::test]
-async fn trashing_a_bank_purges_the_plans_that_read_it() {
+async fn trashing_a_bank_purges_only_the_plans_of_runs_into_it() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().into()).unwrap();
     store.ensure_bank("private", None).await.unwrap();
@@ -619,9 +619,9 @@ async fn trashing_a_bank_purges_the_plans_that_read_it() {
     store.trash_bank("private").await.unwrap();
     assert_eq!(store.extraction_plan(&into_private).unwrap(), None);
     assert!(store.extraction_plan(&elsewhere).unwrap().is_some());
-    // A plan teaching an agent goes with the agent's bank.
+    // A plan teaching an agent stays: its replay drops only the agent's items.
     store.ensure_bank("agent-helper", None).await.unwrap();
     store.trash_bank("agent-helper").await.unwrap();
-    assert_eq!(store.extraction_plan(&teaching).unwrap(), None);
+    assert!(store.extraction_plan(&teaching).unwrap().is_some());
     assert!(store.extraction_plan(&elsewhere).unwrap().is_some());
 }

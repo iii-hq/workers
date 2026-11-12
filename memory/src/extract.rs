@@ -1796,10 +1796,12 @@ async fn execute_run(
         items
     };
     // An agent item naming no listed agent has no bank to go to: never the
-    // user's or the repository's in its place.
-    let items: Vec<ExtractedItem> = items
+    // user's or the repository's in its place. Each item keeps its index in
+    // the plan, which its receipt names: a dropped item never shifts the rest.
+    let items: Vec<(usize, ExtractedItem)> = items
         .into_iter()
-        .filter(|i| !i.is_agent() || i.agent_in(&agents).is_some())
+        .enumerate()
+        .filter(|(_, i)| !i.is_agent() || i.agent_in(&agents).is_some())
         .collect();
     if items.is_empty() {
         // Nothing to write: the run is done, advance past it.
@@ -1819,7 +1821,7 @@ async fn execute_run(
         return Err("extraction bank deleted during run".into());
     }
     let (bank, created) = store
-        .ensure_extraction_bank(bank_name)
+        .ensure_extraction_bank(bank_name, &cfg.default_bank)
         .await
         .map_err(|e| e.to_string())?;
     if created {
@@ -1828,14 +1830,11 @@ async fn execute_run(
     // The layer, when a known memory lives there or an item goes up into it.
     let writes_up = items
         .iter()
-        .any(|i| i.is_user() && (cfg.rule_learning_enabled || !i.is_rule()));
+        .any(|(_, i)| i.is_user() && (cfg.rule_learning_enabled || !i.is_rule()));
     let layer = match layer_name.filter(|_| writes_up || !layered.is_empty()) {
         Some(name) => {
-            if name != cfg.default_bank && store.is_deleted(name) {
-                return Err("extraction layer deleted during run".into());
-            }
             let (b, created) = store
-                .ensure_extraction_bank(name)
+                .ensure_extraction_bank(name, &cfg.default_bank)
                 .await
                 .map_err(|e| e.to_string())?;
             if created {
@@ -1849,8 +1848,8 @@ async fn execute_run(
     let mut agent_banks: Vec<(String, Arc<Bank>)> = Vec::new();
     let teaches = items
         .iter()
-        .filter(|i| cfg.rule_learning_enabled || !i.is_rule())
-        .filter_map(|i| i.agent_in(&agents));
+        .filter(|(_, i)| cfg.rule_learning_enabled || !i.is_rule())
+        .filter_map(|(_, i)| i.agent_in(&agents));
     for name in teaches
         .map(crate::scope::agent_bank)
         .collect::<BTreeSet<_>>()
@@ -1859,7 +1858,7 @@ async fn execute_run(
             return Err("extraction agent bank deleted during run".into());
         }
         let (b, created) = store
-            .ensure_extraction_bank(&name)
+            .ensure_extraction_bank(&name, &cfg.default_bank)
             .await
             .map_err(|e| e.to_string())?;
         if created {
@@ -1876,8 +1875,7 @@ async fn execute_run(
     // Standing instructions graduate straight into the always-injected
     // `learned` rule (visible + editable in the rules tab) instead of the
     // recall pool — Mike's loop: correct in chat, review the rules page.
-    let (rules, items): (Vec<ExtractedItem>, Vec<ExtractedItem>) =
-        items.into_iter().partition(ExtractedItem::is_rule);
+    let (rules, items): (Vec<_>, Vec<_>) = items.into_iter().partition(|(_, i)| i.is_rule());
     if cfg.rule_learning_enabled && !rules.is_empty() {
         // Redacted like memories, so a re-observed rule fingerprints the
         // same as its stored (redacted) line. A rule for the user wherever
@@ -1886,7 +1884,7 @@ async fn execute_run(
         // bank it lands in ([`lands`]: an agent's retires none listed).
         let additions: Vec<(&str, String, Option<String>)> = rules
             .iter()
-            .filter_map(|r| {
+            .filter_map(|(_, r)| {
                 let text = crate::redact::redact(r.text.trim()).text;
                 let target = learned_target(known.len(), &learned, r.replaces)
                     .filter(|(line, _)| may_correct(line, &text));
@@ -1981,11 +1979,7 @@ async fn execute_run(
     }
 
     let mut saved = 0usize;
-    for (effect_index, mut item) in items
-        .into_iter()
-        .take(cfg.max_memories_per_turn)
-        .enumerate()
-    {
+    for (effect_index, mut item) in items.into_iter().take(cfg.max_memories_per_turn) {
         // Redact before the fingerprint and before normalization, like
         // memory::save.
         item.text = crate::redact::redact(item.text.trim()).text;
@@ -2015,8 +2009,9 @@ async fn execute_run(
             .chain(layer.as_ref().map(|(name, bank)| (*name, bank)))
             .chain(agent_banks.iter().map(|(name, bank)| (name.as_str(), bank)))
         {
-            let receipt = json!([source, name, effect_index]).to_string();
-            effect_seen |= destination.extraction_seen(&receipt).await;
+            effect_seen |= destination
+                .extraction_seen(&effect_receipt(&source, name, effect_index))
+                .await;
         }
         if effect_seen {
             continue;
@@ -2046,7 +2041,7 @@ async fn execute_run(
                 .await
             }
         };
-        let receipt = json!([source, at_name, effect_index]).to_string();
+        let receipt = effect_receipt(&source, at_name, effect_index);
         if at.extraction_seen(&receipt).await {
             continue;
         }
@@ -2125,6 +2120,12 @@ async fn execute_run(
         }
     }
     Ok(true)
+}
+
+/// The receipt id of a run's `effect`-th plan item in `bank`: a fixed-size
+/// digest, since the run's source key holds every entry id of the run.
+pub fn effect_receipt(source: &str, bank: &str, effect: usize) -> String {
+    crate::extraction_proof::sha256(json!([source, bank, effect]).to_string().as_bytes())
 }
 
 /// A known memory `text` re-observed, live and unpinned: `(m, true)`

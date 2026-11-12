@@ -21,6 +21,7 @@ struct Fixture {
     queued: Vec<Value>,
     cursor: Value,
     prompts: Vec<String>,
+    calls: Vec<String>,
 }
 struct Stack {
     deps: Arc<Deps>,
@@ -103,6 +104,7 @@ impl Stack {
                             }
                             "invokefunction" => {
                                 let function = request["function_id"].as_str().unwrap();
+                                replies.lock().unwrap().calls.push(function.to_owned());
                                 let result = match function {
                                     "engine::functions::info" if replies.lock().unwrap().lookup == "function" => Value::Null,
                                     "engine::workers::info" if replies.lock().unwrap().lookup == "worker" => Value::Null,
@@ -189,6 +191,8 @@ impl Stack {
             .await
             .unwrap()
             .unwrap();
+        // The hook answers first; its history import runs in the background.
+        self.deps.hook_binding.import_settled().await;
         assert!(response["error"].is_null(), "{response}");
         assert_eq!(response["result"]["decision"], "continue");
         response
@@ -450,6 +454,46 @@ async fn registered_receiver_fails_closed_for_states_and_lookups() {
         );
     }
     assert!(stack.fixture.lock().unwrap().queued.is_empty());
+}
+
+#[tokio::test]
+async fn a_delivery_with_nothing_new_to_recover_costs_no_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    let looked_up = || {
+        let calls = std::mem::take(&mut stack.fixture.lock().unwrap().calls);
+        calls
+            .iter()
+            .any(|c| c == "engine::functions::info" || c == "session::messages")
+    };
+    let mut completed = input("completed");
+    completed["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]
+        ["status"] = json!("completed");
+    stack
+        .invoke(completed, "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(!looked_up());
+    assert!(stack
+        .deps
+        .store()
+        .await
+        .extraction_plan(&key())
+        .unwrap()
+        .is_none());
+    stack
+        .invoke(input("failed"), "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(looked_up());
+    let stored = stack.deps.store().await.extraction_plan(&key()).unwrap();
+    // The same failed request delivered again on the next step is already held.
+    stack
+        .invoke(input("failed"), "owner-one", Some(stack.handle.id()))
+        .await;
+    assert!(!looked_up());
+    assert_eq!(
+        stack.deps.store().await.extraction_plan(&key()).unwrap(),
+        stored
+    );
 }
 
 #[tokio::test]
@@ -1049,20 +1093,14 @@ async fn an_unfinished_turn_never_authorizes_recovery_nor_stops_the_next_turn() 
     unfinished["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]
         ["exchange_finished"] = json!(false);
     stack
-        .invoke(unfinished.clone(), "owner-one", Some(stack.handle.id()))
-        .await;
-    let before = stack.deps.store().await.extraction_plan(&key()).unwrap();
-    assert!(before.is_some());
-    assert!(stack.fixture.lock().unwrap().queued.is_empty());
-    unfinished["recall_context"]["extraction_history"]["rows"][0]["attestation"]["bank"] =
-        json!("new-bank");
-    stack
         .invoke(unfinished, "owner-one", Some(stack.handle.id()))
         .await;
+    // It adds no authority, so the hook never imports it.
     assert_eq!(
         stack.deps.store().await.extraction_plan(&key()).unwrap(),
-        before
+        None
     );
+    assert!(stack.fixture.lock().unwrap().queued.is_empty());
     let job = memory::hooks::ExtractJobInput {
         session_id: "synthetic-session".into(),
         turn_id: Some("old-unfinished".into()),

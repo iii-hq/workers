@@ -2068,7 +2068,7 @@ mod productive {
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"old"}));
             let source =
                 json!(["incremental-fixture", "private", false, null, null, ["end"]]).to_string();
-            let receipt = json!([source, "private", 0]).to_string();
+            let receipt = memory::extract::effect_receipt(&source, "private", 0);
             let decision = stack
                 .deps
                 .store()
@@ -3490,6 +3490,81 @@ mod productive {
             assert_eq!(s.count("router::complete"), 0);
             assert_eq!(s.count("state::set"), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn a_trashed_default_bank_is_recreated_and_the_cursor_moves() {
+        let text = "Amber instruments require copper calibration.";
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("end", text)],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([fact(text)]),
+            ..Script::default()
+        })
+        .await;
+        let store = stack.deps.store().await;
+        store.ensure_bank("public", None).await.unwrap();
+        store.trash_bank("public").await.unwrap();
+        assert!(store.is_deleted("public"));
+        drop(store);
+        let mut into_default = job("end");
+        into_default.bank = Some("public".into());
+        stack.run(&into_default).await.unwrap();
+        assert_eq!(stack.log_records("public").len(), 1);
+        assert_eq!(stack.log_records("public")[0].text, text);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+    }
+
+    #[tokio::test]
+    async fn an_agent_bank_trashed_between_attempts_shifts_no_receipt() {
+        let amber = "Amber instruments require copper calibration.";
+        let birch = "Birch archives retain monthly invoices.";
+        let cedar = "Cedar cabinets need yearly oiling.";
+        let item = |text: &str, scope: &str| {
+            let mut item = fact(text)[0].clone();
+            item["scope"] = json!(scope);
+            if scope == "agent" {
+                item["agent"] = json!("helper");
+            }
+            item
+        };
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("end", &format!("{amber} {birch} {cedar}")),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            state_write_error: true,
+            model_items: VecDeque::from([json!([
+                item(amber, "agent"),
+                item(birch, "project"),
+                item(cedar, "project")
+            ])]),
+            ..Script::default()
+        })
+        .await;
+        let mut taught = job("end");
+        taught.agent = Some("helper".into());
+        assert!(stack.run(&taught).await.unwrap_err().contains("state::set"));
+        assert_eq!(stack.log_records("agent-helper").len(), 1);
+        let committed = stack.log_records("private");
+        assert_eq!(committed.len(), 2);
+        // The retry replays the plan without the agent's item: the others
+        // keep their receipts, so none is reinforced again or dropped.
+        stack
+            .deps
+            .store()
+            .await
+            .trash_bank("agent-helper")
+            .await
+            .unwrap();
+        stack.script.lock().unwrap().state_write_error = false;
+        stack.run(&taught).await.unwrap();
+        assert_eq!(stack.log_records("private"), committed);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
     }
 
     #[tokio::test]
