@@ -152,7 +152,27 @@ pub fn engine_version(engine: BrowserEngine, path: &std::path::Path) -> Option<S
         BrowserEngine::Lightpanda => "version",
     };
     let output = std::process::Command::new(path).arg(arg).output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
+    first_line(&output.stdout)
+}
+
+/// [`chromium_version`] for async callers, bounded by `limit`: a binary that
+/// hangs on `--version` is killed and counts as printing no version.
+pub async fn chromium_version_within(
+    path: &std::path::Path,
+    limit: std::time::Duration,
+) -> Option<String> {
+    let output = tokio::process::Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(limit, output).await.ok()?.ok()?;
+    first_line(&output.stdout)
+}
+
+fn first_line(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
     let line = text.lines().next()?.trim();
     (!line.is_empty()).then(|| line.to_string())
 }
@@ -160,6 +180,29 @@ pub fn engine_version(engine: BrowserEngine, path: &std::path::Path) -> Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_version_probe_that_hangs_is_cut_off() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("browser-doctor-hang-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (hangs, prints) = (dir.join("hangs"), dir.join("prints"));
+        std::fs::write(&hangs, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::write(&prints, "#!/bin/sh\necho 'Chromium 1.2.3'\n").unwrap();
+        for script in [&hangs, &prints] {
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let limit = std::time::Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        assert_eq!(chromium_version_within(&hangs, limit).await, None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            chromium_version_within(&prints, std::time::Duration::from_secs(5)).await,
+            Some("Chromium 1.2.3".to_string())
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn configured_missing_executable_is_none() {
