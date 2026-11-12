@@ -909,7 +909,7 @@ static SESSION_PASSES: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>
 /// cursor: the older turn extracted twice (its corroboration inflated, or
 /// into the newer turn's bank), and the slower pass writing the cursor
 /// back behind the faster one's span.
-fn session_pass(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn session_pass(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     let mut passes = SESSION_PASSES.lock().unwrap_or_else(|e| e.into_inner());
     // Keep only sessions with a pass in flight or queued on the lock.
     passes.retain(|_, pass| Arc::strong_count(pass) > 1);
@@ -997,6 +997,13 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         }),
         (None, false) => crate::scope::resolve(deps, session_id, None).await?,
     };
+    // A stamp or a history row keeps a policy as its bank, layer and agent
+    // only: the job's takes that form, or a default bank no name chose never
+    // matches its own turn's stamp.
+    let resolved = resolved.map(|r| crate::scope::Resolved {
+        derived: r.layer(&cfg.default_bank).is_some() || r.agent.is_some(),
+        ..r
+    });
     // Only the user's own sessions are extracted: checked here, where every
     // path (queued, inline, redelivered, re-resolved) passes.
     let meta = crate::scope::session_meta(&deps.iii, session_id.to_string()).await?;
@@ -1175,10 +1182,9 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                 .map(move |run| (scope.clone(), turn.clone(), run))
         })
         .collect();
-    let pending = runs.len() > PASS_CALLS;
-    tracing::debug!(session_id, runs = runs.len(), pending, "extraction pass");
-    let mut asked = false;
-    for (scope, turn, run) in runs.into_iter().take(PASS_CALLS) {
+    tracing::debug!(session_id, runs = runs.len(), "extraction pass");
+    let mut calls = 0;
+    for (scope, turn, run) in runs {
         let Some(scope) = scope else {
             if let Some((id, ..)) = run.last() {
                 cursor_set(&deps.iii, session_id, id).await?;
@@ -1191,15 +1197,15 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
             }
             continue;
         }
-        asked |= read_run(deps, &cfg, session_id, turn.as_deref(), &scope, run).await?;
+        if calls == PASS_CALLS {
+            // The queue retries the job from the last confirmed run. `until` is
+            // never confirmed while a tail is unprocessed.
+            return Err("extraction pending: remaining runs require retry".into());
+        }
+        calls += usize::from(read_run(deps, &cfg, session_id, turn.as_deref(), &scope, run).await?);
         ext(deps, |s| s.set_pending_extraction(session_id, Value::Null)).await?;
     }
-    if pending {
-        // The queue retries the job from the last confirmed run. `until` is
-        // never confirmed while a tail is unprocessed.
-        return Err("extraction pending: remaining runs require retry".into());
-    }
-    Ok(asked)
+    Ok(calls > 0)
 }
 
 /// Resolve source policy intervals before model runs, not queue arrival order.
@@ -1384,7 +1390,13 @@ fn stamped_intervals(
         if cut > 0 {
             intervals.push((None, None, pending.drain(..cut).collect()));
         }
-        intervals.push((scope, Some(turn.to_string()), std::mem::take(&mut pending)));
+        // A turn's steps are one interval, read whole like any span.
+        match intervals.last_mut() {
+            Some((last, Some(last_turn), entries)) if *last == scope && last_turn == turn => {
+                entries.append(&mut pending)
+            }
+            _ => intervals.push((scope, Some(turn.to_string()), std::mem::take(&mut pending))),
+        }
     }
     // Entries after the last boundary wait for the pass that reads their end.
     Ok(intervals)
@@ -1483,7 +1495,6 @@ async fn retained_pass(
         // which is safe and merges by exact source on the next invocation.
         ext(deps, |s| s.set_pending_extraction(session, Value::Null)).await?;
     }
-    let mut asked = false;
     let mut calls = 0;
     // Set once an OFF job leaves an eligible run behind: the cursor stays
     // before it, for the next eligible job.
@@ -1545,21 +1556,22 @@ async fn retained_pass(
                 // The queue retries the job from the last confirmed run.
                 return Err("extraction pending: remaining runs require retry".into());
             }
-            calls += 1;
             ext(deps, |s| {
                 s.retain_extraction_range(session, capture.clone(), false)
             })
             .await?;
-            asked |= execute_run(
-                deps,
-                cfg,
-                session,
-                turn.as_deref(),
-                scope,
-                run.clone(),
-                false,
-            )
-            .await?;
+            calls += usize::from(
+                execute_run(
+                    deps,
+                    cfg,
+                    session,
+                    turn.as_deref(),
+                    scope,
+                    run.clone(),
+                    false,
+                )
+                .await?,
+            );
             ext(deps, |s| {
                 s.retain_extraction_range(session, capture.clone(), true)
             })
@@ -1571,19 +1583,20 @@ async fn retained_pass(
             ext(deps, |s| s.acknowledge_extraction_range(session, &capture)).await?;
         }
     }
-    Ok(asked)
+    Ok(calls > 0)
 }
 
 /// The most excerpt one extraction call reads: what a window of 12 lines
 /// of 2,000 chars could always send.
 const CALL_CHARS: usize = 24_000;
 
-/// Runs one pass executes; a longer backlog returns pending and retries.
+/// Model calls one pass makes; a longer backlog returns pending and retries.
 const PASS_CALLS: usize = 4;
 
-/// Every run, oldest first, with no prefix or tail dropped. The caller runs
-/// at most [`PASS_CALLS`] and returns pending to drain the rest. The window
-/// applies only to a bootstrap without a cursor, never to a valid delta.
+/// Every run, oldest first, with no prefix or tail dropped. The caller makes
+/// at most [`PASS_CALLS`] model calls and returns pending to drain the rest.
+/// The window applies only to a bootstrap without a cursor, never to a valid
+/// delta.
 // shortcut: runs after the first are read without the turn's opening request;
 // carry the request into later runs if facts are lost there.
 fn pass_runs(entries: Vec<Entry>, _window: usize) -> Vec<Vec<Entry>> {

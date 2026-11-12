@@ -1193,7 +1193,7 @@ impl Store {
 
     /// Move the bank folder into `.trash/<name>-<ms>` — recoverable by
     /// hand, never destroyed.
-    pub async fn trash_bank(&self, name: &str) -> Result<String, MemoryError> {
+    pub async fn trash_bank(&self, name: &str, default_bank: &str) -> Result<String, MemoryError> {
         validate_name(name)?;
         let mut banks = self.banks.write().await;
         if !banks.contains_key(name) {
@@ -1206,9 +1206,12 @@ impl Store {
         // not stranded on disk with no RAM entry until a reload.
         std::fs::rename(self.root.join(name), &dest)?;
         banks.remove(name);
-        // The bank is already gone: a failed purge is logged, not reported.
-        if let Err(e) = run_blocking(|| self.purge_bank_plans(name)).await {
-            tracing::warn!(bank = name, error = %e, "extraction plan purge failed");
+        // The default bank's runs go on (it materializes on use): its plans
+        // stay. The bank is already gone: a failed purge is logged, not reported.
+        if name != default_bank {
+            if let Err(e) = run_blocking(|| self.purge_bank_plans(name)).await {
+                tracing::warn!(bank = name, error = %e, "extraction plan purge failed");
+            }
         }
         Ok(dest.display().to_string())
     }
@@ -2749,7 +2752,7 @@ mod tests {
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         store.ensure_bank("blog", None).await.unwrap();
         store.ensure_bank("blog-old", None).await.unwrap();
-        store.trash_bank("blog-old").await.unwrap();
+        store.trash_bank("blog-old", "main").await.unwrap();
         assert!(store.is_deleted("blog-old"));
         assert!(
             !store.is_deleted("blog"),
@@ -2759,7 +2762,7 @@ mod tests {
             !store.is_deleted("never"),
             "a bank that never existed is not deleted"
         );
-        store.trash_bank("blog").await.unwrap();
+        store.trash_bank("blog", "main").await.unwrap();
         assert!(store.is_deleted("blog"));
         store.ensure_bank("blog", None).await.unwrap();
         assert!(
@@ -2774,7 +2777,7 @@ mod tests {
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("scratch", None).await.unwrap();
         bank.commit(memory("keep me recoverable")).await.unwrap();
-        let dest = store.trash_bank("scratch").await.unwrap();
+        let dest = store.trash_bank("scratch", "main").await.unwrap();
         assert!(std::path::Path::new(&dest).join(MEMORIES_FILE).exists());
         assert!(store.bank("scratch").await.is_err());
     }

@@ -94,7 +94,9 @@ pub async fn delete(
     req: BankDeleteRequest,
 ) -> Result<BankDeleteResponse, MemoryError> {
     let store = deps.store().await;
-    let trashed_to = store.trash_bank(&req.name).await?;
+    let trashed_to = store
+        .trash_bank(&req.name, &deps.config().await.default_bank)
+        .await?;
     deps.emitter.bank("trashed", &req.name).await;
     Ok(BankDeleteResponse {
         ok: true,

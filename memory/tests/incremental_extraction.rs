@@ -2921,6 +2921,39 @@ mod productive {
     }
 
     #[tokio::test]
+    async fn a_long_agentic_turn_is_read_in_one_call_by_its_own_job() {
+        let text = "Amber instruments require copper calibration.";
+        let mut path = vec![message("anchor", ""), message("request", text)];
+        for step in 0..30 {
+            let mut item = stamped(&format!("step-{step}"), "long", "private", true);
+            // Narration on most steps, a bare tool call on the rest.
+            if step % 3 != 0 {
+                item["message"]["content"][0]["text"] = json!(format!(
+                    "Checking calibration log {step} for the instruments."
+                ));
+            }
+            path.push(item);
+        }
+        let mut model_items: VecDeque<_> = (0..30).map(|_| json!([])).collect();
+        model_items.push_front(fact(text));
+        let stack = Boundary::new(Script {
+            path,
+            cursor: Some("anchor".into()),
+            model_items,
+            ..Script::default()
+        })
+        .await;
+        let mut input = job("step-29");
+        input.turn_id = Some("long".into());
+        stack.run(&input).await.unwrap();
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 1);
+        assert!(s.inputs()[0].contains(text));
+        assert!(s.inputs()[0].contains("calibration log 29"));
+        assert_eq!(s.cursor.as_deref(), Some("step-29"));
+    }
+
+    #[tokio::test]
     async fn mismatched_job_turn_cannot_publish_another_boundary() {
         let stack = Boundary::new(Script {
             path: vec![
@@ -3498,7 +3531,7 @@ mod productive {
         .await;
         let store = stack.deps.store().await;
         store.ensure_bank("public", None).await.unwrap();
-        store.trash_bank("public").await.unwrap();
+        store.trash_bank("public", "public").await.unwrap();
         assert!(store.is_deleted("public"));
         drop(store);
         let mut into_default = job("end");
@@ -3550,7 +3583,7 @@ mod productive {
             .deps
             .store()
             .await
-            .trash_bank("agent-helper")
+            .trash_bank("agent-helper", "public")
             .await
             .unwrap();
         stack.script.lock().unwrap().state_write_error = false;
@@ -3604,7 +3637,7 @@ mod productive {
                 .deps
                 .store()
                 .await
-                .trash_bank("private")
+                .trash_bank("private", "public")
                 .await
                 .unwrap();
             pause.1.add_permits(1);
@@ -4332,7 +4365,7 @@ mod productive {
             .deps
             .store()
             .await
-            .trash_bank("private")
+            .trash_bank("private", "public")
             .await
             .unwrap();
         let stack = stack.restart().await;

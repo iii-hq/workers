@@ -135,8 +135,9 @@ pub struct PreGenerateInput {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub generate: Option<GenerateInput>,
-    /// Delivery context the harness attaches to this hook call. Absent on a
-    /// harness that predates it: recall then reads the last user message.
+    /// Delivery context the harness attaches to this hook call. Recall never
+    /// reads it (it reads the last user message): only its
+    /// `extraction_history` is imported, then dropped before the hook runs.
     #[serde(default)]
     pub recall_context: Option<Value>,
 }
@@ -1193,6 +1194,9 @@ pub async fn session_deleted(
     input: SessionDeletedInput,
 ) -> Result<AckResponse, Error> {
     if !input.session_id.is_empty() {
+        // After any pass in flight, or it writes its cursor and state back.
+        let pass = extract::session_pass(&input.session_id);
+        let _pass = pass.lock().await;
         extract::cursor_delete(&deps.iii, &input.session_id).await;
         // Its captured transcript and plans must not outlive the session.
         let store = deps.store().await;

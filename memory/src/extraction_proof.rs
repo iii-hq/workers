@@ -467,7 +467,8 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
     .map_err(|e| format!("history persistence failed: {e}"))?;
     // Queue messages carry correlation only, never history or a trusted flag.
     // Re-delivery is safe: extraction receipts bind effects to the original source.
-    if deps.config().await.extraction_enabled {
+    let cfg = deps.config().await;
+    if cfg.extraction_enabled {
         let stored = crate::store::run_blocking(|| store.authenticated_history(&input.session_id))
             .await
             .map_err(|_| "history read failed")?;
@@ -493,7 +494,7 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
                 Ok(Some(scope)) => scope,
                 _ => continue,
             };
-            if store.is_deleted(&scope.bank) {
+            if scope.bank != cfg.default_bank && store.is_deleted(&scope.bank) {
                 continue;
             }
             let job = crate::hooks::ExtractJobInput {

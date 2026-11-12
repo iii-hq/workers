@@ -616,12 +616,20 @@ async fn trashing_a_bank_purges_only_the_plans_of_runs_into_it() {
             )
             .unwrap();
     }
-    store.trash_bank("private").await.unwrap();
+    store.trash_bank("private", "main").await.unwrap();
     assert_eq!(store.extraction_plan(&into_private).unwrap(), None);
     assert!(store.extraction_plan(&elsewhere).unwrap().is_some());
     // A plan teaching an agent stays: its replay drops only the agent's items.
     store.ensure_bank("agent-helper", None).await.unwrap();
-    store.trash_bank("agent-helper").await.unwrap();
+    store.trash_bank("agent-helper", "main").await.unwrap();
     assert!(store.extraction_plan(&teaching).unwrap().is_some());
     assert!(store.extraction_plan(&elsewhere).unwrap().is_some());
+    // The default bank's runs go on after it is trashed: its plans stay.
+    let into_default = plan("main", serde_json::Value::Null);
+    store
+        .save_extraction_plan(&into_default, &serde_json::json!({"agents":[]}))
+        .unwrap();
+    store.ensure_bank("main", None).await.unwrap();
+    store.trash_bank("main", "main").await.unwrap();
+    assert!(store.extraction_plan(&into_default).unwrap().is_some());
 }

@@ -118,6 +118,7 @@ impl Stack {
                                         let end = (start+100).min(fixture.path.len());
                                         json!({"messages":fixture.path[start..end],"next_cursor":(end < fixture.path.len()).then(||end.to_string())})
                                     },
+                                    "session::messages-tail" => json!({"messages":replies.lock().unwrap().path}),
                                     "engine::queue::enqueue" => {
                                         replies.lock().unwrap().queued.push(request["data"]["data"].clone());
                                         json!({"ok":true})
@@ -1160,4 +1161,71 @@ async fn a_failed_turn_with_an_assistant_step_extracts_and_the_next_turn_follows
         stack.fixture.lock().unwrap().cursor,
         json!({"last_entry_id":"next-end"})
     );
+}
+
+#[tokio::test]
+async fn a_default_bank_turn_goes_from_hook_to_job_and_is_extracted() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    // No `fs_scope.root` and no agent profile: the resolver's own default
+    // bank, which the stamp carries as its name alone.
+    let hook = stack
+        .invoke(
+            json!({"session_id":"synthetic-session","turn_id":"default-turn"}),
+            "owner-one",
+            Some(stack.handle.id()),
+        )
+        .await;
+    let mut origin = hook["result"]["annotations"].clone();
+    assert_eq!(origin["memory_bank"], "main");
+    origin["turn_id"] = json!("default-turn");
+    let text = "The user prefers copper instruments.";
+    stack.fixture.lock().unwrap().path = vec![
+        json!({"entry_id":"default-request","message":{"role":"user","timestamp":1700000000000u64,"content":[{"type":"text","text":text}]}}),
+        json!({"entry_id":"default-end","message":{"role":"assistant","timestamp":1700000000500u64,"content":[{"type":"text","text":"Noted."}]},"origin":origin}),
+    ];
+    let completed =
+        serde_json::from_value(json!({"session_id":"synthetic-session","turn_id":"default-turn"}))
+            .unwrap();
+    memory::hooks::turn_completed(&stack.deps, completed)
+        .await
+        .unwrap();
+    let queued = stack.fixture.lock().unwrap().queued.clone();
+    assert_eq!(queued.len(), 1);
+    let job: memory::hooks::ExtractJobInput = serde_json::from_value(queued[0].clone()).unwrap();
+    assert_eq!(
+        (job.bank.as_deref(), job.derived, job.until.as_deref()),
+        (Some("main"), true, Some("default-end"))
+    );
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
+    let prompts = stack.fixture.lock().unwrap().prompts.clone();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains(text));
+    assert!(dir.path().join("main/memories.jsonl").exists());
+    assert_eq!(
+        stack.fixture.lock().unwrap().cursor,
+        json!({"last_entry_id":"default-end"})
+    );
+}
+
+#[tokio::test]
+async fn a_failed_request_into_a_trashed_default_bank_is_still_recovered() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    let mut cfg = (*stack.deps.config().await).clone();
+    cfg.default_bank = "old-bank".into();
+    *stack.deps.config.write().await = Arc::new(cfg);
+    let store = stack.deps.store().await;
+    store.ensure_bank("old-bank", None).await.unwrap();
+    store.trash_bank("old-bank", "old-bank").await.unwrap();
+    drop(store);
+    // The default materializes on use: its request is queued like any other.
+    stack
+        .invoke(input("now"), "owner-one", Some(stack.handle.id()))
+        .await;
+    let queued = stack.fixture.lock().unwrap().queued.clone();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0]["bank"], "old-bank");
 }
