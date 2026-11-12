@@ -972,8 +972,16 @@ pub fn select(
     let past = kept.split_off(limit.min(kept.len()));
     let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
     // On all the question's words: the slot widens admission, never the list.
-    let Some(first) = kept.first().map(|(m, _)| ev(m)).filter(|first| {
-        on(&first.matched, first.terms) && kept.iter().all(|(m, _)| same(ev(m), first))
+    // A line on the words outside the slot alone takes a place, not a say in it.
+    let outside_only =
+        |e: &Evidence| !on(&e.matched, e.terms) && on(e.relation_words(), e.relation_term_count());
+    let listed: Vec<&Memory> = kept
+        .iter()
+        .map(|(m, _)| m)
+        .filter(|m| !outside_only(ev(m)))
+        .collect();
+    let Some(first) = listed.first().map(|m| ev(m)).filter(|first| {
+        on(&first.matched, first.terms) && listed.iter().all(|m| same(ev(m), first))
     }) else {
         return kept;
     };
@@ -983,7 +991,7 @@ pub fn select(
         // Each line's lead, once: a line with none, or a repeat, is no list.
         let mut leads = HashSet::new();
         let mut lead_once = |m: &Memory| extract::lead(&m.text).is_some_and(|l| leads.insert(l));
-        if kept.iter().all(|(m, _)| lead_once(m)) {
+        if listed.iter().all(|m| lead_once(m)) {
             let siblings: Vec<_> = past
                 .into_iter()
                 .filter(|(m, _)| same(ev(m), first) && lead_once(m))
@@ -2726,6 +2734,34 @@ Formal."
             .collect();
         let told = told_ids(bank_of(&rows), query).await;
         assert!(!told.is_empty() && told.len() <= 6, "{told:?}");
+    }
+
+    /// A line on the one word outside the slot takes a place in the count but
+    /// never cancels the list of lines on two of the question's words.
+    #[test]
+    fn a_line_on_the_word_outside_the_slot_leaves_the_list_alone() {
+        let slot = |matched: &[&str], relevance: f32| Evidence {
+            matched: matched.iter().map(|w| w.to_string()).collect(),
+            relation_matched: vec!["deploy".into()],
+            relation_terms: 1,
+            requested_slot: Some(0..3),
+            terms: 2,
+            lexical: relevance,
+            relevance,
+            ..Evidence::default()
+        };
+        let full = || slot(&["region", "deploy"], 1.0);
+        // Below the share of the best: it stands only on the slot's reading.
+        let outside = || slot(&["deploy"], 0.2);
+        let list = vec![
+            ("alpha", full()),
+            ("friday", outside()),
+            ("bravo", full()),
+            ("charlie", full()),
+        ];
+        assert_eq!(selected(list, 2), ["alpha", "friday", "bravo", "charlie"]);
+        let first = vec![("friday", outside()), ("alpha", full()), ("bravo", full())];
+        assert_eq!(selected(first, 2), ["friday", "alpha", "bravo"]);
     }
 
     fn hook_input(context: Option<Value>) -> PreGenerateInput {
