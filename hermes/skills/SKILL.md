@@ -55,7 +55,6 @@ on here.
 - `hermes::sessions::list` — sessions this worker has run.
 - `hermes::status` — session state + live flag.
 - `hermes::stop` — interrupt a live run.
-- `run::start_and_wait` — alias for `hermes::run`.
 - `hermes::inbound` (HTTP) — inbound gateway delivery route (an observer of
   `http::on-request`); republishes each delivery on `hermes::on-raw-event`.
 

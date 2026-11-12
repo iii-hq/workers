@@ -24,7 +24,7 @@ beforeEach(() => {
 });
 
 describe('register', () => {
-  it('registers the full claude::* surface plus the shared entrypoint', async () => {
+  it('registers the full claude::* surface', async () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
       'claude::on-agent-event',
@@ -35,7 +35,6 @@ describe('register', () => {
       'claude::status',
       'claude::stop',
       'claude::task',
-      'run::start_and_wait',
     ]);
   });
 
@@ -59,11 +58,11 @@ describe('register', () => {
     await expect(fake.registered.get('claude::run')?.({ max_turns: -1 })).rejects.toThrow();
   });
 
-  it('run::start_and_wait shares the claude::run handler behaviour', async () => {
+  it('claude::run accepts the shared messages shape', async () => {
     const fake = await registeredWorker();
     const capture: QueryCapture = { interrupted: false };
     queryMock.mockImplementation(scriptedQuery(fullTurn, capture) as never);
-    const res = (await fake.registered.get('run::start_and_wait')?.({
+    const res = (await fake.registered.get('claude::run')?.({
       session_id: 's1',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
     })) as Record<string, unknown>;

@@ -523,8 +523,8 @@ mod tests {
             Some("claude::on-agent-event")
         );
         assert_eq!(
-            default_events_function("run::start_and_wait").as_deref(),
-            Some("run::on-agent-event")
+            default_events_function("pi::run").as_deref(),
+            Some("pi::on-agent-event")
         );
         assert_eq!(default_events_function("plain"), None);
         assert_eq!(

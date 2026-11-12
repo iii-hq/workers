@@ -1,9 +1,8 @@
 /**
  * pi::* function registrations. `pi::run` accepts either a bare `prompt`
  * string or the shared agent entrypoint shape (`messages` array of
- * role/content-block messages), so anything that can drive
- * `run::start_and_wait` — the acp worker, the console, another worker — can
- * drive Pi unchanged.
+ * role/content-block messages), so the acp worker (`--brain-fn pi::run`) or
+ * another worker can drive Pi unchanged.
  *
  * Pi runs the loop in-process and pushes events through `session.subscribe`.
  * Because that listener is synchronous and feed emits are async, events are
@@ -640,16 +639,4 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     request_format: { type: 'object', properties: {} },
     response_format: SESSIONS_RESPONSE_FORMAT,
   });
-
-  iii.registerFunction(
-    'run::start_and_wait',
-    async (payload: unknown) =>
-      executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
-    {
-      description:
-        'Alias for pi::run under the shared agent entrypoint: run a turn for {session_id, messages} and return when it ends.',
-      request_format: RUN_REQUEST_FORMAT,
-      response_format: RUN_RESPONSE_FORMAT,
-    },
-  );
 }

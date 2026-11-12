@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use iii_acp::handler::{AcpHandler, BrainConfig, DEFAULT_BRAIN_FN};
+use iii_acp::handler::{AcpHandler, BrainConfig};
 use iii_acp::transport;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -25,12 +25,11 @@ struct Args {
     #[arg(
         long,
         env = "IIIACP_BRAIN_FN",
-        help = "iii function id that processes session/prompt. Defaults to \
-                run::start_and_wait when --use-canonical-brain is set; off \
-                otherwise (built-in echo brain). Any function with the \
-                turn-orchestrator wire shape (session_id, messages, model, \
-                ...) whose worker publishes AgentEvent frames on a \
-                `<namespace>::on-agent-event` function will work."
+        help = "iii function id that processes session/prompt, e.g. \
+                claude::run or pi::run; off by default (built-in echo \
+                brain). Any function with the agent wire shape (session_id, \
+                messages, model, ...) whose worker publishes AgentEvent \
+                frames on a `<namespace>::on-agent-event` function will work."
     )]
     brain_fn: Option<String>,
 
@@ -55,9 +54,8 @@ struct Args {
     #[arg(
         long,
         env = "IIIACP_USE_CANONICAL_BRAIN",
-        help = "Shortcut for --brain-fn run::start_and_wait. Wires iii-acp \
-                straight to turn-orchestrator. Ignored if --brain-fn is \
-                already set."
+        hide = true,
+        help = "Removed with run::start_and_wait; pass --brain-fn <agent>::run."
     )]
     use_canonical_brain: bool,
 
@@ -99,6 +97,16 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // run::start_and_wait had one host per engine, whichever agent worker
+    // connected first, so the flag is refused rather than silently falling
+    // back to the echo brain.
+    if args.use_canonical_brain && args.brain_fn.is_none() {
+        anyhow::bail!(
+            "--use-canonical-brain was removed with run::start_and_wait: pass --brain-fn \
+             <agent>::run (claude::run, pi::run, codex::run, ...)"
+        );
+    }
+
     // Honor RUST_LOG when set (gives operators per-module control); fall
     // back to the --debug switch otherwise.
     let fallback = if args.debug {
@@ -125,10 +133,7 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker(&args.engine_url, init_opts);
 
     let outbound = Arc::new(transport::Outbound::new());
-    let brain_fn = args.brain_fn.or_else(|| {
-        args.use_canonical_brain
-            .then(|| DEFAULT_BRAIN_FN.to_string())
-    });
+    let brain_fn = args.brain_fn;
     let handler = Arc::new(AcpHandler::new(
         iii,
         outbound,

@@ -19,7 +19,6 @@ Container worker (`deploy: image`) — the image bundles the Hermes CLI (Python 
 | `hermes::sessions::list` | Sessions this worker has run, plus raw `hermes sessions list` |
 | `hermes::status` | Point-in-time session state, live flag |
 | `hermes::stop` | Interrupt a live run |
-| `run::start_and_wait` | Alias for `hermes::run` under the shared agent entrypoint |
 | `hermes::start` | Start a turn and return `{session_id, started}` at once; frames arrive on the event feeds |
 | `hermes::inbound` | HTTP route: observes `http::on-request` with args `{ method: "POST", path: <inbound_api_path> }`; the Hermes gateway delivers inbound platform/webhook events here and the worker republishes them on `hermes::on-raw-event` |
 | `hermes::on-agent-event` | Event feed: normalized turn frames of one session (args `{ session_id }`); see [Event feeds](#event-feeds) |
