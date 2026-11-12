@@ -576,6 +576,14 @@ fn extraction_lock() -> std::sync::MutexGuard<'static, ()> {
     EXTRACTION.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Serializes every rule write with the extraction's rule compare-and-write.
+/// Process-wide, like [`EXTRACTION`]; never held across an await.
+static RULE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn rule_write_lock() -> std::sync::MutexGuard<'static, ()> {
+    RULE_WRITES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn remove_if_exists(path: &Path) -> Result<(), MemoryError> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
@@ -2043,6 +2051,8 @@ impl Bank {
         content: &str,
     ) -> Result<Option<bool>, MemoryError> {
         validate_name(name)?;
+        // A rule written between the compare and the write would be lost.
+        let _lock = rule_write_lock();
         let path = self.rules_dir().join(format!("{name}.md"));
         let current = match std::fs::read_to_string(&path) {
             Ok(current) => current,
@@ -2055,7 +2065,7 @@ impl Bank {
         if content == expected {
             return Ok(Some(false));
         }
-        self.set_rule(name, content)?;
+        self.write_rule(name, content)?;
         Ok(Some(true))
     }
 
@@ -2101,6 +2111,12 @@ impl Bank {
 
     /// Atomic write ([`write_atomic`]); empty content removes the rule.
     pub fn set_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
+        let _lock = rule_write_lock();
+        self.write_rule(name, content)
+    }
+
+    /// [`Bank::set_rule`] for a caller holding [`rule_write_lock`].
+    fn write_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
         validate_name(name)?;
         // Rules are injected into every turn: no known secret shape is kept.
         let redacted = crate::redact::redact(content);
@@ -2782,6 +2798,34 @@ mod tests {
         let dest = store.trash_bank("scratch", "main").await.unwrap();
         assert!(std::path::Path::new(&dest).join(MEMORIES_FILE).exists());
         assert!(store.bank("scratch").await.is_err());
+    }
+
+    #[test]
+    fn a_rule_written_during_an_extraction_compare_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = Bank::load("race", dir.path().to_path_buf()).unwrap();
+        // A long rule keeps the extraction's redacted compare busy while
+        // the human write lands.
+        let before = "- Keep calibration notes for every instrument.\n".repeat(20_000);
+        let learned = format!("{before}- Learned line.\n");
+        let human = "- Human-authored instruction.\n";
+        for _ in 0..5 {
+            bank.set_rule("learned", &before).unwrap();
+            let start = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    start.wait();
+                    bank.extraction_rule_expected("learned", &before, &learned)
+                        .unwrap();
+                });
+                start.wait();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                bank.set_rule("learned", human).unwrap();
+            });
+            // Whichever lands first, the human write is never overwritten.
+            let rule = std::fs::read_to_string(dir.path().join("rules/learned.md")).unwrap();
+            assert_eq!(rule, human);
+        }
     }
 
     #[tokio::test]
