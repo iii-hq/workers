@@ -1134,9 +1134,9 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         return retained_pass(deps, &cfg, job, intervals, saved).await;
     }
     if job.skip && intervals.iter().any(|(scope, _, _)| scope.is_some()) {
-        // OFF may acknowledge only OFF text; leave older eligible text for
-        // its owning job instead of extracting or discarding it here.
-        return Err("extraction OFF job cannot process eligible backlog".into());
+        // OFF may acknowledge only OFF text: eligible text waits for the
+        // next eligible job, which the retained pass leaves it to.
+        return retained_pass(deps, &cfg, job, intervals, saved).await;
     }
     if let Some(pending) = saved {
         let scope = crate::scope::Resolved {
@@ -1387,7 +1387,9 @@ fn stamped_intervals(
         if ends_job && job.turn_id.as_deref().is_some_and(|t| t != turn) {
             return Err("extraction job/source turn mismatch".into());
         }
-        if ends_job && (scope.as_ref() != fallback || job.skip != scope.is_none()) {
+        // Extraction toggled while the turn ran: the stamp decides, and an
+        // ON/OFF difference only makes the job do less. Two ON banks conflict.
+        if ends_job && !job.skip && scope.is_some() && scope.as_ref() != fallback {
             return Err("extraction job/source policy mismatch".into());
         }
         // Harness send writes user requests unbound. The turn keeps its one

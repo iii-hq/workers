@@ -2271,6 +2271,75 @@ mod productive {
     }
 
     #[tokio::test]
+    async fn a_turn_stamped_on_whose_job_is_off_waits_for_the_next_eligible_job() {
+        let said_on = "Amber instruments require copper calibration.";
+        let said_after = "Birch archives retain monthly invoices.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("on-user", said_on),
+                stamped("on-end", "on-turn", "private", true),
+                message("off-user", "OFF_SECRET_MUST_NOT_REACH_MODEL"),
+                stamped("off-end", "off-turn", "private", false),
+                message("back-user", said_after),
+                stamped("end", "back-turn", "private", true),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([fact(said_on), fact(said_after)]),
+            ..Script::default()
+        })
+        .await;
+        // Extraction was turned off before the stamped-ON turn completed:
+        // its job, and the next turn's, are OFF jobs.
+        let off_job = |until: &str, turn: &str| {
+            let mut off = job(until);
+            off.turn_id = Some(turn.into());
+            off.bank = None;
+            off.skip = true;
+            off
+        };
+        stack.run(&off_job("on-end", "on-turn")).await.unwrap();
+        stack.run(&off_job("off-end", "off-turn")).await.unwrap();
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        // Turned back on: the next eligible job reads the ON turn under its
+        // stamp, passes the OFF turn, and the cursor reaches the end.
+        let mut back = job("end");
+        back.turn_id = Some("back-turn".into());
+        stack.run(&back).await.unwrap();
+        let s = stack.script.lock().unwrap();
+        assert_eq!(s.count("router::complete"), 2);
+        assert!(s.inputs().iter().all(|i| !i.contains("OFF_SECRET")));
+        assert!(s.inputs()[0].contains(said_on));
+        drop(s);
+        assert_eq!(stack.log_records("private").len(), 2);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+    }
+
+    #[tokio::test]
+    async fn a_turn_stamped_off_whose_job_is_on_is_passed_unextracted() {
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("off-user", "OFF_SECRET_MUST_NOT_REACH_MODEL"),
+                stamped("off-end", "off-turn", "private", false),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            ..Script::default()
+        })
+        .await;
+        // Extraction was turned on before the stamped-OFF turn completed.
+        let mut on = job("off-end");
+        on.turn_id = Some("off-turn".into());
+        stack.run(&on).await.unwrap();
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+        assert!(stack.log_records("private").is_empty());
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"off-end"}));
+    }
+
+    #[tokio::test]
     async fn newer_job_recovers_pending_effect_before_widening_delta_after_reopen() {
         let first = "Amber instruments require copper calibration.";
         let second = "Birch archives retain monthly invoices.";
@@ -3228,23 +3297,27 @@ mod productive {
                     _ => {}
                 }
                 let rejection = stack.run(&wrong).await;
-                if denied == "automation" {
+                if matches!(denied, "automation" | "skip") {
                     rejection.unwrap();
                 } else {
-                    assert!(rejection.is_err());
+                    assert!(rejection.is_err(), "{denied}");
                 }
                 assert_eq!(stack.log_records("private"), records);
                 assert!(stack.log_records("other").is_empty());
                 assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
-                assert_eq!(
-                    stack
-                        .deps
-                        .store()
-                        .await
-                        .pending_extraction("incremental-fixture")
-                        .unwrap(),
-                    pending
-                );
+                {
+                    let store = stack.deps.store().await;
+                    let slot = store.pending_extraction("incremental-fixture").unwrap();
+                    if denied == "skip" {
+                        // An OFF job does less, never fails: the saved run
+                        // waits in the ledger for the next eligible job.
+                        assert!(slot.is_none());
+                        let ranges = store.extraction_ranges("incremental-fixture").unwrap();
+                        assert!(matches!(&ranges[..], [range] if !range.completed));
+                    } else {
+                        assert_eq!(slot, pending);
+                    }
+                }
                 {
                     let s = stack.script.lock().unwrap();
                     assert_eq!(s.count("router::complete"), 0);
@@ -4306,16 +4379,22 @@ mod productive {
                 _ => later.skip = true,
             }
             let stack = stack.restart().await;
-            assert!(stack.run(&later).await.is_err(), "{mutation}");
-            assert_eq!(
-                stack
-                    .deps
-                    .store()
-                    .await
-                    .pending_extraction("incremental-fixture")
-                    .unwrap(),
-                pending
-            );
+            let result = stack.run(&later).await;
+            {
+                let store = stack.deps.store().await;
+                let slot = store.pending_extraction("incremental-fixture").unwrap();
+                if mutation == "skip" {
+                    // An OFF job does less, never fails: the exhausted run
+                    // waits in the ledger for the next eligible job.
+                    result.unwrap();
+                    assert!(slot.is_none());
+                    let ranges = store.extraction_ranges("incremental-fixture").unwrap();
+                    assert!(matches!(&ranges[..], [range] if !range.completed));
+                } else {
+                    assert!(result.is_err(), "{mutation}");
+                    assert_eq!(slot, pending);
+                }
+            }
             assert!(stack.log_records("other").is_empty());
             assert!(stack.log_records("private").is_empty());
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
