@@ -81,7 +81,7 @@
   A swap stopped half-way (the worker stopped, a write failed) is settled from what the
   stores hold, at start and within 2 seconds (`swap.json`, without tokens); a sign-in by
   hand found there is left as it is. One switch, recovery, move or new Claude Code pane runs
-  at a time. Signing
+  at a time, to its end even when its caller goes away. Signing
   in by hand on `~/.claude` (`/login`) makes that account global, adding it when it is new,
   even right after a switch (the old account's sign-in, not only its profile, tells it from a
   session writing the old profile back); the account that was global then reads signed out,

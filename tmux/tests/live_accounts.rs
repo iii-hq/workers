@@ -2358,3 +2358,49 @@ async fn a_shell_beside_claude_leaves_its_move_alone() {
     w.pending_tick().await;
     w.settled_on(&a, "personal").await;
 }
+
+/// A call that goes away mid-switch (the SDK drops the handler on a
+/// timeout or a disconnect) leaves the switch to finish holding the swap
+/// gate: nothing else enters meanwhile, a removal of the account waits and
+/// then finds it global, and the pane comes back on ~/.claude.
+#[tokio::test]
+async fn a_switch_whose_caller_goes_away_finishes_holding_the_gate() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("dropped");
+    w.with_accounts(&["Personal"], Some(vec![])).await;
+    let p = windows::create(&w.ctx, window("p", claude("personal", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    let session = w.claude(&p).await.session_id.unwrap();
+    // Its SessionEnd hooks take three seconds: the switch is still stopping
+    // it when the call goes away.
+    let pid = w.claude_pid(&p).await;
+    std::fs::write(w.sandbox.dir.join(format!("state/{pid}.linger")), "3").unwrap();
+    let cut = tokio::time::timeout(Duration::from_millis(700), w.global("personal")).await;
+    assert!(cut.is_err(), "the call was cut off mid-switch");
+    assert!(
+        w.accounts().swap_gate.try_lock().is_err(),
+        "the switch still holds the gate"
+    );
+    // Deleting Personal's folder waits for the switch, then is refused:
+    // Personal is global by then.
+    let refused = account_fns::remove(
+        &w.ctx,
+        account_fns::RemoveAccountInput {
+            account: "personal".into(),
+            delete_files: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("global account"), "{refused}");
+    assert_eq!(w.accounts().registry().global, "personal");
+    assert!(w.paths.account_dir("personal").is_dir());
+    let info = w.settled_on_slot(&p, "personal").await;
+    assert_eq!(info.session_id.as_deref(), Some(session.as_str()));
+    assert_eq!(w.ask(&p, "who").await, "personal");
+}

@@ -663,8 +663,22 @@ pub async fn make_global(
     to: &str,
     by: By,
 ) -> Result<Outcome, SwitchError> {
-    let _gate = accounts.swap_gate.lock().await;
-    switch_locked(tmux, accounts, panes, to, by).await
+    let gate = accounts.gate().await;
+    // The work owns the gate: a caller that goes away mid-switch (its
+    // future dropped) neither stops the switch half-way nor frees the gate
+    // while the swap runs.
+    let (tmux, accounts, panes, to) = (
+        tmux.clone(),
+        accounts.clone(),
+        panes.clone(),
+        to.to_string(),
+    );
+    tokio::spawn(async move {
+        let _gate = gate;
+        switch_locked(&tmux, &accounts, &panes, &to, by).await
+    })
+    .await
+    .unwrap_or_else(|error| Err(SwitchError::Failed(format!("The worker failed ({error})."))))
 }
 
 /// [`make_global`] for a caller that holds `swap_gate` already, with
@@ -1727,6 +1741,23 @@ mod tests {
             marks_shared: false,
         };
         HashMap::from([("%3".to_string(), pane)])
+    }
+
+    #[test]
+    fn an_account_a_swap_involves_is_not_removed() {
+        let (home, accounts) = managed("remove-mid-swap");
+        // A swap to Personal under way (or left half-way): its journal.
+        write(
+            &home.paths.root.join(slot::JOURNAL),
+            &json!({"from": "default", "to": "personal", "step": 4}),
+        );
+        let refused = accounts.remove("personal", true, 0).unwrap_err();
+        assert_eq!(refused, super::super::manage::SWAP_UNDER_WAY);
+        assert!(accounts.registry().has("personal"));
+        assert!(home.paths.account_dir("personal").is_dir(), "folder kept");
+        std::fs::remove_file(home.paths.root.join(slot::JOURNAL)).unwrap();
+        accounts.remove("personal", true, 0).unwrap();
+        assert!(!home.paths.account_dir("personal").exists());
     }
 
     #[tokio::test]

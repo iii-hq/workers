@@ -7,6 +7,10 @@ use super::registry::{self, Entry, Registry};
 use super::{shared, Accounts, DEFAULT};
 use crate::model::now_ms;
 
+/// An account a swap involves is not removed until the swap is over.
+pub const SWAP_UNDER_WAY: &str =
+    "A switch of the global account involving it is under way; try again once it is over.";
+
 pub fn no_account(id: &str) -> String {
     format!("There is no Claude Code account \"{id}\".")
 }
@@ -129,8 +133,9 @@ impl Accounts {
         })
     }
 
-    /// Take account `id` off the list. Never `default`, the global one nor
-    /// the one a switch waits to make global.
+    /// Take account `id` off the list. Never `default`, the global one, the
+    /// one a switch waits to make global, nor one a swap running or left
+    /// half-way involves ([`SWAP_UNDER_WAY`]).
     /// Its panes keep running. With `delete_files` its folder goes too (only
     /// inside the accounts root, never what its links point at), refused
     /// while `running` Claude Code panes still run on it.
@@ -138,6 +143,15 @@ impl Accounts {
         let paths = self.paths_or_err()?;
         if id == DEFAULT {
             return Err("The default account can't be removed.".into());
+        }
+        // A swap that involves it, running or left half-way (its journal):
+        // its sign-in may be on its way into or out of its folder.
+        if self
+            .stores()
+            .and_then(|stores| stores.read_journal())
+            .is_some_and(|journal| journal.from == id || journal.to == id)
+        {
+            return Err(SWAP_UNDER_WAY.into());
         }
         self.update_registry(|registry| {
             if !registry.has(id) {

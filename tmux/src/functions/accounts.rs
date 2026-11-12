@@ -202,22 +202,43 @@ pub struct MoveIdleOutput {
     pub moved: Vec<String>,
 }
 
+/// Run `work` holding the swap gate, in a task of its own: once it has the
+/// gate, it runs to its end even when the call goes away (the SDK drops a
+/// handler on a timeout or a disconnect), and only then frees the gate. A
+/// dropped call cancels only its wait for the gate. One switch, recovery
+/// or move at a time, each on the panes as they are once it is its turn.
+pub(super) async fn gated<T, Fut>(ctx: &Ctx, work: impl FnOnce() -> Fut) -> Result<T, String>
+where
+    Fut: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let gate = ctx.collector.accounts().gate().await;
+    let work = work();
+    tokio::spawn(async move {
+        let _gate = gate;
+        work.await
+    })
+    .await
+    .map_err(|error| format!("The worker failed to finish ({error})."))
+}
+
 pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, String> {
-    use crate::accounts::switch::{switch_locked, By};
+    use crate::accounts::switch::{switch_locked, By, SwitchError};
     let tmux = ctx.tmux().await?;
-    // One switch or move at a time, and the panes as they are once it is
-    // this one's turn.
-    let gate = ctx.collector.accounts().swap_gate.lock().await;
-    let panes = ctx.collector.claude_panes(true).await;
-    let switched = switch_locked(
-        &tmux,
-        ctx.collector.accounts(),
-        &panes,
-        &input.account,
-        By::Person,
-    )
-    .await;
-    drop(gate);
+    let collector = ctx.collector.clone();
+    let switched = gated(ctx, move || async move {
+        let panes = collector.claude_panes(true).await;
+        switch_locked(
+            &tmux,
+            collector.accounts(),
+            &panes,
+            &input.account,
+            By::Person,
+        )
+        .await
+    })
+    .await
+    .unwrap_or_else(|error| Err(SwitchError::Failed(error)));
     ctx.monitor.poke();
     let outcome = switched.map_err(|error| error.to_wire())?;
     Ok(GlobalOutput {
@@ -237,21 +258,24 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
 pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput, String> {
     let tmux = ctx.tmux().await?;
     // Never during a switch: it moves sign-ins between the folders.
-    let gate = ctx.collector.accounts().swap_gate.lock().await;
-    let panes = ctx.collector.claude_panes(true).await;
-    ctx.collector
-        .accounts()
-        .load_accounts_now(vec![input.to.trim().to_string()])
-        .await;
-    let moved = crate::accounts::moves::move_idle(
-        &tmux,
-        ctx.collector.accounts(),
-        &panes,
-        input.from.trim(),
-        input.to.trim(),
-    )
-    .await;
-    drop(gate);
+    let collector = ctx.collector.clone();
+    let moved = gated(ctx, move || async move {
+        let panes = collector.claude_panes(true).await;
+        collector
+            .accounts()
+            .load_accounts_now(vec![input.to.trim().to_string()])
+            .await;
+        crate::accounts::moves::move_idle(
+            &tmux,
+            collector.accounts(),
+            &panes,
+            input.from.trim(),
+            input.to.trim(),
+        )
+        .await
+    })
+    .await
+    .and_then(|moved| moved);
     ctx.monitor.poke();
     Ok(MoveIdleOutput { moved: moved? })
 }
@@ -378,50 +402,60 @@ pub async fn update(ctx: &Ctx, input: UpdateAccountInput) -> Result<AccountOutpu
 
 pub async fn remove(ctx: &Ctx, input: RemoveAccountInput) -> Result<EmptyOutput, String> {
     // Not while a switch runs: it could be making this account global.
-    let gate = ctx.collector.accounts().swap_gate.lock().await;
-    let running = if input.delete_files {
-        // Its folder goes only on a look that saw every pane: a failed one
-        // is no proof that nothing runs on it.
-        let panes = ctx
-            .collector
-            .claude_panes_checked()
-            .await
-            .map_err(|error| {
+    let collector = ctx.collector.clone();
+    gated(ctx, move || async move {
+        let running = if input.delete_files {
+            // Its folder goes only on a look that saw every pane: a failed
+            // one is no proof that nothing runs on it.
+            let panes = collector.claude_panes_checked().await.map_err(|error| {
                 format!("The panes could not be looked at ({error}); the folder was kept.")
             })?;
-        // A move stops Claude Code before it copies the conversation: for
-        // that moment its pane runs nothing, yet the folder is needed.
-        if ctx.collector.accounts().moving.any() {
-            return Err(
-                "A Claude Code pane is being moved; delete the folder once that is over."
-                    .to_string(),
-            );
-        }
-        let folder = crate::accounts::slot::Place::Folder(input.account.trim().to_string());
-        panes
-            .values()
-            .filter(|pane| pane.running() && pane.place.as_ref() == Some(&folder))
-            .count() as u32
-    } else {
-        0
-    };
-    let accounts = ctx.collector.accounts().clone();
-    let removed =
-        blocking(move || accounts.remove(&input.account, input.delete_files, running)).await;
-    drop(gate);
-    removed?;
+            // A move stops Claude Code before it copies the conversation:
+            // for that moment its pane runs nothing, yet the folder is
+            // needed.
+            if collector.accounts().moving.any() {
+                return Err(
+                    "A Claude Code pane is being moved; delete the folder once that is over."
+                        .to_string(),
+                );
+            }
+            let folder = crate::accounts::slot::Place::Folder(input.account.trim().to_string());
+            panes
+                .values()
+                .filter(|pane| pane.running() && pane.place.as_ref() == Some(&folder))
+                .count() as u32
+        } else {
+            0
+        };
+        let accounts = collector.accounts().clone();
+        blocking(move || accounts.remove(&input.account, input.delete_files, running)).await
+    })
+    .await??;
     ctx.monitor.poke();
     Ok(EmptyOutput {})
 }
 
 pub async fn login(ctx: &Ctx, input: LoginInput) -> Result<LoginWindow, String> {
+    let tmux = ctx.tmux().await?;
     // Where it signs in (`~/.claude` or the folder) is decided and started
     // with no switch half-way.
-    let _gate = ctx.collector.accounts().swap_gate.lock().await;
-    let accounts = ctx.collector.accounts().clone();
+    let collector = ctx.collector.clone();
+    let created = gated(ctx, move || async move {
+        open_login(&collector, &tmux, input).await
+    })
+    .await??;
+    ctx.monitor.poke();
+    Ok(created)
+}
+
+async fn open_login(
+    collector: &crate::collector::Collector,
+    tmux: &Tmux,
+    input: LoginInput,
+) -> Result<LoginWindow, String> {
+    let accounts = collector.accounts().clone();
     let id = input.account.clone();
     let command = blocking(move || accounts.login_command(&id)).await?;
-    let tmux = ctx.tmux().await?;
     let session_id = tmux.resolve_session(&input.session).await?;
     let format = [
         "#{session_id}",
@@ -451,7 +485,6 @@ pub async fn login(ctx: &Ctx, input: LoginInput) -> Result<LoginWindow, String> 
     // remain-on-exit says.
     tmux.start_held(&created.pane_id, false, Some(&command))
         .await?;
-    ctx.monitor.poke();
     Ok(LoginWindow {
         session_id: created.session_id,
         window_id: created.window_id,

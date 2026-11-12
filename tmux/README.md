@@ -369,10 +369,11 @@ sees half a swap:
    was global) goes from `~/.claude` to its folder; the new one's goes from its
    folder into `~/.claude`, and is removed from its folder. A sign-in is the
    store's keys that belong to the Anthropic account, the ones Claude Code's
-   logout removes: `claudeAiOauth`, `designOauth` and `cloudSessionsOauth`
-   (three token chains Claude Code revokes together), `organizationUuid`,
-   `trustedDeviceToken`, `trustedDeviceEnrolledAfterRefusalAtMs` and
-   `enterpriseGateway`. Every other key stays where it is: `mcpOAuth` holds
+   logout removes, each moved if present: `claudeAiOauth`, `designOauth` and
+   `cloudSessionsOauth` (three token chains Claude Code revokes together),
+   `organizationUuid`, `trustedDeviceToken`,
+   `trustedDeviceEnrolledAfterRefusalAtMs` and `enterpriseGateway`. Every
+   other key stays where it is: `mcpOAuth` holds
    sign-ins to MCP servers, which are yours, not the Claude account's, and
    stays in `~/.claude`. Files are written to a temporary file (0600), synced
    and renamed. On macOS the Keychain item is written the way Claude Code
@@ -400,10 +401,22 @@ still there it is finished, or undone when the switch already answered with
 an error; with any other sign-in there (someone signed in by hand meanwhile)
 nothing is touched and the sign-in by hand is taken in as below. This
 happens at start, within 2 seconds while the worker runs, and before any
-switch. One switch, recovery or move runs at a time, and a new Claude Code
-pane (`claude` on `tmux::windows::create`, `tmux::sessions::create`) waits
-for the one running too: nothing starts on a folder whose sign-in is moving,
-and nothing plans on what a swap half-way shows. A session that fetched the old profile right before the swap
+switch. The locks a stopped swap left are the worker's own when they are
+still the directories it made (device, inode and birth time, or, where the
+file system keeps no birth time, touched within its own swap): those go at
+once, and anything else is waited out as stale (up to 60 seconds). A stale
+lock is moved aside (`<lock>.stale-<id>`) before it is removed, and put back
+only where nothing new took its place; what was moved aside and left goes
+once stale, at start and before each lock is taken. One switch, recovery or
+move runs at a time, and a new Claude Code pane (`claude` on
+`tmux::windows::create`, `tmux::sessions::create`) waits for the one running
+too: nothing starts on a folder whose sign-in is moving, and nothing plans
+on what a swap half-way shows. Once a call has its turn, its work runs to
+the end on its own, even when the caller goes away (a timeout, a
+disconnect): a switch is never left half-way by a call that stopped
+waiting, and no other one starts before it is over. An account a swap
+involves (running, or left half-way) can't be removed. A session that
+fetched the old profile right before the swap
 and writes it back within a minute gets the new one put back. Claude Code
 has a feature gate (`tengu_bubbly_fountain`, off today) that would stop a
 running session whose account changes; when `~/.claude.json` shows it on,

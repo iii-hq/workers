@@ -464,29 +464,34 @@ pub struct PaneAccountOutput {
 
 pub async fn account(ctx: &Ctx, input: PaneAccountInput) -> Result<PaneAccountOutput, String> {
     use crate::accounts::moves;
-    let pane = pane_arg(&input.pane)?;
+    let pane = pane_arg(&input.pane)?.to_string();
     let tmux = ctx.tmux().await?;
     // Never during a switch (it moves sign-ins between the folders), and
     // planned on the panes as they are once it is over.
-    let gate = ctx.collector.accounts().swap_gate.lock().await;
-    let panes = ctx.collector.claude_panes(true).await;
-    let state = panes.get(pane).ok_or_else(|| {
-        format!("Claude Code is not running in pane {pane}, and it has no account.")
-    })?;
-    let accounts = ctx.collector.accounts();
-    let plan = moves::plan(state, &accounts.registry(), &input.account)?;
-    // Claude Code only moves to an account it can start on: that account's
-    // sign-in alone is read, now.
-    if let moves::Plan::Now { to, .. } | moves::Plan::AfterTurn { to, .. } = &plan {
-        accounts.load_accounts_now(vec![to.clone()]).await;
-        if !accounts.is_signed_in(to) {
-            return Err(moves::not_signed_in(accounts, to));
+    let collector = ctx.collector.clone();
+    let done = super::accounts::gated(ctx, move || async move {
+        let panes = collector.claude_panes(true).await;
+        let state = panes.get(&pane).ok_or_else(|| {
+            format!("Claude Code is not running in pane {pane}, and it has no account.")
+        })?;
+        let accounts = collector.accounts();
+        let plan = moves::plan(state, &accounts.registry(), &input.account)?;
+        // Claude Code only moves to an account it can start on: that
+        // account's sign-in alone is read, now.
+        if let moves::Plan::Now { to, .. } | moves::Plan::AfterTurn { to, .. } = &plan {
+            accounts.load_accounts_now(vec![to.clone()]).await;
+            if !accounts.is_signed_in(to) {
+                return Err(moves::not_signed_in(accounts, to));
+            }
         }
-    }
-    let done = moves::apply(&tmux, accounts, state, &plan).await;
-    drop(gate);
+        let done = moves::apply(&tmux, accounts, state, &plan).await?;
+        Ok((done, plan))
+    })
+    .await
+    .and_then(|done| done);
     ctx.monitor.poke();
-    let state = match done? {
+    let (done, plan) = done?;
+    let state = match done {
         "following" => PaneAccountState::Following,
         "pinned" => PaneAccountState::Pinned,
         "moved" => PaneAccountState::Moved,

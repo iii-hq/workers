@@ -181,8 +181,10 @@ pub struct Accounts {
     waiting: Mutex<HashMap<String, Option<u32>>>,
     /// Why the last move of a pane failed, by pane id.
     move_errors: Mutex<HashMap<String, String>>,
-    /// One switch of the global account at a time.
-    pub swap_gate: tokio::sync::Mutex<()>,
+    /// One switch of the global account, recovery or move at a time. Work
+    /// a caller can drop (a function handler) holds it as a [`Gate`] moved
+    /// into a task of its own, so the work, not the call, releases it.
+    pub swap_gate: Arc<tokio::sync::Mutex<()>>,
     /// A swap runs now (the slot's `.claude.json` changes under it).
     swapping: AtomicBool,
     /// `~/.claude.json` and the slot's credentials file as last looked at
@@ -198,6 +200,9 @@ pub struct Accounts {
     /// The tries of the switch that waits, after failures that may pass.
     pending_retry: Mutex<Option<PendingRetry>>,
 }
+
+/// The swap gate held by whoever owns it, a task included.
+pub type Gate = tokio::sync::OwnedMutexGuard<()>;
 
 /// See [`Accounts::pending_retry`].
 #[derive(Debug, Clone)]
@@ -283,7 +288,7 @@ impl Accounts {
             pending: AtomicBool::new(true),
             waiting: Mutex::new(HashMap::new()),
             move_errors: Mutex::new(HashMap::new()),
-            swap_gate: tokio::sync::Mutex::new(()),
+            swap_gate: Arc::new(tokio::sync::Mutex::new(())),
             swapping: AtomicBool::new(false),
             slot_stamp: Mutex::new(None),
             recent_swap: Mutex::new(None),
@@ -294,6 +299,16 @@ impl Accounts {
     }
 
     /// The slot and the folders, with this platform's store.
+    /// The swap gate, owned: it can move into a task.
+    pub async fn gate(&self) -> Gate {
+        self.swap_gate.clone().lock_owned().await
+    }
+
+    /// The swap gate if nobody holds it.
+    pub fn try_gate(&self) -> Option<Gate> {
+        self.swap_gate.clone().try_lock_owned().ok()
+    }
+
     pub fn stores(&self) -> Option<slot::Stores<'_>> {
         self.paths
             .as_ref()
